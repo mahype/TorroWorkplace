@@ -1059,6 +1059,18 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     // The display name the core knows, else the id the command runs with.
     let named = |id: &str| quote(facts.name.as_deref().unwrap_or(id));
     match request {
+        // Which model does which function (task E12.5): the function and the account, no secret.
+        Request::SetAiAssignment { function, engine: Some(engine), model, .. } => trf(
+            "Let {engine} ({model}) do “{function}”",
+            &[
+                ("engine", &quote(engine)),
+                ("model", &model.as_deref().unwrap_or(tr("a model it picks"))),
+                ("function", &function.label()),
+            ],
+        ),
+        Request::SetAiAssignment { function, .. } => {
+            trf("Let no model do “{function}” any more", &[("function", &function.label())])
+        }
         Request::DeleteEvent { event } => match &facts.item {
             Some(item) => trf(
                 "Delete event \"{title}\" on {when} from \"{calendar}\"",
@@ -1831,6 +1843,30 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
         ),
         Request::SnoozeItem { until: None, .. } => trf("Stop snoozing {entry}", &[("entry", &entry())]),
+        // Filing a mail by hand and keeping that for its sender (task E12.4). The sender comes
+        // from the stored entry (`InboxFacts`), never from the request.
+        Request::SetItemCategory { category, remember: true, .. }
+            if facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).is_some() =>
+        {
+            let sender = facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).unwrap_or_default();
+            trf(
+                "File {entry} as {category} and later mail from {sender} too",
+                &[
+                    ("entry", &entry()),
+                    ("category", &torro_core::category::label(*category)),
+                    ("sender", &format!("\"{}\"", quote(&sender))),
+                ],
+            )
+        }
+        Request::SetItemCategory { category, .. } => trf(
+            "File {entry} as {category}",
+            &[("entry", &entry()), ("category", &torro_core::category::label(*category))],
+        ),
+        // The backlog run: up to 500 model calls per mail account (task E12.4).
+        Request::CatchUpCategories { cancel: false } => {
+            tr("Sort the mail that has no category yet, with the AI on this computer").to_string()
+        }
+        Request::CatchUpCategories { cancel: true } => tr("Stop sorting mail into categories").to_string(),
         Request::SetItemLane { lane, remember: false, .. } => {
             trf("Move {entry} to {lane}", &[("entry", &entry()), ("lane", &lane_name(*lane))])
         }
@@ -1931,8 +1967,19 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 "Stop sending notices of {source} to {lane}",
                 &[("source", &source_name(source)), ("lane", &lane_name(*lane))],
             ),
-            // Only rules with a trait keep no popups; one without is nothing the core makes.
-            Some(Rule { effect: RuleEffect::NoPopup, .. }) | None => {
+            // A category kept for a sender or a domain (task E12.2). The words come from the
+            // stored rule, never from the client's request.
+            Some(Rule { sender: Some(sender), effect: RuleEffect::Category { category }, .. }) => trf(
+                "Stop filing mail from {sender} as {category}",
+                &[("sender", &format!("\"{}\"", quote(sender))), ("category", &torro_core::category::label(*category))],
+            ),
+            Some(Rule { domain: Some(domain), effect: RuleEffect::Category { category }, .. }) => trf(
+                "Stop filing mail from everyone at {domain} as {category}",
+                &[("domain", &format!("\"{}\"", quote(domain))), ("category", &torro_core::category::label(*category))],
+            ),
+            // Only rules with a trait keep no popups; one without is nothing the core makes, and
+            // a category rule always names a sender or a domain.
+            Some(Rule { effect: RuleEffect::NoPopup | RuleEffect::Category { .. }, .. }) | None => {
                 tr("Remove an unknown rule of the Notification Hub").to_string()
             }
         },
@@ -3580,6 +3627,7 @@ pub(crate) mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 

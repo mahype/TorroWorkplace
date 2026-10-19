@@ -3819,4 +3819,153 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ob neue E-Mails dieses Kontos dort auftauchen, stellst du in der Mitteilungszentrale unter dem Zahnrad ein.",
     ),
     ("Open Mail", "E-Mail öffnen"),
+    // Categories of incoming mail (E12.1, docs/kategorien.md). All under the context
+    // "category": several of these English words already mean something else in the suite
+    // ("Task" the to-do, "Order" the sort order, "Event" the calendar event, "Junk" the folder).
+    // The four groups first, then the catalogue in its order.
+    ("category|Waiting for me", "Wartet auf mich"),
+    ("category|Paper trail", "Belege"),
+    ("category|Info", "Zur Info"),
+    ("category|Junk", "Technik und Müll"),
+    ("category|Request", "Anfrage"),
+    ("category|Task", "Auftrag"),
+    ("category|Approval", "Freigabe"),
+    ("category|Security", "Sicherheit"),
+    ("category|Personal", "Persönlich"),
+    ("category|Invitation", "Einladung"),
+    ("category|Invoice", "Rechnung"),
+    ("category|Receipt", "Zahlungsbeleg"),
+    ("category|Order", "Bestellung"),
+    ("category|Shipping", "Sendung"),
+    ("category|Booking", "Buchung"),
+    ("category|Statement", "Abrechnung"),
+    ("category|Document", "Schriftstück"),
+    ("category|Newsletter", "Newsletter"),
+    ("category|Promotion", "Werbung"),
+    ("category|Service notice", "Dienstmeldung"),
+    ("category|Social", "Netzwerk"),
+    ("category|Event", "Veranstaltung"),
+    ("category|Not delivered", "Unzustellbar"),
+    ("category|Auto-reply", "Abwesenheit"),
+    ("category|Spam", "Unerwünscht"),
+    ("category|Phishing", "Betrug"),
+    ("category|Other", "Sonstiges"),
+    // The mail window's categories (E12.8).
+    ("Categories", "Kategorien"),
+    ("Category", "Kategorie"),
+    ("Category…", "Kategorie…"),
+    ("Re-categorize", "Neu einordnen"),
+    ("Only this mail", "Nur diese E-Mail"),
+    ("Always for {sender}", "Immer für {sender}"),
+    ("File as {category}", "Ablegen als {category}"),
+    ("{category} · suggested", "{category} · Vorschlag"),
+    ("Couldn't change the category.", "Die Kategorie konnte nicht geändert werden."),
+    ("No mail of this kind.", "Keine E-Mails dieser Art."),
+    ("Mail sorted into it shows up here.", "Hier erscheinen E-Mails, die so eingeordnet wurden."),
+    // Phishing: the band in the reader and the question before a link (E12.9).
+    ("This looks like an attempt to deceive.", "Das sieht nach einem Täuschungsversuch aus."),
+    (
+        "Links here open only after you confirm, and you see where each one goes. The mail itself is untouched.",
+        "Links öffnen hier erst nach deiner Bestätigung, und du siehst, wohin jeder führt. An der E-Mail selbst \
+         ändert sich nichts.",
+    ),
+    ("Open this link?", "Diesen Link öffnen?"),
+    (
+        "This mail looks like an attempt to deceive. The link goes to:",
+        "Diese E-Mail sieht nach einem Täuschungsversuch aus. Der Link führt zu:",
+    ),
+    ("Open anyway", "Trotzdem öffnen"),
+    // Approvals for the categories and the model assignment (E12.4, E12.5).
+    ("File {entry} as {category}", "{entry} als {category} ablegen"),
+    (
+        "File {entry} as {category} and later mail from {sender} too",
+        "{entry} als {category} ablegen und spätere E-Mails von {sender} auch",
+    ),
+    (
+        "Sort the mail that has no category yet, with the AI on this computer",
+        "Die E-Mails ohne Kategorie mit der KI auf diesem Rechner einordnen",
+    ),
+    ("Stop sorting mail into categories", "Das Einordnen von E-Mails anhalten"),
+    ("Let {engine} ({model}) do “{function}”", "„{function}“ von {engine} ({model}) erledigen lassen"),
+    ("Let no model do “{function}” any more", "„{function}“ von keinem Modell mehr erledigen lassen"),
+    ("a model it picks", "einem Modell seiner Wahl"),
+    // Settings › Categorization of the mail window (E12.10).
+    ("Categorization", "Kategorisierung"),
+    ("Sort mail into categories", "E-Mails in Kategorien einordnen"),
+    (
+        "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved \
+         or deleted, and you can change any category by hand.",
+        "Ein Modell auf deinem Rechner sagt, was jede E-Mail ist. Keine E-Mail verlässt diesen Rechner, nichts \
+         wird versteckt, verschoben oder gelöscht, und jede Kategorie kannst du von Hand ändern.",
+    ),
+    (
+        "Only models on this computer are offered: mail stays here unless you allow more in the control centre.",
+        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du in der Steuerzentrale \
+         nichts anderes erlaubst.",
+    ),
+    ("No model that can sort mail", "Kein Modell, das E-Mails einordnen kann"),
+    (
+        "Add a local AI such as Ollama under Accounts and load a model that decides.",
+        "Füge unter Konten eine KI auf diesem Rechner hinzu, etwa Ollama, und lade ein Modell, das entscheidet.",
+    ),
+    (
+        "Mail may go to an AI elsewhere; every model that decides is offered.",
+        "E-Mails dürfen zu einer KI anderswo gehen; angeboten wird jedes Modell, das entscheidet.",
+    ),
+    ("Catch up", "Altbestand"),
+    ("Catch up now", "Jetzt nachrechnen"),
+    ("Not started", "Noch nicht begonnen"),
+    ("{done} of {total}", "{done} von {total}"),
+    (
+        "The inbox of the last 30 days, at most 500 messages per account.",
+        "Der Posteingang der letzten 30 Tage, höchstens 500 Nachrichten je Konto.",
+    ),
+    ("Show in the sidebar", "In der Seitenleiste zeigen"),
+    ("Senders you filed by hand", "Absender, die du von Hand eingeordnet hast"),
+    (
+        "What you kept with “Always for this sender?” is listed in the Notification Hub.",
+        "Was du mit „Immer für diesen Absender?“ behalten hast, steht in der Mitteilungszentrale.",
+    ),
+    // What the core answers when the sorting cannot be done (E12.5, E12.6).
+    ("Only mail is sorted into categories.", "Nur E-Mails werden in Kategorien eingeordnet."),
+    ("This entry has no mail.", "Zu diesem Eintrag gehört keine E-Mail."),
+    (
+        "The AI's answer held no category. Try again or pick another model.",
+        "Die Antwort der KI enthielt keine Kategorie. Versuch es noch einmal oder nimm ein anderes Modell.",
+    ),
+    (
+        "The AI server's answer is no decision. Try again or pick another model.",
+        "Die Antwort des KI-Servers ist keine Entscheidung. Versuch es noch einmal oder nimm ein anderes Modell.",
+    ),
+    ("There is no mail account {id}.", "Es gibt kein E-Mail-Konto {id}."),
+    ("This AI account offers no model {id}.", "Dieses KI-Konto bietet kein Modell {id}."),
+    (
+        "This model does not decide. Pick one that does, like nimble on Ollama.",
+        "Dieses Modell entscheidet nicht. Nimm eines, das es kann, etwa nimble auf Ollama.",
+    ),
+    ("This AI server does not offer decision models.", "Dieser KI-Server bietet keine Entscheidermodelle."),
+    (
+        "Only Ollama offers decision models at the moment. Pick a model of an Ollama account.",
+        "Entscheidermodelle bietet zurzeit nur Ollama. Nimm ein Modell eines Ollama-Kontos.",
+    ),
+    (
+        "The question “{name}” has {n} options; it needs {least} to {most}.",
+        "Die Frage „{name}“ hat {n} Optionen; nötig sind {least} bis {most}.",
+    ),
+    (
+        "The question “{name}” has {n} levels; it needs {least} to {most}.",
+        "Die Frage „{name}“ hat {n} Stufen; nötig sind {least} bis {most}.",
+    ),
+    (
+        "The instructions of the question “{name}” are longer than {most} characters.",
+        "Die Anweisung der Frage „{name}“ ist länger als {most} Zeichen.",
+    ),
+    // The Rules page of the Notification Hub shows a kept category too (E12.2).
+    ("Filed as “{category}”", "Abgelegt als „{category}“"),
+    ("Filed {n} since {day}", "{n} abgelegt seit {day}"),
+    ("Stop filing mail from {sender} as {category}", "E-Mails von {sender} nicht mehr als {category} ablegen"),
+    (
+        "Stop filing mail from everyone at {domain} as {category}",
+        "E-Mails von allen bei {domain} nicht mehr als {category} ablegen",
+    ),
 ];

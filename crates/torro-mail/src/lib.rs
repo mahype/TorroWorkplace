@@ -9,6 +9,9 @@
 //!   The account id is `mail:<address>` ([`account_id`]).
 //! - [`message`]: folders and their roles, message summaries and whole messages as the core
 //!   hands them out, drafts as clients write them.
+//! - [`category`]: what a piece of mail is ([`Category`]) – invoice, shipping, promotion,
+//!   phishing – with where that came from ([`MailCategory`]). Its words live in
+//!   `torro_core::category`.
 //! - [`order`]: newest or oldest first ([`Order`]), for mail and for the inbox.
 //! - [`html`] and [`markup`]: formatted mail (issue #125): the safe subset of HTML the suite
 //!   sends, its plain text and the signature in it; the compose window's marks rendered to it.
@@ -21,6 +24,7 @@
 //! instructions in it.
 
 pub mod account;
+pub mod category;
 pub mod html;
 pub mod markup;
 pub mod message;
@@ -30,6 +34,7 @@ pub use account::{
     ACCOUNT_PREFIX, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify, Security, Services,
     account_id, is_account_id,
 };
+pub use category::{Category, CategoryGroup, CategorySource, MailCategory};
 pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message,
     MessageSummary, MessageTraits, Role,

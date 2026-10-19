@@ -1512,6 +1512,143 @@ impl MailService {
         Ok(progress)
     }
 
+    /// How much mail each category holds and how much of it is unread, over every account in
+    /// `reach` (task E12.4): the counts behind `inbox.list_categories`, as `(unread, all)`. With
+    /// `only` just that account. The inbox folder only ([`MailStore::unread_by_category`]).
+    pub async fn unread_by_category(
+        &self,
+        reach: Reach<'_>,
+        only: Option<&str>,
+    ) -> Result<std::collections::BTreeMap<torro_mail::Category, (u32, u32)>, MailError> {
+        let mut counts: std::collections::BTreeMap<torro_mail::Category, (u32, u32)> = Default::default();
+        for mailbox in self.reachable(reach, only).await {
+            let Ok(store) = mailbox.store() else { continue };
+            for (category, unread, all) in store.run(|store| store.unread_by_category()).await? {
+                let held = counts.entry(category).or_insert((0, 0));
+                held.0 += unread;
+                held.1 += all;
+            }
+        }
+        Ok(counts)
+    }
+
+    /// How far the backlog of each account in `reach` has been sorted (task E12.4): the window the
+    /// run uses is the inbox of the last `days` days, at most `limit` messages.
+    pub async fn category_progress(
+        &self,
+        reach: Reach<'_>,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<(String, u64, u64)>, MailError> {
+        let mut progress = Vec::new();
+        for mailbox in self.reachable(reach, None).await {
+            let Ok(store) = mailbox.store() else { continue };
+            let (messages, done) = store.run(move |store| store.category_counts(since, limit)).await?;
+            progress.push((mailbox.id().to_string(), messages, done));
+        }
+        Ok(progress)
+    }
+
+    /// Keeps `category` with every message of `messages` in the account `account` (task E12.4);
+    /// `None` takes it away. Messages the store does not know are skipped.
+    pub async fn set_category(
+        &self,
+        account: &str,
+        messages: &[String],
+        category: Option<torro_mail::MailCategory>,
+    ) -> Result<(), MailError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let mailbox = self.mailbox_of(account).await?;
+        let store = mailbox.store()?;
+        let messages = messages.to_vec();
+        store
+            .run(move |store| {
+                for message in &messages {
+                    store.set_category(message, category)?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Keeps the two answers that come with a category (task E12.6).
+    pub async fn set_model_answers(
+        &self,
+        account: &str,
+        message: &str,
+        needs_reply: Option<bool>,
+        urgency: Option<u8>,
+    ) -> Result<(), MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let message = message.to_string();
+        store.run(move |store| store.set_model_answers(&message, needs_reply, urgency).map(|_| ())).await?;
+        Ok(())
+    }
+
+    /// What a decision model reads of the mail `message` (task E12.6): its headers and the start
+    /// of its text, as far as the store holds them. `None` when the store has no such message.
+    /// The text is not fetched from the server for this – a mail whose text is not kept yet is
+    /// decided on its headers, and a later run sees more.
+    pub async fn content_for_category(
+        &self,
+        account: &str,
+        message: &str,
+    ) -> Result<Option<crate::categorize::Content>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let wanted = message.to_string();
+        let held = store.run(move |store| store.message(&wanted)).await?;
+        let Some(message) = held else { return Ok(None) };
+        let summary = &message.summary;
+        let bulk = message.traits.list_id.is_some()
+            || message.traits.precedence.is_some()
+            || message.traits.auto_submitted.as_deref().is_some_and(|value| value != "no");
+        Ok(Some(crate::categorize::Content {
+            subject: summary.subject.clone(),
+            from: summary.from.as_ref().map(|from| match &from.name {
+                Some(name) => format!("{name} <{}>", from.address),
+                None => from.address.clone(),
+            }),
+            list: message.traits.list_id.clone(),
+            bulk,
+            date: Some(summary.date),
+            // The snippet when the text was never fetched: better than nothing, and a later run
+            // sees the whole text once the indexer has it.
+            text: message.text.clone().unwrap_or_else(|| summary.snippet.clone()),
+        }))
+    }
+
+    /// The mail of `account` that has no category yet, newest first, within the window the
+    /// backlog run uses (task E12.6).
+    pub async fn uncategorised(
+        &self,
+        account: &str,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<String>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        Ok(store.run(move |store| store.uncategorised(since, limit)).await?)
+    }
+
+    /// The ids of the mail accounts in `reach` that sync mail (task E12.6).
+    pub async fn accounts_in(&self, reach: Reach<'_>) -> Vec<String> {
+        self.reachable(reach, None).await.iter().map(|mailbox| mailbox.id().to_string()).collect()
+    }
+
+    /// The mailboxes in `reach` that sync mail, or just `only` when it is given and in reach.
+    async fn reachable(&self, reach: Reach<'_>, only: Option<&str>) -> Vec<Arc<Mailbox>> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .filter(|entry| only.is_none_or(|wanted| entry.mailbox.id() == wanted))
+            .map(|entry| Arc::clone(&entry.mailbox))
+            .collect()
+    }
+
     /// One step of the indexer of `account` by hand ([`sync::backfill`] of up to `limit` texts),
     /// for tests, whose services run no indexer task.
     #[cfg(test)]

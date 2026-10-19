@@ -223,6 +223,14 @@ aus einem Guss wirkt:
 
 ## 5. Zustände und Bausteine
 
+**Kategorie-Pille (E12.7, `docs/kategorien.md`).** Was eine Mail ist, steht als `widgets::category_pill`
+in Zeile, Leser und Paneel. Regel: **Farbe und Icon je Gruppe, Wort je Kategorie** – vier Farben
+(`palette.category`, in der Reihenfolge von `CategoryGroup`) und vier Icons (`Inbox`, `Archive`, `Info`,
+`ShieldAlert`); 23 Farben wären nicht mehr auseinanderzuhalten. Eine Kategorie vom Modell bekommt die Sparkles
+in `accent` davor, eine aus einer Kopfzeile oder vom Menschen nicht (`docs/ki.md`, Grundsatz 5). Die Pille ist
+kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
+
+
 - **Jedes Bedienelement** hat fünf Zustände: normal; Hover = `HOVER`; gedrückt/ausgewählt =
   `SELECTED`; Fokus = `FOCUS_RING`; deaktiviert = 40 % Deckkraft, keine Hover-Fläche.
 - **Knöpfe** (`style::button`): `primary` (Rot, weiß, höchstens einer pro Fenster), `secondary`

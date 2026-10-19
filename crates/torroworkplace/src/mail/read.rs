@@ -132,10 +132,24 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
             order,
             sort,
             snoozed,
+            categories,
         } => {
             let (order, sort) = (order.unwrap_or_default(), sort.unwrap_or_default());
-            let search =
-                Search { account, folder, query, unread, flagged, since, before, limit, cursor, order, sort, snoozed };
+            let search = Search {
+                account,
+                folder,
+                query,
+                unread,
+                flagged,
+                since,
+                before,
+                limit,
+                cursor,
+                order,
+                sort,
+                snoozed,
+                categories,
+            };
             // Boxed: the core's request match awaits this deep in the stack already.
             Box::pin(search_messages(mail, inbox, reach, search, Utc::now())).await
         }
@@ -209,6 +223,8 @@ pub struct Search {
     pub cursor: Option<String>,
     /// Newest or oldest first (task E8.15).
     pub order: Order,
+    /// Only mail of one of these categories (task E12.4); empty: every message.
+    pub categories: Vec<torro_mail::Category>,
     /// By date or by relevance (issue #136).
     pub sort: MailSort,
     /// "Later" (task E9.1): `false` without the snoozed mail and with mail back from it on top,
@@ -315,6 +331,10 @@ pub async fn search_messages(
         relevance,
         only: None,
         except: Vec::new(),
+        categories: search.categories.clone(),
+        // Filtering by category lists the inbox only (task E12.8): a reply of one's own and mail
+        // thrown away keep their category, and the sidebar counts them nowhere either.
+        in_inbox: !search.categories.is_empty(),
     };
     let later = match inbox.mail_later(&later_accounts(&stores, reach), now) {
         Ok(later) => later,
@@ -1031,6 +1051,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         }
     }
 
@@ -1051,6 +1072,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         }
     }
 
@@ -1216,6 +1238,9 @@ pub(crate) mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("an entry");
         let opened = || match inbox.handle(Request::GetStats { range: StatsRange::Week, until: None }, None, Utc::now())

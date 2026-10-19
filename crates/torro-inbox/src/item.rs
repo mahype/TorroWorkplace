@@ -96,6 +96,18 @@ pub struct Item {
     /// "For me" says why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<LaneReason>,
+    /// What the mail of a mail entry is (task E12.1, `docs/kategorien.md`): the category of the
+    /// message the entry links to, as the mail store holds it. Set by the core, never taken from
+    /// a poster.
+    ///
+    /// **Only mail has one.** Entries of the suite, of agents and of scripts, and those of
+    /// GitHub, Nextcloud, Talk and ntfy leave it `None`: their facets (`reason`, `result`,
+    /// `kind`) say more, and a model call would be wasted there.
+    ///
+    /// A category with [`torro_mail::CategorySource::Model`] is a **suggestion** with a
+    /// confidence, not a fact (`docs/ki.md`, principle 5); the app marks it as one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<torro_mail::MailCategory>,
 }
 
 /// Why an entry stands in its lane ([`Item::reason`], issue #128). The first three name the
@@ -325,6 +337,8 @@ impl MuteEffect {
             RuleEffect::Lane { lane: Lane::Info } => Some(MuteEffect::Info),
             RuleEffect::Lane { lane: Lane::ForMe } => None,
             RuleEffect::Muted => Some(MuteEffect::Hide),
+            // A kept category mutes nothing: it only says what the mail is (task E12.2).
+            RuleEffect::Category { .. } => None,
         }
     }
 }
@@ -757,7 +771,7 @@ pub enum SourceHealth {
 /// E3.10), or a trait muted (`inbox.mute_item`, task E8.6a).
 ///
 /// At most one of `sender`, `domain` and `facet` is set; with none the rule is about the whole
-/// source. A rule with `facet` holds for every source of the same kind as `source` (a sender muted
+/// source. A rule with [`RuleEffect::Category`] always names a `sender` or a `domain`. A rule with `facet` holds for every source of the same kind as `source` (a sender muted
 /// in every mail account), one for the conversation only in `source` ([`crate::rules::mutes`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Rule {
@@ -805,6 +819,14 @@ pub enum RuleEffect {
     /// New reports with the rule's `facet` become entries without a popup and sound (task E8.6a).
     /// Only rules with a `facet` have it.
     NoPopup,
+    /// New mail of the rule's `sender` or `domain` is filed as `category` (task E12.2,
+    /// `docs/kategorien.md`): what "Always for this sender?" keeps after the person sorted one
+    /// mail by hand (`inbox.set_item_category` with `remember`). It goes **before** the decision
+    /// model and after no other rule, so a kept category is never overruled by a guess.
+    ///
+    /// Only rules of `inbox.set_item_category` have it, and only with `sender` or `domain`; it
+    /// changes no lane, drops nothing and mutes nothing.
+    Category { category: torro_mail::Category },
 }
 
 /// What `inbox.hide_sender` hides of a mail entry (tasks E3.10, E3.11).

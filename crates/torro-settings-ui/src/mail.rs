@@ -27,16 +27,24 @@ use torro_gui::icon::Icon;
 use crate::{Action, Data, Page, Section};
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 2] = [
+pub const SECTIONS: [Section; 3] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: "accounts", icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading" },
+    // What incoming mail is sorted into (task E12.10, `docs/kategorien.md`).
+    Section { id: "categorization", icon: Icon::Tag, label: "Categorization" },
 ];
 
 /// What one load of these sections needs: the suite-wide settings (Reading) and every account with
 /// its mail settings (Accounts).
 pub fn wanted() -> Vec<torro_ipc::Request> {
-    vec![torro_ipc::Request::Settings, torro_ipc::Request::Accounts]
+    vec![
+        torro_ipc::Request::Settings,
+        torro_ipc::Request::Accounts,
+        // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
+        torro_ipc::Request::AiAssignments,
+        torro_ipc::Request::GetCategorization,
+    ]
 }
 
 /// The state of every section that keeps some; the app owns one of these next to its host.
@@ -51,6 +59,7 @@ pub struct State {
 pub enum Message {
     Accounts(accounts::Message),
     Reading(reading::Message),
+    Categorization(categorization::Message),
 }
 
 /// What a section's widget reported, and what the host is to do about it.
@@ -58,6 +67,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
     match message {
         Message::Accounts(message) => accounts::update(&mut state.accounts, message, data),
         Message::Reading(message) => reading::update(message),
+        Message::Categorization(message) => categorization::update(message, data),
     }
 }
 
@@ -66,6 +76,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
         "reading" => wrap(Page::new(reading::view(data)), Message::Reading),
+        "categorization" => wrap(Page::new(categorization::view(data)), Message::Categorization),
         _ => wrap(accounts::page(&state.accounts, data), Message::Accounts),
     }
 }
@@ -716,8 +727,9 @@ mod tests {
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading"]);
+        assert_eq!(ids, ["accounts", "reading", "categorization"]);
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
+        assert_eq!(SECTIONS[2].name(), tr("Categorization"), "task E12.10");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
             assert!(host.open(id), "{id}");
@@ -725,9 +737,327 @@ mod tests {
         assert!(!host.open("sources"), "a section of the Notification Hub is not one of these");
     }
 
-    /// One load asks for what the two sections show, and for nothing else.
+    /// One load asks for what the sections show, and for nothing else.
     #[test]
     fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted(), vec![torro_ipc::Request::Settings, torro_ipc::Request::Accounts]);
+        assert_eq!(
+            wanted(),
+            vec![
+                torro_ipc::Request::Settings,
+                torro_ipc::Request::Accounts,
+                torro_ipc::Request::AiAssignments,
+                torro_ipc::Request::GetCategorization,
+            ]
+        );
+    }
+
+    /// Task E12.10: a category switched off is stored as hidden, one switched on is taken out
+    /// again – only the hidden ones are kept, so a category added later starts shown.
+    #[test]
+    fn switching_a_category_off_stores_it_as_hidden() {
+        use torro_mail::Category;
+
+        let mut data = Data::default();
+        let hide = categorization::update::<()>(categorization::Message::Shown(Category::Spam, false), &data);
+        let Action::Send(requests) = hide else { panic!("a request") };
+        let [torro_ipc::Request::SetSetting { key, value }] = requests.as_slice() else { panic!("one setting") };
+        assert_eq!(*key, torro_ipc::SettingKey::HiddenCategories);
+        assert_eq!(value, &serde_json::json!(["spam"]));
+
+        data.settings.hidden_categories = vec![Category::Spam, Category::Promotion];
+        let show = categorization::update::<()>(categorization::Message::Shown(Category::Spam, true), &data);
+        let Action::Send(requests) = show else { panic!("a request") };
+        let [torro_ipc::Request::SetSetting { value, .. }] = requests.as_slice() else { panic!("one setting") };
+        assert_eq!(value, &serde_json::json!(["promotion"]), "only the ones still hidden");
+    }
+
+    /// Task E12.10: switching the sorting on keeps the model that is assigned, and picking a
+    /// model switches it on – that is what picking one means.
+    #[test]
+    fn the_switch_and_the_model_go_together() {
+        use torro_core::ai::{AiAssignment, AiFunction};
+
+        let assignments = vec![torro_ipc::AiAssignmentInfo {
+            assignment: AiAssignment {
+                function: AiFunction::InboxCategorize,
+                engine: Some("ai:ollama@localhost:11434".into()),
+                model: Some("nimble".into()),
+                effort: None,
+                enabled: false,
+            },
+            label: "Sort mail into categories".into(),
+            needs_decision: true,
+        }];
+        let data = Data { assignments, ..Data::default() };
+        let on = categorization::update::<()>(categorization::Message::Enabled(true), &data);
+        let Action::Send(requests) = on else { panic!("a request") };
+        let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = requests.as_slice() else {
+            panic!("one assignment")
+        };
+        assert_eq!(engine.as_deref(), Some("ai:ollama@localhost:11434"), "the model assigned stays");
+        assert_eq!(model.as_deref(), Some("nimble"));
+        assert!(enabled);
+
+        let pick = categorization::update::<()>(categorization::Message::Model("ai:x".into(), "tev1".into()), &data);
+        let Action::Send(requests) = pick else { panic!("a request") };
+        let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = requests.as_slice() else {
+            panic!("one assignment")
+        };
+        assert_eq!((engine.as_deref(), model.as_deref(), *enabled), (Some("ai:x"), Some("tev1"), true));
+    }
+
+    /// Task E12.10: "Catch up now" starts the run, "Cancel" stops it.
+    #[test]
+    fn catching_up_starts_and_stops() {
+        let data = Data::default();
+        for (message, cancel) in
+            [(categorization::Message::CatchUp(false), false), (categorization::Message::CatchUp(true), true)]
+        {
+            let Action::Send(requests) = categorization::update::<()>(message, &data) else { panic!("a request") };
+            assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel }]);
+        }
+    }
+}
+
+/// "Categorization" (task E12.10, concept `docs/kategorien.md`): what incoming mail is sorted
+/// into, and by which model.
+///
+/// ```text
+/// Sort mail into categories   on/off
+/// Model                       the decision models of the AI accounts, local first
+/// Catch up                    how far the backlog has come, "Catch up now" / "Cancel"
+/// Show in the sidebar         one switch per category
+/// Rules ↗                     the kept senders, in the Notification Hub
+/// ```
+///
+/// **No setting for the moment of sorting or the confidence threshold**: both are fixed
+/// (`docs/kategorien.md`, "decisions instead of options").
+///
+/// Models that do not run on this computer are **not offered** while mail may not leave it
+/// (`docs/ki.md`, principle 4); a quiet line says so. The core refuses such a model as well
+/// (task E12.5), so the rule holds even if this list were wrong.
+pub mod categorization {
+    use iced::widget::column;
+    use torro_core::ai::{AiAssignment, AiFunction, AiModel};
+    use torro_core::i18n::trf;
+    use torro_gui::{layout, style, theme, typo, widgets};
+    use torro_ipc::{Request, SettingKey};
+    use torro_mail::{Category, CategoryGroup};
+
+    use super::*;
+    use crate::parts::{choice, pressable, row_frame, setting_row, switch};
+
+    /// What a row of this section reports.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Message {
+        /// The switch: sorting mail on or off.
+        Enabled(bool),
+        /// A model picked for sorting mail.
+        Model(String, String),
+        /// "Catch up now" (`false`) or "Cancel" (`true`).
+        CatchUp(bool),
+        /// One category shown in the sidebar or not.
+        Shown(Category, bool),
+        /// "Rules ↗": the kept senders live in the Notification Hub.
+        Rules,
+    }
+
+    pub fn update<A>(message: Message, data: &Data) -> Action<A> {
+        let held = assignment(data);
+        match message {
+            // Switching on without a model named would store an assignment the core throws away
+            // (no account, nothing to ask): the first model that can decide is taken, which is
+            // what the switch means. Nothing offered, nothing to switch on.
+            Message::Enabled(true) if held.engine.is_none() => match offered(data).first() {
+                Some((engine, model)) => Action::send(Request::SetAiAssignment {
+                    function: AiFunction::InboxCategorize,
+                    engine: Some(engine.clone()),
+                    model: Some(model.id.clone()),
+                    effort: None,
+                    enabled: true,
+                }),
+                None => Action::None,
+            },
+            Message::Enabled(on) => Action::send(Request::SetAiAssignment {
+                function: AiFunction::InboxCategorize,
+                engine: held.engine.clone(),
+                model: held.model.clone(),
+                effort: held.effort,
+                enabled: on,
+            }),
+            Message::Model(engine, model) => Action::send(Request::SetAiAssignment {
+                function: AiFunction::InboxCategorize,
+                engine: Some(engine),
+                model: Some(model),
+                effort: held.effort,
+                // Picking a model switches the sorting on: that is what picking one means.
+                enabled: true,
+            }),
+            Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel }),
+            Message::Shown(category, shown) => {
+                let mut hidden = data.settings.hidden_categories.clone();
+                hidden.retain(|held| *held != category);
+                if !shown {
+                    hidden.push(category);
+                }
+                let value = serde_json::to_value(&hidden).unwrap_or_default();
+                Action::send(Request::SetSetting { key: SettingKey::HiddenCategories, value })
+            }
+            // The rules live in the Notification Hub, which owns them (task S.20); this library
+            // opens no window of its own, so the row only points there.
+            Message::Rules => Action::None,
+        }
+    }
+
+    /// What is assigned for sorting mail, or nothing assigned.
+    fn assignment(data: &Data) -> AiAssignment {
+        data.assignments
+            .iter()
+            .find(|info| info.assignment.function == AiFunction::InboxCategorize)
+            .map(|info| info.assignment.clone())
+            .unwrap_or_else(|| AiAssignment::none(AiFunction::InboxCategorize))
+    }
+
+    pub fn view(data: &Data) -> Element<'_, Message> {
+        let held = assignment(data);
+        let on = held.is_ready();
+        let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
+        let sorting = widgets::group(
+            tr("Categorization"),
+            vec![switch_row, catch_up_row(data)],
+            Some(
+                tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.")
+                    .to_string(),
+            ),
+        );
+        let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
+        let shown = widgets::group(tr("Show in the sidebar"), category_rows(data), None);
+        let rules = widgets::group(
+            tr("Rules"),
+            vec![pressable(
+                row_frame(
+                    iced::widget::row![
+                        typo::text(typo::body(), tr("Senders you filed by hand")),
+                        crate::parts::chevron(),
+                    ]
+                    .spacing(theme::space::s())
+                    .align_y(iced::Alignment::Center),
+                    false,
+                ),
+                Some(Message::Rules),
+            )],
+            Some(tr("What you kept with “Always for this sender?” is listed in the Notification Hub.").to_string()),
+        );
+        column![sorting, models, shown, rules].spacing(layout::section_gap()).into()
+    }
+
+    /// The models that may sort mail: every AI account's models that decide, and – while mail
+    /// may not leave this computer – only those that run here (`docs/ki.md`, principle 4). The
+    /// core refuses the others as well (task E12.5), so the rule holds even if this list were
+    /// wrong.
+    fn offered(data: &Data) -> Vec<(String, AiModel)> {
+        let local_only = !data.settings.mail_to_cloud;
+        data.decider_models
+            .iter()
+            .filter(|(_, model)| model.decision == Some(true))
+            .filter(|(_, model)| !local_only || model.remote != Some(true))
+            .cloned()
+            .collect()
+    }
+
+    /// One row per model that may sort mail, the assigned one checked; picking one switches the
+    /// sorting on. Without any, one row says so instead.
+    fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
+        let offered = offered(data);
+        if offered.is_empty() {
+            let detail = tr("Add a local AI such as Ollama under Accounts and load a model that decides.");
+            let none = iced::widget::space().width(0);
+            return vec![setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none)];
+        }
+        // Which account a model is from matters only where more than one offers models.
+        let several = offered.iter().map(|(engine, _)| engine).collect::<std::collections::BTreeSet<_>>().len() > 1;
+        offered
+            .into_iter()
+            .map(|(engine, model)| {
+                let chosen = held.is_ready()
+                    && held.engine.as_deref() == Some(engine.as_str())
+                    && held.model.as_deref() == Some(model.id.as_str());
+                let label = match several {
+                    true => format!("{} · {}", account_label(data, &engine), model.name),
+                    false => model.name.clone(),
+                };
+                choice(label, chosen, Message::Model(engine, model.id))
+            })
+            .collect()
+    }
+
+    /// What the account `id` is called, as the control centre calls it; the id itself when it is
+    /// gone from the list.
+    fn account_label(data: &Data, id: &str) -> String {
+        data.accounts
+            .iter()
+            .find(|account| account.id == id)
+            .map(|account| account.label.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Under the models: why the list may be short.
+    fn model_note(data: &Data) -> String {
+        match data.settings.mail_to_cloud {
+            true => tr("Mail may go to an AI elsewhere; every model that decides is offered.").to_owned(),
+            false => {
+                tr("Only models on this computer are offered: mail stays here unless you allow more in the control centre.")
+                    .to_owned()
+            }
+        }
+    }
+
+    /// "Catch up": how far the backlog has come, and the button to start or stop it.
+    fn catch_up_row<'a>(data: &'a Data) -> Element<'a, Message> {
+        let (done, total) = data
+            .categorization
+            .accounts
+            .iter()
+            .fold((0u64, 0u64), |(done, total), held| (done + held.done, total + held.messages));
+        let running =
+            data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
+        let words = if total == 0 {
+            tr("Not started").to_owned()
+        } else if done >= total {
+            tr("Done").to_owned()
+        } else {
+            trf("{done} of {total}", &[("done", &done), ("total", &done.max(total))])
+        };
+        let button = if running {
+            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CatchUp(true)))
+        } else {
+            widgets::text_button(None, tr("Catch up now"), style::button::secondary, Some(Message::CatchUp(false)))
+        };
+        let value = iced::widget::row![typo::text(typo::body(), words), button]
+            .spacing(theme::space::m())
+            .align_y(iced::Alignment::Center);
+        setting_row(
+            None,
+            tr("Catch up"),
+            Some(tr("The inbox of the last 30 days, at most 500 messages per account.").to_owned()),
+            value,
+        )
+    }
+
+    /// One switch per category, by group, so the sidebar shows only what is wanted.
+    fn category_rows(data: &Data) -> Vec<Element<'_, Message>> {
+        let hidden = &data.settings.hidden_categories;
+        let mut rows = Vec::new();
+        for group in CategoryGroup::ALL {
+            for category in group.categories() {
+                let shown = !hidden.contains(&category);
+                let label = torro_core::category::label(category);
+                let first = group.categories().first().copied();
+                let note: Option<String> =
+                    (first == Some(category)).then(|| torro_core::category::group_label(group).to_owned());
+                rows.push(setting_row(None, label, note, switch(shown, move |on| Message::Shown(category, on))));
+            }
+        }
+        rows
     }
 }

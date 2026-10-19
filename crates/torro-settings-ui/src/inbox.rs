@@ -605,6 +605,8 @@ pub mod rules {
             RuleEffect::Muted => 1,
             // Only rules with a trait keep no popups; one without would be about its whole source.
             RuleEffect::NoPopup => 3,
+            // Kept categories last (task E12.2): they say what mail is, they hide nothing.
+            RuleEffect::Category { .. } => 4,
         });
         ordered
     }
@@ -645,6 +647,10 @@ pub mod rules {
                 // The core keeps no popups only with a trait; without one it would hold for the
                 // whole source.
                 RuleEffect::NoPopup => tr("No popups").to_owned(),
+                // "Always for this sender?" after the person sorted one mail by hand (E12.2).
+                RuleEffect::Category { category } => {
+                    trf("Filed as “{category}”", &[("category", &torro_core::category::label(category))])
+                }
             };
         }
         // A lane "for me" mutes nothing; `inbox.mute_item` never keeps one, so it only names the
@@ -705,6 +711,7 @@ pub mod rules {
             RuleEffect::Muted => trf("Hid {n} since {day}", &[("n", &n), ("day", &day)]),
             RuleEffect::NoPopup => trf("Kept {n} quiet since {day}", &[("n", &n), ("day", &day)]),
             RuleEffect::Lane { .. } => trf("Sent {n} since {day}", &[("n", &n), ("day", &day)]),
+            RuleEffect::Category { .. } => trf("Filed {n} since {day}", &[("n", &n), ("day", &day)]),
         })
     }
 

@@ -322,6 +322,7 @@ mod tests {
             context: None,
             reasoning,
             remote: None,
+            decision: None,
         };
         torro_ipc::assistant::Engine {
             id: "claude-code".into(),

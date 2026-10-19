@@ -1084,6 +1084,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let Ok(Response::Items { items }) = torro_ipc::client::call(&socket, &all).await else {
             panic!("the app key lists the inbox");

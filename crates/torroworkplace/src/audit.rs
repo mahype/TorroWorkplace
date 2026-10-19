@@ -288,7 +288,17 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::HideSender { id: entry, .. }
         // The entry only, never the trait muted or its value (task E8.6a).
         | Request::ListMuteOptions { id: entry }
+        // The entry only, never the category it was filed under (task E12.4).
+        | Request::SetItemCategory { id: entry, .. }
+        | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
+        // Nothing of their own to name: a catalogue, a status, a background run.
+        Request::ListCategories { .. } | Request::GetCategorization | Request::CatchUpCategories { .. } => {
+            Vec::new()
+        }
+        // The function and the account are ids, not content; the model's name is the server's.
+        Request::AiAssignments => Vec::new(),
+        Request::SetAiAssignment { engine, .. } => engine.iter().map(|id| account(id)).collect(),
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
         }
@@ -861,6 +871,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let logged = super::ids(&search);
         assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string(), format!("folder:{}", hashed("f:0a1b"))]);

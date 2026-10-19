@@ -141,6 +141,26 @@ mod tests {
         assert_eq!(trc_in(Lang::De, "action", "No such text"), "No such text");
     }
 
+    /// Task E12.1: every category of a mail and every one of its groups has its German words in
+    /// the table, under the context `category` (`crate::category`). Checked here and not in
+    /// `category`, because only this module sees [`de::TABLE`]: comparing the two words would let
+    /// a category through whose German happens to read like the English one ("Newsletter").
+    #[test]
+    fn every_mail_category_is_translated() {
+        let entry = |english: &str| {
+            let key = format!("{}|{english}", crate::category::CONTEXT);
+            de::TABLE.iter().any(|(table_key, _)| *table_key == key)
+        };
+        for category in torro_mail::Category::ALL {
+            let english = crate::category::english_label(category);
+            assert!(entry(english), "{category:?} has no German word: add (\"category|{english}\", …) to de.rs");
+        }
+        for group in torro_mail::CategoryGroup::ALL {
+            let english = crate::category::english_group_label(group);
+            assert!(entry(english), "the group {group:?} has no German word: add (\"category|{english}\", …)");
+        }
+    }
+
     #[test]
     fn table_has_no_duplicates_and_keeps_placeholders() {
         let mut seen = std::collections::HashSet::new();

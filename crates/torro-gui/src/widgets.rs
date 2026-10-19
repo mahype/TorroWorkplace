@@ -2894,6 +2894,62 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
         .into()
 }
 
+/// What a mail is, as a pill in the list, the reader and the panel (task E12.7,
+/// `docs/kategorien.md`): the group's icon and colour, the category's words.
+///
+/// `group` is the index of `torro_mail::CategoryGroup` (0 waiting for me, 3 junk) and picks the
+/// colour out of [`theme::Palette::category`]; a larger index falls back to the last. Colour and
+/// icon are per **group**, the words per category: 23 colours could not stay apart, and four can.
+///
+/// `suggested` marks a category a model chose (`docs/ki.md`, principle 5): the sparkles the suite
+/// puts on every AI result go in front. A category from a header or from the person has none.
+///
+/// Not a button: the click belongs to the row around it. Changing the category goes through the
+/// row's menu.
+pub fn category_pill<'a, M: 'a>(
+    icon: Icon,
+    group: usize,
+    label: impl IntoFragment<'a>,
+    suggested: bool,
+) -> Element<'a, M> {
+    let at = group.min(3);
+    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
+    if suggested {
+        content = content.push(sparkle(pill_icon()));
+    }
+    content = content.push(group_icon(icon, at)).push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
+    container(content)
+        .center_y(PILL_HEIGHT)
+        .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
+        .style(move |t| {
+            let p = palette(t);
+            container::Style {
+                text_color: Some(p.text_2),
+                border: border::rounded(radius::xs()).color(p.category[at]).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The small mark of a mail's category for a row of the list (task E12.8): the group's icon in
+/// the group's colour, `edge` wide. The words belong in its tooltip – a row's marks are icons, so
+/// the whole pill ([`category_pill`]) stays for the reader and the card, where there is room.
+pub fn category_mark<'a, M: 'a>(which: Icon, group: usize, edge: f32) -> Element<'a, M> {
+    let at = group.min(3);
+    icon(which, edge).style(move |t, _| svg::Style { color: Some(palette(t).category[at]) }).into()
+}
+
+/// The icon of a category group in its own colour ([`category_pill`]).
+fn group_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
+    icon(which, pill_icon()).style(move |t, _| svg::Style { color: Some(palette(t).category[group]) }).into()
+}
+
+/// The sparkles the suite marks every AI result with, in the accent colour.
+fn sparkle<'a, M: 'a>(edge: f32) -> Element<'a, M> {
+    icon(Icon::Sparkles, edge).style(move |t, _| svg::Style { color: Some(palette(t).accent) }).into()
+}
+
 /// [`label_chip`]s side by side with 4 between them, wrapping onto more lines when they do not
 /// fit (the value of a "Labels" [`prop_line`]).
 pub fn label_chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
@@ -3168,6 +3224,36 @@ pub fn error_state<'a, M: Clone + 'a>(what: impl IntoFragment<'a>, retry: M) -> 
     .align_x(Alignment::Center)
     .max_width(size::form_max() / 2.0);
     center(content).padding(space::xl()).into()
+}
+
+/// A band over the content of a message that warns about it (task E12.9, `docs/kategorien.md`):
+/// the shield in the error colour, `what` in `BODY_STRONG` and `why` under it in `text_2`, on a
+/// surface tinted with the error colour and a border of it.
+///
+/// A warning, never a wall: what it stands over stays readable, nothing is hidden or moved. The
+/// only thing the band changes is that the links below it ask first.
+pub fn warning_band<'a, M: 'a>(what: impl IntoFragment<'a>, why: impl IntoFragment<'a>) -> Element<'a, M> {
+    let shield = icon(Icon::ShieldAlert, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).error_text) });
+    let words = column![
+        typo::text(typo::body_strong(), what),
+        typo::text(typo::meta(), why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(space::xs())
+    .width(Fill);
+    let content = row![shield, words].spacing(space::m()).align_y(Alignment::Start);
+    container(content)
+        .width(Fill)
+        .padding(space::m())
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(p.error.scale_alpha(0.12).into()),
+                text_color: Some(p.error_text),
+                border: border::rounded(radius::sm()).color(p.error).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 /// The empty state of a list or view: what appears here (`title`, `BODY_STRONG`) and what to do
@@ -3685,6 +3771,24 @@ pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: O
 
 #[cfg(test)]
 mod tests {
+    /// Task E12.7: the four group colours stand out on the panel in both modes, stay apart from
+    /// one another, and there is one per group – no more.
+    #[test]
+    fn the_category_colours_are_visible_and_distinct() {
+        let standard = torro_core::design::Design::standard();
+        for (mode, p) in [("light", &standard.colors.light), ("dark", &standard.colors.dark)] {
+            assert_eq!(p.category.len(), 4, "one colour per group, not per category");
+            for (at, colour) in p.category.iter().enumerate() {
+                let ratio = colour.contrast(p.panel);
+                assert!(ratio >= 3.0, "{mode} category[{at}] is {ratio:.2}:1 on the panel");
+            }
+            for (at, colour) in p.category.iter().enumerate() {
+                for (other, second) in p.category.iter().enumerate().skip(at + 1) {
+                    assert_ne!(colour, second, "{mode}: category[{at}] reads like category[{other}]");
+                }
+            }
+        }
+    }
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]

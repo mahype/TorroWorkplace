@@ -843,6 +843,7 @@ mod tests {
             invite: None,
             back: None,
             untrusted: true,
+            category: None,
         };
         let jonas = who("Jonas", "jonas@example.org");
         let messages = [

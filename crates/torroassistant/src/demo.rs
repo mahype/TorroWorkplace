@@ -140,7 +140,7 @@ impl Demo {
         match request {
             Request::ListEngines => Response::Engines { engines: state.engines() },
             Request::AiModels { account, .. } => match models(&account) {
-                Some(models) if state.setup.engines => Response::AiModels { models },
+                Some(models) if state.setup.engines => Response::AiModels { account, models },
                 _ => refused("not-found", "no such AI account"),
             },
             Request::ListClients => {
@@ -844,6 +844,7 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         context: None,
         reasoning: Some(id.starts_with("qwen3")),
         remote: None,
+        decision: None,
     };
     match account {
         OLLAMA => Some(vec![

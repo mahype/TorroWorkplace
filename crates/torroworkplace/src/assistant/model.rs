@@ -354,6 +354,7 @@ impl ModelAccess {
             context: None,
             reasoning: None,
             remote: None,
+            decision: None,
         });
         Ok((model.id.clone(), place(&model)))
     }
@@ -1018,7 +1019,16 @@ pub(crate) mod tests {
 
     /// A model as a server lists it: whether it calls tools, and whether it runs elsewhere.
     pub(crate) fn model(id: &str, tools: Option<bool>, remote: Option<bool>) -> AiModel {
-        AiModel { id: id.into(), name: id.into(), tools, open_weights: None, context: None, reasoning: None, remote }
+        AiModel {
+            id: id.into(),
+            name: id.into(),
+            tools,
+            open_weights: None,
+            context: None,
+            reasoning: None,
+            remote,
+            decision: None,
+        }
     }
 
     /// Where a scripted model runs: one said to run elsewhere does (an Ollama cloud model, task
@@ -1182,6 +1192,7 @@ pub(crate) mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 

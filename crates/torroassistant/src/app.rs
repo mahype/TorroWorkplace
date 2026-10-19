@@ -1170,7 +1170,7 @@ impl App {
             Message::Models(
                 engine.clone(),
                 result.and_then(|response| match response {
-                    Response::AiModels { models } => Ok(models),
+                    Response::AiModels { models, .. } => Ok(models),
                     other => Err(Refusal::unexpected(&other)),
                 }),
             )

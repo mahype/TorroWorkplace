@@ -169,7 +169,7 @@ use torro_ipc::{
     ApprovalInfo, ClientInfo, InboxStats, Request, Response, RuleHits, SourceStats, StatsCounts, StatsDay, StatsRange,
     StatsSuggestion,
 };
-use torro_mail::{ACCOUNT_PREFIX, Notify, Order};
+use torro_mail::{ACCOUNT_PREFIX, MailCategory, Notify, Order};
 use torro_pim_github::IssueRef;
 
 use crate::account::github::GithubAccounts;
@@ -719,9 +719,10 @@ impl Inbox {
         check_message(request, stand_in, client, Utc::now()).err().map(Failure::response)
     }
 
-    /// `inbox.list_mute_options`, `inbox.mute_item` and `inbox.snooze_item` without `until` (task
-    /// E9.1: the mail as it is, nothing to take back) for a mail message without an entry (issue
-    /// #123): `stand_in` as [`Inbox::message_refusal`] takes it. The options are the message's
+    /// `inbox.list_mute_options`, `inbox.mute_item`, `inbox.snooze_item` without `until` (task
+    /// E9.1: the mail as it is, nothing to take back) and `inbox.set_item_category` (task E12.4)
+    /// for a mail message without an entry (issue #123): `stand_in` as
+    /// [`Inbox::message_refusal`] takes it. The options are the message's
     /// traits ([`rules::message_mute_options`]); muting keeps a rule as for an entry's trait and
     /// changes the open entries it holds for at once ([`mute_by`]). `not-found` for a message the
     /// client may not see, `error` for its conversation (there is no entry to close; a reply would
@@ -751,9 +752,49 @@ impl Inbox {
                     let stored = Stored { owner: stand_in.source.key(), item: stand_in.clone() };
                     Ok(Response::Item { item: stored.shown_to(client) })
                 }
+                // What a mail is (task E12.4), for a mail without an entry: the category goes to
+                // the mail itself, which the core writes; only the rule is kept here. The item
+                // that comes back is the mail as an entry would hold it, with its new category –
+                // nothing is stored in the inbox, because there is nothing to store it on.
+                Request::SetItemCategory { category, remember, .. } => {
+                    let tx = db.transaction()?;
+                    let (rule, new_rule) = match remember {
+                        false => (None, false),
+                        true => {
+                            let sender = rules::mail_sender(stand_in).ok_or_else(|| {
+                                Failure::Invalid("this mail names no sender to remember the category for".into())
+                            })?;
+                            let candidate = Rule {
+                                id: new_id()?,
+                                source: stand_in.source.clone(),
+                                sender: Some(sender),
+                                domain: None,
+                                effect: RuleEffect::Category { category },
+                                created: now,
+                                facet: None,
+                                until: None,
+                            };
+                            let (rule, new_rule) = category_rule(&tx, candidate, client)?;
+                            (Some(rule), new_rule)
+                        }
+                    };
+                    tx.commit()?;
+                    let mut item = stand_in.clone();
+                    item.category = Some(torro_mail::MailCategory::by_person(category));
+                    Ok(Response::ItemCategory { item, rule, new_rule })
+                }
+                // Asking the model again needs the AI accounts: the core answers it
+                // ([`Core::classify_item`]), with the mail this stands in for.
+                Request::ClassifyItem { .. } => {
+                    Err(Failure::Invalid("inbox.classify_item is answered by the core".into()))
+                }
                 // Snoozing files the mail first: the core does it ([`Inbox::file_mail`]) and snoozes
                 // the entry it gets.
-                _ => Err(Failure::Invalid("only muting and taking back from later take the id of a mail".into())),
+                _ => Err(Failure::Invalid(
+                    "only muting, the category and taking back from later take the id of a \
+                                           mail"
+                        .into(),
+                )),
             }
         });
         answered.unwrap_or_else(Failure::response)
@@ -1068,6 +1109,15 @@ impl Inbox {
     /// the newest mail's date (never later than `now`); a mail older than the entry's newest leaves
     /// title, text, sender and link as they are. `Err` holds the message for the log, without
     /// anything of the mail.
+    /// What the fixed rules make of `mail` (task E12.2, `docs/kategorien.md`): a category kept
+    /// for its sender or domain, else what its headers and its folder say; `None` when only a
+    /// model could tell (task E12.6 asks one then). The same answer [`Inbox::file_mail`] puts on
+    /// the entry, so the mail store and the entry never disagree.
+    pub fn mail_category_of(&self, mail: &NewMail) -> Result<Option<MailCategory>, String> {
+        let sender = rules::sender_key(mail.from.as_ref());
+        self.with(|db| mail_category_in(db, sender.as_deref(), mail)).map_err(|failure| failure.to_string())
+    }
+
     pub fn file_mail(&self, mail: &NewMail, notify: Notify, now: DateTime<Utc>) -> Result<Option<String>, String> {
         if notify == Notify::Off {
             return Ok(None);
@@ -1077,6 +1127,32 @@ impl Inbox {
             _ => return Err(format!("{:?} is no mail account", mail.account)),
         };
         self.with(|db| file_mail(db, mail, source, notify, now)).map_err(|failure| failure.to_string())
+    }
+
+    /// Puts `category` on the entry `id` (task E12.6) and gives the entry back; `None` takes it
+    /// away. For what the model decided and what `inbox.classify_item` asked for – the person's
+    /// own choice goes through `inbox.set_item_category`. `Err` holds the message for the log.
+    pub fn set_category(&self, id: &str, category: Option<MailCategory>) -> Result<Item, String> {
+        self.with(|db| {
+            let mut item =
+                read_items(db, &Scope::All, "id = ?", vec![text(id)], "")?.pop().ok_or_else(|| no_item(id))?.item;
+            item.category = category;
+            update_item(db, &item)?;
+            Ok(item)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The messages filed into the entry `id`, oldest first (task E12.4): what a category set by
+    /// hand is written to, so the whole conversation reads alike. `Err` holds the message for the
+    /// log.
+    pub fn messages_of(&self, id: &str) -> Result<Vec<String>, String> {
+        self.with(|db| {
+            let mut statement = db.prepare("SELECT message FROM mail_messages WHERE item = ?1 ORDER BY message")?;
+            let rows = statement.query_map([id], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<Result<Vec<String>, _>>()?)
+        })
+        .map_err(|failure| failure.to_string())
     }
 
     /// The entries of the mail account `account` that are open or snoozed, each with the messages
@@ -1595,9 +1671,18 @@ fn answer(
         // Security rule 4: a hook's key sits in files the agent reads, so it reads nothing.
         Request::ListItems { .. } if is_hook(client) => Err(Failure::NotFound("no inbox entries for this key".into())),
         Request::GetItem { id } if is_hook(client) => Err(no_item(&id)),
-        Request::ListItems { lane, source, state, since, limit, order, dismissed } => {
+        Request::ListItems { lane, source, state, since, limit, order, dismissed, categories } => {
             wake_due(db, now)?;
-            let filter = ItemFilter { lane, source, state, since, limit, order: order.unwrap_or_default(), dismissed };
+            let filter = ItemFilter {
+                lane,
+                source,
+                state,
+                since,
+                limit,
+                order: order.unwrap_or_default(),
+                dismissed,
+                categories,
+            };
             Ok(Response::Items { items: list_items(db, &filter, client)? })
         }
         Request::GetItem { id } => {
@@ -1648,6 +1733,12 @@ fn answer(
             let hidden = hide_sender(&tx, &id, scope, client, now)?;
             tx.commit()?;
             Ok(Response::Hidden(hidden))
+        }
+        Request::SetItemCategory { id, category, remember } => {
+            let tx = db.transaction()?;
+            let filed = set_item_category(&tx, &id, category, remember, client, now)?;
+            tx.commit()?;
+            Ok(Response::ItemCategory { item: filed.0, rule: filed.1, new_rule: filed.2 })
         }
         Request::ListMuteOptions { id } => {
             wake_due(db, now)?;
@@ -2220,6 +2311,7 @@ fn post(
         task: None,
         invite: None,
         reason: None,
+        category: None,
     };
     // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
     // window of a hook's agent); anything else is dropped, not refused.
@@ -2502,7 +2594,8 @@ fn remember_lane(db: &Connection, item: &Item, lane: Lane, now: DateTime<Utc>) -
 fn remembered_lane(rule: &Rule) -> Option<Lane> {
     match rule.effect {
         RuleEffect::Lane { lane } if rule.facet.is_none() => Some(lane),
-        RuleEffect::Lane { .. } | RuleEffect::Muted | RuleEffect::NoPopup => None,
+        // A kept category keeps no lane: it only says what the mail is (task E12.2).
+        RuleEffect::Lane { .. } | RuleEffect::Muted | RuleEffect::NoPopup | RuleEffect::Category { .. } => None,
     }
 }
 
@@ -2640,6 +2733,70 @@ fn hiding_rule(db: &Connection, candidate: Rule, client: Option<&ClientInfo>) ->
     Ok((rule, true))
 }
 
+/// `inbox.set_item_category` (task E12.4): files the mail of `id` under `category` by hand and,
+/// with `remember`, keeps that for its sender in every mail account.
+///
+/// The person's category is the strongest: no automatic run overwrites it, only an explicit
+/// `inbox.classify_item`. Returns the entry as it stands, the rule and whether this call made it.
+fn set_item_category(
+    db: &Connection,
+    id: &str,
+    category: torro_mail::Category,
+    remember: bool,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<(Item, Option<Rule>, bool), Failure> {
+    let mut item = changeable(db, id, client)?.item;
+    if item.source.kind != SourceKind::Mail {
+        return Err(Failure::Invalid("only mail has a category".into()));
+    }
+    let (rule, new_rule) = if remember {
+        let sender = rules::mail_sender(&item)
+            .ok_or_else(|| Failure::Invalid("this mail names no sender to remember the category for".into()))?;
+        let candidate = Rule {
+            id: new_id()?,
+            source: item.source.clone(),
+            sender: Some(sender),
+            domain: None,
+            effect: RuleEffect::Category { category },
+            created: now,
+            facet: None,
+            until: None,
+        };
+        let (rule, new_rule) = category_rule(db, candidate, client)?;
+        (Some(rule), new_rule)
+    } else {
+        (None, false)
+    };
+    item.category = Some(torro_mail::MailCategory::by_person(category));
+    update_item(db, &item)?;
+    Ok((item, rule, new_rule))
+}
+
+/// The rule that files this sender's mail under a category, as stored: the one already there
+/// (then `false`), else a new one. A sender has one category rule, so choosing a different
+/// category for the same sender replaces it.
+fn category_rule(db: &Connection, candidate: Rule, client: Option<&ClientInfo>) -> Result<(Rule, bool), Failure> {
+    let key = text(rule_key(&candidate));
+    let condition = "instr(source, ?) = 1 AND effect = 'category' AND sender = ? AND facet = ''";
+    let kept = read_rules(db, &Scope::of(client), condition, vec![text(ACCOUNT_PREFIX), key.clone()])?;
+    let same = kept.iter().find(|rule| rule.effect == candidate.effect).cloned();
+    if let Some(rule) = same {
+        return Ok((rule, false));
+    }
+    // A different category for the same sender replaces the old rule: one sender, one category.
+    for old in kept {
+        db.execute("DELETE FROM rules WHERE id = ?1", params![old.id])?;
+    }
+    let source = text(candidate.source.key());
+    insert_rule(db, candidate)?;
+    let own = "source = ? AND effect = 'category' AND sender = ? AND facet = ''";
+    let rule = read_rules(db, &Scope::All, own, vec![source, key])?
+        .pop()
+        .ok_or_else(|| Failure::Invalid("the rule could not be kept".into()))?;
+    Ok((rule, true))
+}
+
 /// What `inbox.mute_item` asks for besides the entry (task E8.6a).
 struct Muting {
     scope: MuteScope,
@@ -2709,7 +2866,12 @@ fn check_message(
         }
         // "Later" for any mail (task E9.1): as for an entry of the account.
         Request::SnoozeItem { .. } => api::check_item_change(stand_in, client).map_err(Failure::Forbidden),
-        _ => Err(Failure::Invalid("only muting and snoozing take the id of a mail".into())),
+        // What a mail is, for any mail (task E12.4): the category belongs to the mail, not to
+        // its entry, so a mail that never became one can be filed too.
+        Request::SetItemCategory { .. } | Request::ClassifyItem { .. } => {
+            api::check_item_change(stand_in, client).map_err(Failure::Forbidden)
+        }
+        _ => Err(Failure::Invalid("only muting, snoozing and the category take the id of a mail".into())),
     }
 }
 
@@ -2877,6 +3039,9 @@ fn effect_column(effect: RuleEffect) -> &'static str {
         RuleEffect::Lane { .. } => "lane",
         RuleEffect::Muted => "muted",
         RuleEffect::NoPopup => "no_popup",
+        // Task E12.2. Only for picking rows in SQL: the rule is stored as JSON, so which category
+        // it keeps round-trips through serde and needs no column of its own.
+        RuleEffect::Category { .. } => "category",
     }
 }
 
@@ -3338,6 +3503,7 @@ fn finished_task_entry(
         task: Some(task),
         invite: None,
         reason: None,
+        category: None,
     }
 }
 
@@ -3381,6 +3547,7 @@ impl Matter {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 }
@@ -3583,6 +3750,14 @@ pub struct NewMail {
     /// for every other mail. Headers from outside: [`Inbox::file_mail`] lets it at most join a
     /// GitHub entry of that very repository and number, never hide a mail otherwise.
     pub github: Option<IssueRef>,
+    /// The mail invites to an event (iMIP): filed as [`torro_mail::Category::Invitation`] (E12.2).
+    pub invite: bool,
+    /// What `Auto-Submitted` says, if anything: anything but `no` makes it
+    /// [`torro_mail::Category::AutoReply`].
+    pub auto_submitted: Option<String>,
+    /// The mail lies in the folder the server keeps junk in: filed as
+    /// [`torro_mail::Category::Spam`].
+    pub junk: bool,
 }
 
 /// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
@@ -3695,6 +3870,16 @@ impl MailLater {
 }
 
 /// [`Inbox::file_mail`] on the open database, for `source`, the account's.
+/// What the fixed rules make of `mail` for the sender `sender` (task E12.2): a category kept for
+/// that sender or domain in **any** mail account (like a hidden sender, task E3.11), else what the
+/// headers and the folder say ([`rules::mail_category`]).
+fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
+    let rules =
+        read_rules(db, &Scope::All, "instr(source, ?) = 1 AND effect = 'category'", vec![text(ACCOUNT_PREFIX)])?;
+    let kept = rules.iter().find_map(|rule| rules::kept_category(rule, sender));
+    Ok(rules::mail_category(kept, mail.invite, mail.auto_submitted.as_deref(), mail.junk))
+}
+
 fn file_mail(
     db: &mut Connection,
     mail: &NewMail,
@@ -3733,6 +3918,9 @@ fn file_mail(
         None if lane == Lane::Info => mail.bulk,
         None => None,
     };
+    // What the mail is, as far as the headers, the folder and a kept rule say (task E12.2); the
+    // feed writes the same answer into the mail store.
+    let category = mail_category_in(&tx, sender.as_deref(), mail)?;
     let existing = read_owned(&tx, &mail.account, &mail.thread)?;
     let id = match &existing {
         Some(existing) => existing.id.clone(),
@@ -3765,6 +3953,7 @@ fn file_mail(
         task: None,
         invite: None,
         reason,
+        category,
     };
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
@@ -3974,6 +4163,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
         task: None,
         invite: None,
         reason: None,
+        category: None,
     };
     // Security rule 6: only a web page.
     if !rules::may_open(&incoming, is_app_of_the_suite) {
@@ -4539,6 +4729,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         }
     }
 
@@ -4571,6 +4762,7 @@ pub(crate) mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 
@@ -4637,6 +4829,7 @@ pub(crate) mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             items(inbox.handle(request, None, now))
         };
@@ -4670,6 +4863,7 @@ pub(crate) mod tests {
                 limit: None,
                 order: None,
                 dismissed,
+                categories: Vec::new(),
             };
             items(inbox.handle(request, None, now)).into_iter().map(|item| item.id).collect::<Vec<_>>()
         };
@@ -4803,6 +4997,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         assert_eq!(items(inbox.handle(for_me, None, at(9, 0))).into_iter().map(|i| i.id).collect::<Vec<_>>(), ["old"]);
         let info = |limit| Request::ListItems {
@@ -4813,6 +5008,7 @@ pub(crate) mod tests {
             limit,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let ordered = items(inbox.handle(info(Some(1)), None, at(9, 0)));
         assert_eq!(ordered[0].id, "old", "urgent first although older");
@@ -4838,6 +5034,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         assert!(items(inbox.handle(named, Some(&blind), at(8, 1))).is_empty());
         assert_eq!(inbox.handle(Request::ListSources, Some(&blind), at(8, 1)), Response::Sources { sources: vec![] });
@@ -5061,6 +5258,7 @@ pub(crate) mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             assert_eq!(items(inbox.handle(of_suite, Some(&client), at(8, 1))), vec![]);
             assert_eq!(
@@ -5249,7 +5447,8 @@ pub(crate) mod tests {
                 since: None,
                 limit: None,
                 order: None,
-                dismissed: None
+                dismissed: None,
+                categories: Vec::new(),
             }),
             [waiting.as_str(), "newer", "older"]
         );
@@ -5261,7 +5460,8 @@ pub(crate) mod tests {
                 since: Some(at(8, 1)),
                 limit: Some(1),
                 order: None,
-                dismissed: None
+                dismissed: None,
+                categories: Vec::new(),
             }),
             ["newer"]
         );
@@ -5275,6 +5475,7 @@ pub(crate) mod tests {
             limit,
             order: Some(Order::OldestFirst),
             dismissed: None,
+            categories: Vec::new(),
         };
         assert_eq!(titles(oldest(None)), [waiting.as_str(), "older", "newer"]);
         assert_eq!(titles(oldest(Some(2))), [waiting.as_str(), "older"]);
@@ -5618,6 +5819,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let mut items = items(inbox.handle(request, None, now));
         items.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
@@ -6098,7 +6300,61 @@ pub(crate) mod tests {
             list: None,
             date,
             github: None,
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         }
+    }
+
+    /// Task E12.4: filing a mail by hand sets the person's category, and `remember` keeps it for
+    /// the sender – one sender, one category, so choosing another replaces the rule.
+    #[test]
+    fn filing_a_mail_by_hand_sets_its_category_and_can_remember_it() {
+        use torro_mail::{Category, CategorySource};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+
+        let file = |category, remember| Request::SetItemCategory { id: id.clone(), category, remember };
+        let answer = inbox.handle(file(Category::Invoice, false), None, at(8, 2));
+        let Response::ItemCategory { item, rule, new_rule } = answer else { panic!("a category") };
+        let held = item.category.expect("a category");
+        assert_eq!((held.category, held.source, held.confidence), (Category::Invoice, CategorySource::Person, None));
+        assert!(!held.is_suggestion(), "what the person chose is no suggestion");
+        assert_eq!((rule, new_rule), (None, false), "without remember nothing lasts");
+        assert!(rules_of(&inbox).is_empty());
+
+        let answer = inbox.handle(file(Category::Invoice, true), None, at(8, 3));
+        let Response::ItemCategory { rule: Some(rule), new_rule, .. } = answer else { panic!("a rule") };
+        assert!(new_rule);
+        assert_eq!(rule.effect, RuleEffect::Category { category: Category::Invoice });
+        assert_eq!(rule.sender.as_deref(), Some("bernd@example.com"));
+        assert_eq!(rules_of(&inbox).len(), 1);
+
+        // The same again answers the rule already there, and changes nothing.
+        let answer = inbox.handle(file(Category::Invoice, true), None, at(8, 4));
+        let Response::ItemCategory { new_rule, .. } = answer else { panic!("a rule") };
+        assert!(!new_rule, "the rule was there already");
+        assert_eq!(rules_of(&inbox).len(), 1);
+
+        // Another category for the same sender replaces it: one sender, one category.
+        let answer = inbox.handle(file(Category::Receipt, true), None, at(8, 5));
+        let Response::ItemCategory { rule: Some(rule), new_rule, .. } = answer else { panic!("a rule") };
+        assert!(new_rule);
+        assert_eq!(rule.effect, RuleEffect::Category { category: Category::Receipt });
+        assert_eq!(rules_of(&inbox).len(), 1, "the old rule is gone");
+
+        // An entry that is no mail has no category to set.
+        for_me_notice(&inbox, "Build failed", "build", at(8, 6));
+        let Response::Items { items } = inbox.handle(all(), None, at(8, 7)) else { panic!("items") };
+        let script = items.iter().find(|item| item.source.kind != SourceKind::Mail).expect("a notice");
+        let answer = inbox.handle(file_other(&script.id, Category::Invoice), None, at(8, 8));
+        assert_eq!(code(&answer), "error", "only mail has a category");
+    }
+
+    fn file_other(id: &str, category: torro_mail::Category) -> Request {
+        Request::SetItemCategory { id: id.into(), category, remember: false }
     }
 
     /// A mail from a person to Anna.
@@ -6921,6 +7177,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
         filed(&inbox, &personal("m:2", "t:2", at(8, 30)), at(8, 31));
@@ -7608,6 +7865,7 @@ pub(crate) mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             items(inbox.handle(list, None, now)).into_iter().map(|item| item.id).collect::<Vec<_>>()
         };
@@ -7648,6 +7906,7 @@ pub(crate) mod tests {
             invite: None,
             back: None,
             untrusted: true,
+            category: None,
         };
         let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
         assert_eq!(inbox.entry_of_message(ANNA, "m:9"), None, "never filed");

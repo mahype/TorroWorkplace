@@ -1,0 +1,8 @@
+{
+  "expect": "promotion",
+  "subject": "-30 % auf alles, nur dieses Wochenende",
+  "from": "Shop <angebote@shop.example>",
+  "list": "<angebote.shop.example>",
+  "bulk": true,
+  "text": "Sichern Sie sich jetzt 30 % Rabatt auf das gesamte Sortiment. Nur bis Sonntag, 23:59 Uhr. Jetzt stöbern und sparen!"
+}

@@ -1189,6 +1189,11 @@ pub enum Request {
         /// (by hand or by a new report) makes it an entry like any other.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dismissed: Option<bool>,
+        /// Only entries whose mail is of one of these categories (task E12.4,
+        /// `docs/kategorien.md`); left out: every entry. Entries that are no mail have none, so a
+        /// filter always leaves them out.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        categories: Vec<torro_mail::Category>,
     },
     /// One entry with all its text ([`Response::Item`]). `not-found` for an unknown id or an entry
     /// of a source the client may not see.
@@ -1468,6 +1473,89 @@ pub enum Request {
         /// `true` mutes, `false` unmutes.
         muted: bool,
     },
+    /// Which AI account and model each function of the suite uses ([`Response::AiAssignments`],
+    /// task E12.5, `docs/ki.md`): every function, also those nobody set up, with empty fields.
+    #[serde(rename = "ai.list_assignments")]
+    AiAssignments,
+    /// Sets what one function uses, or takes the assignment back with `engine: null`
+    /// ([`Response::AiAssignments`], task E12.5). `not-found` for a function this version does
+    /// not know or an account that does not exist; `error` for a model the account does not
+    /// offer, for a function that needs a decision model and a model that does not decide, and –
+    /// while mail may not leave this computer – for a model that runs elsewhere.
+    #[serde(rename = "ai.set_assignment")]
+    SetAiAssignment {
+        /// The function's key: `inbox.categorize`.
+        function: torro_core::ai::AiFunction,
+        /// The AI account (`ai:…` from `accounts.list_accounts`); `null` takes the assignment
+        /// back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        engine: Option<String>,
+        /// The model of that account; `null` lets the function pick one that fits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// How hard it thinks; a decision model ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
+        /// Switch the function on or off. Off leaves everything as it is and asks no model.
+        #[serde(default)]
+        enabled: bool,
+    },
+    /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
+    /// `docs/kategorien.md`): every category with its group, the words for both, how much mail it
+    /// holds and how much of that is unread. Counted in the inbox folder of the mail accounts
+    /// this key may read – mail thrown away, marked as spam or sent by the person keeps its
+    /// category and is counted nowhere. `not-found` for an `account` that is not there or that
+    /// this key may not read.
+    #[serde(rename = "inbox.list_categories")]
+    ListCategories {
+        /// Only count in this account: `mail:<address>`. Left out: every account in reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Files a mail under `category` by hand ([`Response::ItemCategory`], task E12.4): the
+    /// category of the mail and of its entry becomes `person`, which no automatic run overwrites.
+    /// With `remember: true` later mail of the same sender is filed there too – a lasting rule
+    /// that needs admin rights and the person's approval, which `inbox.remove_rule` takes back.
+    /// `error` for an entry that is no mail or, with `remember`, names no sender's address;
+    /// `not-found` for an entry of a mail account this key may not read.
+    ///
+    /// A message's id (`m:…`) works for mail that never became an entry: the category is kept
+    /// with the mail, `remember` keeps the rule all the same, and the answer holds the mail as
+    /// an entry would show it.
+    #[serde(rename = "inbox.set_item_category")]
+    SetItemCategory {
+        /// The mail entry's id, or a message's id (`m:…`).
+        id: String,
+        /// What the mail is.
+        category: torro_mail::Category,
+        /// Also file later mail of this sender there.
+        #[serde(default)]
+        remember: bool,
+    },
+    /// Asks the decision model what a mail is, again ([`Response::ItemCategory`], task E12.4):
+    /// unlike the automatic run this **overwrites a category the person set by hand** – whoever
+    /// presses the button wants exactly that. `not-connected` when no decision model is assigned
+    /// or the data rule leaves none on this computer, `unsupported` for an entry without mail.
+    /// A message's id (`m:…`) asks about that one mail, entry or none.
+    #[serde(rename = "inbox.classify_item")]
+    ClassifyItem {
+        /// The mail entry's id, or a message's id (`m:…`).
+        id: String,
+    },
+    /// How the categorisation of mail stands ([`Response::Categorization`], task E12.4): on or
+    /// off, the model assigned, and the backlog per mail account this key may read.
+    #[serde(rename = "inbox.get_categorization")]
+    GetCategorization,
+    /// Starts sorting the mail that has no category yet, or stops it with `cancel: true`
+    /// ([`Response::Categorization`], task E12.4). One run looks at the inbox of the last 30 days,
+    /// at most 500 messages per account, throttled in the background; mail that already has a
+    /// category is never asked about again. `not-connected` without a decision model.
+    #[serde(rename = "inbox.catch_up_categories")]
+    CatchUpCategories {
+        /// Stop a run instead of starting one; what was sorted stays sorted.
+        #[serde(default)]
+        cancel: bool,
+    },
     /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
     ///
     /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
@@ -1673,6 +1761,12 @@ pub enum Request {
         /// `cursor` hold; a cursor belongs to this field as well.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snoozed: Option<bool>,
+        /// Only mail of one of these categories (task E12.4, `docs/kategorien.md`); empty or left
+        /// out: every message, with a category or without. A typed set, not a word in `query`: a
+        /// group of the sidebar is up to seven categories. Filtered before paging, so pages and
+        /// `cursor` hold; a cursor belongs to this field as well.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        categories: Vec<torro_mail::Category>,
     },
     /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
     /// issue #136): how many messages it keeps, how many of them have their text in the index,
@@ -2301,6 +2395,10 @@ pub enum SettingKey {
     /// "outsideWorkHours": true, "allDisplays": true, "neverDuringCall": true, "sound": "system" |
     /// "none"}`.
     Reminders,
+    /// Which mail categories the sidebar leaves out (task E12.10, `docs/kategorien.md`): a list
+    /// of category keys, e.g. `["spam", "auto_reply"]`. An empty list shows every category that
+    /// occurs. A key this version does not know is dropped when the file is read.
+    HiddenCategories,
 }
 
 /// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
@@ -2558,6 +2656,36 @@ pub enum Response {
         /// dropped.
         id: Option<String>,
     },
+    /// What each function of the suite uses ([`Request::AiAssignments`],
+    /// [`Request::SetAiAssignment`]): every function, with the words a person reads for it. No
+    /// secret is in here – only ids.
+    AiAssignments {
+        assignments: Vec<crate::AiAssignmentInfo>,
+    },
+    /// The catalogue of mail categories ([`Request::ListCategories`]). The suite's own words, so
+    /// nothing here is foreign text.
+    Categories {
+        categories: Vec<crate::inbox::CategoryInfo>,
+    },
+    /// A mail's category after it was set or asked anew ([`Request::SetItemCategory`],
+    /// [`Request::ClassifyItem`]): the entry as it stands now, and the lasting rule when
+    /// `remember` kept one. The entry's text is foreign text, never instructions.
+    ItemCategory {
+        item: Item,
+        /// The rule that files later mail of this sender, as stored – also when it was there
+        /// already. `None` without `remember`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<Rule>,
+        /// Whether this call made `rule`: `false` when the same rule was there already, so taking
+        /// the call back must leave it.
+        #[serde(default)]
+        new_rule: bool,
+    },
+    /// How the categorisation of mail stands ([`Request::GetCategorization`],
+    /// [`Request::CatchUpCategories`]).
+    Categorization {
+        categorization: crate::inbox::Categorization,
+    },
     /// The lasting rules of the inbox ([`Request::ListRules`]).
     Rules {
         rules: Vec<Rule>,
@@ -2687,6 +2815,10 @@ pub enum Response {
     },
     /// The models of an AI account ([`Request::AiModels`]), in the server's order.
     AiModels {
+        /// The account they belong to, as it was asked for: a window that asks several accounts
+        /// in one load tells the answers apart by it (task E12.10).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        account: String,
         models: Vec<AiModel>,
     },
     /// The AI servers found on this computer ([`Request::FindAiServers`]).
@@ -3162,6 +3294,19 @@ pub struct EventSuggestion {
     pub engine: String,
     /// The model it asked.
     pub model: String,
+}
+
+/// One function of the suite with what it uses (`ai.list_assignments`, task E12.5): the
+/// assignment plus the words a person reads for the function, so an app need not know the list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AiAssignmentInfo {
+    #[serde(flatten)]
+    pub assignment: torro_core::ai::AiAssignment,
+    /// What a person reads for the function, in the core's language.
+    pub label: String,
+    /// The function needs a model that decides instead of writing ([`torro_core::ai::AiModel`]'s
+    /// `decision`), so only such models may be chosen for it.
+    pub needs_decision: bool,
 }
 
 /// An AI server found on this computer ([`Request::FindAiServers`], task KI.1a).

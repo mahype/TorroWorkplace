@@ -46,8 +46,8 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
 use torro_mail::{
-    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message, MessageSummary, MessageTraits, Order,
-    Role,
+    AttachmentInfo, Category, CategorySource, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory,
+    Message, MessageSummary, MessageTraits, Order, Role,
 };
 use torro_mail_imap::mime::ReadMessage;
 
@@ -59,7 +59,7 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// At most this many bytes of a message's text go into the word index: a log of megabytes is
 /// found by its first half megabyte, and the index stays small.
@@ -125,6 +125,18 @@ CREATE INDEX IF NOT EXISTS messages_unindexed ON messages (indexed, date);";
 /// from before: not read yet, so `mail.get_message` with `include_html` fetches the message once
 /// more; an empty text: the message has no HTML part to show (or it was too large).
 const SCHEMA_V6: &str = "ALTER TABLE bodies ADD COLUMN html TEXT;";
+
+/// Version 7 (task E12.1/E12.2, `docs/kategorien.md`): what a mail is, where that came from and
+/// how sure the model was (percent), plus the two answers the same model call brings along.
+/// `needs_reply` and `urgency` are written but read by nothing yet; they are kept because asking
+/// for them again later would mean running the model over the whole backlog a second time.
+/// `NULL` everywhere in rows from before: nothing is said about that mail yet.
+const SCHEMA_V7: &str = "ALTER TABLE messages ADD COLUMN category TEXT;
+ALTER TABLE messages ADD COLUMN category_source TEXT;
+ALTER TABLE messages ADD COLUMN category_confidence INTEGER;
+ALTER TABLE messages ADD COLUMN needs_reply INTEGER;
+ALTER TABLE messages ADD COLUMN urgency INTEGER;
+CREATE INDEX IF NOT EXISTS messages_by_category ON messages (category, date DESC);";
 
 /// `indexed` of a message whose text is not in the index yet.
 const NOT_INDEXED: i64 = 0;
@@ -351,6 +363,16 @@ pub struct SearchQuery {
     pub only: Option<Vec<String>>,
     /// Never these messages (`m:…`), for "Later" (task E9.1): left out before paging, so pages hold.
     pub except: Vec<String>,
+    /// Only mail of one of these categories (task E12.2); empty: every category, and mail without
+    /// one. A typed set, not a word in [`Query`]: a group of the sidebar is up to seven
+    /// categories, and this way the condition is exact and survives paging.
+    pub categories: Vec<Category>,
+    /// Only mail in the inbox folder, whatever `folder` says (task E12.8): what the sidebar's
+    /// categories list, and what [`MailStore::unread_by_category`] counts, so the number on an
+    /// entry and the mail behind it agree. A reply of one's own in Sent and mail thrown away keep
+    /// their category, and neither belongs under "Invoices". Without an inbox folder nothing
+    /// matches.
+    pub in_inbox: bool,
 }
 
 /// The store of one account. `Send`, not `Sync`: share it as `Arc<Mutex<MailStore>>` and call it
@@ -714,6 +736,88 @@ impl MailStore {
         Ok(self.db.query_row(sql, [NOT_INDEXED], |row| row.get(0))?)
     }
 
+    /// Keeps what the mail `id` is (task E12.2); `None` takes the category away again. `false`
+    /// when the store has no such message. The confidence is only kept for a model's category.
+    pub fn set_category(&self, id: &str, category: Option<MailCategory>) -> Result<bool, MailStoreError> {
+        let key = category.map(|held| held.category.key());
+        let source = category.map(|held| match held.source {
+            CategorySource::Rule => "rule",
+            CategorySource::Model => "model",
+            CategorySource::Person => "person",
+        });
+        let confidence = category.and_then(|held| held.confidence).map(i64::from);
+        let sql = "UPDATE messages SET category = ?2, category_source = ?3, category_confidence = ?4 WHERE id = ?1";
+        Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
+    }
+
+    /// Keeps the two answers the same model call brings along besides the category (task E12.6):
+    /// whether a reply is waited for and how pressing the mail is (0 routine, 1 soon, 2 urgent).
+    /// Nothing reads them yet; they are kept so a later step need not run the model over the
+    /// whole backlog again. `false` when the store has no such message.
+    pub fn set_model_answers(
+        &self,
+        id: &str,
+        needs_reply: Option<bool>,
+        urgency: Option<u8>,
+    ) -> Result<bool, MailStoreError> {
+        let sql = "UPDATE messages SET needs_reply = ?2, urgency = ?3 WHERE id = ?1";
+        Ok(self.db.execute(sql, params![id, needs_reply, urgency.map(i64::from)])? > 0)
+    }
+
+    /// The mail of the inbox folder that has no category yet, newest first, at most `limit` and
+    /// not older than `since`: what the backlog run asks for (task E12.6). Mail that already has
+    /// one is never asked about again, so a second run asks nothing twice.
+    pub fn uncategorised(&self, since: DateTime<Utc>, limit: u32) -> Result<Vec<String>, MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+        let sql = "SELECT id FROM messages WHERE folder_id = ?1 AND category IS NULL AND date >= ?2
+            ORDER BY date DESC, seq DESC LIMIT ?3";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map(params![inbox.id, since.timestamp(), limit], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// How much mail each category holds and how much of it is unread (task E12.4), only
+    /// categories that occur: `(category, unread, all)`.
+    ///
+    /// **The inbox folder only**, as the sidebar's categories list it ([`SearchQuery::in_inbox`]):
+    /// a reply of one's own in Sent, and mail thrown away or marked as spam, carry their category
+    /// on, and counting them would offer a category whose view is empty. Without an inbox folder
+    /// nothing is counted. Mail without a category is not counted at all: the sidebar offers only
+    /// what is there.
+    pub fn unread_by_category(&self) -> Result<Vec<(Category, u32, u32)>, MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+        let sql = "SELECT category, sum(flags & 1 = 0), count(*) FROM messages
+            WHERE folder_id = ?1 AND category IS NOT NULL GROUP BY category";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map([&inbox.id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        let mut counts = Vec::new();
+        let held = |count: i64| count.clamp(0, i64::from(u32::MAX)) as u32;
+        for row in rows {
+            let (key, unread, all) = row?;
+            // A key this version does not know (a store written by a newer one) is left out.
+            if let Some(category) = Category::from_key(&key) {
+                counts.push((category, held(unread), held(all)));
+            }
+        }
+        Ok(counts)
+    }
+
+    /// How much mail of the inbox folder the backlog run looks at and how much of it has a
+    /// category already (task E12.4): `(messages, done)`, counted over the last `days` days and
+    /// at most `limit` messages, the window the run itself uses.
+    pub fn category_counts(&self, since: DateTime<Utc>, limit: u32) -> Result<(u64, u64), MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok((0, 0)) };
+        let sql = "SELECT count(*), coalesce(sum(category IS NOT NULL), 0) FROM (
+                SELECT category FROM messages WHERE folder_id = ?1 AND date >= ?2
+                ORDER BY date DESC, seq DESC LIMIT ?3)";
+        let counted = self.db.query_row(sql, params![inbox.id, since.timestamp(), limit], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        Ok((counted.0.max(0) as u64, counted.1.max(0) as u64))
+    }
+
     /// Keeps `answer` as the answer given to the invitation of the message `id`
     /// (`mail.respond_to_invitation`, task E8.3b); `None` forgets it. `false`: no such message.
     pub fn set_invite_answer(&self, id: &str, answer: Option<InvitationAnswer>) -> Result<bool, MailStoreError> {
@@ -832,26 +936,28 @@ impl MailStore {
         );
         let row = self.db.query_row(&sql, [id], |row| {
             let summary = summary_from_row(&self.account, row)?;
-            let attachments_json: Option<String> = row.get(21)?;
+            // The columns after `SUMMARY_COLUMNS`, which holds [`SUMMARY_WIDTH`] of them.
+            let after = |n: usize| SUMMARY_WIDTH + n;
+            let attachments_json: Option<String> = row.get(after(9))?;
             Ok(Message {
                 summary,
-                cc: json_column(row, 12)?,
-                reply_to: json_column(row, 13)?,
-                text: row.get(19)?,
-                from_html: row.get::<_, Option<bool>>(20)?.unwrap_or(false),
+                cc: json_column(row, after(0))?,
+                reply_to: json_column(row, after(1))?,
+                text: row.get(after(7))?,
+                from_html: row.get::<_, Option<bool>>(after(8))?.unwrap_or(false),
                 html: None,
                 attachments: match attachments_json {
-                    Some(json) => parse_json(&json, 21)?,
+                    Some(json) => parse_json(&json, after(9))?,
                     None => Vec::new(),
                 },
                 traits: MessageTraits {
-                    list_id: row.get(14)?,
-                    list_unsubscribe: row.get(15)?,
-                    precedence: row.get(16)?,
-                    auto_submitted: row.get(17)?,
-                    github: row.get(22)?,
+                    list_id: row.get(after(2))?,
+                    list_unsubscribe: row.get(after(3))?,
+                    precedence: row.get(after(4))?,
+                    auto_submitted: row.get(after(5))?,
+                    github: row.get(after(10))?,
                 },
-                invitation: row.get(18)?,
+                invitation: row.get(after(6))?,
             })
         });
         Ok(row.optional()?)
@@ -951,7 +1057,7 @@ impl MailStore {
         values.push(Value::Integer(i64::from(offset)));
         let mut statement = self.db.prepare(&sql)?;
         let rows = statement.query_map(params_from_iter(values), |row| {
-            Ok((summary_from_row(&self.account, row)?, row.get::<_, f64>(12)?))
+            Ok((summary_from_row(&self.account, row)?, row.get::<_, f64>(SUMMARY_WIDTH)?))
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -1017,6 +1123,19 @@ impl MailStore {
             conditions.push(format!("m.id NOT IN ({})", vec!["?"; query.except.len()].join(", ")));
             values.extend(query.except.iter().cloned().map(Value::Text));
         }
+        if !query.categories.is_empty() {
+            conditions.push(format!("m.category IN ({})", vec!["?"; query.categories.len()].join(", ")));
+            values.extend(query.categories.iter().map(|category| Value::Text(category.key().to_string())));
+        }
+        if query.in_inbox {
+            match self.folder_by_role(Role::Inbox)? {
+                Some(inbox) => {
+                    conditions.push("m.folder_id = ?".into());
+                    values.push(Value::Text(inbox.id));
+                }
+                None => conditions.push("0".into()),
+            }
+        }
         let filter = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
         Ok((filter, values))
     }
@@ -1064,7 +1183,7 @@ impl MailStore {
         );
         let mut statement = self.db.prepare(&sql)?;
         let rows = statement.query_map(params![thread_id, after.timestamp()], |row| {
-            Ok((summary_from_row(&self.account, row)?, row.get::<_, Option<String>>(12)?))
+            Ok((summary_from_row(&self.account, row)?, row.get::<_, Option<String>>(SUMMARY_WIDTH)?))
         })?;
         let mut seen = std::collections::BTreeSet::new();
         let mut count = 0u32;
@@ -1205,6 +1324,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 6 && !has_column(&tx, "bodies", "html")? {
         tx.execute_batch(SCHEMA_V6)?;
     }
+    if version < 7 && !has_column(&tx, "messages", "category")? {
+        tx.execute_batch(SCHEMA_V7)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -1252,7 +1374,12 @@ const FOLDER_ORDER: &str =
         WHEN 'junk' THEN 4 WHEN 'trash' THEN 5 ELSE 6 END, f.path";
 
 const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
-    m.flags, m.has_attachments, m.invite_json, m.invite_answer";
+    m.flags, m.has_attachments, m.invite_json, m.invite_answer, m.category, m.category_source, m.category_confidence";
+
+/// How many columns [`SUMMARY_COLUMNS`] selects: where the columns a query adds after it begin.
+/// A query that appends its own must count from here, never from a number written out – task
+/// E12.2 added three columns in the middle and every hard-coded index moved.
+const SUMMARY_WIDTH: usize = 15;
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
@@ -1499,8 +1626,29 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         has_attachments: row.get(9)?,
         invite: invite_from_row(row)?,
         back: None,
+        category: category_from_row(row)?,
         untrusted: true,
     })
+}
+
+/// The category of a summary row (columns 12 to 14, task E12.2). A value this version cannot read
+/// counts as none: a list must not fail on one message, just as with an invitation.
+fn category_from_row(row: &Row<'_>) -> rusqlite::Result<Option<MailCategory>> {
+    let key: Option<String> = row.get(12)?;
+    let source: Option<String> = row.get(13)?;
+    let confidence: Option<i64> = row.get(14)?;
+    let Some(category) = key.as_deref().and_then(Category::from_key) else { return Ok(None) };
+    let source = match source.as_deref() {
+        Some("rule") => CategorySource::Rule,
+        Some("model") => CategorySource::Model,
+        Some("person") => CategorySource::Person,
+        _ => return Ok(None),
+    };
+    let confidence = match source {
+        CategorySource::Model => confidence.map(|value| value.clamp(0, 100) as u8),
+        CategorySource::Rule | CategorySource::Person => None,
+    };
+    Ok(Some(MailCategory { category, source, confidence }))
 }
 
 /// The invitation of a summary row (columns 10 and 11). A value this version cannot read counts as
@@ -1787,6 +1935,62 @@ mod tests {
         assert_eq!(store.html(&html).expect("asked"), Some(Some("<p>Hello</p>".into())));
         assert_eq!(store.prune_bodies(day(3) + Duration::days(BODY_RETENTION_DAYS)).expect("pruned"), 2);
         assert_eq!(store.html(&html).expect("asked"), None, "pruned with the text");
+    }
+
+    /// Task E12.2: what a mail is is kept with it, filters the search and survives the migration
+    /// of a store written before schema 7.
+    #[test]
+    fn the_category_of_a_mail_is_kept_filtered_and_migrated() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let bill = add(&store, &inbox, &message(1, "Your invoice"));
+        let parcel = add(&store, &inbox, &message(2, "Your parcel is on its way"));
+        let quiet = add(&store, &inbox, &message(3, "Nothing in particular"));
+        assert_eq!(store.summary(&bill).expect("summary").expect("there").category, None, "nothing said yet");
+
+        store.set_category(&bill, Some(MailCategory::by_model(Category::Invoice, 0.93))).expect("kept");
+        store.set_category(&parcel, Some(MailCategory::by_rule(Category::Shipping))).expect("kept");
+        let held = store.summary(&bill).expect("summary").expect("there").category.expect("a category");
+        assert_eq!((held.category, held.source, held.confidence), (Category::Invoice, CategorySource::Model, Some(93)));
+        let held = store.summary(&parcel).expect("summary").expect("there").category.expect("a category");
+        assert_eq!((held.category, held.source, held.confidence), (Category::Shipping, CategorySource::Rule, None));
+        assert!(!store.set_category("m:nope", None).expect("asked"), "no such message");
+
+        // The typed filter picks a set of categories and leaves mail without one out.
+        let of = |categories: Vec<Category>| {
+            let query = SearchQuery { categories, ..SearchQuery::default() };
+            store.search(&query, 50, 0).expect("searched").into_iter().map(|m| m.id).collect::<Vec<_>>()
+        };
+        assert_eq!(of(vec![Category::Invoice]), std::slice::from_ref(&bill));
+        assert_eq!(of(vec![Category::Invoice, Category::Shipping]).len(), 2, "one of the set");
+        assert_eq!(of(vec![Category::Spam]), Vec::<String>::new());
+        assert_eq!(of(Vec::new()).len(), 3, "no condition: every mail, with or without one");
+        assert!(of(Vec::new()).contains(&quiet), "mail without a category is only left out by a filter");
+
+        // Taking it away again leaves the mail without one.
+        store.set_category(&bill, None).expect("taken away");
+        assert_eq!(store.summary(&bill).expect("summary").expect("there").category, None);
+
+        // A store written before schema 7 gets the columns, and its mail survives.
+        store.set_category(&bill, Some(MailCategory::by_person(Category::Document))).expect("kept");
+        store
+            .db
+            .execute_batch(
+                "DROP INDEX IF EXISTS messages_by_category;
+                 ALTER TABLE messages DROP COLUMN category;
+                 ALTER TABLE messages DROP COLUMN category_source;
+                 ALTER TABLE messages DROP COLUMN category_confidence;
+                 ALTER TABLE messages DROP COLUMN needs_reply;
+                 ALTER TABLE messages DROP COLUMN urgency;
+                 PRAGMA user_version = 6",
+            )
+            .expect("v6");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(store.summary(&parcel).expect("summary").expect("there").subject, "Your parcel is on its way");
+        assert_eq!(store.summary(&bill).expect("summary").expect("there").category, None, "said anew after the move");
     }
 
     #[test]

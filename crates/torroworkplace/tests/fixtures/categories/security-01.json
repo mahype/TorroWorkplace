@@ -1,0 +1,8 @@
+{
+  "expect": "security",
+  "subject": "Ihr Anmeldecode: 481902",
+  "from": "Sicherheit <no-reply@service.example>",
+  "list": null,
+  "bulk": true,
+  "text": "Ihr Bestätigungscode lautet 481902. Er ist 10 Minuten gültig. Wenn Sie die Anmeldung nicht angefordert haben, ändern Sie bitte Ihr Passwort."
+}

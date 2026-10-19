@@ -96,6 +96,8 @@ enum Page {
     Cards,
     /// The mail window's large buttons (task E11.1).
     Mailbar,
+    /// The pills that say what a mail is (task E12.7).
+    Categories,
     Window,
 }
 
@@ -130,6 +132,8 @@ impl Start {
             Page::Cards
         } else if has("--mailbar") {
             Page::Mailbar
+        } else if has("--categories") {
+            Page::Categories
         } else {
             Page::Styles
         };
@@ -313,6 +317,7 @@ impl Gallery {
             Page::Parts => self.page_frame(self.parts()),
             Page::Cards => self.page_frame(self.cards()),
             Page::Mailbar => self.page_frame(mailbar()),
+            Page::Categories => self.page_frame(categories()),
             Page::Styles => self.page_frame(self.styles()),
         }
     }
@@ -2166,6 +2171,44 @@ impl Gallery {
 /// styles `cell` and `pill`, the track and the flat input forced into every state (the hover is the
 /// column "Hover"), the command bar in three widths, the strip under a row with and without words,
 /// the pills, the attachment chips and the reader's foot with its view switches.
+/// Task E12.7: the category pill in all four groups, with and without the suggestion mark.
+fn categories() -> Element<'static, Msg> {
+    let groups: [(Icon, &str, &str); 4] = [
+        (Icon::Inbox, "Waiting for me", "Request"),
+        (Icon::Archive, "Paper trail", "Invoice"),
+        (Icon::Info, "Info", "Newsletter"),
+        (Icon::ShieldAlert, "Junk", "Phishing"),
+    ];
+    let mut rows = column![].spacing(space::l());
+    for (at, (mark, group, label)) in groups.into_iter().enumerate() {
+        let line = row![
+            container(typo::text(typo::meta(), group)).width(140),
+            widgets::category_pill(mark, at, label, false),
+            widgets::category_pill(mark, at, label, true),
+        ]
+        .spacing(space::l())
+        .align_y(Alignment::Center);
+        rows = rows.push(line);
+    }
+    // A row of the list as it reads with a pill beside the subject.
+    let in_a_row = row![
+        typo::text(typo::body_strong(), "Shop"),
+        typo::text(typo::body(), "Your parcel is on its way"),
+        widgets::category_pill(Icon::Archive, 1, "Shipping", true),
+    ]
+    .spacing(space::m())
+    .align_y(Alignment::Center);
+    column![
+        typo::text(typo::title(), "Mail categories"),
+        typo::text(typo::meta(), "Colour and icon per group, words per category; sparkles mark a model's guess."),
+        rows,
+        typo::text(typo::meta(), "In a row of the list:"),
+        in_a_row,
+    ]
+    .spacing(space::xl())
+    .into()
+}
+
 fn mailbar() -> Element<'static, Msg> {
     let accent_mark = |which: Icon| -> Element<'static, Msg> {
         icon(which, icon::SIZE).style(|t, _| iced::widget::svg::Style { color: Some(palette(t).accent) }).into()

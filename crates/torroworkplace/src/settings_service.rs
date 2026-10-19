@@ -110,9 +110,15 @@ impl SettingsStore {
     /// refuses such a request before (`forbidden`); this keeps it so when a person switched voice
     /// off between that check and the write. The same holds for letting mail go to cloud models
     /// (`mail_to_cloud`, task C.17): a client may keep it local, never let it out.
+    ///
+    /// Nor which model does which function (`ai_assignments`, task E12.5): those are checked
+    /// against the accounts, the models and the data rule when they are set
+    /// (`Core::set_ai_assignment`), and a whole-settings write would go round that check. They
+    /// change only through [`SettingsStore::set_ai_assignment`].
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
+            let assignments = std::mem::take(&mut settings.ai_assignments);
             let list_orders = std::mem::take(&mut settings.list_orders);
             // Nor the reminder styles of calendars outside its selection (task ER1.2): it changes
             // them with `set_setting reminders`, which names each calendar.
@@ -121,7 +127,33 @@ impl SettingsStore {
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
             let reminders = Reminders { calendars, ..new.reminders.clone() };
-            *settings = Settings { hidden_collections: hidden, list_orders, voice, mail_to_cloud, reminders, ..new };
+            *settings = Settings {
+                hidden_collections: hidden,
+                ai_assignments: assignments,
+                list_orders,
+                voice,
+                mail_to_cloud,
+                reminders,
+                ..new
+            };
+        })
+    }
+
+    /// Sets which account and model `function` uses, or takes the assignment back with `None`
+    /// (task E12.5). The one way `ai_assignments` changes: `Core::set_ai_assignment` checks the
+    /// account, the model and the data rule before it calls this.
+    pub fn set_ai_assignment(
+        &self,
+        function: torro_core::ai::AiFunction,
+        assignment: Option<torro_core::ai::AiAssignment>,
+    ) -> Result<(), String> {
+        self.change(|settings| match &assignment {
+            Some(held) => {
+                settings.ai_assignments.insert(function, held.clone());
+            }
+            None => {
+                settings.ai_assignments.remove(&function);
+            }
         })
     }
 
@@ -298,6 +330,8 @@ enum Change {
     /// The data rule for mail (task C.17). Who may switch it on is the core's check
     /// (`Request::kept_for_people`).
     MailToCloud(bool),
+    /// Which mail categories the sidebar leaves out (task E12.10).
+    HiddenCategories(Vec<torro_mail::Category>),
     /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
     /// defaults when parsed and merged onto the stored ones when applied ([`Reminders::merged`]).
     Reminders(serde_json::Value),
@@ -342,6 +376,9 @@ impl Change {
             }
             SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
             // Strict, like the night: the file's reading falls back to the defaults instead.
+            SettingKey::HiddenCategories => {
+                Change::HiddenCategories(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             SettingKey::Reminders => {
                 Reminders::default().merged(value)?;
                 Change::Reminders(value.clone())
@@ -373,6 +410,7 @@ impl Change {
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
+            Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
             // Checked when parsed: what the stored ones hold cannot make the fields it names unfit.
             Change::Reminders(change) => {
                 if let Ok(merged) = settings.reminders.merged(&change) {
@@ -1015,6 +1053,8 @@ mod tests {
                 mail_appearance: MailAppearance::App,
                 mail_to_cloud: false,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
+                ai_assignments: std::collections::BTreeMap::new(),
+                hidden_categories: Vec::new(),
             }
         );
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);

@@ -32,7 +32,7 @@ use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
-    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, anthropic, openai,
+    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, anthropic, openai, systemone,
 };
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
@@ -210,9 +210,10 @@ impl OpenAiCompatible {
         openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))
     }
 
-    /// Ollama's word on whether `model` calls tools and thinks (`POST <root>/api/show`, issue
-    /// #131); `None` for each when it does not answer within [`SHOW_TIMEOUT`] or does not say.
-    async fn ollama_capabilities(&self, model: &str) -> (Option<bool>, Option<bool>) {
+    /// Ollama's word on whether `model` calls tools, thinks (issue #131) and decides (task
+    /// E12.3) – `POST <root>/api/show`; `None` for each when it does not answer within
+    /// [`SHOW_TIMEOUT`] or does not say.
+    async fn ollama_capabilities(&self, model: &str) -> (Option<bool>, Option<bool>, Option<bool>) {
         let url = format!("{}/api/show", openai::ollama_root(&self.wire.base));
         let builder = self.wire.authorized(self.wire.http.post(url)).json(&openai::ollama_show_body(model));
         let asked = async {
@@ -220,8 +221,8 @@ impl OpenAiCompatible {
             response.bytes().await.ok()
         };
         match tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten() {
-            Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body)),
-            None => (None, None),
+            Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body), openai::ollama_decision(&body)),
+            None => (None, None, None),
         }
     }
 
@@ -272,7 +273,7 @@ impl Provider for OpenAiCompatible {
             if self.provider == AiProvider::Ollama {
                 let tags = self.ollama_tags().await;
                 for model in &mut models {
-                    (model.tools, model.reasoning) = self.ollama_capabilities(&model.id).await;
+                    (model.tools, model.reasoning, model.decision) = self.ollama_capabilities(&model.id).await;
                     model.remote = Some(openai::ollama_runs_elsewhere(&model.id, tags.as_ref()));
                 }
             }
@@ -293,6 +294,27 @@ impl Provider for OpenAiCompatible {
             let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(&body);
             let response = self.wire.send(builder).await?;
             self.stream(response, on_text).await
+        })
+    }
+
+    /// `POST <base>/systemone` (task E12.3): the base already ends in `/v1`, so this is Ollama's
+    /// `/v1/systemone`. Only Ollama speaks the protocol; every other OpenAI-compatible server
+    /// keeps the trait's default and refuses, rather than posting to an address it does not know.
+    fn decide<'a>(
+        &'a self,
+        request: &'a systemone::DecisionRequest,
+    ) -> BoxFuture<'a, Result<systemone::DecisionReply, AiError>> {
+        Box::pin(async move {
+            if self.provider != AiProvider::Ollama {
+                return Err(AiError::Invalid(
+                    tr("Only Ollama offers decision models at the moment. Pick a model of an Ollama account.").into(),
+                ));
+            }
+            let body = systemone::decide_body_for(request)?;
+            let builder = self.wire.request(reqwest::Method::POST, "systemone").json(&body);
+            let response = self.wire.send(builder).await?;
+            let bytes = self.wire.body(response).await?;
+            systemone::read_decision(&bytes)
         })
     }
 }
@@ -417,6 +439,18 @@ impl Provider for AiClient {
         match self {
             AiClient::OpenAi(client) => client.chat(request, on_text),
             AiClient::Anthropic(client) => client.chat(request, on_text),
+        }
+    }
+
+    /// Handed on, so a decision reaches the one protocol that speaks it (task E12.3); Anthropic
+    /// keeps the trait's default.
+    fn decide<'a>(
+        &'a self,
+        request: &'a systemone::DecisionRequest,
+    ) -> BoxFuture<'a, Result<systemone::DecisionReply, AiError>> {
+        match self {
+            AiClient::OpenAi(client) => client.decide(request),
+            AiClient::Anthropic(client) => client.decide(request),
         }
     }
 }
@@ -605,6 +639,16 @@ impl AiAccounts {
             return Err(AiError::NoKey);
         }
         Ok(AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone()))
+    }
+
+    /// One call to the decision model of the account `id` (task E12.6, `torro_core::ai::systemone`).
+    /// `not-connected` when the account has no key on this device, `not-found` when it is gone.
+    pub async fn decide(
+        &self,
+        id: &str,
+        request: &systemone::DecisionRequest,
+    ) -> Result<systemone::DecisionReply, AiError> {
+        self.client(id).await?.decide(request).await
     }
 
     /// Checks the account with its server ([`OpenAiCompatible::check`]) and, when the server takes
@@ -830,6 +874,53 @@ pub(crate) mod tests {
         server
     }
 
+    /// Task E12.3: an Ollama that offers a decision model and answers one call at
+    /// `/v1/systemone`.
+    pub(crate) async fn fake_deciding_ollama() -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"object": "list", "data": [
+                    {"id": "nimble", "object": "model", "owned_by": "library"},
+                    {"id": "qwen3:8b", "object": "model", "owned_by": "library"},
+                ]}));
+            })
+            .await;
+        for (model, capabilities) in
+            [("nimble", json!(["completion", "decision"])), ("qwen3:8b", json!(["completion", "tools"]))]
+        {
+            server
+                .mock_async(|when, then| {
+                    when.method("POST").path("/api/show").json_body_includes(json!({"model": model}).to_string());
+                    then.status(200).json_body(json!({"capabilities": capabilities}));
+                })
+                .await;
+        }
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/tags");
+                then.status(200).json_body(json!({"models": [{"name": "nimble", "model": "nimble"}]}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/systemone").json_body_includes(r#"{"model":"nimble"}"#);
+                then.status(200).json_body(json!({
+                    "model": "nimble",
+                    "answers": {
+                        "category": {"type": "choice", "choice": "invoice",
+                                     "probabilities": {"invoice": 0.91, "other": 0.09}, "confidence": 0.91},
+                        "needs_reply": {"type": "noul", "noul": 0.2},
+                        "urgency": {"type": "score", "score": 0.7, "confidence": 0.8}
+                    },
+                    "usage": {"input_tokens": 120, "output_tokens": 12}
+                }));
+            })
+            .await;
+        server
+    }
+
     /// An Ollama with a cloud model first and a local one (task S.23), both calling tools; with
     /// `tags` it says in `/api/tags` which runs elsewhere, without it does not answer there.
     pub(crate) async fn fake_ollama_with_cloud(tags: bool) -> MockServer {
@@ -898,6 +989,45 @@ pub(crate) mod tests {
 
     fn texts(models: &[AiModel]) -> Vec<(&str, Option<bool>, Option<bool>)> {
         models.iter().map(|m| (m.id.as_str(), m.tools, m.open_weights)).collect()
+    }
+
+    /// Task E12.3: Ollama says which models decide, a decision goes to `/v1/systemone`, and no
+    /// other provider takes one.
+    #[tokio::test]
+    async fn ollama_says_which_models_decide_and_answers_a_decision() {
+        use std::collections::BTreeMap;
+        use torro_core::ai::systemone::{DecisionRequest, Question};
+
+        let server = fake_deciding_ollama().await;
+        let dir = tempfile::tempdir().expect("a directory");
+        let keys = MemoryTokens::default();
+        let base = format!("{}/v1", server.base_url());
+        let accounts = service(dir.path(), &keys, Vec::new());
+        accounts.connect(AiProvider::Ollama, Some(&base), Secret::new("")).await.expect("connected");
+        let id = format!("ai:ollama@{}", server.address());
+
+        let models = accounts.models(&id, true).await.expect("models");
+        let decides: Vec<(String, Option<bool>)> =
+            models.iter().map(|model| (model.id.clone(), model.decision)).collect();
+        assert_eq!(decides, [("nimble".to_string(), Some(true)), ("qwen3:8b".to_string(), Some(false))]);
+
+        let mut questions = BTreeMap::new();
+        questions.insert(
+            "category".to_string(),
+            Question::Choice {
+                instructions: "What is this mail?".into(),
+                criteria: vec![("invoice".into(), "A bill".into()), ("other".into(), "Anything else".into())],
+            },
+        );
+        questions.insert("needs_reply".to_string(), Question::Noul { instructions: "Is an answer waited for?".into() });
+        let asked = DecisionRequest { model: "nimble".into(), state: "Your invoice".into(), questions };
+        let client = accounts.client(&id).await.expect("a client");
+        let reply = client.decide(&asked).await.expect("a decision");
+        let (choice, confidence) = reply.choice("category").expect("a choice");
+        assert_eq!(choice, "invoice");
+        assert!((confidence - 0.91).abs() < 0.001);
+        assert!((reply.noul("needs_reply").expect("a noul") - 0.2).abs() < 0.001);
+        assert_eq!(reply.usage.expect("counted").prompt_tokens, 120);
     }
 
     #[tokio::test]

@@ -358,6 +358,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 
@@ -379,6 +380,7 @@ mod tests {
             context: None,
             reasoning: None,
             remote,
+            decision: None,
         }
     }
 

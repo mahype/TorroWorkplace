@@ -306,6 +306,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         }
     }
 

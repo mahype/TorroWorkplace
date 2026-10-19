@@ -49,7 +49,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use torro_core::i18n::{tr, trf};
 use torro_inbox::{Item, LaneReason, Sender, SourceKind, State};
-use torro_mail::{Flag, MailAddress, MessageTraits, Notify, Role};
+use torro_mail::{Flag, MailAddress, MailCategory, MessageTraits, Notify, Role};
 use torro_pim_github::IssueRef;
 
 use super::MailStoreError;
@@ -133,12 +133,52 @@ fn name_part(part: &str) -> bool {
 
 /// Starts the feed of `mail` into `inbox`: listens to the mail service from now on, so call it
 /// before the service syncs ([`MailService::start`]), and works through its changes in a task of
-/// its own. `accounts_file` is `accounts.json`, where each account's `notify` is read when its mail
-/// comes; `None` (no home directory) files nothing. The core calls it once, on its runtime.
-pub fn start(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Option<PathBuf>) {
+/// its own. `accounts_file` is `accounts.json`, where each account's `notify` is read when its
+/// mail comes; `None` (no home directory) files nothing. The core calls it once, on its runtime.
+///
+/// `decide` asks a decision model what new mail is that the fixed rules could not sort (task
+/// E12.6); `None` leaves such mail without a category – exactly what happens when nobody set a
+/// model up.
+pub fn start_with(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Option<PathBuf>, decide: Option<Decider>) {
     let changes = mail.subscribe();
-    tokio::spawn(Feed { inbox, mail, accounts_file }.run(changes));
+    tokio::spawn(Feed { inbox, mail, accounts_file, decide }.run(changes));
 }
+
+/// How long one mail may keep the decision model busy, and how long the run waits before the
+/// next one (task E12.6): a model that hangs must not keep a round of new mail waiting for ever,
+/// and the machine stays usable while it works.
+const DECIDE_TIMEOUT: Duration = Duration::from_secs(60);
+const DECIDE_PAUSE: Duration = Duration::from_millis(250);
+
+/// Asks the model about `messages` of `account`, one at a time, and puts what it says on their
+/// entries too (task E12.6). Runs beside the filing, never in it: the entries are there already,
+/// and the category reaches them as soon as the model answered.
+async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messages: Vec<String>) {
+    for message in messages {
+        let asked = decide(account.clone(), message.clone());
+        let category = match tokio::time::timeout(DECIDE_TIMEOUT, asked).await {
+            Ok(category) => category,
+            Err(_) => {
+                eprintln!("torroworkplace: inbox: the decision model took too long for a mail of {account}");
+                return;
+            }
+        };
+        // The entry of that mail reads alike; the decider already kept the category with the mail.
+        if let Some(category) = category
+            && let Some(entry) = inbox.entry_of_message(&account, &message)
+            && let Err(err) = inbox.set_category(&entry, Some(category))
+        {
+            eprintln!("torroworkplace: inbox: cannot put a category on an entry of {account}: {err}");
+        }
+        tokio::time::sleep(DECIDE_PAUSE).await;
+    }
+}
+
+/// Asks a decision model what the mail `message` of `account` is and keeps the answer with it
+/// (task E12.6); `Ok(None)` when nothing could be said. The core wires `Core::decide_new_mail`
+/// in here, so the feed need not know about AI accounts, assignments or the data rule.
+pub type Decider =
+    Arc<dyn Fn(String, String) -> std::pin::Pin<Box<dyn Future<Output = Option<MailCategory>> + Send>> + Send + Sync>;
 
 /// Marks the mail of `item` read on its server, in the background, when `item` is a mail entry
 /// the inbox just marked done (task E4.1), or a done GitHub entry with GitHub mail filed with it
@@ -399,6 +439,9 @@ pub fn from_mail_line(summary: &torro_mail::MessageSummary) -> String {
 /// The feed: the inbox it files into, the mail service it listens to, and where the accounts'
 /// settings are.
 struct Feed {
+    /// Asks a decision model about mail the fixed rules could not sort (task E12.6); `None`
+    /// leaves such mail without a category.
+    decide: Option<Decider>,
     inbox: Arc<Inbox>,
     mail: Arc<MailService>,
     accounts_file: Option<PathBuf>,
@@ -515,10 +558,48 @@ impl Feed {
                 return;
             }
         };
+        // What the fixed rules make of each mail (task E12.2): kept with the mail, so the list,
+        // the search and the sidebar show it, and put on the entry by `file_mail` as well. Mail
+        // nothing can be said about yet stays without one until a model is asked (task E12.6).
+        let decided: Vec<(String, MailCategory)> = mails
+            .iter()
+            .filter_map(|mail| match self.inbox.mail_category_of(mail) {
+                Ok(Some(category)) => Some((mail.message.clone(), category)),
+                Ok(None) => None,
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot sort the new mail of {account}: {err}");
+                    None
+                }
+            })
+            .collect();
+        let sorted: Vec<String> = decided.iter().map(|(message, _)| message.clone()).collect();
+        if !decided.is_empty()
+            && let Err(err) = store
+                .run(move |store| {
+                    for (message, category) in decided {
+                        store.set_category(&message, Some(category))?;
+                    }
+                    Ok(())
+                })
+                .await
+        {
+            eprintln!("torroworkplace: inbox: cannot keep the category of the new mail of {account}: {err}");
+        }
         for mail in &mails {
             if let Err(err) = self.inbox.file_mail(mail, notify, now) {
                 eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
                 return;
+            }
+        }
+        // What no rule could tell goes to the decision model – **after** the mail is filed, in a
+        // task of its own (task E12.6). New mail must stand in the list at once; a local model
+        // takes seconds per mail, and waiting here would hold up every entry of this round.
+        if let Some(decide) = &self.decide {
+            let undecided: Vec<String> =
+                mails.iter().filter(|mail| !sorted.contains(&mail.message)).map(|mail| mail.message.clone()).collect();
+            if !undecided.is_empty() {
+                let (decide, inbox, owner) = (Arc::clone(decide), Arc::clone(&self.inbox), account.to_string());
+                tokio::spawn(decide_later(decide, inbox, owner, undecided));
             }
         }
     }
@@ -626,6 +707,8 @@ fn mail_to_file(store: &MailStore, account: &str, id: &str) -> Result<Option<New
 /// `message` of `account`, read from `store`, as [`Inbox::file_mail`] files it.
 fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -> Result<NewMail, MailStoreError> {
     let summary = message.summary;
+    // Where it lies decides one category: mail the server put in its junk folder is spam (E12.2).
+    let junk = store.folder_by_role(Role::Junk)?.is_some_and(|folder| folder.id == summary.folder);
     // Only a mail with `X-GitHub-Reason` can be a GitHub mail: the others need no lookup.
     let github = match &message.traits.github {
         Some(_) => {
@@ -645,6 +728,9 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         list: message.traits.list_id.clone(),
         date: summary.date,
         github,
+        invite: summary.invite.is_some(),
+        auto_submitted: message.traits.auto_submitted.clone(),
+        junk,
     })
 }
 
@@ -706,7 +792,7 @@ pub(crate) mod tests {
     async fn fed(dir: &Path, secrets: &MemoryTokens) -> (Arc<Inbox>, Arc<MailService>) {
         let inbox = Arc::new(inbox_in(dir));
         let mail = Arc::new(service_in(dir, secrets));
-        start(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)), None);
         mail.reload().await;
         (inbox, mail)
     }
@@ -721,6 +807,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         match inbox.handle(all, None, Utc::now()) {
             Response::Items { items } => items,
@@ -815,7 +902,7 @@ pub(crate) mod tests {
         let review = crate::inbox::tests::remote(SourceRef::github("anna-berg"), "42", &["101"], Utc::now());
         let github_entry = crate::inbox::tests::filed_remote(&inbox, &review, Utc::now());
         let mail = Arc::new(service_in(dir.path(), &secrets));
-        start(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None);
         mail.reload().await;
 
         eventually("filed", || async { entries(&inbox).len() == 2 }).await;
@@ -940,6 +1027,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } =
             crate::mail::read::answer(&mail, &inbox, Reach::Suite, search).await
@@ -984,6 +1072,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } =
             crate::mail::read::answer(&mail, &inbox, Reach::Suite, search).await
@@ -1007,7 +1096,7 @@ pub(crate) mod tests {
         let until = Utc::now() + TimeDelta::hours(1);
         inbox.handle(Request::SnoozeItem { id: filed[0].clone(), until: Some(until) }, None, Utc::now());
 
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
         let store = mail.store(ANNA).await.expect("the store");
         feed.settle(&store, ANNA, None, Utc::now()).await;
         let items = entries(&inbox);
@@ -1084,6 +1173,7 @@ pub(crate) mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             match core.handle(all).await {
                 Response::Items { items } => items,
@@ -1119,7 +1209,7 @@ pub(crate) mod tests {
         let (inbox, mail) = fed(dir.path(), &secrets).await;
         eventually("filed", || async { entries(&inbox).len() == 1 }).await;
         let file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
         feed.retire(Utc::now()).await;
         assert_eq!(entries(&inbox)[0].state, State::New, "the account syncs: its entry stays");
 
@@ -1155,7 +1245,7 @@ pub(crate) mod tests {
         mail.reload().await;
         eventually("synced", || synced(&mail)).await;
         let file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
 
         feed.catch_up(Utc::now()).await;
         let titles: Vec<String> = entries(&inbox).into_iter().map(|item| item.title).collect();

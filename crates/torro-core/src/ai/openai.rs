@@ -314,6 +314,9 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 context: model.get("context_length").and_then(Value::as_u64),
                 reasoning,
                 remote: None,
+                // Only Ollama says whether a model decides, and it says so per model in
+                // `/api/show`, not in the list (task E12.3).
+                decision: None,
             })
         })
         .collect())
@@ -341,6 +344,13 @@ pub fn ollama_tools(body: &[u8]) -> Option<bool> {
 /// an effort. `None` for an answer without `capabilities`.
 pub fn ollama_thinking(body: &[u8]) -> Option<bool> {
     ollama_capability(body, "thinking")
+}
+
+/// Whether Ollama's `/api/show` answer lists the capability `decision` (task E12.3, Ollama 0.35
+/// and newer): the model decides instead of writing and is asked at `<base>/systemone`
+/// ([`super::systemone`]). `None` for an answer without `capabilities`.
+pub fn ollama_decision(body: &[u8]) -> Option<bool> {
+    ollama_capability(body, "decision")
 }
 
 fn ollama_capability(body: &[u8], name: &str) -> Option<bool> {
@@ -706,7 +716,8 @@ mod tests {
                 open_weights: None,
                 context: None,
                 reasoning: None,
-                remote: None
+                remote: None,
+                decision: None
             }]
         );
         assert!(matches!(parse_models(br#"{"models":[]}"#), Err(AiError::Format(_))));

@@ -103,6 +103,18 @@ pub struct Settings {
     /// the rest of the window. Read leniently, like [`Settings::mail_view`].
     #[serde(default, deserialize_with = "lenient")]
     pub mail_appearance: MailAppearance,
+    /// Which AI account and model each function of the suite uses (task E12.5, `docs/ki.md`
+    /// "Zuordnung je Funktion"), by the function. Only functions a person set up are stored, so a
+    /// new one starts unassigned. Read leniently ([`known_assignments`]): an entry that does not
+    /// fit, or names a function this version does not know, is dropped and never makes the file
+    /// fail.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "known_assignments")]
+    pub ai_assignments: BTreeMap<crate::ai::AiFunction, crate::ai::AiAssignment>,
+    /// The mail categories the sidebar leaves out (task E12.10, `docs/kategorien.md`). Only the
+    /// ones hidden are stored, so a category added later starts shown. A key this version does
+    /// not know is dropped when the file is read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_categories")]
+    pub hidden_categories: Vec<torro_mail::Category>,
     /// The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps
     /// mail with models on the person's own computers; `true` lets it go to models elsewhere
     /// (OpenRouter, a provider's server) as well. Only a person switches it on
@@ -335,6 +347,32 @@ fn lenient<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// The assignments as written (task E12.5), without the functions this version does not know (a
+/// file from a newer one) and without an entry whose value does not fit: one damaged assignment
+/// must not stop the suite from starting.
+fn known_assignments<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<crate::ai::AiFunction, crate::ai::AiAssignment>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let entries = value.as_object().cloned().unwrap_or_default();
+    Ok(entries
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let function = crate::ai::AiFunction::from_key(&key)?;
+            let assignment: crate::ai::AiAssignment = serde_json::from_value(value).ok()?;
+            Some((function, assignment))
+        })
+        .collect())
+}
+
+/// The categories in a list as written (task E12.10), without the keys this version does not
+/// know and without anything that is not a key.
+fn known_categories<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<torro_mail::Category>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let keys = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(keys.iter().filter_map(|key| serde_json::from_value(key.clone()).ok()).collect())
+}
+
 /// The components in a list as written, without the names this version does not know (a file
 /// written by a newer one) and without anything that is not a name.
 fn known_components<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeSet<Component>, D::Error> {
@@ -374,6 +412,8 @@ impl Default for Settings {
             mail_appearance: MailAppearance::default(),
             mail_to_cloud: false,
             reminders: Reminders::default(),
+            ai_assignments: BTreeMap::new(),
+            hidden_categories: Vec::new(),
         }
     }
 }
@@ -1049,6 +1089,40 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Task E12.5: the assignments are read leniently – an entry this version cannot use is
+    /// dropped, the rest of the settings survive.
+    #[test]
+    fn assignments_are_read_leniently() {
+        use crate::ai::{AiAssignment, AiFunction};
+
+        let file = serde_json::json!({
+            "aiAssignments": {
+                "inbox.categorize": {
+                    "function": "inbox.categorize",
+                    "engine": "ai:ollama@localhost:11434",
+                    "model": "nimble",
+                    "enabled": true
+                },
+                "inbox.someday": {"function": "inbox.someday", "engine": "ai:x", "enabled": true},
+                "inbox.categorize.broken": 42
+            },
+            "language": "german"
+        });
+        let settings: super::Settings = serde_json::from_value(file).expect("the file is read");
+        assert_eq!(settings.language, super::Language::German, "the rest of the file survives");
+        assert_eq!(settings.ai_assignments.len(), 1, "only the function this version knows");
+        let kept = settings.ai_assignments.get(&AiFunction::InboxCategorize).expect("the assignment");
+        assert_eq!(kept.engine.as_deref(), Some("ai:ollama@localhost:11434"));
+        assert_eq!(kept.model.as_deref(), Some("nimble"));
+        assert!(kept.is_ready());
+        assert!(!AiAssignment::none(AiFunction::InboxCategorize).is_ready());
+
+        // Nothing stored: no field on the wire at all.
+        let empty = super::Settings::default();
+        let json = serde_json::to_value(&empty).expect("json");
+        assert!(json.get("aiAssignments").is_none(), "an empty map is left out");
+    }
+
     use super::*;
 
     /// A directory under the system temp dir, removed again on drop. torro-core has no
@@ -1237,6 +1311,8 @@ mod tests {
             mail_appearance: MailAppearance::App,
             mail_to_cloud: false,
             reminders: Reminders::default(),
+            ai_assignments: BTreeMap::new(),
+            hidden_categories: Vec::new(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -1385,6 +1461,8 @@ mod tests {
                 sound: ReminderSound::None,
                 ..Reminders::default()
             },
+            ai_assignments: BTreeMap::new(),
+            hidden_categories: Vec::new(),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
