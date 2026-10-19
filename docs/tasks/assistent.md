@@ -556,7 +556,11 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
   `find` nichts findet; `engines/tests.rs` von C.7 bleibt grün; `fmt`, `clippy`, `test` (auch `TORRO_LANG=de`).
 
 ### C.19 Demo-Ansichten ohne Agenten-Antrieb (Issue #219)
-- [ ] erledigt
+- [x] erledigt (die Demo der Steuerzentrale stellt „New chats“ auf das lokale KI-Konto, sonst zeigte
+  sie einen Standard ohne Antrieb; nachgetragen (zwingend mechanisch):
+  `crates/torroassistant/src/app/tests.rs` — zwei Tests (Aufwand je Modell, Standard der
+  Steuerzentrale) holten den Antrieb über `demo::CLAUDE_CODE` aus der Demo und bauen ihn nun selbst,
+  `demo::CLAUDE_CODE` entfällt damit)
 - **Modell:** Haiku · **Braucht:** C.18 · **Dateien:** `crates/torroassistant/src/demo.rs`,
   `crates/torro-settings-ui/src/demo.rs`, `crates/torro-settings-ui/src/assistant/{mod,general}.rs`,
   `crates/torroworkplace/src/ui/launch.rs`

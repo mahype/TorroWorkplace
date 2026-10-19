@@ -727,10 +727,10 @@ pub fn demo_data() -> Data {
         settings: Settings {
             start_at_login: true,
             hidden_collections,
-            // Issue #131: new chats start with Claude Code's Opus, thinking hard.
+            // Issue #131: new chats start with the local account's qwen3, thinking hard.
             assistant_default: Some(torro_core::settings::AssistantDefault {
-                engine: "claude-code".into(),
-                model: Some("opus".into()),
+                engine: "ai:ollama@localhost:11434".into(),
+                model: Some("qwen3:8b".into()),
                 effort: Some(torro_core::ai::Effort::High),
             }),
             ..Settings::default()
@@ -771,18 +771,19 @@ fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
     ]
 }
 
-/// The engines of the demo's assistant (issue #131): the OpenRouter account and Claude Code with
-/// its fixed models, as the core lists them.
+/// The engines of the demo's assistant (issue #131): two AI accounts, one of them with its models,
+/// as the core lists them. No coding agent: they are not offered any more (task C.19, issue #219),
+/// and the demo shows what the product can do.
 fn demo_engines() -> Vec<torro_ipc::assistant::Engine> {
     use torro_ipc::assistant::{Engine, EngineKind};
     let model = |id: &str, name: &str, reasoning: bool| torro_core::ai::AiModel {
         id: id.into(),
         name: name.into(),
         tools: Some(true),
-        open_weights: Some(false),
+        open_weights: Some(true),
         context: None,
         reasoning: Some(reasoning),
-        remote: None,
+        remote: Some(false),
     };
     vec![
         Engine {
@@ -793,11 +794,11 @@ fn demo_engines() -> Vec<torro_ipc::assistant::Engine> {
             models: Vec::new(),
         },
         Engine {
-            id: "claude-code".into(),
-            kind: EngineKind::Agent,
-            name: "Claude Code".into(),
+            id: "ai:ollama@localhost:11434".into(),
+            kind: EngineKind::Ai,
+            name: "Ollama".into(),
             problem: None,
-            models: vec![model("opus", "Opus", true), model("sonnet", "Sonnet", true), model("haiku", "Haiku", false)],
+            models: vec![model("qwen3:8b", "qwen3:8b", true), model("gemma3:4b", "gemma3:4b", false)],
         },
     ]
 }

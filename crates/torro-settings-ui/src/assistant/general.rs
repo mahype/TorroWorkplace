@@ -239,8 +239,11 @@ mod tests {
         let closed = AssistantDefault { model: Some("openai/gpt-5".into()), ..stored.clone() };
         assert_eq!(default_models(&closed, &data)[0].id, "openai/gpt-5", "a stored model shows");
 
-        // An agent brings its own models, each with whether it takes an effort.
-        let agent = data.engines.iter().find(|engine| engine.kind == EngineKind::Agent).expect("the demo has one");
+        // An agent brings its own models, each with whether it takes an effort. The demo offers
+        // no agent any more (task C.19, issue #219), so the test brings its own: the kind stays in
+        // the protocol, so the group must still show one.
+        let agent = super::super::tests::agent_engine();
+        data.engines.push(agent.clone());
         let on_agent = AssistantDefault { engine: agent.id.clone(), model: None, effort: None };
         let ids: Vec<String> = default_models(&on_agent, &data).into_iter().map(|model| model.id).collect();
         assert_eq!(ids, ["opus", "sonnet", "haiku"]);

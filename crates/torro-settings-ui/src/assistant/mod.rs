@@ -310,6 +310,32 @@ mod tests {
         Data { clients: Vec::new(), ..data.clone() }
     }
 
+    /// A coding agent as an engine, with its fixed models (issue #131). The demo offers none since
+    /// task C.19, issue #219 — the product does not — but `EngineKind::Agent` stays in the
+    /// protocol, so the pages must still be able to show one: the tests bring their own.
+    pub(super) fn agent_engine() -> torro_ipc::assistant::Engine {
+        let model = |id: &str, name: &str, reasoning| torro_core::ai::AiModel {
+            id: id.into(),
+            name: name.into(),
+            tools: Some(true),
+            open_weights: None,
+            context: None,
+            reasoning,
+            remote: None,
+        };
+        torro_ipc::assistant::Engine {
+            id: "claude-code".into(),
+            kind: EngineKind::Agent,
+            name: "Claude Code".into(),
+            problem: None,
+            models: vec![
+                model("opus", "Opus", Some(true)),
+                model("sonnet", "Sonnet", Some(true)),
+                model("haiku", "Haiku", Some(false)),
+            ],
+        }
+    }
+
     /// Every section builds its page in every form of the host, on and off, so no layout is left
     /// untried (design skill, section 6).
     #[tokio::test]
@@ -395,8 +421,9 @@ mod tests {
             "the account is asked for its models"
         );
         // An agent brings its models with it; nothing to ask.
-        let agent = data.engines.iter().find(|engine| engine.kind == EngineKind::Agent).expect("the demo has one");
+        let agent = agent_engine();
         let mut on_agent = data.clone();
+        on_agent.engines.push(agent.clone());
         on_agent.settings.assistant_default =
             Some(AssistantDefault { engine: agent.id.clone(), model: None, effort: None });
         assert!(models_request(&on_agent).is_none());

@@ -211,20 +211,21 @@ fn the_picker_offers_only_models_that_can_call_tools() {
 #[test]
 fn the_effort_goes_with_the_message_where_the_model_thinks() {
     let mut app = started(&["--open", "effort"]);
+    also_offered(&mut app, claude_code());
     assert_eq!(app.menu, Some(Menu::Effort));
     assert!(app.effort_offered(), "qwen3:14b thinks");
     let _ = app.update(Message::PickEffort(Some(torro_core::ai::Effort::High)));
     assert_eq!((app.effort, app.menu.as_ref()), (Some(torro_core::ai::Effort::High), None));
 
-    let claude: Vec<String> = match app.offered_models(demo::CLAUDE_CODE) {
+    let claude: Vec<String> = match app.offered_models(CLAUDE_CODE) {
         Some(Ok(models)) => models.into_iter().map(|model| model.id).collect(),
         other => panic!("Claude Code's models are fixed: {other:?}"),
     };
     assert_eq!(claude, ["opus", "sonnet", "haiku"]);
-    let _ = app.update(Message::Pick(Choice { engine: demo::CLAUDE_CODE.into(), model: Some("haiku".into()) }));
+    let _ = app.update(Message::Pick(Choice { engine: CLAUDE_CODE.into(), model: Some("haiku".into()) }));
     assert!(!app.effort_offered(), "Haiku takes no effort");
     assert_eq!(app.offered_effort(), None, "nothing is sent for it");
-    let _ = app.update(Message::Pick(Choice { engine: demo::CLAUDE_CODE.into(), model: Some("opus".into()) }));
+    let _ = app.update(Message::Pick(Choice { engine: CLAUDE_CODE.into(), model: Some("opus".into()) }));
     sent(&mut app);
     let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Plan".into())))));
     let _ = app.update(Message::Send);
@@ -278,14 +279,15 @@ fn the_permission_mode_goes_with_the_message_and_stays_with_the_conversation() {
 #[test]
 fn a_new_chat_starts_with_the_default_of_the_control_centre() {
     let mut app = started(&[]);
+    also_offered(&mut app, claude_code());
     let default = AssistantDefault {
-        engine: demo::CLAUDE_CODE.into(),
+        engine: CLAUDE_CODE.into(),
         model: Some("sonnet".into()),
         effort: Some(torro_core::ai::Effort::Low),
     };
     let settings = Settings { assistant_default: Some(default), ..Settings::default() };
     let _ = app.update(Message::Settings(Ok(settings)));
-    assert_eq!(app.choice, Some(Choice { engine: demo::CLAUDE_CODE.into(), model: Some("sonnet".into()) }));
+    assert_eq!(app.choice, Some(Choice { engine: CLAUDE_CODE.into(), model: Some("sonnet".into()) }));
     assert_eq!(app.effort, Some(torro_core::ai::Effort::Low));
 }
 
@@ -522,6 +524,38 @@ fn enter_sends_and_shift_enter_breaks_the_line() {
     };
     assert!(matches!(composer_binding(press(Modifiers::empty())), Some(Binding::Custom(Message::Send))));
     assert!(matches!(composer_binding(press(Modifiers::SHIFT)), Some(Binding::Enter)));
+}
+
+/// A coding agent as an engine, with its fixed models (issue #131). The demo offers none since
+/// task C.19, issue #219 — the product does not — but `EngineKind::Agent` stays in the protocol,
+/// so the window must still be able to show one: the tests bring their own.
+fn claude_code() -> Engine {
+    let model = |id: &str, name: &str, reasoning: bool| torro_core::ai::AiModel {
+        id: id.into(),
+        name: name.into(),
+        tools: Some(true),
+        open_weights: Some(false),
+        context: None,
+        reasoning: Some(reasoning),
+        remote: None,
+    };
+    Engine {
+        id: CLAUDE_CODE.into(),
+        kind: EngineKind::Agent,
+        name: "Claude Code".into(),
+        problem: None,
+        models: vec![model("opus", "Opus", true), model("sonnet", "Sonnet", true), model("haiku", "Haiku", false)],
+    }
+}
+
+/// The engine id of a coding agent, as `assistant.send_message` takes it.
+const CLAUDE_CODE: &str = "claude-code";
+
+/// `app` with `engine` added to what the core listed, as a later listing would bring it.
+fn also_offered(app: &mut App, engine: Engine) {
+    let mut engines = app.engines.clone();
+    engines.push(engine);
+    let _ = app.update(Message::Engines(Ok(engines)));
 }
 
 #[test]
