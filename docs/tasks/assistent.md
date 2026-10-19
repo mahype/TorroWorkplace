@@ -156,7 +156,8 @@ KI.1b ── KI.1c ── KI.1d (Anbieter Anthropic, Issue #218) parallel ab KI.
   `TORRO_LANG=de cargo test --workspace`.
 
 ### KI.1d Anthropic in Accounts › Add › AI (Issue #218)
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung per Screenshot nicht möglich: `shoot.sh` braucht Hyprland, die Sitzung lief auf
+  macOS — steht auf der Handprüfliste des PRs)
 - **Modell:** Sonnet · **Braucht:** KI.1c · **Dateien:** `crates/torroworkplace/src/ui/setup/pages.rs`,
   `crates/torroworkplace/src/ui/wizard.rs`
 - In `pages.rs` steht die Gruppe „Providers“ von Hand: Anthropic kommt dort an die erste Stelle, vor `OpenAi`.
