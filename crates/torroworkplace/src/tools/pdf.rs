@@ -100,7 +100,8 @@ impl std::error::Error for PdfError {}
 /// - Markdown: headings, paragraphs, bold, italic (set upright), struck through, code and code blocks, nested
 ///   lists, tables (column widths from the longest cell, alignment from the Markdown), quotes, rules, links
 ///   (`http`, `https`, `mailto`; clickable) and `\pagebreak` alone on a line. Raw HTML and pictures fall away,
-///   their text stays; other links stay text.
+///   their text stays; other links stay text. Quotes and lists nest [`MAX_NESTING`] levels deep, bold, italic,
+///   struck through and links as many inside each other; deeper ones go on flat (items as lines with their marker).
 /// - `title` becomes the document's title and `{title}` in header and footer; `{date}` is `date` in the suite's
 ///   language. The page number reads "Page 1 of 3" in that language, right in the footer.
 /// - `logo`: a PNG or JPEG of at most [`MAX_LOGO_BYTES`], drawn on the right of the header of every page. Anything
@@ -220,6 +221,13 @@ enum Piece<'a> {
 /// At most this many links are clickable: each needs a colour of its own ([`link_colour`]). Later links stay text.
 const MAX_LINKS: usize = 256;
 
+/// At most this many quotes and lists nest as markup, and as many inline tags (bold, italic, struck through,
+/// links) inside each other; deeper levels go on flat, their text stays. azul-layout recurses once per level of the
+/// HTML, so a document nested hundreds of levels deep would overflow the stack of the blocking thread and end the
+/// service. And it lays out the content of nested flex rows again and again: from about 8 levels on, each further
+/// one doubles the time a page of text takes (16 levels: minutes).
+const MAX_NESTING: usize = 6;
+
 fn body_html(markdown: &str) -> Body {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     let pieces = with_page_breaks(Parser::new_ext(markdown, options));
@@ -323,8 +331,12 @@ struct Writer<'a> {
     kept: Vec<Event<'a>>,
     /// The addresses of the clickable links, in the order of their colours.
     links: Vec<String>,
-    /// Whether each open link became clickable, so its end matches.
-    open_links: Vec<bool>,
+    /// Whether each open bold, italic, struck through or link became markup, so its end matches (a link only when
+    /// it is clickable, any of them only within [`MAX_NESTING`]).
+    inline: Vec<bool>,
+    /// Whether each open quote and list became markup, so its end (and a list's items) match: only within
+    /// [`MAX_NESTING`].
+    blocks: Vec<bool>,
     /// The next number of each open list (`None` for bullets).
     lists: Vec<Option<u64>>,
     /// Width in percent and alignment of each column of the open table.
@@ -345,43 +357,63 @@ impl<'a> Writer<'a> {
             Event::Text(_) | Event::Code(_) | Event::SoftBreak | Event::HardBreak | Event::Rule => {
                 self.kept.push(event.clone())
             }
-            Event::Start(Tag::Paragraph | Tag::Heading { .. } | Tag::Strikethrough)
-            | Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Strikethrough | TagEnd::CodeBlock) => {
-                self.kept.push(event.clone())
-            }
+            Event::Start(Tag::Paragraph | Tag::Heading { .. })
+            | Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::CodeBlock) => self.kept.push(event.clone()),
             // Without the info string: it would only become a class name.
             Event::Start(Tag::CodeBlock(_)) => self.kept.push(Event::Start(Tag::CodeBlock(CodeBlockKind::Indented))),
-            Event::Start(Tag::Strong) => self.markup("<span class=\"strong\">"),
-            Event::Start(Tag::Emphasis) => self.markup("<span class=\"em\">"),
-            Event::End(TagEnd::Strong | TagEnd::Emphasis) => self.markup("</span>"),
+            Event::Start(Tag::Strikethrough) => {
+                if self.open_inline(true) {
+                    self.kept.push(event.clone());
+                }
+            }
+            Event::End(TagEnd::Strikethrough) => {
+                if self.inline.pop().unwrap_or(false) {
+                    self.kept.push(event.clone());
+                }
+            }
+            Event::Start(Tag::Strong) => {
+                if self.open_inline(true) {
+                    self.markup("<span class=\"strong\">");
+                }
+            }
+            Event::Start(Tag::Emphasis) => {
+                if self.open_inline(true) {
+                    self.markup("<span class=\"em\">");
+                }
+            }
             Event::Start(Tag::Link { link_type, dest_url, .. }) => self.open_link(*link_type, dest_url),
-            Event::End(TagEnd::Link) => {
-                if self.open_links.pop().unwrap_or(false) {
+            Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Link) => {
+                if self.inline.pop().unwrap_or(false) {
                     self.markup("</span>");
                 }
             }
             Event::Start(Tag::List(first)) => {
                 self.lists.push(*first);
-                self.markup("<div class=\"list\">");
+                if self.open_block() {
+                    self.markup("<div class=\"list\">");
+                }
             }
             Event::End(TagEnd::List(_)) => {
                 self.lists.pop();
-                self.markup("</div>\n");
+                if self.blocks.pop().unwrap_or(false) {
+                    self.markup("</div>\n");
+                }
             }
-            Event::Start(Tag::Item) => {
-                let marker = match self.lists.last_mut() {
-                    Some(Some(number)) => {
-                        let marker = format!("{number}.");
-                        *number += 1;
-                        marker
-                    }
-                    _ => "•".to_string(),
-                };
-                self.markup(format!("<div class=\"item\"><div class=\"marker\">{marker}</div><div class=\"content\">"));
+            Event::Start(Tag::Item) => self.open_item(),
+            Event::End(TagEnd::Item) => {
+                if self.blocks.last().copied().unwrap_or(false) {
+                    self.markup("</div></div>\n");
+                }
             }
-            Event::End(TagEnd::Item | TagEnd::BlockQuote(_)) => self.markup("</div></div>\n"),
             Event::Start(Tag::BlockQuote(_)) => {
-                self.markup("<div class=\"quote\"><div class=\"bar\"></div><div class=\"content\">")
+                if self.open_block() {
+                    self.markup("<div class=\"quote\"><div class=\"bar\"></div><div class=\"content\">");
+                }
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                if self.blocks.pop().unwrap_or(false) {
+                    self.markup("</div></div>\n");
+                }
             }
             Event::Start(Tag::Table(alignments)) => {
                 self.columns =
@@ -413,6 +445,42 @@ impl<'a> Writer<'a> {
         }
     }
 
+    /// Opens a quote or list: whether it becomes markup, which it does only within [`MAX_NESTING`].
+    fn open_block(&mut self) -> bool {
+        let nested = self.blocks.iter().filter(|markup| **markup).count();
+        let markup = nested < MAX_NESTING;
+        self.blocks.push(markup);
+        markup
+    }
+
+    /// Opens an inline tag that `wanted` to become markup: whether it does, which it does only within
+    /// [`MAX_NESTING`].
+    fn open_inline(&mut self, wanted: bool) -> bool {
+        let nested = self.inline.iter().filter(|markup| **markup).count();
+        let markup = wanted && nested < MAX_NESTING;
+        self.inline.push(markup);
+        markup
+    }
+
+    /// An item of the open list: a marker beside its content, or, in a list too deep for markup, a line of its own
+    /// that starts with the marker.
+    fn open_item(&mut self) {
+        let marker = match self.lists.last_mut() {
+            Some(Some(number)) => {
+                let marker = format!("{number}.");
+                *number += 1;
+                marker
+            }
+            _ => "•".to_string(),
+        };
+        if self.blocks.last().copied().unwrap_or(false) {
+            self.markup(format!("<div class=\"item\"><div class=\"marker\">{marker}</div><div class=\"content\">"));
+        } else {
+            self.kept.push(Event::HardBreak);
+            self.kept.push(Event::Text(CowStr::Boxed(format!("{marker} ").into_boxed_str())));
+        }
+    }
+
     /// A link becomes clickable only with `http`, `https` or `mailto`; otherwise its text stays plain. Its address
     /// never reaches the HTML: the link gets a colour of its own, found again after the layout.
     fn open_link(&mut self, link_type: LinkType, dest_url: &str) {
@@ -421,9 +489,9 @@ impl<'a> Writer<'a> {
             _ => dest_url.to_string(),
         };
         let lower = target.to_ascii_lowercase();
-        let allowed = ["http://", "https://", "mailto:"].iter().any(|scheme| lower.starts_with(scheme))
+        let wanted = ["http://", "https://", "mailto:"].iter().any(|scheme| lower.starts_with(scheme))
             && self.links.len() < MAX_LINKS;
-        self.open_links.push(allowed);
+        let allowed = self.open_inline(wanted);
         if allowed {
             let (red, green) = link_colour(self.links.len());
             self.links.push(target);
@@ -1116,6 +1184,67 @@ mod tests {
         assert!(body.html.contains("width: 73%; text-align: left"), "{}", body.html);
         assert!(body.html.contains("width: 14%; text-align: right"), "{}", body.html);
         assert_eq!(body.html.matches("class=\"row").count(), 2, "head and one row");
+    }
+
+    /// Markdown nested `depth` levels deep in every way that nests: quotes, lists, both mixed, a table at the
+    /// bottom of a list, and emphasis, struck through and links inside each other.
+    fn deep_documents(depth: usize) -> Vec<(&'static str, String)> {
+        let quotes = format!("{} tief unten", ">".repeat(depth));
+        let bullets = format!("{}tief unten", "- ".repeat(depth));
+        let numbers = format!("{}tief unten", "1. ".repeat(depth));
+        // A list first: with `> - ` 500 times, the last line ends exactly at the foot of page 11, and azul-layout
+        // drops a line there under six closing levels (a gap of its paging, not of the nesting).
+        let mixed = format!("{}tief unten", "- > ".repeat(depth / 2));
+        let table = format!(
+            "{}| A | B |\n{}|---|---|\n{}| tief | unten |",
+            "- ".repeat(depth),
+            "  ".repeat(depth),
+            "  ".repeat(depth)
+        );
+        let emphasis = format!("{}tief unten{}", "*a **b ~~c ".repeat(depth / 3), " c~~ b** a*".repeat(depth / 3));
+        let links =
+            format!("{}tief unten{}", "[*x ".repeat(depth / 2), " x*](https://torro.example)".repeat(depth / 2));
+        vec![
+            ("quotes", quotes),
+            ("bullets", bullets),
+            ("numbers", numbers),
+            ("mixed", mixed),
+            ("table", table),
+            ("emphasis", emphasis),
+            ("links", links),
+        ]
+    }
+
+    #[test]
+    fn deep_nesting_sets_a_pdf_on_a_small_stack() {
+        // A blocking thread of tokio has 2 MiB of stack; azul-layout recurses once per level of the HTML, so a deep
+        // document must not reach it as deep markup, or the whole service dies of a stack overflow.
+        let worker = std::thread::Builder::new().stack_size(2 * 1024 * 1024).spawn(|| {
+            for (kind, markdown) in deep_documents(1000) {
+                let pdf = read(&set(&markdown, &report()));
+                let text = pdf.all();
+                assert!(text.contains("tief") && text.contains("unten"), "{kind}: the text stays: {text}");
+            }
+        });
+        worker.expect("a thread").join().expect("no panic");
+    }
+
+    #[test]
+    fn markup_nests_at_most_a_few_levels() {
+        for (kind, markdown) in deep_documents(1000) {
+            let html = body_html(&markdown).html;
+            let mut depth = 0usize;
+            let mut deepest = 0usize;
+            for tag in html.split('<').skip(1) {
+                if tag.starts_with('/') {
+                    depth = depth.saturating_sub(1);
+                } else if !tag.starts_with("br") && !tag.starts_with("hr") {
+                    depth += 1;
+                    deepest = deepest.max(depth);
+                }
+            }
+            assert!(deepest <= 3 * MAX_NESTING + 8, "{kind}: {deepest} levels");
+        }
     }
 
     #[test]
