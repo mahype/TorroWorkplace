@@ -2792,7 +2792,10 @@ E12.10 braucht E12.5 und E12.6
   `crate::assistant::model::tests::Scripted`) unverändert bauen und die Schnittstelle object-safe
   bleibt. `OpenAiCompatible` setzt sie: `POST <base>/systemone` (die Basis endet schon auf `/v1`),
   nur für `AiProvider::Ollama` – jeder andere Anbieter behält die Vorgabe, weil nur Ollama das
-  Protokoll spricht.
+  Protokoll spricht. **Nachgetragen 2026-10-19 nach dem Rebase auf #218:** Es gibt inzwischen drei
+  echte Implementierungen – `OpenAiCompatible`, `Anthropic` und der Verteiler `AiClient`. `Anthropic`
+  behält die Vorgabe; `AiClient` **reicht `decide` an die gewählte Implementierung durch**, sonst
+  käme der Aufruf nie bei Ollama an.
 - **Nachzuziehen:** der Doc-Kommentar oben in `ai/mod.rs` nennt bisher nur Chat; er bekommt einen
   Absatz über Entscheidermodelle. `crates/torro-ipc` ist nicht betroffen (nachgesehen:
   `AiModel` wird dort nur weitergereicht) – das Feld erscheint mit E12.4 im Katalogtext.
