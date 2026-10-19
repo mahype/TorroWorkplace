@@ -2932,6 +2932,14 @@ pub fn category_pill<'a, M: 'a>(
         .into()
 }
 
+/// The small mark of a mail's category for a row of the list (task E12.8): the group's icon in
+/// the group's colour, `edge` wide. The words belong in its tooltip – a row's marks are icons, so
+/// the whole pill ([`category_pill`]) stays for the reader and the card, where there is room.
+pub fn category_mark<'a, M: 'a>(which: Icon, group: usize, edge: f32) -> Element<'a, M> {
+    let at = group.min(3);
+    icon(which, edge).style(move |t, _| svg::Style { color: Some(palette(t).category[at]) }).into()
+}
+
 /// The icon of a category group in its own colour ([`category_pill`]).
 fn group_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
     icon(which, pill_icon()).style(move |t, _| svg::Style { color: Some(palette(t).category[group]) }).into()

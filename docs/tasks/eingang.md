@@ -3057,7 +3057,21 @@ E12.10 braucht E12.5 und E12.6
   dunkel angesehen (Bilder im Bericht). `scripts/design-check.sh` sauber. Übersetzungen im Bericht.
 
 ### E12.8 Mail-Fenster: Pille, Seitenleiste, Kategorie ändern
-- [ ] erledigt
+- [x] erledigt (2026-10-19): Pille im Leser-Kopf, im Paneel und auf der Karte; in der Zeile das
+  Gruppen-Icon in der Gruppenfarbe mit der Kategorie als Tooltip (Abweichung: die Marken einer
+  Zeile sind laut ihrem Doc-Kommentar kleine Icons, eine 90-px-Pille sprengt Mittel und Schmal);
+  Seitenleisten-Gruppe „Categories" mit vier aufklappbaren Gruppen in ihren Farben; Menü
+  „Category…" nach Gruppen gegliedert und scrollbar, danach „Always for this sender?"; Knopf
+  „Re-categorize" nur mit zugeordnetem Modell; `MailSource` um vier Methoden erweitert, Demo-Mail
+  mit Kategorien aus allen vier Gruppen.
+  **Sichtprüfung steht aus:** Der Agent `torro-design-review` konnte auf dieser Maschine keine
+  Screenshots machen (macOS ohne Hyprland, `screencapture` verweigert den Bildschirmzugriff). Sein
+  Urteil kam aus Code und Kontrastrechnung; acht Muss-Funde sind behoben (Pille im Leser fehlte,
+  23-Zeilen-Menü ohne Gruppen und ohne Scrollen, unerreichbare Untereinträge, „Re-categorize" ohne
+  Modell, Icon-Kollision mit den Ordner-Icons, fehlender Eintrag im Zeilenmenü, zerschnittene
+  Doc-Kommentare, Demo ohne Beleg-Gruppe). Offen aus dem Review: kein Lade-Zustand während des
+  Modellaufrufs, das Menü hängt am Lane-Anker statt an der Pille, und die Zahl der Gruppe zählt
+  Ungelesene, während die Liste alle zeigt.
 - **Modell:** Opus · **Braucht:** E12.4, E12.7 · **Dateien:**
   `crates/torroinbox/src/{app,list,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Skill `torro-design` laden. Nicht parallel zu E9.2, E9.3b oder E12.9.

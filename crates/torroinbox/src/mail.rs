@@ -71,13 +71,15 @@ use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
+use torro_ipc::inbox::CategoryInfo;
 use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget};
 use torro_ipc::{Request, Response};
 use torro_mail::{
-    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Order, Role,
+    AttachmentInfo, CategoryGroup, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory, Message as Mail,
+    MessageSummary, Order, Role,
 };
 
 use crate::app::{INBOX, Message, View};
@@ -107,6 +109,36 @@ pub trait MailSource: Send + Sync {
         cursor: Option<String>,
         order: Order,
     ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// `inbox.list_categories`: the catalogue of mail categories with how much unread mail each
+    /// one holds (task E12.8). The sidebar builds its group "Categories" from it.
+    fn list_categories(&self) -> impl Future<Output = Result<Vec<CategoryInfo>, InboxError>> + Send;
+
+    /// `inbox.get_categorization`: whether a decision model is set up for sorting mail (task
+    /// E12.8). Only then does the reader offer "Re-categorize".
+    fn categorization_ready(&self) -> impl Future<Output = Result<bool, InboxError>> + Send;
+
+    /// `mail.search_messages` filtered by `categories` (task E12.8): the mail of every account
+    /// that is of one of them, newest first, at most `limit` from `cursor` on.
+    fn search_by_category(
+        &self,
+        categories: Vec<torro_mail::Category>,
+        limit: u32,
+        cursor: Option<String>,
+        order: Order,
+    ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
+
+    /// `inbox.set_item_category`: files the mail `id` under `category` by hand; with `remember`
+    /// later mail of its sender too (task E12.8). Returns the entry as it stands now.
+    fn set_mail_category(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> impl Future<Output = Result<Item, InboxError>> + Send;
+
+    /// `inbox.classify_item`: asks the decision model what the mail `id` is, again (task E12.8).
+    fn classify_mail(&self, id: String) -> impl Future<Output = Result<Item, InboxError>> + Send;
 
     /// `mail.get_message` with its text and – asked with `include_html` (task M9.3) – its cleaned
     /// HTML, which the panel and the reader draw (task M9.7, [`shows_html`]). Its text only when
@@ -226,6 +258,38 @@ impl MailSource for InboxClient {
         InboxClient::mail_folders(self).await
     }
 
+    async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
+        InboxClient::list_categories(self).await
+    }
+
+    async fn categorization_ready(&self) -> Result<bool, InboxError> {
+        Ok(InboxClient::categorization(self).await?.enabled)
+    }
+
+    async fn search_by_category(
+        &self,
+        categories: Vec<torro_mail::Category>,
+        limit: u32,
+        cursor: Option<String>,
+        order: Order,
+    ) -> Result<MailPage, InboxError> {
+        let (messages, next) = InboxClient::search_by_category(self, categories, limit, cursor, order).await?;
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn set_mail_category(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> Result<Item, InboxError> {
+        InboxClient::set_mail_category(self, id, category, remember).await
+    }
+
+    async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
+        InboxClient::classify_mail(self, id).await
+    }
+
     async fn search_mail(
         &self,
         folder: String,
@@ -308,6 +372,48 @@ impl MailSource for InboxClient {
 impl MailSource for DemoSource {
     async fn mail_folders(&self) -> Result<Vec<Folder>, InboxError> {
         DemoSource::mail_folders(self)
+    }
+
+    async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
+        Ok(DemoSource::category_counts(self)
+            .into_iter()
+            .map(|(category, unread)| CategoryInfo {
+                category,
+                group: category.group(),
+                label: torro_core::category::label(category).to_string(),
+                group_label: torro_core::category::group_label(category.group()).to_string(),
+                unread,
+            })
+            .collect())
+    }
+
+    /// The demo has no AI account, so it offers no "Re-categorize".
+    async fn categorization_ready(&self) -> Result<bool, InboxError> {
+        Ok(false)
+    }
+
+    async fn search_by_category(
+        &self,
+        categories: Vec<torro_mail::Category>,
+        limit: u32,
+        _cursor: Option<String>,
+        order: Order,
+    ) -> Result<MailPage, InboxError> {
+        Ok(MailPage::of(DemoSource::by_category(self, &categories, limit, order), None))
+    }
+
+    async fn set_mail_category(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        _remember: bool,
+    ) -> Result<Item, InboxError> {
+        DemoSource::set_mail_category(self, &id, category)
+    }
+
+    async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
+        // The demo has no model: it answers what the mail already says.
+        DemoSource::classified(self, &id)
     }
 
     async fn search_mail(
@@ -434,6 +540,37 @@ impl MailSource for crate::empty::EmptySource {
         Ok(Vec::new())
     }
 
+    async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
+        Ok(Vec::new())
+    }
+
+    async fn categorization_ready(&self) -> Result<bool, InboxError> {
+        Ok(false)
+    }
+
+    async fn search_by_category(
+        &self,
+        _categories: Vec<torro_mail::Category>,
+        _limit: u32,
+        _cursor: Option<String>,
+        _order: Order,
+    ) -> Result<MailPage, InboxError> {
+        Ok(MailPage::of(Vec::new(), None))
+    }
+
+    async fn set_mail_category(
+        &self,
+        _id: String,
+        _category: torro_mail::Category,
+        _remember: bool,
+    ) -> Result<Item, InboxError> {
+        Err(InboxError::Unsupported)
+    }
+
+    async fn classify_mail(&self, _id: String) -> Result<Item, InboxError> {
+        Err(InboxError::Unsupported)
+    }
+
     async fn search_mail(
         &self,
         _folder: String,
@@ -504,6 +641,42 @@ impl MailSource for crate::empty::EmptySource {
 
     async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
         Ok(Vec::new())
+    }
+}
+
+/// What the sidebar's group "Categories" shows (task E12.8): a whole group of mail categories, or
+/// one category of it. Both list the mail of every account's inbox that is of one of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryView {
+    /// The group, which gives the entry its icon and its colour.
+    pub group: CategoryGroup,
+    /// One category of the group, or `None` for the whole group.
+    pub only: Option<torro_mail::Category>,
+}
+
+impl CategoryView {
+    /// The categories this view lists: the one chosen, else every one of the group.
+    pub fn categories(&self) -> Vec<torro_mail::Category> {
+        match self.only {
+            Some(category) => vec![category],
+            None => self.group.categories(),
+        }
+    }
+
+    /// What a person reads for it.
+    pub fn label(&self) -> String {
+        match self.only {
+            Some(category) => torro_core::category::label(category).to_string(),
+            None => torro_core::category::group_label(self.group).to_string(),
+        }
+    }
+
+    /// Which listing its messages belong to, so one view's page is never shown as another's.
+    pub fn listing(&self) -> String {
+        match self.only {
+            Some(category) => format!("category:{}", category.key()),
+            None => format!("category-group:{}", self.group.key()),
+        }
     }
 }
 
@@ -1129,6 +1302,8 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 /// `list::edge_actions`) – and holds what its card offers ([`message_buttons`]), the bell last.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
+    // What the mail is (task E12.8), before the other marks: it says most about the row.
+    marks.extend(message.category.map(category_mark));
     // An invitation (task E8.3b): its time and the answers stand on its card and in the reader.
     marks.extend(message.invite.as_ref().map(|invite| invite_mark(invite, data.now)));
     if message.has_attachments {
@@ -1183,6 +1358,8 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
 /// mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut chips = Vec::new();
+    // What the mail is (task E12.8): the whole pill, where the card has room for it.
+    chips.extend(message.category.map(category_pill));
     if let Some(invite) = &message.invite {
         chips.extend(invite_chips(invite, data.now));
     }
@@ -1432,8 +1609,42 @@ pub(crate) fn invite_chips<'a>(invite: &Invite, now: DateTime<Utc>) -> Vec<Eleme
     chips
 }
 
-/// The mark of an invitation in a row's first line, with its width: the calendar's icon, "Invitation ·
-/// Tue 20 Oct · 12:00–13:00" as tooltip. Rows of folder messages and of entries (task E8.3c) alike.
+/// The icon and the place in `Palette::category` of a category's group (task E12.8): one icon
+/// per group, never per category – 23 would not be told apart (`docs/kategorien.md`). The icons
+/// are deliberately not the folder icons (`folder_icon`): "Inbox" the folder and "Waiting for
+/// me" the group stand in the same sidebar.
+pub(crate) fn group_mark(group: CategoryGroup) -> (Icon, usize) {
+    match group {
+        CategoryGroup::WaitingForMe => (Icon::UserCheck, 0),
+        CategoryGroup::PaperTrail => (Icon::TextQuote, 1),
+        CategoryGroup::Info => (Icon::Info, 2),
+        CategoryGroup::Junk => (Icon::ShieldAlert, 3),
+    }
+}
+
+/// What a person reads for `held` beside the pill: the category, and that a model guessed it.
+pub(crate) fn category_words(held: MailCategory) -> String {
+    let label = torro_core::category::label(held.category);
+    if held.is_suggestion() { trf("{category} · suggested", &[("category", &label)]) } else { label.to_string() }
+}
+
+/// The small mark of a mail's category for a row (task E12.8): the group's icon in its colour,
+/// the words in the tooltip. The whole pill goes where there is room – the reader and the card.
+pub(crate) fn category_mark<'a>(held: MailCategory) -> (Element<'a, Message>, f32) {
+    let (mark, group) = group_mark(held.category.group());
+    let pill = widgets::category_mark(mark, group, icon::SIZE_SM);
+    (widgets::with_tooltip(pill, category_words(held)), icon::SIZE_SM)
+}
+
+/// The whole pill of a mail's category, for the reader and the card (task E12.8).
+pub(crate) fn category_pill<'a>(held: MailCategory) -> Element<'a, Message> {
+    let (mark, group) = group_mark(held.category.group());
+    widgets::category_pill(mark, group, torro_core::category::label(held.category), held.is_suggestion())
+}
+
+/// The mark of an invitation in a row's first line, with its width: the calendar's icon,
+/// "Invitation · Tue 20 Oct · 12:00–13:00" as tooltip. Rows of folder messages and of entries
+/// (task E8.3c) alike.
 pub(crate) fn invite_mark<'a>(invite: &Invite, now: DateTime<Utc>) -> (Element<'a, Message>, f32) {
     let tip = trf("Invitation · {when}", &[("when", &invite_when(invite, now))]);
     (widgets::with_tooltip(small_icon(Icon::Calendar, None), tip), icon::SIZE_SM)
@@ -1609,6 +1820,10 @@ pub struct Reading<'a> {
     pub attention: Color,
     /// The message lies in the trash: it is not deleted again from here.
     pub in_trash: bool,
+    /// A decision model is set up for sorting mail (task E12.8, `inbox.get_categorization`):
+    /// only then does the reader offer "Re-categorize". Without an AI the function is simply not
+    /// there (`docs/ki.md`, principle 1).
+    pub deciding: bool,
     /// Show the date under the sender; an entry's panel says when already ("Properties").
     pub dated: bool,
     /// The text in the reading level (`typo::read()`, task E8.3): the comfortable density of the
@@ -2105,6 +2320,12 @@ fn head_with<'a>(
             }
             None => sender,
         });
+        // What the mail is (task E12.8), right under who sent it: the whole pill, with the
+        // suggestion mark when a model guessed it (`docs/ki.md`, principle 5). Also in the panel,
+        // which draws this head without the subject.
+        if let Some(held) = summary.category {
+            head = head.push(widgets::chip_row(vec![category_pill(held)]));
+        }
     }
     head = head.push(pill_row(pills(reading, entry), anchors));
     // What the mail invites to, with its answers (task E8.3b), and the task made of it (task E8.7b).
@@ -2183,6 +2404,7 @@ pub struct Pill {
 /// issue #123) – the core suggests and makes events from entries only. Each sends what its button
 /// sent before (task E9.4), so requests and keys stay the same.
 pub fn pills(reading: &Reading<'_>, entry: Option<ReaderEntry<'_>>) -> Vec<Pill> {
+    let deciding = reading.deciding;
     let pill = |icon, label: &str, message| Pill { icon, label: label.to_owned(), message: Some(message), tip: None };
     let Some(ReaderEntry { item, hide, ai }) = entry else {
         let id = || reading.id.to_owned();
@@ -2204,6 +2426,21 @@ pub fn pills(reading: &Reading<'_>, entry: Option<ReaderEntry<'_>>) -> Vec<Pill>
         pill(Icon::CalendarPlus, tr("Event"), Message::AskEvent(id())),
         ai_event,
     ];
+    // What the mail is (task E12.8): change it by hand, or let the model look again. Only mail
+    // has a category, and only there do the two make sense.
+    if item.source.kind == torro_inbox::SourceKind::Mail {
+        pills.push(pill(Icon::Tag, tr("Category…"), Message::AskCategory(id())));
+        // Only with a decision model set up: without one the button could do nothing but show an
+        // error, and a function without an AI simply is not there (`docs/ki.md`, principle 1).
+        if deciding {
+            pills.push(Pill {
+                icon: Icon::Sparkles,
+                label: tr("Re-categorize").to_owned(),
+                message: Some(Message::Reclassify(id())),
+                tip: None,
+            });
+        }
+    }
     if hide {
         pills.push(pill(Icon::BellOff, tr("Mute…"), Message::AskHide(id())));
     }
@@ -2322,7 +2559,13 @@ pub fn more_menu<'a>(reading: &Reading<'_>, entry: Option<&Item>, close: bool) -
         };
         let lane = crate::app::other_lane(item.lane);
         let move_to = MenuItem::new(crate::app::lane_icon(lane), lane_word(lane), Message::AskLane(item.id.clone()));
-        sections.push(MenuSection::new(vec![finish.trail(Trail::Kbd("E")), move_to.trail(Trail::Kbd("L"))]));
+        let mut entries = vec![finish.trail(Trail::Kbd("E")), move_to.trail(Trail::Kbd("L"))];
+        // What the mail is, also reachable without the reader (task E12.8): in Compact and in the
+        // narrow window the pills are not there.
+        if item.source.kind == torro_inbox::SourceKind::Mail {
+            entries.push(MenuItem::new(Icon::Tag, tr("Category…"), Message::AskCategory(item.id.clone())));
+        }
+        sections.push(MenuSection::new(entries));
     }
     if close {
         let close = MenuItem::new(Icon::X, tr("Close"), Message::CloseDetail).trail(Trail::Kbd("Esc"));
@@ -2839,6 +3082,7 @@ mod tests {
             text: &text,
             attention: Color::BLACK,
             in_trash: false,
+            deciding: false,
             dated: true,
             read: true,
             account: Some(0),
@@ -2931,7 +3175,7 @@ mod tests {
                 menu_words(&more),
                 [
                     vec![flag.to_owned(), read.to_owned()],
-                    vec![tr("Done").to_owned(), move_to.clone()],
+                    vec![tr("Done").to_owned(), move_to.clone(), tr("Category…").to_owned()],
                     vec![tr("Close").to_owned()]
                 ]
             );
@@ -2941,9 +3185,13 @@ mod tests {
             assert!(matches!(sent[1], Message::Mail(MailAction::Read(_), id) if id == "m:w1"));
             assert!(matches!(sent[2], Message::SetDone(id, true) if *id == item.id));
             assert!(matches!(sent[3], Message::AskLane(id) if *id == item.id));
-            assert!(matches!(sent[4], Message::CloseDetail));
+            assert!(matches!(sent[4], Message::AskCategory(id) if *id == item.id), "task E12.8");
+            assert!(matches!(sent[5], Message::CloseDetail));
             let keys: Vec<Trail> = more.iter().flat_map(|section| section.items.iter().map(|i| i.trail)).collect();
-            assert_eq!(keys, [Trail::None, Trail::None, Trail::Kbd("E"), Trail::Kbd("L"), Trail::Kbd("Esc")]);
+            assert_eq!(
+                keys,
+                [Trail::None, Trail::None, Trail::Kbd("E"), Trail::Kbd("L"), Trail::None, Trail::Kbd("Esc")]
+            );
             // A folder's message: the mail's own entries and Close; the panel (task E11.4) has its ✕.
             let folder = more_menu(reading, None, true);
             assert_eq!(menu_words(&folder), [vec![flag.to_owned(), read.to_owned()], vec![tr("Close").to_owned()]]);
@@ -2963,18 +3211,29 @@ mod tests {
         let words = |pills: &[Pill]| pills.iter().map(|pill| pill.label.clone()).collect::<Vec<_>>();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let all = pills(reading, Some(ReaderEntry { item: &item, hide: true, ai: true }));
-            assert_eq!(words(&all), [tr("Task"), tr("AI task"), tr("Event"), tr("AI event"), tr("Mute…")]);
+            // Task E12.8 adds "Category…" before "Mute…"; "Re-categorize" only with a model
+            // set up (`docs/ki.md`, principle 1), and this reading has none.
+            assert_eq!(
+                words(&all),
+                [tr("Task"), tr("AI task"), tr("Event"), tr("AI event"), tr("Category…"), tr("Mute…")]
+            );
+            let last = all.len() - 1;
+            assert!(matches!(all[last - 1].message.as_ref(), Some(Message::AskCategory(id)) if *id == item.id));
             let sent = |n: usize| all[n].message.as_ref();
             assert!(matches!(sent(0), Some(Message::AskTask(id)) if *id == item.id));
             assert!(matches!(sent(1), Some(Message::SuggestTask(id)) if *id == item.id));
             assert!(matches!(sent(2), Some(Message::AskEvent(id)) if *id == item.id));
             assert!(matches!(sent(3), Some(Message::SuggestEvent(id)) if *id == item.id));
-            assert!(matches!(sent(4), Some(Message::AskHide(id)) if *id == item.id));
+            assert!(matches!(sent(5), Some(Message::AskHide(id)) if *id == item.id));
             assert!(all.iter().all(|pill| pill.tip.is_none()), "on, no tooltip of their own");
             let anchors = detail::Anchors::default();
             let _ = pill_row(all.clone(), &anchors);
             let quiet = pills(reading, Some(ReaderEntry { item: &item, hide: false, ai: false }));
-            assert_eq!(words(&quiet), [tr("Task"), tr("AI task"), tr("Event"), tr("AI event")], "no bell");
+            assert_eq!(
+                words(&quiet),
+                [tr("Task"), tr("AI task"), tr("Event"), tr("AI event"), tr("Category…")],
+                "no bell"
+            );
             let tip = |wanted| Some(crate::suggest::tooltip(wanted, false));
             assert!(quiet[1].message.is_none() && quiet[1].tip == tip(crate::suggest::Wanted::Task));
             assert!(quiet[3].message.is_none() && quiet[3].tip == tip(crate::suggest::Wanted::Event));
@@ -3232,6 +3491,7 @@ mod tests {
                         text: &text,
                         attention: Color::BLACK,
                         in_trash: false,
+                        deciding: false,
                         dated: true,
                         read,
                         account: Some(0),

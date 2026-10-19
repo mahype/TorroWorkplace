@@ -39,7 +39,8 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 use torro_mail::{
-    AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Order, Role,
+    AttachmentInfo, Category, Draft, Flag, Folder, MailAddress, MailCategory, Message, MessageSummary, MessageTraits,
+    Order, Role,
 };
 
 use crate::item::{
@@ -565,6 +566,9 @@ struct Letter {
     pictures: &'static [&'static str],
     /// Sent to a list or by a machine (`List-Id`): the inbox files it under "Info".
     bulk: bool,
+    /// What the mail is (task E12.8), as the demo pretends a model or a rule decided; `None`:
+    /// nothing said about it, so the sidebar's group shows how that reads too.
+    category: Option<MailCategory>,
 }
 
 impl Letter {
@@ -584,6 +588,7 @@ impl Letter {
             html: None,
             pictures: &[],
             bulk: false,
+            category: None,
         }
     }
 }
@@ -642,7 +647,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             has_attachments: files > 0,
             invite: None,
             back: None,
-            category: None,
+            category: letter.category,
             untrusted: true,
         },
         cc: Vec::new(),
@@ -779,6 +784,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
                    The details are in the attached sheet and on the intranet:\n\
                    https://intranet.work.example.org/budget/q4\n\nThanks,\nJonas",
             attachments: &[("budget-q4.csv", "text/csv", 2_340)],
+            category: Some(MailCategory::by_model(Category::Request, 0.88)),
             ..Letter::new("m:w1", WORK, "inbox", "Budget review for Q4")
         },
         Letter {
@@ -802,6 +808,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             bulk: true,
             text: "New issue #212 in torro/workplace: the sidebar flickers when the window is resized.\n\n\
                    View it on GitHub: https://github.example/torro/workplace/issues/212",
+            category: Some(MailCategory::by_model(Category::Task, 0.72)),
             ..Letter::new("m:w3", WORK, "inbox", "[torro/workplace] Sidebar flickers on resize (#212)")
         },
         Letter {
@@ -816,6 +823,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             minutes: 2 * 24 * 60,
             flags: READ_FLAGGED,
             text: "On Saturday from 08:00 to 12:00 the mail and file servers are down for maintenance.",
+            category: Some(MailCategory::by_model(Category::ServiceNotice, 0.93)),
             ..Letter::new("m:w5", WORK, "inbox", "Planned maintenance on Saturday")
         },
         Letter {
@@ -824,6 +832,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             flags: READ,
             text: "Here are the minutes from Monday. Open points are at the end.",
             attachments: &[("minutes-monday.txt", "text/plain", 1_180)],
+            category: Some(MailCategory::by_model(Category::Document, 0.84)),
             ..Letter::new("m:w6", WORK, "inbox", "Minutes from Monday")
         },
         Letter {
@@ -857,6 +866,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Prize Center", "winner@prizes.example"),
             minutes: 20 * 60,
             text: "You have won! Claim your prize now at http://prizes.example/claim before it expires.",
+            category: Some(MailCategory::by_rule(Category::Spam)),
             ..Letter::new("m:w11", WORK, "junk", "You have won a prize")
         },
         Letter {
@@ -871,6 +881,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Paul Berg", "paul@example.org"),
             minutes: 50,
             text: "Are we still on for the hike on Saturday? The weather looks good. I can pick you up at nine.",
+            category: Some(MailCategory::by_model(Category::Personal, 0.81)),
             ..Letter::new("m:p1", PRIVATE, "inbox", "Weekend plans")
         },
         Letter {
@@ -883,6 +894,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             text: "Autumn sale: 20% off all jackets until Sunday.\n\nShop now: https://shop.example/sale\n\n\
                    Rain jacket: 89 € (was 111 €)\nDown jacket: 159 € (was 199 €)\n\n\
                    Unsubscribe: https://shop.example/unsubscribe",
+            category: Some(MailCategory::by_model(Category::Promotion, 0.96)),
             ..Letter::new("m:p2", PRIVATE, "inbox", "Autumn sale: 20% off")
         },
         Letter {
@@ -1041,6 +1053,80 @@ impl DemoSource {
                 Folder { unread, total, ..folder.clone() }
             })
             .collect())
+    }
+
+    /// How much unread demo mail each category holds (task E12.8): what the window turns into
+    /// the answer of `inbox.list_categories`. Pairs, not the wire type – `torro-ipc` depends on
+    /// this crate, not the other way round.
+    pub fn category_counts(&self) -> Vec<(Category, u32)> {
+        let data = self.lock();
+        Category::ALL
+            .into_iter()
+            .map(|category| {
+                let unread = data
+                    .mail
+                    .iter()
+                    .filter(|m| !m.summary.flags.contains(&Flag::Seen))
+                    .filter(|m| m.summary.category.is_some_and(|held| held.category == category))
+                    .count() as u32;
+                (category, unread)
+            })
+            .collect()
+    }
+
+    /// `mail.search_messages` filtered by `categories` (task E12.8): the demo's mail of one of
+    /// them, newest first.
+    pub fn by_category(&self, categories: &[Category], limit: u32, order: Order) -> Vec<MessageSummary> {
+        let data = self.lock();
+        let mut found: Vec<MessageSummary> = data
+            .mail
+            .iter()
+            .filter(|m| m.summary.category.is_some_and(|held| categories.contains(&held.category)))
+            .map(|m| m.summary.clone())
+            .collect();
+        found.sort_by_key(|m| m.date);
+        if order == Order::NewestFirst {
+            found.reverse();
+        }
+        found.truncate(limit as usize);
+        found
+    }
+
+    /// `inbox.set_item_category` (task E12.8): files the demo's mail `id` by hand.
+    pub fn set_mail_category(&self, id: &str, category: Category) -> Result<Item, InboxError> {
+        self.put_category(id, MailCategory::by_person(category))
+    }
+
+    /// `inbox.classify_item` in the demo: there is no model, so the mail keeps what it has, or
+    /// becomes "other" when it has nothing.
+    pub fn classified(&self, id: &str) -> Result<Item, InboxError> {
+        let held = {
+            let data = self.lock();
+            data.mail
+                .iter()
+                .find(|m| m.summary.id == id)
+                .and_then(|m| m.summary.category)
+                .unwrap_or(MailCategory::by_model(Category::Other, 0.5))
+        };
+        self.put_category(id, held)
+    }
+
+    /// Puts `held` on the demo's mail `id` and on the entry that holds it, and gives that entry
+    /// back; [`InboxError::NotFound`] for mail the demo does not have.
+    fn put_category(&self, id: &str, held: MailCategory) -> Result<Item, InboxError> {
+        let mut data = self.lock();
+        let message = data.mail.iter_mut().find(|m| m.summary.id == id).ok_or(InboxError::NotFound)?;
+        message.summary.category = Some(held);
+        let thread = message.summary.thread_id.clone();
+        let entry = data
+            .items
+            .iter_mut()
+            .find(|item| {
+                item.thread_key == thread || matches!(&item.link, Some(Link::Mail { message }) if message == id)
+            })
+            .ok_or(InboxError::NotFound)?;
+        entry.category = Some(held);
+        Ok(entry.clone())
     }
 
     /// `mail.search_messages` in the folder `folder`, in `order` by date: those holding every word of

@@ -3850,6 +3850,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("category|Spam", "Unerwünscht"),
     ("category|Phishing", "Betrug"),
     ("category|Other", "Sonstiges"),
+    // The mail window's categories (E12.8).
+    ("Categories", "Kategorien"),
+    ("Category", "Kategorie"),
+    ("Category…", "Kategorie…"),
+    ("Re-categorize", "Neu einordnen"),
+    ("Only this mail", "Nur diese E-Mail"),
+    ("Always for {sender}", "Immer für {sender}"),
+    ("File as {category}", "Ablegen als {category}"),
+    ("{category} · suggested", "{category} · Vorschlag"),
+    ("Couldn't change the category.", "Die Kategorie konnte nicht geändert werden."),
+    ("No mail of this kind.", "Keine E-Mails dieser Art."),
+    ("Mail sorted into it shows up here.", "Hier erscheinen E-Mails, die so eingeordnet wurden."),
     // The Rules page of the Notification Hub shows a kept category too (E12.2).
     ("Filed as “{category}”", "Abgelegt als „{category}“"),
     ("Filed {n} since {day}", "{n} abgelegt seit {day}"),

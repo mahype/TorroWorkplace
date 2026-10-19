@@ -346,7 +346,8 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     let selected = rows.selected == Some(item.id.as_str());
     let content = if item.source.kind == SourceKind::Mail {
         // An invitation (task E8.3c): the calendar's mark before the time, as in a folder's row.
-        let marks = item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)).into_iter().collect();
+        let mut marks: Vec<(Element<'a, Message>, f32)> = item.category.map(mail::category_mark).into_iter().collect();
+        marks.extend(item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)));
         mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width)
     } else {
         notice_content(item, rows, width)
@@ -789,7 +790,8 @@ pub fn entry_card_buttons<'a>(
 /// The chips of a mail entry's card: when its invitation is, with the answer given (task E8.3c,
 /// `mail::invite_chips`), and the number of messages from two on.
 fn entry_chips<'a>(item: &Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
-    let mut chips = item.invite.as_ref().map(|invite| mail::invite_chips(invite, now)).unwrap_or_default();
+    let mut chips: Vec<Element<'a, Message>> = item.category.map(mail::category_pill).into_iter().collect();
+    chips.extend(item.invite.as_ref().map(|invite| mail::invite_chips(invite, now)).unwrap_or_default());
     if item.count > 1 {
         chips.push(widgets::state_pill(Icon::Mail, trf("{n} messages", &[("n", &item.count)])));
     }
@@ -1491,6 +1493,8 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_) => {
             (tr("No messages here."), tr("Mail in this folder shows up here."))
         }
+        // Task E12.8: a category the person filtered by holds nothing at the moment.
+        View::Category(_) => (tr("No mail of this kind."), tr("Mail sorted into it shows up here.")),
     }
 }
 

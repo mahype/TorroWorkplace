@@ -189,11 +189,11 @@ use torro_inbox::{
     InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef, State,
     StateFilter, rules,
 };
-use torro_ipc::inbox::{CalendarEvent, EventFields};
+use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields};
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
-use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
+use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
 use torro_settings_ui::{
     Backend as SettingsBackend, Host, Outcome, Page, Section, host, inbox as settings_inbox, mail as settings_mail,
 };
@@ -995,6 +995,9 @@ pub enum View {
     /// The smart view "Invitations" of the mail window (task E8.3b): the messages of every account's
     /// inbox that invite to an event not over yet, the soonest first (`mail::invitations`).
     Invitations,
+    /// A group of mail categories or one category of it (task E12.8, `docs/kategorien.md`): the
+    /// mail of every account's inbox that is of one of them, newest first. `mail.*` only.
+    Category(mail::CategoryView),
     /// A search of mail (issue #136, the field over the list): the messages found, a page at a
     /// time, by relevance or by date; `mail.*` only.
     Search(SearchView),
@@ -1011,7 +1014,12 @@ impl View {
             View::Snoozed => (None, None, StateFilter::Snoozed),
             View::Done => (None, None, StateFilter::Done),
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
-            View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_) => return None,
+            View::Folder(_)
+            | View::Mail
+            | View::Attachments
+            | View::Invitations
+            | View::Category(_)
+            | View::Search(_) => return None,
         };
         // "Done" shows what was done for real: a dismissed entry is simply gone (issue #117), its
         // toast's undo the only way back.
@@ -1032,6 +1040,7 @@ impl View {
             View::Mail => tr("Mail").into(),
             View::Attachments => tr("With attachments").into(),
             View::Invitations => tr("Invitations").into(),
+            View::Category(view) => view.label(),
             View::Search(_) => tr("Search").into(),
         }
     }
@@ -1048,6 +1057,7 @@ impl View {
             View::Mail => Icon::Mail,
             View::Attachments => Icon::Paperclip,
             View::Invitations => Icon::Calendar,
+            View::Category(view) => mail::group_mark(view.group).0,
             View::Search(_) => Icon::Search,
         }
     }
@@ -1063,7 +1073,10 @@ impl View {
     /// A view of mail: a folder, a smart view, a search, or a window of mail waiting for its
     /// folders.
     pub fn is_mail(&self) -> bool {
-        matches!(self, View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_))
+        matches!(
+            self,
+            View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Category(_) | View::Search(_)
+        )
     }
 
     /// The search this view shows, if it is one.
@@ -1081,6 +1094,7 @@ impl View {
             View::Folder(folder) => Some(folder.id.clone()),
             View::Attachments => Some("attachments".to_owned()),
             View::Invitations => Some("invitations".to_owned()),
+            View::Category(view) => Some(view.listing()),
             // One listing for every search: the results before stay while the next ones come, so
             // typing does not flash "loading" (issue #136).
             View::Search(_) => Some("search".to_owned()),
@@ -1102,6 +1116,11 @@ pub enum Menu {
     Pick,
     /// The lane question of `App::subject`: only this entry, or always for its source.
     Lane,
+    /// "Category ▸" for `App::subject` (task E12.8): the categories to file its mail under,
+    /// grouped as the catalogue is.
+    Category,
+    /// After one was picked: only this mail, or always for its sender (task E12.8).
+    CategoryAlways,
     /// The dialog that makes a task of `App::subject` (task E3.5).
     Task,
     /// The dialog that makes an event of `App::subject` (task E8.5b).
@@ -1778,6 +1797,11 @@ pub struct Loaded {
     /// The folders of the mail accounts, for the sidebar (task E4.2); empty without mail, and
     /// when they could not be read – the entries still show then.
     pub folders: Vec<Folder>,
+    /// The catalogue of mail categories with their unread counts (task E12.8); empty outside the
+    /// mail window and when the core could not be asked – the sidebar then leaves the group out.
+    pub categories: Vec<CategoryInfo>,
+    /// A decision model is set up for sorting mail (task E12.8).
+    pub model_ready: bool,
     /// The messages of a folder's view: its first page (as many as were listed before, when the
     /// view is loaded again). `None` in the other views.
     pub mail: Option<MailPage>,
@@ -2005,6 +2029,9 @@ pub struct App<S> {
     column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
     subject: Option<Item>,
+    /// The category picked in "Category ▸" while the question "Always for this sender?" stands
+    /// (task E12.8); `None` at every other time.
+    picked_category: Option<torro_mail::Category>,
     /// The message "Move to folder" or the question "Delete permanently?" is for (task E10.1).
     mail_subject: Option<String>,
     /// The day and time in the picker of "Pick…".
@@ -2060,6 +2087,15 @@ pub struct App<S> {
     invite_events: Option<(String, Result<Vec<CalendarEvent>, String>)>,
     /// The folders of the mail accounts (task E4.2), as last loaded.
     folders: Vec<Folder>,
+    /// The catalogue of mail categories with how much unread mail each holds (task E12.8,
+    /// `inbox.list_categories`): what the sidebar's group "Categories" is built from. Empty
+    /// until the core answered, and in every window that is not the mail window.
+    categories: Vec<CategoryInfo>,
+    /// The groups of "Categories" the person opened, so their categories are listed under them.
+    open_groups: std::collections::BTreeSet<CategoryGroup>,
+    /// A decision model is set up for sorting mail (task E12.8, `inbox.get_categorization`):
+    /// only then does the reader offer "Re-categorize".
+    model_ready: bool,
     /// The messages of the folder's view, newest first; the cursor and the panel name them by id.
     messages: Vec<MessageSummary>,
     /// The cursor of the folder's next page; `None` on its last page.
@@ -2231,6 +2267,18 @@ pub enum Message {
     /// From the panel: move the entry with this id to the other lane (asking first where a rule
     /// is possible).
     AskLane(String),
+    /// "Category ▸" on a mail (task E12.8): opens the list of categories.
+    AskCategory(String),
+    /// Folds a group of "Categories" in the sidebar open or shut (task E12.8).
+    ToggleCategoryGroup(CategoryGroup),
+    /// One category picked: the question "Always for this sender?" follows.
+    PickCategory(torro_mail::Category),
+    /// Files the mail `id` under the category; with `remember` later mail of its sender too.
+    SetCategory(String, torro_mail::Category, bool),
+    /// "Re-categorize" in the reader: asks the decision model again.
+    Reclassify(String),
+    /// What came back from filing or re-asking: the entry, or why it did not work.
+    Categorized(Box<Result<Item, String>>),
     /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
     /// with an undo.
     AskMute(String),
@@ -2580,6 +2628,8 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
             info: 0,
             sources: Vec::new(),
             folders: Vec::new(),
+            categories: Vec::new(),
+            model_ready: false,
             mail: view.listing().map(|_| MailPage::of(Vec::new(), None)),
             snoozed: Vec::new(),
             done: Vec::new(),
@@ -2629,6 +2679,11 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
     let folders = inbox.mail_folders().await.unwrap_or_default();
+    // The catalogue for the sidebar's group "Categories" (task E12.8); only the mail window
+    // shows it, and a core that cannot answer simply leaves the group out.
+    let categories = if folders.is_empty() { Vec::new() } else { inbox.list_categories().await.unwrap_or_default() };
+    // Whether a decision model is set up, so the reader offers "Re-categorize" only then.
+    let model_ready = !folders.is_empty() && inbox.categorization_ready().await.unwrap_or(false);
     let mut found = None;
     let mail = match &view {
         View::Folder(folder) => {
@@ -2665,6 +2720,12 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
             }
             Some(MailPage::of(mail::invitations(pages, demo.unwrap_or_else(Utc::now)), None))
         }
+        // A group of categories or one of them (task E12.8): the mail of every account that is
+        // of one of them, newest first – the core filters, the window only names them.
+        View::Category(view) => {
+            let page = inbox.search_by_category(view.categories(), limit, None, order).await.map_err(failed)?;
+            Some(page)
+        }
         _ => None,
     };
     // "Coming back" (task E8.5) and "Handed off" (task E8.7b) beside the hub's "Act now".
@@ -2676,7 +2737,21 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         ),
         _ => (Vec::new(), Vec::new(), None),
     };
-    Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet, found })
+    Ok(Loaded {
+        order,
+        items,
+        for_me,
+        info,
+        sources,
+        folders,
+        categories,
+        model_ready,
+        mail,
+        snoozed,
+        done,
+        quiet,
+        found,
+    })
 }
 
 impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static> App<S> {
@@ -2690,6 +2765,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             suite,
             settings: None,
             opened: false,
+            categories: Vec::new(),
+            open_groups: std::collections::BTreeSet::new(),
+            model_ready: false,
+            picked_category: None,
             offset,
             now: Utc::now() + offset,
             size: torro_gui::window(INBOX).size,
@@ -3117,6 +3196,42 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.menu_at = MenuAt::Panel;
                 return self.ask_lane(&id);
             }
+            Message::ToggleCategoryGroup(group) => {
+                if !self.open_groups.remove(&group) {
+                    self.open_groups.insert(group);
+                }
+            }
+            Message::AskCategory(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_category(&id);
+            }
+            // One category picked: ask whether it holds for this sender from now on (E12.8).
+            Message::PickCategory(category) => {
+                self.picked_category = Some(category);
+                self.menu = Some(Menu::CategoryAlways);
+            }
+            Message::SetCategory(id, category, remember) => {
+                self.menu = None;
+                self.picked_category = None;
+                let inbox = Arc::clone(&self.inbox);
+                return Task::perform(
+                    async move { inbox.set_mail_category(id, category, remember).await.map_err(|err| err.to_string()) },
+                    |result| Message::Categorized(Box::new(result)),
+                );
+            }
+            Message::Reclassify(id) => {
+                self.menu = None;
+                let inbox = Arc::clone(&self.inbox);
+                return Task::perform(
+                    async move { inbox.classify_mail(id).await.map_err(|err| err.to_string()) },
+                    |result| Message::Categorized(Box::new(result)),
+                );
+            }
+            // The entry came back with its category; the list and the sidebar's counts follow.
+            Message::Categorized(result) => match *result {
+                Ok(_) => return self.load(),
+                Err(err) => self.error = Some(Failure::new(tr("Couldn't change the category."), err)),
+            },
             Message::AskMute(id) => return self.ask_mute(&id),
             // The bell of the notifications window's panel and of mail (task E8.6b, issue #123), "…"
             // of the others.
@@ -4636,6 +4751,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.info = loaded.info;
         self.sources = loaded.sources;
         self.folders = loaded.folders;
+        self.categories = loaded.categories;
+        self.model_ready = loaded.model_ready;
         let page = loaded.mail.unwrap_or(MailPage::of(Vec::new(), None));
         self.messages = page.messages;
         for message in &mut self.messages {
@@ -4857,7 +4974,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
     fn focus(&self) -> Focus {
         match self.menu {
-            Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move) => Focus::Choices,
+            Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move | Menu::Category | Menu::CategoryAlways) => {
+                Focus::Choices
+            }
             Some(Menu::DeleteForGood) => Focus::Question,
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
@@ -5141,6 +5260,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// Moves the entry with `id` to the other lane. Where a rule is possible ([`rules_allowed`])
     /// the lane question opens first ("Only this entry" / "Always for …").
+    /// The sender's address of a mail entry, for the question "Always for …" (task E12.8).
+    fn mail_sender_of(item: &Item) -> Option<String> {
+        torro_inbox::rules::mail_sender(item)
+    }
+
+    /// "Category ▸" (task E12.8): the categories to file this mail under. Only mail has one.
+    fn ask_category(&mut self, id: &str) -> Task<Message> {
+        let Some(item) = self.find(id).cloned() else { return Task::none() };
+        if item.source.kind != torro_inbox::SourceKind::Mail {
+            return Task::none();
+        }
+        self.drawer = false;
+        self.picked_category = None;
+        self.subject = Some(item);
+        self.menu = Some(Menu::Category);
+        Task::none()
+    }
+
     fn ask_lane(&mut self, id: &str) -> Task<Message> {
         let Some(item) = self.find(id).cloned() else { return Task::none() };
         if !rules_allowed(&item.source) {
@@ -6085,6 +6222,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     choice(Icon::Repeat, always, edit(true)),
                 ]
             }
+            // The categories are grouped by `App::category_menu`, which builds its own entries.
+            Some(Menu::Category) => Vec::new(),
+            Some(Menu::CategoryAlways) => {
+                let Some(category) = self.picked_category else { return Vec::new() };
+                let edit = |remember| Message::SetCategory(id(), category, remember);
+                let sender = Self::mail_sender_of(item).unwrap_or_else(|| item.source.label().to_string());
+                let always = trf("Always for {sender}", &[("sender", &sender)]);
+                let mark = mail::group_mark(category.group()).0;
+                vec![
+                    choice(mark, tr("Only this mail").to_owned(), edit(false)),
+                    choice(Icon::Repeat, always, edit(true)),
+                ]
+            }
             Some(Menu::Hide) => self.hide_choices(item),
             Some(Menu::Mute) => self.mute_choices(item),
             _ => Vec::new(),
@@ -6482,6 +6632,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 });
                 Some(widgets::floating(&lane_at, below, self.choice_menu(title), Message::CloseMenu))
             }
+            // "Category ▸" and the question that follows it (task E12.8).
+            Some(Menu::Category) => Some(widgets::floating(&lane_at, below, self.category_menu(), Message::CloseMenu)),
+            Some(Menu::CategoryAlways) => {
+                let title = self
+                    .picked_category
+                    .map(|category| trf("File as {category}", &[("category", &torro_core::category::label(category))]))
+                    .unwrap_or_default();
+                Some(widgets::floating(&lane_at, below, self.choice_menu(title), Message::CloseMenu))
+            }
             Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(&task_at, dialog, self.task_dialog(), Message::CloseMenu)),
             Some(Menu::Event) => Some(widgets::floating(&event_at, dialog, self.event_dialog(), Message::CloseMenu)),
@@ -6761,6 +6920,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             text: &self.text,
             attention: colours.attention_text,
             in_trash: self.in_trash(&letter.id),
+            deciding: self.model_ready,
             dated: self.view.is_mail(),
             read: self.look().cards(),
             account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
@@ -7063,6 +7223,58 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
+    /// The group "Categories" of the mail window's sidebar (task E12.8, `docs/kategorien.md`):
+    /// one entry per group of categories with the unread mail it holds, and under an open group
+    /// its categories – only those that occur, so the sidebar shows what is there and nothing
+    /// else.
+    ///
+    /// The whole group is left out until at least one mail has a category: before that it would
+    /// be four empty rows.
+    fn category_entries(&self) -> Vec<NavEntry> {
+        if self.launch.kind != Kind::Mail || self.categories.is_empty() {
+            return Vec::new();
+        }
+        let mut entries = Vec::new();
+        for group in CategoryGroup::ALL {
+            let of_group: Vec<&CategoryInfo> = self.categories.iter().filter(|held| held.group == group).collect();
+            let unread: u32 = of_group.iter().map(|held| held.unread).sum();
+            let view = View::Category(mail::CategoryView { group, only: None });
+            let open = self.open_groups.contains(&group);
+            // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
+            // four colours are learnt.
+            let (mark, at) = mail::group_mark(group);
+            entries.push(NavEntry {
+                mark: Mark::Tinted(mark, self.category_colour(at)),
+                label: torro_core::category::group_label(group).to_string(),
+                count: (unread > 0).then_some(unread as usize),
+                active: view == self.view,
+                view,
+                target: Target::Fold(group),
+            });
+            if !open {
+                continue;
+            }
+            // Only the categories that occur: an empty one would be a dead row.
+            for held in of_group.into_iter().filter(|held| held.unread > 0) {
+                let view = View::Category(mail::CategoryView { group, only: Some(held.category) });
+                entries.push(NavEntry {
+                    mark: Mark::Tinted(mail::group_mark(group).0, self.category_colour(at)),
+                    label: held.label.clone(),
+                    count: Some(held.unread as usize),
+                    active: view == self.view,
+                    view,
+                    target: Target::View,
+                });
+            }
+        }
+        entries
+    }
+
+    /// The colour of the category group at `at` in `Palette::category` (task E12.8).
+    fn category_colour(&self, at: usize) -> iced::Color {
+        palette(&self.theme()).category[at.min(3)]
+    }
+
     /// The folders of the mail accounts by account (task E4.2), for the sidebar and the menu: one
     /// group titled "Mail" with a single account, else one per account titled with its address,
     /// as the calendars group by account. A folder counts its unread messages where that is news
@@ -7126,6 +7338,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !smart.is_empty() {
             items.push(widgets::sidebar_group_in(mode, tr("Smart views"), None));
             items.extend(smart.into_iter().map(row));
+        }
+        // What the mail is (task E12.8): the four groups, with the categories of an open one
+        // under it. The group appears only once at least one mail has a category.
+        let categories = self.category_entries();
+        if !categories.is_empty() {
+            items.push(widgets::sidebar_group_in(mode, tr("Categories"), None));
+            items.extend(categories.into_iter().map(row));
         }
         // The notifications window lists no mail (task E8.4), but "This window shows": its sources
         // to switch on and off, expanded only (the rail has no room for names; the chips stand in).
@@ -7197,6 +7416,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !smart.is_empty() {
             sections.push(MenuSection::titled(tr("Smart views"), smart.into_iter().map(item).collect()));
         }
+        let categories = self.category_entries();
+        if !categories.is_empty() {
+            sections.push(MenuSection::titled(tr("Categories"), categories.into_iter().map(item).collect()));
+        }
         // A menu has no folding: every account is a section named after it, with all its folders
         // only while one of them is shown (or for a single account), else its inbox alone – the
         // drawer unfolds the rest. So the menu fits a window of ordinary height. The narrow mail
@@ -7228,6 +7451,44 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     ///
     /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
     /// domains of "Hide from Notification Hub" show whole.
+    /// "Category ▸" (task E12.8): the catalogue by its four groups, each under its own caption,
+    /// and scrollable – 23 choices in one flat list are taller than a medium window.
+    fn category_menu<'a>(&self) -> Element<'a, Message> {
+        let choices = self.choices();
+        let width = choice_menu_width(&choices);
+        let mut list = column![menu_caption(tr("Category"))];
+        let mut at = 0;
+        for group in CategoryGroup::ALL {
+            let of_group: Vec<torro_mail::Category> =
+                group.categories().into_iter().filter(|c| !c.by_rule_only()).collect();
+            if of_group.is_empty() {
+                continue;
+            }
+            list = list.push(menu_caption(torro_core::category::group_label(group)));
+            for category in of_group {
+                let mark = mail::group_mark(group).0;
+                let words = torro_core::category::label(category).to_owned();
+                let choice = Choice {
+                    icon: mark,
+                    label: words,
+                    when: None,
+                    message: Message::PickCategory(category),
+                    line: false,
+                };
+                list = list.push(choice_entry(choice, keys::digit(at + 1), KeyLook::Kbd, width));
+                at += 1;
+            }
+        }
+        // The window's own height, less the room a floating menu keeps around itself.
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
+        container(iced::widget::container(body).max_height(tallest))
+            .width(width)
+            .padding(style::MENU_INSET)
+            .style(style::container::menu)
+            .into()
+    }
+
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
         let choices = self.choices();
         let width = choice_menu_width(&choices);
@@ -7692,6 +7953,9 @@ enum Target {
     ToSort,
     /// The hub's Insights (task E8.8b): what the inbox counted, not a view of entries.
     Insights,
+    /// A group of mail categories that folds open and shut (task E12.8): a click lists its
+    /// categories under it instead of showing the group.
+    Fold(CategoryGroup),
 }
 
 impl NavEntry {
@@ -7701,6 +7965,7 @@ impl NavEntry {
             Target::View => Message::Show(self.view.clone()),
             Target::ToSort => Message::ShowToSort,
             Target::Insights => Message::ShowInsights,
+            Target::Fold(group) => Message::ToggleCategoryGroup(group),
         }
     }
 

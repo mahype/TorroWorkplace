@@ -563,6 +563,76 @@ fn unexpected(response: Response) -> InboxError {
     InboxError::Other(format!("unexpected answer: {response:?}"))
 }
 
+impl InboxClient {
+    /// `inbox.list_categories` (task E12.8): the catalogue with how much unread mail each
+    /// category holds, over every account this window may read.
+    pub async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
+        match self.ask(Request::ListCategories { account: None }).await? {
+            Response::Categories { categories } => Ok(categories),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.search_messages` filtered by `categories` (task E12.8), over every account.
+    pub async fn search_by_category(
+        &self,
+        categories: Vec<torro_mail::Category>,
+        limit: u32,
+        cursor: Option<String>,
+        order: Order,
+    ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
+        let request = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+            order: asked(order),
+            sort: None,
+            snoozed: None,
+            categories,
+        };
+        match self.ask(request).await? {
+            Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.get_categorization` (task E12.8): how the sorting of mail by a model stands.
+    pub async fn categorization(&self) -> Result<Categorization, InboxError> {
+        match self.ask(Request::GetCategorization).await? {
+            Response::Categorization { categorization } => Ok(categorization),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.set_item_category` (task E12.8): files the mail by hand, and with `remember` keeps
+    /// it for its sender.
+    pub async fn set_mail_category(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> Result<Item, InboxError> {
+        match self.ask(Request::SetItemCategory { id, category, remember }).await? {
+            Response::ItemCategory { item, .. } => Ok(item),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.classify_item` (task E12.8): asks the decision model again.
+    pub async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
+        match self.ask(Request::ClassifyItem { id }).await? {
+            Response::ItemCategory { item, .. } => Ok(item),
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
 impl InboxSource for InboxClient {
     /// `inbox.list_items` with the fields of `filter`; the core sorts, wakes and cuts.
     async fn list_items(&self, filter: ItemFilter) -> Result<Vec<Item>, InboxError> {
