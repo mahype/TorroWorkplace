@@ -7,9 +7,10 @@
 //! The inbox is three entries (task E8.1): its mail window, its notifications window and its hub,
 //! one binary `torroinbox` with three window classes. All three are installed or none.
 //!
-//! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task: [`Target`] reads what the
-//! request names, the core looks it up, and [`target_command`] builds the command line from what it
-//! found ([`Opened`]), never from the target's text.
+//! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task, and (task WZ.8) a new mail
+//! with a file of the tools' register attached: [`Target`] reads what the request names, the core
+//! looks it up, and [`target_command`] builds the command line from what it found ([`Opened`]),
+//! never from the target's text.
 //!
 //! [`Listener`] is the one app the core keeps running itself: the voice listener
 //! `torroassistant --listen` (task C.9), started while the setting `voice.enabled` is on and
@@ -267,16 +268,29 @@ pub enum Target<'a> {
     Mail { account: &'a str, message_id: &'a str },
     /// `task:<uid>`: a task by its iCalendar UID.
     Task { uid: &'a str },
+    /// `file:<id>`: a file of the tools' register (issue #225), by its id of 8 hex digits, to go
+    /// along with a new mail.
+    File { id: &'a str },
 }
 
 /// The start of a task target.
 const TASK_TARGET: &str = "task:";
 
+/// The start of a file target.
+const FILE_TARGET: &str = "file:";
+
+/// How long the id of a file of the register is: 8 hex digits (`crate::tools::files::new_id`).
+const FILE_ID_LEN: usize = 8;
+
 impl<'a> Target<'a> {
-    /// The target `text` names; `Err` with the forms there are for anything else, and for a uid
-    /// that is empty or holds control characters.
+    /// The target `text` names; `Err` with the forms there are for anything else, for a uid that
+    /// is empty or holds control characters, and for a file id that is not 8 hex digits.
     pub fn parse(text: &'a str) -> Result<Target<'a>, &'static str> {
-        const FORMS: &str = "a target is mail:<address>:<Message-ID> or task:<uid>";
+        const FORMS: &str = "a target is mail:<address>:<Message-ID>, task:<uid> or file:<id>";
+        if let Some(id) = text.strip_prefix(FILE_TARGET) {
+            let hex = id.len() == FILE_ID_LEN && id.bytes().all(|byte| byte.is_ascii_hexdigit());
+            return if hex { Ok(Target::File { id }) } else { Err(FORMS) };
+        }
         if let Some(uid) = text.strip_prefix(TASK_TARGET) {
             return match uid.is_empty() || uid.chars().any(char::is_control) {
                 true => Err(FORMS),
@@ -290,49 +304,60 @@ impl<'a> Target<'a> {
         Ok(Target::Mail { account: &text[..account], message_id: &text[text.len() - message_id..] })
     }
 
-    /// The entry of the suite this target opens in: the inbox's mail window, or the tasks app.
+    /// The entry of the suite this target opens in: the inbox's mail window (its compose window for
+    /// a file), or the tasks app.
     pub fn app(self) -> AppId {
         match self {
-            Target::Mail { .. } => AppId::INBOX_MAIL,
+            Target::Mail { .. } | Target::File { .. } => AppId::INBOX_MAIL,
             Target::Task { .. } => AppId::TASKS,
         }
     }
 
-    /// `app` may show it: any window of the inbox (they share a binary) for a mail, the tasks app
-    /// for a task.
+    /// `app` may show it: any window of the inbox (they share a binary) for a mail or a file, the
+    /// tasks app for a task.
     pub fn opens_in(self, app: AppId) -> bool {
         app.binary == self.app().binary
     }
 }
 
 /// What a new window shows, as the core found it ([`target_command`]): the store's id of a mail
-/// (`m:…`) or the uid of a cached task.
+/// (`m:…`), the uid of a cached task, or the path the tools' register keeps for a file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
-    Mail { message: String },
-    Task { uid: String },
+    Mail {
+        message: String,
+    },
+    Task {
+        uid: String,
+    },
+    /// A file of the register, to attach to a new mail; never a path from the request.
+    File {
+        path: String,
+    },
 }
 
 impl Opened {
-    /// The entry of the suite whose window shows it.
+    /// The entry of the suite whose window shows it (for a file: the binary of the compose window).
     pub fn app(&self) -> AppId {
         match self {
-            Opened::Mail { .. } => AppId::INBOX_MAIL,
+            Opened::Mail { .. } | Opened::File { .. } => AppId::INBOX_MAIL,
             Opened::Task { .. } => AppId::TASKS,
         }
     }
 }
 
 /// The command line that starts a window of `program` (the path of [`Opened::app`]'s binary)
-/// showing `opened`: `torroinbox --view mail --message=m:…` or `torrotasks --task=<uid>`. One
-/// argument each, with `=`, so a value that starts with `-` stays a value; started without a
-/// shell.
+/// showing `opened`: `torroinbox --view mail --message=m:…`, `torrotasks --task=<uid>` or
+/// `torroinbox --compose --attach=<path>`. One argument each, with `=`, so a value that starts
+/// with `-` stays a value; started without a shell.
 pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
-    let mut command = opened.app().command(program);
-    command.push(match opened {
-        Opened::Mail { message } => format!("--message={message}"),
-        Opened::Task { uid } => format!("--task={uid}"),
-    });
+    let (mut command, argument) = match opened {
+        Opened::Mail { message } => (opened.app().command(program), format!("--message={message}")),
+        Opened::Task { uid } => (opened.app().command(program), format!("--task={uid}")),
+        // A file opens the compose window, not the mail window the inbox's mail entry names.
+        Opened::File { path } => (vec![program, "--compose".to_string()], format!("--attach={path}")),
+    };
+    command.push(argument);
     command
 }
 
@@ -496,6 +521,24 @@ pub mod tests {
         );
         let opened = Opened::Task { uid: "--version".into() };
         assert_eq!(target_command("torrotasks".into(), &opened), ["torrotasks", "--task=--version"]);
+    }
+
+    /// Task WZ.8: `file:<id>` names a file of the register by its 8 hex digits and opens in the
+    /// inbox's binary, as a new mail in the compose window with the path the register keeps.
+    #[test]
+    fn a_file_target_opens_a_new_mail_with_the_file() {
+        let file = Target::parse("file:1a2b3c4d").expect("file");
+        assert_eq!(file, Target::File { id: "1a2b3c4d" });
+        assert!(file.opens_in(AppId::INBOX) && file.opens_in(AppId::INBOX_MAIL) && !file.opens_in(AppId::TASKS));
+        for bad in ["file:", "file:1a2b3c4", "file:1a2b3c4d5", "file:../../x", "file:1a2b3c4g", "file:/tmp/a.pdf"] {
+            assert!(Target::parse(bad).is_err(), "{bad:?}");
+        }
+        let opened = Opened::File { path: "/home/anna/Desktop/Offer.pdf".into() };
+        assert_eq!(opened.app().binary, "torroinbox");
+        assert_eq!(
+            target_command("/bin/torroinbox".into(), &opened),
+            ["/bin/torroinbox", "--compose", "--attach=/home/anna/Desktop/Offer.pdf"]
+        );
     }
 
     #[test]

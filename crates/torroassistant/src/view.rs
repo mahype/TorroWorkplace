@@ -12,7 +12,8 @@
 //! - **Chat window:** flush in every size, without sidebar.
 //!
 //! Bots (task B.3): their rows, the editor that takes the chat's place, a bot's menu and the card of
-//! a proposal are drawn in [`editor`].
+//! a proposal are drawn in [`editor`]. The cards of a conversation (task WZ.8, a file a tool made)
+//! in [`cards`].
 //!
 //! The settings (task S.18) take header and content area from `torro_settings_ui::Host`
 //! ([`App::settings_frame`]) while they are open; the sidebar stays as it is.
@@ -39,6 +40,7 @@ use crate::app::{
 use crate::bots;
 use crate::chat::{self, Choice};
 
+mod cards;
 mod editor;
 
 /// The anchors of the menus that float next to their buttons; new in every `view`.
@@ -137,6 +139,8 @@ fn area_icon(area: Option<Area>) -> Icon {
         Some(Area::Apps) => Icon::AppWindow,
         Some(Area::Ai) => Icon::Sparkles,
         Some(Area::Bots) => Icon::Users,
+        // The assistant's own tools (task WZ.8): the only one makes files.
+        Some(Area::Tools) => cards::FILE_ICON,
         _ => Icon::Search,
     }
 }
@@ -597,7 +601,7 @@ impl App {
 
     /// The entries in order, the growing answer last; tool lines close together, everything else
     /// with room between. While an answer appears letter by letter, what came after it waits, and
-    /// before its first letter it takes no room.
+    /// before its first letter it takes no room; so does a card the core has not resolved yet.
     fn entries(&self) -> Element<'_, Message> {
         let colours = answer_colours(palette(&self.theme()));
         let mut list = column![].width(Fill);
@@ -607,7 +611,8 @@ impl App {
             if appearing.is_some_and(|seq| entry.seq > seq) {
                 break;
             }
-            if !self.answer_shows(entry.seq) {
+            let unresolved = matches!(entry.content, EntryContent::Card { .. }) && !self.cards.contains_key(&entry.seq);
+            if !self.answer_shows(entry.seq) || unresolved {
                 continue;
             }
             let tool = matches!(entry.content, EntryContent::Tool { .. });
@@ -663,8 +668,9 @@ impl App {
             .spacing(space::s())
             .align_y(Alignment::Center)
             .into(),
-            // Cards (issue #225) show from task WZ.8 on, fetched with `assistant.get_cards`.
-            EntryContent::Card { .. } => Space::new().into(),
+            // What the core resolved for it (`assistant.get_cards`); [`App::entries`] leaves out a
+            // card that is not resolved yet.
+            EntryContent::Card { .. } => self.card(entry.seq).unwrap_or_else(|| Space::new().into()),
         }
     }
 
@@ -1136,7 +1142,12 @@ impl App {
             .spacing(space::xs())
             .into()
         } else if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
-            self.entry(entry, answer_colours(palette(&self.theme())))
+            let answer = self.entry(entry, answer_colours(palette(&self.theme())));
+            // A file made for the newest message shows as one line under the answer (task WZ.8).
+            match self.newest_card_line() {
+                Some(card) => column![answer, card].spacing(space::s()).into(),
+                None => answer,
+            }
         } else if self.transcript.running() {
             typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
         } else {
@@ -1149,6 +1160,22 @@ impl App {
             .width(Fill)
             .height(Fill)
             .into()
+    }
+}
+
+impl App {
+    /// The short form of the newest resolved card after the person's newest message, for the
+    /// glance; `None` when that message brought no card.
+    fn newest_card_line(&self) -> Option<Element<'_, Message>> {
+        let after = self
+            .transcript
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| matches!(entry.content, EntryContent::Message { .. }))
+            .map_or(0, |entry| entry.seq);
+        let seq = self.transcript.cards().into_iter().rev().find(|seq| *seq > after && self.cards.contains_key(seq))?;
+        self.card_line(seq)
     }
 }
 

@@ -1,7 +1,12 @@
 //! The compose window (task E4.3 in `docs/tasks/mail.md`, `docs/mail.md` "Schreiben in einem
 //! eigenen Fenster"): `torroinbox --compose [--reply <id> | --reply-all <id> | --forward <id>]
-//! [--account <id>]`, a window of its own with the class `torro-compose`, so a tiling manager
-//! puts it beside the list and one can read while writing.
+//! [--account <id>] [--attach <path>]`, a window of its own with the class `torro-compose`, so a
+//! tiling manager puts it beside the list and one can read while writing.
+//!
+//! - **A file along (task WZ.8):** `--attach <path>` attaches that file as the window opens, as if
+//!   it had been chosen; the core starts `torroinbox --compose --attach=<path>` for "Send by mail"
+//!   on a file card of the assistant (`apps.open_app` with `file:<id>`), with the path its register
+//!   keeps. The person sees the mail with the file and sends it, or not.
 //!
 //! - **Fields:** From (the account; a choice with two or more), To, Cc and Bcc (unfolded on
 //!   demand, or at once when an answer fills them), Subject, the text and the attachments. The
@@ -217,12 +222,15 @@ pub struct Start {
     pub account: Option<String>,
     /// `--open <state>` with `--demo`.
     pub open: Option<Open>,
+    /// `--attach <path>`: a file that goes along from the start (task WZ.8).
+    pub attach: Option<PathBuf>,
 }
 
 impl Start {
-    /// Reads `--compose`, `--reply <id>`, `--reply-all <id>`, `--forward <id>`, `--account <id>`
-    /// and `--open <state>` from `args`. `None` without `--compose`; then the flags that only make
-    /// sense with it are refused, so a mistyped command never opens the inbox instead.
+    /// Reads `--compose`, `--reply <id>`, `--reply-all <id>`, `--forward <id>`, `--account <id>`,
+    /// `--attach <path>` and `--open <state>` from `args`. `None` without `--compose`; then the
+    /// flags that only make sense with it are refused, so a mistyped command never opens the inbox
+    /// instead. An empty path is a missing value.
     pub fn parse(args: &[String], demo: bool) -> Result<Option<Start>, LaunchError> {
         let answers: [(&'static str, Answer); 3] =
             [("--reply", Kind::Reply), ("--reply-all", Kind::ReplyAll), ("--forward", Kind::Forward)];
@@ -236,8 +244,13 @@ impl Start {
             }
         }
         let account = flag_value(args, "--account")?;
+        let attach = flag_value(args, "--attach")?;
+        if attach == Some("") {
+            return Err(LaunchError::MissingValue("--attach"));
+        }
         if !args.iter().any(|arg| arg == "--compose") {
-            let stray = found.first().map(|(flag, _)| *flag).or(account.map(|_| "--account"));
+            let stray =
+                found.first().map(|(flag, _)| *flag).or(account.map(|_| "--account")).or(attach.map(|_| "--attach"));
             return stray.map_or(Ok(None), |flag| Err(LaunchError::NeedsCompose(flag)));
         }
         let kind = match found.len() {
@@ -260,7 +273,7 @@ impl Start {
             },
         };
         let account = account.map(|id| if id.starts_with("mail:") { id.to_owned() } else { format!("mail:{id}") });
-        Ok(Some(Start { kind, account, open }))
+        Ok(Some(Start { kind, account, open, attach: attach.map(PathBuf::from) }))
     }
 }
 
@@ -965,7 +978,8 @@ pub struct Window<S> {
 
 impl<S: ComposeSource + 'static> Window<S> {
     pub fn new(source: Arc<S>, suite: Source, launch: Launch) -> (Window<S>, Task<Message>) {
-        let start = launch.compose.clone().unwrap_or(Start { kind: Kind::New, account: None, open: None });
+        let start =
+            launch.compose.clone().unwrap_or(Start { kind: Kind::New, account: None, open: None, attach: None });
         let phase = if start.open == Some(Open::Failed) {
             Phase::Failed(Notice::new(start.kind.load_failed(), ComposeError::NotFound))
         } else {
@@ -1241,6 +1255,11 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.in_reply_to = opened.in_reply_to;
         self.history = opened.history;
         self.phase = Phase::Ready;
+        // `--attach` (task WZ.8): the file goes along as if it had been chosen; one that cannot go
+        // says why in the notice, the window opens anyway.
+        if let Some(path) = self.start.attach.clone() {
+            self.attach(&[path]);
+        }
         self.apply_open();
         let focus = if self.to.is_empty() { TO } else { BODY };
         operation::focus(focus)
@@ -2621,12 +2640,55 @@ mod tests {
         let start = parse(&["--compose", "--account", "mail:anna@example.org", "--open", "menu"]).expect("valid");
         assert_eq!(
             start,
-            Some(Start { kind: Kind::New, account: Some("mail:anna@example.org".into()), open: Some(Open::Menu) })
+            Some(Start {
+                kind: Kind::New,
+                account: Some("mail:anna@example.org".into()),
+                open: Some(Open::Menu),
+                attach: None
+            })
         );
         for (name, state) in Open::ALL {
             let start = parse(&["--compose", "--open", name]).expect("valid").expect("a window");
             assert_eq!(start.open, Some(state));
         }
+    }
+
+    /// Task WZ.8: `--attach <path>` (or `--attach=<path>`) names a file that goes along; it needs
+    /// `--compose` and a path.
+    #[test]
+    fn the_start_parameters_take_a_file_to_attach() {
+        let parse = |words: &[&str]| Start::parse(&args(words), false);
+        let attach = |words: &[&str]| parse(words).expect("valid").expect("a window").attach;
+        assert_eq!(
+            attach(&["--compose", "--attach", "/home/anna/Offer.pdf"]),
+            Some(PathBuf::from("/home/anna/Offer.pdf"))
+        );
+        assert_eq!(
+            attach(&["--compose", "--attach=/home/anna/Offer.pdf"]),
+            Some(PathBuf::from("/home/anna/Offer.pdf"))
+        );
+        assert_eq!(attach(&["--compose"]), None);
+        assert_eq!(parse(&["--attach", "/home/anna/Offer.pdf"]), Err(LaunchError::NeedsCompose("--attach")));
+        assert_eq!(parse(&["--compose", "--attach"]), Err(LaunchError::MissingValue("--attach")));
+        assert_eq!(parse(&["--compose", "--attach="]), Err(LaunchError::MissingValue("--attach")));
+    }
+
+    /// Task WZ.8: the file of `--attach` is attached once the window is ready, and saved with the
+    /// draft; a file that cannot go says why and leaves the window open.
+    #[test]
+    fn a_file_given_at_the_start_goes_along() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("Offer.pdf");
+        std::fs::write(&file, b"%PDF-1.7 offer").expect("written");
+        let path = file.to_string_lossy().into_owned();
+        let window = ready(&["--attach", &path]);
+        assert_eq!(window.attachments, [Attached::File { path: file.clone(), name: "Offer.pdf".into(), size: 14 }]);
+        assert!(window.unsaved(), "saved as a draft soon");
+        assert_eq!(window.draft().attachments, [DraftAttachment::File { path }]);
+        let gone = dir.path().join("Gone.pdf").to_string_lossy().into_owned();
+        let window = ready(&["--attach", &gone]);
+        assert!(window.attachments.is_empty());
+        assert_eq!(window.notice.as_ref().map(|notice| notice.what.as_str()), Some(tr("Couldn't attach the file.")));
     }
 
     // ----- the window -----

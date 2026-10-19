@@ -2412,8 +2412,12 @@ static OPEN_APP: Command = Command {
                   windows by class (`torro-inbox-mail` Mail, `torro-inbox-notifications` App Feed, `torro-inbox` \
                   Notification Hub); the binary `torroinbox` opens the Notification Hub. `torroworkplace` opens the control centre, which list_apps does not \
                   list. With `target` a new window always starts and shows one thing: `mail:<address>:<Message-ID>` (a task's \
-                  `link.id`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app; `app` must \
-                  be that app. A mail or task this key may not read is `not-found`.",
+                  `link.id`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app, `file:<id>` \
+                  (the `id` of tools_create_pdf) a new mail with that file attached in the inbox's compose window, \
+                  for the person to address and send; `app` must be that app (`torroinbox` or an inbox window \
+                  class for mail and files). A mail or task this key may not read is `not-found`, and so is a \
+                  file this key did not make or cannot reach (the PDF tool switched off, no read access to \
+                  `tools`, `pdf` not selected).",
 };
 
 // The `clients` commands are never MCP tools, and only the app key may use them (`docs/api.md`,

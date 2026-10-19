@@ -14,16 +14,20 @@
 //!   of a tool line ([`tool_title`], [`tool_outcome`]), and under a refused one why, with "Change
 //!   access" only where that helps ([`refusal_hint`], issue #133).
 //! - The sidebar's two groups, pinned and recent, filtered by the search ([`sidebar_groups`]).
+//! - The file card (task WZ.8): what it says of a file ([`file_meta`]) and the request of each of
+//!   its buttons ([`open_file_request`], [`save_file_request`], [`mail_file_request`]).
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use torro_core::AppId;
 use torro_core::ai::{AiModel, Effort, is_this_computer};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::AssistantDefault;
 use torro_ipc::Request;
 use torro_ipc::api::{Access, Area, CATALOGUE, Lack, Level, Rights};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent, Mode, MyAccess};
+use torro_ipc::tools::{FileInfo, PdfTemplateId};
 
 /// The entries of one conversation as the window has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -98,6 +102,15 @@ impl Transcript {
                 EntryContent::Approval { id } => Some(id.as_str()),
                 _ => None,
             })
+            .collect()
+    }
+
+    /// The numbers of the card entries (task WZ.8), in order: what `assistant.get_cards` resolves.
+    pub fn cards(&self) -> Vec<u64> {
+        self.entries
+            .iter()
+            .filter(|entry| matches!(entry.content, EntryContent::Card { .. }))
+            .map(|entry| entry.seq)
             .collect()
     }
 
@@ -404,6 +417,9 @@ pub fn tool_title(name: &str) -> String {
         "bots.list_bots" => tr("Looked up bots"),
         "assistant.my_access" => tr("Looked up its access"),
         "bots.save_bot" => tr("Suggested a bot"),
+        "tools.create_pdf" => tr("Created PDF"),
+        "tools.list_tools" => tr("Listed tools"),
+        "tools.open_file" => tr("Opened file"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
     };
@@ -475,6 +491,50 @@ pub fn tool_line(name: &str, summary: &str, error: Option<&str>) -> String {
     } else {
         trf("{tool} · {outcome}", &[("tool", &tool_title(name)), ("outcome", &outcome)])
     }
+}
+
+/// The name of a PDF template as the assistant's settings write it ("Report").
+pub fn template_name(template: PdfTemplateId) -> &'static str {
+    match template {
+        PdfTemplateId::Letter => trc("template", "Letter"),
+        PdfTemplateId::Report => trc("template", "Report"),
+        PdfTemplateId::Note => trc("template", "Note"),
+    }
+}
+
+/// A size in bytes as people read it: "860 B", "3 KB", "12 MB" (as the mail window writes it).
+pub fn size_text(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    if bytes < KB {
+        trf("{n} B", &[("n", &bytes)])
+    } else if bytes < KB * KB {
+        trf("{n} KB", &[("n", &bytes.div_ceil(KB))])
+    } else {
+        trf("{n} MB", &[("n", &bytes.div_ceil(KB * KB))])
+    }
+}
+
+/// The quiet line under a file card's name: its template and size ("Report · 84 KB").
+pub fn file_meta(file: &FileInfo) -> String {
+    format!("{} · {}", template_name(file.template), size_text(file.size))
+}
+
+/// "Open" on a file card: `tools.open_file`, the system's program for it on the person's screen.
+pub fn open_file_request(file: &str) -> Request {
+    Request::OpenFile { file: file.to_owned() }
+}
+
+/// "Save as…" on a file card, once the person chose `path` in the system's save dialog:
+/// `tools.save_file_as`. `None` for a path that is not text, which the core could not take.
+pub fn save_file_request(file: &str, path: &Path) -> Option<Request> {
+    let path = path.to_str()?;
+    Some(Request::SaveFileAs { file: file.to_owned(), path: path.to_owned() })
+}
+
+/// "Send by mail" on a file card: `apps.open_app` with `file:<id>`, a new mail in the inbox's
+/// compose window with the file attached – the person sees what goes out before it goes.
+pub fn mail_file_request(file: &str) -> Request {
+    Request::OpenApp { app: AppId::INBOX.binary.to_owned(), target: Some(format!("file:{file}")) }
 }
 
 /// The sidebar's conversations: pinned ones, then the rest, each newest first, both narrowed to
@@ -860,6 +920,38 @@ mod tests {
         let not_granted = hint(Lack::Tool { tool: pdf });
         assert_eq!(not_granted, (tool("The assistant may not use the tool {tool}."), true));
         assert_eq!(area_name(Area::Tools), tr("Tools"));
+    }
+
+    /// Task WZ.8: the tool lines of the PDF tool say what was done; a file card says its template
+    /// and size, and each of its buttons builds its request.
+    #[test]
+    fn the_file_card_says_what_the_file_is_and_each_button_its_request() {
+        assert_eq!(tool_title("tools.create_pdf"), tr("Created PDF"));
+        assert_eq!(tool_title("tools.list_tools"), tr("Listed tools"));
+        assert_eq!(tool_title("tools.open_file"), tr("Opened file"));
+        let file = FileInfo {
+            id: "1a2b3c4d".into(),
+            name: "Offer.pdf".into(),
+            path: "/home/anna/Desktop/Offer.pdf".into(),
+            title: "Offer".into(),
+            template: PdfTemplateId::Report,
+            size: 86_000,
+            created: Utc::now(),
+        };
+        let size = trf("{n} KB", &[("n", &84)]);
+        assert_eq!(file_meta(&file), format!("{} · {size}", trc("template", "Report")));
+        assert_eq!(size_text(860), trf("{n} B", &[("n", &860)]));
+        assert_eq!(size_text(3 * 1024 * 1024), trf("{n} MB", &[("n", &3)]));
+        assert_eq!(open_file_request("1a2b3c4d"), Request::OpenFile { file: "1a2b3c4d".into() });
+        let path = Path::new("/home/anna/Offer copy.pdf");
+        assert_eq!(
+            save_file_request("1a2b3c4d", path),
+            Some(Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/home/anna/Offer copy.pdf".into() })
+        );
+        assert_eq!(
+            mail_file_request("1a2b3c4d"),
+            Request::OpenApp { app: "torroinbox".into(), target: Some("file:1a2b3c4d".into()) }
+        );
     }
 
     #[test]

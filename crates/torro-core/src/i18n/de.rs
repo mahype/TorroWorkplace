@@ -4058,4 +4058,26 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
     ),
     ("Off in the assistant's settings", "In den Einstellungen des Assistenten ausgeschaltet"),
+    // The file card in the chat (WZ.8, #225)
+    ("Save as…", "Speichern unter…"),
+    ("Send by mail", "Per Mail senden"),
+    ("Created PDF", "PDF erstellt"),
+    ("Listed tools", "Werkzeuge aufgelistet"),
+    ("Opened file", "Datei geöffnet"),
+    ("Couldn't open the file.", "Die Datei konnte nicht geöffnet werden."),
+    ("Couldn't save the copy.", "Die Kopie konnte nicht gespeichert werden."),
+    ("Copy saved", "Kopie gespeichert"),
+    ("Couldn't open a new mail with the file.", "Es konnte keine neue Mail mit der Datei geöffnet werden."),
+    ("Save a copy of the PDF", "Kopie der PDF speichern"),
+    ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
+    ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
+    (
+        "Done: the PDF is on your desktop, Release checklist.pdf.",
+        "Erledigt: Die PDF liegt auf deinem Schreibtisch, Release checklist.pdf.",
+    ),
+    ("Add the due dates and make a new one.", "Ergänze die Fälligkeiten und mach eine neue."),
+    (
+        "The new one with the due dates is on your desktop: Release checklist-2.pdf.",
+        "Die neue mit den Fälligkeiten liegt auf deinem Schreibtisch: Release checklist-2.pdf.",
+    ),
 ];

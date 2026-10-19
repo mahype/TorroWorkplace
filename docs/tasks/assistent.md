@@ -983,7 +983,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
   Sichtprüfung der Seite des Assistenten; Übersetzungen in `de.rs`.
 
 ### WZ.8 Datei-Karte in der App, „Send by mail“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WZ.5 · **Dateien:** `crates/torroassistant/src/{app,chat,view,backend}.rs`,
   `crates/torroassistant/src/view/**`, `crates/torroworkplace/src/{apps,core}.rs`, `crates/torroinbox/src/compose.rs`,
   `crates/torro-ipc/src/api.rs` (Beschreibung `OPEN_APP`), `docs/api-reference.md`, `crates/torro-core/src/i18n/de.rs`

@@ -1942,7 +1942,7 @@ impl Core {
             }
         }
         if let Request::OpenApp { app, target: Some(target) } = &request
-            && let Err(refused) = self.open_target(app, target, reach).await
+            && let Err(refused) = self.open_target(app, target, reach, Maker::Client(&id)).await
         {
             return Ok(*refused);
         }
@@ -2046,9 +2046,13 @@ impl Core {
             let name = self.client_name(&id);
             return Ok(Box::pin(self.reminder_request(request, reach, Some((&id, &name)))).await);
         }
-        // A file of a tool is its maker's (issue #225): the register remembers the client.
+        // A file of a tool is its maker's (issue #225): the register remembers the client. So is a
+        // file going along with a new mail (`file:<id>`, task WZ.8).
         if request.operation().area() == Area::Tools {
             return Ok(self.tools_request(request, reach, Maker::Client(&id)).await);
+        }
+        if let Request::OpenApp { app, target } = &request {
+            return Ok(self.open_app_request(app, target.as_deref(), reach, Maker::Client(&id)).await);
         }
         // Boxed: `handle_within` is a large future, and a client's request can run it again inside
         // (the inbox's quiet asks the core for settings and events); on the stack both no longer
@@ -2374,9 +2378,9 @@ impl Core {
                     }
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
-                // as the client may see it.
+                // as the client may see it – for a file of the tools (task WZ.8) the register's title.
                 if let Request::OpenApp { app, target: Some(target) } = &request {
-                    let shown = self.open_target(app, target, Reach::Client(rights)).await.ok();
+                    let shown = self.open_target(app, target, Reach::Client(rights), Maker::Client(client)).await.ok();
                     facts.item = shown.map(|(_, title)| crate::approvals::Known { title, start: None });
                 }
                 let summary = crate::approvals::summary(&request, &facts);
@@ -2659,6 +2663,9 @@ impl Core {
         if request.operation().area() == Area::Tools {
             return self.tools_request(request, reach, Maker::Client(client)).await;
         }
+        if let Request::OpenApp { app, target } = &request {
+            return self.open_app_request(app, target.as_deref(), reach, Maker::Client(client)).await;
+        }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
         Box::pin(self.handle_within(request, reach)).await
@@ -2891,7 +2898,9 @@ impl Core {
             },
             // A binary or a window class: the inbox's mail window is `torro-inbox-mail` (task E8.1).
             // With a target, a new window showing a mail or a task (task E8.7a).
-            Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach).await,
+            // A client's target comes through `handle_client` or `run_approved` with its maker; here
+            // a client reaches no file of the tools (`Core::open_target`).
+            Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach, Maker::App).await,
             Request::ListApps => Response::Apps { apps: crate::apps::list() },
             Request::ListClients => Response::Clients { clients: self.clients.list() },
             // A bot's client is made with its bot (`bots.save_bot`, task B.1), never on its own.
@@ -4264,12 +4273,19 @@ impl Core {
     /// ([`crate::apps::target_command`]). `error` for a target of no known form, one longer than
     /// [`TARGET_MAX`] or one that does not open in `app`; `not-found` for a mail or task `reach`
     /// may not read or that is gone. Nothing of the target reaches a command line but the store's
-    /// own mail id or a task uid the cache holds.
+    /// own mail id, a task uid the cache holds or the path the tools' register keeps.
+    ///
+    /// A file of the tools (`file:<id>`, task WZ.8) for `maker`: the person reaches every file of
+    /// the register, a client only its own ([`Maker::Client`]) and only while it may reach the
+    /// tools' files at all ([`crate::tools::reaches_files`]: the PDF tool on, `tools` readable,
+    /// `pdf` selected); a client asking as [`Maker::App`] reaches none. Everything else, and a
+    /// file that changed or went, is `not-found`. The register is read on a blocking thread.
     async fn open_target(
         &self,
         app: &str,
         target: &str,
         reach: Reach<'_>,
+        maker: Maker<'_>,
     ) -> Result<(crate::apps::Opened, String), Box<Response>> {
         let bad = |message: String| Box::new(refusal("error", message));
         if target.len() > TARGET_MAX {
@@ -4299,19 +4315,38 @@ impl Core {
                 let task = task.ok_or_else(|| Box::new(refusal("not-found", "no such task".into())))?;
                 Ok((crate::apps::Opened::Task { uid: task.uid }, task.summary))
             }
+            crate::apps::Target::File { id } => {
+                let reaches = match (reach, maker) {
+                    (Reach::Suite, _) => true,
+                    (Reach::Client(rights), Maker::Client(_)) => {
+                        crate::tools::reaches_files(&self.settings.current().tools, rights)
+                    }
+                    (Reach::Client(_), Maker::App) => false,
+                };
+                let file = match reaches {
+                    true => self.tools.file(id, maker).await,
+                    false => None,
+                };
+                let no_file = || Box::new(refusal("not-found", tr("No such file.").to_string()));
+                let file = file.ok_or_else(no_file)?;
+                // A path that is no text cannot go on a command line whole; it is not cut either.
+                let path = file.path.to_str().ok_or_else(no_file)?.to_string();
+                Ok((crate::apps::Opened::File { path }, file.title))
+            }
         }
     }
 
     /// `apps.open_app` (task E8.1, with `target` task E8.7a): without a target the app's window
     /// comes forward or starts ([`Core::open_app`]); with one a new window starts showing it
-    /// ([`Core::open_target`]), since a running window cannot be told to show something else yet.
-    async fn open_app_request(&self, app: &str, target: Option<&str>, reach: Reach<'_>) -> Response {
+    /// ([`Core::open_target`], a file of the tools as `maker` reaches it), since a running window
+    /// cannot be told to show something else yet.
+    async fn open_app_request(&self, app: &str, target: Option<&str>, reach: Reach<'_>, maker: Maker<'_>) -> Response {
         let started = match target {
             None => match AppId::find(app) {
                 Some(app) => self.open_app(app).await,
                 None => return refusal("not-found", format!("no app {app:?}")),
             },
-            Some(target) => match self.open_target(app, target, reach).await {
+            Some(target) => match self.open_target(app, target, reach, maker).await {
                 Ok((opened, _)) => {
                     let program = sibling(opened.app().binary).to_string_lossy().into_owned();
                     let command = crate::apps::target_command(program, &opened);
@@ -6875,6 +6910,62 @@ mod tests {
         // The log names the file's id, never its title or path.
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
         assert!(log.contains("tools.create_pdf") && log.contains("tools.open_file"), "{log}");
+        assert!(!log.contains("Offer") && !log.contains(&*room.dir.path().to_string_lossy()), "{log}");
+    }
+
+    /// Task WZ.8: `apps.open_app` with `file:<id>` opens a new mail with a file of the register: the
+    /// person's any, a client's only its own while the PDF tool is on, `tools` readable and `pdf`
+    /// selected. An unknown id and another client's file are `not-found` before anyone is asked;
+    /// an approval names the title the register keeps, and the log neither title nor path.
+    #[tokio::test]
+    async fn a_tools_file_goes_to_a_new_mail_only_for_its_maker() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let room = crate::tools::tests::Room::new();
+        let core = audited(dir.path()).with_tools(room.tools());
+        switch_pdf(&core, true).await;
+        let rights = RightsTemplate::ReadAndWrite.rights();
+        let (maker, first) = client(&core, rights.clone()).await;
+        let (other, second) = client(&core, rights.clone()).await;
+        let mine = made_file(&ask(&core, Some(&first), make_pdf("Offer")).await);
+        let target = format!("file:{}", mine.id);
+        let found = |title: &str| (crate::apps::Opened::File { path: mine.path.clone() }, title.to_string());
+        let open_in = |reach, maker| core.open_target("torroinbox", &target, reach, maker);
+
+        assert_eq!(open_in(Reach::Suite, Maker::App).await, Ok(found("Offer")), "the person's are all");
+        assert_eq!(open_in(Reach::Client(&rights), Maker::Client(&maker)).await, Ok(found("Offer")), "its own");
+        let refused = |opened: Result<_, Box<Response>>| {
+            opened.map_or_else(|refused| code(&refused).to_string(), |_| "ok".into())
+        };
+        assert_eq!(refused(open_in(Reach::Client(&rights), Maker::Client(&other)).await), "not-found", "another's");
+        assert_eq!(refused(open_in(Reach::Client(&rights), Maker::App).await), "not-found", "a client is no person");
+        let unknown = core.open_target("torroinbox", "file:00000000", Reach::Suite, Maker::App).await;
+        assert_eq!(refused(unknown), "not-found");
+        let mut unselected = rights.clone();
+        unselected.tools = Selection::Only(Vec::new());
+        assert_eq!(refused(open_in(Reach::Client(&unselected), Maker::Client(&maker)).await), "not-found");
+        let mut unreadable = rights.clone();
+        unreadable.areas.remove(&Area::Tools);
+        assert_eq!(refused(open_in(Reach::Client(&unreadable), Maker::Client(&maker)).await), "not-found");
+        switch_pdf(&core, false).await;
+        assert_eq!(refused(open_in(Reach::Client(&rights), Maker::Client(&maker)).await), "not-found", "off");
+        switch_pdf(&core, true).await;
+
+        // Through the API: refused before anyone is asked; a wrong app or form is `error`.
+        let open = |app: &str, target: &str| Request::OpenApp { app: app.into(), target: Some(target.into()) };
+        assert_eq!(code(&ask(&core, Some(&second), open("torroinbox", &target)).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&second), open("torroinbox", "file:00000000")).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&first), open("torrotasks", &target)).await), "error");
+        assert_eq!(code(&ask(&core, Some(&first), open("torroinbox", "file:Offer.pdf")).await), "error");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
+        // Asked for approval, the summary names the register's title (not decided here: allowing
+        // would start the mail window).
+        let mut asking = rights.clone();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        core.clients.update(&maker, asking).await.expect("updated");
+        let asked = waits(ask(&core, Some(&first), open("torroinbox", &target)).await);
+        assert!(asked.summary.contains("Offer") && !asked.summary.contains(&mine.path), "{}", asked.summary);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("apps.open_app"), "{log}");
         assert!(!log.contains("Offer") && !log.contains(&*room.dir.path().to_string_lossy()), "{log}");
     }
 
@@ -13421,9 +13512,9 @@ mod tests {
             };
             let mail = Link::mail(ANNA, OFFER_ID).id;
             let task = format!("task:{}", todo.uid);
-            let opened = core.open_target("torro-inbox-mail", &mail, Reach::Suite).await.expect("the mail");
+            let opened = core.open_target("torro-inbox-mail", &mail, Reach::Suite, Maker::App).await.expect("the mail");
             assert_eq!(opened, (crate::apps::Opened::Mail { message: id }, "Offer".to_string()));
-            let opened = core.open_target("torrotasks", &task, Reach::Suite).await.expect("the task");
+            let opened = core.open_target("torrotasks", &task, Reach::Suite, Maker::App).await.expect("the task");
             assert_eq!(opened, (crate::apps::Opened::Task { uid: todo.uid.clone() }, "Offer".to_string()));
 
             let open = |app: &str, target: &str| Request::OpenApp { app: app.into(), target: Some(target.into()) };
