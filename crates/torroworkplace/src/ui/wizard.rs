@@ -1,12 +1,15 @@
-//! The add-account dialog (task S.6 in `docs/tasks/steuerzentrale.md`, GitHub since G.1).
+//! The add-account dialog (task S.6 in `docs/tasks/steuerzentrale.md`, GitHub since G.1, one
+//! provider per dialog since S.30).
 //!
 //! Steps, with the subtitle changing per step, errors bottom left, "Cancel" and the primary
 //! button bottom right (like TorroMail's setup wizard):
 //!
-//! 1. **Provider:** a catalog – Nextcloud (calendars, tasks), mail, GitHub (issues, projects) and
-//!    AI providers enabled; Slack listed as "Coming soon", disabled. With a single available
-//!    provider the step would be skipped. The dialog is the same with accounts already present:
-//!    it adds one more.
+//! 1. **Where it starts (task S.30):** Accounts has a group per provider, and its "Add" opens the
+//!    dialog at that provider's first step ([`State::at`]); "Import from TorroMail…" of the group
+//!    Mail opens it at TorroMail's accounts ([`State::torromail`]). That first step has no "Back":
+//!    there is no catalog to go back to. "Back" walks only between the steps of one provider.
+//!    The old catalog (**Provider**, [`State::new`]) is still the state a dialog is built from, but
+//!    no page shows it any more.
 //! 2. Nextcloud: **Server** – the address; Enter or "Continue" sends
 //!    `Request::ConnectNextcloud { server }`. Then **Sign in**: "Nextcloud handles the sign-in.
 //!    …" The browser opens (the core does that); the login URL from `data.accounts`
@@ -48,16 +51,16 @@
 //!    …" (GitHub), "… is ready to use." (AI), "Your topics are subscribed." (ntfy) or what the mail
 //!    account's servers have, and "Done".
 //!
-//! **TorroMail** (task M7.4): the dialog opens with `Request::TorroMailAccounts` ([`State::open`]).
-//! When the separate TorroMail app has accounts, the catalog starts with "Use accounts from
-//! TorroMail?": one row per account with its address and servers and "Use", which sends
-//! `Request::ImportTorroMailAccount` for mail only (pressing it is the consent to copy the password); accounts the
-//! suite cannot take (OAuth, JMAP) are greyed out with the reason, those it has already say
-//! "Connected". A take-over runs on the catalog itself, one at a time; when it fails (TorroMail's
-//! keychain entry cannot be read, a server refuses), the row shows why and "Enter password", which
-//! opens the mail path at the password step, filled with TorroMail's servers and user name. After a
-//! take-over the catalog ends with "Done". Without TorroMail, or when the list cannot be read, the
-//! catalog is as before.
+//! **TorroMail** (tasks M7.4, S.30): the step **TorroMail** asks for TorroMail's accounts as it
+//! opens (`Request::TorroMailAccounts`) and lists them: one row per account with its address and
+//! servers and "Use", which sends `Request::ImportTorroMailAccount` for mail only (pressing it is the
+//! consent to copy the password); accounts the suite cannot take (OAuth, JMAP) are greyed out with
+//! the reason, those it has already say "Connected". A take-over runs on the step itself, one at a
+//! time; when it fails (TorroMail's keychain entry cannot be read, a server refuses), the row shows
+//! why and "Enter password", which opens the mail path at the password step, filled with
+//! TorroMail's servers and user name ("Back" from its address step leads back to the list). After a
+//! take-over the step ends with "Done". [`can_import`] says whether a list has an account to take
+//! over, so Accounts shows its button only then.
 //!
 //! How a step learns that it is over:
 //!
@@ -104,8 +107,12 @@ const LOCAL_AI: [AiProvider; 2] = [AiProvider::Ollama, AiProvider::LmStudio];
 /// The step the dialog is on. Each step has its own subtitle and footer button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Step {
+    /// The catalog of providers: where [`State::new`] starts. No page opens the dialog here any more
+    /// (task S.30); [`State::at`] goes on from it to a provider's first step.
     #[default]
     Provider,
+    /// TorroMail's accounts to take over (tasks M7.4, S.30), opened by [`State::torromail`].
+    TorroMail,
     /// Nextcloud: the server address.
     Server,
     /// Nextcloud: Login Flow v2 runs in the browser.
@@ -157,7 +164,8 @@ impl Step {
         MAIL_STEPS.get(at + 1).copied()
     }
 
-    /// The step before this one on the mail path; the first leads back to the catalog.
+    /// The step before this one on the mail path; the first leads back to the catalog, which
+    /// `Message::Back` turns into where the dialog started (`State::origin`).
     fn mail_previous(self) -> Step {
         match MAIL_STEPS.iter().position(|step| *step == self) {
             Some(at) if at > 0 => MAIL_STEPS[at - 1],
@@ -214,7 +222,8 @@ impl Service {
     }
 }
 
-/// A service in the catalog.
+/// A provider the dialog sets up: one group of the accounts page each (task S.30). Slack comes as
+/// a provider of its own once it is built; until then it is listed nowhere.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Provider {
     #[default]
@@ -224,44 +233,32 @@ pub enum Provider {
     GitHub,
     /// An ntfy server's topics for the inbox (task E5.14).
     Ntfy,
-    Slack,
     Ai,
 }
 
 impl Provider {
-    /// Nextcloud, a mail provider, GitHub, ntfy and AI providers can be set up; Slack is listed so
-    /// the catalog shows where the suite is heading.
-    fn is_enabled(self) -> bool {
-        matches!(self, Provider::Nextcloud | Provider::Mail | Provider::GitHub | Provider::Ntfy | Provider::Ai)
-    }
-
-    /// The step after picking the provider.
+    /// The step after picking the provider: where [`State::at`] opens the dialog.
     fn first_step(self) -> Step {
         match self {
             Provider::GitHub => Step::Github,
             Provider::Mail => MAIL_STEPS[0],
             Provider::Ai => Step::AiChoose,
             Provider::Ntfy => Step::NtfyServer,
-            _ => Step::Server,
+            Provider::Nextcloud => Step::Server,
         }
     }
 
-    const ALL: [Provider; 6] =
-        [Provider::Nextcloud, Provider::Mail, Provider::GitHub, Provider::Ntfy, Provider::Slack, Provider::Ai];
-}
-
-/// Where a new dialog starts: at the provider catalog, unless there is only one provider to pick.
-fn first_step() -> Step {
-    let mut available = Provider::ALL.into_iter().filter(|provider| provider.is_enabled());
-    match (available.next(), available.next()) {
-        (Some(provider), None) => provider.first_step(),
-        _ => Step::Provider,
-    }
+    /// Every provider, in the order of the catalog.
+    #[cfg(test)]
+    const ALL: [Provider; 5] = [Provider::Nextcloud, Provider::Mail, Provider::GitHub, Provider::Ntfy, Provider::Ai];
 }
 
 #[derive(Debug, Default)]
 pub struct State {
     step: Step,
+    /// The step the dialog opened at (task S.30): a provider's first step, TorroMail's accounts, or
+    /// the catalog of [`State::new`]. It has no "Back", and "Back" towards the catalog leads here.
+    origin: Step,
     /// The provider being set up; Done says what is ready.
     provider: Provider,
     /// The Nextcloud sign-in: the address as typed and the sign-in while it runs (task W.5).
@@ -276,7 +273,7 @@ pub struct State {
     error: Option<String>,
     /// What the mail provider path has asked for and learned so far.
     mail: Mail,
-    /// TorroMail's accounts on the catalog (task M7.4).
+    /// TorroMail's accounts on the step TorroMail (tasks M7.4, S.30).
     torromail: Offer,
     /// What the AI provider path has asked for and learned so far (task KI.1a).
     ai: AiSetup,
@@ -388,8 +385,8 @@ struct AiSetup {
     connected: Option<String>,
 }
 
-/// TorroMail's accounts on the catalog (task M7.4): asked for when the dialog opens
-/// ([`State::open`]), each taken over with one press, one at a time.
+/// TorroMail's accounts on the step TorroMail (tasks M7.4, S.30): asked for when it opens
+/// ([`State::torromail`]), each taken over with one press, one at a time.
 #[derive(Debug, Default)]
 struct Offer {
     /// The list was asked for and has not come back yet.
@@ -400,7 +397,7 @@ struct Offer {
     importing: Option<String>,
     /// The take-over that failed last: TorroMail's id and the core's message.
     failed: Option<(String, String)>,
-    /// An account was taken over in this dialog: the catalog ends with "Done".
+    /// An account was taken over in this dialog: the step ends with "Done".
     imported: bool,
 }
 
@@ -408,12 +405,21 @@ impl Offer {
     /// "Use" on `id` sends something: TorroMail's account can be taken over and is not yet, and no
     /// other take-over runs.
     fn can_use(&self, id: &str) -> bool {
-        self.importing.is_none()
-            && self
-                .accounts
-                .iter()
-                .any(|account| account.id == id && account.unsupported.is_none() && !account.connected)
+        self.importing.is_none() && self.accounts.iter().any(|account| account.id == id && takeable(account))
     }
+}
+
+/// TorroMail's account can be taken over: the suite supports its sign-in and has no account of
+/// that address yet.
+fn takeable(account: &TorroMailAccount) -> bool {
+    account.unsupported.is_none() && !account.connected
+}
+
+/// Whether TorroMail's `accounts`, as `accounts.list_torromail_accounts` lists them, hold one the
+/// step TorroMail can take over ([`Offer::can_use`] while nothing runs). Accounts shows "Import
+/// from TorroMail…" only then (task S.30).
+pub fn can_import(accounts: &[TorroMailAccount]) -> bool {
+    accounts.iter().any(takeable)
 }
 
 /// How far the mail servers are filled in.
@@ -641,15 +647,29 @@ fn app_password_help(provider: &str) -> Option<&'static str> {
 }
 
 impl State {
-    /// A dialog on its first step.
+    /// A dialog on the catalog of providers. No page opens it there any more (task S.30): it is
+    /// what [`State::at`] starts from, and what the tests of the catalog's own rules use.
     pub fn new() -> State {
-        State { step: first_step(), ..State::default() }
+        State::default()
     }
 
-    /// A new dialog and the request that asks for TorroMail's accounts (task M7.4), whose answer
-    /// fills the top of the catalog ([`answered`]). How the accounts page opens the dialog.
-    pub fn open() -> (State, Action) {
+    /// A dialog at the first step of `provider`, without "Back" there (task S.30): how a group's
+    /// "Add" on the accounts page and the steps of the setup open it. Returns the request that step
+    /// sends as it opens – `Request::FindAiServers` for the AI providers, else `Action::None`. The
+    /// same as pressing `provider` on the catalog, so every rule of the provider's path holds.
+    pub fn at(provider: Provider, data: &Data) -> (State, Action) {
         let mut state = State::new();
+        let action = update(&mut state, Message::ChooseProvider(provider), data);
+        state.origin = state.step;
+        (state, action)
+    }
+
+    /// A dialog at the step TorroMail (tasks M7.4, S.30), without "Back" there, and the request
+    /// that asks for TorroMail's accounts (`Request::TorroMailAccounts`), whose answer fills the
+    /// list ([`answered`]). How "Import from TorroMail…" of the accounts page and "Take over from
+    /// TorroMail" of the setup open it.
+    pub fn torromail() -> (State, Action) {
+        let mut state = State { step: Step::TorroMail, origin: Step::TorroMail, ..State::new() };
         state.torromail.asking = true;
         (state, Action::Send(Request::TorroMailAccounts))
     }
@@ -960,10 +980,10 @@ fn ai_can_connect(state: &State) -> bool {
     }
 }
 
-/// The answers to TorroMail's requests (task M7.4): the list whenever it comes, the outcome of a
-/// take-over while one runs, and a list that failed while the dialog is still on the catalog –
-/// silently, since the offer is a shortcut and the catalog works without it. `None` for every
-/// other answer, which the steps take.
+/// The answers to TorroMail's requests (tasks M7.4, S.30): the list whenever it comes, the outcome
+/// of a take-over while one runs, and a list that failed while the dialog is on the step TorroMail
+/// – in its footer, since the list is all the step has. `None` for every other answer, which the
+/// steps take.
 fn offer_answered(state: &mut State, result: &Result<Response, String>) -> Option<bool> {
     let offer = &mut state.torromail;
     if let Ok(Response::TorroMailAccounts { accounts }) = result {
@@ -985,8 +1005,9 @@ fn offer_answered(state: &mut State, result: &Result<Response, String>) -> Optio
         }
         return Some(true);
     }
-    if offer.asking && state.step == Step::Provider && result.is_err() {
+    if let (true, Step::TorroMail, Err(message)) = (offer.asking, state.step, result) {
         offer.asking = false;
+        state.error = Some(message.clone());
         return Some(true);
     }
     None
@@ -1029,18 +1050,24 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     observe(state, data);
     match message {
         Message::Close | Message::LoginLinkEdited => Action::None,
+        // The step the dialog opened at has no way back (task S.30): there is no catalog behind it.
+        Message::Back if state.step == state.origin => Action::None,
         Message::Back => {
             state.error = None;
             match state.step {
                 Step::Token => state.step = Step::Github,
-                Step::Github | Step::Server => state.step = Step::Provider,
-                step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => go(state, step.mail_previous()),
-                Step::AiChoose => state.step = Step::Provider,
+                Step::Github | Step::Server => state.step = state.origin,
+                step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => match step.mail_previous() {
+                    // TorroMail's "Enter password" leads back to its list.
+                    Step::Provider => state.step = state.origin,
+                    previous => go(state, previous),
+                },
+                Step::AiChoose => state.step = state.origin,
                 Step::AiKey | Step::AiServer => {
                     state.step = Step::AiChoose;
                     state.ai.key = Secret::default();
                 }
-                Step::NtfyServer => state.step = Step::Provider,
+                Step::NtfyServer => state.step = state.origin,
                 Step::NtfyTopics => state.step = Step::NtfyServer,
                 Step::NtfyLogin => {
                     state.step = Step::NtfyTopics;
@@ -1052,7 +1079,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         // While a TorroMail account is taken over, the catalog waits for it.
         Message::ChooseProvider(provider) => {
-            if state.step == Step::Provider && provider.is_enabled() && state.torromail.importing.is_none() {
+            if state.step == Step::Provider && state.torromail.importing.is_none() {
                 state.provider = provider;
                 state.step = provider.first_step();
                 // The servers on this computer are looked for each time the AI providers open.
@@ -1208,13 +1235,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::OpenTokenPage => Action::OpenUrl(github::NEW_TOKEN_URL.to_string()),
-        Message::UseTorroMail(id) if state.step == Step::Provider && state.torromail.can_use(&id) => {
+        Message::UseTorroMail(id) if state.step == Step::TorroMail && state.torromail.can_use(&id) => {
             state.torromail.importing = Some(id.clone());
             state.torromail.failed = None;
             state.error = None;
             Action::Send(Request::ImportTorroMailAccount { id })
         }
-        Message::EnterTorroMailPassword(id) if state.step == Step::Provider && state.torromail.importing.is_none() => {
+        Message::EnterTorroMailPassword(id) if state.step == Step::TorroMail && state.torromail.importing.is_none() => {
             if let Some(account) = state.torromail.accounts.iter().find(|account| account.id == id).cloned() {
                 fill_from_torromail(state, &account);
             }
@@ -1375,13 +1402,15 @@ fn connect_request(mail: &mut Mail) -> Option<Request> {
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let header = column![
-        typo::text(typo::title(), tr("Add account")),
-        typo::text(typo::body(), subtitle(state)).style(theme::text_2)
-    ]
-    .spacing(space::xs());
+    // Opened by "Import from TorroMail…", the dialog is an import all the way, also on the mail
+    // path behind "Enter password".
+    let title = if state.origin == Step::TorroMail { tr("Import from TorroMail") } else { tr("Add account") };
+    let header =
+        column![typo::text(typo::title(), title), typo::text(typo::body(), subtitle(state)).style(theme::text_2)]
+            .spacing(space::xs());
     let body = match state.step {
         Step::Provider => provider_step(state),
+        Step::TorroMail => torromail_step(state),
         Step::Server => server_step(state),
         Step::SigningIn => signing_in_step(data),
         Step::Github => github_step(),
@@ -1411,6 +1440,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 fn subtitle(state: &State) -> &'static str {
     match (state.step, state.provider) {
         (Step::Provider, _) => tr("Choose a service to connect."),
+        (Step::TorroMail, _) => tr("Choose the mail accounts to take over from TorroMail."),
         (Step::Server, _) => tr("Enter the address of your Nextcloud."),
         (Step::SigningIn, _) => tr("Sign in with Nextcloud in your browser."),
         (Step::Github, _) => tr("Choose how Torro Workplace signs in to GitHub."),
@@ -1450,9 +1480,8 @@ fn done_text(state: &State) -> String {
     }
 }
 
-/// The catalog: TorroMail's accounts first when it has some ([`offer_group`]), then a group with
-/// one row per provider, the disabled ones marked "Coming soon". While a TorroMail account is
-/// taken over, the providers wait.
+/// The catalog: a group with one row per provider. No page shows it any more (task S.30); it is
+/// the state [`State::at`] starts from.
 fn provider_step(state: &State) -> Element<'_, Message> {
     let open = state.torromail.importing.is_none();
     let rows = vec![
@@ -1460,41 +1489,45 @@ fn provider_step(state: &State) -> Element<'_, Message> {
         provider_row(Provider::Mail, tr("Mail account"), tr("Mail, calendars and tasks"), open),
         provider_row(Provider::GitHub, "GitHub", tr("Issues and projects"), open),
         provider_row(Provider::Ntfy, "ntfy", tr("Notifications from your servers and scripts"), open),
-        provider_row(Provider::Slack, "Slack", tr("Mentions and messages"), open),
         provider_row(Provider::Ai, tr("AI providers"), tr("Summaries and agents"), open),
     ];
-    let services = widgets::group(tr("Services"), rows, None);
-    match offer_group(&state.torromail) {
-        Some(offer) => column![offer, services].spacing(layout::section_gap()).into(),
-        None => services,
-    }
+    widgets::group(tr("Services"), rows, None)
 }
 
-/// A provider: name and what it brings; the available one is a row to press with a chevron (drawn
-/// disabled unless `open`), the others are plain rows with a tag.
+/// A provider: name and what it brings, a row to press with a chevron (drawn disabled unless
+/// `open`).
 fn provider_row(
     provider: Provider,
     name: &'static str,
     summary: &'static str,
     open: bool,
 ) -> Element<'static, Message> {
-    if provider.is_enabled() {
-        let row = setting_row(None, name, Some(summary.to_string()), chevron());
-        pressable(row, open.then_some(Message::ChooseProvider(provider)))
-    } else {
-        coming_soon_row(None, name, summary, tr("Coming soon"))
-    }
+    let row = setting_row(None, name, Some(summary.to_string()), chevron());
+    pressable(row, open.then_some(Message::ChooseProvider(provider)))
 }
 
-/// "Use accounts from TorroMail?" (task M7.4): one row per account of the separate TorroMail app;
-/// `None` when it has none, so the catalog is as before.
+/// The step TorroMail (task S.30): TorroMail's accounts to take over ([`offer_group`]), or while
+/// the list is on its way, or when TorroMail has none, a sentence saying so.
+fn torromail_step(state: &State) -> Element<'_, Message> {
+    if let Some(group) = offer_group(&state.torromail) {
+        return group;
+    }
+    let sentence = match state.torromail.asking {
+        true => tr("Looking for TorroMail's accounts…"),
+        false => tr("TorroMail has no mail accounts to take over."),
+    };
+    typo::text(typo::body(), sentence).style(theme::text_2).into()
+}
+
+/// TorroMail's accounts (task M7.4): one row per account of the separate TorroMail app; `None`
+/// when it has none.
 fn offer_group(offer: &Offer) -> Option<Element<'_, Message>> {
     if offer.accounts.is_empty() {
         return None;
     }
     let rows = offer.accounts.iter().map(|account| offer_row(offer, account)).collect();
     let footer = tr("Copies the mail servers, user name and password. TorroMail keeps its accounts.");
-    Some(widgets::group(tr("Use accounts from TorroMail?"), rows, Some(footer.to_string())))
+    Some(widgets::group(tr("Accounts in TorroMail"), rows, Some(footer.to_string())))
 }
 
 /// One TorroMail account: its address and servers, and what can be done with it – "Use", taking
@@ -2115,17 +2148,10 @@ fn done_lines(connected: &Connected, chosen: &[Service]) -> Vec<(bool, &'static 
         .collect()
 }
 
-/// Error text left, "Back" where there is a step to go back to, "Cancel" and the step's primary
-/// button right.
-fn footer(state: &State) -> Element<'_, Message> {
-    let error: Element<'_, Message> = match &state.error {
-        Some(error) => typo::text(typo::body(), error.as_str())
-            .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
-            .width(Fill)
-            .into(),
-        None => blank::horizontal().into(),
-    };
-    let back = matches!(
+/// Whether the footer shows "Back": on the steps a person walks back from, but never on the step
+/// the dialog opened at (task S.30), which has nothing behind it.
+fn has_back(state: &State) -> bool {
+    let walks_back = matches!(
         state.step,
         Step::Github
             | Step::Token
@@ -2138,16 +2164,31 @@ fn footer(state: &State) -> Element<'_, Message> {
             | Step::NtfyServer
             | Step::NtfyTopics
             | Step::NtfyLogin
-    )
-    .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
-    // A TorroMail account taken over on the catalog is done, not cancelled.
-    let taken_over = state.step == Step::Provider && state.torromail.imported;
+    );
+    walks_back && state.step != state.origin
+}
+
+/// Error text left, "Back" where there is a step to go back to ([`has_back`]), "Cancel" and the
+/// step's primary button right.
+fn footer(state: &State) -> Element<'_, Message> {
+    let error: Element<'_, Message> = match &state.error {
+        Some(error) => typo::text(typo::body(), error.as_str())
+            .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
+            .width(Fill)
+            .into(),
+        None => blank::horizontal().into(),
+    };
+    let back =
+        has_back(state).then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
+    // A TorroMail account taken over on its step is done, not cancelled.
+    let taken_over = state.step == Step::TorroMail && state.torromail.imported;
     let cancel =
         (!taken_over).then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match state.step {
-        Step::Provider if taken_over => primary(tr("Done"), Some(Message::Close)),
+        Step::TorroMail if taken_over => primary(tr("Done"), Some(Message::Close)),
         Step::Provider
+        | Step::TorroMail
         | Step::SigningIn
         | Step::Github
         | Step::Checking
@@ -2206,12 +2247,14 @@ pub enum Demo {
     MailOnly,
     /// Connected: what the servers have.
     Done,
-    /// The catalog after "Use" on TorroMail's Fastmail account, whose password could not be read
-    /// (task M7.4): the reason and "Enter password".
+    /// The step TorroMail (task S.30): the demo's four TorroMail accounts, one of each kind.
+    TorroMail,
+    /// The step TorroMail after "Use" on TorroMail's Fastmail account, whose password could not be
+    /// read (task M7.4): the reason and "Enter password".
     TorroMailFailed,
     /// "Enter password" pressed there: the password step, filled with TorroMail's servers.
     TorroMailPassword,
-    /// The catalog after TorroMail's Posteo account was taken over: "Connected" and "Done".
+    /// The step TorroMail after TorroMail's Posteo account was taken over: "Connected" and "Done".
     TorroMailDone,
     /// The AI providers (task KI.1a): Ollama found on this computer, LM Studio not running.
     AiProviders,
@@ -2235,12 +2278,37 @@ pub enum Demo {
     NtfyDone,
 }
 
-/// The messages that lead to `demo` the way a person would get there. The demo's answers to the
-/// requests come from `launch::demo_answer`; the passwords "wrong" (IMAP) and "wrong-smtp" are the
-/// ones it refuses.
+/// Where a dialog opens (task S.30): at a provider's first step ([`State::at`]) or at TorroMail's
+/// accounts ([`State::torromail`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    At(Provider),
+    TorroMail,
+}
+
+impl Demo {
+    /// Where the dialog of this demo state opens; [`demo_messages`] goes on from there.
+    pub fn start(self) -> Start {
+        match self {
+            Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => Start::TorroMail,
+            Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {
+                Start::At(Provider::Ai)
+            }
+            Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {
+                Start::At(Provider::Ntfy)
+            }
+            _ => Start::At(Provider::Mail),
+        }
+    }
+}
+
+/// The messages that lead to `demo` the way a person would get there, once the dialog is open where
+/// [`Demo::start`] says. The demo's answers to the requests come from `launch::demo_answer`; the
+/// passwords "wrong" (IMAP) and "wrong-smtp" are the ones it refuses.
 pub fn demo_messages(demo: Demo) -> Vec<Message> {
-    // TorroMail's accounts are on the catalog once the dialog is open (`launch::demo_torromail`).
+    // TorroMail's accounts are on its step once the dialog is open (`launch::demo_torromail`).
     match demo {
+        Demo::TorroMail => return Vec::new(),
         Demo::TorroMailFailed => return vec![Message::UseTorroMail("tm-fastmail".into())],
         Demo::TorroMailPassword => {
             let id = "tm-fastmail".to_string();
@@ -2253,25 +2321,24 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         return steps;
     }
     // The AI providers search this computer when they open (`launch::demo_answer` finds Ollama).
-    let ai = |more: Vec<Message>| [vec![Message::ChooseProvider(Provider::Ai)], more].concat();
     let openrouter = Message::ChooseAi(AiProvider::OpenRouter);
     match demo {
-        Demo::AiProviders => return ai(Vec::new()),
-        Demo::AiOpenRouter => return ai(vec![openrouter]),
+        Demo::AiProviders => return Vec::new(),
+        Demo::AiOpenRouter => return vec![openrouter],
         // "wrong" is the key the demo refuses.
-        Demo::AiRefused => return ai(vec![openrouter, Message::AiKeyChanged(Secret::new("wrong")), Message::Continue]),
+        Demo::AiRefused => return vec![openrouter, Message::AiKeyChanged(Secret::new("wrong")), Message::Continue],
         Demo::AiServer => {
             let address = Message::AiServerChanged("http://gpu.local:8000/v1".into());
-            return ai(vec![Message::ChooseAi(AiProvider::OpenAiCompatible), address]);
+            return vec![Message::ChooseAi(AiProvider::OpenAiCompatible), address];
         }
         Demo::AiDone => {
             let ollama = AiProvider::Ollama.default_url().unwrap_or_default().to_string();
-            return ai(vec![Message::ConnectLocalAi(AiProvider::Ollama, ollama)]);
+            return vec![Message::ConnectLocalAi(AiProvider::Ollama, ollama)];
         }
         _ => {}
     }
     let address = match demo {
-        Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
+        Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
         Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => None,
         Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => None,
         Demo::Address => None,
@@ -2284,7 +2351,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
             Some("anna@mailbox.org")
         }
     };
-    let mut steps = vec![Message::ChooseProvider(Provider::Mail)];
+    let mut steps = Vec::new();
     if let Some(address) = address {
         // Search, then (found) on to the password.
         steps.extend([Message::AddressChanged(address.to_string()), Message::Continue]);
@@ -2305,7 +2372,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         }
         Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
         // Returned above.
-        Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
+        Demo::TorroMail | Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
         Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {}
         Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {}
     }
@@ -2318,7 +2385,7 @@ fn ntfy_demo(demo: Demo) -> Option<Vec<Message>> {
     let topic = |at, name: &str, label: &str| {
         [Message::NtfyTopicChanged(at, TopicName::new(name)), Message::NtfyLabelChanged(at, label.to_string())]
     };
-    let mut steps = vec![Message::ChooseProvider(Provider::Ntfy)];
+    let mut steps = Vec::new();
     if demo == Demo::NtfyServer {
         return Some(steps);
     }
@@ -2408,17 +2475,58 @@ mod tests {
         State::new()
     }
 
-    /// A dialog at GitHub's two ways.
+    /// A dialog at GitHub's two ways, as GitHub's "Add" opens it.
     fn at_github() -> State {
-        let mut state = at_catalog();
-        update(&mut state, Message::ChooseProvider(Provider::GitHub), &Data::default());
+        let (state, action) = State::at(Provider::GitHub, &Data::default());
+        assert!(matches!(action, Action::None));
         state
     }
 
+    /// Task S.30: every group's "Add" opens the dialog at the first step of its provider; only the AI
+    /// providers ask for something as they open (the servers on this computer). That step has no
+    /// "Back", and pressing Back there changes nothing.
     #[test]
-    fn five_providers_open_the_catalog() {
-        assert_eq!(Provider::ALL.iter().filter(|provider| provider.is_enabled()).count(), 5);
-        assert_eq!(State::new().step, Step::Provider);
+    fn every_provider_opens_at_its_first_step_without_back() {
+        let data = Data::default();
+        let expected = [
+            (Provider::Nextcloud, Step::Server),
+            (Provider::Mail, Step::MailAddress),
+            (Provider::GitHub, Step::Github),
+            (Provider::Ntfy, Step::NtfyServer),
+            (Provider::Ai, Step::AiChoose),
+        ];
+        assert_eq!(expected.map(|(provider, _)| provider), Provider::ALL, "five providers, no Slack");
+        for (provider, step) in expected {
+            let (mut state, action) = State::at(provider, &data);
+            assert_eq!((state.step, state.origin, state.provider), (step, step, provider), "{provider:?}");
+            assert_eq!(
+                matches!(action, Action::Send(Request::FindAiServers)),
+                provider == Provider::Ai,
+                "{provider:?}"
+            );
+            assert!(!has_back(&state), "{provider:?}: nothing to go back to");
+            assert!(matches!(update(&mut state, Message::Back, &data), Action::None));
+            assert_eq!(state.step, step, "{provider:?}: Back stays");
+            drop(view(&state, &data));
+        }
+        // The catalog itself is still where a dialog is built from.
+        assert_eq!((State::new().step, State::new().origin), (Step::Provider, Step::Provider));
+    }
+
+    /// Task S.30: "Back" walks between the steps of one provider, never out of it.
+    #[test]
+    fn back_stays_on_the_path_of_the_provider() {
+        let data = Data::default();
+        let (mut nextcloud, _) = State::at(Provider::Nextcloud, &data);
+        update(&mut nextcloud, Message::ServerChanged("cloud.example.org".into()), &data);
+        update(&mut nextcloud, Message::Back, &data);
+        assert_eq!(nextcloud.step, Step::Server, "the address is the first step");
+        let mut github = at_github();
+        update(&mut github, Message::PasteToken, &data);
+        assert!(has_back(&github));
+        update(&mut github, Message::Back, &data);
+        assert_eq!(github.step, Step::Github);
+        assert!(!has_back(&github));
     }
 
     #[test]
@@ -2606,14 +2714,21 @@ mod tests {
         update(&mut state, Message::Back, &Data::default());
         assert_eq!(state.step, Step::Github);
         update(&mut state, Message::Back, &Data::default());
-        assert_eq!(state.step, Step::Provider);
+        assert_eq!(state.step, Step::Github, "GitHub's two ways are where the dialog opened");
     }
 
+    /// The catalog of [`State::new`] still opens every provider, and only from there: on any other
+    /// step a provider is no message to react to.
     #[test]
-    fn disabled_providers_do_nothing() {
-        let mut state = at_catalog();
-        update(&mut state, Message::ChooseProvider(Provider::Slack), &Data::default());
-        assert_eq!(state.step, Step::Provider, "Slack is disabled");
+    fn a_provider_is_chosen_only_on_the_catalog() {
+        for provider in Provider::ALL {
+            let mut state = at_catalog();
+            update(&mut state, Message::ChooseProvider(provider), &Data::default());
+            assert_eq!(state.step, provider.first_step(), "{provider:?}");
+        }
+        let mut state = at_github();
+        update(&mut state, Message::ChooseProvider(Provider::Mail), &Data::default());
+        assert_eq!(state.step, Step::Github);
     }
 
     #[test]
@@ -2705,8 +2820,23 @@ mod tests {
         super::super::launch::demo_data()
     }
 
+    /// The dialog opened where `demo` starts ([`Demo::start`]), the way the accounts page opens it,
+    /// with the request it sends as it opens answered by the demo.
+    fn opened(demo: Demo, data: &Data) -> State {
+        let (mut state, action) = match demo.start() {
+            Start::At(provider) => State::at(provider, data),
+            Start::TorroMail => State::torromail(),
+        };
+        if let Action::Send(request) = action
+            && let Some(answer) = super::super::launch::demo_answer(&request, data)
+        {
+            answered(&mut state, &Ok(answer));
+        }
+        state
+    }
+
     fn at_mail(demo: Demo) -> State {
-        let mut state = State::new();
+        let mut state = opened(demo, &data_with_caldav());
         drive(&mut state, demo_messages(demo));
         state
     }
@@ -3185,12 +3315,11 @@ mod tests {
     #[test]
     fn back_walks_the_mail_steps_in_reverse() {
         let mut state = at_mail(Demo::Services);
-        for expected in [Step::MailPassword, Step::MailAddress, Step::Provider] {
+        for expected in [Step::MailPassword, Step::MailAddress, Step::MailAddress] {
             update(&mut state, Message::Back, &Data::default());
             assert_eq!(state.step, expected);
         }
-        update(&mut state, Message::ChooseProvider(Provider::Mail), &Data::default());
-        assert_eq!(state.step, Step::MailAddress);
+        assert!(!has_back(&state), "the address is where Mail's Add opens the dialog");
     }
 
     #[test]
@@ -3264,12 +3393,26 @@ mod tests {
         }
     }
 
-    /// A dialog opened as the accounts page opens it, with TorroMail's `accounts` listed.
+    /// The step TorroMail as "Import from TorroMail…" opens it, with TorroMail's `accounts` listed.
     fn with_torromail(accounts: Vec<TorroMailAccount>) -> State {
-        let (mut state, ask) = State::open();
-        assert!(matches!(ask, Action::Send(Request::TorroMailAccounts)), "the dialog asks as it opens");
+        let (mut state, ask) = State::torromail();
+        assert!(matches!(ask, Action::Send(Request::TorroMailAccounts)), "the step asks as it opens");
+        assert_eq!((state.step, state.origin), (Step::TorroMail, Step::TorroMail));
         assert!(answered(&mut state, &Ok(Response::TorroMailAccounts { accounts })));
         state
+    }
+
+    /// Task S.30: Accounts offers the import only while TorroMail has an account the step could
+    /// take over – not one the suite cannot sign in to, not one it has already.
+    #[test]
+    fn the_import_is_offered_only_with_an_account_to_take_over() {
+        let mut gmail = torromail_account("g", "anna@gmail.com");
+        gmail.unsupported = Some("Signs in with Google".into());
+        let mut known = torromail_account("k", "anna@mailbox.org");
+        known.connected = true;
+        assert!(!can_import(&[]));
+        assert!(!can_import(&[gmail.clone(), known.clone()]));
+        assert!(can_import(&[gmail, known, torromail_account("p", "anna@posteo.de")]));
     }
 
     #[test]
@@ -3289,8 +3432,7 @@ mod tests {
         let action = press("p", &mut state);
         assert!(matches!(action, Action::Send(Request::ImportTorroMailAccount { ref id }) if id == "p"), "{action:?}");
         assert!(matches!(press("f", &mut state), Action::None), "one at a time");
-        update(&mut state, Message::ChooseProvider(Provider::Mail), &data);
-        assert_eq!(state.step, Step::Provider, "the catalog waits for the take-over");
+        assert!(!has_back(&state), "the list is where the dialog opened");
         drop(view(&state, &data));
 
         let done = Response::MailConnected {
@@ -3301,7 +3443,7 @@ mod tests {
         };
         assert!(answered(&mut state, &Ok(done)));
         assert!(state.torromail.accounts[0].connected && state.torromail.imported);
-        assert_eq!((state.step, state.error.as_deref()), (Step::Provider, None));
+        assert_eq!((state.step, state.error.as_deref()), (Step::TorroMail, None));
         assert!(matches!(press("f", &mut state), Action::Send(Request::ImportTorroMailAccount { .. })), "the next one");
         drop(view(&state, &data));
     }
@@ -3314,11 +3456,18 @@ mod tests {
         let message = "The password could not be read from TorroMail. Enter it to connect.";
         assert!(answered(&mut state, &Err(message.into())));
         assert_eq!(state.torromail.failed, Some(("f".to_string(), message.to_string())));
-        assert_eq!((state.step, state.error.as_deref()), (Step::Provider, None), "the row says it, not the footer");
+        assert_eq!((state.step, state.error.as_deref()), (Step::TorroMail, None), "the row says it, not the footer");
         drop(view(&state, &data));
 
         update(&mut state, Message::EnterTorroMailPassword("f".into()), &data);
         assert_eq!((state.step, state.provider), (Step::MailPassword, Provider::Mail));
+        // Back leads through the address to TorroMail's list, and on again.
+        update(&mut state, Message::Back, &data);
+        assert_eq!(state.step, Step::MailAddress);
+        assert!(has_back(&state), "the dialog opened at TorroMail's list");
+        update(&mut state, Message::Back, &data);
+        assert_eq!(state.step, Step::TorroMail);
+        update(&mut state, Message::EnterTorroMailPassword("f".into()), &data);
         update(&mut state, Message::PasswordChanged(Secret::new("typed")), &data);
         update(&mut state, Message::Continue, &data);
         assert_eq!(state.step, Step::MailServices);
@@ -3344,26 +3493,35 @@ mod tests {
         }
     }
 
+    /// The step TorroMail says what it is waiting for, that TorroMail has nothing, or why the list
+    /// could not be read – the list is all the step has.
     #[test]
-    fn without_torromail_the_catalog_is_as_before() {
-        let (mut state, _) = State::open();
-        assert!(answered(&mut state, &Err("TorroMail's state.json is not valid JSON".into())), "taken quietly");
-        assert_eq!(state.error, None);
+    fn the_torromail_step_says_why_it_lists_nothing() {
+        let (mut state, _) = State::torromail();
+        assert!(state.torromail.asking);
+        drop(view(&state, &Data::default()));
+        let broken = "TorroMail's state.json is not valid JSON";
+        assert!(answered(&mut state, &Err(broken.into())));
+        assert_eq!((state.step, state.error.as_deref()), (Step::TorroMail, Some(broken)));
         assert!(offer_group(&state.torromail).is_none());
         assert!(!answered(&mut state, &Err("no template".into())), "afterwards the steps take their answers");
         let empty = with_torromail(Vec::new());
-        assert!(offer_group(&empty.torromail).is_none(), "no TorroMail accounts, no question");
+        assert!(offer_group(&empty.torromail).is_none() && empty.error.is_none(), "no accounts, no list");
+        drop(view(&empty, &Data::default()));
     }
 
     #[test]
     fn the_torromail_demos_lead_where_they_say() {
         for (demo, step) in [
-            (Demo::TorroMailFailed, Step::Provider),
+            (Demo::TorroMail, Step::TorroMail),
+            (Demo::TorroMailFailed, Step::TorroMail),
             (Demo::TorroMailPassword, Step::MailPassword),
-            (Demo::TorroMailDone, Step::Provider),
+            (Demo::TorroMailDone, Step::TorroMail),
         ] {
+            assert_eq!(demo.start(), Start::TorroMail, "{demo:?}");
             let messages = demo_messages(demo);
-            assert!(matches!(messages.first(), Some(Message::UseTorroMail(_))), "{demo:?}");
+            assert_eq!(messages.is_empty(), demo == Demo::TorroMail, "{demo:?}");
+            assert!(messages.first().is_none_or(|first| matches!(first, Message::UseTorroMail(_))), "{demo:?}");
             let mut state = with_torromail(vec![
                 torromail_account("tm-posteo", "anna.example@posteo.de"),
                 torromail_account("tm-fastmail", "anna@fastmail.com"),
@@ -3450,9 +3608,9 @@ mod tests {
         assert_eq!(AiProvider::Anthropic.china_url(), None);
     }
 
+    /// The AI providers as AI's "Add" opens them: the search went out.
     fn at_ai() -> State {
-        let mut state = at_catalog();
-        let action = update(&mut state, Message::ChooseProvider(Provider::Ai), &Data::default());
+        let (state, action) = State::at(Provider::Ai, &Data::default());
         assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}");
         assert_eq!(state.step, Step::AiChoose);
         state
@@ -3523,7 +3681,7 @@ mod tests {
         update(&mut state, Message::Back, &Data::default());
         assert_eq!(state.step, Step::AiChoose);
         update(&mut state, Message::Back, &Data::default());
-        assert_eq!(state.step, Step::Provider);
+        assert_eq!(state.step, Step::AiChoose, "where AI's Add opened the dialog");
         assert!(
             matches!(send(&mut state, Message::OpenAiKeyPage), Action::OpenUrl(url) if Some(url.as_str()) == AiProvider::OpenRouter.key_url())
         );
@@ -3560,7 +3718,8 @@ mod tests {
             (Demo::AiServer, Step::AiServer),
             (Demo::AiDone, Step::Done),
         ] {
-            let mut state = at_catalog();
+            assert_eq!(demo.start(), Start::At(Provider::Ai), "{demo:?}");
+            let mut state = opened(demo, &data);
             for message in demo_messages(demo) {
                 if let Action::Send(request) = update(&mut state, message, &data) {
                     let answer = super::super::launch::demo_answer(&request, &data).expect("the demo answers");
@@ -3577,8 +3736,7 @@ mod tests {
 
     /// The topics step of ntfy at `server`, with `topics` (name, label) typed into its rows.
     fn at_ntfy_topics(server: &str, topics: &[(&str, &str)]) -> State {
-        let mut state = at_catalog();
-        send(&mut state, Message::ChooseProvider(Provider::Ntfy));
+        let (mut state, _) = State::at(Provider::Ntfy, &Data::default());
         assert_eq!(state.step, Step::NtfyServer);
         send(&mut state, Message::NtfyServerChanged(server.into()));
         send(&mut state, Message::Continue);
@@ -3706,7 +3864,7 @@ mod tests {
         send(&mut state, Message::Back);
         assert_eq!(state.step, Step::NtfyServer, "back to the address");
         send(&mut state, Message::Back);
-        assert_eq!(state.step, Step::Provider);
+        assert_eq!(state.step, Step::NtfyServer, "where ntfy's Add opened the dialog");
     }
 
     #[test]
@@ -3719,7 +3877,8 @@ mod tests {
             (Demo::NtfyLogin, Step::NtfyLogin),
             (Demo::NtfyDone, Step::Done),
         ] {
-            let mut state = at_catalog();
+            assert_eq!(demo.start(), Start::At(Provider::Ntfy), "{demo:?}");
+            let mut state = opened(demo, &data);
             for message in demo_messages(demo) {
                 if let Action::Send(request) = update(&mut state, message, &data) {
                     let answer = super::super::launch::demo_answer(&request, &data).expect("the demo answers");

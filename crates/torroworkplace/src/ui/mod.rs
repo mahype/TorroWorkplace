@@ -497,6 +497,15 @@ impl Ui {
             true => ui.perform(Action::ListDesigns),
             false => Task::none(),
         };
+        // The demo's start on Accounts asks for TorroMail's accounts as opening it does; with a
+        // service the first load does (it waits for the core).
+        let import = match demo && ui.section == Section::Accounts && accounts::unlisted(&ui.accounts) {
+            true => {
+                let ask = accounts::opened(&mut ui.accounts);
+                ui.perform(ask)
+            }
+            false => Task::none(),
+        };
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
@@ -509,6 +518,7 @@ impl Ui {
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
             size,
             designs,
+            import,
             target,
         ]);
         (ui, task)
@@ -556,23 +566,32 @@ impl Ui {
                 self.drawer = true;
                 vec![]
             }
-            Open::Wizard => vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)],
+            Open::AccountsEmpty => {
+                self.data.accounts.clear();
+                vec![Message::Select(Section::Accounts)]
+            }
+            Open::WizardNextcloud => vec![
+                Message::Select(Section::Accounts),
+                Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)),
+            ],
             Open::WizardGithub | Open::WizardToken => {
                 let mut messages = vec![
                     Message::Select(Section::Accounts),
-                    Message::Accounts(accounts::Message::AddAccount),
-                    Message::Accounts(accounts::Message::Wizard(wizard::Message::ChooseProvider(
-                        wizard::Provider::GitHub,
-                    ))),
+                    Message::Accounts(accounts::Message::Add(wizard::Provider::GitHub)),
                 ];
                 if open == Open::WizardToken {
                     messages.push(Message::Accounts(accounts::Message::Wizard(wizard::Message::PasteToken)));
                 }
                 messages
             }
+            // The dialog opens where the demo state starts (task S.30): at a group's "Add" or at
+            // "Import from TorroMail…".
             Open::WizardMail(demo) | Open::WizardAi(demo) => {
-                let mut messages =
-                    vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)];
+                let start = match demo.start() {
+                    wizard::Start::At(provider) => accounts::Message::Add(provider),
+                    wizard::Start::TorroMail => accounts::Message::ImportTorroMail,
+                };
+                let mut messages = vec![Message::Select(Section::Accounts), Message::Accounts(start)];
                 messages.extend(
                     wizard::demo_messages(demo)
                         .into_iter()
@@ -836,8 +855,13 @@ impl Ui {
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
-                // The packs may have changed in the folder since the page was last open.
-                if section == Section::Appearance { Action::ListDesigns } else { Action::None }
+                match section {
+                    // The packs may have changed in the folder since the page was last open.
+                    Section::Appearance => Action::ListDesigns,
+                    // Whether TorroMail has an account to import (task S.30).
+                    Section::Accounts => accounts::opened(&mut self.accounts),
+                    _ => Action::None,
+                }
             }
             Message::ToggleMenu(menu) => {
                 self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
@@ -921,14 +945,24 @@ impl Ui {
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
                 }
+                // A window that starts on Accounts asks for TorroMail's accounts once the core
+                // answers, as choosing the page does (task S.30).
+                let unlisted = accounts::unlisted(&self.accounts);
+                let import = match unlisted && self.section == Section::Accounts && self.data.error.is_none() {
+                    true => {
+                        let ask = accounts::opened(&mut self.accounts);
+                        self.perform(ask)
+                    }
+                    false => Task::none(),
+                };
                 // No canvas keeps a cache: the next frame draws with the new design, the task
                 // loads its fonts.
                 if let Some(task) = design {
-                    return Task::batch([target, task.map(Message::Design)]);
+                    return Task::batch([target, import, task.map(Message::Design)]);
                 }
                 // The assistant's page asks for its new client's activity once the list has it.
                 let agents = agents.map_or_else(Task::none, |action| self.perform(action));
-                return Task::batch([target, agents]);
+                return Task::batch([target, agents, import]);
             }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
@@ -1045,10 +1079,11 @@ impl Ui {
                 self.close_menus();
                 Action::None
             }
-            // "New" here means a new account, the one thing the control centre creates.
+            // "New" here means a new account, the one thing the control centre creates. Which kind
+            // is chosen by the "Add" of its group (task S.30), so it opens the accounts' list.
             Switcher::New => {
                 self.select(Section::Accounts);
-                accounts::update(&mut self.accounts, accounts::Message::AddAccount, &self.data)
+                accounts::opened(&mut self.accounts)
             }
         }
     }
@@ -1714,7 +1749,8 @@ mod tests {
         assert!(general::unlisted(&real.general));
         assert!(real.update(Message::Select(Section::Appearance)).units() > 0, "opening the page asks the core");
         assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
-        assert!(real.update(Message::Select(Section::Accounts)).units() == 0, "other pages do not");
+        assert!(real.update(Message::Select(Section::Workspaces)).units() == 0, "other pages do not");
+        assert!(real.update(Message::Select(Section::Accounts)).units() > 0, "Accounts asks for TorroMail's accounts");
     }
 
     /// A design chosen on the Appearance page is drawn in this window at once and saved; a reload that
@@ -1840,6 +1876,8 @@ mod tests {
         let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::Switcher(Switcher::New));
         assert_eq!(ui.section, Section::Accounts, "New in the switcher adds an account");
+        assert!(ui.accounts.wizard.is_none(), "where its group's Add chooses the kind (task S.30)");
+        let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)));
         assert!(ui.accounts.wizard.is_some());
         let _ = ui.update(Message::Switcher(Switcher::Toggle));
         assert_eq!(ui.menu, Some(Menu::Switcher));
@@ -1890,7 +1928,7 @@ mod tests {
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
         }
-        let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
+        let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Mail)));
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
         }
@@ -1900,7 +1938,7 @@ mod tests {
     fn page_dialogs_lie_over_the_whole_window() {
         let mut ui = ui(Section::Accounts);
         assert!(ui.page_overlay().is_none());
-        let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
+        let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Mail)));
         assert!(ui.page_overlay().is_some(), "the add-account dialog is a window layer");
         let _ = ui.update(Message::Select(Section::Overview));
         assert!(ui.page_overlay().is_none(), "another section shows no dialog of the accounts page");
@@ -2094,9 +2132,20 @@ mod tests {
 
     #[test]
     fn the_open_states_go_where_a_click_would() {
-        let wizard = started(&["--demo", "--open", "wizard"]);
+        let wizard = started(&["--demo", "--open", "wizard-nextcloud"]);
         assert_eq!(wizard.section, Section::Accounts);
         assert!(wizard.accounts.wizard.is_some() && wizard.page_overlay().is_some());
+        // Task S.30: opening Accounts asked the demo's TorroMail, whose Posteo account is new.
+        assert!(wizard.accounts.torromail.as_ref().is_some_and(|accounts| !accounts.is_empty()));
+        let empty = started(&["--demo", "--open", "accounts-empty"]);
+        assert_eq!((empty.section, empty.data.accounts.len()), (Section::Accounts, 0));
+        assert!(empty.page_overlay().is_none());
+        let start = started(&["--demo", "--section", "accounts"]);
+        assert!(start.accounts.torromail.is_some(), "a start on Accounts asks too");
+        for state in ["wizard-torromail", "wizard-torromail-failed", "wizard-torromail-done"] {
+            let import = started(&["--demo", "--open", state]);
+            assert!(import.accounts.wizard.is_some() && import.page_overlay().is_some(), "{state}");
+        }
 
         let first = wizard.data.accounts[0].id.clone();
         let detail = started(&["--demo", "--open", "account-detail", "--section", "general"]);

@@ -1,13 +1,23 @@
-//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2): the
-//! accounts as rows of one settings group per provider (status dot, label on one line, status and
-//! last sync below, chevron), "Add account" in the header bar – always, also with accounts; a
-//! detail page per account with groups for the status ("Sync now"), the calendars and task lists
+//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2, fixed groups
+//! since S.30): the accounts as rows of fixed settings groups (status dot, label on one line,
+//! status and last sync below, chevron), in this order and also without an account – Nextcloud,
+//! Mail (with the CalDAV accounts of a mail provider), GitHub, AI, ntfy ([`Group`]); an account of
+//! a kind none of them holds gets a group of its own at the end. Each group says in a sentence
+//! what belongs there and ends with its "Add" ([`Message::Add`]), which opens the add-account
+//! dialog (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of
+//! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
+//! has an account to take over: the page asks for TorroMail's accounts when it opens ([`opened`])
+//! and after the dialog closes, not with every reload. Under AI stands the data rule "Mail to
+//! cloud models" (`settings.set_setting mail_to_cloud`, task C.17), for the assistant and all its
+//! bots.
+//!
+//! A detail page per account has groups for the status ("Sync now"), the calendars and task lists
 //! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
 //! "Remove account…" behind a confirmation that names the account and acts on it alone. A
 //! sign-in in progress (an entry without an id) is a "Signing in…" row without a detail page.
-//! Empty: a sentence about what to add. The add flow is `wizard.rs` (task S.6); it and the confirmation
-//! are dialogs over the whole window ([`overlay`]). The shell hands the answers to requests to
-//! [`answered`], so the dialog shows the outcome of its own requests.
+//! The dialog and the confirmation are dialogs over the whole window ([`overlay`]). The shell
+//! hands the answers to requests to [`answered`], so the dialog shows the outcome of its own
+//! requests.
 //!
 //! A GitHub account (task G.1) has no calendars or lists yet: its detail page shows what the
 //! token's scopes allow and what is missing ([`github_permissions`]) in place of them.
@@ -50,9 +60,10 @@
 //!
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
 //! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the services of a mail
-//! account, and `OpenApp` for the buttons that open a window. The pure parts (relative time, status
-//! text, whether a collection is shown, which accounts are listed) are plain functions with unit
-//! tests.
+//! account, `OpenApp` for the buttons that open a window, `TorroMailAccounts` for the import and
+//! `SetSetting { key: MailToCloud }` for the data rule. The pure parts (relative time, status text,
+//! whether a collection is shown, which accounts are listed, the groups) are plain functions with
+//! unit tests.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -70,11 +81,14 @@ use torro_gui::dialog::frame as dialog_frame;
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Status, empty_state};
+use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
 use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
-use torro_ipc::{AccountInfo, MailView, NtfyTopicView, NtfyView, Request, Response, ServiceState, TopicName};
+use torro_ipc::{
+    AccountInfo, MailView, NtfyTopicView, NtfyView, Request, Response, ServiceState, SettingKey, TopicName,
+    TorroMailAccount,
+};
 use torro_mail::{MailFormat, Notify, Role, Security, Services};
 use torro_pim::AccountState;
 
@@ -99,6 +113,12 @@ pub struct State {
     pub topic: Option<TopicEdit>,
     /// The "Change login" dialog of the open ntfy account.
     pub login: Option<LoginChange>,
+    /// TorroMail's accounts as the last answer listed them (task S.30): whether the group Mail
+    /// offers "Import from TorroMail…" ([`wizard::can_import`]). `None` until an answer came; a
+    /// list that could not be read counts as empty.
+    pub torromail: Option<Vec<TorroMailAccount>>,
+    /// `TorroMailAccounts` was sent by the page and has not answered.
+    asking_torromail: bool,
 }
 
 /// The topic dialog of an ntfy account's page (task E5.14). For a new topic the name and label are
@@ -270,7 +290,13 @@ impl State {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    AddAccount,
+    /// The "Add" of a group (task S.30): the add-account dialog at that provider's first step.
+    Add(wizard::Provider),
+    /// "Import from TorroMail…" of the group Mail (task S.30): the dialog at TorroMail's accounts.
+    ImportTorroMail,
+    /// The switch of the data rule under AI (task C.17, moved here with S.30): whether cloud models
+    /// read the mail the assistant and its bots may read – a setting of the suite, not a right.
+    MailToCloud(bool),
     Wizard(wizard::Message),
     /// Opens the detail page of an account.
     Open(String),
@@ -347,17 +373,42 @@ pub fn escape(state: &State) -> Option<Message> {
     }
 }
 
+/// The page opens (task S.30): it asks for TorroMail's accounts, so the group Mail knows whether to
+/// offer the import. The shell sends the returned request when Accounts is chosen or the window
+/// starts on it; the answer comes back through [`answered`].
+pub fn opened(state: &mut State) -> Action {
+    state.asking_torromail = true;
+    Action::Send(Request::TorroMailAccounts)
+}
+
+/// The page has neither TorroMail's accounts nor asked for them: a window that started on Accounts
+/// before the core answered asks with its first good load.
+pub fn unlisted(state: &State) -> bool {
+    state.torromail.is_none() && !state.asking_torromail
+}
+
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
-        // The dialog asks for TorroMail's accounts as it opens (task M7.4).
-        Message::AddAccount => {
-            let (wizard, ask) = wizard::State::open();
+        // The AI providers ask for the servers on this computer as they open.
+        Message::Add(provider) => {
+            let (wizard, ask) = wizard::State::at(provider, data);
             state.wizard = Some(wizard);
             ask
         }
+        // The step asks for TorroMail's accounts as it opens (task M7.4).
+        Message::ImportTorroMail => {
+            let (wizard, ask) = wizard::State::torromail();
+            state.wizard = Some(wizard);
+            ask
+        }
+        // The app key's: only a person lets mail out (task C.17, `Request::kept_for_people`).
+        Message::MailToCloud(on) => {
+            Action::Send(Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::Value::Bool(on) })
+        }
+        // An account may have come from TorroMail or gone: the import asks again.
         Message::Wizard(wizard::Message::Close) => {
             state.wizard = None;
-            Action::None
+            opened(state)
         }
         Message::Wizard(message) => match state.wizard.as_mut() {
             Some(wizard) => wizard::update(wizard, message, data),
@@ -721,11 +772,23 @@ fn password_request(account: &AccountInfo, password: Secret) -> Option<Request> 
 }
 
 /// The answer to a request the shell sent: the add-account dialog, the password dialog and the
-/// server dialog take the answers to their own requests ([`wizard::answered`]). Returns whether
-/// one did; then the shell shows no notice.
+/// server dialog take the answers to their own requests ([`wizard::answered`]), the page TorroMail's
+/// accounts it asked for ([`opened`]). Returns whether one did; then the shell shows no notice.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    // The list is the page's whoever asked; an open step TorroMail gets it too.
+    let listed = match result {
+        Ok(Response::TorroMailAccounts { accounts }) => {
+            state.torromail = Some(accounts.clone());
+            state.asking_torromail = false;
+            true
+        }
+        _ => false,
+    };
     if let Some(wizard) = state.wizard.as_mut() {
-        return wizard::answered(wizard, result);
+        return wizard::answered(wizard, result) || listed;
+    }
+    if listed {
+        return true;
     }
     if let Some(change) = state.password.as_mut().filter(|change| change.sending) {
         match refusal(result) {
@@ -767,6 +830,13 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         }
         return true;
     }
+    // Nothing else of the page waits: an error is the answer to TorroMail's list. The import is a
+    // shortcut, so a list that cannot be read only leaves the button out, quietly.
+    if state.asking_torromail && matches!(result, Err(_) | Ok(Response::Error { .. })) {
+        state.asking_torromail = false;
+        state.torromail.get_or_insert_default();
+        return true;
+    }
     false
 }
 
@@ -792,7 +862,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(account, data, now),
-        None => list(data, now),
+        None => list(state, data, now),
     }
 }
 
@@ -872,21 +942,12 @@ fn password_dialog<'a>(change: &'a PasswordChange, account: &'a AccountInfo) -> 
     dialog(body.push(buttons), widgets::POPOVER_WIDTH, Message::ClosePassword)
 }
 
-/// The header bar of the page: "Add account" on the list; on an account's detail its label with
-/// a back button to the list.
-pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
-    if let Some(account) = selected(state, data) {
-        return Header { sub_page: Some((account.label.clone(), Message::Back)), actions: Vec::new() };
-    }
-    let add = match class {
-        SizeClass::Wide | SizeClass::Medium => {
-            widgets::text_button(Some(Icon::Plus), tr("Add account"), style::button::primary, Some(Message::AddAccount))
-        }
-        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
-            widgets::compact_button(Icon::Plus, tr("Add account"), style::button::primary, Some(Message::AddAccount))
-        }
-    };
-    Header { sub_page: None, actions: vec![add] }
+/// The header bar of the page: on an account's detail its label with a back button to the list.
+/// The list has no button of its own since task S.30: each group carries its "Add", so there is
+/// no primary button in every size class.
+pub fn header<'a>(state: &'a State, data: &'a Data, _class: SizeClass) -> Header<'a, Message> {
+    let sub_page = selected(state, data).map(|account| (account.label.clone(), Message::Back));
+    Header { sub_page, actions: Vec::new() }
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
@@ -973,15 +1034,97 @@ pub fn account_detail(state: &AccountState, now: DateTime<Utc>) -> String {
     }
 }
 
-/// The providers of `accounts`, each once, in the order they first appear: one group per provider.
-fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<&'a str> {
-    let mut kinds: Vec<&str> = Vec::new();
-    for account in accounts {
-        if !kinds.contains(&account.kind.as_str()) {
-            kinds.push(&account.kind);
+/// A fixed group of the list (task S.30, `docs/settings.md` › Accounts): always shown, also
+/// without an account, in the order of [`Group::ALL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Nextcloud,
+    /// Mail accounts and the CalDAV accounts of a mail provider (kinds `mail` and `caldav`).
+    Mail,
+    GitHub,
+    Ai,
+    Ntfy,
+}
+
+impl Group {
+    const ALL: [Group; 5] = [Group::Nextcloud, Group::Mail, Group::GitHub, Group::Ai, Group::Ntfy];
+
+    /// The kinds of account (`AccountInfo::kind`) the group lists.
+    fn kinds(self) -> &'static [&'static str] {
+        match self {
+            Group::Nextcloud => &["nextcloud"],
+            Group::Mail => &["mail", "caldav"],
+            Group::GitHub => &["github"],
+            Group::Ai => &[AI_KIND],
+            Group::Ntfy => &[NTFY_KIND],
         }
     }
-    kinds
+
+    /// The provider the group's "Add" opens the dialog at.
+    fn provider(self) -> wizard::Provider {
+        match self {
+            Group::Nextcloud => wizard::Provider::Nextcloud,
+            Group::Mail => wizard::Provider::Mail,
+            Group::GitHub => wizard::Provider::GitHub,
+            Group::Ai => wizard::Provider::Ai,
+            Group::Ntfy => wizard::Provider::Ntfy,
+        }
+    }
+
+    fn title(self) -> String {
+        provider_name(self.kinds()[0])
+    }
+
+    /// The sentence under the group: what belongs here.
+    fn about(self) -> &'static str {
+        match self {
+            Group::Nextcloud => tr("Calendars and tasks from your Nextcloud."),
+            Group::Mail => tr("Mailboxes, and the calendars and tasks of the same provider."),
+            Group::GitHub => tr("Issues, pull requests and projects from GitHub."),
+            Group::Ai => tr("Models for the assistant and its bots, on this computer or in the cloud."),
+            Group::Ntfy => tr("Notifications from your servers and scripts, by topic."),
+        }
+    }
+
+    /// The words of the group's "Add" button.
+    fn add_label(self) -> &'static str {
+        match self {
+            Group::Nextcloud => tr("Add Nextcloud…"),
+            Group::Mail => tr("Add mail account…"),
+            Group::GitHub => tr("Add GitHub account…"),
+            Group::Ai => tr("Add AI provider…"),
+            Group::Ntfy => tr("Add ntfy server…"),
+        }
+    }
+}
+
+/// One group of the list: a fixed [`Group`], or a kind of account none of them holds, as a group
+/// of its own (named by [`provider_name`], without "Add").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Listed<'a> {
+    Fixed(Group),
+    Other(&'a str),
+}
+
+impl Listed<'_> {
+    fn holds(self, kind: &str) -> bool {
+        match self {
+            Listed::Fixed(group) => group.kinds().contains(&kind),
+            Listed::Other(other) => other == kind,
+        }
+    }
+}
+
+/// The groups of the list: every fixed group in its order, accounts or not, then each kind of
+/// `accounts` that no fixed group holds, once, in the order it first appears.
+fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<Listed<'a>> {
+    let mut groups: Vec<Listed<'a>> = Group::ALL.into_iter().map(Listed::Fixed).collect();
+    for account in accounts {
+        if !groups.iter().any(|group| group.holds(&account.kind)) {
+            groups.push(Listed::Other(&account.kind));
+        }
+    }
+    groups
 }
 
 /// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago". A time in the future
@@ -1025,23 +1168,70 @@ fn selected<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+/// The fixed groups, each with its accounts, its sentence and its "Add", and the data rule under AI;
+/// then a group for each kind of account none of them holds. A group without an account is its
+/// "Add" and its sentence, so the page is never empty.
+fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     // The accounts first, then the sign-ins in progress, so a new row appears below the others.
     let entries: Vec<&AccountInfo> = listed(&data.accounts).chain(pending(&data.accounts)).collect();
-    if entries.is_empty() {
-        return empty_state(
-            tr("No accounts yet."),
-            tr("Add your Nextcloud or a mail provider to see calendars and tasks in the apps."),
-        );
-    }
-    let groups = providers(&entries).into_iter().map(|kind| {
-        let rows = entries
+    let mut page = column![].spacing(layout::section_gap());
+    for group in providers(&entries) {
+        let mut rows: Vec<Element<'a, Message>> = entries
             .iter()
-            .filter(|account| account.kind == kind)
-            .map(|account| if account.id.is_empty() { pending_row(account) } else { account_row(account, now) });
-        widgets::group(provider_name(kind), rows.collect(), None)
+            .filter(|account| group.holds(&account.kind))
+            .map(|account| if account.id.is_empty() { pending_row(account) } else { account_row(account, now) })
+            .collect();
+        let fixed = match group {
+            Listed::Fixed(fixed) => fixed,
+            Listed::Other(kind) => {
+                page = page.push(widgets::group(provider_name(kind), rows, None));
+                continue;
+            }
+        };
+        rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
+        page = page.push(widgets::group(fixed.title(), rows, Some(fixed.about().to_string())));
+        if fixed == Group::Ai {
+            page = page.push(data_rule_group(data.settings.mail_to_cloud));
+        }
+    }
+    page.into()
+}
+
+/// The group Mail offers "Import from TorroMail…": the last list TorroMail gave has an account the
+/// step TorroMail can take over ([`wizard::can_import`]).
+fn offers_import(state: &State) -> bool {
+    state.torromail.as_deref().is_some_and(wizard::can_import)
+}
+
+/// The last row of a fixed group: its "Add", and in Mail "Import from TorroMail…" next to it while
+/// TorroMail has an account to take over. Ghost buttons on the content axis like "Add topic…": the
+/// page has no primary button, and the groups are many.
+fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
+    let add = widgets::text_button(
+        Some(Icon::Plus),
+        group.add_label(),
+        style::button::ghost,
+        Some(Message::Add(group.provider())),
+    );
+    let import = import.then(|| {
+        widgets::text_button(None, tr("Import from TorroMail…"), style::button::ghost, Some(Message::ImportTorroMail))
     });
-    column(groups).spacing(layout::section_gap()).into()
+    let buttons = row![add].push(import).spacing(space::s()).align_y(Alignment::Center);
+    row_frame(on_axis(buttons.into()), false)
+}
+
+/// "Mail to cloud models" under the group AI (task C.17, here since S.30): off, only AI accounts
+/// on the person's own computers read mail; on, models elsewhere too. The sentence under it says
+/// that it holds for the assistant and every bot.
+fn data_rule_group<'a>(mail_to_cloud: bool) -> Element<'a, Message> {
+    let switch = toggler(mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
+    let detail = match mail_to_cloud {
+        false => tr("Off: only AI accounts on your own computers read mail"),
+        true => tr("Mail goes to the model's provider and can't be taken back"),
+    };
+    let row = setting_row(None, tr("Mail to cloud models"), Some(detail.to_string()), switch);
+    let footer = tr("Holds for the assistant and all its bots, whatever their rights allow.");
+    widgets::group(tr("Data rule"), vec![row], Some(footer.to_string()))
 }
 
 /// A sign-in in progress: attention dot, the server and "Signing in…". Not pressable: there is
@@ -1055,19 +1245,26 @@ fn pending_row<'a>(account: &'a AccountInfo) -> Element<'a, Message> {
 /// One account in the list: status dot, label, status and last sync, and a chevron; the whole row
 /// opens the detail page.
 fn account_row<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
+    let dot = widgets::status_dot(status_line(&account.state).tone.status());
+    let row = setting_row(Some(dot), account.label.as_str(), Some(row_detail(account, now)), chevron());
+    pressable(row, Some(Message::Open(account.id.clone())))
+}
+
+/// The line under an account's name in the list. An AI account never syncs: "Last synced" would
+/// say nothing true about it. An ntfy account listens instead, so its topics are what matters. In
+/// the group Mail a CalDAV account says what it is, as its page does (task S.30).
+fn row_detail(account: &AccountInfo, now: DateTime<Utc>) -> String {
     let line = status_line(&account.state);
-    let dot = widgets::status_dot(line.tone.status());
-    // An AI account never syncs: "Last synced" would say nothing true about it. An ntfy account
-    // listens instead, so its topics are what matters.
-    let detail = match (&account.ntfy, &account.state) {
+    match (&account.ntfy, &account.state) {
         (Some(view), AccountState::Connected { problem: None, .. }) => {
             format!("{} · {}", line.text, topics_text(view.topics.len()))
         }
         _ if account.kind == AI_KIND || account.ntfy.is_some() => line.text,
+        _ if account.kind == "caldav" => {
+            format!("{} · {}", provider_name("caldav"), account_detail(&account.state, now))
+        }
         _ => account_detail(&account.state, now),
-    };
-    let row = setting_row(Some(dot), account.label.as_str(), Some(detail), chevron());
-    pressable(row, Some(Message::Open(account.id.clone())))
+    }
 }
 
 /// The name of an account and its provider, at the top of its detail page.
@@ -1837,12 +2034,127 @@ mod tests {
         assert_eq!(account_detail(&AccountState::NotConnected, now), tr("Needs sign-in"));
     }
 
+    fn of_kind(id: &str, kind: &str) -> AccountInfo {
+        AccountInfo { kind: kind.into(), ..account(id, connected(None, None)) }
+    }
+
+    /// Task S.30: the groups stand in a fixed order whatever accounts there are, also with none; a
+    /// kind no group holds gets a group of its own at the end, once.
     #[test]
-    fn one_group_per_provider_in_order_of_appearance() {
-        let mut github = account("github:anna", connected(None, None));
-        github.kind = "github".into();
-        let (a, b) = (account("nextcloud:a", connected(None, None)), account("nextcloud:b", connected(None, None)));
-        assert_eq!(providers(&[&a, &github, &b]), ["nextcloud", "github"]);
+    fn the_groups_are_fixed_and_unknown_kinds_follow_at_the_end() {
+        let fixed: Vec<Listed<'_>> = Group::ALL.into_iter().map(Listed::Fixed).collect();
+        assert_eq!(providers(&[]), fixed, "every group without an account");
+        assert_eq!(
+            Group::ALL,
+            [Group::Nextcloud, Group::Mail, Group::GitHub, Group::Ai, Group::Ntfy],
+            "Nextcloud, Mail, GitHub, AI, ntfy"
+        );
+        let (github, slack, a, b, more) = (
+            of_kind("github:anna", "github"),
+            of_kind("slack:anna", "slack"),
+            of_kind("nextcloud:a", "nextcloud"),
+            of_kind("nextcloud:b", "nextcloud"),
+            of_kind("slack:ben", "slack"),
+        );
+        let groups = providers(&[&slack, &github, &a, &b, &more]);
+        assert_eq!(groups[..5], fixed[..], "the order does not follow the accounts");
+        assert_eq!(groups[5..], [Listed::Other("slack")], "the unknown kind once, at the end");
+        let titles: Vec<String> = Group::ALL.into_iter().map(Group::title).collect();
+        assert_eq!(titles, [tr("Nextcloud"), tr("Mail"), tr("GitHub"), tr("AI"), "ntfy"]);
+        // Every page builds: no accounts, accounts, an unknown kind.
+        drop(view(&State::default(), &Data::default()));
+        drop(view(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() }));
+    }
+
+    /// Task S.30: a mail provider's CalDAV account stands in the group Mail and says "CalDAV".
+    #[test]
+    fn a_caldav_account_is_listed_under_mail_as_caldav() {
+        let mail = Listed::Fixed(Group::Mail);
+        assert!(mail.holds("mail") && mail.holds("caldav") && !mail.holds("nextcloud"));
+        let data = caldav_data();
+        let caldav = &data.accounts[0];
+        let detail = row_detail(caldav, Utc::now());
+        assert!(detail.starts_with(&format!("{} · ", tr("CalDAV"))), "{detail}");
+        assert!(detail.contains(tr("Connected")), "{detail}");
+        let nextcloud = account("nextcloud:anna", connected(None, None));
+        assert!(!row_detail(&nextcloud, Utc::now()).contains(tr("CalDAV")));
+    }
+
+    /// Task S.30: each group's "Add" opens the dialog at its own provider (the AI providers ask for
+    /// the servers on this computer at once); the header bar has no button of its own.
+    #[test]
+    fn every_group_adds_its_own_provider_and_the_header_has_no_button() {
+        let data = two_accounts();
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini] {
+            assert!(header(&State::default(), &data, class).actions.is_empty(), "{class:?}");
+        }
+        let providers = Group::ALL.map(Group::provider);
+        assert_eq!(
+            providers,
+            [
+                wizard::Provider::Nextcloud,
+                wizard::Provider::Mail,
+                wizard::Provider::GitHub,
+                wizard::Provider::Ai,
+                wizard::Provider::Ntfy
+            ]
+        );
+        for provider in providers {
+            let mut state = State::default();
+            let action = update(&mut state, Message::Add(provider), &data);
+            assert!(state.wizard.is_some() && overlay(&state, &data).is_some(), "{provider:?}");
+            match provider {
+                wizard::Provider::Ai => assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}"),
+                _ => assert!(matches!(action, Action::None), "{provider:?}: {action:?}"),
+            }
+        }
+    }
+
+    /// Task S.30: the page asks for TorroMail's accounts as it opens and when the dialog closes,
+    /// keeps the answer, and offers the import only while an account can be taken over.
+    #[test]
+    fn the_import_is_offered_only_with_an_account_to_take_over() {
+        let data = Data::default();
+        let mut state = State::default();
+        assert!(unlisted(&state) && !offers_import(&state));
+        assert!(matches!(opened(&mut state), Action::Send(Request::TorroMailAccounts)));
+        assert!(!unlisted(&state), "asked");
+        let demo = super::super::launch::demo_answer(&Request::TorroMailAccounts, &super::super::launch::demo_data())
+            .expect("the demo's TorroMail");
+        assert!(answered(&mut state, &Ok(demo)));
+        assert!(offers_import(&state), "the demo's Posteo account can be taken over");
+        let Some(accounts) = state.torromail.as_mut() else { panic!("listed") };
+        for account in accounts.iter_mut() {
+            account.connected = true;
+        }
+        assert!(!offers_import(&state), "everything is here already");
+        assert!(matches!(
+            update(&mut state, Message::ImportTorroMail, &data),
+            Action::Send(Request::TorroMailAccounts)
+        ));
+        assert!(state.wizard.is_some() && overlay(&state, &data).is_some());
+        let closed = update(&mut state, Message::Wizard(wizard::Message::Close), &data);
+        assert!(matches!(closed, Action::Send(Request::TorroMailAccounts)), "asks again after the dialog");
+        assert!(state.wizard.is_none());
+        // A list that cannot be read leaves the button out, quietly, and is asked for no more.
+        let mut broken = State::default();
+        opened(&mut broken);
+        assert!(answered(&mut broken, &Err("TorroMail's state.json is not valid JSON".into())));
+        assert!(!offers_import(&broken) && !unlisted(&broken));
+        assert!(!answered(&mut broken, &Err("no template".into())), "only the one answer it waited for");
+        drop(view(&state, &data));
+    }
+
+    /// Task S.30: the data rule stands under AI and its switch sends the setting, never a right.
+    #[test]
+    fn the_data_rule_under_ai_sends_the_setting() {
+        let data = Data::default();
+        for on in [true, false] {
+            let action = update(&mut State::default(), Message::MailToCloud(on), &data);
+            let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
+            assert_eq!((key, value), (SettingKey::MailToCloud, serde_json::json!(on)));
+            drop(data_rule_group(on));
+        }
     }
 
     #[test]
@@ -1856,7 +2168,7 @@ mod tests {
         update(&mut state, Message::AskRemove, &data);
         assert!(overlay(&state, &data).is_some());
         update(&mut state, Message::CancelRemove, &data);
-        update(&mut state, Message::AddAccount, &data);
+        update(&mut state, Message::Add(wizard::Provider::Nextcloud), &data);
         assert!(overlay(&state, &data).is_some());
         assert!(matches!(escape(&state), Some(Message::Wizard(wizard::Message::Close))));
     }
@@ -1899,15 +2211,6 @@ mod tests {
         assert!(state.selected.is_none() && !state.confirm_remove, "back on the list");
         let again = update(&mut state, Message::Remove, &data);
         assert!(matches!(again, Action::None), "no account open: nothing to remove");
-    }
-
-    #[test]
-    fn adding_is_possible_with_accounts() {
-        let data = two_accounts();
-        let state = State::default();
-        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini] {
-            assert_eq!(header(&state, &data, class).actions.len(), 1, "{class:?} offers Add account");
-        }
     }
 
     #[test]
@@ -1967,10 +2270,14 @@ mod tests {
     fn the_dialog_takes_only_its_own_answers() {
         let mut state = State::default();
         assert!(!answered(&mut state, &Err("no template".into())), "no dialog: the shell shows it");
-        let ask = update(&mut state, Message::AddAccount, &Data::default());
+        let ask = update(&mut state, Message::ImportTorroMail, &Data::default());
         assert!(matches!(ask, Action::Send(Request::TorroMailAccounts)), "it opens asking for TorroMail's accounts");
         assert!(answered(&mut state, &Ok(Response::TorroMailAccounts { accounts: Vec::new() })));
         assert!(!answered(&mut state, &Err("no template".into())), "the dialog waits for nothing else");
+        // A dialog at a provider takes the answers of its own steps only.
+        let mut github = State::default();
+        update(&mut github, Message::Add(wizard::Provider::GitHub), &Data::default());
+        assert!(!answered(&mut github, &Err("no template".into())));
     }
 
     #[test]

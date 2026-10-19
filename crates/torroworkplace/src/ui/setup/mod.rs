@@ -199,7 +199,7 @@ pub struct State {
     /// The GitHub login signed in to in this setup.
     github_login: Option<String>,
     /// The add-account dialog over the setup (task W.7): the mail path, TorroMail's accounts or
-    /// ntfy, exactly as Accounts › Add account has them.
+    /// ntfy, exactly as the groups of Accounts open it (task S.30).
     dialog: Option<wizard::State>,
     /// Inbox sources switched in this setup, by their key: shown at once, the core follows.
     muted: BTreeMap<String, bool>,
@@ -415,7 +415,7 @@ pub enum Message {
     OpenTokenPage,
     /// "Add mail account": the add-account dialog on its mail path.
     AddMail,
-    /// "Take over from TorroMail": the add-account dialog with TorroMail's accounts on top.
+    /// "Take over from TorroMail": the add-account dialog at its step TorroMail (task S.30).
     TakeOverTorroMail,
     /// "Subscribe to ntfy topics": the add-account dialog on its ntfy path.
     AddNtfy,
@@ -616,7 +616,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
 }
 
 /// Opens the add-account dialog at the AI provider `provider`: its key, or the address of another
-/// server. The dialog looks for local servers as it opens, like Accounts › Add account.
+/// server. The dialog looks for local servers as it opens, like the "Add" of Accounts › AI.
 fn open_ai_dialog(state: &mut State, provider: AiProvider, data: &Data) -> Action {
     let search = open_dialog(state, Some(wizard::Provider::Ai), data);
     if let Some(dialog) = state.dialog.as_mut() {
@@ -625,24 +625,18 @@ fn open_ai_dialog(state: &mut State, provider: AiProvider, data: &Data) -> Actio
     search
 }
 
-/// Opens the add-account dialog over the setup: on the path of `provider`, or on the catalog with
-/// TorroMail's accounts on top (it asks for them as it opens).
+/// Opens the add-account dialog over the setup the way Accounts does (task S.30): at the first step
+/// of `provider` ([`wizard::State::at`]), or at TorroMail's accounts ([`wizard::State::torromail`],
+/// which asks for them as it opens).
 fn open_dialog(state: &mut State, provider: Option<wizard::Provider>, data: &Data) -> Action {
     state.close_forms();
     state.error = None;
-    match provider {
-        Some(provider) => {
-            let mut dialog = wizard::State::new();
-            let action = wizard::update(&mut dialog, wizard::Message::ChooseProvider(provider), data);
-            state.dialog = Some(dialog);
-            action
-        }
-        None => {
-            let (dialog, ask) = wizard::State::open();
-            state.dialog = Some(dialog);
-            ask
-        }
-    }
+    let (dialog, action) = match provider {
+        Some(provider) => wizard::State::at(provider, data),
+        None => wizard::State::torromail(),
+    };
+    state.dialog = Some(dialog);
+    action
 }
 
 /// A source's key for the switches kept here: kind and name.

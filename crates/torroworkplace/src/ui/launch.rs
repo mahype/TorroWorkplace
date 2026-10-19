@@ -1,6 +1,6 @@
 //! The start parameters of the control centre and the sample data of `--demo`.
 //!
-//! `torroworkplace ui --demo --open wizard --appearance light` shows a state without a service
+//! `torroworkplace ui --demo --open wizard-mail --appearance light` shows a state without a service
 //! and without clicking, so `torro-design-review` can photograph every state from a script. In
 //! demo mode the window never talks to a socket and never stores anything: the pages get
 //! [`demo_data`], and every request a page wants to send is dropped (see `Ui::perform`).
@@ -40,15 +40,18 @@ use torro_ntfy::NtfyError;
 /// A state the control centre can start in (`--demo --open <state>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Open {
-    /// The add-account dialog.
-    Wizard,
+    /// Accounts without any account (task S.30): every group with only its sentence and "Add".
+    AccountsEmpty,
+    /// The add-account dialog as Nextcloud's "Add" opens it: the server address.
+    WizardNextcloud,
     /// The add-account dialog at GitHub's two ways to sign in.
     WizardGithub,
     /// The add-account dialog at the field for a GitHub token.
     WizardToken,
-    /// The add-account dialog on the mail account path (tasks M7.2, M5.1) or the ntfy path (task
-    /// E5.14), at the state the script of [`wizard::demo_messages`] leads to; the demo's search
-    /// answers for a few domains, its ntfy server wants a login ([`demo_answer`]).
+    /// The add-account dialog on the mail account path (tasks M7.2, M5.1), the ntfy path (task
+    /// E5.14) or at TorroMail's accounts (task S.30), opened where [`wizard::Demo::start`] says and
+    /// at the state the script of [`wizard::demo_messages`] leads to; the demo's search answers for
+    /// a few domains, its ntfy server wants a login ([`demo_answer`]).
     WizardMail(wizard::Demo),
     /// The add-account dialog on the AI provider path (task KI.1a), at the state the script of
     /// [`wizard::demo_messages`] leads to; the demo finds Ollama on this computer, not LM Studio.
@@ -148,8 +151,9 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 78] = [
-        ("wizard", Open::Wizard),
+    pub const ALL: [(&'static str, Open); 80] = [
+        ("accounts-empty", Open::AccountsEmpty),
+        ("wizard-nextcloud", Open::WizardNextcloud),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
         ("wizard-mail", Open::WizardMail(wizard::Demo::Address)),
@@ -164,6 +168,7 @@ impl Open {
         ("wizard-mail-services", Open::WizardMail(wizard::Demo::Services)),
         ("wizard-mail-mail-only", Open::WizardMail(wizard::Demo::MailOnly)),
         ("wizard-mail-done", Open::WizardMail(wizard::Demo::Done)),
+        ("wizard-torromail", Open::WizardMail(wizard::Demo::TorroMail)),
         ("wizard-torromail-failed", Open::WizardMail(wizard::Demo::TorroMailFailed)),
         ("wizard-torromail-password", Open::WizardMail(wizard::Demo::TorroMailPassword)),
         ("wizard-torromail-done", Open::WizardMail(wizard::Demo::TorroMailDone)),
@@ -1442,6 +1447,11 @@ mod tests {
         for (name, _) in Open::ALL {
             assert!(text.contains(name), "{name} is listed in: {text}");
         }
+        // Task S.30: the catalog is gone, so is its word; the error names the dialog's new states.
+        let err = Launch::parse(&args(&["--demo", "--open", "wizard"])).expect_err("no catalog any more");
+        let text = err.to_string();
+        assert!(text.contains("wizard-torromail") && text.contains("wizard-nextcloud"), "{text}");
+        assert!(Open::ALL.iter().all(|(name, _)| *name != "wizard"));
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
@@ -1452,7 +1462,7 @@ mod tests {
         let err = Launch::parse(&args(&["--appearance", "sepia"])).expect_err("unknown appearance");
         assert!(err.to_string().ends_with("valid values: light, dark, system"), "{err}");
         assert_eq!(Launch::parse(&args(&["--demo", "--open"])), Err(LaunchError::MissingValue("--open")));
-        assert_eq!(Launch::parse(&args(&["--open", "wizard"])), Err(LaunchError::NeedsDemo("--open")));
+        assert_eq!(Launch::parse(&args(&["--open", "wizard-mail"])), Err(LaunchError::NeedsDemo("--open")));
         assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
         let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");

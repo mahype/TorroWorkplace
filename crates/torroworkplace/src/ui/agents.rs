@@ -96,7 +96,7 @@ use torro_ipc::api::{Outbound, RightsTemplate, Selection, has_command};
 // Shared with the bot editor of the assistant (task B.5); `ui/bots.rs` and `ui/assistant.rs` reach
 // them here as before.
 pub(super) use torro_ipc::api::{active_level, levels, shows_area};
-use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response, SettingKey};
+use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
 use torro_pim::Collection;
 
 use super::accounts::relative_time;
@@ -353,9 +353,6 @@ pub enum Message {
     Confirm(Confirm),
     /// A segment of "Send on my behalf".
     Outbound(Outbound),
-    /// "Mail to cloud models" under Mail of the assistant and its bots (task C.17): the data rule,
-    /// a setting of the suite (`settings.set_setting mail_to_cloud`), not a right.
-    MailToCloud(bool),
     /// "All" (`true`) or "Selected" of a selection.
     All(Pick, bool),
     /// A switch of a selection: the id and whether it is on now.
@@ -440,10 +437,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 agent: None,
                 rights: Some(state.choice.clone()),
             })
-        }
-        // The app key's: only a person lets mail out (task C.17, `Request::kept_for_people`).
-        Message::MailToCloud(on) => {
-            Action::Send(Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::Value::Bool(on) })
         }
         Message::RepoInput(text) => {
             state.repo_input = text;
@@ -1649,10 +1642,7 @@ pub(super) fn rights_groups<'a>(
     kind: &str,
     title: &'a str,
 ) -> Vec<Element<'a, Message>> {
-    let mut groups = vec![
-        access_group(rights, column, kind, title, data.settings.mail_to_cloud),
-        confirm_group(rights.confirm, column),
-    ];
+    let mut groups = vec![access_group(rights, column, kind, title), confirm_group(rights.confirm, column)];
     for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
         groups.push(selection_group(repo_input, pick, rights, data, column));
     }
@@ -1662,15 +1652,9 @@ pub(super) fn rights_groups<'a>(
 /// The level of every area a client of `kind` can be given ([`shows_area`]), each followed by its
 /// admin switch where it has one. The switch is a row of its own, not indented: admin commands are
 /// allowed per area whatever the level (`docs/api.md`, "Rechte"), so its line names the area
-/// instead. Under Mail of the assistant and its bots, the data rule ([`data_rule_row`]): it decides
-/// whether cloud models get the mail the rights grant (`mail_to_cloud`).
-fn access_group<'a>(
-    rights: &Rights,
-    column: Option<f32>,
-    kind: &str,
-    title: &'a str,
-    mail_to_cloud: bool,
-) -> Element<'a, Message> {
+/// instead. The data rule ("Mail to cloud models") is no right: it stands under Accounts › AI
+/// since task S.30.
+fn access_group<'a>(rights: &Rights, column: Option<f32>, kind: &str, title: &'a str) -> Element<'a, Message> {
     let mut rows = Vec::new();
     for area in Area::ALL.into_iter().filter(|&area| shows_area(area, kind)) {
         let granted = rights.area(area);
@@ -1685,9 +1669,6 @@ fn access_group<'a>(
         if area == Area::Mail && can_send(granted.level) {
             rows.extend(outbound_rows(rights, column));
         }
-        if area == Area::Mail && granted.level != Level::NoAccess && shows_data_rule(kind) {
-            rows.push(data_rule_row(mail_to_cloud, column));
-        }
         if has_admin(area) {
             let switch = toggler(granted.admin)
                 .size(style::CHECK_SIZE)
@@ -1698,25 +1679,6 @@ fn access_group<'a>(
     }
     let footer = tr("Write includes reading, Full also deletes and overwrites.");
     widgets::group(title, rows, Some(footer.to_string()))
-}
-
-/// Whether the rights of a client of `kind` meet the data rule (task C.17): the assistant's and its
-/// bots', which may answer with a cloud model. Other agents read through their own key whatever
-/// their rights grant.
-fn shows_data_rule(kind: &str) -> bool {
-    kind == ASSISTANT_CLIENT || kind == BOT_CLIENT
-}
-
-/// "Mail to cloud models" (task C.17): off, only AI accounts on the person's computers read the
-/// mail granted above; on, models elsewhere too. Named after what it still does: coding agents are
-/// not offered as engines any more (task C.18, issue #219), what it blocks has not changed.
-fn data_rule_row<'a>(mail_to_cloud: bool, column: Option<f32>) -> Element<'a, Message> {
-    let switch = toggler(mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
-    let detail = match mail_to_cloud {
-        false => tr("Off: only AI accounts on your own computers read mail"),
-        true => tr("Mail goes to the model's provider and can't be taken back"),
-    };
-    setting_row(None, tr("Mail to cloud models"), Some(detail.to_string()), in_column(switch, column))
 }
 
 /// The line under "Send on my behalf": what sending means, so "Never" reads as a real choice.
@@ -2165,24 +2127,14 @@ mod tests {
         assert!(!level(&mut rights, Area::Bots, Level::Read), "a bot never gets the row");
     }
 
-    /// Task C.17: the data rule stands under Mail of the assistant and its bots only, and its switch
-    /// sends the setting, never a change of rights.
+    /// Task S.30: the data rule left the rights; the access group of the assistant with mail builds
+    /// without it (it stands under Accounts › AI now, `accounts::data_rule_group`).
     #[test]
-    fn the_data_rule_is_shown_for_the_assistant_and_bots_and_sends_the_setting() {
-        assert!(shows_data_rule(ASSISTANT_CLIENT) && shows_data_rule(BOT_CLIENT));
-        assert!(!shows_data_rule("claude-code") && !shows_data_rule(HOOK_CLIENT));
-        let data = data();
-        let mut state = opened("c1", &data);
-        for on in [true, false] {
-            let action = update(&mut state, Message::MailToCloud(on), &data);
-            let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
-            assert_eq!((key, value), (SettingKey::MailToCloud, serde_json::json!(on)));
-        }
-        assert!(state.draft.is_none(), "no change of rights");
+    fn the_rights_have_no_data_rule_any_more() {
         let mut rights = Rights::assistant();
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
-        for on in [false, true] {
-            let _ = access_group(&rights, None, ASSISTANT_CLIENT, "Access", on);
+        for kind in [ASSISTANT_CLIENT, BOT_CLIENT, "claude-code"] {
+            drop(access_group(&rights, None, kind, "Access"));
         }
     }
 

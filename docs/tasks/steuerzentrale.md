@@ -722,7 +722,7 @@ S.30 und S.32 können parallel laufen (gemeinsam nur `ui/launch.rs`: S.30 die De
 nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 → S.33 → S.34 → S.35.
 
 ### S.30 Accounts: feste Gruppen, „Add“ je Gruppe, TorroMail-Import, Datenregel
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS nicht möglich, Design-Review steht aus)
 - **Modell:** Sonnet · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`, `crates/torroworkplace/src/ui/wizard.rs`,
   `crates/torroworkplace/src/ui/setup/mod.rs`, `crates/torroworkplace/src/ui/mod.rs`,
   `crates/torroworkplace/src/ui/launch.rs`, `crates/torroworkplace/src/ui/agents.rs` (nur die Datenregel heraus)
