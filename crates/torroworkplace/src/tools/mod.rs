@@ -128,8 +128,7 @@ impl Tools {
             let path = place::write_new(&folder, &place::file_name(&title), &bytes)
                 .map_err(|err| ToolError::Write(err.kind().to_string()))?;
             let maker = client.as_deref().map_or(Maker::App, Maker::Client);
-            let entry = files::new_id().map(|file| FileEntry::of(file, path.clone(), &title, id, maker, &bytes));
-            let kept = entry.and_then(|entry| register.add(entry.clone()).map(|()| entry));
+            let kept = register.add_new(|file| FileEntry::of(file, path.clone(), &title, id, maker, &bytes));
             kept.map_err(|err| {
                 // A file nobody can open, save or attach again is not left behind.
                 eprintln!("torroworkplace: a PDF was made but cannot be kept: {err}");
