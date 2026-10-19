@@ -28,8 +28,11 @@
 //! **The mail window's strip** (task E11.2, [`Rows::edge_strip`]): flat cells from edge to edge
 //! under the lines instead (`widgets::row_strip`, [`with_row_strip`], [`strip_row`]) – Archive,
 //! Delete, Later, Task (its icon red), Mute…, then the rest ([`edge_actions`]) –, its words all or
-//! none by the row's width ([`strip_words`]); the selected row grows by [`edge_strip_height`]. The
-//! hub and the app feed keep the strip above.
+//! none by the row's width ([`strip_words`]). The strip stands where the preview line stands and
+//! the row keeps its height (issue #227): the chosen row's text starts where the unchosen row's
+//! does ([`lines_top`]), its preview and account give way, and the row grows only if a design
+//! package leaves too little room for two lines and the strip ([`edge_strip_extra`]). The hub and
+//! the app feed keep the strip above.
 //!
 //! **Urgency never by colour alone** (E3.2b): while urgent entries are open, the list of a view is
 //! grouped like torrotasks – a head "Waiting for you" over them and "Other" over the rest
@@ -122,7 +125,7 @@ pub struct Rows<'a> {
     pub ai: bool,
     /// The strip of the selected row (task E11.2): `true` in the mail window – flat cells from edge
     /// to edge below the row's lines ([`with_row_strip`], in the order of [`edge_actions`]), the row
-    /// [`edge_strip_height`] higher –, `false` in the hub and the app feed, which keep their strip of
+    /// [`edge_strip_extra`] higher, mostly not at all –, `false` in the hub and the app feed, which keep their strip of
     /// buttons where the text starts ([`with_strip`], [`strip_height`]). Cards ignore it.
     pub edge_strip: bool,
 }
@@ -278,8 +281,8 @@ pub fn row_span(items: &[Item], index: usize, look: Look, width: f32) -> Option<
 }
 
 /// [`row_span`] for a list whose selected row carries the strip `edge_strip` says ([`Rows::edge_strip`],
-/// task E11.2): the row under the cursor is [`strip_height_in`] higher – the mail window's strip
-/// from edge to edge, else the hub's.
+/// task E11.2): the row under the cursor is [`strip_height_in`] higher – the mail window's row
+/// not (issue #227) but for a design package with a small row, else the hub's strip.
 pub fn row_span_in(items: &[Item], index: usize, look: Look, width: f32, edge_strip: bool) -> Option<(f32, f32)> {
     let item = items.get(index)?;
     if look.cards() {
@@ -344,14 +347,6 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 /// while it is under the cursor, with its action bar ([`actions`]) in a strip below it then. A click opens it in the panel.
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let selected = rows.selected == Some(item.id.as_str());
-    let content = if item.source.kind == SourceKind::Mail {
-        // An invitation (task E8.3c): the calendar's mark before the time, as in a folder's row.
-        let mut marks: Vec<(Element<'a, Message>, f32)> = item.category.map(mail::category_mark).into_iter().collect();
-        marks.extend(item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)));
-        mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width)
-    } else {
-        notice_content(item, rows, width)
-    };
     let mut height = row_height_of(item);
     let mut actions = if selected {
         entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai, rows.folders, rows.now)
@@ -365,9 +360,20 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
         actions = edge_actions(actions);
     }
     let actions = rows.anchors.mark(true, actions);
+    let mail = item.source.kind == SourceKind::Mail;
+    // The mail window's strip takes the preview's place (issue #227): the chosen row shows two lines.
+    let preview = !(rows.edge_strip && mail && !actions.is_empty());
+    let content = if mail {
+        // An invitation (task E8.3c): the calendar's mark before the time, as in a folder's row.
+        let mut marks: Vec<(Element<'a, Message>, f32)> = item.category.map(mail::category_mark).into_iter().collect();
+        marks.extend(item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)));
+        mail_content_in(MailLines { marks, ..MailLines::of(item, rows) }, width, preview)
+    } else {
+        notice_content(item, rows, width)
+    };
     let on_press = Message::Select(item.id.clone());
     let row = if rows.edge_strip {
-        strip_row(content, with_row_strip(actions, width), selected, on_press, height)
+        strip_row(content, with_row_strip(actions, width), line_count(item), selected, on_press, height)
     } else {
         sized_row(with_strip(content, actions, width), selected, on_press, height)
     };
@@ -380,22 +386,37 @@ pub fn strip_height() -> f32 {
     widgets::row_actions_strip_height()
 }
 
-/// The height the mail window's strip adds to the selected row (task E11.2, [`with_row_strip`]):
-/// `widgets::row_strip_height`, its cells and the line above them. The gap between the row's lines
-/// and the strip is the row's own padding below its lines, so it adds nothing.
+/// The height of the mail window's strip (task E11.2, [`with_row_strip`]): `widgets::row_strip_height`,
+/// its cells and the line above them. The gap between the row's lines and the strip is the row's own
+/// padding below its lines.
 pub fn edge_strip_height() -> f32 {
     widgets::row_strip_height()
 }
 
+/// What `strip` high adds to a mail row `row` high whose lines are `line` high (pure, for
+/// [`edge_strip_extra`]): the strip stands where the third line stands, under the two lines that
+/// stay – so nothing, unless the package's sizes leave less than the strip under them. The chosen
+/// row's text starts where the unchosen row's three lines start ([`lines_top_for`]).
+fn edge_strip_extra_for(row: f32, line: f32, strip: f32) -> f32 {
+    let need = lines_top_for(row, 3, line) + 2.0 * line + strip;
+    (need - (row - size::HAIRLINE)).max(0.0)
+}
+
+/// What the mail window's strip adds to the selected mail row (issue #227): nothing in the standard
+/// design and in `plex`, only for a package with a row so low that two lines and the strip do not fit.
+pub fn edge_strip_extra() -> f32 {
+    edge_strip_extra_for(size::row_message(), typo::line_height(typo::body()), edge_strip_height())
+}
+
 /// The height the strip adds to the selected row of a list whose strip is `edge_strip`
-/// ([`Rows::edge_strip`]): [`edge_strip_height`] in the mail window, else [`strip_height`].
+/// ([`Rows::edge_strip`]): [`edge_strip_extra`] in the mail window, else [`strip_height`].
 pub fn strip_height_in(edge_strip: bool) -> f32 {
-    if edge_strip { edge_strip_height() } else { strip_height() }
+    if edge_strip { edge_strip_extra() } else { strip_height() }
 }
 
 /// The mail window's strip of `actions` under a row `width` wide (task E11.2): `widgets::row_strip`,
 /// its words as [`strip_words`] says; `None` without actions, so the row stays as it is. Lay it out
-/// below the row's lines with [`strip_row`], which takes the row [`edge_strip_height`] higher.
+/// below the row's lines with [`strip_row`], which keeps the row's height.
 pub(crate) fn with_row_strip<'a>(actions: Vec<RowAction<'a, Message>>, width: f32) -> Option<Element<'a, Message>> {
     if actions.is_empty() {
         return None;
@@ -844,18 +865,20 @@ pub(crate) fn sized_row<'a>(
     on_press: Message,
     height: f32,
 ) -> Element<'a, Message> {
-    strip_row(content, None, selected, on_press, height)
+    strip_row(content, None, 0, selected, on_press, height)
 }
 
-/// [`sized_row`] with the mail window's `strip` ([`with_row_strip`], task E11.2) below the row's
-/// button: the button with the lines takes `height` less the line below and the strip
-/// ([`edge_strip_height`]), `content` centred in it – so the row's padding stays above and below
-/// the lines and is the gap to the strip –, the strip under it from the row's left edge to its right
-/// one, outside the row's padding; the bar of the selected row runs down beside both. Without a
-/// strip it is [`sized_row`].
+/// [`sized_row`] with the mail window's `strip` ([`with_row_strip`], task E11.2) at the foot of the
+/// row (issue #227): the button with the text takes `height` less the line below and the strip
+/// ([`edge_strip_height`]), `content` – the row's `lines` lines, without its last – stands at the top
+/// of it, on the height where the unchosen row centres its lines ([`lines_top`], of the row without
+/// [`edge_strip_extra`]), so sender and subject do not move. The strip stands under it from the
+/// row's left edge to its right one, outside the row's padding; the bar of the selected row runs down
+/// beside both. Without a strip it is [`sized_row`].
 pub(crate) fn strip_row<'a>(
     content: Element<'a, Message>,
     strip: Option<Element<'a, Message>>,
+    lines: usize,
     selected: bool,
     on_press: Message,
     height: f32,
@@ -863,13 +886,21 @@ pub(crate) fn strip_row<'a>(
     let pad = layout::row_padding();
     let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
     let height = height - size::HAIRLINE;
-    let lines = if strip.is_some() { height - edge_strip_height() } else { height };
-    let body = button(container(content).center_y(Fill))
-        .width(Fill)
-        .height(lines)
-        .padding(Padding::new(0.0).left(left).right(pad.right))
-        .style(style::button::list_row(selected))
-        .on_press(on_press);
+    let body = match &strip {
+        Some(_) => {
+            let top = lines_top(height + size::HAIRLINE - edge_strip_extra(), lines);
+            button(container(content).align_top(Fill))
+                .width(Fill)
+                .height(height - edge_strip_height())
+                .padding(Padding { top, right: pad.right, bottom: 0.0, left })
+        }
+        None => button(container(content).center_y(Fill))
+            .width(Fill)
+            .height(height)
+            .padding(Padding::new(0.0).left(left).right(pad.right)),
+    }
+    .style(style::button::list_row(selected))
+    .on_press(on_press);
     let body: Element<'a, Message> = match strip {
         Some(strip) => column![body, strip].width(Fill).into(),
         None => body.into(),
@@ -1027,6 +1058,12 @@ pub(crate) fn account_shown(account_name: Option<String>, domain: Option<&str>) 
 /// The content of a mail row `width` wide (task E3.9): avatar, then sender · domain · (marks) ·
 /// time, subject (· count), preview (· account, unless it is the sender's domain: [`account_shown`]).
 pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
+    mail_content_in(lines, width, true)
+}
+
+/// [`mail_content`], without `with_preview` only its first two lines – the chosen row of the mail
+/// window, where the strip takes the preview's place (issue #227); the account's name goes with it.
+pub(crate) fn mail_content_in<'a>(lines: MailLines<'a>, width: f32, with_preview: bool) -> Element<'a, Message> {
     let room = words_room(width);
     let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
@@ -1056,6 +1093,7 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
     let second = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
 
     // The preview, with the account from two accounts on.
+    let account_name = account_name.filter(|_| with_preview);
     let account_room = account_name.as_deref().map_or(0.0, |name| {
         (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(room / 3.0)
     });
@@ -1065,9 +1103,11 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
         .map(|name| account_cell(account, typo::ellipsize(&name, typo::meta(), account_room - cell_gap())))
         .into_iter()
         .collect();
-    let third = line(preview, ends);
-
-    let words = column![first, second, third].width(Fill);
+    let words = if with_preview {
+        column![first, second, line(preview, ends)].width(Fill)
+    } else {
+        column![first, second].width(Fill)
+    };
     row![avatar(&name, account, new, mark_width()), words].spacing(space::m()).align_y(Alignment::Start).into()
 }
 
@@ -1075,8 +1115,19 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
 /// E3.11, `widgets::row_actions_at`): the row is `height` high with its line, its `lines` lines of
 /// text are centred in it.
 pub(crate) fn first_line_middle(height: f32, lines: usize) -> f32 {
-    let line = typo::line_height(typo::body());
-    (height - size::HAIRLINE - lines as f32 * line) / 2.0 + line / 2.0
+    lines_top(height, lines) + typo::line_height(typo::body()) / 2.0
+}
+
+/// How far below a row's top its `lines` lines of text start when they are centred in the row
+/// `height` high with its line: the row's padding above them. The chosen row of the mail window
+/// starts its text here as well (issue #227), so it does not move when the row is chosen.
+pub(crate) fn lines_top(height: f32, lines: usize) -> f32 {
+    lines_top_for(height, lines, typo::line_height(typo::body()))
+}
+
+/// [`lines_top`] for lines `line` high.
+fn lines_top_for(height: f32, lines: usize, line: f32) -> f32 {
+    (height - size::HAIRLINE - lines as f32 * line) / 2.0
 }
 
 /// How many lines of text `item`'s row has: three for mail, two for a notice with a text, else one.
@@ -1798,26 +1849,46 @@ mod tests {
         assert_eq!(sent(&strip), sent(&before));
     }
 
-    /// Task E11.2: the selected row of the mail window is its row and the strip from edge to edge
-    /// high (`widgets::row_strip_height`: its cells and the line above them), the hub's keeps its
-    /// strip; scrolling to the cursor counts the same heights.
+    /// Issue #227: the selected row of the mail window is as high as any row – its strip (cells
+    /// 28 high and the line above them) stands where the preview stands –, the hub's keeps its strip
+    /// below; scrolling to the cursor counts the same heights.
     #[test]
-    fn the_mail_windows_selected_row_is_as_high_as_row_and_strip() {
+    fn the_mail_windows_selected_row_is_as_high_as_any_row() {
         assert_eq!(edge_strip_height(), widgets::row_strip_height());
-        assert_eq!(edge_strip_height(), size::control_xl() + size::HAIRLINE);
-        assert_eq!(strip_height_in(true), edge_strip_height());
+        assert_eq!(edge_strip_height(), size::control_sm() + size::HAIRLINE);
+        assert_eq!(strip_height_in(true), 0.0, "the standard's row has room for two lines and the strip");
         assert_eq!(strip_height_in(false), strip_height(), "the hub's strip");
         let items = vec![
             mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"),
             mail("Lena Hoffmann", "lena@work.example.org", "anna@work.example.org"),
         ];
         let message = size::row_message();
-        assert_eq!(
-            row_span_in(&items, 1, Look::Rows, 480.0, true),
-            Some((message, 2.0 * message + edge_strip_height()))
-        );
+        assert_eq!(row_span_in(&items, 1, Look::Rows, 480.0, true), Some((message, 2.0 * message)));
         assert_eq!(row_span_in(&items, 1, Look::Rows, 480.0, false), row_span(&items, 1, Look::Rows, 480.0));
         assert_eq!(row_span(&items, 1, Look::Rows, 480.0), Some((message, 2.0 * message + strip_height())));
+    }
+
+    /// Issue #227: the row grows only by what is missing. The standard (92 high, lines 20, strip 29)
+    /// and `plex` (92, 22, 31) need nothing; a package with a row of 72 needs the rest.
+    #[test]
+    fn the_row_grows_only_by_what_the_strip_lacks() {
+        assert_eq!(edge_strip_extra_for(92.0, 20.0, 29.0), 0.0, "the standard");
+        assert_eq!(edge_strip_extra_for(92.0, 22.0, 31.0), 0.0, "plex");
+        assert_eq!(edge_strip_extra_for(72.0, 20.0, 29.0), 3.5, "a row of 72: the strip under two lines");
+        // The grown row has room again.
+        let row = 72.0 + edge_strip_extra_for(72.0, 20.0, 29.0);
+        assert_eq!(lines_top_for(72.0, 3, 20.0) + 40.0 + 29.0, row - size::HAIRLINE);
+        assert_eq!(edge_strip_extra(), 0.0, "the active design");
+    }
+
+    /// Issue #227: the chosen row starts its text where the unchosen row's three lines start.
+    #[test]
+    fn the_chosen_row_starts_its_text_where_the_unchosen_one_does() {
+        let line = typo::line_height(typo::body());
+        let top = lines_top(size::row_message(), 3);
+        assert_eq!(top, (size::row_message() - size::HAIRLINE - 3.0 * line) / 2.0);
+        assert_eq!(first_line_middle(size::row_message(), 3), top + line / 2.0);
+        assert!(top + 2.0 * line + edge_strip_height() <= size::row_message() - size::HAIRLINE + edge_strip_extra());
     }
 
     /// Task E11.2: the strip's cells carry their words all or none, by the row's width. A mail entry's

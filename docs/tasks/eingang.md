@@ -1857,6 +1857,11 @@ Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und L
   (`list::strip_height` für das Mail-Fenster). Zentrale und App Feed behalten `with_strip`; welche Leiste gilt, sagt
   ein neues Feld `edge_strip: bool` in `list::Rows` (und `mail::MailList`), das `App` für Kind `Mail` setzt. Die
   Höhen für das Scrollen zum Cursor (`list::row_span`, `height_of`) rechnen mit derselben Höhe.
+- **Höhe seit #227:** Die Leiste ist `size::control_sm()` 28 hoch (mit der Linie 29) und steht anstelle der
+  Vorschauzeile; die gewählte Zeile bleibt `row_message()` hoch, Absender und Betreff stehen wie in der ungewählten
+  Zeile (`list::lines_top`), der Kontoname entfällt mit der Vorschau. Nur ein Design-Paket mit niedriger Zeile lässt
+  sie um das Fehlende wachsen (`list::edge_strip_extra`). Die Angaben zu `control_xl()` und zu „Höhe mit Leiste“ oben
+  sind der Stand von E11.2.
 - **Reihenfolge** in der Leiste: Archive, Delete, Later, Task (Icon rot, `RowAction::accent`), Mute…, danach, was die
   Zeile heute sonst hat (AI task, Done/Reopen, Antworten einer Einladung vor Later). Einträge: `list::entry_actions`
   neu ordnen; Ordnermails: `mail::message_buttons` (das „…“ bleibt der letzte Knopf). Nichts fällt weg.

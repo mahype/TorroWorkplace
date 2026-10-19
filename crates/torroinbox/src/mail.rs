@@ -1230,8 +1230,9 @@ pub struct MailList<'a> {
     /// The text colour of the theme, for the matches in a passage.
     pub text: Color,
     /// The strip of the selected row (task E11.2, as `list::Rows::edge_strip`): `true` in the mail
-    /// window – flat cells from edge to edge below the lines (`list::with_row_strip`), Archive ·
-    /// Delete · Task · Mute… (`list::edge_actions`) –, else the strip of buttons where the text starts.
+    /// window – flat cells from edge to edge in place of the preview line (`list::with_row_strip`,
+    /// issue #227), Archive · Delete · Task · Mute… (`list::edge_actions`) –, else the strip of buttons
+    /// where the text starts.
     pub edge_strip: bool,
 }
 
@@ -1305,7 +1306,8 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 /// avatar), the start of the text –, [`list::message_height`] high. Under the cursor its action bar
 /// (issue #118) hangs below its lines, as an entry's row – in the mail window (task E11.2,
 /// [`MailList::edge_strip`]) as the strip from edge to edge (`list::with_row_strip`, in the order of
-/// `list::edge_actions`) – and holds what its card offers ([`message_buttons`]), the bell last.
+/// `list::edge_actions`), in place of the preview, so the row keeps its height (issue #227) – and
+/// holds what its card offers ([`message_buttons`]), the bell last.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     // What the mail is (task E12.8), before the other marks: it says most about the row.
@@ -1348,11 +1350,12 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     if !actions.is_empty() {
         height += list::strip_height_in(data.edge_strip);
     }
-    let content = list::mail_content(lines, width);
     let row = if data.edge_strip {
         let strip = list::with_row_strip(list::edge_actions(actions), width);
-        list::strip_row(content, strip, selected, on_press, height)
+        let content = list::mail_content_in(lines, width, strip.is_none());
+        list::strip_row(content, strip, 3, selected, on_press, height)
     } else {
+        let content = list::mail_content(lines, width);
         list::sized_row(list::with_strip(content, actions, width), selected, on_press, height)
     };
     if selected { widgets::anchored(&data.anchors.row, row) } else { row }
