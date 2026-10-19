@@ -5,7 +5,8 @@ Konzept: [eingang.md](../eingang.md). Regeln: [CLAUDE.md](../../CLAUDE.md), Abla
 
 E1–E3 bringen den Eingang **ohne Mail und ohne fremde Anmeldung**: Kern, Meldungen der Suite,
 Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mit E4 (Konzept
-[mail.md](../mail.md)), KI mit [ki.md](../ki.md).
+[mail.md](../mail.md)), KI mit [ki.md](../ki.md). Die Kategorien eingehender Mail (E12) haben
+ein eigenes Konzept: [kategorien.md](../kategorien.md).
 
 > **Entschieden 2026-10-12:** Der Kern (E1.1 ff.) wartet nicht mehr auf M7.1/M7.2, die noch niemand
 > begonnen hat. Startet M7.1 parallel, stimmen sich die beiden ab; Konflikte in `torro-ipc`, `core.rs`,
@@ -2616,6 +2617,504 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
 - **API/MCP:** wie E10.2, kein neuer Request.
 - **Abnahme:** Sichtprüfung Breit/Schmal, hell/dunkel; Tests der Nachrichten.
 
+
+## E12 Kategorien eingehender Mail (Issue #221)
+
+Konzept: [kategorien.md](../kategorien.md). Jede Mail bekommt zusätzlich zur Spur eine **Art**:
+Rechnung, Sendung, Werbung, Anmeldecode, Betrugsversuch, Anfrage, Auftrag … Erkannt zuerst aus
+festen Merkmalen, sonst von einem **lokalen Entscheidermodell** über die SystemOne-/Jev-Schnittstelle
+(Ollama ≥ 0.35, `POST <base>/systemone`, Fähigkeit `decision`).
+
+Entschieden am 2026-10-19 (Planung #221, Entscheidungen 1–7 im Issue):
+
+1. Keine dritte Spur. Die Kategorie ist eine eigene Dimension neben „Für mich“/„Zur Info“; an
+   Zählern, Tray-Zahl, Benachrichtigungen und gespeicherten Einträgen ändert sich nichts.
+2. **Eine `choice`-Frage mit den 20 vom Modell entschiedenen Kategorien**, ein Aufruf je Mail, dazu
+   `needs_reply` (`noul`) und `urgency` (`score`). 20 ist die engste dokumentierte Obergrenze
+   (Jev-Referenz); Ollama erlaubt 26. `invitation`, `bounce` und `auto_reply` folgen aus Kopfzeilen
+   und sind keine Optionen der Frage.
+3. Konfidenzschwelle **0,6, fest im Code**, keine Einstellung. Unter der Schwelle steht `other`.
+   Der Wert ist **nicht an echten Mails gemessen**; nachjustiert wird er in einem eigenen Schritt.
+4. **Die Modellwahl läuft über Zuordnungen je Funktion** (`ai.list_assignments`,
+   `ai.set_assignment`, `docs/ki.md`), neu gebaut mit genau einem Funktionsschlüssel
+   `inbox.categorize` und offen für weitere. Verworfen: ein eigenes Feld in `Settings` wie
+   `assistant_default` – dann hätte die Tabelle im Issue keinen `ai.*`-Weg und müsste später
+   migriert werden.
+5. **`Category` wohnt in `torro-mail`**, die übersetzten Beschriftungen in `torro-core`
+   (`torro_core::category`). Grund: `torro-core` hängt von `torro-mail` ab, nicht umgekehrt – ein
+   `tr()` in `torro-mail` wäre ein Abhängigkeitskreis. `torro-inbox` hängt von beiden ab.
+6. **Icon und Farbe je Gruppe (vier), Beschriftung je Kategorie.** Verworfen: 23 Icons und 23
+   Farben – das bräuchte rund 20 neue SVGs und eine Palette, die nicht mehr farbenblind-sicher
+   bleibt.
+7. **Gefiltert wird über ein getyptes Feld** `categories` in `inbox.list_items` und
+   `mail.search_messages`, nicht über einen `category:`-Operator der Suchsprache: Eine Gruppe sind
+   bis zu sieben Kategorien, und ein getyptes Feld ist exakt, ohne Parser-Arbeit und
+   Cursor-verträglich.
+
+Die Seitenleiste wird gegen den **heutigen** Stand geplant (Ordner, „With attachments“,
+„Invitations“); E9.2 („All“/„Later“) und E9.3a/b (Bounces) sind offen. `bounce` steht im Katalog,
+setzt aber niemand, bis E9.3a kommt. Nicht parallel: zwei Aufgaben in `crates/torroinbox`, zwei am
+Katalog (A-, M-, G-, P-Aufgaben), zwei an `crates/torro-ipc`.
+
+```
+E12.1 ─┬─ E12.2 ─┬─ E12.4 ─┬─ E12.6 (braucht auch E12.3 und E12.5)
+       └─ E12.3 ─┘         ├─ E12.5
+                           └─ E12.8 (braucht auch E12.7) ── E12.9
+E12.7 (sofort möglich) ────┘
+E12.10 braucht E12.5 und E12.6
+```
+
+### E12.1 Modell: Kategorie, Gruppe, Herkunft
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/{lib,category}.rs` (neu:
+  `category.rs`), `crates/torro-mail/src/message.rs`, `crates/torro-core/src/{lib,category}.rs`
+  (neu: `category.rs`), `crates/torro-core/src/i18n/de.rs`, `crates/torro-inbox/src/item.rs`
+- **`torro_mail::category`** (Daten, ohne `tr()`, weil `torro-mail` kein `torro-core` kennt):
+  `Category` mit den 23 Schlüsseln aus `docs/kategorien.md` (`#[serde(rename_all = "snake_case")]`,
+  `Serialize`, `Deserialize`, `JsonSchema`, `Copy`, `Hash`, `PartialOrd`, `Ord`), `Category::ALL`
+  in der Reihenfolge des Katalogs, `Category::key()`, `Category::group()`.
+  `CategoryGroup` mit `WaitingForMe`, `PaperTrail`, `Info`, `Junk`, dazu `ALL` und `key()`.
+  `CategoryGroup::categories()` gibt die Kategorien der Gruppe in Katalogreihenfolge.
+  `Category::BY_MODEL`: die genau 20 Kategorien, die das Modell entscheidet – alle außer
+  `Invitation`, `Bounce`, `AutoReply` –, in Katalogreihenfolge; dazu `Category::by_rule_only()`.
+  `CategorySource` mit `Rule`, `Model`, `Person` (`snake_case`), und
+  `MailCategory { category: Category, source: CategorySource, confidence: Option<f32> }`
+  (`confidence` nur bei `Model`, `skip_serializing_if`).
+- **`torro_core::category`** (Beschriftungen): `label(Category) -> &'static str` und
+  `group_label(CategoryGroup) -> &'static str`, beide über `tr("…")` mit den englischen Texten aus
+  `docs/kategorien.md`; `description(Category) -> &'static str` mit der Zeile „Was es ist“, die
+  E12.3 als `criteria` der `choice`-Frage verschickt (**englisch, ohne `tr()`** – sie geht an ein
+  Modell, nicht an einen Menschen). Deutsche Übersetzungen der Beschriftungen in `de.rs`.
+- **Felder:** `MessageSummary::category: Option<MailCategory>` und
+  `torro_inbox::Item::category: Option<MailCategory>`, beide
+  `#[serde(default, skip_serializing_if = "Option::is_none")]`, mit Doc-Kommentar: nur Mail setzt
+  sie, GitHub, Talk und ntfy lassen sie leer; eine Kategorie mit `source: model` ist ein Vorschlag.
+  `torro_mail::Message` nimmt sie über sein `#[serde(flatten)]` von `MessageSummary` mit – nichts zu
+  tun.
+- **Nachzuziehen:** nachgesehen – alle Aufrufstellen bauen `MessageSummary` und `Item` über
+  Struktur-Literale; die neuen Felder brauchen dort je eine Zeile `category: None`
+  (`crates/torroworkplace/src/mail/store.rs`, `crates/torro-inbox/src/demo.rs`,
+  `crates/torro-settings-ui/src/demo.rs`, `crates/torroinbox/src/*` und die Tests). Grep nach
+  `MessageSummary {` und `Item {`.
+- **Oberfläche:** keine. **API/MCP:** keine (die Felder kommen mit E12.4 in den Katalog).
+- **Abnahme:** Tests in `category.rs`: jede Kategorie wird als ihr `key()` serialisiert und zurück
+  gelesen; `Category::ALL` hat 23 Einträge, jede Gruppe ist nicht leer und die Gruppen zusammen
+  ergeben `ALL` ohne Dublette; `Category::BY_MODEL` hat **genau 20** Einträge und enthält
+  `Invitation`, `Bounce`, `AutoReply` nicht; jede Kategorie und jede Gruppe hat eine nicht leere
+  Beschriftung und jede Kategorie eine nicht leere englische `description`. In `de.rs` ein Test,
+  dass jede Beschriftung übersetzt ist (`TORRO_LANG=de`). Übersetzungen im Bericht.
+
+### E12.2 Speicher und feste Regeln
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.1 · **Dateien:**
+  `crates/torroworkplace/src/mail/store.rs`, `crates/torroworkplace/src/mail/query.rs`,
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torro-inbox/src/{item,rules}.rs`,
+  `crates/torroworkplace/src/{inbox,approvals}.rs`, `crates/torro-settings-ui/src/inbox.rs`,
+  `crates/torro-ipc/src/api.rs`, `docs/api-reference.md`
+- **Schema 7** in `store.rs` neben `SCHEMA_V6`: `ALTER TABLE messages ADD COLUMN category TEXT;`,
+  `… category_source TEXT;`, `… category_confidence REAL;`, `… needs_reply INTEGER;`,
+  `… urgency INTEGER;` und
+  `CREATE INDEX messages_by_category ON messages (category, date DESC);`. Die beiden letzten
+  Spalten bleiben vorerst leer und werden von nichts gelesen; sie stehen hier, weil derselbe
+  Modellaufruf sie ohnehin mitbeantwortet (E12.6) und ein späteres Nachrüsten hieße, das Modell
+  über den ganzen Altbestand noch einmal laufen zu lassen. `SCHEMA_VERSION` auf 7,
+  Migration in der vorhandenen `match`-Kette; Zeilen von vorher lesen als `None`. Lesen und
+  Schreiben in denselben Funktionen, die heute `invite_json`/`invite_answer` tragen; eine Mail ohne
+  Kategorie bleibt `NULL`.
+- **Filter:** `query.rs` bekommt ein `Field`/`Test` für die Kategorie, damit `SearchQuery` nach
+  einer Menge von Kategorien filtern kann (`category IN (…)`), kombinierbar mit allem anderen und
+  vor dem Blättern angewandt, damit Seiten und `cursor` halten.
+- **Feste Regeln** in `torro_inbox::rules`: `pub fn mail_category(…) -> Option<MailCategory>` neben
+  `mail_lane`, in dieser Reihenfolge und immer mit `CategorySource::Rule`:
+  1. eine gemerkte Regel für Absender oder Domain (unten),
+  2. `Category::Invitation`, wenn die Mail ein `torro_mail::Invite` trägt,
+  3. `Category::AutoReply`, wenn `Auto-Submitted` etwas anderes als `no` sagt
+     (`MessageTraits::auto_submitted`, dieselbe Prüfung wie in `inbox_feed::bulk_reason`),
+  4. `Category::Spam`, wenn die Mail im Ordner mit der Rolle `torro_mail::Role::Junk` liegt.
+  `Category::Bounce` bleibt frei: der Erkenner kommt mit E9.3a. Keine Regel setzt eine Kategorie
+  über eine schon gespeicherte mit `CategorySource::Person`.
+- **Gemerkte Regeln:** `RuleEffect` bekommt die Variante `Category { category: Category }`, benutzt
+  mit `Rule::sender` bzw. `Rule::domain` wie `inbox.hide_sender`. `rules::mutes`/`drops` bleiben
+  unberührt – eine Kategorieregel verwirft nichts und ändert keine Spur; sie wird nur von
+  `mail_category` gelesen. Die Variante **reicht weiter, als es aussieht** – überall, wo heute
+  über `RuleEffect` entschieden wird, braucht sie einen Arm, sonst baut es nicht oder der Mensch
+  liest einen Allerweltssatz:
+  - `crates/torroworkplace/src/approvals.rs`, der `match` unter `Request::RemoveRule` (heute
+    `Muted`, `Lane`, `NoPopup`) – ein Satz wie „Stop filing mail from … as Invoice“, den Absender
+    und die Kategorie **aus `approvals::Facts`**, nie aus dem Text des Clients.
+  - `crates/torro-settings-ui/src/inbox.rs`, Seite „Rules“: `ordered.sort_by_key` (Reihenfolge),
+    `effect_words` (Beschriftung) und der Treffertext zu `RuleHits` – alle drei `match` über
+    `RuleEffect`.
+  - Die Beschreibungen von `inbox.list_rules` und `inbox.remove_rule` in
+    `crates/torro-ipc/src/api.rs` zählen die Regelarten einzeln auf und bekommen die neue dazu;
+    danach `docs/api-reference.md` neu erzeugen.
+  Der Doc-Kommentar von `Rule` und `RuleEffect` nennt sie ebenfalls.
+- **Beim Eintreffen** (`inbox_feed`, `Inbox::file_mail`): die feste Kategorie wird gleich gesetzt
+  und mit der Mail gespeichert; der Eintrag bekommt sie an `Item::category`. Mail ohne feste
+  Kategorie bleibt vorerst ohne – das Modell kommt mit E12.6.
+- **Oberfläche:** die vorhandene Seite „Rules“ des Notification Hub zeigt die neue Regelart mit.
+  **API:** keine neuen Befehle; `inbox.list_rules` und `inbox.remove_rule` bekommen die neue
+  Regelart in Beschreibung und Schema. **MCP:** keine neuen.
+- **Abnahme:** Test, dass eine Datenbank in Schema 6 auf 7 wandert und ihre Mails erhalten bleiben;
+  Test je fester Regel (Einladung, Abwesenheit, Junk-Ordner, Absenderregel vor allem anderen,
+  `Person` schlägt jede Regel); Test, dass der Filter nach Kategorien über Seiten hinweg hält;
+  Test, dass die Freigabe zum Entfernen einer Kategorieregel Absender und Kategorie nennt und
+  beide aus `Facts` kommen.
+  Prüfbefehle aus `docs/issue-workflow.md` sauber.
+
+### E12.3 SystemOne/Jev im KI-Anbieter
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.1 · **Dateien:**
+  `crates/torro-core/src/ai/{mod,systemone,openai}.rs` (neu: `systemone.rs`),
+  `crates/torroworkplace/src/account/ai.rs`
+- **`torro_core::ai::systemone`** – das Drahtformat, rein und ohne Netz, wie `ai::openai`:
+  `DecisionRequest { model, state, questions }`, `Question` mit `Choice { instructions, criteria:
+  BTreeMap<String, String> }`, `Noul { instructions }`, `Score { instructions, criteria:
+  Vec<String> }`; `DecisionReply { answers }` mit `Answer::Choice { choice, probabilities,
+  confidence }`, `Answer::Noul { noul }` (eine **Wahrscheinlichkeit** 0–1, kein Wahrheitswert),
+  `Answer::Score { score, confidence }` (eine **Zahl**, auch gebrochen). Dazu
+  `decide_body_for(&DecisionRequest) -> serde_json::Value` und
+  `read_decision(&[u8]) -> Result<DecisionReply, AiError>`; Fehler über das vorhandene
+  `openai::error_of`, das keine Schlüssel und keine Serverworte weiterreicht.
+  Grenzen als Konstanten, die engeren der Jev-Referenz: `QUESTIONS_MAX = 8`,
+  `CHOICE_OPTIONS_MAX = 20`, `SCORE_LEVELS_MAX = 10`, `STATE_MAX = 8000` (Zeichen),
+  `INSTRUCTIONS_MAX = 1800`. `decide_body_for` kürzt `state` auf `STATE_MAX` an einer
+  Zeichengrenze; eine Anfrage über den anderen Grenzen ist ein `AiError::Invalid`, kein Panik-Fall.
+- **`decision` als Fähigkeit:** `openai::ollama_decision(&[u8]) -> Option<bool>` neben
+  `ollama_tools`/`ollama_thinking` (dieselbe Hilfsfunktion über `capabilities`);
+  `AiModel::decision: Option<bool>` mit Doc-Kommentar (Ollama ≥ 0.35 nennt sie in `/api/show`;
+  `null`, wo der Server nichts sagt). `OpenAiCompatible::ollama_capabilities` gibt sie mit zurück
+  und `Provider::models` trägt sie ein.
+- **`Provider::decide`:** neue Methode
+  `fn decide<'a>(&'a self, request: &'a DecisionRequest) -> BoxFuture<'a, Result<DecisionReply, AiError>>`
+  mit **Vorgabe-Implementierung**, die `AiError::Invalid` mit einem Satz für Menschen liefert, damit
+  die vorhandenen Test-Implementierungen (`crate::suggest::tests::Fake`,
+  `crate::assistant::model::tests::Scripted`) unverändert bauen und die Schnittstelle object-safe
+  bleibt. `OpenAiCompatible` setzt sie: `POST <base>/systemone` (die Basis endet schon auf `/v1`),
+  nur für `AiProvider::Ollama` – jeder andere Anbieter behält die Vorgabe, weil nur Ollama das
+  Protokoll spricht.
+- **Nachzuziehen:** der Doc-Kommentar oben in `ai/mod.rs` nennt bisher nur Chat; er bekommt einen
+  Absatz über Entscheidermodelle. `crates/torro-ipc` ist nicht betroffen (nachgesehen:
+  `AiModel` wird dort nur weitergereicht) – das Feld erscheint mit E12.4 im Katalogtext.
+- **Oberfläche:** keine. **API/MCP:** keine (`ai.list_models` bekommt das Feld in E12.4).
+- **Abnahme:** Tests in `systemone.rs` gegen die Beispiele aus `docs/kategorien.md › Quellen`: eine
+  Anfrage mit `choice`, `noul` und `score` ergibt den dokumentierten Rumpf; eine Antwort mit allen
+  drei Antwortarten wird gelesen, eine unvollständige wird `AiError::Format`; `state` über
+  `STATE_MAX` wird gekürzt, 21 Optionen sind `AiError::Invalid`. In `account/ai.rs` ein
+  `httpmock`-Test, dass `decide` an `/v1/systemone` geht und die Antwort liest, und dass
+  `ollama_decision` aus `capabilities` gelesen wird. Kein echtes Netz.
+
+### E12.4 Requests, Katalog, MCP
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.2, E12.3 · **Dateien:**
+  `crates/torro-ipc/src/{lib,api,inbox,mail}.rs`, `crates/torro-inbox/src/source.rs`,
+  `crates/torroworkplace/src/{core,inbox,mcp,approvals,audit,daemon}.rs`,
+  `crates/torroworkplace/src/mail/service.rs`, `docs/api.md`, `docs/api-reference.md`
+- Skill `torro-api` laden. Neue Requests mit Katalogeintrag (`Request::operation` ist erschöpfend)
+  und je einem MCP-Tool gleichen Namens mit `_` statt `.`:
+  | Request | Befehl | Zugriff | MCP |
+  |---|---|---|---|
+  | `ListCategories` | `inbox.list_categories` | Read | `inbox_list_categories` |
+  | `SetItemCategory` | `inbox.set_item_category` | Write, mit `remember: true` Admin | `inbox_set_item_category` |
+  | `ClassifyItem` | `inbox.classify_item` | Write | `inbox_classify_item` |
+  | `GetCategorization` | `inbox.get_categorization` | Read | `inbox_get_categorization` |
+  | `CatchUpCategories` | `inbox.catch_up_categories` | **Admin** | `inbox_catch_up_categories` |
+
+  `inbox.catch_up_categories` ist **Admin**, nicht Write: Ein Aufruf stößt bis zu 500 Modellaufrufe
+  je Mailkonto an und belegt den Rechner auf Minuten – das gibt ein Mensch frei, wie bei
+  `inbox.mute_source`. Gerechnet wird nur über die Konten, die der Schlüssel lesen darf.
+- `inbox.list_categories { account }` gibt den Katalog: je Kategorie Schlüssel, Gruppe,
+  Beschriftung, die Beschriftung der Gruppe und die Zahl der ungelesenen Mails. Die Zahlen zählen
+  **nur Mail aus Konten, die der Schlüssel lesen darf** – Leserecht auf `mail` **und** das Konto in
+  `Rights::mail_accounts`, genau wie `inbox.list_items` es für Mail-Einträge tut; ein Schlüssel mit
+  Inbox-Read und ohne Mailrechte bekommt überall 0, nie eine Zahl über ein fremdes Postfach. Die
+  Beschreibung schreibt das fest. Das optionale `account` (`mail:<adresse>`, wie bei
+  `mail.list_folders`) grenzt auf ein Konto ein, damit die Zahl in der Seitenleiste und die Liste
+  daneben nicht auseinanderlaufen. Keine Fremdtexte, also kein `untrusted`.
+- `inbox.set_item_category { id, category, remember }`: `id` ist eine Eintragskennung oder eine
+  Mailkennung (`m:…`), wie `inbox.mute_item` es schon kann. Setzt `CategorySource::Person` an Mail
+  und Eintrag. `remember: true` legt eine `RuleEffect::Category`-Regel für den Absender an – eine
+  dauerhafte Regel, also **Admin** und die Freigabe eines Menschen, wie bei
+  `inbox.set_item_lane { remember }`; `Request::operation` entscheidet das am Feld. Antwort wie
+  `inbox.hide_sender`: die Regel, ob sie neu ist, und die geänderten Kennungen. Eine Mail ohne
+  Absenderadresse kann nicht gemerkt werden (`error`).
+- `inbox.classify_item { id }`: lässt die Mail neu einordnen; löst einen Modellaufruf aus, daher
+  Write. Ein **ausdrückliches** Neu-Einordnen **überschreibt auch eine Kategorie, die der Mensch von
+  Hand gesetzt hat** – anders als der Lauf beim Eintreffen und der Altbestand, die eine Kategorie
+  mit `CategorySource::Person` nie anfassen. Wer den Knopf drückt, will genau das.
+  `not-connected`, wenn kein Entscheidermodell zugeordnet ist oder die Datenregel keines auf diesem
+  Rechner übrig lässt – mit demselben Satz wie `crate::suggest::SuggestError::NoLocalAi`;
+  `unsupported` für einen Eintrag ohne Mail (GitHub, Talk, ntfy), der keine Kategorie bekommt.
+- `inbox.get_categorization`: an/aus, das zugeordnete Modell, und – **nur für die Konten, die der
+  Schlüssel lesen darf**, wie bei `inbox.list_categories` – je Konto der Stand des
+  Altbestands (`messages`, `done`, `state` mit `complete`, `running`, `cancelled`, `not_started`),
+  nach dem Vorbild von `torro_ipc::mail::MailIndexProgress`/`IndexState`.
+- `inbox.catch_up_categories { cancel: bool }`: startet das Nachrechnen des Altbestands oder bricht
+  es ab.
+- **Felder an vorhandenen Befehlen:** `category` kommt mit `Item` und `MessageSummary` aus E12.1
+  automatisch in `inbox.list_items`, `inbox.get_item`, `mail.search_messages` und
+  `mail.get_message`; die Beschreibungen dieser vier Katalogeinträge nennen es und sagen
+  ausdrücklich, dass eine Kategorie mit `source: model` ein **Vorschlag mit Konfidenz** ist
+  (`docs/ki.md` Grundsatz 5) – damit ein Agent sie nicht für eine Tatsache hält. Neues Filterfeld
+  `categories: Option<Vec<Category>>` an `torro_inbox::ItemFilter` (also `inbox.list_items`) und an
+  `Request::SearchMail`, beide optional und mit `skip_serializing_if`, Bedeutung „eine der
+  genannten“. `ai.list_models` nennt in seiner Beschreibung das neue Feld `decision`.
+- **Freigabe, Protokoll, Benachrichtigung** für `inbox.set_item_category { remember: true }` – ohne
+  sie bekommt der Mensch einen Allerweltssatz statt der Sache, über die er entscheidet:
+  - `approvals.rs`: ein eigener Arm in `inbox_summary` („Always file mail from … as Invoice“), den
+    Absender über `torro_inbox::rules::mail_sender` **aus `approvals::Facts`**, genau wie der
+    vorhandene Arm für `Request::SetItemLane { remember: true }`; ohne ihn fällt der Request in
+    `other => summary(other, &Facts::default())`.
+  - `audit.rs`, `ids`: die Kennung des Eintrags neben die von `MuteItem` – **nur die Kennung, nie
+    die Kategorie** (dieselbe Regel wie „never the trait muted or its value“).
+  - `daemon.rs`: eine Beschriftung für die Benachrichtigung, ebenfalls ohne die Kategorie.
+- **Nachzuziehen:** `docs/api.md` (Tabelle des Bereichs `inbox`), `docs/api-reference.md` neu
+  erzeugen mit `TORRO_BLESS=1 cargo test -p torro-ipc` und mitcommitten. Die Liste „Was nie nach
+  außen geht“ bleibt unverändert: kein Befehl braucht `Never`.
+- **Oberfläche:** keine (kommt mit E12.8 und E12.10). **API/MCP:** die Tabelle oben.
+- **Abnahme:** der Tabellen-Test über alle Katalogeinträge und der Vertragstest „Tool ↔ Katalog“
+  laufen; eigener Fall, dass `inbox.set_item_category` mit `remember: true` Admin braucht und ohne
+  nur Write; Handler-Tests im Kern mit Temp-Verzeichnissen, ohne Netz; `not-found` für Konten, die
+  der Schlüssel nicht sehen darf; ein Schlüssel ohne Mailrechte bekommt von `inbox.list_categories`
+  und `inbox.get_categorization` keine Zahl über ein fremdes Postfach; die Freigabe zu
+  `set_item_category { remember: true }` nennt Absender und Kategorie, und die Protokollzeile nennt
+  die Kategorie **nicht**. Agent `torro-api-review` ohne offene Funde.
+
+### E12.5 Zuordnung je Funktion: `ai.list_assignments` und `ai.set_assignment`
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.4 · **Dateien:**
+  `crates/torro-core/src/{ai/mod,settings}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,mcp,settings_service}.rs`, `docs/api.md`,
+  `docs/api-reference.md`, `docs/ki.md`
+- Skill `torro-api` laden. Umsetzt den Abschnitt „Zuordnung je Funktion“ aus `docs/ki.md`, **mit
+  genau einem Funktionsschlüssel** und offen für weitere.
+- **Modell:** `torro_core::ai::AiFunction` mit vorerst einer Variante `InboxCategorize`
+  (`serde`-Name `inbox.categorize`), dazu `ALL`, `key()` und `label()` über `tr()`.
+  `AiAssignment { function: AiFunction, engine: String, model: Option<String>, effort:
+  Option<Effort>, enabled: bool }` – dieselben Felder wie `settings::AssistantDefault`, das als
+  Vorbild dient, plus `enabled` für „Kategorisierung an/aus“. Gespeichert in
+  `Settings::ai_assignments: BTreeMap<AiFunction, AiAssignment>`, `#[serde(default,
+  skip_serializing_if = "BTreeMap::is_empty", deserialize_with = …)]` und **nachsichtig gelesen**
+  wie `assistant_default`: ein Wert, der nicht passt, fällt weg und lässt die Einstellungsdatei nie
+  scheitern. Ein Funktionsschlüssel, den diese Fassung nicht kennt, wird beim Lesen verworfen.
+- **Befehle:** `ai.list_assignments` (Read, MCP `ai_list_assignments`) listet je Funktion den
+  Schlüssel, die Beschriftung, Konto, Modell, Aufwand und ob sie an ist – auch die Funktionen ohne
+  Zuordnung, mit leeren Feldern, damit die Oberfläche die Liste nicht selbst kennt.
+  `ai.set_assignment { function, engine, model, effort, enabled }` (**Admin**, MCP
+  `ai_set_assignment`): setzt eine Zuordnung oder nimmt sie mit `engine: null` zurück. `not-found`
+  für eine unbekannte Funktion oder ein Konto, das es nicht gibt; `error` für ein Modell, das das
+  Konto nicht anbietet. Kein Geheimnis verlässt den Dienst – die Antwort nennt nur Kennungen.
+- **Datenregel:** `ai.set_assignment` nimmt für `inbox.categorize` **kein Modell an, das nicht auf
+  diesem Rechner rechnet**, solange `Settings::mail_to_cloud` aus ist (`data_rule::place_of`,
+  `Place::Local`); die Antwort ist `error` mit dem Satz aus
+  `crate::suggest::SuggestError::NoLocalAi`. So kann auch ein Agent die Regel nicht umgehen.
+- **Nachzuziehen:** `docs/ki.md` – der Abschnitt „Zuordnung je Funktion“ bekommt eine Zeile, dass
+  die Befehle jetzt stehen und welcher Funktionsschlüssel es gibt. `docs/api.md` (Bereich `ai`),
+  `docs/api-reference.md` neu erzeugen.
+- **Oberfläche:** keine (kommt mit E12.10). **API/MCP:** die beiden Befehle oben.
+- **Abnahme:** Tabellen- und Vertragstest laufen; Test, dass `ai.set_assignment` Admin verlangt;
+  Test, dass ein Modell mit `remote: true` für `inbox.categorize` abgelehnt wird, solange
+  `mail_to_cloud` aus ist, und angenommen, wenn er an ist; Test, dass eine Einstellungsdatei mit
+  einem unbekannten Funktionsschlüssel gelesen wird, ohne zu scheitern. Agent `torro-api-review`
+  ohne offene Funde.
+
+### E12.6 Einordnen mit dem Modell: beim Eintreffen und Altbestand
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.3, E12.4, E12.5 · **Dateien:**
+  `crates/torroworkplace/src/categorize.rs` (neu), `crates/torroworkplace/src/main.rs` (Modul),
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/{core,inbox}.rs`,
+  `crates/torroworkplace/src/audit.rs`, `crates/torroworkplace/tests/fixtures/` (neu)
+- **`crate::categorize`** nach dem Vorbild von `crate::suggest` (derselbe Aufbau: Inhalt lesen,
+  Modell wählen, einmal fragen, Antwort lesen; nichts wird selbst geschrieben):
+  - `Content` – Kopfzeilen und der Anfang der Mail. Der Text wird auf `systemone::STATE_MAX`
+    gekürzt und steht zwischen `<message>` und `</message>`, eine schließende Marke darin wird
+    aufgebrochen, genau wie in `suggest::messages`. Was hereinkommt, ist Fremdtext und wird nie als
+    Anweisung gelesen.
+  - `questions()` – die drei Fragen aus `docs/kategorien.md › Die drei Fragen`: `category`
+    (`choice` über `Category::BY_MODEL`, `criteria` aus `torro_core::category::description`),
+    `needs_reply` (`noul`), `urgency` (`score` mit `["routine", "soon", "urgent"]`).
+  - `const CONFIDENCE_MIN: f32 = 0.6;` mit Doc-Kommentar, dass der Wert nicht gemessen ist.
+  - `read(reply)` – `Answer::Choice` unter `CONFIDENCE_MIN` wird `Category::Other`; `noul` ≥ 0,5
+    heißt ja; `score` wird auf die nächste Stufe gerundet. Eine Antwort, die keine Frage
+    beantwortet, ist ein Fehler, kein stiller Rückfall. Alle drei Antworten werden gespeichert:
+    die Kategorie in `category`/`category_source`/`category_confidence`, die beiden anderen in
+    `needs_reply` und `urgency` (Schema 7 aus E12.2). Gelesen werden die beiden letzten heute von
+    niemandem – sie stehen da, damit ein späterer Schritt nicht das Modell über den ganzen
+    Altbestand noch einmal laufen lassen muss.
+  - `choose()` – das Konto und Modell aus `ai.list_assignments` für `AiFunction::InboxCategorize`.
+    Es wird **gar nicht gefragt**, wenn keines zugeordnet ist, die Zuordnung aus ist, **das
+    zugeordnete Konto nicht mehr besteht** (entfernt oder abgemeldet, seit es gesetzt wurde – die
+    Zuordnung wird beim Setzen geprüft, kann aber später ins Leere zeigen) oder das Modell nicht
+    `Place::Local` ist, während `mail_to_cloud` aus ist. Die Mail behält dann ihre feste Kategorie
+    oder keine; es gibt keinen Fehler je Mail und keinen Eintrag im Eingang.
+- **Wessen Kategorie gilt:** Der Lauf beim Eintreffen und der Altbestand fassen eine Kategorie mit
+  `CategorySource::Person` **nie** an. Nur das ausdrückliche `inbox.classify_item` überschreibt
+  auch sie (E12.4) – wer den Knopf drückt, will genau das.
+- **Beim Eintreffen:** `inbox_feed` ruft nach der festen Regel aus E12.2 das Modell, wenn die Mail
+  danach keine Kategorie hat; das Ergebnis geht mit `CategorySource::Model` an Mail und Eintrag.
+  Scheitert der Aufruf, bleibt die Mail ohne Kategorie – nie `other`, damit ein späterer Lauf sie
+  noch einholt.
+- **Altbestand:** ein eigener Lauf im Hintergrund, gestartet und abgebrochen über
+  `inbox.catch_up_categories`. Er sieht sich **nur Mail ohne Kategorie** an (die Spalte `category`
+  ist `NULL`), damit ein zweiter Druck auf „Catch up now“ nicht alles noch einmal fragt. Je Konto
+  höchstens die letzten **30 Tage** oder **500 Nachrichten**, neueste zuerst; gedrosselt mit einer Pause zwischen den Aufrufen, damit ein lokales Modell die
+  Maschine nicht belegt. Der Stand (`messages`, `done`, `state`) ist das, was
+  `inbox.get_categorization` meldet. Ein Abbruch hält nach dem laufenden Aufruf an und lässt das
+  schon Eingeordnete stehen. Beim Neustart des Dienstes läuft nichts von selbst wieder an.
+- **Protokoll:** `audit.rs` bekommt eine Zeile je Aufruf mit Funktion, Konto, Modell, Tokens und
+  Dauer – **kein** Betreff, Absender oder Text (Sicherheitsregel 7 des Eingangs).
+- **Oberfläche:** keine (kommt mit E12.8 und E12.10). **API/MCP:** keine neuen; `inbox.classify_item`
+  und `inbox.catch_up_categories` aus E12.4 bekommen hier ihre Wirkung.
+- **Abnahme:** Tests mit einem erfundenen `Provider` (kein Netz, wie `suggest::tests::Fake`): eine
+  sichere Antwort ergibt ihre Kategorie, eine unter 0,6 ergibt `other`, ein Fehler lässt die Mail
+  ohne Kategorie; `needs_reply` und `urgency` werden richtig gelesen; eine Mail mit
+  `CategorySource::Person` wird vom Lauf beim Eintreffen und vom Altbestand nicht angefasst, von
+  `inbox.classify_item` aber überschrieben; `needs_reply` und `urgency` landen in ihren Spalten;
+  die Grenzen 30 Tage und 500 Nachrichten halten; ein Abbruch hält an; eine Zuordnung auf ein Konto, das es nicht mehr gibt, fragt nichts
+  und meldet keinen Fehler; ein zweiter Lauf fragt nichts, was schon eine Kategorie hat. Fixtures mit mindestens zwei echten, anonymisierten Mail-Köpfen je
+  Gruppe unter `crates/torroworkplace/tests/fixtures/`, damit die Schwelle später daran
+  nachjustiert werden kann. Ein Test, dass keine Protokollzeile Betreff, Absender oder Text enthält.
+
+### E12.7 Bausteine: Kategorie-Pille und Gruppenfarben
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{theme,widgets}.rs`,
+  `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/rules.rs`,
+  `crates/torro-gui/examples/gallery.rs`, `docs/design-pakete.md`,
+  `.claude/skills/torro-design/SKILL.md`
+- Skill `torro-design` laden. Darf sofort starten und läuft neben allem Übrigen – sie fasst
+  `crates/torroinbox` nicht an.
+- **Farben:** `Palette::category: [Color; 4]` – eine Farbe je Gruppe, in der Reihenfolge von
+  `CategoryGroup::ALL` (Wartet auf mich, Belege, Info, Müll). Als Satz auf Farbenblindheit geprüft
+  wie `Palette::chart`, hell und dunkel; nur als Punkt und Rand benutzt, nie als Textfarbe.
+  Eintrag in `design/rules.rs` und in der Tabelle in `docs/design-pakete.md`; ein Paket ohne die
+  Farben nimmt die des Standardpakets (Test).
+- **Baustein** `widgets::category_pill(group_icon, group, label, suggested)` neben `pill` und
+  `icon_pill`: `PILL_HEIGHT` hoch, rund, Rand `line_strong`, Icon 12 in `palette.category[group]`,
+  Beschriftung `typo::caption()` in `text_2`. Mit `suggested` (eine Kategorie vom Modell,
+  `docs/ki.md` Grundsatz 5) steht `Icon::Sparkles` in `accent` davor – dasselbe Zeichen, mit dem
+  die Suite KI-Ergebnisse schon überall kennzeichnet. Keine Zahlen in der App: Maße und Farben nur
+  über `theme`/`typo`/`layout`.
+- **Icons je Gruppe**, alle vorhanden, kein neues SVG: `Icon::Inbox` (Wartet auf mich),
+  `Icon::Archive` (Belege), `Icon::Info` (Info), `Icon::ShieldAlert` (Müll).
+- **Galerie:** `--categories` zeigt alle vier Gruppen, mit und ohne Vorschlags-Zeichen, hell und
+  dunkel, in `torro` und `plex`.
+- **Skill `torro-design`:** Abschnitt 5 bekommt einen Eintrag „Kategorie-Pille“ mit der Regel
+  „Farbe je Gruppe, Beschriftung je Kategorie, Vorschlag mit Sparkles“.
+- **Oberfläche:** nur Bausteine. **API/MCP:** keine.
+- **Abnahme:** Tests in `widgets.rs`/`theme.rs`: die vier Farben lassen sich als Satz
+  unterscheiden, der Rand der Pille erreicht ≥ 3:1 auf `panel` und der Text ≥ 4.5:1, hell und
+  dunkel; ein Paket ohne `category` nimmt den Standard. Galerie in `torro` und `plex`, hell und
+  dunkel angesehen (Bilder im Bericht). `scripts/design-check.sh` sauber. Übersetzungen im Bericht.
+
+### E12.8 Mail-Fenster: Pille, Seitenleiste, Kategorie ändern
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.4, E12.7 · **Dateien:**
+  `crates/torroinbox/src/{app,list,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
+- Skill `torro-design` laden. Nicht parallel zu E9.2, E9.3b oder E12.9.
+- **Pille:** `widgets::category_pill` in der Zeile der Liste und im Kopf des Lesers, nach den
+  Bausteinen aus E11.1/E11.3. Keine Kategorie, keine Pille.
+- **Seitenleiste:** eine neue Gruppe **„Categories“** zusätzlich zu den vorhandenen Einträgen
+  (Ordner, „With attachments“, „Invitations“) – `View` bekommt dafür
+  `Category(CategoryFilter)` mit einer Gruppe **oder** einer Kategorie. Vier Einträge, je Gruppe
+  einer, mit der Zahl der ungelesenen Mails; darunter aufklappbar die einzelnen Kategorien der
+  Gruppe, **nur die, die im Postfach vorkommen**. Die ganze Gruppe erscheint erst, wenn mindestens
+  eine Mail eine Kategorie hat. Zahlen und Vorkommen kommen aus `inbox.list_categories`, die Liste
+  selbst aus `mail.search_messages` mit dem Feld `categories` – das Fenster rechnet nichts selbst.
+- **Ändern:** im Menü der Zeile und im Leser ein Eintrag „Category ▸“ mit den Kategorien, nach
+  Gruppen geordnet, aus `inbox.list_categories`. Nach der Wahl dieselbe Rückfrage wie beim
+  Umsortieren der Spur („Always for this sender?“), die bei Ja
+  `inbox.set_item_category { remember: true }` schickt; die Regel braucht eine Freigabe, das Fenster
+  zeigt sie wie bei `inbox.set_item_lane`. Dazu ein Knopf „Re-categorize“ im Leser
+  (`inbox.classify_item`), bei den KI-Knöpfen und nur sichtbar, wenn ein Modell zugeordnet ist.
+- **Oberfläche:** Liste, Leser, Paneel und Seitenleiste des Mail-Fensters in allen Größenklassen.
+  **API:** `inbox.list_categories`, `inbox.set_item_category`, `inbox.classify_item`,
+  `inbox.get_categorization` (sagt, ob ein Modell zugeordnet ist – daran hängt, ob „Re-categorize“
+  überhaupt erscheint; das Fenster findet das nie selbst heraus) und
+  `mail.search_messages { categories }` – alle aus E12.4, keine neuen. **MCP:** keine neuen.
+- **Abnahme:** Tests: die Gruppe „Categories“ fehlt, solange keine Mail eine Kategorie hat, und
+  zeigt nur vorkommende Kategorien; die Wahl im Menü schickt `inbox.set_item_category` und bei Ja
+  mit `remember: true`; eine Kategorie vom Modell trägt das Vorschlags-Zeichen, eine aus einer Regel
+  nicht. Oberflächentexte in Tests über `tr("…")` vergleichen. Sichtprüfung mit Agent
+  `torro-design-review` in Breit, Mittel und Schmal, hell und dunkel, `torro` und `plex`
+  (Bilder im Bericht). Übersetzungen im Bericht.
+
+### E12.9 Phishing: Band im Leser und entschärfte Links
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.8 · **Dateien:**
+  `crates/torroinbox/src/{app,mail}.rs`, `crates/torro-core/src/i18n/de.rs`
+- Skill `torro-design` laden. Nicht parallel zu E12.8.
+- **Band:** oben in der Nachricht, über dem Inhalt, in den Farben für Fehler (`palette.error`,
+  `error_text`), mit `Icon::ShieldAlert` und einem Satz, der sagt, was der Verdacht ist und dass
+  nichts verschoben oder gelöscht wurde. Nur bei `Category::Phishing`.
+- **Entschärfte Links:** Es sind **genau zwei** Stellen, an denen das Mail-Fenster einen Link aus
+  einer Nachricht öffnet (nachgesehen, beide in `app.rs` und beide über `App::open_url`):
+  `Message::HtmlLink` für den HTML-Leser (mit `mail::opens_in_browser` davor) und
+  `Message::OpenMailLink` für die Textansicht (Links aus `mail::pieces`, davor die Prüfung auf
+  `http://`/`https://`). `Link::Url` in `App::open_entry` gehört einem Eintrag, nicht dem Text
+  einer Mail, und bleibt unberührt. Beide Stellen öffnen bei einer Mail mit `Category::Phishing`
+  nicht mehr sofort, sondern zeigen **dieselbe** Bestätigung mit dem **Ziel im Klartext** (die
+  volle URL, nicht der Linktext) und den Knöpfen „Open anyway“ und „Cancel“; erst „Open anyway“
+  ruft `open_url`. Versteckt, verschoben und gelöscht wird nichts; der einzige Eingriff ist der
+  zusätzliche Klick.
+- **Grenze der Änderung:** nur das Mail-Fenster und nur Mail mit dieser Kategorie. Die Zentrale,
+  der App Feed und `torro-htmlview` bleiben unberührt; die Nachricht selbst wird nicht umgeschrieben.
+- **Oberfläche:** Leser des Mail-Fensters. **API/MCP:** keine.
+- **Abnahme:** Tests: das Band steht nur bei `phishing`; ein Klick auf einen Link einer
+  Phishing-Mail öffnet nichts, sondern fragt, und erst die Bestätigung schickt `Sent::Link` mit
+  genau der URL – je ein Fall für `Message::HtmlLink` und für `Message::OpenMailLink`; bei jeder
+  anderen Mail öffnet der Klick wie bisher; die Prüfung der Schemata (`javascript:`, `file:`)
+  bleibt davor. Oberflächentexte über `tr("…")` vergleichen. Sichtprüfung
+  mit Agent `torro-design-review`, hell und dunkel. Übersetzungen im Bericht.
+
+### E12.10 Einstellungen › Categorization
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E12.5, E12.6 · **Dateien:**
+  `crates/torro-settings-ui/src/{lib,mail,demo}.rs`,
+  `crates/torro-settings-ui/src/mail/categorization.rs` (neu),
+  `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api}.rs` (`SettingKey` und die
+  Beschreibungen von `settings.set_setting` und `settings.get_settings`, die die Schlüssel einzeln
+  aufzählen), `crates/torroworkplace/src/settings_service.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`
+- Skill `torro-design` laden. **Korrektur zum Issue:** Die Einstellungen des Mail-Fensters haben
+  heute nur „Accounts“ und „Reading“ (`settings_mail::SECTIONS`); die Seite „Rules“ gehört zum
+  Notification Hub (`settings_inbox::SECTIONS`, `Kind::settings_sections`). Die neue Seite kommt
+  also zu `settings_mail::SECTIONS` dazu, und der Verweis auf „Rules“ führt in das andere Fenster.
+- **Neue Sektion** `Section { id: "categorization", icon: Icon::Tag, label: "Categorization" }` in
+  `settings_mail::SECTIONS`, dazu ein Modul in der Form der anderen Sektionen (`State`, `Message`,
+  `update`, `view`). `settings_mail::wanted()` holt zusätzlich `ai.list_assignments`,
+  `inbox.get_categorization` und `accounts.list_accounts`; `Data` bekommt die Felder dafür, und die
+  Modelle des gewählten Kontos kommen über `Data::follow_up` wie `default_models` schon heute.
+- **Zeilen der Seite**, in dieser Reihenfolge:
+  1. **Kategorisierung an/aus** – `ai.set_assignment { function: "inbox.categorize", enabled }`.
+  2. **Modell** – Auswahl aus den angeschalteten Modellen mit `decision: true`
+     (`ai.list_models`), gruppiert nach Konto, lokale zuerst. Modelle mit `remote: true` erscheinen
+     **gar nicht**, solange `mail_to_cloud` aus ist, mit einer ruhigen Zeile darunter, die das
+     erklärt – kein Warnton, keine Aufforderung. Gewählt mit `ai.set_assignment`.
+  3. **Altbestand nachrechnen** – Zustand aus `inbox.get_categorization` („Done“, „847 of 1,240“,
+     „Not started“), Knopf „Catch up now“ und „Cancel“ (`inbox.catch_up_categories`), dazu die
+     Zeile, wie weit zurück gerechnet wird (30 Tage oder 500 Nachrichten je Konto).
+  4. **Je Kategorie: in der Seitenleiste zeigen** – ja/nein, gespeichert als
+     `Settings::hidden_categories` über `settings.set_setting` (neuer `SettingKey` und `Change`,
+     nach dem Vorbild von `hidden_collections`). Die Seitenleiste aus E12.8 liest es.
+  5. **Verweis auf „Rules“** für die gemerkten Absender- und Domainregeln: eine Zeile, die den
+     Notification Hub holt – genau wie `app::rules_message(Kind::Mail)` es für „All rules“ im
+     Glockenmenü schon tut (`Message::OpenApp` mit `AppId::INBOX.window_class`, also `apps.open_app`,
+     das den Hub startet, wenn keiner läuft).
+  Keine Einstellung für Zeitpunkt und Konfidenzschwelle – beides steht fest.
+- **Nachzuziehen:** `torro_settings_ui::demo::Demo` antwortet auf die neuen Requests, damit
+  `--demo` die Seite zeigt, ohne einen Socket zu öffnen.
+- **Oberfläche:** Einstellungen des Mail-Fensters, neue Seite „Categorization“.
+  **API:** `ai.list_assignments`, `ai.set_assignment`, `ai.list_models`,
+  `inbox.get_categorization`, `inbox.catch_up_categories` – alle aus E12.4/E12.5 – und
+  `settings.set_setting` mit dem **neuen Schlüssel** `hidden_categories`, der also in `SettingKey`,
+  in den Beschreibungen von `settings.set_setting` und `settings.get_settings` und danach in
+  `docs/api-reference.md` auftaucht. **MCP:** keine neuen.
+- **Abnahme:** Tests: die Sektion steht in `settings_mail::SECTIONS` und `--settings categorization`
+  landet dort; nur Modelle mit `decision: true` stehen zur Wahl, und mit `mail_to_cloud: false`
+  keines mit `remote: true`; „Catch up now“ schickt `inbox.catch_up_categories { cancel: false }`,
+  „Cancel“ mit `true`; `hidden_categories` wird über `settings.set_setting` gesetzt und gelesen. Oberflächentexte über `tr("…")` vergleichen. Sichtprüfung mit Agent
+  `torro-design-review` in allen Größenklassen, hell und dunkel, auch mit `--demo`
+  (Bilder im Bericht). Übersetzungen im Bericht.
 
 ## Danach (Überblick, Aufgaben folgen)
 

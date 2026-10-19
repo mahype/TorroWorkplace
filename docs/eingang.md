@@ -568,6 +568,7 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
 | Nextcloud Notifications ([api.md](api.md), vorgemerkt) | Quelle im Eingang statt eigener Tray-Liste |
 | Agenten-Übersicht, GitHub-Dashboard | bleiben Zustands-Apps; ihre Ereignisse kommen in den Eingang |
 | Tagesplan (Katalog) | „Für mich“ + heutige Termine + fällige Aufgaben wäre genau das; später |
+| Kategorien eingehender Mail ([kategorien.md](kategorien.md), Issue #221) | eine eigene Dimension neben den Spuren: jede Mail bekommt zusätzlich eine Art (Rechnung, Sendung, Werbung …) |
 
 ## Reihenfolge
 
