@@ -8,7 +8,7 @@
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
 //! mail window's large buttons (task E11.1): the reader's command bar ([`command_bar`] with
-//! [`command_cell`], [`command_split`], [`command_more`]), the strip under the chosen mail
+//! [`command_cell`], [`command_split`], [`command_more`]), the strip in the chosen mail's row
 //! ([`row_strip`]), the Torro pills ([`pill_button`]), the sunken view switch ([`view_switch`]) and
 //! the chips of attachments ([`file_chip`]).
 //!
