@@ -12,12 +12,20 @@
 //! every change, so the listener's state follows by itself. "Installed something?" asks again
 //! without changing anything: an [`crate::Action::Send`] with no request is a load.
 //!
+//! One load is not enough right after voice was switched: the daemon starts (or stops) the
+//! listener, which takes a moment, so that load still finds it off and the row would read
+//! "Starting …" for ever. The section therefore asks again, up to [`VOICE_POLLS`] times every
+//! [`VOICE_POLL`], until the listener reports what it does ([`subscription`], [`Message::Poll`]) –
+//! the way the control centre's Assistant page did it before task S.17.
+//!
 //! "Say something" ([`Message::TestVoice`]) is the one thing here whose answer is the point:
 //! `settings.test_voice` answers with what was understood. It goes out as [`crate::Action::Ask`],
 //! and the app hands the answer back to [`answered`], which puts it under the row ([`Heard`]).
 
-use iced::Element;
+use std::time::Duration;
+
 use iced::widget::{Space, column, toggler};
+use iced::{Element, Subscription};
 
 use torro_core::i18n::{tr, trf};
 use torro_gui::theme;
@@ -29,14 +37,27 @@ use super::Action;
 use crate::Data;
 use crate::parts::{choice, setting_row};
 
-/// Section state: what "Say something" is doing. Everything else the section shows comes from
-/// [`Data`].
+/// How long between two asks while the listener has not followed what was switched.
+const VOICE_POLL: Duration = Duration::from_secs(2);
+
+/// How many times the status is asked after voice was switched, until the listener says it runs
+/// (or stopped): five times two seconds, as the control centre had it before task S.17. After that
+/// the row shows what last came, and "Installed something?" asks by hand.
+const VOICE_POLLS: u8 = 5;
+
+/// Section state: what "Say something" is doing, and what the listener is still expected to
+/// follow. Everything else the section shows comes from [`Data`].
 #[derive(Debug, Default)]
 pub struct State {
     /// "Say something" is recording.
     testing: bool,
     /// What the last test heard.
     heard: Option<Heard>,
+    /// Whether voice was last switched on (`Some(true)`) or off, until the listener follows;
+    /// `None` while nothing is waited for.
+    expected: Option<bool>,
+    /// How many more times the status is asked while the listener has not followed.
+    polls: u8,
 }
 
 /// The outcome of "Say something".
@@ -60,6 +81,9 @@ pub enum Message {
     Microphone(Option<String>),
     /// "Installed something?" / "Check again": ask how voice stands again.
     Check,
+    /// The clock of [`subscription`] after voice was switched: ask how it stands again, until the
+    /// listener reports what it does.
+    Poll,
     /// "Say something": record once and show what was understood.
     TestVoice,
 }
@@ -71,6 +95,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             if on && data.voice.as_ref().is_some_and(|status| !status.can_listen()) {
                 return Action::None;
             }
+            // The daemon starts (or stops) the listener, which takes a moment: the one load after
+            // this change still finds it off. Ask again until it reports what it does, else the
+            // row stays at "Starting …" ([`subscription`]).
+            state.expected = Some(on);
+            state.polls = VOICE_POLLS;
             set(SettingKey::VoiceEnabled, serde_json::Value::Bool(on))
         }
         Message::SpeakAnswers(speak) => set(SettingKey::SpeakAnswers, serde_json::Value::Bool(speak)),
@@ -79,6 +108,17 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         // Nothing to send: the host loads the sections' data again, the status with it.
         Message::Check => Action::Send(Vec::new()),
+        Message::Poll => {
+            let Some(on) = state.expected else { return Action::None };
+            // Followed, or asked often enough: let the clock stop and show what last came.
+            if followed(on, data.voice.as_ref()) || state.polls == 0 {
+                state.expected = None;
+                state.polls = 0;
+                return Action::None;
+            }
+            state.polls -= 1;
+            Action::Send(Vec::new())
+        }
         Message::TestVoice => {
             if state.testing {
                 return Action::None;
@@ -111,6 +151,26 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
 /// One voice setting; the host loads again afterwards, so the status follows.
 fn set(key: SettingKey, value: serde_json::Value) -> Action {
     Action::send(Request::SetSetting { key, value })
+}
+
+/// The clock that asks how voice stands again, while the listener has not followed what was last
+/// switched; none otherwise – a section at rest asks nothing. The app batches it into the window's
+/// own subscription ([`crate::assistant::subscription`]).
+pub fn subscription(state: &State) -> Subscription<Message> {
+    match state.expected.is_some() && state.polls > 0 {
+        true => iced::time::every(VOICE_POLL).map(|_| Message::Poll),
+        false => Subscription::none(),
+    }
+}
+
+/// Whether the listener has followed what was switched: switched on it is doing something, or says
+/// what went wrong; switched off it is off. A status that has not come yet has followed nothing.
+fn followed(on: bool, status: Option<&VoiceStatus>) -> bool {
+    let Some(status) = status else { return false };
+    match on {
+        true => status.listener != VoiceState::Off || status.problem.is_some(),
+        false => status.listener == VoiceState::Off,
+    }
 }
 
 // ----- Views --------------------------------------------------------------------------------
@@ -382,6 +442,51 @@ mod tests {
         assert_eq!(heard_text(&state), before, "nothing was being tested");
     }
 
+    /// Task S.17: switching voice on asks again until the listener reports what it does. The
+    /// daemon needs a moment to start it, so the one load of the change still finds it off – and
+    /// the row would read "Starting …" for good (the review of task S.22 found it).
+    #[tokio::test]
+    async fn switching_voice_asks_again_until_the_listener_follows() {
+        let starting = Data { voice: Some(status(VoiceState::Off, None)), ..data().await };
+        let mut state = State::default();
+        assert_eq!(subscription(&state).units(), 0, "a section at rest asks nothing");
+
+        let _ = update(&mut state, Message::Enabled(true), &starting);
+        assert_eq!(subscription(&state).units(), 1, "the clock runs");
+        assert_eq!(voice_state(true, starting.voice.as_ref()).1, tr("Starting …"));
+        // Still starting: ask once more.
+        assert_eq!(update(&mut state, Message::Poll, &starting), Act::Send(Vec::new()));
+        assert_eq!(subscription(&state).units(), 1);
+
+        // The listener runs: the line says so and the clock stops.
+        let listening = Data { voice: Some(status(VoiceState::Listening, None)), ..starting.clone() };
+        assert!(matches!(update(&mut state, Message::Poll, &listening), Act::None));
+        assert_eq!(subscription(&state).units(), 0, "nothing left to wait for");
+        assert_eq!(voice_state(true, listening.voice.as_ref()).1, tr("Listening for “Hey Torro”"));
+        assert!(matches!(update(&mut state, Message::Poll, &listening), Act::None), "and no clock of its own");
+
+        // Switched off, it waits for the listener to be off.
+        let _ = update(&mut state, Message::Enabled(false), &listening);
+        assert_eq!(subscription(&state).units(), 1);
+        assert!(matches!(update(&mut state, Message::Poll, &starting), Act::None), "off is off");
+        assert_eq!(subscription(&state).units(), 0);
+    }
+
+    /// It does not ask for ever: after [`VOICE_POLLS`] tries the row shows what last came, and
+    /// "Installed something?" asks by hand.
+    #[tokio::test]
+    async fn the_asking_stops_after_a_few_tries() {
+        let starting = Data { voice: Some(status(VoiceState::Off, None)), ..data().await };
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Enabled(true), &starting);
+        for left in 0..VOICE_POLLS {
+            assert_eq!(update(&mut state, Message::Poll, &starting), Act::Send(Vec::new()), "try {left}");
+        }
+        assert!(matches!(update(&mut state, Message::Poll, &starting), Act::None), "enough");
+        assert_eq!(subscription(&state).units(), 0);
+        assert_eq!(update(&mut state, Message::Check, &starting), Act::Send(Vec::new()), "by hand, any time");
+    }
+
     /// Without the programs voice cannot be switched on; off always works.
     #[tokio::test]
     async fn voice_needs_the_programs_to_switch_on() {
@@ -428,7 +533,7 @@ mod tests {
         on.settings.voice.enabled = true;
         let mut testing = State::default();
         let _ = update(&mut testing, Message::TestVoice, &data);
-        let heard = State { testing: false, heard: Some(Heard::Text("What is on today?".into())) };
+        let heard = State { heard: Some(Heard::Text("What is on today?".into())), ..State::default() };
         for state in [State::default(), testing, heard] {
             for voice in [
                 Some(status(VoiceState::Listening, None)),

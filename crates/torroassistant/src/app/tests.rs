@@ -927,6 +927,24 @@ fn escape_stops_the_open_question_before_it_closes_the_settings() {
     assert!(app.settings.is_none());
 }
 
+/// The clock of the Voice section runs through the window's own subscription: switched on, the
+/// section asks how the listener stands again until it reports what it does – else the row stays
+/// at "Starting …" for good (task S.17).
+#[test]
+fn the_window_carries_the_clock_of_the_voice_section() {
+    use torro_settings_ui::assistant::voice;
+
+    let mut app = started(&[]);
+    let _ = app.update(Message::ToggleSettings);
+    settings_loaded(&mut app);
+    let at_rest = app.subscription().units();
+    let _ = app.update(Message::SettingsPage(settings::Message::Voice(voice::Message::Enabled(true))));
+    assert_eq!(app.subscription().units(), at_rest + 1, "the section's clock is in the window's subscription");
+    // Closed, the clock goes with the settings.
+    let _ = app.update(Message::ToggleSettings);
+    assert!(app.subscription().units() < at_rest + 1);
+}
+
 /// A change behind the gear reaches the window at once: when the host reports it stored
 /// ([`torro_settings_ui::Outcome::Changed`]), the window asks for what it shows itself – the
 /// conversations, the engines, the client, the profile – instead of waiting for its next tick. A

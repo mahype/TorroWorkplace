@@ -40,7 +40,8 @@
 //! ```
 //!
 //! Escape goes to [`escape`] first (it closes a dialog of the Profile section) and only then to the
-//! host, which closes the settings.
+//! host, which closes the settings. The window's own subscription batches [`subscription`], the
+//! clock the open sections need (Voice asks how the listener stands after it was switched).
 
 pub mod bots;
 pub mod general;
@@ -172,6 +173,14 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
         "history" => wrap(Page::new(history::view(data)), Message::History),
         _ => wrap(Page::new(general::view(data)), Message::General),
     }
+}
+
+/// What the open sections need a clock for, as the app batches it into the window's own
+/// subscription (`Subscription::batch([…, settings::subscription(&pane.sections).map(…)])`); none
+/// while nothing waits. Today one section needs one – Voice asks how the listener stands again
+/// after it was switched ([`voice::subscription`]).
+pub fn subscription(state: &State) -> iced::Subscription<Message> {
+    voice::subscription(&state.voice).map(Message::Voice)
 }
 
 /// The answer to a section's [`crate::Action::Ask`], as the host handed it to the app

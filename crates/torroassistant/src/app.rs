@@ -692,6 +692,12 @@ impl App {
         if self.notice.is_some() {
             subscriptions.push(iced::time::every(NOTICE_TICK).map(Message::NoticeTick));
         }
+        // What the open settings sections need a clock for: Voice asks how the listener stands
+        // again after it was switched, until it reports what it does (task S.17). None while
+        // nothing waits.
+        if let Some(pane) = &self.settings {
+            subscriptions.push(settings::subscription(&pane.sections).map(Message::SettingsPage));
+        }
         if !self.chat_only && !self.is_glance() {
             subscriptions.push(iced::event::listen_with(window_key));
         }
