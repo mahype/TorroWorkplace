@@ -1,7 +1,10 @@
 # Einstellungen: die Steuerzentrale
 
-Stand: 2026-10-16. **Konzept zur Freigabe**; die Einstellungen in den Apps sind am 2026-10-14
-entschieden, ihre Ordnung am 2026-10-16 (#210, Entwurf B „Schlanke Zentrale“).
+Stand: 2026-10-19. **Konzept zur Freigabe**; die Einstellungen in den Apps sind am 2026-10-14
+entschieden, ihre Ordnung am 2026-10-16 (#210, Entwurf B „Schlanke Zentrale“). Gebaut ist sie mit
+S.16–S.21: Jede App hat ihre Einstellungen hinter dem Zahnrad im eigenen Fenster, die Steuerzentrale
+hat nur noch die Abschnitte der Suite. Der Abschnitt [Bestand](#bestand-stand-2026-10-16) beschreibt
+den Stand davor.
 
 ### Die Regel
 
@@ -107,8 +110,9 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
   Sichtprüfung). Die Steuerzentrale öffnet eine App mit `apps.open_app` (holt ein laufendes Fenster nach vorn);
   dort die Einstellungen gleich aufzuschlagen bräuchte einen neuen Weg vom Kern zur App und ist nicht geplant. Hinweise in der App, die
   bisher die Steuerzentrale öffneten, öffnen den passenden Abschnitt im selben Fenster („All rules“ →
-  Rules). Was Rechte und Konten betrifft, bleibt ein Verweis in die Steuerzentrale: „Change access“
-  unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen Agents & API beim Assistenten bzw.
+  Rules); das Mail-Fenster hat keine Rules, dort holt „All rules“ das Fenster des Notification Hub nach
+  vorn, wo die Regeln stehen. Was Rechte und Konten betrifft, bleibt ein Verweis in die
+  Steuerzentrale: „Change access“ unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen Agents & API beim Assistenten bzw.
   beim Bot, Konten einrichten öffnet Accounts.
 
 ### Was wohin gehört
@@ -317,15 +321,20 @@ Die App wartet und lädt von selbst, sobald ein Konto da ist.
 ## Bestand (Stand 2026-10-16)
 
 Aufgabe S.27 (#210): jede Einstellung der Suite, am Code nachgesehen. Die Spalte **Urteil** ist mit der Wahl
-von Entwurf B entschieden (2026-10-16, S.29). Abkürzungen: **Seite** heißt Steuerzentrale,
+von Entwurf B entschieden (2026-10-16, S.29) und mit S.16–S.21 gebaut. **„heute“ heißt in diesem Abschnitt: am
+2026-10-16, vor Stufe 2.** Wo eine Einstellung jetzt steht, sagt [Was wohin gehört](#was-wohin-gehört).
+Abkürzungen: **Seite** heißt Steuerzentrale,
 `set_setting x` heißt `settings.set_setting` mit `SettingKey::X` (MCP `settings_set_setting`), MCP-Tools heißen wie
 der Befehl mit `_` statt `.`. Ablage: `settings.json` mit JSON-Schlüssel, sonst Datei oder Modul.
 
 ### Steuerzentrale: Seitenleiste und Einstieg
 
-Reihenfolge heute (`Section::ALL`): Overview, Accounts, Workspaces, Apps, Assistant, Agents & API, Approvals,
+Reihenfolge am 2026-10-16 (`Section::ALL`): Overview, Accounts, Workspaces, Apps, Assistant, Agents & API, Approvals,
 Notification Hub (`inbox`), Appearance; General am Fuß. Das Zahnrad der Steuerzentrale öffnet General. Die Kurzansicht
 (`glance.rs`) hat keine Einstellungen.
+
+Mit S.21 gebaut: Overview, Accounts, Agents & API, Approvals, Workspaces, Appearance; General am Fuß. Die Seiten Apps,
+Assistant und Notification Hub sind weg.
 
 ### Overview und Approvals
 
@@ -366,6 +375,9 @@ ihre Zeile hat.
 
 ### Apps
 
+Die Seite ist mit S.21 weg; die Komponenten stehen als Gruppe **Apps** unter General, mit „Open“ und dem Satz, dass
+die Einstellungen einer App hinter ihrem Zahnrad liegen. `--section apps` öffnet General.
+
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
 | je Komponente an/aus (Calendar, Tasks, Mail, Notification Hub, Assistant, Workspaces) | Komponente aus Umschalter, Tray und Übersicht nehmen, nichts im Hintergrund | Apps › Components; Einrichtung › Components | `componentsOff` | `set_setting component` | alle | bleibt, General › Apps |
@@ -395,7 +407,9 @@ steht hier nicht einzeln; Geheimnisse gehen nur über die Oberfläche (`api.md` 
 
 ### Assistant (Seite und Unterseiten)
 
-Bis zu 18 Gruppen untereinander: Status, Profile, Bots, Engines, New chats, Model, Effort, What the assistant may use,
+Die Seite ist mit S.21 weg: Status, Rechte und die Bots stehen unter Agents & API (`--section assistant`,
+`--section bot:<id>`), alles andere im Fenster des Assistenten (General, Profile, Bots, Voice, History). Bis zu 18
+Gruppen untereinander: Status, Profile, Bots, Engines, New chats, Model, Effort, What the assistant may use,
 Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this computer, Keep conversations.
 
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
@@ -418,6 +432,9 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 
 ### Notification Hub (Seite)
 
+Die Seite ist mit S.21 weg; Notifications, Sources und Rules stehen im Fenster des Notification Hub.
+`--section inbox` öffnet General.
+
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
 | Quiet during busy events | während belegter Termine nur Dringendes | Notification Hub › Notifications; Einrichtung | `quietWhenBusy` | `set_setting quiet_when_busy` | Eingang | umziehen nach Notification Hub |
@@ -435,8 +452,10 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 
 ### In den Apps
 
-Gilt in allen vier Apps: Das Zahnrad und „Settings“ öffnen heute die Steuerzentrale als eigenes Fenster bei Accounts
-(`connect::open_settings`, Befund 1) – Urteil: **ändern**, die Einstellungen der App erscheinen im selben Fenster.
+Gilt in allen vier Apps: Das Zahnrad und „Settings“ öffneten am 2026-10-16 die Steuerzentrale als eigenes Fenster bei
+Accounts (`connect::open_settings`, Befund 1) – Urteil: **ändern**, die Einstellungen der App erscheinen im selben
+Fenster. Mit S.18–S.21 gebaut: Das Zahnrad öffnet die Einstellungen im Fenster der App. `connect::open_settings`
+führt nur noch dorthin, wo es um Konten geht („Open Settings“ einer App ohne Konto).
 
 #### Kalender
 
@@ -464,7 +483,7 @@ Gilt in allen vier Apps: Das Zahnrad und „Settings“ öffnen heute die Steuer
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
 | Mute (Umfang, For, What happens), Hide from Notification Hub › Mute {source}, Move to {lane} › Always for {source}, Insights › Hide sender, Mute app | legt Regeln an bzw. schaltet Quellen stumm | Eingang (alle Fenster) | `<state>/inbox.sqlite` | `inbox.mute_item`, `inbox.mute_source`, `inbox.set_item_lane` | Eingang | bleibt im Eingang; Liste unter Notification Hub › Rules |
-| All rules ↗ | öffnet Steuerzentrale › Notification Hub | Eingang › Mute-Menü | – | – | Eingang | ändern: Rules im selben Fenster |
+| All rules ↗ | öffnete die Seite Notification Hub der Steuerzentrale | Eingang › Mute-Menü | – | – | Eingang | geändert (S.20): Rules im selben Fenster; im Mail-Fenster, das keine Rules hat, holt es das Fenster des Notification Hub nach vorn (`apps.open_app`) |
 
 #### Mail-Fenster
 
@@ -490,9 +509,9 @@ Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder
 
 | Argument | bewirkt | wo | Urteil |
 |---|---|---|---|
-| `--section <wort>`, `--section bot:<id>` | öffnet die Steuerzentrale bei einem Abschnitt bzw. einer Bot-Seite (`Section::from_arg`) | Steuerzentrale | bleibt; S.21 lässt `apps` und `inbox` auf General zeigen |
+| `--section <wort>`, `--section bot:<id>` | öffnet die Steuerzentrale bei einem Abschnitt bzw. einem Programm (`Section::from_arg`) | Steuerzentrale | bleibt; mit S.21 führen `apps` und `inbox` auf General, `assistant` und `bot:<id>` auf Agents & API |
 | `--setup`, `--setup-if-open`, `--step <schritt>` | öffnet die Einrichtung, auf Wunsch nur solange sie offen ist | Steuerzentrale | bleibt |
-| `--settings <abschnitt>` | öffnet eine App mit offenen Einstellungen | geplant (S.18–S.20) | kommt mit Stufe 2; kein Request, nur ein Startwort |
+| `--settings <abschnitt>` | öffnet eine App mit offenen Einstellungen | alle Apps (S.18–S.20) | bleibt; kein Request, nur ein Startwort |
 | `--demo` | Beispieldaten statt Dienst, schreibt nichts | alle | bleibt (Sichtprüfung) |
 | `--appearance light\|dark\|system`, `--design <id>` | überschreibt `appearance` bzw. `design` für dieses Fenster (`--design` nur mit `--demo`) | alle | bleibt (Sichtprüfung) |
 | `--density`, `--mail-view`, `--mail-colors` | überschreiben Dichte, `mailView` und `mailAppearance` für dieses Fenster | Eingang, Mail | bleibt (Sichtprüfung) |
@@ -500,8 +519,8 @@ Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder
 | `--reminders`, `--all-displays`, `--monitors`, `--cover` | das Erinnerungsfenster, das der Kern selbst startet (`torrocalendar::reminder`) | Kalender | bleibt, keine Einstellung |
 
 Das Tray öffnet mit „Settings…“ die Steuerzentrale ohne `--section` (`apps.open_app` auf `torroworkplace`, ohne
-Ziel) und landet damit auf **Overview** – anders als das Zahnrad der Apps (Accounts) und das der Steuerzentrale
-(General). Drei Einstiege, drei Ziele (Befund 1).
+Ziel) und landet damit auf **Overview**; das Zahnrad der Steuerzentrale öffnet General. Das Zahnrad einer App führte
+am 2026-10-16 auf Accounts (Befund 1) und öffnet seit S.18–S.21 die Einstellungen im Fenster der App.
 
 ### Kein Einstellungs-Ort
 
@@ -512,9 +531,10 @@ Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine AP
 
 ### Befunde
 
-1. **Das Zahnrad führt überall zu Accounts.** In allen Apps und im Mail-Fenster öffnet es die Steuerzentrale bei
+1. **Das Zahnrad führt überall zu Accounts.** In allen Apps und im Mail-Fenster öffnete es die Steuerzentrale bei
    Accounts, auch wo die gesuchte Einstellung woanders steht; in der Steuerzentrale selbst öffnet es General, und
-   „Settings…“ im Tray landet auf Overview. Drei Einstiege, drei Ziele.
+   „Settings…“ im Tray landet auf Overview. Drei Einstiege, drei Ziele. *Mit S.18–S.21 erledigt: Das Zahnrad einer
+   App öffnet ihre Einstellungen im eigenen Fenster.*
 2. **Doppelt:** Night (General und Karte am Mond), Language, Appearance, Components, Calendars and lists, Sources,
    Quiet und New chats (je Seite und Einrichtung, die Einrichtung ist gewollt), Rechte eines Bots (Bot-Seite und
    Bot-Editor), neue Mail im Eingang auf zwei Wegen (`notify` am Mail-Konto und die Quelle „Mail“ der Einrichtung).
@@ -543,8 +563,9 @@ Zentrale, C · Nach Themen). Gewählt wird mit dem Kommentar „Entscheidung Str
 ## Offene Fragen
 
 1. Slack: welcher Weg (Bot-Token, Benutzer-Token, OAuth) – entscheiden, wenn Slack drankommt.
-2. Wie heißt der Knopf „Connect agent“, wenn unter Agents & API auch Assistent und Bots stehen
-   („Connect program“?). Die Frage, wo Rechte stehen, ist mit #210 entschieden: zentral.
+2. ~~Wie heißt der Knopf „Connect agent“, wenn unter Agents & API auch Assistent und Bots stehen?~~ Beantwortet
+   mit S.21: Der Knopf heißt **„Connect program“**, die leere Liste „No programs connected“. Die Frage, wo Rechte
+   stehen, ist mit #210 entschieden: zentral unter Agents & API, auch für Assistent und Bots.
 3. Die Haken der Kalender in der Seitenleiste der Kalender-App gelten heute nur bis zum Neustart (Befund 5):
    dauerhaft für die Suite wie Calendar › Calendars, oder nur für dieses Fenster (dann als Teil des
    Fenster-Profils, „pro Fenster (später)“)? Bis zur Antwort bleiben sie, wie sie sind.

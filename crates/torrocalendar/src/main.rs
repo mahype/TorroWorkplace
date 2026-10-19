@@ -8,6 +8,11 @@
 //! time; `--appearance light|dark|system` overrides the stored appearance and `--design <id>` the
 //! design pack (see [`app::Launch`]).
 //!
+//! `torrocalendar --settings <section>` opens the window with its settings in the content area
+//! (task S.19): Calendars, Reminders and Night, over the window's own way to the core – with
+//! `--demo` over the settings library's demo, which never opens a socket. Works without `--demo`
+//! too.
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.

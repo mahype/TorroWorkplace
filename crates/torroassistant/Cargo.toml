@@ -15,7 +15,9 @@ workspace = true
 torro-core.workspace = true
 torro-gui.workspace = true
 torro-ipc.workspace = true
-# The answers the bot editor reads for its section "Access" (task B.5): inbox sources, calendars.
+# The settings in the content area (task S.18): the host, the assistant's sections, the demo backend.
+torro-settings-ui.workspace = true
+# The sample answers of the demo: inbox sources, calendars, accounts.
 torro-inbox.workspace = true
 torro-pim.workspace = true
 chrono.workspace = true

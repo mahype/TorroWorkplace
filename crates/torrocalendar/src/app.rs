@@ -12,7 +12,8 @@
 //! properties column ("Up next"), and over the view otherwise; the open event is outlined in the
 //! views. The editor has no Save button: it hands out saves as it changes, and while typed text
 //! waits to be saved a one-second timer sends `Flush` ([`AUTOSAVE`]). Escape closes an open menu
-//! or the drawer first, then whatever is open in the panel, then the panel.
+//! or the drawer first, then the settings while they cover the content area, then whatever is open
+//! in the panel, then the panel.
 //!
 //! In the wide layout the sidebar collapses to a rail of icons (U.2: panel button at its top or
 //! `[`, remembered in `ui.json`); the rail leaves out the small month. The medium layout always
@@ -23,6 +24,15 @@
 //! double-click on a moon (or "Nights" in the header while there is no night) opens the floating
 //! card "Night" with "From" and "Until" on the quarter hour, "Save" and "No night"; saving sends
 //! `Request::SetSetting` with the key `night` (the demo keeps it in the process).
+//!
+//! Settings (task S.19, `docs/settings.md`): the gear turns the content area into three sections
+//! – Calendars ([`torro_settings_ui::collections`], `Role::Calendar`), Reminders and Night
+//! ([`torro_settings_ui::calendar`]) – and back ([`App::toggle_settings`]). They are shown by the
+//! library's [`Host`], which talks to the core through [`App::settings_backend`]; the sidebar
+//! stays, and a click there that shows the calendar again closes the settings
+//! ([`App::leave_settings`]). `--settings <section>` opens the window with them open; the hint
+//! without an account ("Open Settings") still opens the control centre at Accounts
+//! ([`connect::open_setup_or_settings`]), unchanged.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -55,6 +65,7 @@ use torro_gui::{style, typo};
 use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
+use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
 
 use crate::editor::{self, Editor};
 use crate::views::{self, Item, ViewData, glance, mini_month, short_date, timeline, week_strip};
@@ -129,6 +140,25 @@ fn is_glance(class: SizeClass) -> bool {
     matches!(class, SizeClass::Mini | SizeClass::Strip)
 }
 
+/// Whether `message` means the content area is to show the calendar again (task S.19): a click
+/// in the sidebar (a view, a calendar, the small month, another app) or a shortcut that only
+/// makes sense on the calendar's own view, none of which exist while the settings are open.
+fn shows_calendar(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::SetView(_)
+            | Message::ToggleCollection(_)
+            | Message::GoTo(_)
+            | Message::MiniMonth(_)
+            | Message::NewEvent { .. }
+            | Message::NewEventHere
+            | Message::OpenEvent(_)
+            | Message::ShowDay(_)
+            | Message::ComingPage(_)
+            | Message::Switcher(_)
+    )
+}
+
 /// The menus that open over the window; at most one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
@@ -136,6 +166,86 @@ pub enum Menu {
     Switcher,
     /// "Week ▾" in the medium and narrow header: the views and the calendars.
     View,
+}
+
+/// The settings of this window (task S.19): Calendars (which the suite shows, grouped by
+/// account, and each shown one's reminder kind), Reminders and Night. [`Section::id`] is what
+/// `--settings <id>` takes.
+const SETTINGS_SECTIONS: [Section; 3] = [
+    Section { id: "calendars", icon: Icon::Calendar, label: "Calendars" },
+    Section { id: "reminders", icon: Icon::Bell, label: "Reminders" },
+    Section { id: "night", icon: Icon::Moon, label: "Night" },
+];
+
+/// What one load of the settings needs: Calendars reads every account
+/// ([`collections::wanted`]); Reminders and Night need only the suite-wide settings, already
+/// part of it.
+fn settings_wanted() -> Vec<torro_ipc::Request> {
+    collections::wanted()
+}
+
+/// What a section of the settings reported, combined over the three of them.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SettingsMessage {
+    Calendars(collections::Message),
+    Reminders(calendar::reminders::Message),
+    Night(calendar::night::Message),
+}
+
+/// The settings in the content area while they are open: the library's [`Host`] with
+/// [`SETTINGS_SECTIONS`]. None of the three sections keeps state of its own (unlike the
+/// assistant's, task S.18): everything they show comes straight from [`Host::data`].
+struct SettingsPane {
+    host: Host,
+}
+
+/// [`torro_settings_ui::Backend`] for a window on the core: one request, one answer over the
+/// socket, an error answer as its message for people. The host never calls [`torro_ipc::client`]
+/// itself, so a visual check with `--demo` cannot reach it (`torro_settings_ui`'s own doc).
+struct CoreSettings {
+    socket: std::path::PathBuf,
+}
+
+impl SettingsBackend for CoreSettings {
+    fn call(&self, request: torro_ipc::Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move {
+            match torro_ipc::client::call(&socket, &request).await {
+                Ok(torro_ipc::Response::Error { message, .. }) => Err(message),
+                Ok(answer) => Ok(answer),
+                Err(err) => Err(err.to_string()),
+            }
+        })
+    }
+}
+
+/// What a section of the settings returned, as the host hands it to the app.
+fn settings_update(message: SettingsMessage, data: &torro_settings_ui::Data) -> torro_settings_ui::Action<()> {
+    match message {
+        SettingsMessage::Calendars(message) => collections::update(message),
+        SettingsMessage::Reminders(message) => calendar::reminders::update(message),
+        SettingsMessage::Night(message) => calendar::night::update(message, data),
+    }
+}
+
+/// The page of the section with this id: Calendars shows [`collections::Role::Calendar`]; an id
+/// no section has (there is none today) shows it too, like the host only ever asking for one of
+/// [`SETTINGS_SECTIONS`].
+fn settings_page<'a>(data: &'a torro_settings_ui::Data, section: &str) -> Page<'a, SettingsMessage> {
+    match section {
+        "reminders" => wrap(Page::new(calendar::reminders::view(data)), SettingsMessage::Reminders),
+        "night" => wrap(Page::new(calendar::night::view(data)), SettingsMessage::Night),
+        _ => wrap(Page::new(collections::page(data, collections::Role::Calendar)), SettingsMessage::Calendars),
+    }
+}
+
+/// One section's page with its messages wrapped in [`SettingsMessage`].
+fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -> Page<'a, SettingsMessage> {
+    Page {
+        body: page.body.map(into),
+        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
+        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
+    }
 }
 
 /// A state the window can start in (`--demo --open <state>`), so that every state can be
@@ -214,12 +324,15 @@ impl Open {
 ///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>`: a fixed "now" (and demo data around its day), for pictures that
 ///   can be made again; needs `--demo`.
+/// - `--settings <section>`: open the window with its settings in the content area, at this
+///   section (task S.19); works without `--demo` too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
     pub design: Option<String>,
+    pub settings: Option<String>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, as `ctl` does.
@@ -307,7 +420,14 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        Ok(Launch { open, appearance, now, design })
+        let settings = match flag_value(args, "--settings")? {
+            None => None,
+            Some(word) if SETTINGS_SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) => {
+                return Err(unknown("--settings", word, SETTINGS_SECTIONS.iter().map(|section| section.id).collect()));
+            }
+        };
+        Ok(Launch { open, appearance, now, design, settings })
     }
 
     /// The data source: demo data around the fixed day with `--now`, else what
@@ -411,6 +531,8 @@ pub struct App {
     night_saving: bool,
     /// The card "Night", while it is open.
     night_card: Option<NightCard>,
+    /// The settings in the content area, while they are open (task S.19).
+    settings: Option<SettingsPane>,
 }
 
 #[derive(Debug, Clone)]
@@ -460,8 +582,13 @@ pub enum Message {
     /// The ‹ › of the radar's "Coming days": browse its mini radars by this many weeks, the radar
     /// staying on its day.
     ComingPage(i64),
-    /// "Settings" in the band or the sidebar: open the control centre.
-    OpenSettings,
+    /// The gear in the band or "Settings" in the sidebar: the settings take the content area, or
+    /// give it back to the calendar (task S.19).
+    ToggleSettings,
+    /// One of the settings' own messages ([`Host`]).
+    SettingsHost(torro_settings_ui::host::Message),
+    /// What a widget of the open settings section reported.
+    SettingsPage(SettingsMessage),
     /// The core answered `calendar.preview_reminder` (task ER2.3).
     Previewed(Result<(), String>),
     /// The core answered `Request::OpenApp`.
@@ -576,7 +703,7 @@ impl App {
         let open = launch.open;
         let zoom = Zoom::for_source(&source);
         let design = Follow::for_source(&source);
-        let app = App {
+        let mut app = App {
             source,
             now,
             view: open.and_then(Open::view).unwrap_or(CalView::Week),
@@ -617,13 +744,14 @@ impl App {
             night: Night::DEFAULT,
             night_saving: false,
             night_card: None,
+            settings: None,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
-        let task = Task::batch([
+        let mut tasks = vec![
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
             // The first load waits for a core that is still starting (issue #206).
             {
@@ -636,8 +764,12 @@ impl App {
             app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
             size,
-        ]);
-        (app, task)
+        ];
+        // `--settings <section>`: the window opens with the settings in its content area.
+        if let Some(section) = app.launch.settings.clone() {
+            tasks.push(app.open_settings(Some(&section)));
+        }
+        (app, Task::batch(tasks))
     }
 
     pub fn title(&self) -> String {
@@ -660,14 +792,22 @@ impl App {
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
             // Over the view the panel is all there is to work with; beside it the view still is.
-            let over = self.editor.is_some() && panel::mode_for(self.class()) == PanelMode::Over;
+            // The settings (task S.19) cover the content area the same way: its own widgets take
+            // the keys, not the calendar's.
+            let over =
+                (self.editor.is_some() && panel::mode_for(self.class()) == PanelMode::Over) || self.settings.is_some();
             if !over {
                 all.push(iced::event::listen_with(shortcut));
                 if self.shown() == CalView::Radar {
                     all.push(iced::event::listen_with(radar_shortcut));
                 }
             }
-            if self.menu.is_some() || self.drawer || self.editor.is_some() || self.night_card.is_some() {
+            if self.menu.is_some()
+                || self.drawer
+                || self.editor.is_some()
+                || self.night_card.is_some()
+                || self.settings.is_some()
+            {
                 all.push(widgets::escape().map(|()| Message::Escape));
             }
         }
@@ -735,6 +875,11 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // The sidebar stays while the settings are open; a click there that would show the
+        // calendar again closes them first (task S.19, design skill "Wie es aussieht").
+        if self.settings.is_some() && shows_calendar(&message) {
+            self.leave_settings();
+        }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::CoreReady => {
@@ -824,8 +969,18 @@ impl App {
             }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
+                // Innermost first: a menu, the drawer or the night's card, then the settings
+                // (task S.19: none of its sections have a dialog or question of their own, so the
+                // host closes them directly), then what is open in the side panel.
+                //
+                // The settings come before the editor, as in the tasks app: they cover the content
+                // area, so an editor behind them is out of sight and keeps what it holds
+                // ([`App::toggle_settings`]). Escape must act on what can be seen, not on the
+                // hidden editor – a key that does nothing visible is a key that looks broken.
                 if self.menu.is_some() || self.drawer || self.night_card.is_some() {
                     self.close_menus();
+                } else if self.settings.is_some() {
+                    self.settings = None;
                 } else if self.editor.is_some() {
                     return self.update(Message::Editor(editor::Message::Escape));
                 }
@@ -846,9 +1001,19 @@ impl App {
                 }
             }
             Message::UiState(state) => self.sidebar = state.sidebar,
-            Message::OpenSettings => {
-                self.close_menus();
-                connect::open_settings();
+            Message::ToggleSettings => return self.toggle_settings(),
+            Message::SettingsHost(message) => {
+                let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                let outcome = pane.host.update(message);
+                return self.settings_outcome(outcome);
+            }
+            Message::SettingsPage(message) => {
+                let outcome = {
+                    let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                    let action = settings_update(message, pane.host.data());
+                    pane.host.act(action)
+                };
+                return self.settings_outcome(outcome);
             }
             // Nothing to show in the window: the other app either comes up or it does not.
             Message::AppOpened(Err(err)) => eprintln!("torrocalendar: cannot open the app: {err}"),
@@ -1035,7 +1200,10 @@ impl App {
             return TitleButtons::none();
         }
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings)
+        TitleButtons::none()
+            .sidebar(label, Message::ToggleSidebar)
+            .settings(Message::ToggleSettings)
+            .settings_open(self.settings.is_some())
     }
 
     /// What lies over the top of the window, which the title band repeats: the editor's panel over
@@ -1096,44 +1264,59 @@ impl App {
     }
 
     /// The whole window in the layout for `class`: sidebar, header and the current view in the
-    /// shell, the side panel beside or over the view, the drawer and the open menu above it.
+    /// shell, the side panel beside or over the view, the drawer and the open menu above it. The
+    /// settings (task S.19), while they are open, take the header and the content area instead;
+    /// the sidebar and its menus stay.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, views, field) = (Anchor::new(), Anchor::new(), Anchor::new());
-        // The night's card floats beside a moon on the view's canvas, or under "Nights".
-        let (night_view, night_button) = (Anchor::new(), Anchor::new());
-        let menu = self.menu.and_then(|menu| match menu {
-            Menu::Switcher => Some(widgets::floating(
-                &switcher,
-                Placement::Below(Align::Start),
-                shell::switcher_menu(AppId::CALENDAR, Message::Switcher),
-                Message::CloseMenu,
-            )),
-            // Only the medium and narrow header have the "Week ▾" button the menu hangs from.
-            Menu::View => (!shell::has_sidebar(class))
-                .then(|| widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)),
-        });
-        let night = self.night_card.map(|card| {
-            let (anchor, placement) = match card.at {
-                Some(moon) => (night_view.area(moon), Placement::Beside),
-                None => (night_button.clone(), Placement::Below(Align::End)),
-            };
-            widgets::floating(&anchor, placement, night_card(card), Message::CloseNight)
-        });
-        // One layer at a time: the window's menus, the night's card, else the calendar menu inside
-        // the panel.
-        let layer =
-            menu.or(night).or_else(|| self.editor.as_ref().and_then(|editor| editor.layer(&field, Message::Editor)));
-        let detail = self.editor.as_ref().map(|editor| editor.panel(&field, Message::Editor));
-        // Beside the view the panel takes the place of the properties column ("Up next").
-        let props = if self.panel_beside(class) { None } else { self.props(class) };
-        let placed = panel::place(class, self.body(&night_view), detail, layer);
+        let switcher = Anchor::new();
+        let (header, body, overlay, props) = match &self.settings {
+            Some(pane) => {
+                let frame = self.settings_frame(pane, class);
+                (frame.header, frame.body, frame.overlay, None)
+            }
+            None => {
+                let (views, field) = (Anchor::new(), Anchor::new());
+                // The night's card floats beside a moon on the view's canvas, or under "Nights".
+                let (night_view, night_button) = (Anchor::new(), Anchor::new());
+                let menu = self.menu.and_then(|menu| match menu {
+                    Menu::Switcher => Some(widgets::floating(
+                        &switcher,
+                        Placement::Below(Align::Start),
+                        shell::switcher_menu(AppId::CALENDAR, Message::Switcher),
+                        Message::CloseMenu,
+                    )),
+                    // Only the medium and narrow header have the "Week ▾" button the menu hangs
+                    // from.
+                    Menu::View => (!shell::has_sidebar(class)).then(|| {
+                        widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)
+                    }),
+                });
+                let night = self.night_card.map(|card| {
+                    let (anchor, placement) = match card.at {
+                        Some(moon) => (night_view.area(moon), Placement::Beside),
+                        None => (night_button.clone(), Placement::Below(Align::End)),
+                    };
+                    widgets::floating(&anchor, placement, night_card(card), Message::CloseNight)
+                });
+                // One layer at a time: the window's menus, the night's card, else the calendar
+                // menu inside the panel.
+                let layer = menu
+                    .or(night)
+                    .or_else(|| self.editor.as_ref().and_then(|editor| editor.layer(&field, Message::Editor)));
+                let detail = self.editor.as_ref().map(|editor| editor.panel(&field, Message::Editor));
+                // Beside the view the panel takes the place of the properties column ("Up next").
+                let props = if self.panel_beside(class) { None } else { self.props(class) };
+                let placed = panel::place(class, self.body(&night_view), detail, layer);
+                (self.header(class, &views, &night_button), placed.body, placed.overlay, props)
+            }
+        };
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, class, &switcher));
         let sidebar = self.sidebar(SidebarMode::Expanded, class, &switcher);
-        shell::shell(class, sidebar, self.header(class, &views, &night_button), placed.body, props)
+        shell::shell(class, sidebar, header, body, props)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(placed.overlay)
+            .overlay(overlay)
             .into()
     }
 
@@ -1293,8 +1476,8 @@ impl App {
                 Icon::Settings,
                 tr("Settings"),
                 Trail::None,
-                false,
-                Message::OpenSettings,
+                self.settings.is_some(),
+                Message::ToggleSettings,
             ));
         }
         let head = shell::sidebar_head(mode, AppId::CALENDAR, switcher, Message::Switcher, Message::ToggleSidebar);
@@ -1678,6 +1861,102 @@ impl App {
         self.menu = None;
         self.drawer = false;
         self.night_card = None;
+    }
+
+    // -- The settings in the content area (task S.19) -------------------------------------------
+
+    /// The way the settings take to the core: this window's own socket, or the library's demo
+    /// with `--demo`, which never opens one.
+    fn settings_backend(&self) -> Arc<dyn SettingsBackend> {
+        match &self.source {
+            Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
+            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
+        }
+    }
+
+    /// The gear, or "Settings" in the sidebar: the settings take the content area, or give it
+    /// back to the calendar. Nothing open in the panel is lost – it stays until a click in the
+    /// sidebar shows it again ([`App::leave_settings`]).
+    fn toggle_settings(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.settings.is_some() {
+            self.settings = None;
+            return Task::none();
+        }
+        self.open_settings(None)
+    }
+
+    /// The settings in the content area, at `section` when one is named (`--settings <section>`,
+    /// an unknown word leaves the first section open) – a fresh [`Host`] and its first load,
+    /// which goes over [`App::settings_backend`] and never over this window's own requests.
+    fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
+        let (mut host, load) = Host::new(self.settings_backend(), SETTINGS_SECTIONS.to_vec(), settings_wanted());
+        if let Some(id) = section {
+            host.open(id);
+        }
+        self.settings = Some(SettingsPane { host });
+        load.map(Message::SettingsHost)
+    }
+
+    /// The content area shows the calendar again: the settings step aside. A click in the
+    /// sidebar that shows the calendar – a view, a calendar, a day – comes through here.
+    fn leave_settings(&mut self) {
+        self.settings = None;
+    }
+
+    /// What the window loads again after a change behind the gear ([`Outcome::Changed`]): the
+    /// appearance and the night always, the events only where a tick would load them too – with an
+    /// account connected and with nothing open in the editor, which keeps what it holds while the
+    /// settings cover it. An editor that is open gets the fresh events when it closes.
+    fn settings_loads(&mut self) -> Task<Message> {
+        let mut loads = vec![self.fetch_appearance(), self.fetch_night()];
+        if self.connected() && self.editor.is_none() {
+            loads.push(self.load());
+        }
+        Task::batch(loads)
+    }
+
+    /// What the host asks of the window: the browser and the control centre are the app's;
+    /// everything else the host did itself.
+    fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
+        match outcome {
+            Outcome::None => Task::none(),
+            Outcome::Work(task) => task.map(Message::SettingsHost),
+            // A section changed something: the calendar loads what it shows itself, right now
+            // instead of on its next tick – a calendar just hidden must leave the sidebar and the
+            // week at once, not up to a minute later.
+            //
+            // Exactly the loads a tick does, under the same conditions ([`Message::Tick`]): the
+            // events wait while the editor holds an event, which it does behind the open settings
+            // (task S.19), and while no account is connected there is nothing to load.
+            Outcome::Changed => self.settings_loads(),
+            Outcome::Close => {
+                self.settings = None;
+                Task::none()
+            }
+            Outcome::OpenUrl(url) => {
+                Task::perform(async move { webbrowser::open(&url).map_err(|e| e.to_string()) }, Message::LinkOpened)
+            }
+            // No section of this window asks a question of its own (`Action::Ask`).
+            Outcome::Answer(_) => Task::none(),
+            Outcome::ControlCentre(section) => {
+                connect::open_section(&section);
+                Task::none()
+            }
+            // No section of this window needs what only the app itself can do.
+            Outcome::App(()) => Task::none(),
+        }
+    }
+
+    /// The header bar and the content area of the open settings, as the host draws them.
+    fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
+        let page = settings_page(pane.host.data(), pane.host.current().id);
+        let page = Page {
+            body: page.body.map(Message::SettingsPage),
+            sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
+            actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
+        };
+        pane.host.view(class, page, Message::SettingsHost)
     }
 
     /// Day and week open at 07:00 instead of midnight; the timeline with now (or the time of now
@@ -2728,5 +3007,172 @@ mod tests {
         let _ = app.update(Message::EditNight { fold: None, at: None });
         assert!(app.night_card.is_some_and(|card| card.at.is_none()));
         let _ = app.view();
+    }
+
+    // -- Settings in the content area (task S.19) ------------------------------------------------
+
+    /// The gear (`ToggleSettings`) opens the settings at the first section and closes them again;
+    /// while they are open the window still builds in every layout.
+    #[test]
+    fn the_gear_toggles_the_settings_open_and_closed() {
+        let mut app = launched(&["--demo"]);
+        assert!(app.settings.is_none());
+        let _ = app.update(Message::ToggleSettings);
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, "calendars", "the gear lands on the first section");
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let _ = app.update(Message::Resized(class_size(class)));
+            let _ = app.view();
+        }
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.settings.is_none(), "a second press closes them");
+    }
+
+    /// `--settings <section>` opens the window with that section already open; an unknown word
+    /// is refused with the valid ones.
+    #[test]
+    fn settings_opens_at_the_word_s_section() {
+        for section in SETTINGS_SECTIONS {
+            let app = launched(&["--demo", "--settings", section.id]);
+            let pane = app.settings.as_ref().expect(section.id);
+            assert_eq!(pane.host.current().id, section.id);
+        }
+        let err = Launch::parse(&args(&["--settings", "bogus"])).expect_err("unknown section");
+        assert!(matches!(err, LaunchError::UnknownValue { flag: "--settings", .. }), "{err:?}");
+        assert_eq!(Launch::parse(&args(&["--settings"])), Err(LaunchError::MissingValue("--settings")));
+        // Unlike `--open`, `--settings` needs no `--demo`.
+        assert!(Launch::parse(&args(&["--settings", "night"])).is_ok());
+    }
+
+    /// A click in the sidebar that shows the calendar again (a view, a calendar, "Open Tasks")
+    /// closes the settings first; one that does not (an account's fold) leaves them open.
+    #[test]
+    fn a_sidebar_click_leaves_the_settings_the_rest_does_not() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::ToggleCollection("work".into()));
+        assert!(app.settings.is_none(), "a calendar's switch in the sidebar shows the calendar");
+
+        let _ = app.update(Message::ToggleSettings);
+        let _ = app.update(Message::ToggleAccount("work".into()));
+        assert!(app.settings.is_some(), "folding an account does not leave the settings");
+    }
+
+    /// A change behind the gear reaches the calendar at once: when the host reports the change
+    /// stored ([`Outcome::Changed`]), the window asks for its events again instead of waiting up
+    /// to a minute for the next tick – a calendar just hidden must leave the sidebar and the week
+    /// now.
+    #[test]
+    fn a_change_in_the_settings_loads_the_calendar_again() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::ToggleSettings);
+        app.loading = false;
+        let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: fresh }));
+        assert!(app.loading, "the events are on their way again");
+        assert!(task.units() > 0, "and the night and the appearance with them");
+
+        // A change that failed changed nothing, so nothing is loaded again.
+        app.loading = false;
+        let failed = Box::new(Err("not connected".to_string()));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
+        assert!(!app.loading && task.units() == 0, "the host shows the notice, the calendar stays as it is");
+    }
+
+    /// The loads after a change are the ones a tick does, under the same conditions (found in the
+    /// second review of #210): an editor keeps the event it holds while the settings cover it
+    /// (task S.19), so the events wait for it, as they do on every tick. The appearance and the
+    /// night come either way.
+    #[test]
+    fn a_change_in_the_settings_leaves_an_open_editor_alone() {
+        let mut app = launched(&["--demo", "--now", "2026-10-07T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::OpenEvent(editable(&app)));
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.editor.is_some() && app.settings.is_some(), "the editor is behind the settings");
+
+        app.loading = false;
+        let task = app.settings_outcome(Outcome::Changed);
+        assert!(!app.loading, "the events wait for the editor, as they do on a tick");
+        assert!(app.editor.is_some(), "and the editor keeps what it holds");
+        assert!(task.units() > 0, "the appearance and the night come anyway");
+
+        // Without the editor the events come at once.
+        app.editor = None;
+        let _ = app.settings_outcome(Outcome::Changed);
+        assert!(app.loading);
+    }
+
+    /// Escape closes a menu, the drawer or the night's card first, then the settings, and only
+    /// then what is open in the side panel.
+    #[test]
+    fn escape_closes_the_menu_then_the_settings_then_the_panel() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::ToggleSettings);
+        let _ = app.update(Message::ToggleMenu(Menu::Switcher));
+        let _ = app.update(Message::Escape);
+        assert!(app.menu.is_none() && app.settings.is_some(), "the menu first");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none());
+    }
+
+    /// An editor behind the open settings is out of sight: Escape closes the settings, which is
+    /// what can be seen, and only the next one closes the editor. The editor keeps its event
+    /// meanwhile.
+    #[test]
+    fn escape_closes_the_settings_before_the_hidden_editor() {
+        let mut app = launched(&["--demo", "--now", "2026-10-07T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::OpenEvent(editable(&app)));
+        assert!(app.editor.is_some(), "an event is open in the panel");
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.settings.is_some() && app.editor.is_some(), "the settings cover the editor, they do not close it");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none(), "the key acts on what is on screen");
+        assert!(app.editor.is_some(), "and the editor is back with what it held");
+        let _ = app.update(Message::Escape);
+        assert!(app.editor.is_none(), "the next one closes the editor");
+    }
+
+    /// Each section sends exactly the request its own library tests expect; this only checks the
+    /// dispatch reaches the right one.
+    #[test]
+    fn settings_dispatch_reaches_the_right_section() {
+        let data = torro_settings_ui::Data::default();
+        let shown = settings_update(
+            SettingsMessage::Calendars(collections::Message::Shown { collection: "a/work".into(), shown: false }),
+            &data,
+        );
+        assert_eq!(
+            shown,
+            torro_settings_ui::Action::send(torro_ipc::Request::SetCollectionShown {
+                collection: "a/work".into(),
+                shown: false
+            })
+        );
+        let reminders = settings_update(SettingsMessage::Reminders(calendar::reminders::Message::Enabled(true)), &data);
+        let torro_settings_ui::Action::Send(requests) = reminders else { panic!("expected Send") };
+        assert!(matches!(
+            requests.as_slice(),
+            [torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::Reminders, .. }]
+        ));
+        let night = settings_update(SettingsMessage::Night(calendar::night::Message::From(quarter(23, 30))), &data);
+        let torro_settings_ui::Action::Send(requests) = night else { panic!("expected Send") };
+        assert!(matches!(
+            requests.as_slice(),
+            [torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::Night, .. }]
+        ));
+    }
+
+    /// The size whose class is `class` (the three the design skill names for the Sichtprüfung).
+    fn class_size(class: SizeClass) -> Size {
+        match class {
+            SizeClass::Wide => Size::new(1100.0, 760.0),
+            SizeClass::Medium => Size::new(500.0, 760.0),
+            _ => Size::new(360.0, 760.0),
+        }
     }
 }

@@ -1389,7 +1389,7 @@ Keine Felder.
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Records one sentence from the microphone and returns it as text, for the control centre's voice test. Only for the app key: it opens the microphone.
+Records one sentence from the microphone and returns it as text, for the microphone test in the assistant's settings. Only for the app key: it opens the microphone.
 
 Keine Felder.
 

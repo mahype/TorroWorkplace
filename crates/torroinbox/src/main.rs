@@ -34,6 +34,12 @@
 //! window with the class `torro-compose`, started by the panel's Reply, Reply all and Forward and
 //! by "New" ([`mail::compose_command`]).
 //!
+//! `--settings <section>` opens the window with its settings in the content area (task S.20,
+//! `docs/settings.md`): the Notification Hub and the App Feed take `notifications`, `sources` and
+//! `rules`, the mail window `accounts` and `reading`; a word the window does not know is refused
+//! with the ones it does (exit 64). Only a person opens the settings – no entry of the inbox and
+//! no command of the core can ([`app::App::open_entry`]).
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206): the hulls
 //! [`update`] and [`view`] here measure, so the app's own code stays as it is.

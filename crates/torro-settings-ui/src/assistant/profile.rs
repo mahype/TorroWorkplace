@@ -1,27 +1,31 @@
-//! Assistant › Profile and Assistant › Memory (task C.10 in `docs/tasks/assistent.md`, concept
-//! `docs/assistent.md`, "Persönlichkeit (Stufe 1)" and decision 1): who the assistant is and what it
-//! keeps because the person asked it to. Two pages below the Assistant page, opened from its rows
-//! "Profile" and "Memory" ([`profile_rows`]).
+//! Assistant › Profile (task S.17; it was Assistant › Profile and Assistant › Memory of the
+//! control centre, task C.10, concept `docs/assistent.md`, "Persönlichkeit (Stufe 1)"): who the
+//! assistant is and what it keeps because the person asked it to.
+//!
+//! The section's own page holds two rows; each opens a page below it ([`crate::Page::sub_page`]):
 //!
 //! - **Profile:** name, short description, picture (the first letter of the name or one of the
-//!   suite's symbols, [`torro_ipc::assistant::AVATARS`]) and the personality, typed into a draft and
-//!   saved with "Save" (`assistant.update_profile`, only the fields that changed). Three templates
-//!   ("Calm and brief", "Friendly", "Formal") fill the personality as a starting point;
+//!   suite's symbols, [`torro_ipc::assistant::AVATARS`]) and the personality, typed into a draft
+//!   and saved with "Save" (`assistant.update_profile`, only the fields that changed). Three
+//!   templates ("Calm and brief", "Friendly", "Formal") fill the personality as a starting point;
 //!   "Discard changes" brings back what is stored. A blank name and a personality over 4,000
 //!   characters are named after the first "Save", not before.
 //! - **Memory:** the notes (`assistant.list_memories`), each with "Edit" (`assistant.remember` with
-//!   `replaces`) and "Forget" (`assistant.forget`, after asking); "Add note" in the header. A note
-//!   kept from models outside this computer says so ("This computer only").
+//!   `replaces`) and "Forget" (`assistant.forget`, after asking); "Add note" in the header bar.
+//!   A note kept from models outside this computer says so ("This computer only").
 //!
-//! The page reads and writes nothing itself: the profile and the notes come with [`Data`]
-//! (`assistant.get_profile`, `assistant.list_memories`), every change is a request. The draft follows
-//! a reload while nothing is typed, like a mail account's sender name.
+//! The page reads and writes nothing itself: the profile and the notes come with [`Data`], every
+//! change is a request the host sends. **A section never sees the answer** – the host sends and
+//! loads again –, so the draft measures itself against the stored profile of the fresh [`Data`]:
+//! once a change is stored, "Save" greys out by itself, and what is still typed stays typed. A
+//! note being written closes as it is sent; if it fails, the host's message stands over the page.
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row, text_editor};
-use iced::{Alignment, Background, Element, Fill, Theme, border};
+use iced::widget::{Space, column, container, row, svg, text_editor};
+use iced::{Alignment, Element, Fill, Theme};
+
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_short_date, to_local};
 use torro_gui::icon::{self, Icon};
@@ -29,17 +33,20 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{style, typo};
+use torro_ipc::Request;
 use torro_ipc::assistant::{
     AVATARS, DEFAULT_NAME, LETTER_AVATAR, MAX_NOTE_CHARS, MAX_PERSONALITY_CHARS, Note, Profile,
 };
-use torro_ipc::{Request, Response};
 
-use super::{Action, Data, Header, chevron, confirm, pressable, row_frame, setting_row, wizard};
+use super::{Action, avatar};
+use crate::parts::{chevron, confirm, field, pressable, row_frame, setting_row};
+use crate::{Data, Page};
 
-/// The id of the field a note is typed into: it takes the focus when "Add note" or "Edit" opens it.
+/// The id of the field a note is typed into: it takes the focus when "Add note" or "Edit" opens it
+/// ([`crate::Action::Focus`]).
 pub const NOTE_FIELD: &str = "assistant-note";
 
-/// The page below Assistant that is open.
+/// The page below the section that is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sub {
     Profile,
@@ -81,10 +88,10 @@ impl Template {
     }
 }
 
-/// Page state.
+/// Section state.
 #[derive(Debug, Default)]
 pub struct State {
-    /// The page below Assistant that is open; `None` on the Assistant page itself.
+    /// The page below the section that is open; `None` on its own page.
     pub sub: Option<Sub>,
     /// What is typed into the profile; made when its page opens.
     draft: Option<Draft>,
@@ -96,14 +103,13 @@ pub struct State {
     leaving: bool,
 }
 
-/// The profile as it is being typed, and as it was stored when the draft was made.
+/// The profile as it is being typed.
 #[derive(Debug)]
 struct Draft {
     name: String,
     description: String,
     avatar: String,
     personality: text_editor::Content,
-    stored: Profile,
     /// "Save" was pressed once: problems show from now on.
     tried: bool,
 }
@@ -115,7 +121,6 @@ impl Draft {
             description: profile.description.clone(),
             avatar: profile.avatar.clone(),
             personality: text_editor::Content::with_text(&profile.personality),
-            stored: profile.clone(),
             tried: false,
         }
     }
@@ -126,13 +131,13 @@ impl Draft {
     }
 
     /// What changed against `stored`, as `assistant.update_profile`; `None` when nothing did.
-    fn changes(&self) -> Option<Request> {
+    fn changes(&self, stored: &Profile) -> Option<Request> {
         let changed = |typed: &str, stored: &str| (typed.trim() != stored.trim()).then(|| typed.trim().to_string());
         let request = Request::UpdateProfile {
-            name: changed(&self.name, &self.stored.name),
-            description: changed(&self.description, &self.stored.description),
-            avatar: (self.avatar != self.stored.avatar).then(|| self.avatar.clone()),
-            personality: changed(&self.personality_text(), &self.stored.personality),
+            name: changed(&self.name, &stored.name),
+            description: changed(&self.description, &stored.description),
+            avatar: (self.avatar != stored.avatar).then(|| self.avatar.clone()),
+            personality: changed(&self.personality_text(), &stored.personality),
         };
         match &request {
             Request::UpdateProfile { name: None, description: None, avatar: None, personality: None } => None,
@@ -181,7 +186,7 @@ impl NoteEdit {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The rows on the Assistant page.
+    /// The two rows of the section's own page.
     OpenProfile,
     OpenMemory,
     /// The back button in the header: asks first while the profile has unsaved changes.
@@ -197,7 +202,7 @@ pub enum Message {
     Save,
     /// "Discard changes".
     Discard,
-    /// "Add note" in the header.
+    /// "Add note" in the header bar.
     AddNote,
     /// "Edit" at the note with this id.
     EditNote(String),
@@ -212,7 +217,7 @@ pub enum Message {
     CloseDialog,
 }
 
-/// The profile the core holds, or the defaults before it answered.
+/// The profile the daemon holds, or the defaults before it answered.
 fn profile_of(data: &Data) -> Profile {
     data.profile.clone().unwrap_or_else(|| Profile {
         name: DEFAULT_NAME.to_string(),
@@ -234,7 +239,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.edit = None;
             Action::None
         }
-        Message::Back if state.draft.as_ref().is_some_and(|draft| draft.changes().is_some()) => {
+        Message::Back if unsaved(state, data) => {
             state.leaving = true;
             Action::None
         }
@@ -249,11 +254,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Template(template) => {
             edit_draft(state, |draft| draft.personality = text_editor::Content::with_text(template.text()))
         }
-        Message::Save => save(state),
+        Message::Save => save(state, data),
         Message::Discard => {
-            if let Some(draft) = &mut state.draft {
-                *draft = Draft::new(&draft.stored.clone());
-            }
+            state.draft = Some(Draft::new(&profile_of(data)));
             Action::None
         }
         Message::AddNote => {
@@ -281,7 +284,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::Forget => match state.forget.take() {
-            Some(id) => Action::Send(Request::Forget { id }),
+            Some(id) => Action::send(Request::Forget { id }),
             None => Action::None,
         },
         Message::CloseDialog => {
@@ -290,6 +293,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
     }
+}
+
+/// Whether the profile holds changes that are not stored yet.
+fn unsaved(state: &State, data: &Data) -> bool {
+    state.draft.as_ref().is_some_and(|draft| draft.changes(&profile_of(data)).is_some())
 }
 
 /// Changes the draft, when there is one.
@@ -301,49 +309,28 @@ fn edit_draft(state: &mut State, change: impl FnOnce(&mut Draft)) -> Action {
 }
 
 /// "Save": what changed, unless a problem keeps it back (shown from now on).
-fn save(state: &mut State) -> Action {
+fn save(state: &mut State, data: &Data) -> Action {
+    let stored = profile_of(data);
     let Some(draft) = &mut state.draft else { return Action::None };
     draft.tried = true;
     if draft.problem().is_some() {
         return Action::None;
     }
-    draft.changes().map_or(Action::None, Action::Send)
+    draft.changes(&stored).map_or(Action::None, Action::send)
 }
 
-/// "Save" at a note: `assistant.remember`, with `replaces` for a changed note.
+/// "Save" at a note: `assistant.remember`, with `replaces` for a changed note. The editor closes
+/// as it is sent: the section never sees the answer, and the host shows what failed.
 fn save_note(state: &mut State) -> Action {
     let Some(edit) = &mut state.edit else { return Action::None };
     edit.tried = true;
     if edit.problem().is_some() {
         return Action::None;
     }
-    Action::Send(Request::Remember { text: edit.text.trim().to_string(), replaces: edit.id.clone(), local_only: false })
-}
-
-/// The answer to a request the shell sent: a stored profile takes the draft's place, a stored note
-/// ends its editing. Errors leave both as typed (the shell shows the error).
-pub fn answered(state: &mut State, result: &Result<Response, String>) {
-    match result {
-        Ok(Response::Profile { profile }) if state.draft.is_some() => state.draft = Some(Draft::new(profile)),
-        Ok(Response::Memory { .. }) => state.edit = None,
-        _ => {}
-    }
-}
-
-/// The shell loaded [`Data`] anew: the draft follows the stored profile while nothing is typed; a
-/// note being changed that is gone ends its editing.
-pub fn loaded(state: &mut State, data: &Data) {
-    if let (Some(draft), Some(profile)) = (&mut state.draft, &data.profile)
-        && draft.changes().is_none()
-        && draft.stored != *profile
-    {
-        *draft = Draft::new(profile);
-    }
-    if let Some(NoteEdit { id: Some(id), .. }) = &state.edit
-        && !data.memories.iter().any(|note| &note.id == id)
-    {
-        state.edit = None;
-    }
+    let request =
+        Request::Remember { text: edit.text.trim().to_string(), replaces: edit.id.clone(), local_only: false };
+    state.edit = None;
+    Action::send(request)
 }
 
 /// What Escape means here: close the question, then stop typing a note.
@@ -357,7 +344,7 @@ pub fn escape(state: &State) -> Option<Message> {
     }
 }
 
-/// "Forget this note?" while it is open.
+/// "Forget this note?" or "Discard changes?" while one is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if state.leaving {
         return Some(confirm(
@@ -379,14 +366,19 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     ))
 }
 
-/// The header of a page below Assistant: its name after the section's and the back button; on
-/// Memory "Add note", the window's one primary button (only its icon in narrow windows).
-pub fn header<'a>(state: &'a State, class: SizeClass) -> Option<Header<'a, Message>> {
-    match state.sub? {
-        Sub::Profile => {
-            Some(Header { sub_page: Some((tr("Profile").to_string(), Message::Back)), actions: Vec::new() })
+// ----- Views --------------------------------------------------------------------------------
+
+/// The section's page: its two rows, or the page below it that is open – Profile, or Memory with
+/// "Add note" in the header bar (only its icon in narrow windows).
+pub fn page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, Message> {
+    if !super::is_on(data) {
+        return Page::new(super::off_group(tr("Profile")));
+    }
+    match (state.sub, state.draft.as_ref()) {
+        (Some(Sub::Profile), Some(draft)) => {
+            Page::new(profile_page(draft, &profile_of(data))).sub_page(tr("Profile"), Message::Back)
         }
-        Sub::Memory => {
+        (Some(Sub::Memory), _) => {
             let label = tr("Add note");
             let adding = matches!(state.edit, Some(NoteEdit { id: None, .. }));
             let on_press = (!adding).then_some(Message::AddNote);
@@ -398,24 +390,15 @@ pub fn header<'a>(state: &'a State, class: SizeClass) -> Option<Header<'a, Messa
                     widgets::compact_button(Icon::Plus, label, style::button::primary, on_press)
                 }
             };
-            Some(Header { sub_page: Some((tr("Memory").to_string(), Message::Back)), actions: vec![button] })
+            Page::new(memory_page(state, data)).sub_page(tr("Memory"), Message::Back).actions(vec![button])
         }
+        _ => Page::new(profile_rows(data)),
     }
 }
 
-// ----- Views --------------------------------------------------------------------------------
-
-/// The open page below Assistant; `None` on the Assistant page itself.
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    match state.sub? {
-        Sub::Profile => state.draft.as_ref().map(profile_page),
-        Sub::Memory => Some(memory_page(state, data)),
-    }
-}
-
-/// The rows on the Assistant page that open the two pages: the profile with its picture, name and
-/// description, the memory with how many notes it holds.
-pub fn profile_rows<'a>(data: &'a Data) -> Element<'a, Message> {
+/// The two rows of the section: the profile with its picture, name and description, the memory
+/// with how many notes it holds.
+fn profile_rows(data: &Data) -> Element<'_, Message> {
     let profile = profile_of(data);
     let face = avatar(&profile.name, &profile.avatar, size::control_sm());
     let description = Some(profile.description.clone()).filter(|text| !text.is_empty());
@@ -428,8 +411,7 @@ pub fn profile_rows<'a>(data: &'a Data) -> Element<'a, Message> {
     };
     // In a box as wide as the picture, so both titles stand on one axis.
     let mark = container(
-        icon::icon(Icon::AlignLeft, icon::SIZE)
-            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) }),
+        icon::icon(Icon::AlignLeft, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_2) }),
     )
     .center(size::control_sm());
     let memory_row = setting_row(Some(mark.into()), tr("Memory"), Some(detail), chevron());
@@ -456,10 +438,10 @@ fn inset<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
 }
 
 /// Name, description, picture and personality, then "Save" and "Discard changes".
-fn profile_page(draft: &Draft) -> Element<'_, Message> {
-    let save_on = draft.changes().is_some();
-    let name = wizard::field(DEFAULT_NAME, &draft.name).on_input(Message::Name).on_submit(Message::Save);
-    let description = wizard::field(tr("Your assistant for this computer"), &draft.description)
+fn profile_page<'a>(draft: &'a Draft, stored: &Profile) -> Element<'a, Message> {
+    let save_on = draft.changes(stored).is_some();
+    let name = field(DEFAULT_NAME, &draft.name).on_input(Message::Name).on_submit(Message::Save);
+    let description = field(tr("Your assistant for this computer"), &draft.description)
         .on_input(Message::Description)
         .on_submit(Message::Save);
     let preview = avatar(&draft.name, &draft.avatar, size::control_lg());
@@ -567,7 +549,7 @@ fn memory_page<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// One note: its text (wrapping), when it was written and whether it stays on this computer, and
 /// "Edit" and "Forget".
-fn note_row<'a>(note: &'a Note, today: chrono::NaiveDate) -> Element<'a, Message> {
+fn note_row<'a>(note: &'a Note, today: NaiveDate) -> Element<'a, Message> {
     let mut meta = format_short_date(to_local(note.created).date(), today);
     if note.local_only {
         meta = format!("{meta} · {}", tr("This computer only"));
@@ -590,7 +572,7 @@ fn note_row<'a>(note: &'a Note, today: chrono::NaiveDate) -> Element<'a, Message
 /// A note being typed: the field, "Cancel" and "Save"; Enter saves, Escape cancels. A problem shows
 /// after the first "Save".
 fn note_editor(edit: &NoteEdit) -> Element<'_, Message> {
-    let field = wizard::field(tr("For example: Anna works in sales."), &edit.text)
+    let typed = field(tr("For example: Anna works in sales."), &edit.text)
         .id(NOTE_FIELD)
         .on_input(Message::NoteInput)
         .on_submit(Message::SaveNote);
@@ -601,7 +583,7 @@ fn note_editor(edit: &NoteEdit) -> Element<'_, Message> {
     ]
     .spacing(space::s())
     .align_y(Alignment::Center);
-    let mut content = column![field, buttons].spacing(space::s());
+    let mut content = column![typed, buttons].spacing(space::s());
     if let Some(problem) = edit.problem().filter(|_| edit.tried) {
         content = content.push(problem_text(problem));
     }
@@ -612,13 +594,13 @@ fn note_editor(edit: &NoteEdit) -> Element<'_, Message> {
 /// only in the icon.
 fn problem_text<'a>(problem: String) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
-        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
     row![alert, typo::text(typo::meta(), problem)].spacing(space::xs()).align_y(Alignment::Center).into()
 }
 
 /// The word and the mark of a picture in the picker.
 fn avatar_choice(id: &str) -> (&'static str, Option<Mark>) {
-    match avatar_icon(id) {
+    match super::avatar_icon(id) {
         Some(icon) => (avatar_label(id), Some(Mark::Icon(icon))),
         None => (tr("Letter"), None),
     }
@@ -637,93 +619,48 @@ fn avatar_label(id: &str) -> &'static str {
     }
 }
 
-/// The symbol of a picture; `None` for the letter and for a picture this window does not know.
-pub fn avatar_icon(id: &str) -> Option<Icon> {
-    match id {
-        "sparkles" => Some(Icon::Sparkles),
-        "sun" => Some(Icon::Sun),
-        "moon" => Some(Icon::Moon),
-        "cloud" => Some(Icon::Cloud),
-        "radar" => Some(Icon::Radar),
-        "user" => Some(Icon::User),
-        _ => None,
-    }
-}
-
-/// The assistant's picture, round, `edge` across: its symbol, else the first letter of `name`
-/// (`?` without one), in `text` on `selected` – neutral, the red is the app's.
-pub fn avatar<'a, M: 'a>(name: &str, avatar: &str, edge: f32) -> Element<'a, M> {
-    // A symbol keeps a ring of room in a small circle.
-    let symbol_edge = if edge < size::control_sm() { icon::SIZE_SM } else { icon::SIZE };
-    let face: Element<'a, M> = match avatar_icon(avatar) {
-        Some(symbol) => icon::icon(symbol, symbol_edge)
-            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) })
-            .into(),
-        None => {
-            let letter = name.trim().chars().next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
-            let style = if edge >= size::control_lg() { typo::title() } else { typo::caption() };
-            typo::text(style, letter).style(theme::text).wrapping(Wrapping::None).into()
-        }
-    };
-    container(face)
-        .center(edge)
-        .style(move |t: &Theme| container::Style {
-            background: Some(Background::Color(palette(t).selected)),
-            border: border::rounded(edge / 2.0),
-            ..container::Style::default()
-        })
-        .into()
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
 
+    use super::super::tests::{data, turned_off};
     use super::*;
-
-    fn stored() -> Profile {
-        Profile {
-            name: "Torro".into(),
-            description: "Your assistant for this computer".into(),
-            avatar: LETTER_AVATAR.into(),
-            personality: "Be brief.".into(),
-        }
-    }
+    use crate::Action as Act;
 
     fn note(id: &str, text: &str, local_only: bool) -> Note {
         let created = Utc.with_ymd_and_hms(2026, 10, 14, 9, 0, 0).single().expect("a time");
         Note { id: id.into(), text: text.into(), created, local_only }
     }
 
-    fn data() -> Data {
-        Data {
-            profile: Some(stored()),
-            memories: vec![note("1a2b3c4d", "Anna works in sales.", false), note("5e6f7a8b", "ACME owes 400 €.", true)],
-            ..Data::default()
-        }
-    }
-
     fn sent(action: Action) -> Request {
         match action {
-            Action::Send(request) => request,
-            other => panic!("expected a request, got {other:?}"),
+            Act::Send(requests) if requests.len() == 1 => requests.into_iter().next().expect("one"),
+            other => panic!("expected one request, got {other:?}"),
         }
     }
 
-    #[test]
-    fn saving_the_profile_sends_only_what_changed() {
-        let data = data();
+    /// The demo's notes, by the ids the tests change and forget.
+    async fn with_notes() -> Data {
+        let mut data = data().await;
+        data.memories =
+            vec![note("1a2b3c4d", "Anna works in sales.", false), note("5e6f7a8b", "ACME owes 400 €.", true)];
+        data
+    }
+
+    #[tokio::test]
+    async fn saving_the_profile_sends_only_what_changed() {
+        let data = with_notes().await;
+        let stored = profile_of(&data);
         let mut state = State::default();
         let _ = update(&mut state, Message::OpenProfile, &data);
         assert_eq!(state.sub, Some(Sub::Profile));
-        assert!(matches!(update(&mut state, Message::Save, &data), Action::None), "nothing changed");
+        assert!(matches!(update(&mut state, Message::Save, &data), Act::None), "nothing changed");
 
         let _ = update(&mut state, Message::Name("Jarvis".into()), &data);
         let _ = update(&mut state, Message::Avatar("sun".into()), &data);
         let _ = update(&mut state, Message::Template(Template::Formal), &data);
-        let request = sent(update(&mut state, Message::Save, &data));
         assert_eq!(
-            request,
+            sent(update(&mut state, Message::Save, &data)),
             Request::UpdateProfile {
                 name: Some("Jarvis".into()),
                 description: None,
@@ -731,33 +668,34 @@ mod tests {
                 personality: Some(Template::Formal.text().into()),
             }
         );
-        // The core's answer becomes the stored profile: nothing is left to save.
-        let profile = Profile {
-            name: "Jarvis".into(),
-            avatar: "sun".into(),
-            personality: Template::Formal.text().into(),
-            ..stored()
+        // The host loads again; against the stored profile nothing is left to save.
+        let saved = Data {
+            profile: Some(Profile {
+                name: "Jarvis".into(),
+                avatar: "sun".into(),
+                personality: Template::Formal.text().into(),
+                ..stored
+            }),
+            ..data.clone()
         };
-        answered(&mut state, &Ok(Response::Profile { profile }));
-        assert!(matches!(update(&mut state, Message::Save, &data), Action::None));
+        assert!(matches!(update(&mut state, Message::Save, &saved), Act::None), "stored: Save greys out");
     }
 
-    #[test]
-    fn problems_show_after_the_first_save_and_nothing_is_sent() {
-        let data = data();
+    #[tokio::test]
+    async fn problems_show_after_the_first_save_and_nothing_is_sent() {
+        let data = with_notes().await;
         let mut state = State::default();
         let _ = update(&mut state, Message::OpenProfile, &data);
         let _ = update(&mut state, Message::Name("  ".into()), &data);
         let draft = state.draft.as_ref().expect("a draft");
         assert!(!draft.tried && draft.problem() == Some(tr("Give the assistant a name.").to_string()));
-        drop(view(&state, &data));
-        assert!(matches!(update(&mut state, Message::Save, &data), Action::None));
+        let _ = page(&state, &data, SizeClass::Wide);
+        assert!(matches!(update(&mut state, Message::Save, &data), Act::None));
         assert!(state.draft.as_ref().is_some_and(|draft| draft.tried), "shown from now on");
-        drop(view(&state, &data));
+        let _ = page(&state, &data, SizeClass::Wide);
 
-        let _ = update(&mut state, Message::Name("Torro".into()), &data);
         let long = "a".repeat(MAX_PERSONALITY_CHARS + 1);
-        let mut draft = Draft::new(&Profile { personality: long, ..stored() });
+        let mut draft = Draft::new(&Profile { personality: long, ..profile_of(&data) });
         draft.tried = true;
         assert_eq!(
             draft.problem(),
@@ -768,9 +706,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn going_back_asks_before_unsaved_changes_are_lost_and_new_notes_take_the_focus() {
-        let data = data();
+    #[tokio::test]
+    async fn going_back_asks_before_unsaved_changes_are_lost_and_new_notes_take_the_focus() {
+        let data = with_notes().await;
         let mut state = State::default();
         let _ = update(&mut state, Message::OpenProfile, &data);
         let _ = update(&mut state, Message::Back, &data);
@@ -788,44 +726,40 @@ mod tests {
         assert!(state.sub.is_none() && overlay(&state, &data).is_none());
 
         let _ = update(&mut state, Message::OpenMemory, &data);
-        assert!(matches!(update(&mut state, Message::AddNote, &data), Action::Focus(NOTE_FIELD)));
-        assert!(matches!(update(&mut state, Message::EditNote("1a2b3c4d".into()), &data), Action::Focus(NOTE_FIELD)));
-        assert!(matches!(update(&mut state, Message::EditNote("ffffffff".into()), &data), Action::None));
+        assert!(matches!(update(&mut state, Message::AddNote, &data), Act::Focus(NOTE_FIELD)));
+        assert!(matches!(update(&mut state, Message::EditNote("1a2b3c4d".into()), &data), Act::Focus(NOTE_FIELD)));
+        assert!(matches!(update(&mut state, Message::EditNote("ffffffff".into()), &data), Act::None));
     }
 
-    #[test]
-    fn discarding_brings_back_what_is_stored_and_a_reload_follows_while_nothing_is_typed() {
-        let data = data();
+    #[tokio::test]
+    async fn discarding_brings_back_what_is_stored_and_what_is_typed_stays_over_a_reload() {
+        let data = with_notes().await;
         let mut state = State::default();
         let _ = update(&mut state, Message::OpenProfile, &data);
         let _ = update(&mut state, Message::Description("Mine".into()), &data);
         let _ = update(&mut state, Message::Discard, &data);
-        assert!(state.draft.as_ref().is_some_and(|draft| draft.changes().is_none()));
+        assert!(!unsaved(&state, &data), "back to what is stored");
 
-        let mut changed = data.clone();
-        changed.profile = Some(Profile { name: "Jarvis".into(), ..stored() });
-        loaded(&mut state, &changed);
-        assert_eq!(state.draft.as_ref().map(|draft| draft.name.as_str()), Some("Jarvis"), "follows");
-        let _ = update(&mut state, Message::Name("Friday".into()), &changed);
-        loaded(&mut state, &data);
+        let _ = update(&mut state, Message::Name("Friday".into()), &data);
+        let changed =
+            Data { profile: Some(Profile { description: "Elsewhere".into(), ..profile_of(&data) }), ..data.clone() };
         assert_eq!(state.draft.as_ref().map(|draft| draft.name.as_str()), Some("Friday"), "what is typed stays");
+        assert!(unsaved(&state, &changed), "and is still offered against the fresh profile");
     }
 
-    #[test]
-    fn notes_are_added_changed_and_forgotten_with_requests() {
-        let data = data();
+    #[tokio::test]
+    async fn notes_are_added_changed_and_forgotten_with_requests() {
+        let data = with_notes().await;
         let mut state = State::default();
         let _ = update(&mut state, Message::OpenMemory, &data);
         let _ = update(&mut state, Message::AddNote, &data);
-        assert!(matches!(update(&mut state, Message::SaveNote, &data), Action::None), "empty: nothing sent");
+        assert!(matches!(update(&mut state, Message::SaveNote, &data), Act::None), "empty: nothing sent");
         let _ = update(&mut state, Message::NoteInput(" Bob likes tea. ".into()), &data);
         assert_eq!(
             sent(update(&mut state, Message::SaveNote, &data)),
             Request::Remember { text: "Bob likes tea.".into(), replaces: None, local_only: false }
         );
-        let created = note("9a9a9a9a", "Bob likes tea.", false);
-        answered(&mut state, &Ok(Response::Memory { note: created }));
-        assert!(state.edit.is_none(), "stored: the editor closes");
+        assert!(state.edit.is_none(), "sent: the editor closes, the host loads again");
 
         let _ = update(&mut state, Message::EditNote("1a2b3c4d".into()), &data);
         assert_eq!(state.edit.as_ref().map(|edit| edit.text.as_str()), Some("Anna works in sales."));
@@ -838,9 +772,10 @@ mod tests {
                 local_only: false
             }
         );
+
+        let _ = update(&mut state, Message::EditNote("5e6f7a8b".into()), &data);
         assert!(matches!(escape(&state), Some(Message::CancelNote)));
         let _ = update(&mut state, Message::CancelNote, &data);
-
         let _ = update(&mut state, Message::AskForget("5e6f7a8b".into()), &data);
         assert!(overlay(&state, &data).is_some());
         assert!(matches!(escape(&state), Some(Message::CloseDialog)));
@@ -850,40 +785,26 @@ mod tests {
         assert!(overlay(&state, &data).is_none(), "no such note, no question");
     }
 
-    #[test]
-    fn the_pages_build_with_their_headers_in_every_state() {
-        let data = data();
+    #[tokio::test]
+    async fn the_pages_build_with_their_headers_in_every_state() {
+        let data = with_notes().await;
         let mut state = State::default();
-        assert!(view(&state, &data).is_none() && header(&state, SizeClass::Wide).is_none());
-        drop(profile_rows(&data));
-        drop(profile_rows(&Data::default()));
+        assert!(page(&state, &data, SizeClass::Wide).sub_page.is_none(), "the section's own rows");
+        let _ = page(&state, &Data { memories: Vec::new(), ..data.clone() }, SizeClass::Wide);
         let _ = update(&mut state, Message::OpenProfile, &data);
-        assert!(view(&state, &data).is_some());
-        let shown = header(&state, SizeClass::Wide).and_then(|header| header.sub_page).map(|(name, _)| name);
-        assert_eq!(shown, Some(tr("Profile").to_string()));
+        let shown = page(&state, &data, SizeClass::Wide).sub_page.map(|(name, _)| name);
+        assert_eq!(shown.as_deref(), Some(tr("Profile")));
         let _ = update(&mut state, Message::OpenMemory, &data);
         for class in [SizeClass::Wide, SizeClass::Narrow] {
-            let memory = header(&state, class).expect("a header");
+            let memory = page(&state, &data, class);
             assert_eq!(memory.actions.len(), 1, "Add note");
+            assert_eq!(memory.sub_page.map(|(name, _)| name).as_deref(), Some(tr("Memory")));
         }
-        drop(view(&state, &data));
-        drop(view(&state, &Data::default()));
         let _ = update(&mut state, Message::AddNote, &data);
-        drop(view(&state, &data));
-        let _ = update(&mut state, Message::Back, &data);
-        assert!(state.sub.is_none());
-    }
-
-    #[test]
-    fn every_picture_has_a_word_and_unknown_ones_are_the_letter() {
-        for id in AVATARS {
-            let (label, mark) = avatar_choice(id);
-            assert!(!label.is_empty());
-            assert_eq!(mark.is_none(), *id == LETTER_AVATAR, "{id}");
-        }
-        assert!(avatar_icon("dragon").is_none());
-        drop(avatar::<Message>("torro", "dragon", size::control_sm()));
-        drop(avatar::<Message>("", LETTER_AVATAR, size::control_lg()));
+        let _ = page(&state, &data, SizeClass::Wide);
+        // While the assistant is off the section waits, whatever was open.
+        let off = turned_off(&data);
+        assert!(page(&state, &off, SizeClass::Wide).sub_page.is_none());
     }
 
     #[test]
@@ -892,5 +813,11 @@ mod tests {
             assert!(!template.label().is_empty() && template.text().chars().count() <= MAX_PERSONALITY_CHARS);
         }
         assert_eq!(Template::Calm.label(), tr("Calm and brief"));
+        for id in AVATARS {
+            let (label, mark) = avatar_choice(id);
+            assert!(!label.is_empty());
+            assert_eq!(mark.is_none(), *id == LETTER_AVATAR, "{id}");
+        }
+        assert_eq!(avatar_label("sun"), tr("Sun"));
     }
 }

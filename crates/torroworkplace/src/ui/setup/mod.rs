@@ -51,6 +51,7 @@ use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::{Action, Data, page_margin, wizard};
 use torro_inbox::SourceRef;
+use torro_mail::Notify;
 
 /// A step of the setup, in the order it is walked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -273,12 +274,20 @@ impl State {
         self.dialog.is_some()
     }
 
-    /// Whether the inbox source `source` is muted: as switched here, else as the core lists it.
+    /// Whether the inbox source `source` is muted: as switched here, else as it is stored. A mail
+    /// account keeps that in its own `notify` (task S.21, `docs/settings.md` › Was wohin gehört),
+    /// so its switch reads from there; every other source from `inbox.list_sources`. An old
+    /// `inbox.mute_source` rule still wins over `notify` – it would keep the source quiet whatever
+    /// `notify` says –, so the switch is off while either of them is.
     fn is_muted(&self, data: &Data, source: &SourceRef) -> bool {
-        self.muted
-            .get(&source_key(source))
-            .copied()
-            .unwrap_or_else(|| data.sources.iter().any(|info| info.source == *source && info.muted))
+        if let Some(switched) = self.muted.get(&source_key(source)) {
+            return *switched;
+        }
+        let muted = data.sources.iter().any(|info| info.source == *source && info.muted);
+        if source.kind != torro_inbox::SourceKind::Mail {
+            return muted;
+        }
+        muted || mail_notify(data, source) == Notify::Off
     }
 
     /// Whether the apps show the calendar or task list `id`: as switched here, else as stored.
@@ -584,7 +593,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
         },
         Message::Source(source, on) => {
             state.muted.insert(source_key(&source), !on);
-            stay(Action::Send(Request::MuteSource { source, muted: !on }))
+            stay(source_requests(&source, on, data))
         }
         Message::Quiet(quiet) => {
             state.quiet = Some(quiet);
@@ -639,6 +648,63 @@ fn open_dialog(state: &mut State, provider: Option<wizard::Provider>, data: &Dat
 /// A source's key for the switches kept here: kind and name.
 fn source_key(source: &SourceRef) -> String {
     format!("{:?}:{}", source.kind, source.name)
+}
+
+/// What a source's switch sends. Every source but mail is `inbox.mute_source`. A mail account keeps
+/// whether its new mail shows up in its own `notify` (task S.21), so its switch sends
+/// `accounts.update_mail_account`; switched on it also lifts an older `inbox.mute_source` rule in
+/// the same step, which would otherwise keep the source quiet whatever `notify` says – exactly as
+/// Notification Hub › Sources does it.
+///
+/// Switched on it writes back what the account has stored ([`switched_on`]): an account at "Only
+/// ‚For me‘" keeps that step, because the reading side counts it as on ([`State::is_muted`]) – it
+/// would otherwise lose the choice and let every newsletter into the inbox again. Only an account
+/// stored as `Off` (or one the setup cannot see) starts at `All`. The three steps themselves are
+/// set in the Notification Hub, under its gear. Without an account for the source nothing is sent;
+/// the core would only answer `not-found`.
+fn source_requests(source: &SourceRef, on: bool, data: &Data) -> Action {
+    if source.kind != torro_inbox::SourceKind::Mail {
+        return Action::Send(Request::MuteSource { source: source.clone(), muted: !on });
+    }
+    let Some(account) = mail_account(data, source) else { return Action::None };
+    let update = Request::UpdateMailAccount {
+        id: account.id.clone(),
+        sender_name: None,
+        signature: None,
+        notify: Some(if on { switched_on(mail_notify(data, source)) } else { Notify::Off }),
+        services: None,
+        folder_roles: None,
+        format: None,
+    };
+    let muted = data.sources.iter().any(|info| info.source == *source && info.muted);
+    match on && muted {
+        true => Action::SendAll(vec![update, Request::MuteSource { source: source.clone(), muted: false }]),
+        false => Action::Send(update),
+    }
+}
+
+/// The mail account the source `source` stands for; `None` for a source without one.
+fn mail_account<'a>(data: &'a Data, source: &SourceRef) -> Option<&'a torro_ipc::AccountInfo> {
+    let id = format!("mail:{}", source.name);
+    data.accounts.iter().find(|account| account.id == id)
+}
+
+/// What a mail source's switch writes when it is turned on: the step the account has, so "Only
+/// ‚For me‘" survives being switched off and on again; `All` for one that stands at `Off` and has
+/// no step to keep.
+fn switched_on(stored: Notify) -> Notify {
+    match stored {
+        Notify::Off => Notify::All,
+        kept => kept,
+    }
+}
+
+/// What the mail account of `source` stores under `notify`; [`Notify::default`] for a source
+/// without such an account (none of the setup's rows, but the switch must read something).
+fn mail_notify(data: &Data, source: &SourceRef) -> Notify {
+    mail_account(data, source)
+        .and_then(|account| account.mail.as_ref())
+        .map_or_else(Notify::default, |mail| mail.settings.notify)
 }
 
 /// Sends the open form of the calendar or tasks step: the CalDAV account, showing what the
@@ -1202,6 +1268,79 @@ mod tests {
         assert!(setup.is_muted(&data, &source), "at once");
         let quiet = update(&mut setup, Message::Quiet(false), &data);
         assert_eq!(sent(&quiet), Some((SettingKey::QuietWhenBusy, serde_json::json!(false))));
+    }
+
+    /// Task S.21: the source "Mail" reads its state from the account's `notify`, not from the
+    /// muted sources. Switching it on sends `accounts.update_mail_account` and lifts an older
+    /// `inbox.mute_source` rule in the same step; switching it off sends only the account's setting
+    /// – the one place it is stored from now on.
+    #[test]
+    fn the_mail_source_reads_and_writes_notify() {
+        let mut data = data();
+        let mut setup = state(Step::Inbox);
+        let account = data.accounts.iter().find(|a| a.kind == "mail").expect("the demo's mail").clone();
+        let name = account.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
+        let source = SourceRef { kind: torro_inbox::SourceKind::Mail, name };
+        assert!(!setup.is_muted(&data, &source), "the demo's account shows new mail");
+
+        // Off is stored at the account, not as a muted source.
+        let off = update(&mut setup, Message::Source(source.clone(), false), &data);
+        let Outcome::Stay(Action::Send(Request::UpdateMailAccount { id, notify, services, .. })) = off else {
+            panic!("expected accounts.update_mail_account, got {off:?}");
+        };
+        assert_eq!((id.as_str(), notify, services), (account.id.as_str(), Some(Notify::Off), None));
+        assert!(setup.is_muted(&data, &source), "at once");
+
+        // `notify: off` alone keeps the row off, without any muted source.
+        let mut quiet = state(Step::Inbox);
+        if let Some(mail) = data.accounts.iter_mut().find(|a| a.id == account.id).and_then(|a| a.mail.as_mut()) {
+            mail.settings.notify = Notify::Off;
+        }
+        assert!(quiet.is_muted(&data, &source), "read from notify");
+
+        // An older mute rule is lifted together with the account's setting.
+        data.sources.push(torro_inbox::SourceInfo { source: source.clone(), open: 0, muted: true, health: None });
+        let on = update(&mut quiet, Message::Source(source.clone(), true), &data);
+        let Outcome::Stay(Action::SendAll(requests)) = on else { panic!("expected two requests, got {on:?}") };
+        assert!(
+            matches!(&requests[0], Request::UpdateMailAccount { notify: Some(Notify::All), .. }),
+            "{:?}",
+            requests[0]
+        );
+        assert!(
+            matches!(&requests[1], Request::MuteSource { source: sent, muted: false } if *sent == source),
+            "{:?}",
+            requests[1]
+        );
+        assert_eq!(requests.len(), 2);
+
+        // A mail source whose account the core does not list sends nothing.
+        let without = Data { accounts: Vec::new(), ..data.clone() };
+        let none = update(&mut state(Step::Inbox), Message::Source(source, true), &without);
+        assert!(matches!(none, Outcome::Stay(Action::None)), "{none:?}");
+    }
+
+    /// Found in the review of task S.22: switching a mail source on writes back the step the
+    /// account has. "Only ‚For me‘" counts as on ([`State::is_muted`]), so writing `All` would
+    /// quietly undo that choice and let every newsletter into the inbox again.
+    #[test]
+    fn switching_a_mail_source_on_keeps_only_for_me() {
+        assert_eq!(switched_on(Notify::ForMeOnly), Notify::ForMeOnly, "the choice stays");
+        assert_eq!(switched_on(Notify::All), Notify::All);
+        assert_eq!(switched_on(Notify::Off), Notify::All, "an account that was off has no step to keep");
+
+        let mut data = data();
+        let account = data.accounts.iter().find(|a| a.kind == "mail").expect("the demo's mail").clone();
+        let name = account.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
+        let source = SourceRef { kind: torro_inbox::SourceKind::Mail, name };
+        if let Some(mail) = data.accounts.iter_mut().find(|a| a.id == account.id).and_then(|a| a.mail.as_mut()) {
+            mail.settings.notify = Notify::ForMeOnly;
+        }
+        let on = update(&mut state(Step::Inbox), Message::Source(source, true), &data);
+        let Outcome::Stay(Action::Send(Request::UpdateMailAccount { notify, .. })) = on else {
+            panic!("expected accounts.update_mail_account, got {on:?}");
+        };
+        assert_eq!(notify, Some(Notify::ForMeOnly), "the newsletters stay out");
     }
 
     #[test]

@@ -1,0 +1,31 @@
+[package]
+name = "torro-settings-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The settings of a TorroWorkplace app in its own window: row building blocks, the sections of each app and the host that shows them in the content area."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+torro-gui.workspace = true
+torro-ipc.workspace = true
+# The sources of the inbox's sections (`SourceRef`, task S.20).
+torro-inbox.workspace = true
+# The calendars and task lists of an account, as `accounts.list_accounts` lists them
+# (`Collection`, `CollectionKind`, task S.19).
+torro-pim.workspace = true
+# The settings of a mail account the sections change (`Notify`, `MailFormat`, `Role`, task S.20).
+torro-mail.workspace = true
+iced.workspace = true
+# When a note of the assistant's memory was written (task S.17).
+chrono.workspace = true
+# The value of `settings.set_setting` (task S.17).
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

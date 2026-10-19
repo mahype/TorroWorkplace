@@ -9,6 +9,10 @@
 //!   or a new one, class `torro-assistant-chat`, titled "{bot} · {title}". `assistant.open_window`
 //!   starts it this way, and a workspace template brings the same bot back with its argument.
 //! - `--demo`: sample conversations in memory instead of the core ([`crate::demo`]).
+//! - `--settings <section>`: open the window with its settings in the content area, at this
+//!   section (`general`, `profile`, `bots`, `voice`, `history`; task S.18). A start parameter, so
+//!   only a person starting the program opens the settings: no text of an answer can, and the
+//!   links of an answer stay on `http(s)` ([`crate::app`]).
 //! - `--open <state>`: start in a state ([`Open`]), for screenshots; needs `--demo`.
 //! - `--appearance light|dark|system`: this process only, nothing is stored.
 //! - `--design <id>`: draw with this design pack; needs `--demo`.
@@ -20,6 +24,7 @@ use std::fmt;
 use torro_gui::design;
 use torro_gui::theme::Appearance;
 use torro_ipc::assistant::MAX_ID_BYTES;
+use torro_settings_ui::assistant::SECTIONS;
 
 /// Which window the process opens.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -83,8 +88,6 @@ pub enum Open {
     BotMenu,
     /// The editor of the bot "Travel planner": profile, personality, instructions, skills.
     BotEditor,
-    /// The editor of the bot "Travel planner" scrolled to its section "Access" (task B.5).
-    BotAccess,
     /// The editor of a new bot, after a first "Save" without a name: the problem shows.
     BotNew,
     /// The question before deleting the bot "Travel planner".
@@ -99,7 +102,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 28] = [
+    pub const ALL: [(&'static str, Open); 27] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -122,7 +125,6 @@ impl Open {
         ("bot-welcome", Open::BotWelcome),
         ("bot-menu", Open::BotMenu),
         ("bot-editor", Open::BotEditor),
-        ("bot-access", Open::BotAccess),
         ("bot-new", Open::BotNew),
         ("bot-delete", Open::BotDelete),
         ("bot-asked", Open::BotAsked),
@@ -138,6 +140,9 @@ pub struct Launch {
     pub window: Window,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
+    /// `--settings <section>`: the window opens with its settings in the content area, at the
+    /// section with this [`torro_settings_ui::Section::id`].
+    pub settings: Option<String>,
     pub design: Option<String>,
     /// `--size`: the window's size at start, width and height in logical pixels.
     pub size: Option<(u16, u16)>,
@@ -211,6 +216,13 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
+        let settings = match flag_value(args, "--settings")? {
+            None => None,
+            Some(word) if SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) => {
+                return Err(unknown("--settings", word, SECTIONS.iter().map(|section| section.id).collect()));
+            }
+        };
         let design = match flag_value(args, "--design")? {
             None => None,
             Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
@@ -225,7 +237,7 @@ impl Launch {
             Some(_) if !demo => return Err(LaunchError::NeedsDemo("--size")),
             Some(word) => Some(size_of(word).ok_or_else(|| unknown("--size", word, vec!["<width>x<height>"]))?),
         };
-        Ok(Launch { demo, window, open, appearance, design, size })
+        Ok(Launch { demo, window, open, appearance, settings, design, size })
     }
 }
 
@@ -311,6 +323,24 @@ mod tests {
             );
         }
         assert_eq!(window_of(&["--chat", "new", "--bot", "travel"]), Err(LaunchError::Conflict("--chat", "--bot")));
+    }
+
+    /// Task S.18: `--settings <section>` opens the settings at a section of the assistant, with
+    /// and without `--demo`; a word no section has is refused with the words that work.
+    #[test]
+    fn settings_takes_a_section_of_the_assistant() {
+        for section in SECTIONS {
+            let launch = Launch::parse(&args(&["--settings", section.id])).expect("every section");
+            assert_eq!(launch.settings.as_deref(), Some(section.id));
+        }
+        let demo = Launch::parse(&args(&["--demo", "--settings=voice"])).expect("valid");
+        assert_eq!(demo.settings.as_deref(), Some("voice"));
+        assert_eq!(Launch::parse(&args(&[])).expect("valid").settings, None);
+        assert_eq!(Launch::parse(&args(&["--settings"])), Err(LaunchError::MissingValue("--settings")));
+        for bad in ["appearance", "rights", "", "Voice"] {
+            let refused = Launch::parse(&args(&["--settings", bad]));
+            assert!(matches!(refused, Err(LaunchError::UnknownValue { flag: "--settings", .. })), "{bad:?}");
+        }
     }
 
     #[test]

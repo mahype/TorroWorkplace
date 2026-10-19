@@ -160,7 +160,8 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.16 Gerüst: Bibliothek `torro-settings-ui` und Host für den Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (Bibliothek, Host, Demo-Backend und `settings_open`; Sichtprüfung der Steuerzentrale auf
+  diesem Rechner nicht möglich – kein Hyprland, macOS –, die Bausteine sind unverändert umgezogen)
 - **Modell:** Opus (neues Crate, Schnittstelle für alle Apps) · **Dateien:** `Cargo.toml` (Wurzel, Mitglied und
   `[workspace.dependencies]`), `crates/torro-settings-ui/` (neu), `crates/torroworkplace/Cargo.toml`,
   `crates/torroworkplace/src/ui/mod.rs`, `crates/torro-gui/src/shell.rs`
@@ -192,7 +193,11 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   dunkel); fmt, clippy, test (auch `TORRO_LANG=de`) grün; baut auf Linux, macOS, Windows.
 
 ### S.17 Seiten des Assistenten in die Bibliothek, in Abschnitte geteilt
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; die Abschnitte General, Profile, Bots, Voice und History liegen in
+  `crates/torro-settings-ui/src/assistant/`. Der Host reicht Antworten durch – `Action::Ask` hin,
+  `Outcome::Answer` an die App und von dort an `assistant::answered` –, darum steht „Test the microphone“
+  mit „Say something“ im Abschnitt Voice. Sichtprüfung erst mit S.18 möglich: vorher hängt kein Fenster die
+  Abschnitte ein, und dieser Rechner hat kein Hyprland)
 - **Modell:** Opus · **Dateien:** `crates/torro-settings-ui/src/` (neu: `assistant/`); `crates/torroworkplace/src/ui/
   {assistant,persona}.rs` nur lesen (die Seite der Steuerzentrale bleibt unverändert bis S.21)
 - Die Seite Assistant (heute bis zu 18 Gruppen) wird zu den Abschnitten **General** (Status an/aus als Anzeige mit
@@ -217,7 +222,18 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   `TORRO_LANG=de`) grün.
 
 ### S.18 Assistent: Einstellungen im Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; das Zahnrad schaltet den Inhaltsbereich zwischen Chat und Einstellungen um und ist
+  dabei hervorgehoben, `--settings <abschnitt>` startet dort, Escape geht erst an den offenen Abschnitt und dann an
+  den Host. Der Bot-Editor hat statt des Abschnitts „Access“ eine Zeile „Access ↗“ und schickt nur noch
+  `bots.save_bot`; der Demo-Zustand `--open bot-access` ist damit entfallen. Sichtprüfung auf diesem macOS-Rechner:
+  `shoot.sh` braucht Hyprland und `screencapture` darf nicht aufnehmen („could not create image from display“) –
+  stattdessen offscreen über Iceds `window::screenshot` (wegwerf-Patch, nicht commitiert, wie bei U.13):
+  `--demo --settings general|bots|voice` bei 1100, 800, 500 und 360 px, hell und dunkel, alle vier Größenklassen
+  sauber (breit Abschnittsliste, mittel Rail + Menü „General ▾“, schmal Schritte mit „‹“). **Offen:** die neue Zeile
+  „Access ↗“ im Bot-Editor steht unter dem Falz, und ohne `--open bot-access` kommt kein Bild davon zustande – das
+  Formular ist höher als ein Fenster auf diesem Bildschirm (max. 965 px). Dazu zwei Befunde aus der Bibliothek
+  (nicht aus dieser Aufgabe), die S.22 aufnimmt: lange Zeilentexte in `parts::setting_row` werden hart
+  abgeschnitten statt mit „…“, und die Textfelder des Bot-Editors zeichnen im Screenshot der ersten Frames leer)
 - **Modell:** Opus · **Dateien:** `crates/torroassistant/Cargo.toml`, `crates/torroassistant/src/{app,view,bots}.rs`,
   `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app/bots.rs`, `crates/torroassistant/src/app/tests.rs`,
   `crates/torroassistant/src/backend.rs` (setzt das Backend des Hosts um), `crates/torroassistant/src/main.rs`,
@@ -241,7 +257,17 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   (Agent `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.19 Kalender und Aufgaben: Einstellungen im Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; Kalender bekommt die drei Abschnitte aus `collections.rs`
+  (Calendars, `Role::Calendar`) und `calendar.rs` (Reminders, Night) in einer eigenen `SETTINGS_SECTIONS`
+  in `torrocalendar/src/app.rs` – die Bibliothek hat kein eigenes Kalender-Modul, weil Calendars sich
+  `collections.rs` mit Aufgabens Lists teilt. Aufgaben bekommt nur den einen Abschnitt Lists, direkt aus
+  `collections::Role::TaskList`. Beide Apps: Zahnrad/„Settings“ hin und zurück, `--settings <abschnitt>`
+  ohne `--demo`-Zwang, ein Klick in der Seitenleiste, der den Kalender bzw. die Liste wieder zeigt, schließt
+  die Einstellungen (`shows_calendar`/`shows_list`), Escape zuletzt. Dabei einen bestehenden Fehler in beiden
+  Apps gefunden und mitbehoben: die Escape- und die Tastatur-Subscription waren nicht an die Einstellungen
+  gekoppelt, sonst hätte Escape bei offenen Einstellungen gar nichts getan. **Offen:** Sichtprüfung auf diesem
+  Rechner nicht möglich – kein Hyprland, macOS, und den nicht committeten Wegwerf-Patch aus S.18 für Iceds
+  `window::screenshot` habe ich für diese Aufgabe nicht neu angelegt; S.22 holt die Design-Prüfung der Stufe nach.)
 - **Modell:** Sonnet · **Dateien:** `crates/torro-settings-ui/src/` (neu: `collections.rs`, `calendar.rs`),
   `crates/torrocalendar/{Cargo.toml,src/app.rs,src/main.rs}`, `crates/torrotasks/{Cargo.toml,src/app.rs,src/main.rs}`
 - Kalender: Abschnitte **Calendars** (welche die Suite zeigt, je Konto gruppiert, `settings.set_collection_shown`;
@@ -259,7 +285,21 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   (auch `TORRO_LANG=de`) grün.
 
 ### S.20 Eingang und Mail: Einstellungen im Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; Notification Hub und App Feed zeigen Notifications, Sources und Rules aus
+  `torro-settings-ui/src/inbox.rs`, das Mail-Fenster Accounts und Reading aus `mail.rs` – für „Keyboard
+  shortcuts“ (E10.3) ist nur Platz gelassen. Jede Fensterart kennt nur ihre Abschnitte
+  (`Kind::settings_sections`); Zahnrad, „Settings“ in Seitenleiste und Menü schalten den Inhaltsbereich um,
+  `--settings <abschnitt>` nimmt nur die Wörter der eigenen Fensterart, Escape und jeder Klick, der wieder
+  Einträge zeigt, schließen sie. „All rules“ öffnet Rules im Fenster; das Mail-Fenster, das den Abschnitt
+  nicht hat, holt mit `apps.open_app` das Fenster des Notification Hub nach vorn („All rules in the
+  Notification Hub ↗“), nicht die Steuerzentrale. Ein Eintrag mit `Link::App` auf `torroworkplace` hat
+  eine eigene Nachricht (`OpenControlCentre`) und öffnet nie einen Abschnitt. Eine Mail-Quelle, die früher mit
+  `MuteSource` stumm wurde, zeigt „Off“; beim Anschalten gehen `UpdateMailAccount` **und**
+  `MuteSource { muted: false }` raus. Sichtprüfung über Iceds `window::screenshot` mit einem nicht
+  committeten Wegwerf-Patch wie bei S.18: alle Abschnitte bei 1100, 800, 500 und 360 px, hell und dunkel.
+  **Offen:** die deutschen Übersetzungen (sammelt S.22); `torro-settings-ui` hat dafür `torro-mail` als
+  Abhängigkeit bekommen (`Notify`, `MailFormat`, `Role` der Mail-Einstellungen), was die Aufgabe nicht
+  genannt hatte)
 - **Modell:** Opus (viele Quellen, große App) · **Dateien:** `crates/torro-settings-ui/src/` (neu: `inbox.rs`,
   `mail.rs`), `crates/torroinbox/{Cargo.toml,src/app.rs,src/main.rs}`
 - Fensterarten Notification Hub und App Feed: Abschnitte **Notifications** (still bei Terminen), **Sources** (je
@@ -285,7 +325,35 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   grün.
 
 ### S.21 Steuerzentrale: nur noch die Suite
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; die Seiten Apps, Assistant und Notification Hub sind gelöscht
+  (`apps.rs`, `assistant.rs`, `bots.rs`, `persona.rs`, `inbox.rs`), die Seitenleiste hat nur noch
+  Overview, Accounts, Agents & API, Approvals, Workspaces, Appearance und General am Fuß.
+  **Agents & API** führt den Assistenten und jeden Bot wie jedes Programm: eigene Gruppen in der
+  Liste, dieselbe Rechte-Ansicht in der Detailseite, „Turn off assistant…“ statt „Disconnect…“ beim
+  Assistenten, beim Bot **kein zerstörender Knopf** (nachgezogen mit dem Review zu #210: von hier
+  ließe sich sein Client nicht wieder anlegen, nur das nächste `bots.save_bot` im Assistenten;
+  dafür hat die Bot-Seite wieder „Open chat“ wie vorher) und **kein Schlüssel-Block** – der Kern hält ihre Schlüssel, ein neuer würde
+  sie nur zerreißen (`Category::has_key`). Ist der Assistent aus, steht seine Zeile trotzdem da und
+  führt auf seinen ersten Start („Start from“ und die angebotenen Rechte, „Turn on assistant“ im
+  Kopf, `clients.create_client` mit genau diesen Rechten); sein Schlüssel wird wie bisher verworfen.
+  `--section assistant` und `bot:<id>` landen dort (`Launch::client`), `apps` und `inbox` auf General
+  (`Section::from_arg`). **General** hat die Gruppe Apps (Schalter je Komponente und „Open“ mit der
+  Fensterklasse, `torro-inbox-mail` für Mail; Workspaces hat kein Fenster und zeigt seine Seite) und
+  keine Kalender- und Erinnerungsgruppen mehr; **Appearance** keine Gruppe Mail. Die Kontoseiten
+  zeigen an Stelle der umgezogenen Gruppen je eine Zeile mit dem neuen Ort und „Open Calendar“,
+  „Open Tasks“, „Open Notification Hub“ bzw. „Open Mail“ (`apps.open_app`, kein Ziel für einen
+  Abschnitt). Die Einrichtung liest die Quelle Mail aus `notify` und schickt beim Anschalten
+  `UpdateMailAccount` **und** `MuteSource { muted: false }` (dafür hat `Action` ein `SendAll`
+  bekommen, der einzige Ort mit zwei Requests). `ui/general.rs` nutzt jetzt `parts::choice` und
+  `parts::switch`; `ui/wizard.rs` stand nicht in der Dateiliste und bleibt bei seinem eigenen `field`.
+  `ui/setup/pages.rs` brauchte keine Änderung: die Zeile fragt `State::is_muted`, das umgestellt
+  wurde. Sichtprüfung über Iceds `window::screenshot` mit nicht committetem Wegwerf-Patch wie bei
+  S.18/S.20: General, Appearance, Agents & API (Liste, Assistent an und aus, Bot, Agent, leer),
+  Kontoseite, Mail-Konto und der Schritt Notification Hub der Einrichtung bei 1100, 500 und 360 px,
+  hell und dunkel, dazu ans Seitenende gescrollte Bilder der langen Rechte-Seiten.
+  **Offen:** die deutschen Übersetzungen (sammelt S.22, Liste im Bericht), und der Befund aus S.18
+  gilt weiter: lange Zeilentexte in `parts::setting_row` werden bei 360 px hart abgeschnitten statt
+  mit „…“)
 - **Modell:** Opus · **Dateien:** `crates/torroworkplace/src/ui/{mod,launch,accounts,apps,assistant,bots,persona,
   inbox,general,agents}.rs`, `crates/torroworkplace/src/ui/setup/{mod,pages}.rs`
 - **Braucht:** S.18, S.19, S.20 (die Abschnitte haben ihren neuen Ort, bevor die alten verschwinden)
@@ -319,7 +387,20 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   der Einrichtung; Sichtprüfung `--demo` bei 1100, 500 und 360 px; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.22 Abschluss
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (2026-10-19: 40 Übersetzungen eingetragen, 32 verwaiste Einträge entfernt; `docs/settings.md`
+  datiert den Bestand als Stand vor Stufe 2 und nennt den gebauten; offene Frage 2 beantwortet („Connect program“),
+  offene Frage 3 bleibt offen. Sichtprüfung auf macOS über Iceds `window::screenshot` mit einem nicht committeten
+  Wegwerf-Patch, 78 Bilder bei 1100/500/360 px hell und dunkel. Behoben: `parts::setting_row` kürzt mit „…“ und
+  Tooltip statt hart abzuschneiden, und im Kalender rückt die Erinnerungsart unter den Namen, sobald er sonst
+  verschwindet (`collections.rs`); dazu der Hinweis der API-Prüfung, dass der Socket-Wächter von
+  `torro-settings-ui` auch `InboxClient`, `PimClient` und `socket_path` kennen muss.
+  **Offen, je ein eigenes Issue wert:** Kopfleiste und Seiteninhalt liegen nicht auf einer Achse (Shell, gilt für
+  alle Apps); eine Zeile mit Marke rückt gegen ihre Nachbarn ein (`parts::setting_row` kennt die Gruppe nicht);
+  Name und Fehlergründe eines unbrauchbaren Design-Pakets mit zu wenig Kontrast und Fachjargon (`ui/general.rs`,
+  aus L.4); zwei sichtbare Aktionen je Zeile unter General › Apps (so im Konzept verlangt, dem Design-Skill
+  entgegen); der App Feed zeigt die Texte des Notification Hub (eine `SECTIONS` für beide Fensterarten, S.20);
+  gerade Anführungszeichen in „Only "For me"“ (aus E4.1). Der leere `text_editor` des Bot-Editors aus S.18 war
+  an diesen Bildern nicht prüfbar: Die Unterseite hat kein `--settings`-Wort.)
 - **Modell:** Opus · **Dateien:** `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`, `docs/assistent.md`,
   `docs/eingang.md`, `docs/einrichtung.md`
 - Übersetzungen eintragen (`crates/torro-core/src/i18n/de.rs`), `docs/settings.md` an den gebauten Stand anpassen,

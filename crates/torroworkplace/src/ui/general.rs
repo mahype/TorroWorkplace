@@ -3,15 +3,17 @@
 //!
 //! - **General** ([`view`]): "Language", a list of choices – one row each, the whole row is the
 //!   button, a check mark at the chosen one (Deutsch is shown in its own name, like the language
-//!   picker of any app); "Calendar" has the night with its two times "From" and "Until" on the
-//!   quarter hour (task K.27); "Startup" has the "Start at login" switch.
+//!   picker of any app); "Apps" ([`apps`], task S.21) has every part of the suite with its switch,
+//!   its window class under the name (for window rules) and "Open", the App Feed among them;
+//!   "Startup" has the "Start at login" switch; "Setup" runs the first-run setup again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance): "Appearance" (System, Light, Dark) as a list of choices like the language; "Design"
 //!   lists the design packs (task L.4, below); "Interface" has the zoom of the suite with −, the
-//!   value, + and "Reset" (task Z.1); "Mail" (task M9.8 in `docs/tasks/mail.md`) has "Show mail as"
-//!   (formatted or plain text) and "Mail colors" (like the app, light, dark) for the content of a
-//!   mail in the reader, each a pick list like "Write new mail as" of a mail account. It moves to
-//!   the inbox's own settings later (task S.20).
+//!   value, + and "Reset" (task Z.1).
+//!
+//! What a single app or window shows and how it behaves is set in that window, behind its gear
+//! (task S.21): the calendar's night and reminders, how mail is read, the sources of the
+//! Notification Hub. Only what holds for the whole suite is left here.
 //!
 //! Both pages share one state and one message type. There is no Save button: every change sends
 //! `Request::SetSetting` with the one key that changed, and the shell reloads `Data` afterwards.
@@ -33,24 +35,24 @@
 //! folder, read here the way every window reads the design it draws with
 //! (`torro_core::design::load`): [`Pack::new`].
 
-use std::fmt;
 use std::sync::Arc;
 
-use iced::widget::{column, container, pick_list, row, space as blank, svg, text, toggler};
+use iced::widget::{column, container, row, space as blank, svg, text};
 use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Padding, Theme};
+use torro_core::AppId;
 use torro_core::design::{Design, FontRole, Mode, STANDARD_ID, Weight};
-use torro_core::i18n::tr;
-use torro_core::settings::{
-    CalendarReminders, Language, MailAppearance, MailFormat, Night, Quarter, ReminderSound, Reminders, Zoom,
-};
+use torro_core::i18n::{tr, trf};
+use torro_core::settings::{Component, ComponentSwitch, Language, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
 use torro_gui::zoom::{self, Step};
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{DesignInfo, Request, SettingKey};
+use torro_settings_ui::parts::{choice, switch};
 
-use super::{Action, Data, one_line, pressable, row_frame, setting_row};
+use super::setup::component_name;
+use super::{Action, Data, Section, one_line, pressable, row_frame, setting_row};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -107,10 +109,14 @@ pub enum Message {
     StartAtLogin(bool),
     /// −, + or "Reset" of the zoom.
     Zoom(Step),
-    /// The night's start, picked in "From".
-    NightFrom(Quarter),
-    /// The night's end, picked in "Until".
-    NightTo(Quarter),
+    /// A part of the suite was switched on or off under Apps (task W.2).
+    Component(Component, bool),
+    /// "Open" of a part of the suite: its window, by window class and nothing else (task S.21).
+    /// The window class alone, deliberately – a target such as `settings:<section>` has no place
+    /// here, because a window's settings are opened by a person with its gear ([`apps`]).
+    OpenApp(String),
+    /// "Open" of Workspaces, which has no window of its own: the Workspaces page.
+    OpenWorkspaces,
     /// A design pack's row: draw every window with this pack (its id).
     Design(String),
     /// "Reload": list the packs again, after one was added to or changed in the folder.
@@ -119,85 +125,9 @@ pub enum Message {
     OpenDesignsFolder,
     /// "Run setup again" (task W.9).
     RunSetup,
-    /// "Show mail as": how a mail with HTML first shows in the reader.
-    MailView(MailFormat),
-    /// "Mail colors": the colours of a mail's content in the reader.
-    MailAppearance(MailAppearance),
-    /// A row of the reminders (task ER2.4): it changes only its own field.
-    Reminder(ReminderChange),
 }
 
-/// What one row of the reminders changes (task ER2.4, `settings.set_setting reminders`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReminderChange {
-    Enabled(bool),
-    DefaultLead(Lead),
-    AllDisplays(bool),
-    Sound(bool),
-    OnlyAccepted(bool),
-    AllDay(bool),
-    FreeEvents(bool),
-    OutsideWorkHours(bool),
-    NeverDuringCall(bool),
-    /// How the calendar (its id) shows its reminders.
-    Calendar(String, CalendarReminders),
-}
-
-impl ReminderChange {
-    /// The change as the value of `settings.set_setting reminders`: only this field.
-    pub fn value(&self) -> serde_json::Value {
-        use serde_json::json;
-        match self {
-            ReminderChange::Enabled(on) => json!({"enabled": on}),
-            ReminderChange::DefaultLead(Lead(minutes)) => json!({"defaultLead": minutes}),
-            ReminderChange::AllDisplays(on) => json!({"allDisplays": on}),
-            ReminderChange::Sound(on) => {
-                let sound = if *on { ReminderSound::System } else { ReminderSound::None };
-                json!({"sound": sound})
-            }
-            ReminderChange::OnlyAccepted(on) => json!({"onlyAccepted": on}),
-            ReminderChange::AllDay(on) => json!({"allDay": on}),
-            ReminderChange::FreeEvents(on) => json!({"freeEvents": on}),
-            ReminderChange::OutsideWorkHours(on) => json!({"outsideWorkHours": on}),
-            ReminderChange::NeverDuringCall(on) => json!({"neverDuringCall": on}),
-            ReminderChange::Calendar(id, shown) => json!({"calendars": {id.clone(): shown}}),
-        }
-    }
-}
-
-/// A default reminder of the list: minutes before the start, or none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Lead(pub Option<u32>);
-
-impl Lead {
-    /// The leads the list offers.
-    const ALL: [Lead; 8] = [
-        Lead(None),
-        Lead(Some(0)),
-        Lead(Some(1)),
-        Lead(Some(5)),
-        Lead(Some(10)),
-        Lead(Some(15)),
-        Lead(Some(30)),
-        Lead(Some(60)),
-    ];
-}
-
-impl std::fmt::Display for Lead {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            None => f.write_str(tr("None")),
-            Some(0) => f.write_str(tr("At start")),
-            Some(60) => f.write_str(&torro_core::i18n::trf("{span} before", &[("span", &tr("1 hour"))])),
-            Some(minutes) => f.write_str(&torro_core::i18n::trf(
-                "{span} before",
-                &[("span", &torro_core::i18n::trf("{n} min", &[("n", &minutes)]))],
-            )),
-        }
-    }
-}
-
-pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
+pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
     // The core takes the same names the settings file uses (`"german"`, `"dark"`, `true`), so the
     // values come from the enums' own serialisation. A value that cannot serialise (none here)
     // would become `null`, which the core refuses.
@@ -208,19 +138,16 @@ pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::StartAtLogin(start) => (SettingKey::StartAtLogin, serde_json::Value::Bool(start)),
         Message::Zoom(step) => return Action::Zoom(step),
-        // The whole night goes as one value, with the other end as the page shows it.
-        Message::NightFrom(from) => (SettingKey::Night, Night { from, ..data.settings.night }.to_value()),
-        Message::NightTo(to) => (SettingKey::Night, Night { to, ..data.settings.night }.to_value()),
+        Message::Component(component, enabled) => {
+            (SettingKey::Component, serde_json::to_value(ComponentSwitch { component, enabled }).unwrap_or_default())
+        }
+        Message::OpenApp(app) => return Action::Send(Request::OpenApp { app, target: None }),
+        Message::OpenWorkspaces => return Action::Select(Section::Workspaces),
         // The shell draws its own window with it at once, then saves it.
         Message::Design(id) => return Action::Design(id),
         Message::ReloadDesigns => return Action::ListDesigns,
         Message::OpenDesignsFolder => return Action::OpenDesignsFolder,
-        Message::MailView(format) => (SettingKey::MailView, serde_json::to_value(format).unwrap_or_default()),
-        Message::MailAppearance(colors) => {
-            (SettingKey::MailAppearance, serde_json::to_value(colors).unwrap_or_default())
-        }
         Message::RunSetup => return Action::OpenSetup,
-        Message::Reminder(change) => (SettingKey::Reminders, change.value()),
     };
     Action::Send(Request::SetSetting { key, value })
 }
@@ -243,11 +170,9 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Some(tr("Applies to apps you open afterwards. “System” follows your system language.").to_string()),
     );
 
-    let switch =
-        toggler(settings.start_at_login).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::StartAtLogin);
     let startup = widgets::group(
         tr("Startup"),
-        vec![setting_row(None, tr("Start at login"), None, switch)],
+        vec![setting_row(None, tr("Start at login"), None, switch(settings.start_at_login, Message::StartAtLogin))],
         Some(
             tr("Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.")
                 .to_string(),
@@ -266,123 +191,107 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Some(tr("What is connected stays; the steps show it.").to_string()),
     );
 
-    let calendar = widgets::group(
-        tr("Calendar"),
-        vec![setting_row(None, tr("Night"), None, night_control(settings.night))],
-        Some(
-            tr("The timeline folds the night away and the radar shades it; neither counts it as free time. The same time twice means no night.")
-                .to_string(),
+    column![language, apps(data), startup, setup].spacing(layout::section_gap()).into()
+}
+
+/// The group "Apps" (task S.21): one row per part of the suite with its switch – a part turned off
+/// leaves the app switcher and the tray – and "Open", which brings its window to the front or
+/// starts it (`apps.open_app` with the window class, so the inbox's three windows are told apart).
+/// "Open" is off while the core has not reported the app as installed. Workspaces has no window of
+/// its own: its "Open" shows the Workspaces page, where the templates are.
+///
+/// Under the name stands the window's class, quietly ([`app_detail`]): that is what a window rule
+/// in Hyprland needs, and the control centre is the one place it is written down.
+///
+/// The App Feed ([`AppId::INBOX_NOTIFICATIONS`]) gets a row of its own after the Notification Hub,
+/// with its class and "Open" but no switch: it is a second window of the same part of the suite,
+/// not a part of its own. Nothing else in the control centre opens it.
+///
+/// What a window shows and how it behaves is set in that window, behind its gear; this page only
+/// says so and leads there. No "Open" can name a section of the settings (`apps.open_app` with a
+/// target `settings:<section>`), because [`Message::OpenApp`] carries nothing but the window class
+/// and [`update`] fills in `target: None`: there is no place to put one. That is on purpose – the
+/// settings of a window are opened by a person with its gear, not by a button elsewhere. Giving
+/// this page such a way means widening the message first, which is where the decision belongs.
+fn apps(data: &Data) -> Element<'_, Message> {
+    let mut rows: Vec<Element<'_, Message>> = Vec::new();
+    for component in Component::ALL {
+        let app = window_of(component);
+        let open = match app {
+            Some(app) => installed(data, app).then(|| Message::OpenApp(app.window_class.to_string())),
+            None => Some(Message::OpenWorkspaces),
+        };
+        // A button without a message is drawn disabled, so a missing app cannot be opened.
+        let button = widgets::text_button(None, tr("Open"), style::button::secondary, open);
+        let controls = row![
+            button,
+            switch(data.settings.component_on(component), move |on| { Message::Component(component, on) })
+        ]
+        .spacing(space::l())
+        .align_y(Alignment::Center);
+        rows.push(setting_row(None, component_name(component), app_detail(data, app), controls));
+        if component == Component::Inbox {
+            rows.push(second_window(data, AppId::INBOX_NOTIFICATIONS, tr("App Feed")));
+        }
+    }
+    let footer = format!(
+        "{} {}",
+        tr("Its settings are behind the gear in its window."),
+        tr(
+            "Turned off, a part of the suite leaves the app switcher and the tray, and nothing runs for it in the background. Accounts and data stay."
         ),
     );
-
-    column![
-        language,
-        calendar,
-        reminders(settings.reminders.clone()),
-        which_events(&settings.reminders),
-        calendars(data),
-        startup,
-        setup
-    ]
-    .spacing(layout::section_gap())
-    .into()
+    widgets::group(tr("Apps"), rows, Some(footer))
 }
 
-/// A switch for one field of the reminders.
-fn switch<'a>(on: bool, change: fn(bool) -> ReminderChange) -> Element<'a, Message> {
-    toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(move |on| Message::Reminder(change(on))).into()
+/// A second window of a part of the suite (the App Feed of the Notification Hub): its name, its
+/// class and "Open", without a switch – what switches it is the part's own row above.
+fn second_window<'a>(data: &'a Data, app: AppId, label: &'a str) -> Element<'a, Message> {
+    let open = installed(data, app).then(|| Message::OpenApp(app.window_class.to_string()));
+    let button = widgets::text_button(None, tr("Open"), style::button::secondary, open);
+    // The switch's place stays empty, so every "Open" of the group stands in the same column.
+    let controls = row![button, blank().width(switch_width())].spacing(space::l()).align_y(Alignment::Center);
+    setting_row(None, label, app_detail(data, Some(app)), controls)
 }
 
-/// The group "Reminders" (task ER2.4): on or off, the default reminder, every display, the sound.
-fn reminders<'a>(reminders: Reminders) -> Element<'a, Message> {
-    let lead = pick_list(Lead::ALL, Some(Lead(reminders.default_lead)), |lead| {
-        Message::Reminder(ReminderChange::DefaultLead(lead))
-    })
-    .padding(style::pick_list_padding())
-    .text_size(typo::caption().size)
-    .text_line_height(typo::caption().line_height)
-    .font(typo::caption().font)
-    .style(style::pick_list)
-    .menu_style(style::pick_list_menu);
-    widgets::group(
-        tr("Reminders"),
-        vec![
-            setting_row(None, tr("Show reminders"), None, switch(reminders.enabled, ReminderChange::Enabled)),
-            setting_row(None, tr("Default reminder"), Some(tr("For events without their own reminder").to_string()), lead),
-            setting_row(None, tr("On all displays"), Some(tr("A full-screen reminder covers every display").to_string()), switch(reminders.all_displays, ReminderChange::AllDisplays)),
-            setting_row(None, tr("Sound"), None, switch(reminders.sound == ReminderSound::System, ReminderChange::Sound)),
-        ],
-        Some(tr("Reminders of an event come first; you set them in the event. A full-screen reminder stays until you join, snooze or dismiss it.").to_string()),
-    )
+/// How wide Iced draws a switch of the suite: twice its height, which is what a row leaves for it.
+fn switch_width() -> f32 {
+    style::CHECK_SIZE + style::CHECK_SIZE
 }
 
-/// The group "Which events" (task ER2.4).
-fn which_events<'a>(reminders: &Reminders) -> Element<'a, Message> {
-    widgets::group(
-        tr("Which events"),
-        vec![
-            setting_row(
-                None,
-                tr("Only events I accepted"),
-                None,
-                switch(reminders.only_accepted, ReminderChange::OnlyAccepted),
-            ),
-            setting_row(None, tr("All-day events"), None, switch(reminders.all_day, ReminderChange::AllDay)),
-            setting_row(
-                None,
-                tr("Events marked free"),
-                None,
-                switch(reminders.free_events, ReminderChange::FreeEvents),
-            ),
-            setting_row(
-                None,
-                tr("Outside work hours"),
-                None,
-                switch(reminders.outside_work_hours, ReminderChange::OutsideWorkHours),
-            ),
-            setting_row(
-                None,
-                tr("Never full screen during a video call"),
-                Some(tr("Shows a notification instead while an event with a call link runs").to_string()),
-                switch(reminders.never_during_call, ReminderChange::NeverDuringCall),
-            ),
-        ],
-        None,
-    )
+/// The line under an app's name: its window class, for window rules, and "Not installed" while the
+/// core does not report it. `None` for a part of the suite without a window of its own
+/// (Workspaces), which has neither.
+fn app_detail(data: &Data, app: Option<AppId>) -> Option<String> {
+    let app = app?;
+    let class = trf("Window class: {class}", &[("class", &app.window_class)]);
+    match installed(data, app) {
+        true => Some(class),
+        false => Some(format!("{class} · {}", tr("Not installed"))),
+    }
 }
 
-/// The group "Calendars" (task ER2.4): how each calendar shows its reminders.
-fn calendars<'a>(data: &'a Data) -> Element<'a, Message> {
-    let reminders = &data.settings.reminders;
-    let rows = data
-        .calendars
+/// The window a part of the suite opens: mail is the inbox's mail window, the Notification Hub its
+/// hub (task E8.1, each with its own class). Workspaces has none – it is the service itself.
+fn window_of(component: Component) -> Option<AppId> {
+    match component {
+        Component::Calendar => Some(AppId::CALENDAR),
+        Component::Tasks => Some(AppId::TASKS),
+        Component::Mail => Some(AppId::INBOX_MAIL),
+        Component::Inbox => Some(AppId::INBOX),
+        Component::Assistant => Some(AppId::ASSISTANT),
+        Component::Workspaces => None,
+    }
+}
+
+/// Whether the core reported the window `app` as installed, so "Open" can start it; `false` until
+/// the first answer (`apps.list_apps`).
+fn installed(data: &Data, app: AppId) -> bool {
+    data.apps
+        .as_deref()
+        .unwrap_or_default()
         .iter()
-        .filter(|calendar| calendar.kind.has_events() && !data.settings.hidden_collections.contains(&calendar.id))
-        .map(|calendar| {
-            let shown = reminders.calendar(&calendar.id);
-            let pick =
-                |shown: CalendarReminders| Message::Reminder(ReminderChange::Calendar(calendar.id.clone(), shown));
-            let options = [
-                (tr("Off"), pick(CalendarReminders::Off)),
-                (tr("Notification"), pick(CalendarReminders::Notification)),
-                (tr("Full screen"), pick(CalendarReminders::FullScreen)),
-            ];
-            let active = match shown {
-                CalendarReminders::Off => 0,
-                CalendarReminders::Notification => 1,
-                CalendarReminders::FullScreen => 2,
-            };
-            let dot = widgets::color_dot(widgets::collection_color(calendar.color.as_deref()), space::s());
-            setting_row(Some(dot), calendar.name.as_str(), None, widgets::segmented(options, active))
-        })
-        .collect();
-    widgets::group(
-        tr("Calendars"),
-        rows,
-        Some(
-            tr("“Full screen” covers the screen until you react. Use it for calendars you must not miss.").to_string(),
-        ),
-    )
+        .any(|listed| listed.window_class == app.window_class && listed.installed)
 }
 
 /// The page Appearance: light or dark, the design pack, the zoom, how mail shows.
@@ -412,59 +321,7 @@ pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
     );
 
     let design = designs(state, data);
-    column![appearance, design, interface, mail(data)].spacing(layout::section_gap()).into()
-}
-
-/// The group "Mail": how a mail shows in the reader and its colours there (task M9.8). Only the
-/// mail's content follows "Mail colors", never the rest of the window.
-fn mail<'a>(data: &'a Data) -> Element<'a, Message> {
-    let settings = &data.settings;
-    let view = picker(MAIL_VIEWS, MailViewChoice(settings.mail_view), |choice| Message::MailView(choice.0));
-    let colors =
-        picker(MAIL_COLORS, MailColorChoice(settings.mail_appearance), |choice| Message::MailAppearance(choice.0));
-    widgets::group(
-        tr("Mail"),
-        vec![setting_row(None, tr("Show mail as"), None, view), setting_row(None, tr("Mail colors"), None, colors)],
-        Some(
-            tr("Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.")
-                .to_string(),
-        ),
-    )
-}
-
-/// "Show mail as" as a choice of a pick list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MailViewChoice(MailFormat);
-
-const MAIL_VIEWS: [MailViewChoice; 2] = [MailViewChoice(MailFormat::Html), MailViewChoice(MailFormat::Text)];
-
-impl fmt::Display for MailViewChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            MailFormat::Html => tr("Formatted (HTML)"),
-            MailFormat::Text => tr("Plain text"),
-        })
-    }
-}
-
-/// "Mail colors" as a choice of a pick list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MailColorChoice(MailAppearance);
-
-const MAIL_COLORS: [MailColorChoice; 3] = [
-    MailColorChoice(MailAppearance::App),
-    MailColorChoice(MailAppearance::Light),
-    MailColorChoice(MailAppearance::Dark),
-];
-
-impl fmt::Display for MailColorChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            MailAppearance::App => tr("Like the app"),
-            MailAppearance::Light => tr("Light"),
-            MailAppearance::Dark => tr("Dark"),
-        })
-    }
+    column![appearance, design, interface].spacing(layout::section_gap()).into()
 }
 
 /// The group "Design": a row per pack, then the row of the designs folder.
@@ -672,41 +529,6 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// "From" and "Until" of the night, each a list of the quarter hours of a day.
-fn night_control<'a>(night: Night) -> Element<'a, Message> {
-    let label = |text: &'a str| typo::text(typo::meta(), text).style(torro_gui::theme::text_2);
-    row![
-        label(tr("From")),
-        time_field(night.from, Message::NightFrom),
-        label(tr("Until")),
-        time_field(night.to, Message::NightTo),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// A time on the quarter hour as a pick list in the look of a secondary button.
-fn time_field<'a>(time: Quarter, on_pick: fn(Quarter) -> Message) -> Element<'a, Message> {
-    picker(Quarter::all().collect::<Vec<_>>(), time, on_pick)
-}
-
-/// A pick list of `options` with `chosen` shown, in the look of a secondary button.
-fn picker<'a, T, L>(options: L, chosen: T, on_pick: impl Fn(T) -> Message + 'a) -> Element<'a, Message>
-where
-    T: fmt::Display + PartialEq + Clone + 'a,
-    L: std::borrow::Borrow<[T]> + 'a,
-{
-    pick_list(options, Some(chosen), on_pick)
-        .padding(style::pick_list_padding())
-        .text_size(typo::caption().size)
-        .text_line_height(typo::caption().line_height)
-        .font(typo::caption().font)
-        .style(style::pick_list)
-        .menu_style(style::pick_list_menu)
-        .into()
-}
-
 /// −, the level, + and "Reset". The level keeps the width of the widest one ("200%"), so the
 /// buttons stay where they are; a button that would change nothing is off.
 fn zoom_control<'a>(level: Zoom) -> Element<'a, Message> {
@@ -722,19 +544,6 @@ fn zoom_control<'a>(level: Zoom) -> Element<'a, Message> {
     .spacing(space::xs())
     .align_y(Alignment::Center)
     .into()
-}
-
-/// One choice of a list: the whole row is the button; the chosen one has a check mark at the end,
-/// neutral like the current item of a menu.
-pub(super) fn choice<'a, M: Clone + 'a>(
-    label: impl text::IntoFragment<'a>,
-    chosen: bool,
-    on_press: M,
-) -> Element<'a, M> {
-    let check: Option<Element<'a, M>> = chosen.then(|| {
-        icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) }).into()
-    });
-    pressable(setting_row(None, label, None, check), Some(on_press))
 }
 
 #[cfg(test)]
@@ -769,31 +578,6 @@ mod tests {
     }
 
     #[test]
-    fn each_mail_view_choice_sets_only_the_mail_view() {
-        for (choice, name) in [(MailFormat::Html, "html"), (MailFormat::Text, "text")] {
-            let action = update(&mut State::default(), Message::MailView(choice), &Data::default());
-            assert_eq!(sent(action), (SettingKey::MailView, serde_json::json!(name)), "choice {choice:?}");
-        }
-    }
-
-    #[test]
-    fn each_mail_color_choice_sets_only_the_mail_appearance() {
-        let cases = [(MailAppearance::App, "app"), (MailAppearance::Light, "light"), (MailAppearance::Dark, "dark")];
-        for (choice, name) in cases {
-            let action = update(&mut State::default(), Message::MailAppearance(choice), &Data::default());
-            assert_eq!(sent(action), (SettingKey::MailAppearance, serde_json::json!(name)), "choice {choice:?}");
-        }
-    }
-
-    #[test]
-    fn the_mail_choices_read_as_the_task_says() {
-        let views: Vec<String> = MAIL_VIEWS.iter().map(ToString::to_string).collect();
-        assert_eq!(views, [tr("Formatted (HTML)"), tr("Plain text")]);
-        let colors: Vec<String> = MAIL_COLORS.iter().map(ToString::to_string).collect();
-        assert_eq!(colors, [tr("Like the app"), tr("Light"), tr("Dark")]);
-    }
-
-    #[test]
     fn start_at_login_sets_only_the_switch() {
         let on = update(&mut State::default(), Message::StartAtLogin(true), &Data::default());
         assert_eq!(sent(on), (SettingKey::StartAtLogin, serde_json::json!(true)));
@@ -807,15 +591,6 @@ mod tests {
             let action = update(&mut State::default(), Message::Zoom(step), &Data::default());
             assert!(matches!(action, Action::Zoom(sent) if sent == step), "{step:?}: {action:?}");
         }
-    }
-
-    #[test]
-    fn a_time_of_the_night_sets_the_whole_night() {
-        let quarter = |hour, minute| Quarter::new(hour, minute).expect("quarter");
-        let from = update(&mut State::default(), Message::NightFrom(quarter(23, 30)), &Data::default());
-        assert_eq!(sent(from), (SettingKey::Night, serde_json::json!({"from": "23:30", "to": "06:00"})));
-        let to = update(&mut State::default(), Message::NightTo(quarter(7, 0)), &Data::default());
-        assert_eq!(sent(to), (SettingKey::Night, serde_json::json!({"from": "22:00", "to": "07:00"})));
     }
 
     #[test]
@@ -901,66 +676,103 @@ mod tests {
         assert_eq!(home_relative(outside), outside.display().to_string());
     }
 
+    /// Task S.21: General › Apps switches a part of the suite and opens its window by window
+    /// class; Workspaces has no window and leads to its page instead. "Open" stays off while the
+    /// core has not reported an app as installed.
+    #[test]
+    fn the_apps_group_switches_a_part_and_opens_its_window() {
+        let data = Data::default();
+        let set = |component, on| sent(update(&mut State::default(), Message::Component(component, on), &data));
+        assert_eq!(
+            set(Component::Calendar, false),
+            (SettingKey::Component, serde_json::json!({"component": "calendar", "enabled": false}))
+        );
+        assert_eq!(
+            set(Component::Mail, true),
+            (SettingKey::Component, serde_json::json!({"component": "mail", "enabled": true}))
+        );
+        // The inbox's windows share a binary: mail is opened by its own class (task E8.1).
+        assert_eq!(window_of(Component::Mail).map(|app| app.window_class), Some("torro-inbox-mail"));
+        assert_eq!(window_of(Component::Inbox).map(|app| app.window_class), Some("torro-inbox"));
+        assert_eq!(window_of(Component::Workspaces), None, "no window of its own");
+        let open = update(&mut State::default(), Message::OpenApp("torro-inbox-mail".into()), &data);
+        assert!(matches!(open, Action::Send(Request::OpenApp { ref app, target: None }) if app == "torro-inbox-mail"));
+        let workspaces = update(&mut State::default(), Message::OpenWorkspaces, &data);
+        assert!(matches!(workspaces, Action::Select(Section::Workspaces)), "{workspaces:?}");
+
+        assert!(!installed(&data, AppId::CALENDAR), "no answer yet");
+        let listed = |class: &str, installed: bool| torro_ipc::AppInfo {
+            binary: "torroinbox".into(),
+            name: "Torro".into(),
+            window_class: class.into(),
+            installed,
+        };
+        let apps = Data { apps: Some(vec![listed("torro-inbox-mail", true), listed("torro-inbox", false)]), ..data };
+        assert!(installed(&apps, AppId::INBOX_MAIL));
+        assert!(!installed(&apps, AppId::INBOX));
+        drop(view(&State::default(), &apps));
+    }
+
+    /// Found in the review of task S.22: the window class belongs on the row (window rules in
+    /// Hyprland need it and the control centre is the one place it is written down), and the App
+    /// Feed must be reachable – it is a window of the Notification Hub, not a part of the suite,
+    /// so it gets no switch of its own.
+    #[test]
+    fn every_app_row_names_its_window_class_and_the_app_feed_can_be_opened() {
+        let listed = |class: &str, installed: bool| torro_ipc::AppInfo {
+            binary: "torroinbox".into(),
+            name: "Torro".into(),
+            window_class: class.into(),
+            installed,
+        };
+        let class_of = |app: AppId| trf("Window class: {class}", &[("class", &app.window_class)]);
+
+        // Every window of the suite is in the list; only Workspaces has none.
+        let all: Vec<torro_ipc::AppInfo> =
+            AppId::ALL.iter().map(|app| listed(app.window_class, true)).collect::<Vec<_>>();
+        let data = Data { apps: Some(all), ..Data::default() };
+        for component in Component::ALL {
+            let app = window_of(component);
+            assert_eq!(app_detail(&data, app), app.map(class_of), "{component:?}");
+        }
+        assert_eq!(window_of(Component::Workspaces), None);
+
+        // Not installed: the class stays, the state follows it.
+        let none = Data::default();
+        assert_eq!(
+            app_detail(&none, Some(AppId::CALENDAR)),
+            Some(format!("{} · {}", class_of(AppId::CALENDAR), tr("Not installed")))
+        );
+
+        // The App Feed opens by its own class, and only while the core reports it.
+        assert_eq!(AppId::INBOX_NOTIFICATIONS.window_class, "torro-inbox-notifications");
+        let feed =
+            update(&mut State::default(), Message::OpenApp(AppId::INBOX_NOTIFICATIONS.window_class.into()), &data);
+        assert!(
+            matches!(feed, Action::Send(Request::OpenApp { ref app, target: None })
+                if app == "torro-inbox-notifications"),
+            "{feed:?}"
+        );
+        drop(view(&State::default(), &data));
+        drop(second_window(&none, AppId::INBOX_NOTIFICATIONS, tr("App Feed")));
+    }
+
     #[test]
     fn page_builds_with_default_and_stored_settings() {
-        let stored = Data {
-            settings: Settings {
-                language: Language::German,
-                appearance: Appearance::Dark,
-                start_at_login: false,
-                hidden_collections: vec!["work".into()],
-                zoom: torro_core::settings::Zoom::MAX,
-                night: Night::none_at(Quarter::new(6, 0).expect("quarter")),
-                list_orders: Default::default(),
-                quiet_when_busy: false,
-                design: "plex".into(),
-                assistant_retention: Default::default(),
-                voice: Default::default(),
-                assistant_default: None,
-                setup: Default::default(),
-                components_off: Default::default(),
-                mail_view: MailFormat::Text,
-                mail_appearance: MailAppearance::Dark,
-                mail_to_cloud: false,
-                reminders: Default::default(),
-            },
-            ..Data::default()
+        let mut settings = Settings {
+            language: Language::German,
+            appearance: Appearance::Dark,
+            start_at_login: false,
+            design: "plex".into(),
+            ..Settings::default()
         };
+        settings.zoom = torro_core::settings::Zoom::MAX;
+        settings.components_off = [Component::Mail].into_iter().collect();
+        let stored = Data { settings, ..Data::default() };
         let (state, default) = (State::default(), Data::default());
         let _default: Element<'_, Message> = view(&state, &default);
         let _stored: Element<'_, Message> = view(&state, &stored);
         let _default: Element<'_, Message> = appearance(&state, &default);
         let _stored: Element<'_, Message> = appearance(&state, &stored);
-    }
-
-    /// Task ER2.4: every row of the reminders changes only its own field.
-    #[test]
-    fn each_reminder_row_sets_only_its_field() {
-        use serde_json::json;
-        let data = Data::default();
-        let set = |change: ReminderChange| sent(update(&mut State::default(), Message::Reminder(change), &data));
-        assert_eq!(set(ReminderChange::Enabled(false)), (SettingKey::Reminders, json!({"enabled": false})));
-        assert_eq!(set(ReminderChange::DefaultLead(Lead(None))), (SettingKey::Reminders, json!({"defaultLead": null})));
-        assert_eq!(set(ReminderChange::DefaultLead(Lead(Some(5)))), (SettingKey::Reminders, json!({"defaultLead": 5})));
-        assert_eq!(set(ReminderChange::Sound(false)), (SettingKey::Reminders, json!({"sound": "none"})));
-        assert_eq!(
-            set(ReminderChange::NeverDuringCall(false)),
-            (SettingKey::Reminders, json!({"neverDuringCall": false}))
-        );
-        assert_eq!(
-            set(ReminderChange::Calendar("a/work".into(), CalendarReminders::FullScreen)),
-            (SettingKey::Reminders, json!({"calendars": {"a/work": "full_screen"}}))
-        );
-        for change in [
-            ReminderChange::AllDisplays(false),
-            ReminderChange::OnlyAccepted(false),
-            ReminderChange::AllDay(true),
-            ReminderChange::FreeEvents(true),
-            ReminderChange::OutsideWorkHours(false),
-        ] {
-            let (key, value) = set(change);
-            assert_eq!((key, value.as_object().map(|o| o.len())), (SettingKey::Reminders, Some(1)), "one field");
-            assert!(Reminders::default().merged(&value).is_ok(), "{value}");
-        }
     }
 }

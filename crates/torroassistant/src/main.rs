@@ -12,6 +12,11 @@
 //! back with its argument; `--bot <id>` is the chat with a bot in such a window (task B.3). The
 //! start parameters are [`launch::Launch`]'s.
 //!
+//! `torroassistant --settings <section>` opens the main or chat window with the assistant's
+//! settings in its content area (task S.18): the sections of `torro_settings_ui::assistant`, over
+//! the window's own way to the core ([`Backend::settings`]) – with `--demo` over the settings
+//! library's demo, which never opens a socket.
+//!
 //! Without a window: `--listen` waits for the wake word and talks with the assistant by voice
 //! (task C.9); `--voice-status` and `--voice-test` answer the core's `settings.voice_status` and
 //! `settings.test_voice` ([`voice::cli`]).

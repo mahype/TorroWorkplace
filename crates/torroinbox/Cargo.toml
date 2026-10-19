@@ -20,6 +20,8 @@ torro-inbox.workspace = true
 torro-ipc.workspace = true
 torro-mail.workspace = true
 torro-pim.workspace = true
+# The settings behind the gear, in the window's content area (task S.20).
+torro-settings-ui.workspace = true
 chrono.workspace = true
 iced.workspace = true
 rfd.workspace = true

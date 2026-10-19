@@ -2093,8 +2093,8 @@ pub enum Request {
     /// settings themselves are `settings.get_settings` (`voice`).
     #[serde(rename = "settings.voice_status")]
     VoiceStatus,
-    /// Records one sentence from the microphone and turns it into text, for the control centre's
-    /// "Say something" ([`Response::Transcript`]): up to 15 seconds, ending at a pause. Nothing is
+    /// Records one sentence from the microphone and turns it into text, for "Say something" in the
+    /// assistant's settings ([`Response::Transcript`]): up to 15 seconds, ending at a pause. Nothing is
     /// sent to the assistant and nothing is kept. Only with the app key: it opens the microphone
     /// (point 6 of "Was nie nach außen geht" in `docs/api.md`). `unsupported` when the programs
     /// it needs are missing, `error` when the recording fails.

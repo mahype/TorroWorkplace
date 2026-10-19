@@ -4,6 +4,12 @@
 //! action is a [`torro_ipc::Request`] – `assistant.*`, `ai.list_models`, `approvals.*`,
 //! `clients.list_clients` – that [`Backend::ask`] sends. The core holds the conversations and runs
 //! the answers; the window asks again on its timer to follow them.
+//!
+//! The settings in the content area (task S.18) take the same two ways, through the trait of
+//! `torro-settings-ui` ([`Backend::settings`]): the core over its socket, or
+//! [`torro_settings_ui::demo::Demo`] with `--demo`. A demo window never reaches the socket – the
+//! assistant's own demo answers no settings request, and `torro_ipc::client` would read the app
+//! key and really change rights and settings.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,5 +66,34 @@ impl Backend {
             Response::Error { code, message } => Err(Refusal { code, message }),
             other => Ok(other),
         }
+    }
+
+    /// The way the settings of this window take to the core (task S.18,
+    /// [`torro_settings_ui::Host::new`]): this socket, or the settings library's own demo, which
+    /// answers sample data from memory and never opens a socket.
+    pub fn settings(&self) -> Arc<dyn torro_settings_ui::Backend> {
+        match self {
+            Backend::Core(socket) => Arc::new(Socket { socket: socket.clone() }),
+            Backend::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
+        }
+    }
+}
+
+/// The [`torro_settings_ui::Backend`] of a window on the core: one request, one answer over the
+/// socket. An error answer comes back as its message for people, as the library asks.
+struct Socket {
+    socket: PathBuf,
+}
+
+impl torro_settings_ui::Backend for Socket {
+    fn call(&self, request: Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move {
+            match torro_ipc::client::call(&socket, &request).await {
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(answer) => Ok(answer),
+                Err(err) => Err(err.to_string()),
+            }
+        })
     }
 }

@@ -6436,6 +6436,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-settings-ui"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "serde_json",
+ "tokio",
+ "torro-core",
+ "torro-gui",
+ "torro-inbox",
+ "torro-ipc",
+ "torro-mail",
+ "torro-pim",
+]
+
+[[package]]
 name = "torro-setups"
 version = "0.1.0"
 dependencies = [
@@ -6483,6 +6499,7 @@ dependencies = [
  "torro-inbox",
  "torro-ipc",
  "torro-pim",
+ "torro-settings-ui",
  "unicode-segmentation",
  "webbrowser",
 ]
@@ -6497,6 +6514,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "torro-settings-ui",
  "webbrowser",
  "winresource",
 ]
@@ -6518,6 +6536,7 @@ dependencies = [
  "torro-ipc",
  "torro-mail",
  "torro-pim",
+ "torro-settings-ui",
  "webbrowser",
 ]
 
@@ -6532,6 +6551,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "torro-settings-ui",
  "webbrowser",
  "winresource",
 ]
@@ -6570,6 +6590,7 @@ dependencies = [
  "torro-pim",
  "torro-pim-caldav",
  "torro-pim-github",
+ "torro-settings-ui",
  "torro-setups",
  "torro-tui",
  "torro-wm",

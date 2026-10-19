@@ -1,11 +1,14 @@
 //! Agents & API (task A.6 in `docs/tasks/api-mcp.md`, concept in `docs/api.md`, "Rechte" and
-//! "Steuerzentrale: Abschnitt „Agents & API“"): the agents, hooks and scripts that may use the API,
-//! and what each of them may do.
+//! "Steuerzentrale: Abschnitt „Agents & API“"): every program that may use the API – the suite's own
+//! assistant and its bots, coding agents, hooks and scripts (task S.21) – and what each of them may
+//! do.
 //!
-//! - **List:** one settings group per kind of client (agents, hooks, scripts), a row per client
-//!   with its name, what it is, its rights in words ([`rights_summary`]) and when it was last
-//!   used; the row opens the detail page. Without clients an empty state that points to the
-//!   header's "Connect agent", which opens the assistant of task A.7 (`agent_wizard.rs`).
+//! - **List:** one settings group per kind of client (the assistant, bots, agents, hooks, scripts),
+//!   a row per client with its name, what it is, its rights in words ([`rights_summary`]) and when
+//!   it was last used; the row opens the detail page. Without clients of the other kinds an empty
+//!   state that points to the header's "Connect program", which opens the assistant of task A.7
+//!   (`agent_wizard.rs`). "Connect program" and not "Connect agent" (task S.21): the section also
+//!   holds the suite's own assistant and its bots, which no such dialog creates.
 //! - **Detail:** the rights per grantable area as a segmented control that offers only the levels
 //!   that make a difference there ([`levels`], read from the command catalogue), each starting in
 //!   the same slot ([`segment_slot`]) so the levels line up; every other control of the page (the
@@ -25,12 +28,25 @@
 //!   log (command and result, never contents); "Create new key" and "Disconnect…", each behind a
 //!   confirmation that says what goes ([`disconnect_text`]). A new key is shown once, with a copy
 //!   button.
-//! - **Bots** (`api::BOT_CLIENT`, task B.3) are a group of their own; their rows open the bot's page
-//!   under Assistant › Bots, where the same rights view sets what each bot may use. The areas
-//!   `assistant` and `bots` have no row for a bot or for the assistant itself – the core refuses
-//!   them whatever the rights say (`api::loops_back`). For every other agent a short warning stands
-//!   under `bots` (it would act with a bot's rights) and `assistant` (it would also read the
-//!   conversations with bots) while they are on ([`bot_warning`]).
+//! - **The assistant** (`api::ASSISTANT_CLIENT`, tasks C.6 and S.21) is a group of its own, led like
+//!   every other program: its row opens a detail page with the same rights view. While it has no
+//!   client the row says "Turn on assistant" and its page is the first start – "Start from"
+//!   ([`Preset`]) and the rights it is offered, with "Turn on assistant" in the header, which sends
+//!   `clients.create_client` with the chosen rights ([`Message::TurnOn`], task C.11). Its page ends
+//!   with "Turn off assistant…" (`clients.remove_client`), never with a new key: the core runs the
+//!   assistant's tools itself with the client's rights, so nobody ever needs its key, and the page
+//!   must not show it ([`answered`] drops it).
+//! - **Bots** (`api::BOT_CLIENT`, task B.3) are a group of their own; their rows open the same
+//!   rights view for the bot's own client, which sets what each bot may use, and "Open chat" in the
+//!   header leads to the bot's chat window in the assistant app
+//!   (`assistant.open_window { bot }`, [`chat_button`]). A bot's page has **no** destructive
+//!   button ([`Category::away_label`]): who a bot is – name,
+//!   instructions, skills – is edited in the assistant app, and whether it exists at all is the
+//!   assistant's too. The areas `assistant` and `bots` have no
+//!   row for a bot or for the assistant itself – the core refuses them whatever the rights say
+//!   (`api::loops_back`). For every other agent a short warning stands under `bots` (it would act
+//!   with a bot's rights) and `assistant` (it would also read the conversations with bots) while
+//!   they are on ([`bot_warning`]).
 //! - **Hook clients** (`api::HOOK_CLIENT`) show the agent they report for and their fixed rights,
 //!   read-only: the core narrows a hook's rights to `Rights::hook` whatever is sent, because its key
 //!   sits in files the agent can read itself.
@@ -49,8 +65,10 @@
 //! Disconnecting a hook client itself takes out only its hooks.
 //!
 //! Requests: `clients.update_client` (every control of the rights), `clients.activity` (opening a
-//! detail page), `clients.new_key`, `clients.remove_client` and, from the assistant,
-//! `clients.create_client`. The clients come from
+//! detail page), `clients.new_key`, `clients.remove_client` ("Disconnect…", "Turn off assistant…"),
+//! `clients.create_client` ("Turn on assistant" and the "Connect program" dialog) and
+//! `assistant.open_window` ("Open chat" on a bot's page). The clients
+//! come from
 //! `clients.list_clients`, the candidates of the selections from `calendar.list_calendars`,
 //! `tasks.list_lists` (whose GitHub filter lists also name repositories), `inbox.list_sources` and
 //! `accounts.list_accounts` (the accounts of the kind `mail`), all loaded by the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
@@ -82,7 +100,7 @@ use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response, Setting
 use torro_pim::Collection;
 
 use super::accounts::relative_time;
-use super::{Action, Data, Header, Section, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
+use super::{Action, Data, Header, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
 #[cfg(test)]
 use crate::client_setup::Released;
 use crate::client_setup::{Job, Outcome};
@@ -97,11 +115,24 @@ const TICK: Duration = Duration::from_millis(100);
 /// The latest requests the detail page shows; the core keeps 50.
 const ACTIVITY_SHOWN: usize = 10;
 
+/// The name of the assistant's client, as the list and the audit log show it (decision 5 of
+/// `docs/assistent.md`: one client "Assistant").
+pub const CLIENT_NAME: &str = "Assistant";
+
 /// Page state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct State {
     /// The client whose detail page is open (its `ClientInfo::id`); `None` shows the list.
     pub selected: Option<String>,
+    /// The assistant's page is open (task S.21): its client's detail page, or its first start while
+    /// it has no client. Kept apart from `selected`, which names a client the core lists – the
+    /// first start has none yet.
+    assistant: bool,
+    /// What the assistant's first start offers until "Turn on assistant": [`Rights::assistant`],
+    /// then what the person changed.
+    choice: Rights,
+    /// "Turn on assistant" was sent and the core's list does not show the client yet.
+    creating: bool,
     /// Rights changed on the page and not yet in [`Data::clients`].
     draft: Option<Draft>,
     /// The client whose activity was asked for and not answered yet.
@@ -122,6 +153,66 @@ pub struct State {
     problem: Option<String>,
     /// Hook clients of a disconnected agent still to remove from the core.
     orphans: Vec<String>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            selected: None,
+            assistant: false,
+            choice: Rights::assistant(),
+            creating: false,
+            draft: None,
+            asked: None,
+            activity: None,
+            dialog: None,
+            issued: None,
+            repo_input: String::new(),
+            wizard: None,
+            removing: None,
+            problem: None,
+            orphans: Vec::new(),
+        }
+    }
+}
+
+/// A starting point of the assistant's first start (task C.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preset {
+    /// [`Rights::assistant`]: read calendars, tasks and the Notification Hub.
+    Suggested,
+    Template(RightsTemplate),
+}
+
+impl Preset {
+    const ALL: [Preset; 4] = [
+        Preset::Suggested,
+        Preset::Template(RightsTemplate::ReadOnly),
+        Preset::Template(RightsTemplate::ReadAndWrite),
+        Preset::Template(RightsTemplate::FullAccess),
+    ];
+
+    /// The rights it stands for. No template opens the area `assistant` (`Area::in_templates`).
+    pub fn rights(self) -> Rights {
+        match self {
+            Preset::Suggested => Rights::assistant(),
+            Preset::Template(template) => template.rights(),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Preset::Suggested => tr("Suggested"),
+            Preset::Template(template) => template_label(template),
+        }
+    }
+
+    fn detail(self) -> &'static str {
+        match self {
+            Preset::Suggested => tr("Reads calendars, tasks and the Notification Hub"),
+            Preset::Template(template) => agent_wizard::template_detail(template),
+        }
+    }
 }
 
 /// Rights the page changed, on their way to the core.
@@ -244,11 +335,14 @@ impl Pick {
 pub enum Message {
     /// Opens the detail page of a client.
     Open(String),
-    /// The assistant's row in the list: its rights live on the Assistant page (task C.6).
+    /// The assistant's row in the list: its detail page, or its first start while it has no client
+    /// (task S.21).
     ShowAssistant,
-    /// A bot's row in the list (its client's id): its rights live on its page under Assistant ›
-    /// Bots (task B.3).
-    ShowBot(String),
+    /// A starting point of the assistant's first start.
+    Preset(Preset),
+    /// "Turn on assistant" in the header of the first start: `clients.create_client` with the
+    /// chosen rights.
+    TurnOn,
     /// Back from a detail page to the list.
     Back,
     /// A segment of an area's level.
@@ -285,9 +379,12 @@ pub enum Message {
     /// "Disconnect…", then its confirmation.
     AskDisconnect,
     Disconnect,
+    /// "Open chat" in the header of a bot's page: the bot's chat window in the assistant app
+    /// (`assistant.open_window` with the bot's id, not its client's).
+    OpenChat(String),
     /// "Cancel" or Escape in a confirmation.
     CloseDialog,
-    /// "Connect agent" in the header: opens the assistant.
+    /// "Connect program" in the header: opens the assistant.
     Connect,
     Wizard(agent_wizard::Message),
     /// A job the shell ran for the page ([`Action::Setup`]): detection and writing for the
@@ -298,29 +395,56 @@ pub enum Message {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Open(id) => {
-            state.selected = Some(id.clone());
-            state.dialog = None;
-            state.repo_input.clear();
-            state.activity = None;
-            state.asked = Some(id.clone());
-            Action::Send(Request::ClientActivity { id })
+            state.assistant = false;
+            open(state, id)
         }
         Message::Back => {
             state.selected = None;
+            state.assistant = false;
             state.dialog = None;
             // Leaving the page is a good moment to save; the clock would do it a moment later.
             save_now(state)
         }
-        Message::ShowAssistant => Action::Select(Section::Assistant),
+        // On, the assistant is a client like any other; off, its page is the first start, which
+        // has no client to ask for activity.
+        Message::ShowAssistant => {
+            state.assistant = true;
+            match assistant_client(data) {
+                Some(client) => open(state, client.id.clone()),
+                None => {
+                    state.selected = None;
+                    state.dialog = None;
+                    state.repo_input.clear();
+                    Action::None
+                }
+            }
+        }
+        Message::Preset(preset) => {
+            if assistant_client(data).is_none() {
+                state.choice = preset.rights();
+            }
+            Action::None
+        }
+        Message::TurnOn => {
+            if assistant_client(data).is_some() || state.creating {
+                return Action::None;
+            }
+            state.creating = true;
+            // The chosen rights in the same request (task C.11), so the client never holds other
+            // ones, not even for a moment; the template is the narrowest, in case an older core
+            // ignores them.
+            Action::Send(Request::CreateClient {
+                name: CLIENT_NAME.into(),
+                kind: ASSISTANT_CLIENT.into(),
+                template: RightsTemplate::ReadOnly,
+                agent: None,
+                rights: Some(state.choice.clone()),
+            })
+        }
         // The app key's: only a person lets mail out (task C.17, `Request::kept_for_people`).
         Message::MailToCloud(on) => {
             Action::Send(Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::Value::Bool(on) })
         }
-        Message::ShowBot(client) => match data.bots.iter().find(|bot| bot.client == client) {
-            Some(bot) => Action::OpenBot(bot.id.clone()),
-            // A bot's client without its bot (the bots could not be listed): its own page here.
-            None => update(state, Message::Open(client), data),
-        },
         Message::RepoInput(text) => {
             state.repo_input = text;
             Action::None
@@ -341,7 +465,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::AskNewKey => ask(state, data, Dialog::NewKey),
         Message::NewKey => {
             state.dialog = None;
-            match selected_client(state, data) {
+            // Only a client that has a key of its own: the assistant and the bots run inside the
+            // core, which holds theirs ([`Category::has_key`]), and a new one would only break them.
+            match selected_client(state, data).filter(|client| Category::of(client).has_key()) {
                 Some(client) => Action::Send(Request::NewClientKey { id: client.id.clone() }),
                 None => Action::None,
             }
@@ -358,16 +484,36 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::KeepKey => Action::None,
-        Message::AskDisconnect => ask(state, data, Dialog::Disconnect),
+        // Only a page that offers the button asks the question: a bot's has none
+        // ([`Category::away_label`]), and its client must not be taken away from here.
+        Message::AskDisconnect => match selected_client(state, data).map(Category::of) {
+            Some(category) if category.away_label().is_some() => ask(state, data, Dialog::Disconnect),
+            _ => Action::None,
+        },
         Message::Disconnect => {
             state.dialog = None;
-            let Some(id) = state.selected.take() else { return Action::None };
+            let Some(id) = selected_client(state, data)
+                .filter(|client| Category::of(client).away_label().is_some())
+                .map(|client| client.id.clone())
+            else {
+                return Action::None;
+            };
+            let was_assistant = state.assistant;
+            state.selected = None;
+            // Turned off, the assistant starts from the suggestion again, as its first start does.
+            if was_assistant {
+                state.assistant = false;
+                state.choice = Rights::assistant();
+            }
             // Its rights need not be saved any more.
             if state.draft.as_ref().is_some_and(|draft| draft.id == id) {
                 state.draft = None;
             }
             state.removing = Some(id.clone());
             Action::Send(Request::RemoveClient { id })
+        }
+        Message::OpenChat(bot) => {
+            Action::Send(Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot(bot) })
         }
         Message::CloseDialog => {
             state.dialog = None;
@@ -395,6 +541,21 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             None => Action::None,
         },
     }
+}
+
+/// Opens the detail page of the client `id`: its latest requests come with it.
+fn open(state: &mut State, id: String) -> Action {
+    state.selected = Some(id.clone());
+    state.dialog = None;
+    state.repo_input.clear();
+    state.activity = None;
+    state.asked = Some(id.clone());
+    Action::Send(Request::ClientActivity { id })
+}
+
+/// The assistant's client as the core lists it; `None` before it was turned on.
+pub fn assistant_client(data: &Data) -> Option<&ClientInfo> {
+    data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT)
 }
 
 /// Removes the next hook client of a disconnected agent, the way "Disconnect…" removes a client:
@@ -434,9 +595,17 @@ fn ask(state: &mut State, data: &Data, dialog: Dialog) -> Action {
 }
 
 /// Applies the rights control `message` to the rights of the client on the detail page
-/// ([`change_rights`]) and waits [`SAVE_DELAY`] before saving. A hook client's rights are fixed:
-/// nothing changes.
+/// ([`change_rights`]) and waits [`SAVE_DELAY`] before saving. On the assistant's first start there
+/// is no client yet: the change goes to the choice "Turn on assistant" will send. A hook client's
+/// rights are fixed: nothing changes.
 fn edit(state: &mut State, data: &Data, message: Message) -> Action {
+    if first_start(state, data) {
+        let mut choice = state.choice.clone();
+        if change_rights(&mut choice, ASSISTANT_CLIENT, message, data, &mut state.repo_input) {
+            state.choice = choice;
+        }
+        return Action::None;
+    }
     let Some(client) = selected_client(state, data) else { return Action::None };
     if client.kind == HOOK_CLIENT {
         return Action::None;
@@ -589,19 +758,31 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<
                 state.activity = Some((id, entries.clone()));
             }
         }
+        // The assistant's key is dropped: the core runs its tools itself with the client's rights,
+        // so nobody needs it, and no page of the suite ever shows it (task C.6).
+        Ok(Response::ClientKey { client, .. }) if client.kind == ASSISTANT_CLIENT => {}
         Ok(Response::ClientKey { client, key }) => {
             state.issued = Some(Issued { name: client.name.clone(), key: key.clone(), copied: false });
         }
+        Err(_) if state.creating => state.creating = false,
         _ => {}
     }
     None
 }
 
-/// The shell loaded [`Data`] anew: a saved draft is in it now.
-pub fn loaded(state: &mut State) {
+/// The shell loaded [`Data`] anew: a saved draft is in it now. "Turn on assistant" is done once the
+/// core lists the client; the assistant's first start then becomes that client's detail page, which
+/// asks for its latest requests like any other (the returned action).
+pub fn loaded(state: &mut State, data: &Data) -> Option<Action> {
     if state.draft.as_ref().is_some_and(|draft| draft.phase == Phase::Answered) {
         state.draft = None;
     }
+    let client = assistant_client(data)?;
+    state.creating = false;
+    if !state.assistant || state.selected.as_deref() == Some(client.id.as_str()) {
+        return None;
+    }
+    Some(open(state, client.id.clone()))
 }
 
 /// The clock that saves a waiting draft; none while nothing waits, so the page costs nothing at
@@ -628,21 +809,56 @@ pub fn escape(state: &State) -> Option<Message> {
     }
 }
 
-/// The header bar: on a detail page the client's name with a back button to the list; on the list
-/// "Connect agent", only its icon in narrow windows.
+/// The header bar: on a detail page the client's name with a back button to the list, and on a
+/// bot's page "Open chat" ([`chat_button`]); on the assistant's first start its name and "Turn on
+/// assistant" – the window's one primary button, where it stays in sight while the rights below
+/// are chosen; on the list "Connect program". Only the icon of a primary button in narrow windows.
 pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     if let Some(client) = selected_client(state, data) {
-        return Header { sub_page: Some((client.name.clone(), Message::Back)), actions: Vec::new() };
+        let actions = chat_button(data, client, class).into_iter().collect();
+        return Header { sub_page: Some((client.name.clone(), Message::Back)), actions };
     }
-    let connect = match class {
+    if first_start(state, data) {
+        let button = match state.creating {
+            true => widgets::busy_button(tr("Turning on…"), style::button::primary),
+            false => primary(class, tr("Turn on assistant"), Message::TurnOn),
+        };
+        return Header { sub_page: Some((tr("Assistant").to_string(), Message::Back)), actions: vec![button] };
+    }
+    Header { sub_page: None, actions: vec![primary(class, tr("Connect program"), Message::Connect)] }
+}
+
+/// "Open chat" on a bot's page: its chat window in the assistant app, where the bot itself is
+/// edited. `None` for every other client, and for a bot whose own entry the core no longer lists –
+/// then there is nothing to chat with. In narrow windows only the icon, like the bot's page in the
+/// control centre had it before task S.21.
+fn chat_button<'a>(data: &'a Data, client: &ClientInfo, class: SizeClass) -> Option<Element<'a, Message>> {
+    if client.kind != BOT_CLIENT {
+        return None;
+    }
+    let bot = data.bots.iter().find(|bot| bot.client == client.id)?;
+    let open = Some(Message::OpenChat(bot.id.clone()));
+    Some(match class {
         SizeClass::Wide | SizeClass::Medium => {
-            widgets::text_button(Some(Icon::Plus), tr("Connect agent"), style::button::primary, Some(Message::Connect))
+            widgets::text_button(Some(Icon::ArrowUpRight), tr("Open chat"), style::button::secondary, open)
         }
         SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
-            widgets::compact_button(Icon::Plus, tr("Connect agent"), style::button::primary, Some(Message::Connect))
+            widgets::compact_button(Icon::ArrowUpRight, tr("Open chat"), style::button::secondary, open)
         }
-    };
-    Header { sub_page: None, actions: vec![connect] }
+    })
+}
+
+/// The header's primary button: with its word, in narrow windows only its "+" icon, so the section
+/// menu keeps its room.
+fn primary<'a>(class: SizeClass, label: &'a str, message: Message) -> Element<'a, Message> {
+    match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Plus), label, style::button::primary, Some(message))
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Plus, label, style::button::primary, Some(message))
+        }
+    }
 }
 
 /// The page's dialog over the whole window: the assistant, the new key, else a confirmation.
@@ -669,22 +885,28 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         ),
         Dialog::Disconnect => {
             let (title, consequence) = disconnect_text(client);
-            confirm(title, consequence, tr("Disconnect"), Message::Disconnect, Message::CloseDialog)
+            let word = Category::of(client).confirm_word();
+            confirm(title, consequence, word, Message::Disconnect, Message::CloseDialog)
         }
     })
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
 
-/// The client whose detail page is open, if it is still listed.
+/// The client whose detail page is open, if it is still listed. While the assistant's page is open
+/// it is the assistant's client, whatever `selected` still holds: turned off, the page becomes the
+/// first start, not the page of a client that is gone.
 fn selected_client<'a>(state: &State, data: &'a Data) -> Option<&'a ClientInfo> {
+    if state.assistant {
+        return assistant_client(data);
+    }
     let id = state.selected.as_deref()?;
     data.clients.iter().find(|client| client.id == id)
 }
 
-/// The text typed into "Add repository" of the rights view ([`rights_groups`]).
-pub(super) fn repo_input(state: &State) -> &str {
-    &state.repo_input
+/// The assistant's first start is on screen: its page is open and it has no client yet.
+fn first_start(state: &State, data: &Data) -> bool {
+    state.assistant && assistant_client(data).is_none()
 }
 
 /// The rights the page shows for `client`: its draft while there is one, else what the core holds.
@@ -866,7 +1088,8 @@ pub fn kind_label(client: &ClientInfo) -> String {
 /// sits in the group "Scripts", and "Claude Code" needs no "Claude Code" below it.
 fn kind_word(client: &ClientInfo) -> Option<String> {
     let kind = kind_label(client);
-    (!matches!(Category::of(client), Category::Script | Category::Bot) && kind != client.name).then_some(kind)
+    let named_by_group = matches!(Category::of(client), Category::Script | Category::Bot | Category::Assistant);
+    (!named_by_group && kind != client.name).then_some(kind)
 }
 
 /// "Used 5 min ago", or "Never used".
@@ -887,12 +1110,20 @@ pub fn about(client: &ClientInfo, now: DateTime<Utc>) -> String {
     parts.join(" · ")
 }
 
-/// Title and consequence of "Disconnect…" for `client`. An agent loses its key and, where
-/// "Connect agent" set them up, its configuration entry and inbox hooks ([`Job::Disconnect`]);
-/// hooks are taken out of the agent's settings; a script only loses its key.
+/// Title and consequence of the page's last button for `client`. An agent loses its key and, where
+/// "Connect program" set them up, its configuration entry and inbox hooks ([`Job::Disconnect`]);
+/// hooks are taken out of the agent's settings; a script only loses its key; the assistant is
+/// turned off and keeps its conversations.
 fn disconnect_text(client: &ClientInfo) -> (&'static str, String) {
     let name: &dyn std::fmt::Display = &client.name;
     match Category::of(client) {
+        Category::Assistant => (
+            tr("Turn off the assistant?"),
+            tr(
+                "It loses access to everything at once. Your conversations stay. Turn it on again to choose what it may use.",
+            )
+            .to_string(),
+        ),
         Category::Agent => (
             tr("Disconnect this agent?"),
             trf(
@@ -924,21 +1155,24 @@ fn disconnect_text(client: &ClientInfo) -> (&'static str, String) {
     }
 }
 
-/// The groups of the list: agents, hooks, scripts.
+/// The groups of the list: the assistant, its bots, agents, hooks, scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Category {
-    Agent,
+    /// The suite's own assistant (task C.6), one client of its kind.
+    Assistant,
     /// The assistant's bots (task B.3).
     Bot,
+    Agent,
     Hook,
     Script,
 }
 
 impl Category {
-    const ALL: [Category; 4] = [Category::Agent, Category::Bot, Category::Hook, Category::Script];
+    const ALL: [Category; 5] = [Category::Assistant, Category::Bot, Category::Agent, Category::Hook, Category::Script];
 
     fn of(client: &ClientInfo) -> Category {
         match client.kind.as_str() {
+            ASSISTANT_CLIENT => Category::Assistant,
             HOOK_CLIENT => Category::Hook,
             BOT_CLIENT => Category::Bot,
             "script" => Category::Script,
@@ -949,6 +1183,7 @@ impl Category {
     /// One client of the group, for the line under its name on the detail page.
     fn singular(self) -> &'static str {
         match self {
+            Category::Assistant => tr("Assistant"),
             Category::Agent => tr("Agent"),
             Category::Bot => tr("Bot"),
             Category::Hook => tr("Hook"),
@@ -958,8 +1193,9 @@ impl Category {
 
     fn title(self) -> &'static str {
         match self {
-            Category::Agent => tr("Agents"),
+            Category::Assistant => tr("Assistant"),
             Category::Bot => tr("Bots"),
+            Category::Agent => tr("Agents"),
             Category::Hook => tr("Hooks"),
             Category::Script => tr("Scripts"),
         }
@@ -967,6 +1203,9 @@ impl Category {
 
     fn footer(self) -> &'static str {
         match self {
+            Category::Assistant => {
+                tr("The assistant chats with you and works in Torro Workplace with only what you allow it here.")
+            }
             Category::Agent => {
                 tr("Coding agents and apps that use Torro Workplace through MCP, each with its own key.")
             }
@@ -976,6 +1215,39 @@ impl Category {
             }
             Category::Script => tr("Scripts and other programs that use the API with their own key."),
         }
+    }
+
+    /// The last button of the detail page: what it takes away, in the words of what it is; `None`
+    /// for a page that has none.
+    ///
+    /// A bot has none. Taking its client away cannot be undone from here – the core refuses
+    /// `clients.create_client` for the kind `bot`, so only the next `bots.save_bot` in the
+    /// assistant would give the bot a client again, with no rights. Task S.21 names one
+    /// destructive button for this section, "Turn off assistant…", and the bot's page in the
+    /// control centre never had one. What a bot may use is set here; whether it exists at all is
+    /// the assistant's.
+    fn away_label(self) -> Option<&'static str> {
+        match self {
+            Category::Assistant => Some(tr("Turn off assistant…")),
+            Category::Bot => None,
+            Category::Agent | Category::Hook | Category::Script => Some(tr("Disconnect…")),
+        }
+    }
+
+    /// The word on the button of its confirmation.
+    fn confirm_word(self) -> &'static str {
+        match self {
+            Category::Assistant => tr("Turn off"),
+            Category::Bot => tr("Take away"),
+            Category::Agent | Category::Hook | Category::Script => tr("Disconnect"),
+        }
+    }
+
+    /// Whether a client of this kind has a key a person puts into a configuration. The assistant
+    /// and the bots run inside the core, which holds their keys: a new one would only break them,
+    /// so their pages offer none.
+    fn has_key(self) -> bool {
+        matches!(self, Category::Agent | Category::Hook | Category::Script)
     }
 }
 
@@ -1164,31 +1436,52 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match selected_client(state, data) {
         Some(client) => detail(state, client, data, now),
+        None if first_start(state, data) => start(state, data),
         None => list(state, data, now),
     }
 }
 
+/// The list: the assistant's group – which is there whether it is on or off –, then one group per
+/// other kind of client, or the empty state while there is no other client.
 fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     let problem = state.problem.as_deref().map(problem_line);
-    if data.clients.is_empty() {
-        let empty = empty_state(
-            tr("No agents connected"),
+    let groups: Vec<Element<'a, Message>> = Category::ALL
+        .into_iter()
+        .filter_map(|category| {
+            let mut rows: Vec<Element<'a, Message>> = data
+                .clients
+                .iter()
+                .filter(|client| Category::of(client) == category)
+                .map(|client| client_row(state, client, now))
+                .collect();
+            // The assistant has a row even without a client: the one way to turn it on.
+            if category == Category::Assistant && rows.is_empty() {
+                rows.push(assistant_off_row());
+            }
+            (!rows.is_empty()).then(|| widgets::group(category.title(), rows, Some(category.footer().to_string())))
+        })
+        .collect();
+    // Only the assistant's group: the page says where the other programs come from.
+    let empty = (groups.len() == 1).then(|| {
+        empty_state(
+            tr("No programs connected"),
             tr(
-                "Choose Connect agent to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
+                "Choose Connect program to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
             ),
-        );
-        return column![].push(problem).push(empty).spacing(space::l()).into();
-    }
-    let groups = Category::ALL.into_iter().filter_map(|category| {
-        let rows: Vec<Element<'a, Message>> = data
-            .clients
-            .iter()
-            .filter(|client| Category::of(client) == category)
-            .map(|client| client_row(state, client, now))
-            .collect();
-        (!rows.is_empty()).then(|| widgets::group(category.title(), rows, Some(category.footer().to_string())))
+        )
     });
-    column![].push(problem).extend(groups).spacing(layout::section_gap()).into()
+    column![].push(problem).extend(groups).push(empty).spacing(layout::section_gap()).into()
+}
+
+/// The assistant's row while it has no client: off, and the one thing to do about it.
+fn assistant_off_row<'a>() -> Element<'a, Message> {
+    let row = setting_row(
+        Some(widgets::status_dot(Status::Inactive)),
+        tr("The assistant is off"),
+        Some(tr("Turn on assistant").to_string()),
+        chevron(),
+    );
+    pressable(row, Some(Message::ShowAssistant))
 }
 
 /// The empty list: the section's icon over what shows up here and how – `widgets::empty_state`
@@ -1223,10 +1516,11 @@ fn client_row<'a>(state: &State, client: &'a ClientInfo, now: DateTime<Utc>) -> 
     parts.push(rights_summary(shown_rights(state, client), &client.kind));
     parts.push(last_used_text(client.last_used, now));
     let row = setting_row(None, client.name.as_str(), Some(parts.join(" · ")), chevron());
-    // The assistant's rights are edited on its own page, next to its other settings.
+    // Every client, the assistant and the bots included, opens the same detail page (task S.21);
+    // the assistant's keeps track of being the assistant's, so turning it off lands on its first
+    // start instead of a page without a client.
     let open = match client.kind.as_str() {
         ASSISTANT_CLIENT => Message::ShowAssistant,
-        BOT_CLIENT => Message::ShowBot(client.id.clone()),
         _ => Message::Open(client.id.clone()),
     };
     pressable(row, Some(open))
@@ -1248,18 +1542,93 @@ fn detail_page<'a>(
     now: DateTime<Utc>,
     column: Option<f32>,
 ) -> Element<'a, Message> {
-    let name = typo::text(typo::headline(), client.name.as_str()).wrapping(Wrapping::None);
-    let about = typo::text(typo::meta(), about(client, now)).style(theme::text_2);
-    let heading = column![container(name).width(Fill).clip(true), about].spacing(space::xs());
-    let mut page = column![heading].spacing(layout::section_gap());
+    let category = Category::of(client);
+    let mut page = column![heading(client.name.as_str(), about(client, now))].spacing(layout::section_gap());
     if client.kind == HOOK_CLIENT {
         page = page.push(hook_group(client, column));
     } else {
         let rights = shown_rights(state, client);
-        page = page.extend(rights_groups(&state.repo_input, rights, data, column, &client.kind, tr("Access")));
+        page =
+            page.extend(rights_groups(&state.repo_input, rights, data, column, &client.kind, access_title(category)));
     }
-    let disconnect = widgets::text_button(None, tr("Disconnect…"), style::button::danger, Some(Message::AskDisconnect));
-    page.push(activity_group(state, client, now)).push(key_group(column)).push(on_axis(disconnect)).into()
+    page = page.push(activity_group(state, client, now));
+    if category.has_key() {
+        page = page.push(key_group(column));
+    }
+    // A bot's page ends without one: see [`Category::away_label`].
+    if let Some(label) = category.away_label() {
+        let away = widgets::text_button(None, label, style::button::danger, Some(Message::AskDisconnect));
+        page = page.push(on_axis(away));
+    }
+    page.into()
+}
+
+/// The name of the rights group, in the words of what the client is: an agent is given access, the
+/// assistant and a bot are allowed to use things.
+fn access_title(category: Category) -> &'static str {
+    match category {
+        Category::Assistant => tr("What the assistant may use"),
+        Category::Bot => tr("What the bot may use"),
+        Category::Agent | Category::Hook | Category::Script => tr("Access"),
+    }
+}
+
+/// The name of a detail page with the line under it.
+fn heading<'a>(name: &'a str, about: String) -> Element<'a, Message> {
+    let name = typo::text(typo::headline(), name).wrapping(Wrapping::None);
+    let about = typo::text(typo::meta(), about).style(theme::text_2);
+    column![container(name).width(Fill).clip(true), about].spacing(space::xs()).into()
+}
+
+/// The assistant's first start in the width the page has.
+fn start<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    responsive(move |size| start_page(state, data, control_column(size.width))).height(Length::Shrink).into()
+}
+
+/// The assistant's first start: that it is off, the starting points of its rights ([`Preset`]) and
+/// the rights themselves, which "Turn on assistant" in the header sends along with the client.
+fn start_page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a, Message> {
+    let about = format!("{} · {}", Category::Assistant.singular(), tr("Off"));
+    let groups = rights_groups(
+        &state.repo_input,
+        &state.choice,
+        data,
+        column,
+        ASSISTANT_CLIENT,
+        access_title(Category::Assistant),
+    );
+    column![heading(CLIENT_NAME, about), off_group(), preset_group(&state.choice)]
+        .extend(groups)
+        .spacing(layout::section_gap())
+        .into()
+}
+
+/// The first start's head: the assistant is off and what to do about it.
+fn off_group<'a>() -> Element<'a, Message> {
+    let detail = tr("Choose what it may use below, then turn it on.");
+    let row = setting_row(None, tr("The assistant is off"), Some(detail.to_string()), Space::new());
+    let footer =
+        tr("It chats with you and works in Torro Workplace with only what you allow here. You can change it any time.");
+    widgets::group(tr("Status"), vec![row], Some(footer.to_string()))
+}
+
+/// The starting points of the first start, with a check at the one the rights equal.
+fn preset_group<'a>(rights: &Rights) -> Element<'a, Message> {
+    let rows = Preset::ALL
+        .into_iter()
+        .map(|preset| {
+            let mark: Element<'a, Message> = match preset.rights() == *rights {
+                true => icon::icon(Icon::Check, icon::SIZE)
+                    .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) })
+                    .into(),
+                false => Space::new().width(icon::SIZE).into(),
+            };
+            let row = setting_row(None, preset.label(), Some(preset.detail().to_string()), mark);
+            pressable(row, Some(Message::Preset(preset)))
+        })
+        .collect();
+    let footer = tr("A starting point: every row below can be changed. None of them sends mail without asking.");
+    widgets::group(tr("Start from"), rows, Some(footer.to_string()))
 }
 
 /// A text button moved left by its own padding, so its label stands on the page's content axis.
@@ -1877,7 +2246,7 @@ mod tests {
         assert!(matches!(action, Action::Send(Request::UpdateClient { ref id, .. }) if id == "c1"));
         answered(&mut state, &Ok(Response::Ok));
         assert_eq!(shown_rights(&state, client).area(Area::Apps).level, Level::Read, "until the reload");
-        loaded(&mut state);
+        let _ = loaded(&mut state, &data);
         assert_eq!(shown_rights(&state, client).area(Area::Apps).level, Level::Full, "then what the core holds");
     }
 
@@ -2298,5 +2667,163 @@ mod tests {
         assert_eq!(Category::of(&bot), Category::Bot);
         assert_eq!(kind_label(&bot), tr("Bot"));
         assert_eq!(kind_word(&bot), None, "the group says it");
+    }
+
+    /// Task S.21: while the assistant has no client, its row leads to the first start – "Start
+    /// from" and the rights it is offered –, and "Turn on assistant" sends `clients.create_client`
+    /// with exactly those rights (task C.11). Its key never reaches the page.
+    #[test]
+    fn the_assistant_is_turned_on_with_the_rights_of_its_first_start() {
+        let data = data();
+        let mut state = State::default();
+        assert!(assistant_client(&data).is_none());
+        let action = update(&mut state, Message::ShowAssistant, &data);
+        assert!(matches!(action, Action::None), "no client to ask for activity: {action:?}");
+        assert!(first_start(&state, &data) && selected_client(&state, &data).is_none());
+        assert!(header(&state, &data, SizeClass::Wide).sub_page.is_some(), "a page of its own");
+
+        // A starting point, then one row changed by hand: both land in the choice, not in a draft.
+        let _ = update(&mut state, Message::Preset(Preset::Template(RightsTemplate::ReadOnly)), &data);
+        assert_eq!(state.choice, RightsTemplate::ReadOnly.rights());
+        let _ = update(&mut state, Message::Level(Area::Tasks, Level::Write), &data);
+        assert_eq!(state.choice.area(Area::Tasks).level, Level::Write);
+        assert!(state.draft.is_none(), "nothing to save: there is no client yet");
+        let chosen = state.choice.clone();
+
+        let action = update(&mut state, Message::TurnOn, &data);
+        let Action::Send(Request::CreateClient { name, kind, template, agent, rights }) = action else {
+            panic!("expected clients.create_client");
+        };
+        assert_eq!(
+            (name.as_str(), kind.as_str(), template, agent),
+            (CLIENT_NAME, ASSISTANT_CLIENT, RightsTemplate::ReadOnly, None)
+        );
+        assert_eq!(rights, Some(chosen));
+        assert!(matches!(update(&mut state, Message::TurnOn, &data), Action::None), "sent once");
+        assert!(state.creating);
+        for class in [SizeClass::Wide, SizeClass::Narrow] {
+            assert_eq!(header(&state, &data, class).actions.len(), 1, "busy, still one button");
+        }
+
+        // The key of the new client is dropped; the reload then opens its detail page.
+        let client = client("a1", CLIENT_NAME, ASSISTANT_CLIENT, RightsTemplate::ReadOnly.rights());
+        let key = IssuedKey::new(Key::new("torro_a1_00ff"));
+        let _ = answered(&mut state, &Ok(Response::ClientKey { client: client.clone(), key }));
+        assert!(state.issued.is_none(), "no page ever shows the assistant's key");
+        let on = Data { clients: vec![client], ..data.clone() };
+        let next = loaded(&mut state, &on);
+        assert!(matches!(next, Some(Action::Send(Request::ClientActivity { ref id })) if id == "a1"), "{next:?}");
+        assert!(!state.creating && !first_start(&state, &on));
+        drop(view(&state, &on));
+
+        // An error ends "Turn on assistant", so the button comes back.
+        let mut again = State::default();
+        let _ = update(&mut again, Message::ShowAssistant, &data);
+        let _ = update(&mut again, Message::TurnOn, &data);
+        let _ = answered(&mut again, &Err("offline".into()));
+        assert!(!again.creating);
+        assert!(matches!(update(&mut again, Message::TurnOn, &data), Action::Send(Request::CreateClient { .. })));
+    }
+
+    /// Task S.21: the assistant and a bot are led like every other program – one detail page with
+    /// the same rights view – but they have no key to hand out, and their last button says what it
+    /// really does.
+    #[test]
+    fn the_assistant_and_a_bot_have_no_key_and_their_own_words() {
+        let assistant = client("a1", CLIENT_NAME, ASSISTANT_CLIENT, RightsTemplate::ReadAndWrite.rights());
+        let bot = client("c0000001", "Travel planner", BOT_CLIENT, Rights::none());
+        let data = Data { clients: vec![assistant, bot], ..data() };
+        assert_eq!(Category::of(&data.clients[0]), Category::Assistant);
+        assert!(!Category::Assistant.has_key() && !Category::Bot.has_key(), "the core holds their keys");
+        assert!(Category::Agent.has_key() && Category::Script.has_key() && Category::Hook.has_key());
+        assert_eq!(Category::Assistant.away_label(), Some(tr("Turn off assistant…")));
+        assert_eq!(Category::Assistant.confirm_word(), tr("Turn off"));
+        assert_eq!(Category::Agent.away_label(), Some(tr("Disconnect…")));
+        assert_eq!(access_title(Category::Assistant), tr("What the assistant may use"));
+        assert_eq!(access_title(Category::Bot), tr("What the bot may use"));
+        assert_eq!(access_title(Category::Agent), tr("Access"));
+
+        // The assistant's page: its rights are saved like an agent's, and "Turn off assistant…"
+        // removes the client.
+        let mut state = State::default();
+        let action = update(&mut state, Message::ShowAssistant, &data);
+        assert!(matches!(action, Action::Send(Request::ClientActivity { ref id }) if id == "a1"), "{action:?}");
+        let _ = update(&mut state, Message::Level(Area::Calendar, Level::NoAccess), &data);
+        let (id, rights) = saved(&mut state, &data);
+        assert_eq!((id.as_str(), rights.area(Area::Calendar).level), ("a1", Level::NoAccess));
+        // "Create new key" is not even reachable for them, and the handler refuses it too.
+        let _ = update(&mut state, Message::AskNewKey, &data);
+        assert!(matches!(update(&mut state, Message::NewKey, &data), Action::None), "no key of its own");
+        let _ = update(&mut state, Message::AskDisconnect, &data);
+        assert!(overlay(&state, &data).is_some(), "Turn off the assistant?");
+        let action = update(&mut state, Message::Disconnect, &data);
+        assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "a1"), "{action:?}");
+        assert!(!state.assistant && state.choice == Rights::assistant(), "it starts from the suggestion again");
+
+        // A bot's page is a client's page like any other, but it never takes the bot's access
+        // away: only the next `bots.save_bot` in the assistant could give it a client again.
+        let mut bot = State::default();
+        let _ = update(&mut bot, Message::Open("c0000001".into()), &data);
+        drop(view(&bot, &data));
+        assert_eq!(Category::Bot.away_label(), None, "no destructive button on a bot's page");
+        assert!(matches!(update(&mut bot, Message::AskDisconnect, &data), Action::None), "and no question either");
+        assert!(overlay(&bot, &data).is_none());
+        assert!(matches!(update(&mut bot, Message::Disconnect, &data), Action::None), "nor a way past it");
+    }
+
+    /// Task S.21, found in the review of S.22: "Open chat" is back on a bot's page, the way the
+    /// control centre's own bot page had it – with the bot's id, not its client's. Every other
+    /// detail page has no such button.
+    #[test]
+    fn a_bot_s_page_opens_its_chat() {
+        let bot_client = client("c0000001", "Travel planner", BOT_CLIENT, Rights::none());
+        let agent = client("c1", "Claude Code", "claude-code", RightsTemplate::ReadAndWrite.rights());
+        let summary = torro_ipc::bots::BotSummary {
+            id: "b0000001".into(),
+            name: "Travel planner".into(),
+            description: "Plans trips".into(),
+            avatar: torro_ipc::assistant::LETTER_AVATAR.into(),
+            engine: "ai:ollama".into(),
+            model: None,
+            client: "c0000001".into(),
+        };
+        let data = Data { clients: vec![bot_client, agent], bots: vec![summary], ..data() };
+
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Open("c0000001".into()), &data);
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let header = header(&state, &data, class);
+            assert_eq!(header.actions.len(), 1, "{class:?}: the bot's page offers \"Open chat\"");
+        }
+        let action = update(&mut state, Message::OpenChat("b0000001".into()), &data);
+        assert!(
+            matches!(
+                action,
+                Action::Send(Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot(ref id) })
+                    if id == "b0000001"
+            ),
+            "{action:?}"
+        );
+
+        // An agent's page has none, and neither has a bot the core no longer lists.
+        let mut other = State::default();
+        let _ = update(&mut other, Message::Open("c1".into()), &data);
+        assert!(header(&other, &data, SizeClass::Wide).actions.is_empty());
+        let gone = Data { bots: Vec::new(), ..data };
+        assert!(header(&state, &gone, SizeClass::Wide).actions.is_empty(), "nothing to chat with");
+    }
+
+    /// Task S.21: the list always has the assistant's group – its row turns it on while it is off –
+    /// and the empty state only speaks of the other programs.
+    #[test]
+    fn the_list_always_shows_the_assistant() {
+        let now = Utc::now();
+        let mut empty = Data { clients: Vec::new(), ..data() };
+        let state = State::default();
+        drop(list(&state, &empty, now));
+        empty.clients.push(client("a1", CLIENT_NAME, ASSISTANT_CLIENT, Rights::assistant()));
+        drop(list(&state, &empty, now));
+        drop(list(&state, &data(), now));
+        assert_eq!(Category::ALL[0], Category::Assistant, "its group comes first");
     }
 }

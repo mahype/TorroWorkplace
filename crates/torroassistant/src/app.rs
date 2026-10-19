@@ -35,6 +35,17 @@
 //! tool opens the same page. Without an AI account it says so and opens the accounts page
 //! (`--section accounts`).
 //!
+//! Settings (task S.18, `docs/settings.md`): the gear in the title band – and "Settings" in the
+//! sidebar where there is no band – turns the content area into the assistant's settings and back
+//! ([`App::toggle_settings`]). The sections and their pages are `torro_settings_ui::assistant`,
+//! shown by the library's [`Host`], which talks to the core through [`Backend::settings`]; the
+//! sidebar stays, and a click on a chat or a bot there closes the settings again
+//! ([`App::leave_settings`]). `--settings <section>` opens the window with them open.
+//!
+//! **Only a person opens the settings.** `--settings` is a start parameter, and the links of an
+//! answer stay on `http(s)` ([`web_link`]): no text of the model can open a section, name a scheme
+//! of its own or point at a path.
+//!
 //! Bots (task B.3, [`crate::bots`]): the sidebar lists them under "Bots" with "New bot"; a click
 //! opens a bot's chat – its newest conversation or a new one – in which messages go to the bot
 //! (`assistant.send_message { bot }`) and the picker starts at the bot's engine and model. The bot
@@ -76,10 +87,12 @@ use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
 use torro_ipc::bots::{Bot, BotSummary};
-use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
+use torro_ipc::{ApprovalInfo, Request, Response};
+use torro_settings_ui::assistant::{self as settings, AppAction};
+use torro_settings_ui::{Host, Outcome};
 
 use crate::backend::{Backend, Refusal};
-use crate::bots::{BotDraft, DraftEdit, Known, Listed, Proposal};
+use crate::bots::{BotDraft, DraftEdit, Proposal};
 use crate::chat::{self, Choice, Transcript};
 use crate::demo;
 use crate::launch::{Launch, Open, Window};
@@ -133,15 +146,13 @@ pub const SEARCH: &str = "assistant-search";
 pub const BOT_NAME: &str = "assistant-bot-name";
 /// The id of the bot editor's scrolling form: a "Save" that finds a problem goes to its top.
 pub const BOT_FORM: &str = "assistant-bot-form";
-/// The id of the bot editor's section "Access" (task B.5): the demo state `--open bot-access`
-/// scrolls the form to it.
-pub const BOT_ACCESS: &str = "assistant-bot-access";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
-/// The control centre's page "Assistant" (task C.6): what the assistant may use.
-pub const ASSISTANT_PAGE: &str = "assistant";
-/// The control centre's page of the accounts, where AI accounts are added.
-pub const ACCOUNTS_PAGE: &str = "accounts";
+/// The control centre's page "Assistant" (task C.6): what the assistant may use. The same word the
+/// settings sections point at, so the two never drift apart.
+pub const ASSISTANT_PAGE: &str = settings::CONTROL_CENTRE;
+/// The control centre's page where AI accounts are added (task S.25 brings a page `ai`).
+pub const ACCOUNTS_PAGE: &str = settings::AI_SECTION;
 
 /// The id of the scrolling entries of the open conversation.
 pub const HISTORY: &str = "assistant-history";
@@ -281,19 +292,11 @@ pub enum Message {
     /// "Edit bot": asks the core for the whole bot, then opens the editor.
     EditBot(String),
     BotLoaded(Result<Bot, Refusal>),
-    /// The clients as the editor read them when it opened (task B.5): the bot's rights.
-    BotClients(Result<Vec<ClientInfo>, Refusal>),
-    /// What exists, read when the editor opened: calendars, task lists, inbox sources, accounts.
-    Known(Result<Listed, Refusal>),
     /// A field of the bot editor changed.
     Draft(DraftEdit),
     /// "Save" in the bot editor.
     SaveBot,
     BotSaved(Result<Bot, Refusal>),
-    /// The clients read again after `bots.save_bot`, because a row of "Access" changed.
-    AccessNow(Result<Vec<ClientInfo>, Refusal>),
-    /// The core's answer to `clients.update_client` for the bot.
-    AccessSet(Result<(), Refusal>),
     /// "Cancel" in the bot editor: back to the chat, nothing saved.
     CloseEditor,
     /// "Delete bot…": asks first.
@@ -379,8 +382,15 @@ pub enum Message {
     /// "Set up access", "Change access": the control centre's page "Assistant" (task C.6), where
     /// the person chooses what the assistant may use.
     SetUp,
-    /// "Add an AI account", "Settings": the control centre's accounts.
-    OpenSettings,
+    /// "Add an AI account": the control centre's accounts, where AI accounts are added.
+    AddAiAccount,
+    /// The gear in the title band, "Settings" in the sidebar: the settings in the content area, or
+    /// back to the chat (task S.18).
+    ToggleSettings,
+    /// One of the settings' own messages ([`Host`]).
+    SettingsHost(torro_settings_ui::host::Message),
+    /// What a widget of the open settings section reported.
+    SettingsPage(settings::Message),
     /// A link in an answer.
     OpenLink(String),
     /// "Retry" in the error state.
@@ -394,6 +404,14 @@ pub enum Message {
     SystemMode(Mode),
     Zoom(zoom::Message),
     Design(design::Message),
+}
+
+/// The settings in the content area while they are open (task S.18): the library's [`Host`] with
+/// the assistant's sections, and the state those sections keep (a note being written, what "Say
+/// something" heard).
+pub struct SettingsPane {
+    pub(crate) host: Host,
+    pub(crate) sections: settings::State,
 }
 
 pub struct App {
@@ -439,8 +457,6 @@ pub struct App {
     pub(crate) bot: Option<String>,
     /// The bot editor, while it is open: it takes the chat's place.
     pub(crate) bot_draft: Option<BotDraft>,
-    /// What exists, read when the editor opened, for its section "Access" (task B.5).
-    pub(crate) known: Known,
     /// A `--bot` window has looked for the bot's newest conversation.
     pub(crate) bot_resolved: bool,
     /// The one-time states of `--open` that need the bots are done.
@@ -497,6 +513,8 @@ pub struct App {
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     pub(crate) sidebar: SidebarMode,
     pub(crate) notice: Option<Notice>,
+    /// The settings in the content area, while they are open (task S.18).
+    pub(crate) settings: Option<SettingsPane>,
     pub(crate) appearance: Appearance,
     pub(crate) system_mode: Mode,
     pub(crate) zoom: Zoom,
@@ -525,7 +543,7 @@ impl App {
             (Window::Main, Some(Open::BotWelcome)) => Some(demo::TRAVEL.to_owned()),
             _ => None,
         };
-        let app = App {
+        let mut app = App {
             backend,
             zoom: Zoom::for_source(&suite),
             design: Follow::for_source(&suite),
@@ -548,7 +566,6 @@ impl App {
             bots_loaded: false,
             bot,
             bot_draft: None,
-            known: Known::default(),
             bot_resolved: false,
             opened_bots: false,
             confirming: None,
@@ -587,6 +604,7 @@ impl App {
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher | Open::BotMenu)),
             sidebar: SidebarMode::default(),
             notice: None,
+            settings: None,
             appearance: Appearance::System,
             system_mode: Mode::None,
             launch,
@@ -616,6 +634,10 @@ impl App {
         }
         if app.current.is_none() {
             tasks.push(operation::focus(EDITOR));
+        }
+        // `--settings <section>`: the window opens with the settings in its content area.
+        if let Some(section) = app.launch.settings.clone() {
+            tasks.push(app.open_settings(Some(&section)));
         }
         (app, Task::batch(tasks))
     }
@@ -659,11 +681,22 @@ impl App {
         if self.stream.as_ref().is_some_and(|stream| stream.smoother.revealing()) {
             subscriptions.push(iced::window::frames().map(Message::Frame));
         }
-        if self.dialog.is_some() || self.menu.is_some() || self.drawer || self.notice.is_some() {
+        if self.dialog.is_some()
+            || self.menu.is_some()
+            || self.drawer
+            || self.notice.is_some()
+            || self.settings.is_some()
+        {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
         }
         if self.notice.is_some() {
             subscriptions.push(iced::time::every(NOTICE_TICK).map(Message::NoticeTick));
+        }
+        // What the open settings sections need a clock for: Voice asks how the listener stands
+        // again after it was switched, until it reports what it does (task S.17). None while
+        // nothing waits.
+        if let Some(pane) = &self.settings {
+            subscriptions.push(settings::subscription(&pane.sections).map(Message::SettingsPage));
         }
         if !self.chat_only && !self.is_glance() {
             subscriptions.push(iced::event::listen_with(window_key));
@@ -698,13 +731,7 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
-            Message::Resized(size) => {
-                self.size = size;
-                // The demo state for screenshots keeps the editor at its section "Access" in every size.
-                if self.launch.open == Some(Open::BotAccess) && self.bot_draft.is_some() {
-                    return bots::scroll_to_access();
-                }
-            }
+            Message::Resized(size) => self.size = size,
             Message::CoreReady => {
                 self.waiting = false;
                 // The chat window's conversation too: it waited with the rest (issue #206).
@@ -746,15 +773,9 @@ impl App {
             Message::Bots(result) => return self.bots_listed(result),
             Message::OpenBot(id) => return self.open_bot(id),
             Message::NewBotChat(id) => return self.new_bot_chat(id),
-            Message::NewBot => return self.new_bot(),
+            Message::NewBot => self.new_bot(),
             Message::EditBot(id) => return self.edit_bot(id),
-            Message::BotLoaded(result) => return self.bot_loaded(result),
-            Message::BotClients(result) => self.bot_clients(result),
-            Message::Known(Ok(listed)) => self.known.take(listed),
-            // Without it the section offers what it knows; switching an area on gives less.
-            Message::Known(Err(refusal)) => eprintln!("cannot read what the bot may be given: {}", refusal.message),
-            Message::AccessNow(result) => return self.access_now(result),
-            Message::AccessSet(result) => return self.access_set(result),
+            Message::BotLoaded(result) => self.bot_loaded(result),
             Message::Draft(edit) => {
                 let pick = matches!(edit, DraftEdit::Engine(_));
                 if let Some(draft) = self.bot_draft.as_mut() {
@@ -898,7 +919,21 @@ impl App {
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => self.note(format!("{} {err}", tr("Couldn't open the app."))),
             Message::SetUp => self.open_section(ASSISTANT_PAGE),
-            Message::OpenSettings => self.open_section(ACCOUNTS_PAGE),
+            Message::AddAiAccount => self.open_section(ACCOUNTS_PAGE),
+            Message::ToggleSettings => return self.toggle_settings(),
+            Message::SettingsHost(message) => {
+                let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                let outcome = pane.host.update(message);
+                return self.settings_outcome(outcome);
+            }
+            Message::SettingsPage(message) => {
+                let outcome = {
+                    let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                    let action = settings::update(&mut pane.sections, message, pane.host.data());
+                    pane.host.act(action)
+                };
+                return self.settings_outcome(outcome);
+            }
             Message::OpenLink(url) => return open_link(url),
             Message::Retry => {
                 self.list_error = None;
@@ -908,10 +943,17 @@ impl App {
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::Escape => {
+                // Innermost first: a dialog of the window, then what the open settings section
+                // has open (its question, a note being written, task S.17), then a menu or the
+                // drawer over the content, then the settings themselves, then the notice.
                 if self.dialog.is_some() {
                     self.dialog = None;
+                } else if let Some(message) = self.settings.as_ref().and_then(|pane| settings::escape(&pane.sections)) {
+                    return self.update(Message::SettingsPage(message));
                 } else if self.menu.is_some() || self.drawer {
                     self.close_menus();
+                } else if self.settings.is_some() {
+                    self.settings = None;
                 } else {
                     self.notice = None;
                 }
@@ -1374,6 +1416,7 @@ impl App {
 
     fn select(&mut self, id: String) -> Task<Message> {
         self.close_menus();
+        self.leave_settings();
         self.bot_draft = None;
         if self.current.as_ref() == Some(&id) {
             return Task::none();
@@ -1390,6 +1433,7 @@ impl App {
     /// A new chat: with the assistant in the main window, with its bot in a bot's chat window.
     fn new_chat(&mut self) -> Task<Message> {
         self.close_menus();
+        self.leave_settings();
         self.bot_draft = None;
         match &self.launch.window {
             Window::Main => self.bot = None,
@@ -1554,6 +1598,70 @@ impl App {
         }
     }
 
+    // -- The settings in the content area (task S.18) -------------------------------------------
+
+    /// The gear, or "Settings" in the sidebar: the settings take the content area, or give it back
+    /// to the chat. Nothing of the chat is lost – the settings are a second view of the same
+    /// window, not a second window.
+    fn toggle_settings(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.settings.is_some() {
+            self.settings = None;
+            return Task::none();
+        }
+        self.open_settings(None)
+    }
+
+    /// The settings in the content area, at `section` when one is named (`--settings <section>`,
+    /// an unknown word leaves the first section open) – a fresh [`Host`] with the assistant's
+    /// sections and its first load, which goes over [`Backend::settings`] and never over this
+    /// window's own requests.
+    fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
+        let (mut host, load) = Host::new(self.backend.settings(), settings::SECTIONS.to_vec(), settings::wanted());
+        if let Some(id) = section {
+            host.open(id);
+        }
+        self.settings = Some(SettingsPane { host, sections: settings::State::default() });
+        load.map(Message::SettingsHost)
+    }
+
+    /// The content area shows the chat or the bot editor again: the settings step aside. A click in
+    /// the sidebar – a chat, a bot, "New chat", "New bot" – comes through here.
+    pub(crate) fn leave_settings(&mut self) {
+        self.settings = None;
+    }
+
+    /// What the host asks of the window: the browser, the control centre, the bot editor are the
+    /// app's; everything else the host did itself.
+    fn settings_outcome(&mut self, outcome: Outcome<AppAction>) -> Task<Message> {
+        match outcome {
+            Outcome::None => Task::none(),
+            Outcome::Work(task) => task.map(Message::SettingsHost),
+            // A section changed something: the window loads what it shows itself – the engines,
+            // the profile, the client, the conversations – right now instead of on its next tick,
+            // so a changed default or a new bot is in the chat at once.
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all()]),
+            Outcome::Close => {
+                self.settings = None;
+                Task::none()
+            }
+            Outcome::OpenUrl(url) => open_link(url),
+            Outcome::Answer(result) => {
+                // The answer belongs to the section that asked for it ("Say something").
+                if let Some(pane) = self.settings.as_mut() {
+                    settings::answered(&mut pane.sections, &result);
+                }
+                Task::none()
+            }
+            Outcome::ControlCentre(section) => {
+                self.open_section(&section);
+                Task::none()
+            }
+            // "Edit" at a bot: its editor takes the content area, so the settings close.
+            Outcome::App(AppAction::EditBot(id)) => self.edit_bot(id),
+        }
+    }
+
     fn toggle_sidebar(&mut self) -> Task<Message> {
         if self.chat_only {
             return Task::none();
@@ -1688,10 +1796,17 @@ fn approval_of(result: Result<Response, Refusal>) -> Result<ApprovalInfo, Refusa
     }
 }
 
-/// Opens a web address of an answer in the browser; only `http` and `https`, since the text is the
-/// model's.
+/// The web address of `url`, or `None` when it is none: **only** `http` and `https`, because the
+/// text an answer is written in is the model's (task S.18). A scheme of its own (`torro://…`), a
+/// start parameter, a path, a `file://` – anything else – opens nothing, so no answer can reach
+/// the settings, a file or another program.
+pub(crate) fn web_link(url: &str) -> Option<&str> {
+    (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
+}
+
+/// Opens a web address of an answer in the browser; only what [`web_link`] allows.
 fn open_link(url: String) -> Task<Message> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
+    if web_link(&url).is_none() {
         return Task::none();
     }
     Task::future(async move {

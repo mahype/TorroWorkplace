@@ -38,6 +38,8 @@ torro-tui.workspace = true
 torro-wm.workspace = true
 torro-setups.workspace = true
 torro-gui.workspace = true
+# The rows of the settings pages, shared with the apps (task S.16).
+torro-settings-ui.workspace = true
 iced.workspace = true
 chrono.workspace = true
 getrandom.workspace = true

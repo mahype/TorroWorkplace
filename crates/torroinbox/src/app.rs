@@ -37,7 +37,9 @@
 //! under "Mute" the ways the core offers for the entry (`inbox.list_mute_options`: this
 //! conversation, then its traits – the sender, the project, the client …), under "For" how long
 //! ([`MuteFor`]: 1 hour, until tomorrow, 1 week, always) and under "What happens" what muting does (no
-//! popup, only Info, hide), and at the end "All rules", which opens the control centre. Picking a
+//! popup, only Info, hide), and at the end "All rules", which shows every rule: the section Rules
+//! of this window's settings, and in the mail window, which has none, the Notification Hub's
+//! window ([`rules_message`], task S.20). Picking a
 //! way sends `inbox.mute_item` with the "For" and "What happens" chosen; the toast says what holds
 //! now in the words of the control centre's rules ([`muted_note`]) and its undo takes it back
 //! exactly ([`Undo::Muted`]). "For" and "What happens" stay as chosen while the window runs. The
@@ -192,6 +194,9 @@ use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
+use torro_settings_ui::{
+    Backend as SettingsBackend, Host, Outcome, Page, Section, host, inbox as settings_inbox, mail as settings_mail,
+};
 
 use crate::compose;
 use crate::glance::{self, GlanceData};
@@ -1360,6 +1365,9 @@ pub struct Launch {
     /// (`start_message`), as the core passes it for `apps.open_app` with a `mail:` target. The
     /// window shows it once its first entries are in ([`App::open_start_mail`]).
     pub message: Option<String>,
+    /// `--settings <section>`: open the window with its settings in the content area, at this
+    /// section (task S.20). One of [`Kind::settings_sections`] of this window's kind.
+    pub settings: Option<String>,
 }
 
 /// Which of the inbox's three windows this process is (task E8.1, `--view`; `docs/eingang.md`,
@@ -1392,6 +1400,33 @@ impl Kind {
             Kind::Mail => "mail",
             Kind::Notifications => "notifications",
             Kind::Hub => "hub",
+        }
+    }
+
+    /// The settings sections behind this window's gear (task S.20, `docs/settings.md`): the
+    /// Notification Hub and the App Feed show the inbox's (Notifications, Sources, Rules), the
+    /// mail window mail's (Accounts, Reading). [`Section::id`] is what `--settings <id>` takes;
+    /// every window kind takes only its own words.
+    pub fn settings_sections(self) -> Vec<Section> {
+        match self {
+            Kind::Mail => settings_mail::SECTIONS.to_vec(),
+            Kind::Notifications | Kind::Hub => settings_inbox::SECTIONS.to_vec(),
+        }
+    }
+
+    /// What one load of those sections asks the core for.
+    fn settings_wanted(self) -> Vec<torro_ipc::Request> {
+        match self {
+            Kind::Mail => settings_mail::wanted(),
+            Kind::Notifications | Kind::Hub => settings_inbox::wanted(),
+        }
+    }
+
+    /// The state those sections keep while they are open (a draft, a removal on its way).
+    fn settings_state(self) -> SettingsState {
+        match self {
+            Kind::Mail => SettingsState::Mail(settings_mail::State::default()),
+            Kind::Notifications | Kind::Hub => SettingsState::Inbox(settings_inbox::State::default()),
         }
     }
 
@@ -1609,6 +1644,15 @@ impl Launch {
                 None => return Err(unknown("--density", word, Density::ALL.map(|(name, _)| name).to_vec())),
             },
         };
+        // The sections are the window kind's (task S.20), so this comes after `--view`.
+        let settings = match flag_value(args, "--settings")? {
+            None => None,
+            Some(word) if kind.settings_sections().iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) => {
+                let valid = kind.settings_sections().iter().map(|section| section.id).collect();
+                return Err(unknown("--settings", word, valid));
+            }
+        };
         let (view, shown) = start_view(args, kind)?;
         Ok(Launch {
             demo,
@@ -1624,6 +1668,7 @@ impl Launch {
             shown,
             compose,
             message: None,
+            settings,
         })
     }
 
@@ -1772,10 +1817,152 @@ pub struct Letter {
     pub loaded: Option<Result<Mail, String>>,
 }
 
+// ----- The settings in the content area (task S.20) -------------------------------------------
+
+/// The settings of this window while they are open: the library's [`Host`] with the sections of
+/// this window's kind ([`Kind::settings_sections`]), and what those sections keep.
+///
+/// The gear turns the content area into the settings and back ([`App::toggle_settings`]); the
+/// sidebar stays, and a click there that shows entries again closes them
+/// ([`App::leave_settings`]).
+struct SettingsPane {
+    host: Host,
+    sections: SettingsState,
+}
+
+/// What the sections of one window kind keep between presses.
+enum SettingsState {
+    /// The Notification Hub and the App Feed: Notifications, Sources, Rules.
+    Inbox(settings_inbox::State),
+    /// The mail window: Accounts, Reading.
+    Mail(settings_mail::State),
+}
+
+/// What a section of the settings reported, over both kinds of window.
+#[derive(Debug, Clone)]
+pub enum SettingsMessage {
+    Inbox(settings_inbox::Message),
+    Mail(settings_mail::Message),
+}
+
+/// [`torro_settings_ui::Backend`] for a window on the core: one request, one answer over the
+/// socket, an error answer as its message for people. The host never calls [`torro_ipc::client`]
+/// itself, so a visual check with `--demo` cannot reach it (`torro_settings_ui`'s own doc).
+struct CoreSettings {
+    socket: std::path::PathBuf,
+}
+
+impl SettingsBackend for CoreSettings {
+    fn call(&self, request: torro_ipc::Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move {
+            match torro_ipc::client::call(&socket, &request).await {
+                Ok(torro_ipc::Response::Error { message, .. }) => Err(message),
+                Ok(answer) => Ok(answer),
+                Err(err) => Err(err.to_string()),
+            }
+        })
+    }
+}
+
+/// What a section of the settings returned, as the host hands it to the window. A message of the
+/// other kind's sections cannot arrive – a window builds only its own – and changes nothing.
+fn settings_update(
+    sections: &mut SettingsState,
+    message: SettingsMessage,
+    data: &torro_settings_ui::Data,
+) -> torro_settings_ui::Action<()> {
+    match (sections, message) {
+        (SettingsState::Inbox(state), SettingsMessage::Inbox(message)) => settings_inbox::update(state, message, data),
+        (SettingsState::Mail(state), SettingsMessage::Mail(message)) => settings_mail::update(state, message, data),
+        _ => torro_settings_ui::Action::None,
+    }
+}
+
+/// The page of the open section, as the host takes it.
+fn settings_page<'a>(
+    sections: &'a SettingsState,
+    data: &'a torro_settings_ui::Data,
+    section: &str,
+) -> Page<'a, SettingsMessage> {
+    match sections {
+        SettingsState::Inbox(state) => {
+            wrap_settings(settings_inbox::page(state, data, section), SettingsMessage::Inbox)
+        }
+        SettingsState::Mail(state) => wrap_settings(settings_mail::page(state, data, section), SettingsMessage::Mail),
+    }
+}
+
+/// One section's page with its messages wrapped in [`SettingsMessage`].
+fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -> Page<'a, SettingsMessage> {
+    Page {
+        body: page.body.map(into),
+        sub_page: page.sub_page.map(|(name, back)| (name, into(back))),
+        actions: page.actions.into_iter().map(|action| action.map(into)).collect(),
+    }
+}
+
+/// The section of the settings that lists the rules: where "All rules" in the bell's menu leads in
+/// the windows that have it ([`Message::OpenRules`]). A test keeps it among the inbox's sections.
+const RULES_SECTION: &str = "rules";
+
+/// What "All rules" in the bell's menu does in a window of this kind (task S.20): `None` in the
+/// Notification Hub and the App Feed, which open their own section [`RULES_SECTION`], and in the
+/// mail window – which has no such section – the Notification Hub's window, brought forward by the
+/// core (`apps.open_app` with its window class, which starts it when none runs). The rules belong
+/// to the Notification Hub, so that is where they are shown, not in the control centre.
+fn rules_message(kind: Kind) -> Option<Message> {
+    (kind == Kind::Mail).then(|| Message::OpenApp(AppId::INBOX.window_class.to_string()))
+}
+
+/// A change or a load came back: the sections let go of what was on its way – the removals of
+/// Rules. Mail's drafts need nothing: they measure themselves against the fresh data.
+fn answered_settings(sections: &mut SettingsState) {
+    match sections {
+        SettingsState::Inbox(state) => settings_inbox::answered(state),
+        SettingsState::Mail(_) => {}
+    }
+}
+
+/// Whether `message` shows entries again, so the settings give the content area back (task S.20):
+/// a click in the sidebar or the drawer, a column or a source, the cursor, a mail, a search, a key
+/// that acts on the list. What only changes the window's chrome (the sidebar, the drawer, a menu)
+/// and what comes from the core on its own (a load, the clock) leave the settings open.
+fn shows_entries(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::Show(_)
+            | Message::ShowToSort
+            | Message::ShowInsights
+            | Message::ShowColumn(_)
+            | Message::Filter(_)
+            | Message::ToggleSource(_)
+            | Message::Arrange(_)
+            | Message::Select(_)
+            | Message::SelectMail(_)
+            | Message::OpenRow(_)
+            | Message::OpenForMe(_)
+            | Message::OpenItem(_)
+            | Message::Act(..)
+            | Message::Key(_)
+            | Message::Shortcut(_)
+            | Message::SearchInput(_)
+            | Message::Search
+            | Message::ClearSearch
+            | Message::SearchScope(_)
+            | Message::SearchSort(_)
+            | Message::MoreMail
+            | Message::DismissAll
+            | Message::Switcher(_)
+    )
+}
+
 pub struct App<S> {
     inbox: Arc<S>,
     /// The suite behind the window: appearance, zoom, opening other apps (none with `--demo`).
     suite: Source,
+    /// The settings in the content area, while they are open (task S.20).
+    settings: Option<SettingsPane>,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
@@ -2205,9 +2392,19 @@ pub enum Message {
     OpenApp(String),
     /// The core's answer to [`Message::OpenApp`].
     AppOpened(Result<(), String>),
-    /// Open the control centre.
+    /// The gear in the band, or "Settings" in the sidebar and the menu: the settings take the
+    /// content area, or give it back to the entries (task S.20).
     OpenSettings,
-    /// Open the control centre on the Inbox page, where the rules are ("All rules" in the bell's menu).
+    /// One of the settings' own messages ([`Host`]).
+    SettingsHost(torro_settings_ui::host::Message),
+    /// What a widget of the open settings section reported.
+    SettingsPage(SettingsMessage),
+    /// Open the control centre: what an entry about the suite links to ([`App::open_entry`] with
+    /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
+    /// able to open a settings section in this window (task S.20).
+    OpenControlCentre,
+    /// "All rules" in the bell's menu: the section Rules of this window's settings where it has
+    /// one, else the Notification Hub's window, where the rules live ([`rules_message`], S.20).
     OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
@@ -2486,11 +2683,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     pub fn new(inbox: Arc<S>, suite: Source, launch: Launch) -> (App<S>, Task<Message>) {
         let open = launch.open;
         let offset = launch.now.map_or(TimeDelta::zero(), |now| datetime::to_utc(now) - Utc::now());
-        let app = App {
+        let mut app = App {
             inbox,
             zoom: Zoom::for_source(&suite),
             design: Follow::for_source(&suite),
             suite,
+            settings: None,
             opened: false,
             offset,
             now: Utc::now() + offset,
@@ -2658,6 +2856,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
+        // `--settings <section>`: the window opens with the settings in its content area.
+        let task = match app.launch.settings.clone() {
+            Some(section) => Task::batch([task, app.open_settings(Some(&section))]),
+            None => task,
+        };
         (app, task)
     }
 
@@ -2688,26 +2891,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
-            subscriptions.push(iced::event::listen_with(keys::listen));
-            // The shortcuts of the system's preset (tasks E10.1, E10.1b; with Ctrl or ⌘, the function
-            // keys and Insert), also when the search field or the window's guard took them; they all
-            // act on mail.
-            if !self.folders.is_empty() {
-                subscriptions.push(iced::event::listen_with(keys::shortcut));
+            // The settings cover the content area (task S.20): no key acts on a list nobody sees,
+            // and the fields of a section keep every key for themselves – ⌘ + Z of the signature
+            // included.
+            let on_entries = self.settings.is_none();
+            if on_entries {
+                subscriptions.push(iced::event::listen_with(keys::listen));
+                // The shortcuts of the system's preset (tasks E10.1, E10.1b; with Ctrl or ⌘, the
+                // function keys and Insert), also when the search field or the window's guard took
+                // them; they all act on mail.
+                if !self.folders.is_empty() {
+                    subscriptions.push(iced::event::listen_with(keys::shortcut));
+                }
             }
-            // Escape closes an open menu, drawer, the toast or the panel; nothing listens while none is
-            // open.
+            // Escape closes an open menu, drawer, the toast, the settings or the panel; nothing
+            // listens while none is open.
             if self.menu.is_some()
                 || self.drawer
                 || self.panel_open()
                 || self.hint.is_some()
+                || self.settings.is_some()
                 || self.view.search().is_some()
             {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
             // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
             // or the picker has the keys.
-            if self.can_undo()
+            if on_entries
+                && self.can_undo()
                 && !matches!(self.menu, Some(Menu::Task | Menu::Event | Menu::Pick | Menu::DeleteForGood))
             {
                 subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
@@ -2820,6 +3031,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // (task E11.3): its entries send the messages of the buttons they stand for.
         if matches!(self.menu, Some(Menu::Reply | Menu::More)) && closes_mail_menu(&message) {
             self.close_menus();
+        }
+        // The sidebar stays while the settings are open; anything that would show entries again
+        // takes the content area back from them (task S.20).
+        if self.settings.is_some() && shows_entries(&message) {
+            self.leave_settings();
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
@@ -3157,6 +3373,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 } else if self.hint.is_some() {
                     // The toast goes first: it lies over everything, and the panel stays.
                     self.hint = None;
+                } else if self.settings.is_some() {
+                    // The settings cover the content area; Escape gives it back (task S.20). What
+                    // was open behind them – the panel, a search – comes back with it. No section
+                    // of these windows has a dialog of its own that would swallow Escape first.
+                    self.settings = None;
                 } else if self.suggesting {
                     self.suggesting = false;
                 } else if self.panel_open() || self.view.search().is_none() {
@@ -3175,13 +3396,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::AppOpened(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the app."), err));
             }
-            Message::OpenSettings => {
+            Message::OpenSettings => return self.toggle_settings(),
+            Message::SettingsHost(message) => {
+                let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                // A change or a load came back: the sections let go of what was on its way.
+                if matches!(message, host::Message::Loaded(_) | host::Message::Sent { .. }) {
+                    answered_settings(&mut pane.sections);
+                }
+                let outcome = pane.host.update(message);
+                return self.settings_outcome(outcome);
+            }
+            Message::SettingsPage(message) => {
+                let outcome = {
+                    let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                    let action = settings_update(&mut pane.sections, message, pane.host.data());
+                    pane.host.act(action)
+                };
+                return self.settings_outcome(outcome);
+            }
+            Message::OpenControlCentre => {
                 self.close_menus();
                 connect::open_settings();
             }
             Message::OpenRules => {
                 self.close_menus();
-                connect::open_section("inbox");
+                match rules_message(self.launch.kind) {
+                    Some(message) => return self.update(message),
+                    None => return self.open_settings(Some(RULES_SECTION)),
+                }
             }
             Message::SelectMail(id) => {
                 if self.select_mail(id) {
@@ -4234,7 +4476,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.launch.demo {
             match link {
                 Link::Url { url } => return self.open_url(url),
-                Link::App { app } if app == AppId::WORKPLACE.binary => return self.update(Message::OpenSettings),
+                // The control centre, never this window's settings: an entry opens no section
+                // (task S.20).
+                Link::App { app } if app == AppId::WORKPLACE.binary => {
+                    return self.update(Message::OpenControlCentre);
+                }
                 Link::App { app } => return self.update(Message::OpenApp(app)),
                 // A mail is shown in this app (task E4.2); the demo source only marks it seen.
                 Link::Window | Link::Mail { .. } => {}
@@ -4281,6 +4527,85 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         #[cfg(test)]
         self.sent.push(Sent::Link(url.clone()));
         Task::perform(async move { webbrowser::open(&url).map_err(|err| err.to_string()) }, Message::LinkOpened)
+    }
+
+    // -- The settings in the content area (task S.20) -------------------------------------------
+
+    /// The way the settings take to the core: this window's own socket, or the library's demo with
+    /// `--demo`, which never opens one – a look at the settings must not change anything real.
+    fn settings_backend(&self) -> Arc<dyn SettingsBackend> {
+        match &self.suite {
+            Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
+            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
+        }
+    }
+
+    /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
+    /// give it back to the entries. Nothing open behind them is lost – the panel, the search and
+    /// the cursor stay until a click shows them again ([`shows_entries`]).
+    fn toggle_settings(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.settings.is_some() {
+            self.settings = None;
+            return Task::none();
+        }
+        self.open_settings(None)
+    }
+
+    /// The settings in the content area, at `section` when one is named (`--settings <section>`,
+    /// "All rules"; an unknown word leaves the first section open) – a fresh [`Host`] with the
+    /// sections of this window's kind and its first load, which goes over
+    /// [`App::settings_backend`] and never over this window's own source.
+    fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
+        let kind = self.launch.kind;
+        let (mut host, load) = Host::new(self.settings_backend(), kind.settings_sections(), kind.settings_wanted());
+        if let Some(id) = section {
+            host.open(id);
+        }
+        self.settings = Some(SettingsPane { host, sections: kind.settings_state() });
+        load.map(Message::SettingsHost)
+    }
+
+    /// The content area shows entries again: the settings step aside, with everything they held.
+    fn leave_settings(&mut self) {
+        self.settings = None;
+    }
+
+    /// What the host asks of the window: the browser and the control centre are the window's;
+    /// everything else the host did itself.
+    fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
+        match outcome {
+            Outcome::None => Task::none(),
+            Outcome::Work(task) => task.map(Message::SettingsHost),
+            // A section changed something: the entries, the sources and the mail look come again
+            // right now – a muted source or a removed rule must change the list at once, not ten
+            // seconds later. The same loads a tick does.
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.fetch_look(), self.load()]),
+            Outcome::Close => {
+                self.settings = None;
+                Task::none()
+            }
+            Outcome::OpenUrl(url) => self.open_url(url),
+            // No section of these windows asks a question of its own (`Action::Ask`).
+            Outcome::Answer(_) => Task::none(),
+            Outcome::ControlCentre(section) => {
+                connect::open_section(&section);
+                Task::none()
+            }
+            // No section of these windows needs what only the window itself can do.
+            Outcome::App(()) => Task::none(),
+        }
+    }
+
+    /// The header bar and the content area of the open settings, as the host draws them.
+    fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
+        let page = settings_page(&pane.sections, pane.host.data(), pane.host.current().id);
+        let page = Page {
+            body: page.body.map(Message::SettingsPage),
+            sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
+            actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
+        };
+        pane.host.view(class, page, Message::SettingsHost)
     }
 
     /// Takes the source's answer for the view: entries, count and sources. The cursor stays on
@@ -6005,7 +6330,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let content = self.zoom.view(window);
         // The panel button and "Settings" in the band above the window (U.10).
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
-        let buttons = TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings);
+        let buttons = TitleButtons::none()
+            .sidebar(label, Message::ToggleSidebar)
+            .settings(Message::OpenSettings)
+            .settings_open(self.settings.is_some());
         widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
     }
 
@@ -6090,11 +6418,29 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The whole window in the layout of `class` (not mini or strip: [`App::view`] shows the glance
     /// there; the arms for them only keep the matches whole).
+    ///
+    /// The settings (task S.20), while they are open, take the header and the content area instead;
+    /// the sidebar stays with the app switcher above it, and what is open behind them – the panel,
+    /// a search – is kept and comes back with the content area. Pressing the app switcher there
+    /// shows entries again ([`shows_entries`]), so the only layer over the settings is the host's
+    /// own section menu.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav) = (Anchor::new(), Anchor::new());
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher));
+        if let Some(pane) = &self.settings {
+            let frame = self.settings_frame(pane, class);
+            // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
+            // The app switcher cannot be open at the same time: every `Message::Switcher` shows
+            // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
+            // the calendar and the tasks app.
+            return shell::shell(class, sidebar, frame.header, frame.body, None)
+                .rail(rail)
+                .drawer(self.drawer, Message::CloseMenu)
+                .overlay(frame.overlay)
+                .into();
+        }
         let header = self.header(class, &nav);
         // Two sets (issue #122): the buttons of the panel or the reader (`anchors`), and the row or
         // card under the cursor with its buttons (`rows`). A menu hangs at the button that opened it.
@@ -6824,7 +7170,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Icon::Settings,
                     tr("Settings"),
                     Trail::None,
-                    false,
+                    self.settings.is_some(),
                     Message::OpenSettings,
                 )
             })
@@ -6870,7 +7216,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !sources.is_empty() && !self.mail_only {
             sections.push(MenuSection::titled(tr("Sources"), sources.into_iter().map(item).collect()));
         }
-        sections.push(MenuSection::new(vec![MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings)]));
+        let settings =
+            MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings).current(self.settings.is_some());
+        sections.push(MenuSection::new(vec![settings]));
         widgets::menu(sections)
     }
 
@@ -6895,14 +7243,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "Mute" with the ways to mute ([`App::mute_choices`], digits as in every menu of choices, shown
     /// quietly in `META` ([`KeyLook::Meta`], task E8.12); a
     /// quiet line while they load or when they could not be read), a line, "For" and "What happens"
-    /// as segments (`widgets::segmented`, ←/→ and ↑/↓), a line and "All rules ↗", which opens the
-    /// control centre, where every rule is listed with "Remove".
+    /// as segments (`widgets::segmented`, ←/→ and ↑/↓), a line and "All rules", which opens the
+    /// section Rules of this window's settings, where every rule is listed with "Remove" – in the
+    /// mail window, which has no such section, the Notification Hub's window instead
+    /// ([`rules_entry`], task S.20).
     ///
     /// As wide as its longest way to mute or its segments need ([`mute_menu_width`]), so a whole
     /// address shows.
     fn mute_menu<'a>(&self) -> Element<'a, Message> {
         let choices = self.choices();
-        let width = mute_menu_width(&choices);
+        // The mail window has no section Rules; its foot entry opens the Notification Hub's
+        // window, which takes a longer word and the arrow out of this window.
+        let leaves = self.launch.kind == Kind::Mail;
+        let width = mute_menu_width(&choices, leaves);
         let mut list = column![menu_caption(tr("Mute"))];
         let quiet = match &self.mute_options {
             None => Some(tr("Loading…")),
@@ -6929,7 +7282,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
-        let rules = rules_entry();
+        let rules = rules_entry(leaves);
         list = list
             .push(menu_line())
             .push(menu_caption(tr("For")))
@@ -7401,21 +7754,41 @@ fn segmented_width(labels: &[&str]) -> f32 {
     segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
 }
 
-/// "All rules ↗" at the foot of the bell's menu. It opens the Inbox page of the control centre, not
-/// the accounts page the gear opens ([`Message::OpenSettings`]), because the rules are listed there.
-fn rules_entry<'a>() -> MenuItem<'a, Message> {
-    MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenRules).trail(Trail::Icon(Icon::ArrowUpRight))
+/// "All rules" at the foot of the bell's menu. In the Notification Hub and the App Feed it opens
+/// the section Rules of this window's settings (task S.20); in the mail window, which has no such
+/// section, it brings the Notification Hub's window forward, and its word says so
+/// ([`rules_word`]) with the arrow of a way out of this window (`leaves`).
+fn rules_entry<'a>(leaves: bool) -> MenuItem<'a, Message> {
+    let entry = MenuItem::new(Icon::Settings, rules_word(leaves), Message::OpenRules);
+    if leaves { entry.trail(Trail::Icon(Icon::ArrowUpRight)) } else { entry }
+}
+
+/// The word of that entry: short where the rules open in this very window, and where they do not,
+/// the window it opens instead – a line must say where it leads.
+fn rules_word(leaves: bool) -> &'static str {
+    if leaves { tr("All rules in the Notification Hub") } else { tr("All rules") }
+}
+
+/// The width that entry needs: the frame of a menu item, its icon, the gaps, its word and, where
+/// it leaves the window, the arrow at the end. The bell's menu is at least this wide, so the word
+/// of the longer one is not cut ([`mute_menu_width`]).
+fn rules_entry_width(leaves: bool) -> f32 {
+    let gap = space::s();
+    let frame = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
+    let trail = if leaves { icon::SIZE + gap } else { 0.0 };
+    frame + icon::SIZE + gap + typo::text_width(rules_word(leaves), typo::body()) + trail
 }
 
 /// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
 /// at least what its segments need beside the menu's and their insets – "Until tomorrow" and
 /// "Only Info" are long in some languages.
-fn mute_menu_width(choices: &[Choice]) -> f32 {
+fn mute_menu_width(choices: &[Choice], leaves: bool) -> f32 {
     let spans = MuteFor::ALL.map(MuteFor::name);
     let effects = MUTE_EFFECTS.map(effect_name);
     let frame = 2.0 * (style::MENU_INSET + space::s());
     let segments = segmented_width(&spans).max(segmented_width(&effects)) + frame;
-    choice_menu_width(choices).max(segments.ceil()).min(size::panel())
+    let rules = rules_entry_width(leaves).ceil();
+    choice_menu_width(choices).max(segments.ceil()).max(rules).min(size::panel())
 }
 
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
@@ -9031,7 +9404,7 @@ mod tests {
         let (mut app, _, _) = at_mail();
         bell_by_keys(&mut app);
         let choices = app.choices();
-        let width = mute_menu_width(&choices);
+        let width = mute_menu_width(&choices, true);
         assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
         for (i, choice) in choices.iter().enumerate() {
             let shown = choice_label(&choice.label, None, keys::digit(i + 1), width);
@@ -11708,13 +12081,183 @@ mod tests {
         assert!(last.line && matches!(last.message, Message::AskMute(ref id) if id == "demo-6"));
     }
 
-    /// Task S.15: "All rules" sends its own message, which opens the control centre's Inbox page;
-    /// it is not the gear's `OpenSettings`, which opens the accounts page.
+    /// Task S.20: "All rules" sends its own message – never the gear's `OpenSettings` – and only
+    /// the mail window, which has no section Rules, says with its word and the arrow that it leads
+    /// to another window.
     #[test]
-    fn all_rules_opens_the_inbox_page_not_the_accounts_page() {
-        let rules = rules_entry();
-        assert!(matches!(rules.on_press, Message::OpenRules));
-        assert!(!matches!(rules.on_press, Message::OpenSettings));
+    fn all_rules_has_its_own_message_and_leaves_only_the_mail_window() {
+        let in_window = rules_entry(false);
+        assert!(matches!(in_window.on_press, Message::OpenRules));
+        assert!(!matches!(in_window.on_press, Message::OpenSettings));
+        assert!(matches!(in_window.trail, Trail::None), "it opens in this window");
+        assert_eq!(rules_word(false), tr("All rules"));
+        let leaves = rules_entry(true);
+        assert!(matches!(leaves.trail, Trail::Icon(Icon::ArrowUpRight)), "the mail window has no Rules");
+        assert_eq!(rules_word(true), tr("All rules in the Notification Hub"), "the word says where it leads");
+        assert!(rules_entry_width(true) > rules_entry_width(false), "the longer word needs more room");
+        // The menu grows at most to a panel's width; a word that needed more would be cut.
+        assert!(rules_entry_width(true) <= size::panel(), "{}", rules_entry_width(true));
+        assert!(mute_menu_width(&[], true) >= rules_entry_width(true).ceil(), "the menu makes room for it");
+    }
+
+    /// Task S.20: the gear turns the content area into the settings and back, and the sidebar and
+    /// the band say that they are open.
+    #[test]
+    fn the_gear_turns_the_content_area_into_the_settings_and_back() {
+        let mut app = overview_at(&[]);
+        assert!(app.settings.is_none());
+        let _ = app.update(Message::OpenSettings);
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, settings_inbox::SECTIONS[0].id, "the gear lands on the first");
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_none(), "the gear gives the content area back");
+    }
+
+    /// Task S.20: every window kind shows its own sections, and `--settings <section>` starts
+    /// there; a word of another kind's sections is refused with the ones this window knows.
+    #[test]
+    fn each_window_kind_has_its_own_sections() {
+        for (words, ids) in [
+            (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
+            (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
+            (vec!["--view", "mail"], vec!["accounts", "reading"]),
+        ] {
+            let launch = Launch::parse(&args(&words)).expect("valid parameters");
+            let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
+            assert_eq!(found, ids, "{words:?}");
+            for id in &ids {
+                let mut with = words.clone();
+                with.extend_from_slice(&["--settings", id]);
+                let launch = Launch::parse(&args(&with)).expect("a section of this window");
+                assert_eq!(launch.settings.as_deref(), Some(*id));
+            }
+        }
+        // A section of the mail window is no word of the hub, and the message says what is.
+        let refused = Launch::parse(&args(&["--view", "hub", "--settings", "reading"])).expect_err("refused");
+        let message = refused.to_string();
+        assert!(message.contains("rules") && message.contains("--settings"), "{message}");
+        assert!(Launch::parse(&args(&["--view", "mail", "--settings", "rules"])).is_err(), "no Rules in mail");
+        // The word "All rules" opens is one of the inbox's sections.
+        assert!(settings_inbox::SECTIONS.iter().any(|section| section.id == RULES_SECTION));
+    }
+
+    /// Task S.20: `--settings <section>` opens the window with that section, in every kind.
+    #[test]
+    fn the_window_starts_on_the_section_it_was_asked_for() {
+        let hub = overview_at(&["--settings", "rules"]);
+        assert_eq!(hub.settings.as_ref().map(|pane| pane.host.current().id), Some("rules"));
+        let mail = overview_at(&["--view", "mail", "--settings", "reading"]);
+        assert_eq!(mail.settings.as_ref().map(|pane| pane.host.current().id), Some("reading"));
+    }
+
+    /// Task S.20: "All rules" opens the section Rules in the windows that have it; the mail window,
+    /// which has none, brings the Notification Hub's window forward (`apps.open_app`) and opens no
+    /// settings of its own.
+    #[test]
+    fn all_rules_opens_the_rules_or_the_notification_hub() {
+        for kind in [Kind::Hub, Kind::Notifications] {
+            assert!(rules_message(kind).is_none(), "{kind:?} has the section itself");
+        }
+        let mut hub = overview_at(&[]);
+        let _ = hub.update(Message::OpenRules);
+        assert_eq!(hub.settings.as_ref().map(|pane| pane.host.current().id), Some(RULES_SECTION));
+
+        let opens = rules_message(Kind::Mail);
+        assert!(
+            matches!(opens, Some(Message::OpenApp(ref app)) if app == AppId::INBOX.window_class),
+            "the mail window asks the core for the Notification Hub, not the control centre: {opens:?}"
+        );
+        let mut mail = mail_window("compact", &[]);
+        let _ = mail.update(Message::OpenRules);
+        assert!(mail.settings.is_none(), "the mail window opens no section of its own");
+    }
+
+    /// Task S.20, not negotiable: an entry that links to the control centre opens it and never a
+    /// section of this window – entries cannot open settings.
+    #[test]
+    fn an_entry_about_the_suite_never_opens_the_settings() {
+        let mut app = overview_at(&[]);
+        let suite = app
+            .items
+            .iter()
+            .chain(&app.for_me)
+            .find(
+                |item| matches!(detail::openable(item), Some(Link::App { ref app }) if *app == AppId::WORKPLACE.binary),
+            )
+            .cloned()
+            .expect("the demo has an entry about the suite");
+        let _ = app.open_entry(&suite);
+        assert!(app.settings.is_none(), "an entry opens no section of this window");
+        // Nor does it reach them with the settings already open: it is its own message, and the
+        // control centre is another window.
+        let _ = app.update(Message::OpenSettings);
+        let first = app.settings.as_ref().map(|pane| pane.host.current().id);
+        let _ = app.open_entry(&suite);
+        assert_eq!(app.settings.as_ref().map(|pane| pane.host.current().id), first, "no section was opened");
+    }
+
+    /// Task S.20: a click that shows entries again gives the content area back, and so does
+    /// Escape; what was open behind the settings is kept.
+    #[test]
+    fn showing_entries_and_escape_close_the_settings() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::OpenSettings);
+        assert!(shows_entries(&Message::Show(View::ForMe)) && !shows_entries(&Message::Tick));
+        let _ = app.update(Message::Show(View::ForMe));
+        assert!(app.settings.is_none(), "a click in the sidebar shows entries again");
+
+        // The app switcher too, as in the calendar and the tasks app: it is never a layer over
+        // the open settings, so the settings branch of `window` draws only the host's own menu.
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::Switcher(Switcher::Toggle));
+        assert!(app.settings.is_none() && app.menu == Some(Menu::Switcher), "the switcher shows entries again");
+        app.menu = None;
+
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none(), "Escape gives the content area back");
+        // A load or the clock leaves them open.
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::Tick);
+        assert!(app.settings.is_some());
+    }
+
+    /// A change behind the gear reaches the entries at once: when the host reports it stored
+    /// ([`Outcome::Changed`]), the window asks for its entries, sources and mail look again
+    /// instead of waiting ten seconds for the next tick – a source just muted must leave the list
+    /// now. A change that failed loads nothing.
+    #[test]
+    fn a_change_in_the_settings_loads_the_entries_again() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::OpenSettings);
+        let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: fresh }));
+        assert!(task.units() > 0, "the entries, the look and the appearance are on their way again");
+        assert!(app.settings.is_some(), "and the settings stay open");
+        let failed = Box::new(Err("not connected".to_string()));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
+        assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
+    }
+
+    /// Task S.20: the settings draw in every layout, in both kinds of window, and the keys of the
+    /// list are off while they cover the content area.
+    #[test]
+    fn the_settings_draw_in_every_layout() {
+        for words in [vec![], vec!["--view", "mail"], vec!["--view", "notifications"]] {
+            let mut app = overview_at(&words);
+            let _ = app.update(Message::OpenSettings);
+            for size in [(1600.0, 1000.0), (1100.0, 800.0), (800.0, 600.0), (480.0, 900.0), (360.0, 700.0)] {
+                let _ = app.update(Message::Resized(Size::new(size.0, size.1)));
+                let _ = app.view();
+            }
+            // The sections of the open window, and only those, answer to `Host::open`.
+            let pane = app.settings.as_mut().expect("open");
+            for section in app.launch.kind.settings_sections() {
+                assert!(pane.host.open(section.id), "{}", section.id);
+            }
+        }
     }
 
     /// Task E8.6b: the rule's words – effect, end and what it mutes – and when a muting ends.
@@ -11792,7 +12335,7 @@ mod tests {
                 }
             }
         }
-        let menu = mute_menu_width(&[]);
+        let menu = mute_menu_width(&[], false);
         assert!(menu >= widgets::menu_width() && menu <= size::panel());
     }
 

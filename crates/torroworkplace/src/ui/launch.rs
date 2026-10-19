@@ -14,16 +14,16 @@ use torro_core::AppId;
 use torro_core::ai::{AiError, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
-use torro_inbox::item::{Facet, FacetKey, SourceHealth};
-use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
+use torro_inbox::item::SourceHealth;
+use torro_inbox::{AgentKind, SourceInfo, SourceRef};
 use torro_ipc::api::{
     ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate,
     Selection,
 };
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServerService,
-    ServiceState, Status, TorroMailAccount,
+    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, ServerService, ServiceState,
+    Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -110,41 +110,27 @@ pub enum Open {
     AgentWizardDone,
     /// "Connect agent" with the key of a new script, shown once.
     AgentWizardKey,
-    /// The inbox page with the demo's rules (task E3.7).
-    Inbox,
-    /// The inbox page without any rules: the group says where they come from.
-    InboxEmpty,
     /// Appearance › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
     Design,
-    /// The Assistant page with the demo's assistant (task C.6): rights of its own, its engines and
-    /// how long it keeps conversations.
+    /// Agents & API › Assistant with the demo's assistant (tasks C.6, S.21): its rights, its
+    /// activity and "Turn off assistant…".
     Assistant,
-    /// The Assistant page before the assistant has a client: the first start with what it is
-    /// offered (`Rights::assistant`).
+    /// Agents & API › Assistant before the assistant has a client: the first start with "Start
+    /// from" and the rights it is offered (`Rights::assistant`).
     AssistantFirstStart,
-    /// The Assistant page with the assistant reading only calendars, tasks and the inbox, as its
-    /// first start offers.
+    /// Agents & API › Assistant with the assistant reading only calendars, tasks and the
+    /// Notification Hub, as its first start offers.
     AssistantReadOnly,
     /// The "Turn off the assistant?" confirmation.
     AssistantTurnOff,
-    /// Assistant › Profile with the demo's profile (task C.10).
-    AssistantProfile,
-    /// Assistant › Bots › Travel planner (task B.3): the rights of a bot that may read calendars and
+    /// Agents & API › Travel planner (task B.3): the rights of a bot that may read calendars and
     /// write tasks.
     AssistantBot,
-    /// Assistant › Bots › Release helper: a bot that may use nothing yet, as every new bot.
+    /// Agents & API › Release helper: a bot that may use nothing yet, as every new bot.
     AssistantBotNew,
     /// The detail page of the demo agent Codex with `bots` and `assistant` switched on: both
     /// warnings show.
     AgentBots,
-    /// Assistant › Memory with the demo's notes, one of them kept on this computer.
-    AssistantMemory,
-    /// Assistant › Memory without notes: its empty row.
-    AssistantMemoryEmpty,
-    /// Assistant › Memory with a new note being typed.
-    AssistantNote,
-    /// The "Forget this note?" confirmation.
-    AssistantForget,
     /// The first-run setup at this step (task W.4), with the demo's sample data.
     Setup(super::setup::Step),
     /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
@@ -162,7 +148,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 85] = [
+    pub const ALL: [(&'static str, Open); 78] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -219,21 +205,14 @@ impl Open {
         ("agent-wizard-rights", Open::AgentWizardRights),
         ("agent-wizard-done", Open::AgentWizardDone),
         ("agent-wizard-key", Open::AgentWizardKey),
-        ("inbox", Open::Inbox),
-        ("inbox-empty", Open::InboxEmpty),
         ("design", Open::Design),
         ("assistant", Open::Assistant),
         ("assistant-first-start", Open::AssistantFirstStart),
         ("assistant-read-only", Open::AssistantReadOnly),
         ("assistant-turn-off", Open::AssistantTurnOff),
-        ("assistant-profile", Open::AssistantProfile),
         ("assistant-bot", Open::AssistantBot),
         ("assistant-bot-new", Open::AssistantBotNew),
         ("agent-bots", Open::AgentBots),
-        ("assistant-memory", Open::AssistantMemory),
-        ("assistant-memory-empty", Open::AssistantMemoryEmpty),
-        ("assistant-note", Open::AssistantNote),
-        ("assistant-forget", Open::AssistantForget),
         ("setup", Open::Setup(super::setup::Step::Welcome)),
         ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
         ("setup-nextcloud-address", Open::SetupNextcloudAddress),
@@ -253,12 +232,14 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|appearance|general`:
-///   the page to start on. The states of `--open` that belong to a page choose that page themselves. Other
+/// - `--section overview|accounts|agents|approvals|workspaces|appearance|general`: the page to
+///   start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section assistant` from the assistant's
-///   chat when it may not use something, task C.6). `--section bot:<id>` opens the page of the bot
-///   `id` under Assistant › Bots with its rights (task B.3), what the assistant app's "Access…"
-///   sends ([`Launch::bot`]).
+///   chat when it may not use something, task C.6). Two words open a page below Agents & API
+///   ([`Launch::client`], task S.21): `assistant` the assistant's, `bot:<id>` the bot `id`'s, what
+///   the assistant app's "Access…" sends. The words of the pages that moved into the apps keep
+///   working: `apps` and `inbox` are General, where the suite's parts are switched on and opened
+///   ([`Section::from_arg`]).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
 ///   of the service. Nothing is sent and nothing is stored; [`demo_answer`] answers the few
 ///   requests whose answer is a state of its own.
@@ -275,8 +256,9 @@ impl Open {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
-    /// The bot whose page `--section bot:<id>` opens (then `section` is the Assistant).
-    pub bot: Option<String>,
+    /// The program whose page `--section assistant` or `--section bot:<id>` opens (then `section`
+    /// is Agents & API).
+    pub client: Option<ClientTarget>,
     pub demo: bool,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
@@ -291,7 +273,7 @@ impl Default for Launch {
     fn default() -> Self {
         Launch {
             section: Section::Overview,
-            bot: None,
+            client: None,
             demo: false,
             open: None,
             appearance: None,
@@ -353,13 +335,16 @@ impl Launch {
             value: value.to_owned(),
             valid: valid.join(", "),
         };
-        let (section, bot) = match flag_value(args, "--section")? {
+        let (section, client) = match flag_value(args, "--section")? {
             None => (Section::Overview, None),
+            // The assistant and a bot are programs under Agents & API (task S.21); their pages
+            // open there.
+            Some("assistant") => (Section::Agents, Some(ClientTarget::Assistant)),
             Some(word) => match word.strip_prefix("bot:") {
-                Some(id) if is_bot_id(id) => (Section::Assistant, Some(id.to_owned())),
+                Some(id) if is_bot_id(id) => (Section::Agents, Some(ClientTarget::Bot(id.to_owned()))),
                 _ => {
                     let mut valid: Vec<&str> = Section::ALL.iter().map(|s| s.arg()).collect();
-                    valid.push("bot:<id>");
+                    valid.extend(["assistant", "bot:<id>", "apps", "inbox"]);
                     (Section::from_arg(word).ok_or_else(|| unknown("--section", word, valid))?, None)
                 }
             },
@@ -399,7 +384,31 @@ impl Launch {
                     .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
             ),
         };
-        Ok(Launch { section, bot, demo, open, appearance, design, setup, setup_if_open })
+        Ok(Launch { section, client, demo, open, appearance, design, setup, setup_if_open })
+    }
+}
+
+/// A program whose page `--section` opens below Agents & API (task S.21).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientTarget {
+    /// `--section assistant`: the assistant's page, its first start while it has no client.
+    Assistant,
+    /// `--section bot:<id>`: the page of the bot `id`, which is its client's.
+    Bot(String),
+}
+
+impl ClientTarget {
+    /// What the agents page is told to open. A bot is named by its own id; its rights live on its
+    /// client, which [`Data::bots`] points at. A bot the core does not list leaves the section's
+    /// list open, which shows every bot it has.
+    pub fn message(&self, data: &Data) -> super::agents::Message {
+        match self {
+            ClientTarget::Assistant => super::agents::Message::ShowAssistant,
+            ClientTarget::Bot(id) => match data.bots.iter().find(|bot| bot.id == *id) {
+                Some(bot) => super::agents::Message::Open(bot.client.clone()),
+                None => super::agents::Message::Back,
+            },
+        }
     }
 }
 
@@ -704,8 +713,6 @@ pub fn demo_data() -> Data {
         calendars,
         task_lists,
         sources,
-        rules: demo_rules(now),
-        rule_hits: demo_hits(now),
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -728,13 +735,38 @@ pub fn demo_data() -> Data {
         },
         apps: Some(apps),
         approvals: demo_approvals(now),
-        profile: Some(demo_profile()),
-        memories: demo_memories(now),
         bots: demo_bots(),
         engines: demo_engines(),
-        default_models: Vec::new(),
         error: None,
     }
+}
+
+/// The demo's bot "Travel planner" (task B.3), whose client may read calendars and write tasks.
+pub const DEMO_TRAVEL: &str = "b0000001";
+/// The demo's bot "Release helper", whose client may use nothing yet.
+pub const DEMO_RELEASE: &str = "b0000002";
+
+/// The demo's bots, by name; their clients are among [`demo_clients`].
+fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
+    let bot = |id: &str, name: &str, description: &str, avatar: &str, client: &str| torro_ipc::bots::BotSummary {
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+        avatar: avatar.into(),
+        engine: "ai:ollama@localhost:11434".into(),
+        model: Some("qwen3:14b".into()),
+        client: client.into(),
+    };
+    vec![
+        bot(
+            DEMO_RELEASE,
+            tr("Release helper"),
+            tr("Writes release notes and checks what is open"),
+            "radar",
+            "c0000002",
+        ),
+        bot(DEMO_TRAVEL, tr("Travel planner"), tr("Plans trips by train"), "letter", "c0000001"),
+    ]
 }
 
 /// The engines of the demo's assistant (issue #131): the OpenRouter account and Claude Code with
@@ -792,65 +824,6 @@ fn ntfy_account(topics: &[(&str, &str)], now: DateTime<Utc>) -> AccountInfo {
         ntfy: Some(NtfyView { server: server.into(), topics, user: Some("anna".into()), login: true }),
         services: None,
     }
-}
-
-/// The demo's bot "Travel planner" (task B.3), whose client may read calendars and write tasks.
-pub const DEMO_TRAVEL: &str = "b0000001";
-/// The demo's bot "Release helper", whose client may use nothing yet.
-pub const DEMO_RELEASE: &str = "b0000002";
-
-/// The demo's bots, by name; their clients are among [`demo_clients`].
-fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
-    let bot = |id: &str, name: &str, description: &str, avatar: &str, client: &str| torro_ipc::bots::BotSummary {
-        id: id.into(),
-        name: name.into(),
-        description: description.into(),
-        avatar: avatar.into(),
-        engine: "ai:ollama@localhost:11434".into(),
-        model: Some("qwen3:14b".into()),
-        client: client.into(),
-    };
-    vec![
-        bot(
-            DEMO_RELEASE,
-            tr("Release helper"),
-            tr("Writes release notes and checks what is open"),
-            "radar",
-            "c0000002",
-        ),
-        bot(DEMO_TRAVEL, tr("Travel planner"), tr("Plans trips by train"), "letter", "c0000001"),
-    ]
-}
-
-/// The demo's assistant (task C.10): a name of its own, a symbol and a friendly personality.
-pub fn demo_profile() -> torro_ipc::assistant::Profile {
-    torro_ipc::assistant::Profile {
-        name: "Torro".into(),
-        description: tr("Your assistant for this computer").into(),
-        avatar: "sparkles".into(),
-        personality: super::persona::Template::Friendly.text().into(),
-    }
-}
-
-/// The demo's notes: three the person asked for, one of them kept on this computer, one long.
-fn demo_memories(now: DateTime<Utc>) -> Vec<torro_ipc::assistant::Note> {
-    let note = |id: &str, text: &str, days: i64, local_only| torro_ipc::assistant::Note {
-        id: id.into(),
-        text: text.into(),
-        created: now - Duration::days(days),
-        local_only,
-    };
-    vec![
-        note("1a2b3c4d", "Anna Berger is my colleague in sales; she prefers calls to mail.", 20, false),
-        note(
-            "5e6f7a8b",
-            "The invoice from ACME for the October workshop is due on the 31st; remind me a week before and keep \
-             the amount to yourself.",
-            3,
-            true,
-        ),
-        note("9c0d1e2f", "Mornings before ten are for focus work: no meetings then.", 1, false),
-    ]
 }
 
 /// A connected mail account of the demo: no calendars or lists, as long as it is mail only. Its
@@ -923,67 +896,6 @@ fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
         mail.mail.problem = Some(problem);
     }
     account
-}
-
-/// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
-/// the nightly build muted, as the demo's sources list has it, a sender and a domain hidden, and two
-/// traits muted from the bell's menu (task E8.6b): Claude Code's project "torro-workplace" without
-/// popups until tomorrow, newsletters to "Info" for good.
-fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
-    let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
-        id: id.into(),
-        source,
-        sender: None,
-        domain: None,
-        effect,
-        created: now - age,
-        facet: None,
-        until: None,
-    };
-    vec![
-        rule("5e0b7c2a", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }, Duration::days(6)),
-        rule("a81f3d94", SourceRef::script("nightly-build"), RuleEffect::Muted, Duration::days(3)),
-        rule("2c6e9b17", SourceRef::script("backup"), RuleEffect::Lane { lane: Lane::Info }, Duration::days(1)),
-        // A sender and a domain hidden in the Inbox (task E3.10).
-        Rule {
-            sender: Some("news@shop.example".into()),
-            ..rule("7d41e0b3", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(20))
-        },
-        Rule {
-            domain: Some("deals.example".into()),
-            ..rule("e93a5c08", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(2))
-        },
-        // Traits muted from the bell's menu (task E8.6b).
-        Rule {
-            facet: Some(Facet { key: FacetKey::Project, value: "torro-workplace".into() }),
-            until: Some(now + Duration::hours(22)),
-            ..rule("4b8d2e61", SourceRef::agent("claude-code"), RuleEffect::NoPopup, Duration::hours(2))
-        },
-        Rule {
-            facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),
-            ..rule(
-                "9f13c7a5",
-                SourceRef::mail("anna@example.org"),
-                RuleEffect::Lane { lane: Lane::Info },
-                Duration::days(5),
-            )
-        },
-    ]
-}
-
-/// What the demo's rules caught ([`demo_rules`], task E8.8a): counted since each was made, the
-/// domain hidden two hours ago nothing yet.
-fn demo_hits(now: DateTime<Utc>) -> Vec<RuleHits> {
-    let hit = |rule: &str, hits: u32, age: Duration| RuleHits { rule: rule.into(), hits, since: now - age };
-    vec![
-        hit("5e0b7c2a", 14, Duration::days(6)),
-        hit("a81f3d94", 31, Duration::days(3)),
-        hit("2c6e9b17", 9, Duration::days(1)),
-        hit("7d41e0b3", 12, Duration::hours(20)),
-        hit("e93a5c08", 0, Duration::hours(2)),
-        hit("4b8d2e61", 3, Duration::hours(2)),
-        hit("9f13c7a5", 27, Duration::days(5)),
-    ]
 }
 
 /// The demo's clients: Claude Code with the default template, Codex with rights of its own
@@ -1480,18 +1392,25 @@ mod tests {
         assert_eq!(Launch::parse(&[]), Ok(Launch::default()));
     }
 
-    /// Task B.3: `--section bot:<id>` is the Assistant page with the bot's page open; a bot id that
-    /// is no id is refused like any unknown section.
+    /// Tasks B.3 and S.21: `--section bot:<id>` and `--section assistant` are Agents & API with
+    /// that program's page open; a bot id that is no id is refused like any unknown section. The
+    /// words of the pages that moved into the apps land on General.
     #[test]
-    fn a_bots_section_names_the_bot() {
+    fn the_sections_of_a_program_and_of_the_pages_that_moved() {
         let launch = Launch::parse(&args(&["--section", "bot:1a2b3c4d"])).expect("a bot");
-        assert_eq!((launch.section, launch.bot.as_deref()), (Section::Assistant, Some("1a2b3c4d")));
-        assert_eq!(Launch::parse(&args(&["--section=bot:1a2b3c4d"])).map(|l| l.bot), Ok(Some("1a2b3c4d".into())));
+        let bot = Some(ClientTarget::Bot("1a2b3c4d".into()));
+        assert_eq!((launch.section, launch.client), (Section::Agents, bot.clone()));
+        assert_eq!(Launch::parse(&args(&["--section=bot:1a2b3c4d"])).map(|l| l.client), Ok(bot));
         for bad in ["bot:", "bot:../x", "bot:a b", "bots"] {
             let err = Launch::parse(&args(&["--section", bad])).expect_err(bad);
             assert!(err.to_string().contains("bot:<id>"), "{bad}: {err}");
         }
-        assert_eq!(Launch::parse(&args(&["--section", "assistant"])).map(|l| l.bot), Ok(None));
+        let assistant = Launch::parse(&args(&["--section", "assistant"])).expect("the assistant");
+        assert_eq!((assistant.section, assistant.client), (Section::Agents, Some(ClientTarget::Assistant)));
+        for word in ["apps", "inbox"] {
+            let launch = Launch::parse(&args(&["--section", word])).expect(word);
+            assert_eq!((launch.section, launch.client), (Section::General, None), "{word}");
+        }
     }
 
     #[test]
@@ -1500,8 +1419,8 @@ mod tests {
             let launch = Launch::parse(&args(&["--section", section.arg()])).expect("a known section");
             assert_eq!(launch.section, section);
         }
-        let launch = Launch::parse(&args(&["--demo", "--section=apps", "--appearance", "light"])).expect("valid");
-        assert_eq!((launch.section, launch.appearance), (Section::Apps, Some(Appearance::Light)));
+        let launch = Launch::parse(&args(&["--demo", "--section=agents", "--appearance", "light"])).expect("valid");
+        assert_eq!((launch.section, launch.appearance), (Section::Agents, Some(Appearance::Light)));
         for (word, appearance) in
             [("light", Appearance::Light), ("dark", Appearance::Dark), ("system", Appearance::System)]
         {
@@ -1540,7 +1459,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, appearance, general, bot:<id>"
+                "valid values: overview, accounts, agents, approvals, workspaces, appearance, general, assistant, bot:<id>, apps, inbox"
             ),
             "{err}"
         );
