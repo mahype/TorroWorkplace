@@ -10,9 +10,10 @@
 //! its own in this library; the calendar app's "Calendars" sits beside `calendar::reminders` and
 //! `calendar::night` in `torrocalendar`'s own `SECTIONS`.
 //!
-//! The sidebar checkmarks of the calendar app stay as they are (flat, in memory only, decision
-//! 2026-10-18 on open question 3 of `docs/settings.md`): this section is the suite-wide, lasting
-//! choice behind the gear, not a replacement for them.
+//! The sidebar checkmarks of the calendar app stay as they are: flat, in memory only. That much
+//! was decided on 2026-10-18 for S.19; whether they should ever hold for the whole suite is open
+//! question 3 of `docs/settings.md` and stays open. This section is the suite-wide, lasting choice
+//! behind the gear, not a replacement for them.
 
 use iced::widget::{column, container, responsive, row, toggler};
 use iced::{Alignment, Element, Fill, Length};
