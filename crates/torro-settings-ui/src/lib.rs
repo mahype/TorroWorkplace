@@ -242,6 +242,11 @@ pub enum Action<A> {
     /// `torro_gui::connect::open_section`. For everything that stays in the control centre:
     /// accounts, rights, keys, approvals.
     ControlCentre(String),
+    /// Close the settings: the window shows what its content area showed before
+    /// ([`Outcome::Close`]). For a section that was asked whether the window may close
+    /// ([`assistant::closing`]) and has got its answer – "Discard" in "Discard changes?" – so the
+    /// question and the closing stay in one place.
+    Close,
     /// What only the app itself can do – open the bot editor, show a chat. The app chooses the
     /// type; a section that needs none stays generic over it.
     App(A),
@@ -264,6 +269,7 @@ impl<A> Action<A> {
             Action::Open(section) => Action::Open(section),
             Action::Focus(field) => Action::Focus(field),
             Action::ControlCentre(section) => Action::ControlCentre(section),
+            Action::Close => Action::Close,
             Action::App(app) => Action::App(into(app)),
         }
     }

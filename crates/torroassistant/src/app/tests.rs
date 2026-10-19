@@ -983,6 +983,46 @@ fn the_sidebar_closes_the_settings() {
     }
 }
 
+/// An unsaved profile is never dropped silently (found in the review of #210): the gear, Escape
+/// and a click in the sidebar first ask "Discard changes?" – the question of the section itself
+/// (`profile::closing`) – and only "Discard" lets the settings go. Before this, all three threw
+/// the typed text away without a word.
+#[test]
+fn an_unsaved_profile_asks_before_the_settings_close() {
+    use torro_settings_ui::assistant::profile;
+
+    let profile_page = |message: profile::Message| Message::SettingsPage(settings::Message::Profile(message));
+    for way in [Message::ToggleSettings, Message::Escape, Message::Select(TOOLS.into())] {
+        let mut app = started(&[]);
+        let _ = app.update(Message::ToggleSettings);
+        settings_loaded(&mut app);
+        let _ = app.update(profile_page(profile::Message::OpenProfile));
+        let _ = app.update(profile_page(profile::Message::Name("Marvin".into())));
+
+        let _ = app.update(way.clone());
+        assert!(app.settings.is_some(), "{way:?}: the question stands instead");
+        let sections = &pane(&app).sections;
+        assert!(settings::overlay(sections, pane(&app).host.data()).is_some(), "{way:?}: \"Discard changes?\"");
+
+        // Escape cancels the question: the settings and what is typed stay where they are.
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_some(), "{way:?}: cancelled, nothing lost");
+        assert!(settings::closing(&pane(&app).sections, pane(&app).host.data()).is_some(), "{way:?}: still typed");
+
+        let _ = app.update(way.clone());
+        let _ = app.update(profile_page(profile::Message::Leave));
+        assert!(app.settings.is_none(), "{way:?}: \"Discard\" lets them go");
+    }
+
+    // With nothing typed every way out closes them at once, as it always did.
+    let mut app = started(&[]);
+    let _ = app.update(Message::ToggleSettings);
+    settings_loaded(&mut app);
+    let _ = app.update(profile_page(profile::Message::OpenProfile));
+    let _ = app.update(Message::ToggleSettings);
+    assert!(app.settings.is_none(), "nothing to ask about");
+}
+
 /// `--settings <section>` opens the window with that section of the settings.
 #[test]
 fn settings_voice_starts_at_the_voice_section() {
