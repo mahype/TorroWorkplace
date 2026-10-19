@@ -2711,7 +2711,15 @@ E12.10 braucht E12.5 und E12.6
   dass jede Beschriftung übersetzt ist (`TORRO_LANG=de`). Übersetzungen im Bericht.
 
 ### E12.2 Speicher und feste Regeln
-- [ ] erledigt
+- [x] erledigt (2026-10-19): Schema 7 mit `category`, `category_source`, `category_confidence`,
+  `needs_reply`, `urgency` und Index; `rules::mail_category` und `rules::kept_category`;
+  `RuleEffect::Category` samt Armen in `approvals.rs`, der Seite „Rules“ und `effect_column`;
+  `MailStore::set_category` und der typisierte Filter `SearchQuery::categories`; die feste
+  Kategorie wird beim Eintreffen gesetzt (`Inbox::mail_category_of`, `inbox_feed::file`).
+  Abweichung: Der Filter sitzt in `SearchQuery`, nicht in `query.rs` – Entscheidung 7 wollte ein
+  getyptes Feld statt eines Suchoperators, damit braucht die Suchsprache nichts. Nebenbefund
+  behoben: Drei Abfragen lasen Spalten **nach** `SUMMARY_COLUMNS` über feste Indizes und brachen
+  durch die drei neuen Spalten; sie zählen jetzt von `SUMMARY_WIDTH`.
 - **Modell:** Opus · **Braucht:** E12.1 · **Dateien:**
   `crates/torroworkplace/src/mail/store.rs`, `crates/torroworkplace/src/mail/query.rs`,
   `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torro-inbox/src/{item,rules}.rs`,
@@ -2931,7 +2939,9 @@ E12.10 braucht E12.5 und E12.6
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** E12.3, E12.4, E12.5 · **Dateien:**
   `crates/torroworkplace/src/categorize.rs` (neu), `crates/torroworkplace/src/main.rs` (Modul),
-  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/{core,inbox}.rs`,
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/mail/store.rs`
+  (`set_model_answers` und `uncategorised` – in E12.2 wären sie bis hierher toter Code),
+  `crates/torroworkplace/src/{core,inbox}.rs`,
   `crates/torroworkplace/src/audit.rs`, `crates/torroworkplace/tests/fixtures/` (neu)
 - **`crate::categorize`** nach dem Vorbild von `crate::suggest` (derselbe Aufbau: Inhalt lesen,
   Modell wählen, einmal fragen, Antwort lesen; nichts wird selbst geschrieben):

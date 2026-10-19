@@ -49,7 +49,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use torro_core::i18n::{tr, trf};
 use torro_inbox::{Item, LaneReason, Sender, SourceKind, State};
-use torro_mail::{Flag, MailAddress, MessageTraits, Notify, Role};
+use torro_mail::{Flag, MailAddress, MailCategory, MessageTraits, Notify, Role};
 use torro_pim_github::IssueRef;
 
 use super::MailStoreError;
@@ -515,6 +515,32 @@ impl Feed {
                 return;
             }
         };
+        // What the fixed rules make of each mail (task E12.2): kept with the mail, so the list,
+        // the search and the sidebar show it, and put on the entry by `file_mail` as well. Mail
+        // nothing can be said about yet stays without one until a model is asked (task E12.6).
+        let decided: Vec<(String, MailCategory)> = mails
+            .iter()
+            .filter_map(|mail| match self.inbox.mail_category_of(mail) {
+                Ok(Some(category)) => Some((mail.message.clone(), category)),
+                Ok(None) => None,
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot sort the new mail of {account}: {err}");
+                    None
+                }
+            })
+            .collect();
+        if !decided.is_empty()
+            && let Err(err) = store
+                .run(move |store| {
+                    for (message, category) in decided {
+                        store.set_category(&message, Some(category))?;
+                    }
+                    Ok(())
+                })
+                .await
+        {
+            eprintln!("torroworkplace: inbox: cannot keep the category of the new mail of {account}: {err}");
+        }
         for mail in &mails {
             if let Err(err) = self.inbox.file_mail(mail, notify, now) {
                 eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
@@ -626,6 +652,8 @@ fn mail_to_file(store: &MailStore, account: &str, id: &str) -> Result<Option<New
 /// `message` of `account`, read from `store`, as [`Inbox::file_mail`] files it.
 fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -> Result<NewMail, MailStoreError> {
     let summary = message.summary;
+    // Where it lies decides one category: mail the server put in its junk folder is spam (E12.2).
+    let junk = store.folder_by_role(Role::Junk)?.is_some_and(|folder| folder.id == summary.folder);
     // Only a mail with `X-GitHub-Reason` can be a GitHub mail: the others need no lookup.
     let github = match &message.traits.github {
         Some(_) => {
@@ -645,6 +673,9 @@ fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -
         list: message.traits.list_id.clone(),
         date: summary.date,
         github,
+        invite: summary.invite.is_some(),
+        auto_submitted: message.traits.auto_submitted.clone(),
+        junk,
     })
 }
 

@@ -9331,6 +9331,9 @@ mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -9390,6 +9393,9 @@ mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -9422,6 +9428,9 @@ mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         let id =
             core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -11323,6 +11332,9 @@ mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed");
         let counted = || async {
@@ -14406,6 +14418,9 @@ mod tests {
                 list: None,
                 github: None,
                 date: Utc::now(),
+                invite: false,
+                auto_submitted: None,
+                junk: false,
             };
             let entry =
                 core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -14802,6 +14817,9 @@ mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let asked = ask(&core, Some(&app_key), Request::SuggestEventFromItem { id: filed.clone() }).await;
@@ -14849,6 +14867,9 @@ mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
         let suggested = |id: String| {

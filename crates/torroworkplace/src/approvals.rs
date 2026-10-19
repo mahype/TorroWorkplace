@@ -1931,8 +1931,19 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 "Stop sending notices of {source} to {lane}",
                 &[("source", &source_name(source)), ("lane", &lane_name(*lane))],
             ),
-            // Only rules with a trait keep no popups; one without is nothing the core makes.
-            Some(Rule { effect: RuleEffect::NoPopup, .. }) | None => {
+            // A category kept for a sender or a domain (task E12.2). The words come from the
+            // stored rule, never from the client's request.
+            Some(Rule { sender: Some(sender), effect: RuleEffect::Category { category }, .. }) => trf(
+                "Stop filing mail from {sender} as {category}",
+                &[("sender", &format!("\"{}\"", quote(sender))), ("category", &torro_core::category::label(*category))],
+            ),
+            Some(Rule { domain: Some(domain), effect: RuleEffect::Category { category }, .. }) => trf(
+                "Stop filing mail from everyone at {domain} as {category}",
+                &[("domain", &format!("\"{}\"", quote(domain))), ("category", &torro_core::category::label(*category))],
+            ),
+            // Only rules with a trait keep no popups; one without is nothing the core makes, and
+            // a category rule always names a sender or a domain.
+            Some(Rule { effect: RuleEffect::NoPopup | RuleEffect::Category { .. }, .. }) | None => {
                 tr("Remove an unknown rule of the Notification Hub").to_string()
             }
         },

@@ -3850,4 +3850,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("category|Spam", "Unerwünscht"),
     ("category|Phishing", "Betrug"),
     ("category|Other", "Sonstiges"),
+    // The Rules page of the Notification Hub shows a kept category too (E12.2).
+    ("Filed as “{category}”", "Abgelegt als „{category}“"),
+    ("Filed {n} since {day}", "{n} abgelegt seit {day}"),
+    ("Stop filing mail from {sender} as {category}", "E-Mails von {sender} nicht mehr als {category} ablegen"),
+    (
+        "Stop filing mail from everyone at {domain} as {category}",
+        "E-Mails von allen bei {domain} nicht mehr als {category} ablegen",
+    ),
 ];

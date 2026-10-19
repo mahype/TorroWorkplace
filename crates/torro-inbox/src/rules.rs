@@ -18,7 +18,7 @@ use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
-use torro_mail::Order;
+use torro_mail::{Category, MailCategory, Order};
 
 use crate::item::{
     AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
@@ -62,6 +62,54 @@ pub fn placement(kind: Kind, wanted: Option<Lane>) -> (Lane, bool) {
 /// issue #128), else [`Lane::ForMe`].
 pub fn mail_lane(bulk: bool, remembered: Option<Lane>) -> Lane {
     remembered.unwrap_or(if bulk { Lane::Info } else { Lane::ForMe })
+}
+
+/// What a mail is, as far as its headers and the folder it lies in say (task E12.2,
+/// `docs/kategorien.md`, "Die Reihenfolge beim Einordnen"). `None`: nothing can be said without
+/// asking a model, which the core does afterwards (task E12.6).
+///
+/// In this order, and always [`CategorySource::Rule`]:
+///
+/// 1. `remembered` – a category the person kept for this sender or domain
+///    ([`RuleEffect::Category`]). It wins over every header, because the person said so.
+/// 2. [`Category::Invitation`] – the mail invites to an event (iMIP, `invite`).
+/// 3. [`Category::AutoReply`] – `Auto-Submitted` says something other than `no`.
+/// 4. [`Category::Spam`] – `junk`: the mail lies in the folder the server keeps junk in.
+///
+/// [`Category::Bounce`] is not found here: the detection of delivery reports comes with task
+/// E9.3a. Until then no rule sets it.
+pub fn mail_category(
+    remembered: Option<Category>,
+    invite: bool,
+    auto_submitted: Option<&str>,
+    junk: bool,
+) -> Option<MailCategory> {
+    let found = if let Some(kept) = remembered {
+        kept
+    } else if invite {
+        Category::Invitation
+    } else if auto_submitted.is_some_and(|value| value != "no") {
+        Category::AutoReply
+    } else if junk {
+        Category::Spam
+    } else {
+        return None;
+    };
+    Some(MailCategory::by_rule(found))
+}
+
+/// The category `rule` keeps for new mail of `sender` ([`RuleEffect::Category`]); `None` for every
+/// other rule and for mail the rule does not reach. The caller passes only rules of a source it
+/// [`reaches`]; a rule without a sender or domain keeps nothing, so a whole account is never
+/// pinned to one category by accident.
+pub fn kept_category(rule: &Rule, sender: Option<&str>) -> Option<Category> {
+    let RuleEffect::Category { category } = rule.effect else { return None };
+    let matches = match (&rule.sender, &rule.domain) {
+        (None, None) => false,
+        (Some(kept), _) => sender == Some(kept.as_str()),
+        (None, Some(kept)) => sender.and_then(domain_of).as_deref() == Some(kept.as_str()),
+    };
+    matches.then_some(category)
 }
 
 /// How a lane is kept for a mail's sender ([`crate::Rule::sender`]): the sender's address in small
@@ -826,9 +874,65 @@ pub fn sort_in(items: &mut [Item], order: Order) {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
+    use torro_mail::CategorySource;
 
     use super::*;
+
+    /// Task E12.2: the order of the fixed rules, and that a kept category beats every header.
+    #[test]
+    fn the_fixed_rules_sort_what_the_headers_and_the_folder_say() {
+        let by_rule = |category| Some(MailCategory::by_rule(category));
+        assert_eq!(mail_category(None, true, None, false), by_rule(Category::Invitation), "iMIP");
+        assert_eq!(mail_category(None, false, Some("auto-replied"), false), by_rule(Category::AutoReply));
+        assert_eq!(mail_category(None, false, Some("auto-generated"), false), by_rule(Category::AutoReply));
+        assert_eq!(mail_category(None, false, Some("no"), false), None, "`no` is no automatic reply");
+        assert_eq!(mail_category(None, false, None, true), by_rule(Category::Spam), "the server's junk folder");
+        assert_eq!(mail_category(None, false, None, false), None, "nothing to say without a model");
+        // What the person kept wins over every header and over the folder.
+        let kept = Some(Category::Invoice);
+        assert_eq!(mail_category(kept, true, Some("auto-replied"), true), by_rule(Category::Invoice));
+        // Every category a rule gives says so, never that a model guessed it.
+        for found in [Category::Invitation, Category::AutoReply, Category::Spam] {
+            let held = mail_category(Some(found), false, None, false).expect("a category");
+            assert_eq!((held.source, held.confidence), (CategorySource::Rule, None), "{found:?}");
+            assert!(!held.is_suggestion(), "{found:?} is no suggestion");
+        }
+        // Task E9.3a brings the detection of delivery reports; until then no rule sets it.
+        assert_ne!(mail_category(None, false, None, true), by_rule(Category::Bounce));
+    }
+
+    /// Task E12.2: a kept category holds for its sender or its domain, and for nothing else.
+    #[test]
+    fn a_kept_category_holds_for_its_sender_or_its_domain_only() {
+        let rule = |sender: Option<&str>, domain: Option<&str>, effect| Rule {
+            id: "r1".into(),
+            source: SourceRef::mail("anna@example.org"),
+            sender: sender.map(str::to_string),
+            domain: domain.map(str::to_string),
+            effect,
+            created: at(8),
+            facet: None,
+            until: None,
+        };
+        let invoice = RuleEffect::Category { category: Category::Invoice };
+        let for_sender = rule(Some("billing@shop.example"), None, invoice);
+        assert_eq!(kept_category(&for_sender, Some("billing@shop.example")), Some(Category::Invoice));
+        assert_eq!(kept_category(&for_sender, Some("news@shop.example")), None);
+        assert_eq!(kept_category(&for_sender, None), None, "mail without a sender keeps nothing");
+        let for_domain = rule(None, Some("shop.example"), invoice);
+        assert_eq!(kept_category(&for_domain, Some("news@shop.example")), Some(Category::Invoice));
+        assert_eq!(kept_category(&for_domain, Some("news@news.shop.example")), None, "exactly that domain");
+        // A rule about the whole account pins nothing: that would catch every mail of it.
+        assert_eq!(kept_category(&rule(None, None, invoice), Some("news@shop.example")), None);
+        // Rules of another kind keep no category.
+        assert_eq!(
+            kept_category(&rule(Some("billing@shop.example"), None, RuleEffect::Muted), Some("billing@shop.example")),
+            None
+        );
+    }
+
+    use chrono::TimeZone;
+
     use crate::item::{Action, AgentInfo, AgentKind};
 
     fn at(hour: u32) -> DateTime<Utc> {

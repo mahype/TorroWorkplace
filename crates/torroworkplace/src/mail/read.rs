@@ -315,6 +315,8 @@ pub async fn search_messages(
         relevance,
         only: None,
         except: Vec::new(),
+        // The request carries the chosen categories from task E12.4 on; until then: every one.
+        categories: Vec::new(),
     };
     let later = match inbox.mail_later(&later_accounts(&stores, reach), now) {
         Ok(later) => later,
@@ -1216,6 +1218,9 @@ pub(crate) mod tests {
             list: None,
             github: None,
             date: Utc::now(),
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         };
         inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("an entry");
         let opened = || match inbox.handle(Request::GetStats { range: StatsRange::Week, until: None }, None, Utc::now())

@@ -169,7 +169,7 @@ use torro_ipc::{
     ApprovalInfo, ClientInfo, InboxStats, Request, Response, RuleHits, SourceStats, StatsCounts, StatsDay, StatsRange,
     StatsSuggestion,
 };
-use torro_mail::{ACCOUNT_PREFIX, Notify, Order};
+use torro_mail::{ACCOUNT_PREFIX, MailCategory, Notify, Order};
 use torro_pim_github::IssueRef;
 
 use crate::account::github::GithubAccounts;
@@ -1068,6 +1068,15 @@ impl Inbox {
     /// the newest mail's date (never later than `now`); a mail older than the entry's newest leaves
     /// title, text, sender and link as they are. `Err` holds the message for the log, without
     /// anything of the mail.
+    /// What the fixed rules make of `mail` (task E12.2, `docs/kategorien.md`): a category kept
+    /// for its sender or domain, else what its headers and its folder say; `None` when only a
+    /// model could tell (task E12.6 asks one then). The same answer [`Inbox::file_mail`] puts on
+    /// the entry, so the mail store and the entry never disagree.
+    pub fn mail_category_of(&self, mail: &NewMail) -> Result<Option<MailCategory>, String> {
+        let sender = rules::sender_key(mail.from.as_ref());
+        self.with(|db| mail_category_in(db, sender.as_deref(), mail)).map_err(|failure| failure.to_string())
+    }
+
     pub fn file_mail(&self, mail: &NewMail, notify: Notify, now: DateTime<Utc>) -> Result<Option<String>, String> {
         if notify == Notify::Off {
             return Ok(None);
@@ -2503,7 +2512,8 @@ fn remember_lane(db: &Connection, item: &Item, lane: Lane, now: DateTime<Utc>) -
 fn remembered_lane(rule: &Rule) -> Option<Lane> {
     match rule.effect {
         RuleEffect::Lane { lane } if rule.facet.is_none() => Some(lane),
-        RuleEffect::Lane { .. } | RuleEffect::Muted | RuleEffect::NoPopup => None,
+        // A kept category keeps no lane: it only says what the mail is (task E12.2).
+        RuleEffect::Lane { .. } | RuleEffect::Muted | RuleEffect::NoPopup | RuleEffect::Category { .. } => None,
     }
 }
 
@@ -2878,6 +2888,9 @@ fn effect_column(effect: RuleEffect) -> &'static str {
         RuleEffect::Lane { .. } => "lane",
         RuleEffect::Muted => "muted",
         RuleEffect::NoPopup => "no_popup",
+        // Task E12.2. Only for picking rows in SQL: the rule is stored as JSON, so which category
+        // it keeps round-trips through serde and needs no column of its own.
+        RuleEffect::Category { .. } => "category",
     }
 }
 
@@ -3586,6 +3599,14 @@ pub struct NewMail {
     /// for every other mail. Headers from outside: [`Inbox::file_mail`] lets it at most join a
     /// GitHub entry of that very repository and number, never hide a mail otherwise.
     pub github: Option<IssueRef>,
+    /// The mail invites to an event (iMIP): filed as [`torro_mail::Category::Invitation`] (E12.2).
+    pub invite: bool,
+    /// What `Auto-Submitted` says, if anything: anything but `no` makes it
+    /// [`torro_mail::Category::AutoReply`].
+    pub auto_submitted: Option<String>,
+    /// The mail lies in the folder the server keeps junk in: filed as
+    /// [`torro_mail::Category::Spam`].
+    pub junk: bool,
 }
 
 /// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
@@ -3698,6 +3719,16 @@ impl MailLater {
 }
 
 /// [`Inbox::file_mail`] on the open database, for `source`, the account's.
+/// What the fixed rules make of `mail` for the sender `sender` (task E12.2): a category kept for
+/// that sender or domain in **any** mail account (like a hidden sender, task E3.11), else what the
+/// headers and the folder say ([`rules::mail_category`]).
+fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
+    let rules =
+        read_rules(db, &Scope::All, "instr(source, ?) = 1 AND effect = 'category'", vec![text(ACCOUNT_PREFIX)])?;
+    let kept = rules.iter().find_map(|rule| rules::kept_category(rule, sender));
+    Ok(rules::mail_category(kept, mail.invite, mail.auto_submitted.as_deref(), mail.junk))
+}
+
 fn file_mail(
     db: &mut Connection,
     mail: &NewMail,
@@ -3736,6 +3767,9 @@ fn file_mail(
         None if lane == Lane::Info => mail.bulk,
         None => None,
     };
+    // What the mail is, as far as the headers, the folder and a kept rule say (task E12.2); the
+    // feed writes the same answer into the mail store.
+    let category = mail_category_in(&tx, sender.as_deref(), mail)?;
     let existing = read_owned(&tx, &mail.account, &mail.thread)?;
     let id = match &existing {
         Some(existing) => existing.id.clone(),
@@ -3768,7 +3802,7 @@ fn file_mail(
         task: None,
         invite: None,
         reason,
-        category: None,
+        category,
     };
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
@@ -6104,6 +6138,9 @@ pub(crate) mod tests {
             list: None,
             date,
             github: None,
+            invite: false,
+            auto_submitted: None,
+            junk: false,
         }
     }
 
