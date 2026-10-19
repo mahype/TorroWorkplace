@@ -19,8 +19,8 @@ Pakete legt man in einen Ordner, später auch zum Herunterladen.
 
 | Stufe | Was ein Paket bestimmt | Stand |
 |---|---|---|
-| **1 Tokens** | Farben (hell und dunkel, auch Akzent und Status), Schriften, Schriftstufen, Abstände, Radien, Maße, Logo | **jetzt** |
-| **2 Layout-Schalter** | feste Schalter, die jede App kennt, z. B. Seitenleiste links/rechts/oben, Listen als Zeilen oder Karten, Detail daneben/darüber | später, Auswahl offen |
+| **1 Tokens** | Farben (hell und dunkel, auch Akzent und Status), Schriften, Schriftstufen, Abstände, Radien, Maße, Logo, Dichte des Eingangs (`layout.density`: Zeilen oder Karten) | **jetzt** |
+| **2 Layout-Schalter** | feste Schalter, die jede App kennt, z. B. Seitenleiste links/rechts/oben, Detail daneben/darüber | später, Auswahl offen |
 | 3 Freie Anordnung | eine Layout-Sprache beschreibt beliebige Anordnungen | **nein**: jede Ansicht würde zum Interpreter, nicht prüfbar, kaputte Pakete machten die Apps unbedienbar |
 
 Die Regeln von [torro-design](../.claude/skills/torro-design/SKILL.md) bleiben gültig, nur die **Werte** kommen aus
@@ -133,6 +133,7 @@ row_padding = [8, 16]          # Innenrand von Listenzeilen
 control_padding = [0, 10]      # Innenrand von Knöpfen, Chips, Eingaben
 section_gap = 24               # Abstand zwischen Gruppen und Abschnitten
 item_gap = 8                   # Abstand zwischen Elementen innerhalb einer Gruppe
+density = "compact"            # Zeilen oder Karten im Eingang (E8.2/#226), fehlt er: compact
 
 [size]                         # nur, was abweicht; Namen wie torro_gui::theme::size
 row = 44
@@ -176,6 +177,9 @@ Gewichte 400/500/600). Laufweite und Großschreibung gehen mit Iced 0.14 nicht u
 **Layout-Abstände sind zuerst allgemein:** ein Rand (`inset`) und wenige Innenränder und Lücken nach Rolle (Seite,
 Paneel, Zeile, Bedienelement, Gruppe, Element). Die Apps nutzen dafür benannte Tokens statt der Skala, damit ein Paket
 sie gezielt ändern kann. Abstände je einzelnem Element gibt es bewusst nicht, damit es am Anfang nicht zu bunt wird.
+Im selben Abschnitt steht die **Dichte** des Eingangs (`density`, Issue #226): `compact` zeigt eine Zeile je Eintrag,
+`comfortable` Karten mit Vorschau, Chips und Knöpfen. Sie gehört zum Paket und nicht ins Fenster, damit alle Fenster
+der Suite gleich dicht stehen. Kein mitgeliefertes Paket setzt `comfortable`; alle zeigen Zeilen.
 
 ### Seitenleiste mit eigenen Farben
 
@@ -246,7 +250,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
 | Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected` (auch mit zurückgefallenen Werten). Hat die Leiste eine eigene Fläche (`sidebar` ≠ `bg`): `focus_ring`, `accent`, `merged` und Kalenderfarben ≥ 3:1 auf `sidebar`, Statusfarben im dunklen Modus ebenso. Ohne eigene Fläche gilt für Grafik nichts Neues, ältere Pakete bleiben gültig |
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; `hero` 32–72 und `countdown` 20–48 (Erinnerung im Vollbild, ER1.5); jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
-| Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24 |
+| Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24; `density` nur `compact` oder `comfortable` (ein Wort, kein Bereich: ein anderes lehnt schon das Lesen mit Zeilennummer ab) |
 | Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
 | Maße | Bedienelemente (`control_sm` … `control_xl`) ≥ 24 (Klickziel); `row` 32–64; `row_two` 32–96; `row_message` 72–120 und `row_notice` 48–96 (Zeilen des Eingangs); `row_sidebar` 24–40; `header` 36–64; `sidebar` 180–320; `props`, `panel`, `list` 280–520; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64 (Befehlsleiste des Lesers), `pill` 28–64 (Torro-Pillen) |
 | Dateien | Pfade nur innerhalb des Paketordners, keine Links nach außen; `design.toml` ≤ 64 KB, SVG ≤ 256 KB, PNG ≤ 2 MB, Schrift ≤ 5 MB, Paket ≤ 20 MB |
@@ -450,7 +454,7 @@ Fehler, der ihn zu `font` oder `color_scheme` schickt, je nachdem, was das Paket
   `--color-scheme <id>` neben `--design`.
 - **Gleiches Bild:** Mit Torro/Torro/Torro sieht jede App aus wie vorher (exakt). Mit jedem Beispielpaket als alle drei
   Teile weichen die wirksamen Größen höchstens um 0,5 px von heute ab (Rundung des Ausgleichs).
-- **Stufe 2:** Der Kandidat „Dichte“ fällt weg, das erledigen die Designs Compact und Airy.
+- **Stufe 2:** Der Kandidat „Dichte“ fällt weg: Sie steht seit Issue #226 als `layout.density` in Stufe 1.
 
 ### Mitgelieferte Designs (Vorschlag)
 
@@ -520,7 +524,8 @@ Pakete enthalten keine Geheimnisse; Agenten dürfen sie auflisten und (als Admin
   Start in `torro_gui::settings()`, beim Wechsel über `iced::font::load`.
 - **Gleiches Bild:** Mit dem Standardpaket sieht jede App aus wie vorher. Das ist die Abnahme der Umstellung.
 - **Später, Stufe 2:** Schalter in `design.toml` (Block `[arrangement]`), die jede App liest. Welche, klären wir, wenn
-  Stufe 1 steht. Kandidaten: Seitenleiste links/rechts/als Reiter, Listen als Zeilen oder Karten, Dichte, Detail
-  daneben/darüber, Kopfleiste mit Text oder nur Icons.
+  Stufe 1 steht. Kandidaten: Seitenleiste links/rechts/als Reiter, Detail daneben/darüber, Kopfleiste mit Text oder
+  nur Icons. Nicht mehr dabei: die Dichte und „Listen als Zeilen oder Karten“ – beides ist `layout.density` in
+  Stufe 1 (Issue #226).
 - **Später, Herunterladen:** Ein Katalog (z. B. ein Git-Repo mit Paketen), „Install“ lädt, prüft und legt ab. Erst
   wenn es Pakete von anderen gibt.

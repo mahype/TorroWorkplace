@@ -1977,7 +1977,7 @@ E13.1 ── E13.2 ─┬─ E13.3
 Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/app.rs` an vielen Stellen.
 
 ### E13.1 Dichte als Wert des Designs und Schlüssel des Paket-Formats
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
   `crates/torro-core/src/design/{pack,rules}.rs`, `crates/torro-ipc/src/api.rs` (nur Beschreibungen),
   `docs/api-reference.md` (erzeugt), `docs/design-pakete.md`
