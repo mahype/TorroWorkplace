@@ -3053,14 +3053,16 @@ mod tests {
         let _ = app.update(Message::ToggleSettings);
         app.loading = false;
         let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
-        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: fresh }));
         assert!(app.loading, "the events are on their way again");
         assert!(task.units() > 0, "and the night and the appearance with them");
 
         // A change that failed changed nothing, so nothing is loaded again.
         app.loading = false;
         let failed = Box::new(Err("not connected".to_string()));
-        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
         assert!(!app.loading && task.units() == 0, "the host shows the notice, the calendar stays as it is");
     }
 

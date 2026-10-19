@@ -3400,7 +3400,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
                 // A change or a load came back: the sections let go of what was on its way.
-                if matches!(message, host::Message::Loaded(_) | host::Message::Sent(_)) {
+                if matches!(message, host::Message::Loaded(_) | host::Message::Sent { .. }) {
                     answered_settings(&mut pane.sections);
                 }
                 let outcome = pane.host.update(message);
@@ -12231,11 +12231,13 @@ mod tests {
         let mut app = overview_at(&[]);
         let _ = app.update(Message::OpenSettings);
         let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
-        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: fresh }));
         assert!(task.units() > 0, "the entries, the look and the appearance are on their way again");
         assert!(app.settings.is_some(), "and the settings stay open");
         let failed = Box::new(Err("not connected".to_string()));
-        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
         assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
     }
 

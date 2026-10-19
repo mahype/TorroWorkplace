@@ -5292,10 +5292,12 @@ mod tests {
         let mut app = launched(&["--demo"]);
         let _ = app.update(Message::ToggleSettings);
         let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
-        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: fresh }));
         assert!(task.units() > 0, "the lists and the appearance are on their way again");
         let failed = Box::new(Err("not connected".to_string()));
-        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+        let task =
+            app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
         assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
     }
 

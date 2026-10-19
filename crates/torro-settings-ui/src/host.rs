@@ -186,7 +186,13 @@ pub enum Message {
     /// A load came back.
     Loaded(Box<Data>),
     /// A send came back: the fresh data, or what went wrong.
-    Sent(Box<Result<Data, String>>),
+    ///
+    /// `changed` says whether it really carried a change. An [`Action::Send`] with no requests is
+    /// a plain reload of the sections' data – "Installed something?" in Voice and the clock that
+    /// follows the listener use it – and leaves the app's own data untouched, so it answers with
+    /// [`Outcome::None`] instead of [`Outcome::Changed`]. Without that, every such ask would pull
+    /// a full reload of the window behind it.
+    Sent { changed: bool, result: Box<Result<Data, String>> },
     /// The answer to an [`Action::Ask`] came back; the host hands it on as [`Outcome::Answer`].
     Answered(Box<Result<Response, String>>),
 }
@@ -310,9 +316,12 @@ impl Host {
             Action::None => Outcome::None,
             Action::Send(requests) => {
                 self.notice = None;
+                // No requests is a plain reload of the sections' data, not a change: the app's own
+                // data stays as it is ([`Message::Sent`]).
+                let changed = !requests.is_empty();
                 let (backend, wanted) = (Arc::clone(&self.backend), self.wanted.clone());
                 let send = crate::send(backend, requests, wanted);
-                Outcome::Work(Task::perform(send, |result| Message::Sent(Box::new(result))))
+                Outcome::Work(Task::perform(send, move |result| Message::Sent { changed, result: Box::new(result) }))
             }
             Action::Ask(request) => {
                 // One request, one answer, no reload: `send` is for what changes something.
@@ -362,13 +371,14 @@ impl Host {
                 self.loaded = true;
                 Outcome::None
             }
-            Message::Sent(result) => {
+            Message::Sent { changed, result } => {
                 self.loaded = true;
                 match *result {
                     Ok(data) => {
                         self.data = data;
-                        // The sections are fresh; the app's own data follows ([`Outcome::Changed`]).
-                        Outcome::Changed
+                        // The sections are fresh; the app's own data follows, but only after a
+                        // real change ([`Outcome::Changed`], [`Message::Sent`]).
+                        if changed { Outcome::Changed } else { Outcome::None }
                     }
                     Err(problem) => {
                         // Nothing changed, so there is nothing new for the app to load.
@@ -665,11 +675,34 @@ mod tests {
             .await
             .expect("the demo answers");
         assert_eq!(backend.sent(), vec![zoom, night], "in the order the section gave them");
-        let outcome: Outcome<()> = host.update(Message::Sent(Box::new(Ok(data))));
+        let outcome: Outcome<()> = host.update(Message::Sent { changed: true, result: Box::new(Ok(data)) });
         assert!(matches!(outcome, Outcome::Changed), "the app loads its own data now, not in a minute");
         assert!(host.loaded(), "the fresh data is there");
         assert_eq!(host.data().settings.appearance, backend.settings().appearance);
         assert!(matches!(host.act::<()>(Action::None), Outcome::None));
+    }
+
+    /// A `Send` with no requests is a plain reload of the sections' data – "Installed something?"
+    /// in Voice and the clock that follows the listener use it – and must not pull the app's own
+    /// reload behind it: the second review of #210 found five full window reloads for the five
+    /// asks after voice was switched on.
+    #[tokio::test]
+    async fn a_send_with_no_requests_changes_nothing() {
+        let backend = Arc::new(Demo::new());
+        let (mut host, _) = Host::new(Arc::clone(&backend) as Arc<dyn Backend>, sections(), vec![Request::Settings]);
+        host.notice = Some("an older problem".to_string());
+
+        assert!(matches!(host.act::<()>(Action::Send(Vec::new())), Outcome::Work(_)), "it still asks again");
+        assert!(host.notice.is_none(), "and the old notice goes, as with every send");
+        assert!(backend.sent().is_empty(), "nothing went out but the load");
+
+        // The data comes back as fresh as after any send; only the app is left alone.
+        let data = crate::send(Arc::clone(&backend) as Arc<dyn Backend>, Vec::new(), vec![Request::Settings])
+            .await
+            .expect("the demo answers");
+        let outcome: Outcome<()> = host.update(Message::Sent { changed: false, result: Box::new(Ok(data)) });
+        assert!(matches!(outcome, Outcome::None), "nothing changed, so the app loads nothing");
+        assert!(host.loaded() && host.data().settings.appearance == backend.settings().appearance);
     }
 
     /// An `Ask` reaches the daemon and its answer comes back to the section that asked, without
@@ -694,7 +727,8 @@ mod tests {
     #[test]
     fn a_failed_change_is_reported() {
         let mut host = host();
-        let outcome: Outcome<()> = host.update(Message::Sent(Box::new(Err("not connected".to_string()))));
+        let failed = Box::new(Err("not connected".to_string()));
+        let outcome: Outcome<()> = host.update(Message::Sent { changed: true, result: failed });
         assert!(matches!(outcome, Outcome::None), "nothing to load again");
         assert_eq!(host.notice.as_deref(), Some("not connected"));
     }

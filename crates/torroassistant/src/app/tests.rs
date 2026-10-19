@@ -955,11 +955,13 @@ fn a_change_in_the_settings_loads_the_window_again() {
     let _ = app.update(Message::ToggleSettings);
     settings_loaded(&mut app);
     let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
-    let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+    let task =
+        app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: fresh }));
     assert!(task.units() > 0, "the window's own data is on its way again");
     assert!(app.settings.is_some(), "and the settings stay open");
     let failed = Box::new(Err("not connected".to_string()));
-    let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+    let task =
+        app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
     assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
 }
 
