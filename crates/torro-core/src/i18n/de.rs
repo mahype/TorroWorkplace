@@ -3715,6 +3715,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{title} · now", "{title} · jetzt"),
     ("{title} · started {n} min ago", "{title} · hat vor {n} Min. begonnen"),
     // Settings in the windows of the apps, slim control centre (S.16-S.21, #210)
+    // The second link at the foot of every section list ("Appearance ↗" is translated above).
+    ("All settings", "Alle Einstellungen"),
     ("Close settings", "Einstellungen schließen"),
     ("History", "Verlauf"),
     ("Turn on in Torro Workplace", "In Torro Workplace einschalten"),
