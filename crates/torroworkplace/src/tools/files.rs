@@ -233,8 +233,8 @@ fn read(file: &Path) -> Vec<FileEntry> {
 
 /// The entries in `file` before a change is written: none when it is missing; an error when it cannot be read, so a
 /// passing read error never replaces the register by one entry and leaves every older file unreachable. A file that
-/// reads but is no register is kept aside as `files.json.broken` (replacing an older one) before the register starts
-/// anew, so what it held is not lost either.
+/// reads but is no register is kept aside under a name of its own ([`broken`]) before the register starts anew, so
+/// what it held is not lost either, and no older copy kept aside is replaced.
 fn read_to_change(file: &Path) -> Result<Vec<FileEntry>, RegisterError> {
     let bytes = match fs::read(file) {
         Ok(bytes) => bytes,
@@ -251,11 +251,16 @@ fn read_to_change(file: &Path) -> Result<Vec<FileEntry>, RegisterError> {
     }
 }
 
-/// Where a register that is no register is kept aside: `files.json.broken` next to it.
+/// Where a register that is no register is kept aside: `files.json.broken-<seconds since 1970>` next to it, with
+/// `-2`, `-3` … when that name is taken, so nothing has to be replaced (which can fail, and would lose an older copy).
 fn broken(file: &Path) -> PathBuf {
-    let mut name = file.file_name().map(|name| name.to_os_string()).unwrap_or_default();
-    name.push(".broken");
-    file.with_file_name(name)
+    let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+    let name = file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    let base = format!("{name}.broken-{seconds}");
+    (1..)
+        .map(|n| file.with_file_name(if n == 1 { base.clone() } else { format!("{base}-{n}") }))
+        .find(|path| fs::symlink_metadata(path).is_err())
+        .unwrap_or_else(|| file.with_file_name(base))
 }
 
 /// `entries` without the oldest beyond [`MAX_FILES`], written to `file` (0600) in a folder of its own (0700).
@@ -409,12 +414,25 @@ pub(crate) mod tests {
         fs::rename(&aside, &file).expect("back");
         assert_eq!(register.get(&kept.id, Maker::App), Some(kept.clone()), "the register is untouched");
 
-        // No register: kept aside whole, then a new one.
+        // No register: kept aside whole, then a new one; a second one is kept aside too, beside the first.
+        let aside = || -> Vec<Vec<u8>> {
+            let mut kept: Vec<_> = fs::read_dir(&tools)
+                .expect("listed")
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with("files.json.broken-"))
+                .map(|entry| fs::read(entry.path()).expect("read"))
+                .collect();
+            kept.sort();
+            kept
+        };
         let damaged = b"[{\"id\": \"broken";
         fs::write(&file, damaged).expect("damaged");
         let new = register.add_new(made).expect("kept");
-        assert_eq!(fs::read(tools.join("files.json.broken")).expect("kept aside"), damaged.to_vec());
+        assert_eq!(aside(), vec![damaged.to_vec()]);
         assert_eq!(register.entries(), vec![new]);
+        fs::write(&file, b"no json").expect("damaged again");
+        register.add_new(made).expect("kept");
+        assert_eq!(aside(), vec![damaged.to_vec(), b"no json".to_vec()], "the first copy stays");
     }
 
     #[test]
