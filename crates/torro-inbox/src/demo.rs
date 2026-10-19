@@ -1055,21 +1055,21 @@ impl DemoSource {
             .collect())
     }
 
-    /// How much unread demo mail each category holds (task E12.8): what the window turns into
-    /// the answer of `inbox.list_categories`. Pairs, not the wire type – `torro-ipc` depends on
-    /// this crate, not the other way round.
-    pub fn category_counts(&self) -> Vec<(Category, u32)> {
+    /// How much demo mail each category holds and how much of it is unread (task E12.8):
+    /// `(category, unread, all)`, what the window turns into the answer of
+    /// `inbox.list_categories`. Tuples, not the wire type – `torro-ipc` depends on this crate,
+    /// not the other way round.
+    pub fn category_counts(&self) -> Vec<(Category, u32, u32)> {
         let data = self.lock();
         Category::ALL
             .into_iter()
             .map(|category| {
-                let unread = data
-                    .mail
-                    .iter()
-                    .filter(|m| !m.summary.flags.contains(&Flag::Seen))
-                    .filter(|m| m.summary.category.is_some_and(|held| held.category == category))
-                    .count() as u32;
-                (category, unread)
+                let of_category =
+                    data.mail.iter().filter(|m| m.summary.category.is_some_and(|held| held.category == category));
+                let (all, unread) = of_category.fold((0, 0), |(all, unread), m| {
+                    (all + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen)))
+                });
+                (category, unread, all)
             })
             .collect()
     }

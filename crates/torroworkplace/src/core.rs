@@ -792,31 +792,24 @@ const CATEGORY_BACKLOG_MAX: u32 = 500;
 /// The decision model to ask for sorting mail, and whether the data rule allows it (task E12.6).
 /// `Err` names why nothing is asked; the caller then leaves the mail alone.
 ///
+/// Reads the assignment and the account's models, then lets [`categorize::chosen`] weigh them –
+/// on the concrete model, not on the account (`docs/ki.md`, principle 4): a local Ollama serves
+/// cloud models too (`:cloud`), and one of those would send the mail to ollama.com.
+///
 /// A free function, not a method: the mail feed's closure needs it too and holds only the pieces.
 async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String, String), categorize::Refusal> {
     let settings = settings.current();
     let assignment = settings.ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize).cloned();
-    let mut accounts = Vec::new();
-    for info in ai.infos().await {
-        if let Some((provider, _)) = ai.server(&info.id).await {
-            // Without a model named the account's seat decides; with one, task E12.5 weighed it
-            // when it was assigned.
-            let seat = match provider.seat() {
-                torro_core::ai::Seat::ThisComputer => Place::Local,
-                _ => Place::Remote,
-            };
-            accounts.push((info.id, seat));
-        }
-    }
-    let (engine, model) = categorize::chosen(assignment.as_ref(), &accounts, !settings.mail_to_cloud)?;
-    let model = match model {
-        Some(model) => model,
-        None => {
-            let models = ai.models(&engine, true).await.map_err(|_| categorize::Refusal::NoModel)?;
-            categorize::pick_model(&models).ok_or(categorize::Refusal::NoModel)?
-        }
-    };
-    Ok((engine, model))
+    let engine = assignment
+        .as_ref()
+        .filter(|held| held.is_ready())
+        .and_then(|held| held.engine.clone())
+        .ok_or(categorize::Refusal::NoModel)?;
+    // The account can be gone since it was chosen: then nothing is asked, and nothing fails.
+    let (provider, server) = ai.server(&engine).await.ok_or(categorize::Refusal::NoModel)?;
+    let models = ai.models(&engine, true).await.map_err(|_| categorize::Refusal::NoModel)?;
+    let here = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model) == Place::Local;
+    categorize::chosen(assignment.as_ref(), &models, here, !settings.mail_to_cloud)
 }
 
 /// Asks the decision model what the mail `message` of `account` is and keeps the answer with it
@@ -832,18 +825,45 @@ async fn decide_mail_with(
     model: &str,
     account: &str,
     message: &str,
-) -> Result<Option<torro_mail::MailCategory>, String> {
-    let Some(content) = mail.content_for_category(account, message).await.map_err(|err| err.to_string())? else {
-        return Ok(None);
-    };
-    let reply = ai.decide(engine, &categorize::request(model, &content)).await.map_err(|err| err.to_string())?;
+) -> Result<Option<torro_mail::MailCategory>, DecideError> {
+    let held = mail.content_for_category(account, message).await.map_err(|err| DecideError::Mail(err.to_string()))?;
+    let Some(content) = held else { return Ok(None) };
+    // The AI's own error, not its words flattened: `offline` and `auth` must reach the person as
+    // themselves, not as a plain `error`.
+    let reply = ai.decide(engine, &categorize::request(model, &content)).await.map_err(DecideError::Ai)?;
     let Some(decided) = categorize::read(&reply) else { return Ok(None) };
     let one = [message.to_string()];
-    mail.set_category(account, &one, Some(decided.category)).await.map_err(|err| err.to_string())?;
+    mail.set_category(account, &one, Some(decided.category)).await.map_err(|err| DecideError::Mail(err.to_string()))?;
     mail.set_model_answers(account, message, decided.needs_reply, decided.urgency)
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| DecideError::Mail(err.to_string()))?;
     Ok(Some(decided.category))
+}
+
+/// Why one mail could not be sorted ([`decide_mail_with`]).
+enum DecideError {
+    /// The AI server said so; its code reaches the caller (`offline`, `auth`, `busy` …).
+    Ai(torro_core::ai::AiError),
+    /// The mail store could not be read or written.
+    Mail(String),
+}
+
+impl DecideError {
+    /// The core's answer: the AI's own code where there is one, else `error`.
+    fn response(&self) -> Response {
+        match self {
+            DecideError::Ai(err) => ai_error(err),
+            DecideError::Mail(message) => Response::Error { code: "error".into(), message: message.clone() },
+        }
+    }
+
+    /// One line for the log; no subject, sender or text (security rule 7).
+    fn to_line(&self) -> String {
+        match self {
+            DecideError::Ai(err) => err.to_string(),
+            DecideError::Mail(message) => message.clone(),
+        }
+    }
 }
 
 /// How long the backlog run waits between two model calls (task E12.6): a local model must not
@@ -2914,7 +2934,7 @@ impl Core {
                 Box::pin(self.ntfy_request(request, client)).await
             }
             Request::AiModels { account, all } => match self.ai.models(&account, all).await {
-                Ok(models) => Response::AiModels { models },
+                Ok(models) => Response::AiModels { account, models },
                 Err(err) => ai_error(&err),
             },
             Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
@@ -3043,7 +3063,7 @@ impl Core {
                 match decide_mail_with(&ai, &mail, &engine, &model, &account, &message).await {
                     Ok(category) => category,
                     Err(err) => {
-                        eprintln!("torroworkplace: inbox: cannot sort a mail of {account}: {err}");
+                        eprintln!("torroworkplace: inbox: cannot sort a mail of {account}: {}", err.to_line());
                         None
                     }
                 }
@@ -3118,13 +3138,8 @@ impl Core {
                 }
             }
         }
-        let mut settings = self.settings.current();
-        if wanted.engine.is_some() {
-            settings.ai_assignments.insert(function, wanted);
-        } else {
-            settings.ai_assignments.remove(&function);
-        }
-        if let Err(err) = self.settings.update_keeping_hidden(settings) {
+        let kept = wanted.engine.is_some().then_some(wanted);
+        if let Err(err) = self.settings.set_ai_assignment(function, kept) {
             return Response::Error { code: "error".into(), message: err };
         }
         self.ai_assignments().await
@@ -3148,21 +3163,37 @@ impl Core {
     }
 
     /// `inbox.list_categories` (task E12.4): the whole catalogue with its words, and how much
-    /// unread mail each category holds in the accounts `reach` allows. A key without mail rights
-    /// reaches no account and sees 0 everywhere – never a number about a mailbox it cannot see.
+    /// mail each category holds in the accounts `reach` allows – all of it, and how much of that
+    /// is unread. A key without mail rights reaches no account and sees 0 everywhere – never a
+    /// number about a mailbox it cannot see.
     async fn list_categories(&self, account: Option<String>, reach: Reach<'_>) -> Response {
+        // An account that does not exist, or that this key may not read, is `not-found` – the
+        // same answer either way, so nothing tells a hidden mailbox from one that is not there.
+        // Counting it as zero would read as "an account without mail of any category".
+        if let Some(wanted) = &account
+            && !self.mail.accounts_in(reach).await.iter().any(|held| held == wanted)
+        {
+            return Response::Error {
+                code: "not-found".into(),
+                message: trf("There is no mail account {id}.", &[("id", wanted)]),
+            };
+        }
         let counts = match self.mail.unread_by_category(reach, account.as_deref()).await {
             Ok(counts) => counts,
             Err(err) => return err.response(),
         };
         let categories = torro_mail::Category::ALL
             .into_iter()
-            .map(|category| torro_ipc::inbox::CategoryInfo {
-                category,
-                group: category.group(),
-                label: torro_core::category::label(category).to_string(),
-                group_label: torro_core::category::group_label(category.group()).to_string(),
-                unread: counts.get(&category).copied().unwrap_or(0),
+            .map(|category| {
+                let (unread, messages) = counts.get(&category).copied().unwrap_or((0, 0));
+                torro_ipc::inbox::CategoryInfo {
+                    category,
+                    group: category.group(),
+                    label: torro_core::category::label(category).to_string(),
+                    group_label: torro_core::category::group_label(category.group()).to_string(),
+                    unread,
+                    messages,
+                }
             })
             .collect();
         Response::Categories { categories }
@@ -3193,11 +3224,15 @@ impl Core {
         let accounts: Vec<torro_ipc::inbox::CategoryProgress> = accounts
             .into_iter()
             .map(|mut progress| {
-                progress.state = match (running, cancelled, progress.done >= progress.messages) {
-                    (true, _, _) => torro_ipc::inbox::CatchUpState::Running,
-                    (false, _, true) => torro_ipc::inbox::CatchUpState::Complete,
-                    (false, true, false) => torro_ipc::inbox::CatchUpState::Cancelled,
-                    (false, false, false) => torro_ipc::inbox::CatchUpState::NotStarted,
+                // Nothing to sort comes first: an account whose window holds no mail has not
+                // been through a run, and one that is through is through even while another
+                // account still runs.
+                progress.state = match (progress.messages, progress.done >= progress.messages, running, cancelled) {
+                    (0, _, _, _) => torro_ipc::inbox::CatchUpState::NotStarted,
+                    (_, true, _, _) => torro_ipc::inbox::CatchUpState::Complete,
+                    (_, false, true, _) => torro_ipc::inbox::CatchUpState::Running,
+                    (_, false, false, true) => torro_ipc::inbox::CatchUpState::Cancelled,
+                    (_, false, false, false) => torro_ipc::inbox::CatchUpState::NotStarted,
                 };
                 progress
             })
@@ -3243,7 +3278,7 @@ impl Core {
                 let message = tr("The AI's answer held no category. Try again or pick another model.");
                 return Response::Error { code: "error".into(), message: message.to_string() };
             }
-            Err(err) => return Response::Error { code: "error".into(), message: err },
+            Err(err) => return err.response(),
         };
         // Every mail of the conversation reads alike, and so does the entry.
         if let Err(err) = self.mail.set_category(&account, &messages, Some(decided)).await {
@@ -3252,6 +3287,29 @@ impl Core {
         match self.inbox.set_category(&stored.id, Some(decided)) {
             Ok(item) => Response::ItemCategory { item, rule: None, new_rule: false },
             Err(err) => Response::Error { code: "error".into(), message: err },
+        }
+    }
+
+    /// `inbox.classify_item` for a mail without an entry (task E12.6): the same call as for an
+    /// entry, on this one mail. Nothing is stored in the inbox – there is no entry – so the
+    /// answer carries the mail as an entry would hold it, with the category the model gave it.
+    async fn classify_message(&self, stand_in: torro_inbox::Item) -> Response {
+        let (engine, model) = match decider_of(&self.settings, &self.ai).await {
+            Ok(decider) => decider,
+            Err(refusal) => return refused_decider(refusal),
+        };
+        let account = stand_in.source.key();
+        match decide_mail_with(&self.ai, &self.mail, &engine, &model, &account, &stand_in.id).await {
+            Ok(Some(category)) => {
+                let mut item = stand_in;
+                item.category = Some(category);
+                Response::ItemCategory { item, rule: None, new_rule: false }
+            }
+            Ok(None) => {
+                let message = tr("The AI's answer held no category. Try again or pick another model.");
+                Response::Error { code: "error".into(), message: message.to_string() }
+            }
+            Err(err) => err.response(),
         }
     }
 
@@ -3305,6 +3363,31 @@ impl Core {
                     Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until) }, None),
                     Err(refused) => return *refused,
                 }
+            }
+            // What a mail is, for a mail without an entry (task E12.4): the category is kept
+            // with the mail itself, and with `remember` the inbox keeps the rule.
+            Ok((Request::SetItemCategory { category, remember, .. }, Some(stand_in))) => {
+                let request = Request::SetItemCategory { id: stand_in.id.clone(), category, remember };
+                let answer = self.inbox.handle_message(request, &stand_in, client, Utc::now());
+                if let Response::ItemCategory { .. } = &answer {
+                    let account = stand_in.source.key();
+                    let one = [stand_in.id.clone()];
+                    let held = torro_mail::MailCategory::by_person(category);
+                    if let Err(err) = self.mail.set_category(&account, &one, Some(held)).await {
+                        return Response::Error { code: "error".into(), message: err.to_string() };
+                    }
+                }
+                return answer;
+            }
+            // Asking the model again, for a mail without an entry: the same call as for an
+            // entry's newest mail, on this one.
+            Ok((Request::ClassifyItem { .. }, Some(stand_in))) => {
+                if let Some(refused) =
+                    self.inbox.message_refusal(&Request::ClassifyItem { id: stand_in.id.clone() }, &stand_in, client)
+                {
+                    return refused;
+                }
+                return Box::pin(self.classify_message(stand_in)).await;
             }
             Ok((request, Some(stand_in))) => return self.inbox.handle_message(request, &stand_in, client, Utc::now()),
             Err(refused) => return refused,
@@ -8511,6 +8594,73 @@ mod tests {
         assert_eq!(list_ids(&core, None, Request::TaskCollections).await, [list.id]);
     }
 
+    /// Task E12.4: the four commands around the categories answer for the keys that may ask
+    /// them, and refuse the ones that may not. Without a mail account nothing is counted, and
+    /// without a decision model nothing is asked – each with its own code, never a bare `error`.
+    #[tokio::test]
+    async fn the_commands_around_the_categories_answer_by_their_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        // The catalogue: every category, with its words and zero counts – there is no mailbox.
+        let Response::Categories { categories } =
+            ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
+        else {
+            panic!("the catalogue answers with Categories");
+        };
+        assert_eq!(categories.len(), torro_mail::Category::ALL.len());
+        assert!(categories.iter().all(|held| held.unread == 0 && held.messages == 0));
+        assert_eq!(
+            categories[0].label,
+            torro_core::category::label(categories[0].category),
+            "the words are the suite's own"
+        );
+        // An account that is not there is `not-found`, never zeros that read as "nothing of any
+        // category".
+        let elsewhere = Request::ListCategories { account: Some("mail:nobody@example.org".into()) };
+        assert_eq!(code(&ask(&core, Some(&app_key), elsewhere).await), "not-found");
+
+        // How the sorting stands: nothing assigned, no account, so nothing running.
+        let Response::Categorization { categorization } = ask(&core, Some(&app_key), Request::GetCategorization).await
+        else {
+            panic!("the state answers with Categorization");
+        };
+        assert!(!categorization.enabled && categorization.model.is_none() && categorization.accounts.is_empty());
+
+        // Without a decision model neither the backlog run nor one mail is asked.
+        let run = ask(&core, Some(&app_key), Request::CatchUpCategories { cancel: false }).await;
+        assert_eq!(code(&run), "not-connected", "no model, nothing asked");
+        let one = ask(&core, Some(&app_key), Request::ClassifyItem { id: "i0000001".into() }).await;
+        assert_eq!(code(&one), "not-found", "no such entry");
+
+        // A key without the inbox is refused all four, before anything is read.
+        let mut none = RightsTemplate::ReadOnly.rights();
+        none.areas.insert(Area::Inbox, AreaRights { level: Level::NoAccess, admin: false });
+        let (_, blind) = client(&core, none).await;
+        for request in [
+            Request::ListCategories { account: None },
+            Request::GetCategorization,
+            Request::CatchUpCategories { cancel: false },
+            Request::ClassifyItem { id: "i0000001".into() },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&blind), request).await), "forbidden");
+        }
+
+        // Read access reads the two readers, and the backlog run takes the admin switch: it
+        // starts up to 500 model calls, so a person decides.
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
+        let (_, key) = client(&core, reading).await;
+        assert!(matches!(
+            ask(&core, Some(&key), Request::ListCategories { account: None }).await,
+            Response::Categories { .. }
+        ));
+        assert!(matches!(ask(&core, Some(&key), Request::GetCategorization).await, Response::Categorization { .. }));
+        let run = ask(&core, Some(&key), Request::CatchUpCategories { cancel: false }).await;
+        assert_eq!(code(&run), "forbidden", "the backlog run needs the admin switch");
+    }
+
     /// Full access with the admin switch of the inbox on, so muting waits for a person.
     fn inbox_admin() -> Rights {
         let mut rights = RightsTemplate::FullAccess.rights();
@@ -13476,7 +13626,7 @@ mod tests {
         assert_eq!(listed, Response::Accounts { accounts: vec![account.clone()] });
 
         let models = Request::AiModels { account: account.id.clone(), all: false };
-        let Response::AiModels { models } = ask(&core, Some(&app_key), models).await else { panic!("models") };
+        let Response::AiModels { models, .. } = ask(&core, Some(&app_key), models).await else { panic!("models") };
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["qwen/qwen3-14b"]);
         let unknown = Request::AiModels { account: "ai:openrouter@nowhere.example".into(), all: true };
         assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found");

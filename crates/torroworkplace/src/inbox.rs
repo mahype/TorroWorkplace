@@ -719,9 +719,10 @@ impl Inbox {
         check_message(request, stand_in, client, Utc::now()).err().map(Failure::response)
     }
 
-    /// `inbox.list_mute_options`, `inbox.mute_item` and `inbox.snooze_item` without `until` (task
-    /// E9.1: the mail as it is, nothing to take back) for a mail message without an entry (issue
-    /// #123): `stand_in` as [`Inbox::message_refusal`] takes it. The options are the message's
+    /// `inbox.list_mute_options`, `inbox.mute_item`, `inbox.snooze_item` without `until` (task
+    /// E9.1: the mail as it is, nothing to take back) and `inbox.set_item_category` (task E12.4)
+    /// for a mail message without an entry (issue #123): `stand_in` as
+    /// [`Inbox::message_refusal`] takes it. The options are the message's
     /// traits ([`rules::message_mute_options`]); muting keeps a rule as for an entry's trait and
     /// changes the open entries it holds for at once ([`mute_by`]). `not-found` for a message the
     /// client may not see, `error` for its conversation (there is no entry to close; a reply would
@@ -751,9 +752,49 @@ impl Inbox {
                     let stored = Stored { owner: stand_in.source.key(), item: stand_in.clone() };
                     Ok(Response::Item { item: stored.shown_to(client) })
                 }
+                // What a mail is (task E12.4), for a mail without an entry: the category goes to
+                // the mail itself, which the core writes; only the rule is kept here. The item
+                // that comes back is the mail as an entry would hold it, with its new category –
+                // nothing is stored in the inbox, because there is nothing to store it on.
+                Request::SetItemCategory { category, remember, .. } => {
+                    let tx = db.transaction()?;
+                    let (rule, new_rule) = match remember {
+                        false => (None, false),
+                        true => {
+                            let sender = rules::mail_sender(stand_in).ok_or_else(|| {
+                                Failure::Invalid("this mail names no sender to remember the category for".into())
+                            })?;
+                            let candidate = Rule {
+                                id: new_id()?,
+                                source: stand_in.source.clone(),
+                                sender: Some(sender),
+                                domain: None,
+                                effect: RuleEffect::Category { category },
+                                created: now,
+                                facet: None,
+                                until: None,
+                            };
+                            let (rule, new_rule) = category_rule(&tx, candidate, client)?;
+                            (Some(rule), new_rule)
+                        }
+                    };
+                    tx.commit()?;
+                    let mut item = stand_in.clone();
+                    item.category = Some(torro_mail::MailCategory::by_person(category));
+                    Ok(Response::ItemCategory { item, rule, new_rule })
+                }
+                // Asking the model again needs the AI accounts: the core answers it
+                // ([`Core::classify_item`]), with the mail this stands in for.
+                Request::ClassifyItem { .. } => {
+                    Err(Failure::Invalid("inbox.classify_item is answered by the core".into()))
+                }
                 // Snoozing files the mail first: the core does it ([`Inbox::file_mail`]) and snoozes
                 // the entry it gets.
-                _ => Err(Failure::Invalid("only muting and taking back from later take the id of a mail".into())),
+                _ => Err(Failure::Invalid(
+                    "only muting, the category and taking back from later take the id of a \
+                                           mail"
+                        .into(),
+                )),
             }
         });
         answered.unwrap_or_else(Failure::response)
@@ -2825,7 +2866,12 @@ fn check_message(
         }
         // "Later" for any mail (task E9.1): as for an entry of the account.
         Request::SnoozeItem { .. } => api::check_item_change(stand_in, client).map_err(Failure::Forbidden),
-        _ => Err(Failure::Invalid("only muting and snoozing take the id of a mail".into())),
+        // What a mail is, for any mail (task E12.4): the category belongs to the mail, not to
+        // its entry, so a mail that never became one can be filed too.
+        Request::SetItemCategory { .. } | Request::ClassifyItem { .. } => {
+            api::check_item_change(stand_in, client).map_err(Failure::Forbidden)
+        }
+        _ => Err(Failure::Invalid("only muting, snoozing and the category take the id of a mail".into())),
     }
 }
 

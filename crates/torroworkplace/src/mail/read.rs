@@ -332,6 +332,9 @@ pub async fn search_messages(
         only: None,
         except: Vec::new(),
         categories: search.categories.clone(),
+        // Filtering by category lists the inbox only (task E12.8): a reply of one's own and mail
+        // thrown away keep their category, and the sidebar counts them nowhere either.
+        in_inbox: !search.categories.is_empty(),
     };
     let later = match inbox.mail_later(&later_accounts(&stores, reach), now) {
         Ok(later) => later,

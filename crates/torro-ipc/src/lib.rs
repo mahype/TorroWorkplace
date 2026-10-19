@@ -1473,28 +1473,6 @@ pub enum Request {
         /// `true` mutes, `false` unmutes.
         muted: bool,
     },
-    /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
-    ///
-    /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
-    ///   brings it back. Write access, like `inbox.set_item_done`.
-    /// - `sender`: every later mail from the sender's address, in **every** mail account, is
-    ///   dropped instead of becoming an entry, and the open and snoozed mail entries it matches are
-    ///   done at once. A lasting rule like [`Request::MuteSource`]
-    ///   ([`torro_inbox::RuleEffect::Muted`] with `sender`), removed with [`Request::RemoveRule`];
-    ///   admin access.
-    /// - `domain`: the same for every address of the sender's domain (exactly, no subdomains);
-    ///   admin access.
-    ///
-    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved, in
-    /// every scope. Answered with [`Response::Hidden`]: the rule as stored (the one already there
-    /// when the same rule is made again, `new_rule: false`) and the ids of the entries it marked
-    /// done, as far as the client sees them – what "Undo" takes back. `not-found` for an unknown
-    /// entry or one the client may not see, `forbidden` for one it may not change (rule 1),
-    /// `error` for an entry that is no mail or, for `sender` and `domain`, names no sender's
-    /// address.
-    /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
-    /// `docs/kategorien.md`): every category with its group, the words for both and how much
-    /// unread mail it holds. The counts only cover mail accounts this key may read.
     /// Which AI account and model each function of the suite uses ([`Response::AiAssignments`],
     /// task E12.5, `docs/ki.md`): every function, also those nobody set up, with empty fields.
     #[serde(rename = "ai.list_assignments")]
@@ -1522,6 +1500,12 @@ pub enum Request {
         #[serde(default)]
         enabled: bool,
     },
+    /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
+    /// `docs/kategorien.md`): every category with its group, the words for both, how much mail it
+    /// holds and how much of that is unread. Counted in the inbox folder of the mail accounts
+    /// this key may read – mail thrown away, marked as spam or sent by the person keeps its
+    /// category and is counted nowhere. `not-found` for an `account` that is not there or that
+    /// this key may not read.
     #[serde(rename = "inbox.list_categories")]
     ListCategories {
         /// Only count in this account: `mail:<address>`. Left out: every account in reach.
@@ -1534,6 +1518,10 @@ pub enum Request {
     /// that needs admin rights and the person's approval, which `inbox.remove_rule` takes back.
     /// `error` for an entry that is no mail or, with `remember`, names no sender's address;
     /// `not-found` for an entry of a mail account this key may not read.
+    ///
+    /// A message's id (`m:…`) works for mail that never became an entry: the category is kept
+    /// with the mail, `remember` keeps the rule all the same, and the answer holds the mail as
+    /// an entry would show it.
     #[serde(rename = "inbox.set_item_category")]
     SetItemCategory {
         /// The mail entry's id, or a message's id (`m:…`).
@@ -1548,6 +1536,7 @@ pub enum Request {
     /// unlike the automatic run this **overwrites a category the person set by hand** – whoever
     /// presses the button wants exactly that. `not-connected` when no decision model is assigned
     /// or the data rule leaves none on this computer, `unsupported` for an entry without mail.
+    /// A message's id (`m:…`) asks about that one mail, entry or none.
     #[serde(rename = "inbox.classify_item")]
     ClassifyItem {
         /// The mail entry's id, or a message's id (`m:…`).
@@ -1567,6 +1556,25 @@ pub enum Request {
         #[serde(default)]
         cancel: bool,
     },
+    /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
+    ///
+    /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
+    ///   brings it back. Write access, like `inbox.set_item_done`.
+    /// - `sender`: every later mail from the sender's address, in **every** mail account, is
+    ///   dropped instead of becoming an entry, and the open and snoozed mail entries it matches are
+    ///   done at once. A lasting rule like [`Request::MuteSource`]
+    ///   ([`torro_inbox::RuleEffect::Muted`] with `sender`), removed with [`Request::RemoveRule`];
+    ///   admin access.
+    /// - `domain`: the same for every address of the sender's domain (exactly, no subdomains);
+    ///   admin access.
+    ///
+    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved, in
+    /// every scope. Answered with [`Response::Hidden`]: the rule as stored (the one already there
+    /// when the same rule is made again, `new_rule: false`) and the ids of the entries it marked
+    /// done, as far as the client sees them – what "Undo" takes back. `not-found` for an unknown
+    /// entry or one the client may not see, `forbidden` for one it may not change (rule 1),
+    /// `error` for an entry that is no mail or, for `sender` and `domain`, names no sender's
+    /// address.
     #[serde(rename = "inbox.hide_sender")]
     HideSender {
         /// The mail entry's id.
@@ -2648,7 +2656,6 @@ pub enum Response {
         /// dropped.
         id: Option<String>,
     },
-    /// The lasting rules of the inbox ([`Request::ListRules`]).
     /// What each function of the suite uses ([`Request::AiAssignments`],
     /// [`Request::SetAiAssignment`]): every function, with the words a person reads for it. No
     /// secret is in here – only ids.
@@ -2679,6 +2686,7 @@ pub enum Response {
     Categorization {
         categorization: crate::inbox::Categorization,
     },
+    /// The lasting rules of the inbox ([`Request::ListRules`]).
     Rules {
         rules: Vec<Rule>,
         /// How much each rule of `rules` caught (task E8.8a), one per rule by its id. Left out by
@@ -2807,6 +2815,10 @@ pub enum Response {
     },
     /// The models of an AI account ([`Request::AiModels`]), in the server's order.
     AiModels {
+        /// The account they belong to, as it was asked for: a window that asks several accounts
+        /// in one load tells the answers apart by it (task E12.10).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        account: String,
         models: Vec<AiModel>,
     },
     /// The AI servers found on this computer ([`Request::FindAiServers`]).

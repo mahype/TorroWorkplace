@@ -144,6 +144,36 @@ pub fn start_with(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Opti
     tokio::spawn(Feed { inbox, mail, accounts_file, decide }.run(changes));
 }
 
+/// How long one mail may keep the decision model busy, and how long the run waits before the
+/// next one (task E12.6): a model that hangs must not keep a round of new mail waiting for ever,
+/// and the machine stays usable while it works.
+const DECIDE_TIMEOUT: Duration = Duration::from_secs(60);
+const DECIDE_PAUSE: Duration = Duration::from_millis(250);
+
+/// Asks the model about `messages` of `account`, one at a time, and puts what it says on their
+/// entries too (task E12.6). Runs beside the filing, never in it: the entries are there already,
+/// and the category reaches them as soon as the model answered.
+async fn decide_later(decide: Decider, inbox: Arc<Inbox>, account: String, messages: Vec<String>) {
+    for message in messages {
+        let asked = decide(account.clone(), message.clone());
+        let category = match tokio::time::timeout(DECIDE_TIMEOUT, asked).await {
+            Ok(category) => category,
+            Err(_) => {
+                eprintln!("torroworkplace: inbox: the decision model took too long for a mail of {account}");
+                return;
+            }
+        };
+        // The entry of that mail reads alike; the decider already kept the category with the mail.
+        if let Some(category) = category
+            && let Some(entry) = inbox.entry_of_message(&account, &message)
+            && let Err(err) = inbox.set_category(&entry, Some(category))
+        {
+            eprintln!("torroworkplace: inbox: cannot put a category on an entry of {account}: {err}");
+        }
+        tokio::time::sleep(DECIDE_PAUSE).await;
+    }
+}
+
 /// Asks a decision model what the mail `message` of `account` is and keeps the answer with it
 /// (task E12.6); `Ok(None)` when nothing could be said. The core wires `Core::decide_new_mail`
 /// in here, so the feed need not know about AI accounts, assignments or the data rule.
@@ -555,18 +585,21 @@ impl Feed {
         {
             eprintln!("torroworkplace: inbox: cannot keep the category of the new mail of {account}: {err}");
         }
-        // What no rule could tell goes to the decision model, one mail at a time (task E12.6).
-        if let Some(decide) = &self.decide {
-            let undecided: Vec<String> =
-                mails.iter().filter(|mail| !sorted.contains(&mail.message)).map(|mail| mail.message.clone()).collect();
-            for message in undecided {
-                decide(account.to_string(), message).await;
-            }
-        }
         for mail in &mails {
             if let Err(err) = self.inbox.file_mail(mail, notify, now) {
                 eprintln!("torroworkplace: inbox: cannot file the new mail of {account}: {err}");
                 return;
+            }
+        }
+        // What no rule could tell goes to the decision model – **after** the mail is filed, in a
+        // task of its own (task E12.6). New mail must stand in the list at once; a local model
+        // takes seconds per mail, and waiting here would hold up every entry of this round.
+        if let Some(decide) = &self.decide {
+            let undecided: Vec<String> =
+                mails.iter().filter(|mail| !sorted.contains(&mail.message)).map(|mail| mail.message.clone()).collect();
+            if !undecided.is_empty() {
+                let (decide, inbox, owner) = (Arc::clone(decide), Arc::clone(&self.inbox), account.to_string());
+                tokio::spawn(decide_later(decide, inbox, owner, undecided));
             }
         }
     }

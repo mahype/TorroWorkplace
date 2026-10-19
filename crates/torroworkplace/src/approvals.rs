@@ -1059,6 +1059,18 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     // The display name the core knows, else the id the command runs with.
     let named = |id: &str| quote(facts.name.as_deref().unwrap_or(id));
     match request {
+        // Which model does which function (task E12.5): the function and the account, no secret.
+        Request::SetAiAssignment { function, engine: Some(engine), model, .. } => trf(
+            "Let {engine} ({model}) do “{function}”",
+            &[
+                ("engine", &quote(engine)),
+                ("model", &model.as_deref().unwrap_or(tr("a model it picks"))),
+                ("function", &function.label()),
+            ],
+        ),
+        Request::SetAiAssignment { function, .. } => {
+            trf("Let no model do “{function}” any more", &[("function", &function.label())])
+        }
         Request::DeleteEvent { event } => match &facts.item {
             Some(item) => trf(
                 "Delete event \"{title}\" on {when} from \"{calendar}\"",
@@ -1831,6 +1843,30 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             &[("entry", &entry()), ("when", &when(&EventTime::DateTime(*until), today))],
         ),
         Request::SnoozeItem { until: None, .. } => trf("Stop snoozing {entry}", &[("entry", &entry())]),
+        // Filing a mail by hand and keeping that for its sender (task E12.4). The sender comes
+        // from the stored entry (`InboxFacts`), never from the request.
+        Request::SetItemCategory { category, remember: true, .. }
+            if facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).is_some() =>
+        {
+            let sender = facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).unwrap_or_default();
+            trf(
+                "File {entry} as {category} and later mail from {sender} too",
+                &[
+                    ("entry", &entry()),
+                    ("category", &torro_core::category::label(*category)),
+                    ("sender", &format!("\"{}\"", quote(&sender))),
+                ],
+            )
+        }
+        Request::SetItemCategory { category, .. } => trf(
+            "File {entry} as {category}",
+            &[("entry", &entry()), ("category", &torro_core::category::label(*category))],
+        ),
+        // The backlog run: up to 500 model calls per mail account (task E12.4).
+        Request::CatchUpCategories { cancel: false } => {
+            tr("Sort the mail that has no category yet, with the AI on this computer").to_string()
+        }
+        Request::CatchUpCategories { cancel: true } => tr("Stop sorting mail into categories").to_string(),
         Request::SetItemLane { lane, remember: false, .. } => {
             trf("Move {entry} to {lane}", &[("entry", &entry()), ("lane", &lane_name(*lane))])
         }

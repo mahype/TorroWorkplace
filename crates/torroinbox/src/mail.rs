@@ -377,12 +377,13 @@ impl MailSource for DemoSource {
     async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
         Ok(DemoSource::category_counts(self)
             .into_iter()
-            .map(|(category, unread)| CategoryInfo {
+            .map(|(category, unread, messages)| CategoryInfo {
                 category,
                 group: category.group(),
                 label: torro_core::category::label(category).to_string(),
                 group_label: torro_core::category::group_label(category.group()).to_string(),
                 unread,
+                messages,
             })
             .collect())
     }

@@ -1663,8 +1663,14 @@ pub struct CategoryInfo {
     /// What a person reads for its group.
     pub group_label: String,
     /// Unread mail of this category, counted only in the accounts the caller may read; 0 for a
-    /// caller without access to any mail.
+    /// caller without access to any mail. The inbox folder only: mail thrown away, marked as
+    /// spam or sent by the person keeps its category and is counted nowhere.
     pub unread: u32,
+    /// All mail of this category in the same place, read or not: whether the category **occurs**
+    /// at all. The sidebar lists a category by this and shows [`CategoryInfo::unread`] as its
+    /// number, so an entry never leads to an empty list.
+    #[serde(default)]
+    pub messages: u32,
 }
 
 /// How the categorisation of mail stands (`inbox.get_categorization`, task E12.4).

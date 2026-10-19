@@ -85,7 +85,7 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
         Request::AiModels { account, .. } => Message::Models(
             account.clone(),
             result.and_then(|response| match response {
-                Response::AiModels { models } => Ok(models),
+                Response::AiModels { models, .. } => Ok(models),
                 other => Err(Refusal::unexpected(&other)),
             }),
         ),

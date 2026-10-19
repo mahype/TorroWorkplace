@@ -121,9 +121,11 @@ pub struct Data {
     /// How the sorting of mail by a model stands (`inbox.get_categorization`, task E12.10): the
     /// backlog per account.
     pub categorization: torro_ipc::inbox::Categorization,
-    /// The models of the AI account that sorts mail (`ai.list_models`), for its picker; only the
-    /// deciding ones are offered.
-    pub decider_models: Vec<AiModel>,
+    /// The models of every AI account, each with the account it came from (`ai.list_models`,
+    /// task E12.10): the mail window's "Categorization" offers the deciding ones of all of them,
+    /// so a model can be picked before anything is assigned. Only filled where the load asked
+    /// for the assignments ([`Data::follow_up`]).
+    pub decider_models: Vec<(String, AiModel)>,
     /// The inbox sources the window may see, muted ones included (`inbox.list_sources`): the
     /// inbox's section "Sources" tells by them whether a source is muted (task S.20,
     /// [`inbox::sources`]).
@@ -149,11 +151,18 @@ impl Data {
             Response::Memories { notes } => self.memories = notes,
             Response::Bots { bots } => self.bots = bots,
             Response::Engines { engines } => self.engines = engines,
-            Response::AiModels { models } => {
-                // The assistant's default models and the ones for sorting mail come from the
-                // same command; the section that asked for them keeps both (task E12.10).
-                self.decider_models = models.clone();
-                self.default_models = models;
+            Response::AiModels { account, models } => {
+                // Several accounts answer the same command in one load (task E12.10); each
+                // answer says which account it is from, and only the assistant's default engine
+                // fills its own list. A core from before that field says nothing: then the one
+                // answer is the assistant's, as it used to be.
+                let default = assistant::models_request(self);
+                let mine = matches!(&default, Some(Request::AiModels { account: asked, .. }) if *asked == account);
+                if account.is_empty() || mine {
+                    self.default_models = models.clone();
+                }
+                self.decider_models.retain(|(held, _)| *held != account);
+                self.decider_models.extend(models.into_iter().map(|model| (account.clone(), model)));
             }
             Response::AiAssignments { assignments } => self.assignments = assignments,
             Response::Categorization { categorization } => self.categorization = categorization,
@@ -169,14 +178,29 @@ impl Data {
     }
 
     /// What a load asks for in a second round, once the first answers are in: requests that only
-    /// the loaded data can name. Today one – `ai.list_models` takes the id of the AI account the
-    /// assistant's default engine names, which stands in the settings and whose kind stands in the
-    /// engines ([`assistant::models_request`]).
+    /// the loaded data can name. Both are `ai.list_models` – the AI account the assistant's
+    /// default engine names ([`assistant::models_request`]), and, where the load asked for the
+    /// assignments, every AI account, so the mail window can offer a model to sort mail with
+    /// before anything is assigned (task E12.10).
     ///
     /// Asked once, never again from its own answers: a section that adds a round here keeps it to
     /// what the first round brought.
     pub fn follow_up(&self) -> Vec<Request> {
-        assistant::models_request(self).into_iter().collect()
+        let mut wanted: Vec<Request> = assistant::models_request(self).into_iter().collect();
+        // Only a load that wants the assignments pays for asking every AI server: the control
+        // centre keeps the one request it always had.
+        if self.assignments.is_empty() {
+            return wanted;
+        }
+        let asked = |wanted: &[Request], id: &str| {
+            wanted.iter().any(|request| matches!(request, Request::AiModels { account, .. } if account == id))
+        };
+        for account in self.accounts.iter().filter(|account| account.kind == "ai" && !account.id.is_empty()) {
+            if !asked(&wanted, &account.id) {
+                wanted.push(Request::AiModels { account: account.id.clone(), all: false });
+            }
+        }
+        wanted
     }
 }
 

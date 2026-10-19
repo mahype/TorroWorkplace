@@ -7278,12 +7278,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The whole group is left out until at least one mail has a category: before that it would
     /// be four empty rows.
     fn category_entries(&self) -> Vec<NavEntry> {
-        if self.launch.kind != Kind::Mail || self.categories.is_empty() {
+        // Only what is there: the catalogue always holds all of them, so a mailbox nothing has
+        // been sorted in yet shows no "Categories" at all (task E12.8). A category the person
+        // switched off under Settings › Categorization counts as not there either.
+        let hidden = &self.look.hidden_categories;
+        let occurs = |held: &&CategoryInfo| held.messages > 0 && !hidden.contains(&held.category);
+        if self.launch.kind != Kind::Mail || !self.categories.iter().any(|held| occurs(&held)) {
             return Vec::new();
         }
         let mut entries = Vec::new();
         for group in CategoryGroup::ALL {
-            let of_group: Vec<&CategoryInfo> = self.categories.iter().filter(|held| held.group == group).collect();
+            let of_group: Vec<&CategoryInfo> =
+                self.categories.iter().filter(|held| held.group == group).filter(occurs).collect();
+            if of_group.is_empty() {
+                continue;
+            }
             let unread: u32 = of_group.iter().map(|held| held.unread).sum();
             let view = View::Category(mail::CategoryView { group, only: None });
             let open = self.open_groups.contains(&group);
@@ -7301,15 +7310,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if !open {
                 continue;
             }
-            // Only the categories that occur and that the person did not switch off under
-            // Settings › Categorization (task E12.10).
-            let hidden = &self.look.hidden_categories;
-            for held in of_group.into_iter().filter(|held| held.unread > 0 && !hidden.contains(&held.category)) {
+            for held in of_group {
                 let view = View::Category(mail::CategoryView { group, only: Some(held.category) });
                 entries.push(NavEntry {
                     mark: Mark::Tinted(mail::group_mark(group).0, self.category_colour(at)),
                     label: held.label.clone(),
-                    count: Some(held.unread as usize),
+                    // The number is what waits, as every other entry's is; the entry itself
+                    // stands as long as the category occurs.
+                    count: (held.unread > 0).then_some(held.unread as usize),
                     active: view == self.view,
                     view,
                     target: Target::View,

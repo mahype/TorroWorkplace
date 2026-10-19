@@ -1512,18 +1512,21 @@ impl MailService {
         Ok(progress)
     }
 
-    /// How much unread mail each category holds, over every account in `reach` (task E12.4):
-    /// the counts behind `inbox.list_categories`. With `only` just that account.
+    /// How much mail each category holds and how much of it is unread, over every account in
+    /// `reach` (task E12.4): the counts behind `inbox.list_categories`, as `(unread, all)`. With
+    /// `only` just that account. The inbox folder only ([`MailStore::unread_by_category`]).
     pub async fn unread_by_category(
         &self,
         reach: Reach<'_>,
         only: Option<&str>,
-    ) -> Result<std::collections::BTreeMap<torro_mail::Category, u32>, MailError> {
-        let mut counts = std::collections::BTreeMap::new();
+    ) -> Result<std::collections::BTreeMap<torro_mail::Category, (u32, u32)>, MailError> {
+        let mut counts: std::collections::BTreeMap<torro_mail::Category, (u32, u32)> = Default::default();
         for mailbox in self.reachable(reach, only).await {
             let Ok(store) = mailbox.store() else { continue };
-            for (category, count) in store.run(|store| store.unread_by_category()).await? {
-                *counts.entry(category).or_insert(0u32) += count;
+            for (category, unread, all) in store.run(|store| store.unread_by_category()).await? {
+                let held = counts.entry(category).or_insert((0, 0));
+                held.0 += unread;
+                held.1 += all;
             }
         }
         Ok(counts)

@@ -167,6 +167,8 @@ impl Demo {
             ),
             self.ntfy_account(),
             self.mail_account(),
+            // The local AI, so the mail window's "Categorization" has a model to offer.
+            account("ai:ollama@localhost:11434", "ai", "Ollama", connected("http://localhost:11434", ""), Vec::new()),
         ]
     }
 
@@ -331,18 +333,70 @@ impl Demo {
         }]
     }
 
-    /// The models the sample AI account offers (`ai.list_models`).
+    /// The models the sample AI account offers (`ai.list_models`): one that writes and one that
+    /// only decides, which is what sorting mail needs (task E12.10).
     fn models(&self) -> Vec<AiModel> {
-        vec![AiModel {
-            id: "qwen3:8b".into(),
-            name: "qwen3:8b".into(),
-            tools: Some(true),
-            open_weights: Some(true),
-            context: None,
-            reasoning: Some(true),
-            remote: Some(false),
-            decision: None,
-        }]
+        vec![
+            AiModel {
+                id: "qwen3:8b".into(),
+                name: "qwen3:8b".into(),
+                tools: Some(true),
+                open_weights: Some(true),
+                context: None,
+                reasoning: Some(true),
+                remote: Some(false),
+                decision: None,
+            },
+            AiModel {
+                id: "nimble".into(),
+                name: "nimble".into(),
+                tools: Some(false),
+                open_weights: Some(true),
+                context: None,
+                reasoning: Some(false),
+                remote: Some(false),
+                decision: Some(true),
+            },
+        ]
+    }
+
+    /// What each function of the suite uses (`ai.list_assignments`): sorting mail is set up with
+    /// the local deciding model. Every function of the list, so a new one shows up here by
+    /// itself – unassigned until the sample says otherwise.
+    fn assignments(&self) -> Vec<torro_ipc::AiAssignmentInfo> {
+        use torro_core::ai::{AiAssignment, AiFunction};
+        AiFunction::ALL
+            .into_iter()
+            .map(|function| {
+                let mut assignment = AiAssignment::none(function);
+                if function == AiFunction::InboxCategorize {
+                    assignment.engine = Some("ai:ollama@localhost:11434".into());
+                    assignment.model = Some("nimble".into());
+                    assignment.enabled = true;
+                }
+                torro_ipc::AiAssignmentInfo {
+                    assignment,
+                    label: function.label().to_string(),
+                    needs_decision: function.needs_decision(),
+                }
+            })
+            .collect()
+    }
+
+    /// How far the sample inbox is sorted (`inbox.get_categorization`): most of it done, the rest
+    /// waiting for the backlog run.
+    fn categorization(&self) -> torro_ipc::inbox::Categorization {
+        torro_ipc::inbox::Categorization {
+            enabled: true,
+            engine: Some("ai:ollama@localhost:11434".into()),
+            model: Some("nimble".into()),
+            accounts: vec![torro_ipc::inbox::CategoryProgress {
+                account: format!("mail:{MAIL_ADDRESS}"),
+                messages: 212,
+                done: 184,
+                state: torro_ipc::inbox::CatchUpState::NotStarted,
+            }],
+        }
     }
 
     /// How voice stands on the sample computer: everything there but the wake word, one
@@ -394,7 +448,9 @@ impl Backend for Demo {
             Request::ListMemories => Response::Memories { notes: self.memories() },
             Request::ListBots => Response::Bots { bots: self.bots() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
-            Request::AiModels { .. } => Response::AiModels { models: self.models() },
+            Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
+            Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
+            Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::ListSources => Response::Sources { sources: self.sources() },

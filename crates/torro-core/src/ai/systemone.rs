@@ -75,11 +75,21 @@ pub enum Question {
 impl Question {
     /// Why the question cannot be sent, as a sentence for people; `None` when it fits the limits.
     fn refused(&self, name: &str) -> Option<String> {
-        let count = |what: &str, n: usize, least: usize, most: usize| {
-            (n < least || n > most).then(|| {
+        // Two sentences, not one with the word slotted in: "options" and "levels" are words a
+        // person reads, and a translation cannot inflect a word it never sees.
+        let options = |n: usize| {
+            (!(CHOICE_OPTIONS_MIN..=CHOICE_OPTIONS_MAX).contains(&n)).then(|| {
                 trf(
-                    "The question “{name}” has {n} {what}; it needs {least} to {most}.",
-                    &[("name", &name), ("n", &n), ("what", &what), ("least", &least), ("most", &most)],
+                    "The question “{name}” has {n} options; it needs {least} to {most}.",
+                    &[("name", &name), ("n", &n), ("least", &CHOICE_OPTIONS_MIN), ("most", &CHOICE_OPTIONS_MAX)],
+                )
+            })
+        };
+        let levels = |n: usize| {
+            (!(SCORE_LEVELS_MIN..=SCORE_LEVELS_MAX).contains(&n)).then(|| {
+                trf(
+                    "The question “{name}” has {n} levels; it needs {least} to {most}.",
+                    &[("name", &name), ("n", &n), ("least", &SCORE_LEVELS_MIN), ("most", &SCORE_LEVELS_MAX)],
                 )
             })
         };
@@ -95,10 +105,8 @@ impl Question {
             ));
         }
         match self {
-            Question::Choice { criteria, .. } => {
-                count("options", criteria.len(), CHOICE_OPTIONS_MIN, CHOICE_OPTIONS_MAX)
-            }
-            Question::Score { levels, .. } => count("levels", levels.len(), SCORE_LEVELS_MIN, SCORE_LEVELS_MAX),
+            Question::Choice { criteria, .. } => options(criteria.len()),
+            Question::Score { levels: held, .. } => levels(held.len()),
             Question::Noul { .. } => None,
         }
     }

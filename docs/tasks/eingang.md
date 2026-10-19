@@ -2961,6 +2961,11 @@ E12.10 braucht E12.5 und E12.6
   der Feed bekommt den Modellaufruf als `inbox_feed::Decider` hereingereicht, damit er von
   KI-Konten, Zuordnungen und Datenregel nichts wissen muss. Fixtures unter
   `crates/torroworkplace/tests/fixtures/categories/`.
+  Nach dem Korrektheits-Review: Neue Mail wird **erst abgelegt, dann gefragt** – der Modellaufruf
+  läuft in einer eigenen Aufgabe mit Zeitgrenze (60 s) und Pause (250 ms), und die Kategorie
+  kommt danach auch auf den Eintrag; vorher hing jede Zustellung an einer Reihe ungedrosselter
+  Aufrufe und der Eintrag blieb ohne Kategorie. Absender und Mailingliste stehen jetzt **im**
+  `<message>`-Zaun und gehen durch `fenced()`.
   Abweichung: Keine eigene Protokollzeile je Modellaufruf – `audit.rs` hat dafür kein Format, und
   die Zeile des auslösenden Requests steht schon ohne Inhalte darin.
 - **Modell:** Opus · **Braucht:** E12.3, E12.4, E12.5 · **Dateien:**
@@ -3072,6 +3077,12 @@ E12.10 braucht E12.5 und E12.6
   Doc-Kommentare, Demo ohne Beleg-Gruppe). Offen aus dem Review: kein Lade-Zustand während des
   Modellaufrufs, das Menü hängt am Lane-Anker statt an der Pille, und die Zahl der Gruppe zählt
   Ungelesene, während die Liste alle zeigt.
+  Nach dem Korrektheits-Review: Die Seitenleiste zeigt eine Kategorie, **solange sie vorkommt**
+  (neues Feld `messages` in `CategoryInfo`), nicht nur mit Ungelesenen; die Gruppe „Categories"
+  fehlt ganz, wenn nichts eingeordnet ist. Gezählt und gelistet wird nur der Posteingang
+  (`SearchQuery::in_inbox`) – Papierkorb, Spam und Gesendet tragen ihre Kategorie weiter, gehören
+  aber unter keine. `inbox.set_item_category` und `inbox.classify_item` nehmen jetzt wirklich ein
+  `m:…` für Mail ohne Eintrag, wie der Katalog es verspricht.
 - **Modell:** Opus · **Braucht:** E12.4, E12.7 · **Dateien:**
   `crates/torroinbox/src/{app,list,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Skill `torro-design` laden. Nicht parallel zu E9.2, E9.3b oder E12.9.
@@ -3148,6 +3159,11 @@ E12.10 braucht E12.5 und E12.6
   Abweichung: Der Verweis auf „Rules" **öffnet** den Notification Hub nicht – `Action` dieser
   Bibliothek kennt kein „öffne diese App", und sie soll kein Fenster von sich aus aufmachen. Die
   Zeile sagt stattdessen, wo die Regeln stehen.
+  Nach dem Review: Die Modellwahl ist eine eigene Gruppe „Model" mit einer Zeile je Modell (wie
+  „New chats" im Assistenten), gespeist aus **allen** KI-Konten – `Data::follow_up` fragt
+  `ai.list_models` je KI-Konto, und `Response::AiModels` nennt jetzt das Konto, damit die
+  Antworten auseinanderzuhalten sind. Vorher war die Liste immer leer und die Funktion damit
+  unerreichbar. Der Schalter „an" ohne Modell nimmt das erste, das entscheidet.
   **Sichtprüfung steht aus**, wie bei E12.8 und E12.9 (keine Screenshots auf dieser Maschine).
 - **Modell:** Opus · **Braucht:** E12.5, E12.6 · **Dateien:**
   `crates/torro-settings-ui/src/{lib,mail,demo}.rs`,

@@ -838,14 +838,14 @@ mod tests {
 /// (task E12.5), so the rule holds even if this list were wrong.
 pub mod categorization {
     use iced::widget::column;
-    use torro_core::ai::{AiAssignment, AiFunction};
+    use torro_core::ai::{AiAssignment, AiFunction, AiModel};
     use torro_core::i18n::trf;
     use torro_gui::{layout, style, theme, typo, widgets};
     use torro_ipc::{Request, SettingKey};
     use torro_mail::{Category, CategoryGroup};
 
     use super::*;
-    use crate::parts::{pressable, row_frame, setting_row, switch};
+    use crate::parts::{choice, pressable, row_frame, setting_row, switch};
 
     /// What a row of this section reports.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -865,6 +865,19 @@ pub mod categorization {
     pub fn update<A>(message: Message, data: &Data) -> Action<A> {
         let held = assignment(data);
         match message {
+            // Switching on without a model named would store an assignment the core throws away
+            // (no account, nothing to ask): the first model that can decide is taken, which is
+            // what the switch means. Nothing offered, nothing to switch on.
+            Message::Enabled(true) if held.engine.is_none() => match offered(data).first() {
+                Some((engine, model)) => Action::send(Request::SetAiAssignment {
+                    function: AiFunction::InboxCategorize,
+                    engine: Some(engine.clone()),
+                    model: Some(model.id.clone()),
+                    effort: None,
+                    enabled: true,
+                }),
+                None => Action::None,
+            },
             Message::Enabled(on) => Action::send(Request::SetAiAssignment {
                 function: AiFunction::InboxCategorize,
                 engine: held.engine.clone(),
@@ -909,16 +922,15 @@ pub mod categorization {
         let held = assignment(data);
         let on = held.is_ready();
         let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
-        let mut rows = vec![switch_row, model_row(data, &held)];
-        rows.push(catch_up_row(data));
         let sorting = widgets::group(
             tr("Categorization"),
-            rows,
+            vec![switch_row, catch_up_row(data)],
             Some(
                 tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.")
                     .to_string(),
             ),
         );
+        let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
         let shown = widgets::group(tr("Show in the sidebar"), category_rows(data), None);
         let rules = widgets::group(
             tr("Rules"),
@@ -936,36 +948,68 @@ pub mod categorization {
             )],
             Some(tr("What you kept with “Always for this sender?” is listed in the Notification Hub.").to_string()),
         );
-        column![sorting, shown, rules].spacing(layout::section_gap()).into()
+        column![sorting, models, shown, rules].spacing(layout::section_gap()).into()
     }
 
-    /// "Model": the deciding models of the AI accounts. Only models that run on this computer
-    /// while mail may not leave it; a quiet line says why the list may be short.
-    fn model_row<'a>(data: &'a Data, held: &AiAssignment) -> Element<'a, Message> {
+    /// The models that may sort mail: every AI account's models that decide, and – while mail
+    /// may not leave this computer – only those that run here (`docs/ki.md`, principle 4). The
+    /// core refuses the others as well (task E12.5), so the rule holds even if this list were
+    /// wrong.
+    fn offered(data: &Data) -> Vec<(String, AiModel)> {
         let local_only = !data.settings.mail_to_cloud;
-        let offered: Vec<(String, String)> = data
-            .decider_models
+        data.decider_models
             .iter()
-            .filter(|model| model.decision == Some(true))
-            .filter(|model| !local_only || model.remote != Some(true))
-            .filter_map(|model| held.engine.clone().map(|engine| (engine, model.id.clone())))
-            .collect();
-        let chosen = held.model.clone().unwrap_or_else(|| tr("None").to_owned());
-        let value: Element<'_, Message> = match offered.first() {
-            Some((engine, model)) if held.model.is_none() => {
-                let pick = Message::Model(engine.clone(), model.clone());
-                let line = iced::widget::row![typo::text(typo::body(), model.clone()), crate::parts::chevron()]
-                    .spacing(theme::space::s())
-                    .align_y(iced::Alignment::Center);
-                pressable(row_frame(line, false), Some(pick))
+            .filter(|(_, model)| model.decision == Some(true))
+            .filter(|(_, model)| !local_only || model.remote != Some(true))
+            .cloned()
+            .collect()
+    }
+
+    /// One row per model that may sort mail, the assigned one checked; picking one switches the
+    /// sorting on. Without any, one row says so instead.
+    fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
+        let offered = offered(data);
+        if offered.is_empty() {
+            let detail = tr("Add a local AI such as Ollama under Accounts and load a model that decides.");
+            let none = iced::widget::space().width(0);
+            return vec![setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none)];
+        }
+        // Which account a model is from matters only where more than one offers models.
+        let several = offered.iter().map(|(engine, _)| engine).collect::<std::collections::BTreeSet<_>>().len() > 1;
+        offered
+            .into_iter()
+            .map(|(engine, model)| {
+                let chosen = held.is_ready()
+                    && held.engine.as_deref() == Some(engine.as_str())
+                    && held.model.as_deref() == Some(model.id.as_str());
+                let label = match several {
+                    true => format!("{} · {}", account_label(data, &engine), model.name),
+                    false => model.name.clone(),
+                };
+                choice(label, chosen, Message::Model(engine, model.id))
+            })
+            .collect()
+    }
+
+    /// What the account `id` is called, as the control centre calls it; the id itself when it is
+    /// gone from the list.
+    fn account_label(data: &Data, id: &str) -> String {
+        data.accounts
+            .iter()
+            .find(|account| account.id == id)
+            .map(|account| account.label.clone())
+            .unwrap_or_else(|| id.to_string())
+    }
+
+    /// Under the models: why the list may be short.
+    fn model_note(data: &Data) -> String {
+        match data.settings.mail_to_cloud {
+            true => tr("Mail may go to an AI elsewhere; every model that decides is offered.").to_owned(),
+            false => {
+                tr("Only models on this computer are offered: mail stays here unless you allow more in the control centre.")
+                    .to_owned()
             }
-            _ => typo::text(typo::body(), chosen).into(),
-        };
-        let note = local_only.then(|| {
-            tr("Only models on this computer are offered: mail stays here unless you allow more in the control centre.")
-                .to_owned()
-        });
-        setting_row(None, tr("Model"), note, value)
+        }
     }
 
     /// "Catch up": how far the backlog has come, and the button to start or stop it.
