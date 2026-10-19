@@ -1631,6 +1631,10 @@ impl App {
         match outcome {
             Outcome::None => Task::none(),
             Outcome::Work(task) => task.map(Message::SettingsHost),
+            // A section changed something: the window loads what it shows itself – the engines,
+            // the profile, the client, the conversations – right now instead of on its next tick,
+            // so a changed default or a new bot is in the chat at once.
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all()]),
             Outcome::Close => {
                 self.settings = None;
                 Task::none()

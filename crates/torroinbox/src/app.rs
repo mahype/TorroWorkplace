@@ -4577,6 +4577,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         match outcome {
             Outcome::None => Task::none(),
             Outcome::Work(task) => task.map(Message::SettingsHost),
+            // A section changed something: the entries, the sources and the mail look come again
+            // right now – a muted source or a removed rule must change the list at once, not ten
+            // seconds later. The same loads a tick does.
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.fetch_look(), self.load()]),
             Outcome::Close => {
                 self.settings = None;
                 Task::none()
@@ -12212,6 +12216,23 @@ mod tests {
         let _ = app.update(Message::OpenSettings);
         let _ = app.update(Message::Tick);
         assert!(app.settings.is_some());
+    }
+
+    /// A change behind the gear reaches the entries at once: when the host reports it stored
+    /// ([`Outcome::Changed`]), the window asks for its entries, sources and mail look again
+    /// instead of waiting ten seconds for the next tick – a source just muted must leave the list
+    /// now. A change that failed loads nothing.
+    #[test]
+    fn a_change_in_the_settings_loads_the_entries_again() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::OpenSettings);
+        let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
+        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+        assert!(task.units() > 0, "the entries, the look and the appearance are on their way again");
+        assert!(app.settings.is_some(), "and the settings stay open");
+        let failed = Box::new(Err("not connected".to_string()));
+        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+        assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
     }
 
     /// Task S.20: the settings draw in every layout, in both kinds of window, and the keys of the

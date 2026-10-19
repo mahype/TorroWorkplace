@@ -1910,6 +1910,10 @@ impl App {
         match outcome {
             Outcome::None => Task::none(),
             Outcome::Work(task) => task.map(Message::SettingsHost),
+            // A section changed something: the calendar loads what it shows itself, right now
+            // instead of on its next tick – a calendar just hidden must leave the sidebar and the
+            // week at once, not up to a minute later. The same loads a tick does.
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.fetch_night(), self.load()]),
             Outcome::Close => {
                 self.settings = None;
                 Task::none()
@@ -3037,6 +3041,27 @@ mod tests {
         let _ = app.update(Message::ToggleSettings);
         let _ = app.update(Message::ToggleAccount("work".into()));
         assert!(app.settings.is_some(), "folding an account does not leave the settings");
+    }
+
+    /// A change behind the gear reaches the calendar at once: when the host reports the change
+    /// stored ([`Outcome::Changed`]), the window asks for its events again instead of waiting up
+    /// to a minute for the next tick – a calendar just hidden must leave the sidebar and the week
+    /// now.
+    #[test]
+    fn a_change_in_the_settings_loads_the_calendar_again() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::ToggleSettings);
+        app.loading = false;
+        let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
+        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+        assert!(app.loading, "the events are on their way again");
+        assert!(task.units() > 0, "and the night and the appearance with them");
+
+        // A change that failed changed nothing, so nothing is loaded again.
+        app.loading = false;
+        let failed = Box::new(Err("not connected".to_string()));
+        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+        assert!(!app.loading && task.units() == 0, "the host shows the notice, the calendar stays as it is");
     }
 
     /// Escape closes a menu, the drawer or the night's card first, then the settings, and only

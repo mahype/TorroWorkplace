@@ -2394,6 +2394,10 @@ impl App {
         match outcome {
             Outcome::None => Task::none(),
             Outcome::Work(task) => task.map(Message::SettingsHost),
+            // "Lists" changed what the suite shows: the lists and their todos come again right
+            // now, so a hidden list leaves the sidebar and the list at once instead of waiting up
+            // to a minute for the next tick.
+            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load()]),
             Outcome::Close => {
                 self.settings = None;
                 Task::none()
@@ -5278,6 +5282,21 @@ mod tests {
         assert!(app.menu.is_none() && app.settings.is_some(), "the menu first");
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_none() && app.detail.is_some(), "the settings, the detail stays");
+    }
+
+    /// A change behind the gear reaches the list at once: when the host reports it stored
+    /// ([`Outcome::Changed`]), the window asks for its lists and todos again instead of waiting up
+    /// to a minute for the next tick. A change that failed loads nothing.
+    #[test]
+    fn a_change_in_the_settings_loads_the_lists_again() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::ToggleSettings);
+        let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
+        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+        assert!(task.units() > 0, "the lists and the appearance are on their way again");
+        let failed = Box::new(Err("not connected".to_string()));
+        let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+        assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
     }
 
     /// The switch of a list sends exactly `settings.set_collection_shown`; the library's own

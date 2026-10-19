@@ -29,6 +29,8 @@
 //! Message::Settings(message) => match host.update(message) {
 //!     Outcome::None => Task::none(),
 //!     Outcome::Work(task) => task.map(Message::Settings),
+//!     // A change went through: load what this app shows, as a tick would.
+//!     Outcome::Changed => self.load(),
 //!     Outcome::Close => { self.settings = None; Task::none() }
 //!     Outcome::OpenUrl(url) => { links::open(&url); Task::none() }
 //!     Outcome::ControlCentre(section) => { connect::open_section(&section); Task::none() }
@@ -195,6 +197,15 @@ pub enum Outcome<A> {
     None,
     /// Run this task and feed its messages back into [`Host::update`].
     Work(Task<Message>),
+    /// A change went through: the daemon stored it and the sections' own data is fresh again. The
+    /// app now loads **its own** data – its entries, its view, the night, the look – so what was
+    /// just changed is on screen at once.
+    ///
+    /// Without this the app would only notice on its next tick, which is up to a minute away in
+    /// the calendar and the tasks app and ten seconds in the inbox: a calendar hidden under
+    /// Calendars would stay in the sidebar and in the week all that time. Every app answers it
+    /// with the loads that belong to it, like a tick does, and nothing else.
+    Changed,
     /// Close the settings: show what the content area showed before.
     Close,
     /// Open this web page in the browser (`torro_gui::links::open`).
@@ -354,10 +365,17 @@ impl Host {
             Message::Sent(result) => {
                 self.loaded = true;
                 match *result {
-                    Ok(data) => self.data = data,
-                    Err(problem) => self.notice = Some(problem),
+                    Ok(data) => {
+                        self.data = data;
+                        // The sections are fresh; the app's own data follows ([`Outcome::Changed`]).
+                        Outcome::Changed
+                    }
+                    Err(problem) => {
+                        // Nothing changed, so there is nothing new for the app to load.
+                        self.notice = Some(problem);
+                        Outcome::None
+                    }
                 }
-                Outcome::None
             }
             // The answer belongs to the section that asked for it, failures included.
             Message::Answered(result) => Outcome::Answer(result),
@@ -647,7 +665,8 @@ mod tests {
             .await
             .expect("the demo answers");
         assert_eq!(backend.sent(), vec![zoom, night], "in the order the section gave them");
-        host.update::<()>(Message::Sent(Box::new(Ok(data))));
+        let outcome: Outcome<()> = host.update(Message::Sent(Box::new(Ok(data))));
+        assert!(matches!(outcome, Outcome::Changed), "the app loads its own data now, not in a minute");
         assert!(host.loaded(), "the fresh data is there");
         assert_eq!(host.data().settings.appearance, backend.settings().appearance);
         assert!(matches!(host.act::<()>(Action::None), Outcome::None));
@@ -670,11 +689,13 @@ mod tests {
         assert!(host.notice.is_none(), "and the page says itself what it heard");
     }
 
-    /// A failed change stands over the page instead of being lost.
+    /// A failed change stands over the page instead of being lost, and asks for no reload: nothing
+    /// changed.
     #[test]
     fn a_failed_change_is_reported() {
         let mut host = host();
-        host.update::<()>(Message::Sent(Box::new(Err("not connected".to_string()))));
+        let outcome: Outcome<()> = host.update(Message::Sent(Box::new(Err("not connected".to_string()))));
+        assert!(matches!(outcome, Outcome::None), "nothing to load again");
         assert_eq!(host.notice.as_deref(), Some("not connected"));
     }
 

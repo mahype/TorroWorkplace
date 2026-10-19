@@ -927,6 +927,24 @@ fn escape_stops_the_open_question_before_it_closes_the_settings() {
     assert!(app.settings.is_none());
 }
 
+/// A change behind the gear reaches the window at once: when the host reports it stored
+/// ([`torro_settings_ui::Outcome::Changed`]), the window asks for what it shows itself – the
+/// conversations, the engines, the client, the profile – instead of waiting for its next tick. A
+/// change that failed loads nothing.
+#[test]
+fn a_change_in_the_settings_loads_the_window_again() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::ToggleSettings);
+    settings_loaded(&mut app);
+    let fresh = Box::new(Ok(torro_settings_ui::Data::default()));
+    let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(fresh)));
+    assert!(task.units() > 0, "the window's own data is on its way again");
+    assert!(app.settings.is_some(), "and the settings stay open");
+    let failed = Box::new(Err("not connected".to_string()));
+    let task = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent(failed)));
+    assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
+}
+
 /// A click in the sidebar – a chat, a bot, "New chat", "New bot" – brings the content area back.
 #[test]
 fn the_sidebar_closes_the_settings() {
