@@ -541,15 +541,27 @@ impl Running {
 
     /// Why the tool `tool` (Claude Code's name of it) was refused with the error `text` (issue #133):
     /// for `forbidden`, what the rights, the conversation's switches and the areas the run goes
-    /// without ([`Running::withheld`]) say.
+    /// without ([`Running::withheld`]) say. A command of one of the assistant's own tools the rights
+    /// allow (issue #225), as in engine A: the tool switched off now ([`Lack::ToolOff`]), else not in
+    /// the selection ([`Lack::Tool`]).
+    ///
+    /// [`Lack::ToolOff`]: torro_ipc::api::Lack::ToolOff
+    /// [`Lack::Tool`]: torro_ipc::api::Lack::Tool
     fn lack(&self, tool: &str, text: &str) -> Option<torro_ipc::api::Lack> {
+        use torro_ipc::api::Lack;
         if error_code(text) != "forbidden" {
             return None;
         }
         let tool = tools::callable(tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool))?;
         let operation = torro_ipc::api::Operation { command: tool.command, access: tool.command.access };
         let kind = self.job.actor.kind();
-        tools::lack_in(kind, self.rights.as_ref(), operation, &self.job.without, self.withheld, self.job.mode)
+        let rights = self.rights.as_ref();
+        let lack = tools::lack_in(kind, rights, operation, &self.job.without, self.withheld, self.job.mode);
+        match (lack, torro_core::settings::ToolId::of_command(operation.command.name), rights) {
+            (None, Some(tool), Some(_)) if !self.host.tools_on().contains(&tool) => Some(Lack::ToolOff { tool }),
+            (None, Some(tool), Some(rights)) if !rights.reaches_tool(tool) => Some(Lack::Tool { tool }),
+            (lack, ..) => lack,
+        }
     }
 
     /// Adds `content` while this run is the conversation's running answer; `last` ends it.
