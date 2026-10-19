@@ -2056,7 +2056,7 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/ap
     über ein Temp-Paket (`TORRO_DATA_HOME=<tmp>`, `--demo --design <id>`), damit die Karten nachweislich noch zeichnen.
 
 ### E13.3 Umschalter, `Density` und `density` in `ui.json` entfernen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** E13.2 · **Dateien:** `crates/torro-gui/src/{ui_state,widgets}.rs`,
   `crates/torro-gui/examples/gallery.rs`, `crates/torro-core/src/i18n/de.rs`
 - **`ui_state.rs`:** weg sind `Density`, die Konstante `DENSITY`, `density_from`, `save_density_to`,

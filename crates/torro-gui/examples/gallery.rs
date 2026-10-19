@@ -6,8 +6,8 @@
 //! a click (choice chips, label choices, segments, the busy primary button; task G.10), the small
 //! parts of the tasks redesign (property
 //! lines, label chips, state pills, progress bars) and every bundled icon, `-- --cards` the blocks of the
-//! inbox's comfortable density (task E8.2: cards, card heads, chips, source tiles, avatars, reading
-//! text and the switch "Compact | Comfortable"), `-- --mailbar` the mail window's large buttons (task
+//! inbox's comfortable density (task E8.2: cards, card heads, chips, source tiles, avatars and
+//! reading text), `-- --mailbar` the mail window's large buttons (task
 //! E11.1: the styles `cell`, `pill`, the track and the flat input in every state, the command bar in
 //! three widths, the strip under a row with and without words, the pills, the attachment chips and
 //! the reader's foot), `-- --window` the example "Tasks" window (sample data from
@@ -41,7 +41,6 @@ use torro_gui::shell::{self, Switcher};
 use torro_gui::style;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::typo;
-use torro_gui::ui_state::Density;
 use torro_gui::widgets::{
     self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, TileFace, TileSize, Trail,
 };
@@ -172,8 +171,7 @@ struct Gallery {
     show: usize,
     state: usize,
     busy: bool,
-    /// The cards page (task E8.2): the density of its switch and the card under the "cursor".
-    density: Density,
+    /// The cards page (task E8.2): the card under the "cursor".
     card: usize,
 }
 
@@ -203,7 +201,6 @@ enum Msg {
     Show(usize),
     State(usize),
     Busy(bool),
-    Density(Density),
     Card(usize),
 }
 
@@ -237,7 +234,6 @@ impl Gallery {
             show: 0,
             state: 0,
             busy: false,
-            density: Density::Comfortable,
             card: 0,
         }
     }
@@ -301,7 +297,6 @@ impl Gallery {
             Msg::Show(i) => self.show = i,
             Msg::State(i) => self.state = i,
             Msg::Busy(busy) => self.busy = busy,
-            Msg::Density(density) => self.density = density,
             Msg::Card(i) => self.card = i,
         }
     }
@@ -497,8 +492,8 @@ fn forced<'a>(
 impl Gallery {
     /// The blocks of the comfortable density (task E8.2) as the mail and the notifications window
     /// lay them out: mail cards with avatar, chips and their buttons always shown, a column of one
-    /// app with card heads and ✕, the source tiles in three sizes, the avatars, reading text beside
-    /// body text and the switch "Compact | Comfortable". A click on a mail card selects it.
+    /// app with card heads and ✕, the source tiles in three sizes, the avatars and reading text
+    /// beside body text. A click on a mail card selects it.
     fn cards(&self) -> Element<'_, Msg> {
         let buttons = |words: &[(Icon, &'static str, ButtonStyle)]| -> Element<'static, Msg> {
             let all = words
@@ -677,15 +672,9 @@ impl Gallery {
             ),
         ]
         .spacing(space::l());
-        let switches = column![
-            cell("with words (wide, medium)", widgets::density_switch(self.density, true, Msg::Density)),
-            cell("icons only (narrow)", widgets::density_switch(self.density, false, Msg::Density)),
-        ]
-        .spacing(space::m());
         let side = column![
             section("Source tiles", tiles.into()),
             section("Avatars", avatars.into()),
-            section("Compact | Comfortable", switches.into()),
             section("Reading text", reading.into()),
         ]
         .spacing(space::xl());
