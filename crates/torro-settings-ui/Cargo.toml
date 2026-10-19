@@ -16,6 +16,9 @@ torro-gui.workspace = true
 torro-ipc.workspace = true
 # The sources of the inbox's sections (`SourceRef`, task S.20).
 torro-inbox.workspace = true
+# The calendars and task lists of an account, as `accounts.list_accounts` lists them
+# (`Collection`, `CollectionKind`, task S.19).
+torro-pim.workspace = true
 # The settings of a mail account the sections change (`Notify`, `MailFormat`, `Role`, task S.20).
 torro-mail.workspace = true
 iced.workspace = true

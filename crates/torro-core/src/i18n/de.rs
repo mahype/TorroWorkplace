@@ -3741,6 +3741,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No lists", "Keine Listen"),
     ("Lists appear here once an account has one.", "Listen erscheinen hier, sobald ein Konto eine hat."),
     (
+        "No calendars yet. Use “Sync now” at this account in the control centre.",
+        "Noch keine Kalender. Nutze „Jetzt synchronisieren“ bei diesem Konto in der Steuerzentrale.",
+    ),
+    (
+        "No task lists yet. Use “Sync now” at this account in the control centre.",
+        "Noch keine Aufgabenlisten. Nutze „Jetzt synchronisieren“ bei diesem Konto in der Steuerzentrale.",
+    ),
+    (
         "Choose which kinds of events may remind you, whatever their own reminder says.",
         "Wähle, welche Art von Terminen überhaupt erinnern darf, unabhängig von der eigenen Erinnerung des Termins.",
     ),
