@@ -22,9 +22,11 @@ use torro_ipc::api::{ASSISTANT_CLIENT, Rights};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::{
-    AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceMissing, VoicePart, VoiceProgram, VoiceState,
-    VoiceStatus,
+    AccountInfo, ClientInfo, FolderChoice, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response,
+    RuleHits, ServiceState, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
 };
+use torro_mail::{Endpoint, MailFormat, MailSettings, Notify, Role, Security};
+use torro_pim::{AccountState, Collection, CollectionKind};
 
 use crate::{Answer, Backend};
 
@@ -91,50 +93,68 @@ impl Demo {
 
     /// Two accounts with calendars and task lists, for "Calendars" (task S.19) and "Lists" to
     /// group by: a Nextcloud account with a calendar, a family calendar and a personal list, and
-    /// a second one with a calendar the sample settings hide ([`SHARED_CALENDAR`]).
+    /// a second one with a calendar the sample settings hide ([`SHARED_CALENDAR`]). The Shared
+    /// calendar is read-only, so a row shows what "Read-only" looks like.
+    ///
+    /// Built as the structs they are, not parsed from JSON: a sample that cannot be read would
+    /// have to be unwrapped, and the workspace allows no `expect` outside tests.
     fn accounts(&self) -> Vec<AccountInfo> {
-        let connected = |server: &str, login: &str| {
-            serde_json::json!({
-                "state": "connected", "server": server, "login_name": login, "last_sync": null, "problem": null
-            })
+        let connected = |server: &str, login: &str| AccountState::Connected {
+            server: server.to_string(),
+            login_name: login.to_string(),
+            last_sync: None,
+            problem: None,
         };
-        let account = |id: &str, kind: &str, label: &str, server: &str, login: &str, collections: serde_json::Value| {
-            serde_json::from_value(serde_json::json!({
-                "id": id,
-                "kind": kind,
-                "label": label,
-                "state": connected(server, login),
-                "collections": collections,
-            }))
-            .expect("a sample account")
+        let account =
+            |id: &str, kind: &str, label: &str, state: AccountState, collections: Vec<Collection>| AccountInfo {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                label: label.to_string(),
+                state,
+                collections,
+                scopes: None,
+                mail: None,
+                ntfy: None,
+                services: None,
+            };
+        let collection = |id: &str, name: &str, kind: CollectionKind, color: Option<&str>, writable: bool| Collection {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind,
+            color: color.map(str::to_string),
+            writable,
+            source: None,
         };
         vec![
             account(
                 "nextcloud:anna@cloud.example.org",
                 "nextcloud",
                 "anna@cloud.example.org",
-                "https://cloud.example.org",
-                "anna",
-                serde_json::json!([
-                    {"id": WORK_CALENDAR, "name": "Work", "kind": "events", "color": "#3B6EF0"},
-                    {
-                        "id": "nextcloud:anna@cloud.example.org/family",
-                        "name": "Family",
-                        "kind": "events",
-                        "color": "#1F9D68"
-                    },
-                    {"id": "nextcloud:anna@cloud.example.org/personal", "name": "Personal", "kind": "todos"},
-                ]),
+                connected("https://cloud.example.org", "anna"),
+                vec![
+                    collection(WORK_CALENDAR, "Work", CollectionKind::Events, Some("#3B6EF0"), true),
+                    collection(
+                        "nextcloud:anna@cloud.example.org/family",
+                        "Family",
+                        CollectionKind::Events,
+                        Some("#1F9D68"),
+                        true,
+                    ),
+                    collection(
+                        "nextcloud:anna@cloud.example.org/personal",
+                        "Personal",
+                        CollectionKind::Todos,
+                        None,
+                        true,
+                    ),
+                ],
             ),
             account(
                 "nextcloud:ben@cloud.example.org",
                 "nextcloud",
                 "ben@cloud.example.org",
-                "https://cloud.example.org",
-                "ben",
-                serde_json::json!([
-                    {"id": SHARED_CALENDAR, "name": "Shared", "kind": "events", "color": "#B06F12"},
-                ]),
+                connected("https://cloud.example.org", "ben"),
+                vec![collection(SHARED_CALENDAR, "Shared", CollectionKind::Events, Some("#B06F12"), false)],
             ),
             // The accounts the inbox's "Sources" shows (task S.20): GitHub, an ntfy server and a
             // mail account, the last one also the mail window's "Accounts".
@@ -142,9 +162,8 @@ impl Demo {
                 "github:anna-berg",
                 "github",
                 "anna-berg",
-                "https://github.com",
-                "anna-berg",
-                serde_json::json!([]),
+                connected("https://github.com", "anna-berg"),
+                Vec::new(),
             ),
             self.ntfy_account(),
             self.mail_account(),
@@ -154,48 +173,70 @@ impl Demo {
     /// The sample ntfy account: one server with two topics, whose subscriptions stay with the
     /// account in the control centre – "Sources" only mutes the whole server.
     fn ntfy_account(&self) -> AccountInfo {
-        serde_json::from_value(serde_json::json!({
-            "id": "ntfy:ntfy.sh",
-            "kind": "ntfy",
-            "label": "ntfy.sh",
-            "state": {"state": "connected", "server": "https://ntfy.sh", "login_name": "anna"},
-            "collections": [],
-            "ntfy": {
-                "server": "https://ntfy.sh",
-                "topics": [{"label": "Backups"}, {"label": "Doorbell"}],
-                "user": "anna",
-                "login": true,
+        let topic = |label: &str| NtfyTopicView { label: label.to_string(), topic: None };
+        AccountInfo {
+            id: "ntfy:ntfy.sh".into(),
+            kind: "ntfy".into(),
+            label: "ntfy.sh".into(),
+            state: AccountState::Connected {
+                server: "https://ntfy.sh".into(),
+                login_name: "anna".into(),
+                last_sync: None,
+                problem: None,
             },
-        }))
-        .expect("a sample ntfy account")
+            collections: Vec::new(),
+            scopes: None,
+            mail: None,
+            ntfy: Some(NtfyView {
+                server: "https://ntfy.sh".into(),
+                topics: vec![topic("Backups"), topic("Doorbell")],
+                user: Some("anna".into()),
+                login: true,
+            }),
+            services: None,
+        }
     }
 
     /// The sample mail account: a sender name, a signature, formatted mail and one folder role the
     /// server left open, so the mail window's "Accounts" has every row to show (task S.20).
     fn mail_account(&self) -> AccountInfo {
-        serde_json::from_value(serde_json::json!({
-            "id": format!("mail:{MAIL_ADDRESS}"),
-            "kind": "mail",
-            "label": MAIL_ADDRESS,
-            "state": {"state": "connected", "server": "imap.mailbox.org", "login_name": MAIL_ADDRESS},
-            "collections": [],
-            "mail": {
-                "address": MAIL_ADDRESS,
-                "sender_name": "Anna Example",
-                "imap": {"host": "imap.mailbox.org", "port": 993, "security": "tls"},
-                "smtp": {"host": "smtp.mailbox.org", "port": 465, "security": "tls"},
-                "settings": {"signature": "Kind regards\nAnna", "notify": "for_me_only", "format": "html"},
-                "open_roles": [{
-                    "role": "archive",
-                    "candidates": [
-                        {"name": "Archive", "path": "INBOX.Archive"},
-                        {"name": "All Mail", "path": "INBOX.All"},
-                    ],
-                }],
-                "mail": {},
+        let endpoint = |host: &str, port: u16| Endpoint { host: host.to_string(), port, security: Security::Tls };
+        let folder = |name: &str, path: &str| FolderChoice { name: name.to_string(), path: path.to_string() };
+        let settings = MailSettings {
+            signature: Some("Kind regards\nAnna".into()),
+            notify: Notify::ForMeOnly,
+            format: MailFormat::Html,
+            ..MailSettings::default()
+        };
+        AccountInfo {
+            id: format!("mail:{MAIL_ADDRESS}"),
+            kind: "mail".into(),
+            label: MAIL_ADDRESS.into(),
+            state: AccountState::Connected {
+                server: "imap.mailbox.org".into(),
+                login_name: MAIL_ADDRESS.into(),
+                last_sync: None,
+                problem: None,
             },
-        }))
-        .expect("a sample mail account")
+            collections: Vec::new(),
+            scopes: None,
+            mail: Some(MailView {
+                address: MAIL_ADDRESS.into(),
+                sender_name: "Anna Example".into(),
+                imap: endpoint("imap.mailbox.org", 993),
+                smtp: endpoint("smtp.mailbox.org", 465),
+                caldav: None,
+                settings,
+                open_roles: vec![OpenRoleView {
+                    role: Role::Archive,
+                    candidates: vec![folder("Archive", "INBOX.Archive"), folder("All Mail", "INBOX.All")],
+                }],
+                mail: ServiceState::default(),
+                calendars: None,
+            }),
+            ntfy: None,
+            services: None,
+        }
     }
 
     /// The sample inbox sources (`inbox.list_sources`, task S.20): Talk is muted, so "Sources"
