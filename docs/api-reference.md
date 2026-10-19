@@ -55,7 +55,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.hide_sender`](#inboxhide_sender), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
 | [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
-| [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.find_local_servers`](#aifind_local_servers) |
+| [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment) |
 | [`assistant`](#assistant) | [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.send_message`](#assistantsend_message), [`assistant.cancel`](#assistantcancel), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.confirm_bot`](#assistantconfirm_bot) |
 | [`bots`](#bots) | [`bots.list_bots`](#botslist_bots), [`bots.get_bot`](#botsget_bot), [`bots.save_bot`](#botssave_bot), [`bots.delete_bot`](#botsdelete_bot), [`bots.ask_bot`](#botsask_bot) |
 | [`settings`](#settings) | [`settings.get_settings`](#settingsget_settings), [`settings.set_setting`](#settingsset_setting), [`settings.set_collection_shown`](#settingsset_collection_shown), [`settings.list_designs`](#settingslist_designs), [`settings.voice_status`](#settingsvoice_status), [`settings.test_voice`](#settingstest_voice), [`settings.update_settings`](#settingsupdate_settings) |
@@ -1155,6 +1155,28 @@ Looks for AI servers running on this computer (Ollama at localhost:11434, LM Stu
 
 Keine Felder.
 
+### `ai.list_assignments`
+
+Zugriff `read` · MCP-Tool `ai_list_assignments`
+
+Lists which AI account and model each function of the suite uses (`docs/ki.md`): the function's key (`inbox.categorize`), the words a person reads for it, the account (`ai:…`), the model, the effort and whether it is switched on. Functions nobody set up are listed with empty fields, so the list is the whole truth. `needs_decision` marks a function that only works with a model that decides instead of writing. No key or secret is in here.
+
+Keine Felder.
+
+### `ai.set_assignment`
+
+Zugriff `admin` · MCP-Tool `ai_set_assignment`
+
+Sets which AI account and model a function uses, or takes it back with `engine: null`; returns the whole list. Needs the person's approval. `not-found` for a function this version does not know or an account that does not exist; `error` for a model the account does not offer, for a function that needs a decision model and a model that does not decide, and – while mail may only go to models on this computer – for a model that runs elsewhere. That last rule is the person's to lift, in the control centre, never an agent's.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `effort` | `"low"` \| `"medium"` \| `"high"` | nein | How hard it thinks; a decision model ignores it. |
+| `enabled` | boolean | nein, Standard `false` | Switch the function on or off. Off leaves everything as it is and asks no model. |
+| `engine` | string | nein | The AI account (`ai:…` from `accounts.list_accounts`); `null` takes the assignment back. |
+| `function` | `"inbox.categorize"` | ja | The function's key: `inbox.categorize`. |
+| `model` | string | nein | The model of that account; `null` lets the function pick one that fits. |
+
 ## `assistant`
 
 Nicht in den Vorlagen enthalten, auch nicht in *Full access*: Die Person schaltet den Bereich je Client eigens ein.
@@ -1454,6 +1476,7 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `settings` | object | ja | All suite-wide settings. |
+| `settings.aiAssignments` | object | nein | Which AI account and model each function of the suite uses (task E12.5, `docs/ki.md` "Zuordnung je Funktion"), by the function. Only functions a person set up are stored, so a new one starts unassigned. Read leniently ([`known_assignments`]): an entry that does not fit, or names a function this version does not know, is dropped and never makes the file fail. |
 | `settings.appearance` | `"system"` \| `"light"` \| `"dark"` | nein, Standard `"system"` | Light or dark colours for every app; `System` follows the desktop. |
 | `settings.assistantDefault` | object | nein | What a new chat of the assistant starts with (issue #131): engine, model and effort, set in the control centre › Assistant. `None` (the default): the engine and model used last. Read leniently: a value that does not read is `None`, never a settings file that fails. |
 | `settings.assistantDefault.effort` | `"low"` \| `"medium"` \| `"high"` | nein | How hard the model thinks; `None` leaves it to the model. |

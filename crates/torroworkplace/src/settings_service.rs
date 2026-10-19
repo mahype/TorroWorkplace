@@ -1015,6 +1015,7 @@ mod tests {
                 mail_appearance: MailAppearance::App,
                 mail_to_cloud: false,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
+                ai_assignments: std::collections::BTreeMap::new(),
             }
         );
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);

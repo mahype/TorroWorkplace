@@ -1038,7 +1038,9 @@ impl PimService {
         }
         let (role, collection, href) = match request {
             // The categories of mail touch no calendar or task collection (task E12.4).
-            Request::ListCategories { .. }
+            Request::AiAssignments
+            | Request::SetAiAssignment { .. }
+            | Request::ListCategories { .. }
             | Request::SetItemCategory { .. }
             | Request::ClassifyItem { .. }
             | Request::GetCategorization

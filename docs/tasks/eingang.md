@@ -2910,7 +2910,11 @@ E12.10 braucht E12.5 und E12.6
   die Kategorie **nicht**. Agent `torro-api-review` ohne offene Funde.
 
 ### E12.5 Zuordnung je Funktion: `ai.list_assignments` und `ai.set_assignment`
-- [ ] erledigt
+- [x] erledigt (2026-10-19): `torro_core::ai::AiFunction` (vorerst `inbox.categorize`) und
+  `AiAssignment`, gespeichert in `Settings::ai_assignments`, nachsichtig gelesen; die beiden
+  Befehle mit Katalogeintrag (Read bzw. Admin) und MCP-Tool; `ai.set_assignment` prüft Konto,
+  Modell, `decision` und – solange `mail_to_cloud` aus ist – `Place::Local`. `docs/ki.md`
+  nachgezogen.
 - **Modell:** Opus · **Braucht:** E12.4 · **Dateien:**
   `crates/torro-core/src/{ai/mod,settings}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{core,mcp,settings_service}.rs`, `docs/api.md`,

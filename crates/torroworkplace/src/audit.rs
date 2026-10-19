@@ -296,6 +296,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListCategories { .. } | Request::GetCategorization | Request::CatchUpCategories { .. } => {
             Vec::new()
         }
+        // The function and the account are ids, not content; the model's name is the server's.
+        Request::AiAssignments => Vec::new(),
+        Request::SetAiAssignment { engine, .. } => engine.iter().map(|id| account(id)).collect(),
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
         }

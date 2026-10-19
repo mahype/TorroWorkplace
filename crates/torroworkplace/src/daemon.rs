@@ -459,6 +459,11 @@ fn describe(request: &Request) -> String {
         Request::ConnectNextcloud { server } => format!("connect {server}"),
         Request::ConnectGithub => "connect github".into(),
         // Never the category: the log and the notification name the entry only (task E12.4).
+        Request::AiAssignments => "list ai assignments".into(),
+        Request::SetAiAssignment { function, engine, .. } => match engine {
+            Some(engine) => format!("use {engine} for {}", function.key()),
+            None => format!("use no model for {}", function.key()),
+        },
         Request::ListCategories { .. } => "list categories".into(),
         Request::SetItemCategory { id, remember, .. } => {
             format!("file {id}{}", if *remember { " and remember" } else { "" })

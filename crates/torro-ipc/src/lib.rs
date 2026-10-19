@@ -1495,6 +1495,33 @@ pub enum Request {
     /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
     /// `docs/kategorien.md`): every category with its group, the words for both and how much
     /// unread mail it holds. The counts only cover mail accounts this key may read.
+    /// Which AI account and model each function of the suite uses ([`Response::AiAssignments`],
+    /// task E12.5, `docs/ki.md`): every function, also those nobody set up, with empty fields.
+    #[serde(rename = "ai.list_assignments")]
+    AiAssignments,
+    /// Sets what one function uses, or takes the assignment back with `engine: null`
+    /// ([`Response::AiAssignments`], task E12.5). `not-found` for a function this version does
+    /// not know or an account that does not exist; `error` for a model the account does not
+    /// offer, for a function that needs a decision model and a model that does not decide, and –
+    /// while mail may not leave this computer – for a model that runs elsewhere.
+    #[serde(rename = "ai.set_assignment")]
+    SetAiAssignment {
+        /// The function's key: `inbox.categorize`.
+        function: torro_core::ai::AiFunction,
+        /// The AI account (`ai:…` from `accounts.list_accounts`); `null` takes the assignment
+        /// back.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        engine: Option<String>,
+        /// The model of that account; `null` lets the function pick one that fits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// How hard it thinks; a decision model ignores it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
+        /// Switch the function on or off. Off leaves everything as it is and asks no model.
+        #[serde(default)]
+        enabled: bool,
+    },
     #[serde(rename = "inbox.list_categories")]
     ListCategories {
         /// Only count in this account: `mail:<address>`. Left out: every account in reach.
@@ -2618,6 +2645,12 @@ pub enum Response {
         id: Option<String>,
     },
     /// The lasting rules of the inbox ([`Request::ListRules`]).
+    /// What each function of the suite uses ([`Request::AiAssignments`],
+    /// [`Request::SetAiAssignment`]): every function, with the words a person reads for it. No
+    /// secret is in here – only ids.
+    AiAssignments {
+        assignments: Vec<crate::AiAssignmentInfo>,
+    },
     /// The catalogue of mail categories ([`Request::ListCategories`]). The suite's own words, so
     /// nothing here is foreign text.
     Categories {
@@ -3245,6 +3278,19 @@ pub struct EventSuggestion {
     pub engine: String,
     /// The model it asked.
     pub model: String,
+}
+
+/// One function of the suite with what it uses (`ai.list_assignments`, task E12.5): the
+/// assignment plus the words a person reads for the function, so an app need not know the list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AiAssignmentInfo {
+    #[serde(flatten)]
+    pub assignment: torro_core::ai::AiAssignment,
+    /// What a person reads for the function, in the core's language.
+    pub label: String,
+    /// The function needs a model that decides instead of writing ([`torro_core::ai::AiModel`]'s
+    /// `decision`), so only such models may be chosen for it.
+    pub needs_decision: bool,
 }
 
 /// An AI server found on this computer ([`Request::FindAiServers`], task KI.1a).

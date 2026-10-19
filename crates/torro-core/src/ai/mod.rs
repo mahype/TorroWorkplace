@@ -307,6 +307,89 @@ pub struct AiModel {
     pub decision: Option<bool>,
 }
 
+/// A function of the suite that a model does for the person (`docs/ki.md`, "Zuordnung je
+/// Funktion", task E12.5): which account and model it uses is set per function, because a small
+/// local model is right for sorting mail and a larger one for a summary.
+///
+/// One function so far. A new one is a variant here plus its row in the module that uses it;
+/// nothing else changes, and a settings file naming a function this version does not know is read
+/// all the same – the entry is dropped ([`crate::settings::Settings::ai_assignments`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+pub enum AiFunction {
+    /// Sorting incoming mail into categories (task E12.6, `docs/kategorien.md`). Needs a decision
+    /// model ([`AiModel::decision`]), and – while mail may not leave this computer – one that
+    /// runs here.
+    #[serde(rename = "inbox.categorize")]
+    InboxCategorize,
+}
+
+impl AiFunction {
+    /// Every function, in the order the settings list them.
+    pub const ALL: [AiFunction; 1] = [AiFunction::InboxCategorize];
+
+    /// How the function is written on the wire and in the settings file: `inbox.categorize`.
+    pub fn key(self) -> &'static str {
+        match self {
+            AiFunction::InboxCategorize => "inbox.categorize",
+        }
+    }
+
+    /// The function named by `key`; `None` for one this version does not know.
+    pub fn from_key(key: &str) -> Option<AiFunction> {
+        AiFunction::ALL.into_iter().find(|function| function.key() == key)
+    }
+
+    /// What a person reads for the function, in the core's language.
+    pub fn label(self) -> &'static str {
+        match self {
+            AiFunction::InboxCategorize => tr("Sort mail into categories"),
+        }
+    }
+
+    /// The function only works with a model that decides instead of writing
+    /// ([`AiModel::decision`]).
+    pub fn needs_decision(self) -> bool {
+        matches!(self, AiFunction::InboxCategorize)
+    }
+
+    /// What the function reads may not leave this computer unless the person allowed it
+    /// (`docs/ki.md`, principle 4): mail is such data.
+    pub fn reads_mail(self) -> bool {
+        matches!(self, AiFunction::InboxCategorize)
+    }
+}
+
+/// Which account and model one [`AiFunction`] uses (task E12.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AiAssignment {
+    pub function: AiFunction,
+    /// The AI account's id (`ai:ollama@localhost:11434`); `None` when none is chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The model of that account; `None` lets the function pick one that fits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How hard it thinks; `None` leaves it to the model. A decision model ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
+    /// The function is switched on. `false` leaves everything as it is and asks no model.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl AiAssignment {
+    /// Nothing assigned for `function`: what `ai.list_assignments` answers for a function the
+    /// person has not set up.
+    pub fn none(function: AiFunction) -> AiAssignment {
+        AiAssignment { function, engine: None, model: None, effort: None, enabled: false }
+    }
+
+    /// The assignment can be used: switched on and with an account.
+    pub fn is_ready(&self) -> bool {
+        self.enabled && self.engine.is_some()
+    }
+}
+
 /// How hard a model thinks before it answers (issue #131): sent with a message
 /// (`assistant.send_message`), kept as a default (`settings`), and put into a [`ChatRequest`]. Each
 /// protocol writes it its own way ([`openai::chat_body_for`]; Claude Code's `--effort`). A model

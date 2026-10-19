@@ -68,6 +68,14 @@ Inbox für „suggest lane“ und „summarize item“, in den Einstellungen der
 Modelle. Die Tabelle unten bleibt die Übersicht aller Funktionen; die Befehle `ai.list_assignments` und
 `ai.set_assignment` bleiben, nur ihre Oberfläche wandert in die Module.
 
+**Umgesetzt am 2026-10-19** (Aufgabe E12.5, Issue #221): Die Befehle `ai.list_assignments` (Read) und
+`ai.set_assignment` (Admin) stehen, gespeichert in `Settings::ai_assignments`. Es gibt vorerst **einen**
+Funktionsschlüssel, `inbox.categorize` (Mail einordnen, [kategorien.md](kategorien.md)); eine neue Funktion ist
+eine Variante in `torro_core::ai::AiFunction` und sonst nichts. `ai.set_assignment` prüft vor dem Speichern, dass
+das Konto besteht, das Modell anbietet, dass es entscheidet, wo die Funktion das braucht, und – solange
+`mail_to_cloud` aus ist – dass es auf diesem Rechner rechnet. Die Datenregel ist damit doppelt gesichert: beim
+Setzen und beim Aufruf.
+
 Ursprünglich geplant: Seite **„AI“** in der Steuerzentrale (erscheint erst mit einem KI-Konto). Eine Zeile je Funktion:
 
 | Funktion | Konto | Modell | Aufwand | Daten |

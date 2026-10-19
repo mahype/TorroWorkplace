@@ -36,7 +36,7 @@ use crate::account::ntfy::NtfyAccounts;
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::apps::Listener;
-use crate::assistant::Assistant;
+use crate::assistant::{Assistant, Place};
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
@@ -2764,6 +2764,11 @@ impl Core {
                 Err(err) => ai_error(&err),
             },
             Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
+            Request::AiAssignments => self.ai_assignments().await,
+            Request::SetAiAssignment { function, engine, model, effort, enabled } => {
+                let wanted = torro_core::ai::AiAssignment { function, engine, model, effort, enabled };
+                Box::pin(self.set_ai_assignment(wanted)).await
+            }
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
@@ -2872,6 +2877,85 @@ impl Core {
     /// was shown it ([`EntryPin::holds`]), else the answer is `conflict` and nothing runs. Opening
     /// and making a task check it on what they read from the entry; the other commands before
     /// they run, which suffices since they do not read its texts or link.
+    /// `ai.list_assignments` (task E12.5): every function of the suite, with what it uses and the
+    /// words a person reads for it. Functions nobody set up come with empty fields.
+    async fn ai_assignments(&self) -> Response {
+        let stored = self.settings.current().ai_assignments;
+        let assignments = torro_core::ai::AiFunction::ALL
+            .into_iter()
+            .map(|function| torro_ipc::AiAssignmentInfo {
+                assignment: stored
+                    .get(&function)
+                    .cloned()
+                    .unwrap_or_else(|| torro_core::ai::AiAssignment::none(function)),
+                label: function.label().to_string(),
+                needs_decision: function.needs_decision(),
+            })
+            .collect();
+        Response::AiAssignments { assignments }
+    }
+
+    /// `ai.set_assignment` (task E12.5). Checked before anything is stored: the account exists,
+    /// it offers the model, the model decides where the function needs one, and – while
+    /// `mail_to_cloud` is off – it runs on this computer for a function that reads mail
+    /// (`docs/ki.md`, principle 4). So no agent can route mail past the data rule.
+    async fn set_ai_assignment(&self, wanted: torro_core::ai::AiAssignment) -> Response {
+        let function = wanted.function;
+        if let Some(engine) = &wanted.engine {
+            let Some((provider, server)) = self.ai.server(engine).await else {
+                return Response::Error {
+                    code: "not-found".into(),
+                    message: trf("There is no AI account {id}.", &[("id", &engine)]),
+                };
+            };
+            let models = match self.ai.models(engine, true).await {
+                Ok(models) => models,
+                Err(err) => return ai_error(&err),
+            };
+            let chosen = match &wanted.model {
+                Some(id) => match models.iter().find(|model| &model.id == id) {
+                    Some(model) => Some(model.clone()),
+                    None => {
+                        let message = trf("This AI account offers no model {id}.", &[("id", &id)]);
+                        return Response::Error { code: "error".into(), message };
+                    }
+                },
+                None => None,
+            };
+            if function.needs_decision()
+                && let Some(model) = &chosen
+                && model.decision != Some(true)
+            {
+                let message = tr("This model does not decide. Pick one that does, like nimble on Ollama.");
+                return Response::Error { code: "error".into(), message: message.to_string() };
+            }
+            // The data rule, checked on the account and the model together (task S.23).
+            if function.reads_mail() && !self.settings.current().mail_to_cloud {
+                let elsewhere = match &chosen {
+                    Some(model) => crate::assistant::place_of(provider, &server, model) != Place::Local,
+                    // Without a model named, the account alone must already be on this computer.
+                    None => !matches!(provider.seat(), torro_core::ai::Seat::ThisComputer),
+                };
+                if elsewhere {
+                    let message = tr(
+                        "Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.",
+                    );
+                    return Response::Error { code: "error".into(), message: message.to_string() };
+                }
+            }
+        }
+        let mut settings = self.settings.current();
+        if wanted.engine.is_some() {
+            settings.ai_assignments.insert(function, wanted);
+        } else {
+            settings.ai_assignments.remove(&function);
+        }
+        if let Err(err) = self.settings.update_keeping_hidden(settings) {
+            return Response::Error { code: "error".into(), message: err };
+        }
+        self.ai_assignments().await
+    }
+
     /// Writes the category a person chose to every mail of the entry (task E12.4), so the mail
     /// store and the entry say the same. A store that cannot be written is logged, never shown:
     /// the entry already carries the category.
@@ -13039,6 +13123,80 @@ mod tests {
     }
 
     use torro_core::ai::AiProvider;
+
+    /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
+    /// while `mail_to_cloud` is off no model that runs elsewhere is taken – so no agent can route
+    /// mail past the data rule.
+    #[tokio::test]
+    async fn a_function_takes_only_a_deciding_model_and_one_on_this_computer() {
+        use torro_core::ai::AiFunction;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = crate::account::ai::tests::fake_deciding_ollama().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let connect = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let engine = account.id;
+
+        // Nothing is assigned at first, and the list is still whole.
+        let Response::AiAssignments { assignments } = core.handle(Request::AiAssignments).await else {
+            panic!("assignments")
+        };
+        assert_eq!(assignments.len(), AiFunction::ALL.len());
+        assert_eq!(assignments[0].assignment.function, AiFunction::InboxCategorize);
+        assert!(assignments[0].needs_decision, "sorting mail needs a model that decides");
+        assert!(!assignments[0].assignment.is_ready());
+
+        let set = |model: Option<&str>| Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(engine.clone()),
+            model: model.map(str::to_string),
+            effort: None,
+            enabled: true,
+        };
+        // A model that writes instead of deciding is refused.
+        let answer = core.handle(set(Some("qwen3:8b"))).await;
+        assert_eq!(code(&answer), "error", "qwen3 does not decide");
+        // A model the account does not offer either.
+        assert_eq!(code(&core.handle(set(Some("nope"))).await), "error");
+        // An account that does not exist is `not-found`.
+        let unknown = Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some("ai:ollama@nowhere.example".into()),
+            model: None,
+            effort: None,
+            enabled: true,
+        };
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+
+        // The decision model is taken, and the list says so.
+        let Response::AiAssignments { assignments } = core.handle(set(Some("nimble"))).await else {
+            panic!("assignments")
+        };
+        let held = &assignments[0].assignment;
+        assert_eq!(
+            (held.engine.as_deref(), held.model.as_deref(), held.enabled),
+            (Some(engine.as_str()), Some("nimble"), true)
+        );
+        assert!(held.is_ready());
+
+        // Taking it back leaves the function listed, with empty fields.
+        let back = Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: None,
+            model: None,
+            effort: None,
+            enabled: false,
+        };
+        let Response::AiAssignments { assignments } = core.handle(back).await else { panic!("assignments") };
+        assert!(!assignments[0].assignment.is_ready());
+        assert_eq!(assignments[0].assignment.engine, None);
+    }
 
     #[tokio::test]
     async fn the_control_centre_connects_an_ai_account_lists_its_models_and_removes_it() {
