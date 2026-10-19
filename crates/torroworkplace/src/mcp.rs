@@ -572,6 +572,8 @@ const IDEMPOTENT: &[&str] = &[
     "accounts.update_mail_account",
     // Subscribing the same topic with the same label again changes nothing (task E5.12).
     "accounts.set_ntfy_topic",
+    // Turning a model on or off again leaves it as it is (task S.24).
+    "ai.set_model_enabled",
     "mail.set_flags",
     "mail.move_messages",
 ];

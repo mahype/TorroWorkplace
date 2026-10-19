@@ -328,6 +328,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } => Vec::new(),
         Request::SetNtfyTopic { account: name, .. } => vec![account(name)],
         Request::AiModels { account: name, .. } => vec![account(name)],
+        // The account and the switch, never the model's name (task S.24).
+        Request::SetModelEnabled { account: name, enabled, .. } => {
+            vec![account(name), id("enabled", if *enabled { "true" } else { "false" })]
+        }
         Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
         // The assistant (task C.1): the conversation as the core made it, and for a message the
         // engine (decision 5: the log says which engine the assistant used), never a text, a title

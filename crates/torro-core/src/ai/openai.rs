@@ -317,6 +317,7 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 // Only Ollama says whether a model decides, and it says so per model in
                 // `/api/show`, not in the list (task E12.3).
                 decision: None,
+                enabled: false,
             })
         })
         .collect())
@@ -717,7 +718,8 @@ mod tests {
                 context: None,
                 reasoning: None,
                 remote: None,
-                decision: None
+                decision: None,
+                enabled: false,
             }]
         );
         assert!(matches!(parse_models(br#"{"models":[]}"#), Err(AiError::Format(_))));

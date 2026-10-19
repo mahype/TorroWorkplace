@@ -18,7 +18,8 @@
 //!   ([`Asked::for_model`]).
 //! - **Data rule**: a conversation whose model read mail asks no bot whose model runs elsewhere (the
 //!   message could carry the mail; the model the bot really answers with, its "Automatic" resolved
-//!   as for any answer, task S.23); when the bot read mail, its answer is withheld from a model
+//!   as for any answer, task S.23, and a model turned off replaced by one of the same account that is
+//!   on, task S.24, both by [`super::Host::model`]); when the bot read mail, its answer is withheld from a model
 //!   elsewhere; when it read data from outside the suite, its answer is marked so, and the
 //!   assistant's conversation counts as having read it (notes then wait for a person, task C.11).
 //! - **Stopping** the assistant's answer stops the bots it asked (`assistant.cancel`).

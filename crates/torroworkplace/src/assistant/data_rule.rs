@@ -381,6 +381,7 @@ mod tests {
             reasoning: None,
             remote,
             decision: None,
+            enabled: false,
         }
     }
 

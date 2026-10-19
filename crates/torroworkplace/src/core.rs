@@ -1455,6 +1455,9 @@ impl Core {
         });
         self.github.start();
         self.ai.start();
+        // The first start after the switches came (task S.24): what the suite uses stays on.
+        let core = Arc::clone(self);
+        tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
@@ -1681,7 +1684,10 @@ impl Core {
     async fn assistant_refusal(&self, request: &Request) -> Option<Response> {
         match (request.operation().area(), request) {
             (Area::Assistant, _) | (Area::Bots, Request::AskBot { .. }) => {
-                self.assistant.refusal(&self.ai, request).await
+                match self.assistant.refusal(&self.ai, request).await {
+                    Some(refused) => Some(refused),
+                    None => self.models_off_refusal(request).await,
+                }
             }
             (Area::Bots, _) => self.assistant.bots().refusal(request).await,
             _ => None,
@@ -1829,7 +1835,9 @@ impl Core {
         // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
         // whatever its rights in `assistant` say (task C.10).
         let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
-        if !allowed || self.switches_on_for_people(&request) {
+        // Turning on a model that computes elsewhere is the person's too (task S.24): the core's
+        // list says where it computes, so it is checked here and not with the request alone.
+        if !allowed || self.switches_on_for_people(&request) || self.turns_on_elsewhere(&request).await {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
             // the rights say.
@@ -1841,6 +1849,12 @@ impl Core {
                 }
             };
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
+        }
+        // An AI account that is not there is nothing to approve (task S.24).
+        if let Request::SetModelEnabled { account, .. } = &request
+            && !self.ai.knows(account).await
+        {
+            return Ok(ai_error(&crate::account::ai::no_account(account)));
         }
         // Its own access (issue #134): the rights it was admitted with, which are already narrowed
         // as for every other command, and what the request came through.
@@ -1860,6 +1874,10 @@ impl Core {
             if asking.without.contains(&Area::Bots) {
                 let message = "the person switched off bots for this conversation".into();
                 return Ok(Response::Error { code: "forbidden".into(), message });
+            }
+            // A bot whose account has no model on does not answer (task S.24).
+            if let Some(refused) = self.models_off_refusal(&request).await {
+                return Ok(refused);
             }
             let from = crate::assistant::Asking {
                 conversation: &asking.conversation,
@@ -2404,6 +2422,16 @@ impl Core {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
             }
+            // The account by its label, the model by its name and where it computes as the account's
+            // list in the core says (task S.24), never by the client's words.
+            Request::SetModelEnabled { account, model, .. } => {
+                let known = self.ai.described(account, model).await;
+                Facts {
+                    name: self.ai.label_of(account).await,
+                    model: known.map(|(name, here)| crate::approvals::KnownModel { name, here }),
+                    ..Facts::default()
+                }
+            }
             // The account by its label (its server), the topic by the label the account keeps for it,
             // never by its name (task E5.12).
             Request::SetNtfyTopic { account, topic, .. } => {
@@ -2552,6 +2580,7 @@ impl Core {
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
         if !allowed
             || self.switches_on_for_people(&request)
+            || self.turns_on_elsewhere(&request).await
             || torro_ipc::api::loops_back(&info.kind, request.operation())
             || self.bots_refusal(client, rights, &request).is_some()
         {
@@ -2933,10 +2962,15 @@ impl Core {
             request @ (Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. }) => {
                 Box::pin(self.ntfy_request(request, client)).await
             }
+            // Marked with the switches (task S.24); the server's list says nothing about them.
             Request::AiModels { account, all } => match self.ai.models(&account, all).await {
-                Ok(models) => Response::AiModels { account, models },
+                Ok(models) => Response::AiModels { models: self.ai.mark_enabled(&account, models).await, account },
                 Err(err) => ai_error(&err),
             },
+            // Boxed, as the ntfy commands: it may ask the account's server for its models.
+            Request::SetModelEnabled { account, model, enabled } => {
+                Box::pin(self.set_model_enabled(&account, &model, enabled, client)).await
+            }
             Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
             Request::AiAssignments => self.ai_assignments().await,
             Request::SetAiAssignment { function, engine, model, effort, enabled } => {
@@ -2996,7 +3030,7 @@ impl Core {
             | Request::AskBot { .. }) => {
                 // Only the person's own message can name a bot for the assistant (task B.2).
                 let person = matches!(reach, Reach::Suite);
-                crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await
+                Box::pin(self.assistant_request(request, person)).await
             }
             // Bots (task B.1): rights were checked in `handle_from`; a bot's client is made and
             // removed with it.
@@ -5200,6 +5234,103 @@ impl Core {
         self.voice.changes()
     }
 
+    /// Whether `request` from a client turns on a model that computes elsewhere (task S.24): only a
+    /// person may, like letting mail go to the cloud (`docs/api.md`, "Was nie nach außen geht", 6),
+    /// since every module would then send it what it reads. Where the model computes is the account's
+    /// list in the core ([`AiAccounts::runs_elsewhere`], in doubt elsewhere). Turning a model off, and
+    /// turning on one that computes here, are ordinary admin commands.
+    async fn turns_on_elsewhere(&self, request: &Request) -> bool {
+        match request {
+            Request::SetModelEnabled { account, model, enabled: true } => self.ai.runs_elsewhere(account, model).await,
+            _ => false,
+        }
+    }
+
+    /// `ai.set_model_enabled` (task S.24): the switch, stored in `ai-models.json`. For a client
+    /// (`client`) turning a model on, where it computes is judged again by the server's list of now:
+    /// the check before ([`Core::turns_on_elsewhere`]) read the list the core held, and the server
+    /// may say otherwise since.
+    async fn set_model_enabled(&self, account: &str, model: &str, enabled: bool, client: bool) -> Response {
+        if client && enabled {
+            if let Err(err) = self.ai.models(account, true).await {
+                return ai_error(&err);
+            }
+            if self.ai.runs_elsewhere(account, model).await {
+                return Refused::Lacks { command: "ai.set_model_enabled", lack: torro_ipc::api::Lack::ForPeople }
+                    .response();
+            }
+        }
+        match self.ai.set_enabled(account, model, enabled).await {
+            Ok(()) => Response::Ok,
+            Err(err) => ai_error(&err),
+        }
+    }
+
+    /// The sentence for an AI account `engine` with no model on (task S.24), naming it as the person
+    /// reads it.
+    async fn models_off_message(&self, engine: &str) -> String {
+        let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+        trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)])
+    }
+
+    /// `unsupported` for `assistant.send_message` and `bots.ask_bot` (by the bot's engine) with an AI
+    /// account that has no model on (task S.24): the module never answers with another account
+    /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
+    /// (the assistant refuses those itself).
+    async fn models_off_refusal(&self, request: &Request) -> Option<Response> {
+        let engine = match request {
+            Request::SendMessage { engine, .. } => engine.clone(),
+            Request::AskBot { bot, .. } => self.assistant.bots().get(bot).await?.engine,
+            _ => return None,
+        };
+        if !self.ai.knows(&engine).await || self.ai.offers_a_model(&engine).await {
+            return None;
+        }
+        Some(Response::Error { code: "unsupported".into(), message: self.models_off_message(&engine).await })
+    }
+
+    /// The commands of the assistant and `bots.ask_bot` (task C.1), with the switches of the models
+    /// (task S.24): `assistant.list_engines` lists only AI accounts with a model on, a message to one
+    /// without is `unsupported` ([`Core::models_off_refusal`]). `person`: the app key sent it.
+    async fn assistant_request(&self, request: Request, person: bool) -> Response {
+        if let Some(refused) = self.models_off_refusal(&request).await {
+            return refused;
+        }
+        match crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await {
+            Response::Engines { engines } => {
+                let mut offered = Vec::with_capacity(engines.len());
+                for engine in engines {
+                    let ai = engine.kind == torro_ipc::assistant::EngineKind::Ai;
+                    if !ai || self.ai.offers_a_model(&engine.id).await {
+                        offered.push(engine);
+                    }
+                }
+                Response::Engines { engines: offered }
+            }
+            other => other,
+        }
+    }
+
+    /// The first start after the switches of the models came (task S.24,
+    /// [`AiAccounts::keep_used_models_on`]): the models the suite already uses stay on – the
+    /// assistant's default for new chats and the models of the bots. Afterwards it does nothing.
+    pub(crate) async fn keep_used_models_on(&self) {
+        let mut used = Vec::new();
+        if let Some(default) = self.settings.current().assistant_default
+            && let Some(model) = default.model
+        {
+            used.push((default.engine, model));
+        }
+        for bot in self.assistant.bots().list().await {
+            if let Some(model) = bot.model {
+                used.push((bot.engine, model));
+            }
+        }
+        if let Err(err) = self.ai.keep_used_models_on(used).await {
+            eprintln!("torroworkplace: cannot keep the models in use on: {err}");
+        }
+    }
+
     /// Whether `request` from a client switches on through the whole settings what only a person
     /// switches on (`settings.update_settings` with it on while it is off): the microphone (point
     /// 6) and mail to cloud models (`mail_to_cloud`, task C.17), refused like
@@ -5342,7 +5473,8 @@ impl crate::assistant::Host for Core {
 
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
-    /// the list lacks), then [`crate::assistant::place_of`] for that model.
+    /// the list lacks), then [`crate::assistant::place_of`] for that model. Only models turned on
+    /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]).
     fn model<'a>(
         &'a self,
         engine: &'a str,
@@ -5356,8 +5488,19 @@ impl crate::assistant::Host for Core {
                 Some((kind, server)) => crate::assistant::place_of(*kind, server, described),
                 None => crate::assistant::Place::Remote,
             };
-            let models = self.ai.known_models(engine, model).await;
-            let (model, place) = crate::assistant::ModelAccess::choose(models, model, place)?;
+            // Only models turned on count (task S.24): one asked that is off gives way to
+            // "Automatic" among those of this account that are on.
+            let listed = match self.ai.known_models(engine, model).await {
+                Ok(models) => Ok(self.ai.mark_enabled(engine, models).await),
+                Err(err) => Err(err),
+            };
+            let asked_on = match model {
+                Some(model) => self.ai.is_on(engine, model, listed.as_deref().ok()).await,
+                None => false,
+            };
+            let off = self.models_off_message(engine).await;
+            let off = || torro_core::ai::AiError::NotFound(off);
+            let (model, place) = crate::assistant::ModelAccess::choose_on(listed, model, asked_on, place, off)?;
             Ok(crate::assistant::ModelAccess { provider, model, place })
         })
     }
@@ -13531,6 +13674,11 @@ mod tests {
 
     use torro_core::ai::AiProvider;
 
+    /// `ai.set_model_enabled` turning `model` of `account` on (task S.24).
+    fn turn_on(account: &str, model: &str) -> Request {
+        Request::SetModelEnabled { account: account.into(), model: model.into(), enabled: true }
+    }
+
     /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
     /// while `mail_to_cloud` is off no model that runs elsewhere is taken – so no agent can route
     /// mail past the data rule.
@@ -14688,6 +14836,8 @@ mod tests {
             .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
             .await
             .expect("openrouter");
+        // Models elsewhere start off (task S.24); the person turned one on.
+        assert_eq!(core.handle(turn_on(&remote.id, "qwen/qwen3-14b")).await, Response::Ok);
         core.clients
             .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
             .await
@@ -14717,6 +14867,8 @@ mod tests {
         core.attach_assistant();
         let account =
             core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        // The cloud model starts off (task S.24); the person turned it on.
+        assert_eq!(core.handle(turn_on(&account.id, "glm-5.3:cloud")).await, Response::Ok);
         core.clients
             .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
             .await
@@ -14742,6 +14894,186 @@ mod tests {
             })
             .collect();
         assert_eq!(answered, [Some("qwen3:8b")], "the model checked answers");
+    }
+
+    /// `ai.set_model_enabled` for `model` of `account` (task S.24).
+    fn switch(account: &str, model: &str, enabled: bool) -> Request {
+        Request::SetModelEnabled { account: account.into(), model: model.into(), enabled }
+    }
+
+    /// The models of `account` with whether each is on, as `ai.list_models` answers the app key.
+    async fn switched(core: &Core, account: &str) -> Vec<(String, bool)> {
+        let list = Request::AiModels { account: account.into(), all: true };
+        let Response::AiModels { models, .. } = core.handle(list).await else { panic!("models") };
+        models.into_iter().map(|model| (model.id, model.enabled)).collect()
+    }
+
+    /// Task S.24: `ai.list_models` says which models are on – at first the one that computes here –,
+    /// the person switches them, and the switches stay out of `settings.get_settings`.
+    #[tokio::test]
+    async fn models_are_switched_for_the_suite_and_kept_apart_from_the_settings() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let connect = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: Default::default(),
+        };
+        let Response::Account { account } = ask(&core, Some(&app_key), connect).await else { panic!("connected") };
+        let at_first = [("glm-5.3:cloud".to_string(), false), ("qwen3:8b".to_string(), true)];
+        assert_eq!(switched(&core, &account.id).await, at_first);
+
+        assert_eq!(ask(&core, Some(&app_key), switch(&account.id, "glm-5.3:cloud", true)).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), switch(&account.id, "qwen3:8b", false)).await, Response::Ok);
+        let now = [("glm-5.3:cloud".to_string(), true), ("qwen3:8b".to_string(), false)];
+        assert_eq!(switched(&core, &account.id).await, now);
+        let unknown = switch(&account.id, "llama3:8b", true);
+        assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found", "not offered");
+
+        let settings = serde_json::to_string(&ask(&core, Some(&app_key), Request::Settings).await).expect("json");
+        assert!(!settings.contains("glm-5.3") && !settings.contains("qwen3"), "{settings}");
+        let stored = std::fs::read_to_string(dir.path().join("config").join(torro_core::ai::MODELS_FILE));
+        assert!(stored.expect("its own file").contains("glm-5.3:cloud"));
+    }
+
+    /// Task S.24, the first start after the update: the assistant's default for new chats and a
+    /// bot's model stay on, also where they compute elsewhere.
+    #[tokio::test]
+    async fn the_models_the_suite_uses_stay_on_after_the_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama_with_cloud(true).await, fake_openrouter().await);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        let local = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let local = local.expect("ollama");
+        let cloud = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let default = serde_json::json!({"engine": local.id, "model": "glm-5.3:cloud"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(core.handle(set).await, Response::Ok);
+        let mut save = save_bot(None, "Travel planner");
+        if let Request::SaveBot { engine, model, .. } = &mut save {
+            (*engine, *model) = (cloud.id.clone(), Some("openai/gpt-4o".into()));
+        }
+        bot_of(core.handle(save).await);
+
+        core.keep_used_models_on().await;
+        let on =
+            |list: Vec<(String, bool)>| list.into_iter().filter(|(_, on)| *on).map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(on(switched(&core, &local.id).await), ["glm-5.3:cloud", "qwen3:8b"]);
+        assert_eq!(on(switched(&core, &cloud.id).await), ["openai/gpt-4o"]);
+    }
+
+    /// Task S.24: no client turns on a model that computes elsewhere, whatever its rights, and
+    /// nothing waits for the person then; a model that computes here goes off and on only once the
+    /// person allowed it, the approval naming model and place from the core's list. The log names
+    /// the account and the switch, never the model.
+    #[tokio::test]
+    async fn only_people_turn_on_a_model_elsewhere_and_agents_switch_with_approval() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let account = account.expect("ollama");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+
+        let Err(refused) = core.handle_from(Some(&key), switch(&account.id, "glm-5.3:cloud", true)).await else {
+            panic!("refused")
+        };
+        assert_eq!(refused, Refused::Lacks { command: "ai.set_model_enabled", lack: Lack::ForPeople });
+        let unlisted = ask(&core, Some(&key), switch(&account.id, "llama3:8b", true)).await;
+        assert_eq!(code(&unlisted), "forbidden", "a model the list lacks counts as elsewhere");
+        let nowhere = ask(&core, Some(&key), switch("ai:ollama@nowhere.example", "qwen3:8b", false)).await;
+        assert_eq!(code(&nowhere), "not-found", "no account, nothing to approve");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let label = core.ai.label_of(&account.id).await.expect("a label");
+        let words: [(&str, &dyn std::fmt::Display); 2] = [("model", &"qwen3:8b"), ("account", &label)];
+        let asked = waits(ask(&core, Some(&key), switch(&account.id, "qwen3:8b", false)).await);
+        assert_eq!(asked.summary, trf("Turn off “{model}” of {account}", &words));
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert_eq!(switched(&core, &account.id).await[1], ("qwen3:8b".to_string(), false));
+
+        let asked = waits(ask(&core, Some(&key), switch(&account.id, "qwen3:8b", true)).await);
+        let expected = trf("Turn on “{model}” of {account} (runs on this computer)", &words);
+        assert_eq!(asked.summary, expected);
+        approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(switched(&core, &account.id).await[1], ("qwen3:8b".to_string(), true));
+        assert_eq!(switched(&core, &account.id).await[0], ("glm-5.3:cloud".to_string(), false), "still off");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("qwen3") && !log.contains("glm-5.3"), "{log}");
+        let first = audit_lines(dir.path()).into_iter().find(|line| line.command == "ai.set_model_enabled");
+        let first = first.expect("logged");
+        assert_eq!(first.ids, [format!("account:{}", account.id), "enabled:true".to_string()]);
+    }
+
+    /// Task S.24: with the local model off and only the cloud model of the same Ollama on,
+    /// "Automatic" takes the cloud model and the data rule counts it as elsewhere: a bot without a
+    /// model is not asked after mail. A model asked that is off gives way. With nothing on the
+    /// account is no engine, and a message or a bot's ask with it is `unsupported`.
+    #[tokio::test]
+    async fn automatic_takes_the_only_model_on_and_the_data_rule_follows_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant));
+        core.attach_assistant();
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let account = account.expect("ollama");
+        assert_eq!(core.handle(switch(&account.id, "qwen3:8b", false)).await, Response::Ok);
+        assert_eq!(core.handle(switch(&account.id, "glm-5.3:cloud", true)).await, Response::Ok);
+
+        let access = Host::model(&*core, &account.id, None).await.expect("a model");
+        assert_eq!((access.model, access.place), ("glm-5.3:cloud".to_string(), Place::Remote));
+        let access = Host::model(&*core, &account.id, Some("qwen3:8b")).await.expect("replaced");
+        assert_eq!((access.model, access.place), ("glm-5.3:cloud".to_string(), Place::Remote), "off gives way");
+
+        core.clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let automatic = bot_with(&core, "Packing helper", &account.id, reading(&[Area::Calendar])).await;
+        let main = said(&core, "Ask the packing helper").await;
+        let refused = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, true, &[]).await;
+        let Response::Error { code, message } = refused else { panic!("refused: {refused:?}") };
+        assert!(code == "forbidden" && message.contains("mail"), "the data rule: {message}");
+
+        assert_eq!(core.handle(switch(&account.id, "glm-5.3:cloud", false)).await, Response::Ok);
+        let Response::Engines { engines } = core.handle(Request::ListEngines).await else { panic!("engines") };
+        assert!(engines.iter().all(|engine| engine.id != account.id), "{engines:?}");
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: account.id.clone(),
+            model: Some("glm-5.3:cloud".into()),
+            effort: None,
+            text: "Hello".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+        };
+        let label = core.ai.label_of(&account.id).await.expect("a label");
+        let off = trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &label)]);
+        assert_eq!(core.handle(send).await, Response::Error { code: "unsupported".into(), message: off.clone() });
+        let asked = Request::AskBot { bot: automatic.id.clone(), text: "Hello".into(), conversation: None };
+        assert_eq!(core.handle(asked).await, Response::Error { code: "unsupported".into(), message: off.clone() });
+        let delegated = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, false, &[]).await;
+        assert_eq!(delegated, Response::Error { code: "unsupported".into(), message: off });
     }
 
     /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
@@ -14901,6 +15233,11 @@ mod tests {
             engines.push(connected.expect("ollama").id);
         }
         let (told, untold) = (engines[0].clone(), engines[1].clone());
+        // Task S.24: only models that are on count. A model in use before the switches came stays on,
+        // also one the list lacks and one that counts as elsewhere; the cloud model the person turns on.
+        let used = vec![(told.clone(), "llama3:8b".to_string()), (untold.clone(), "qwen3:8b".to_string())];
+        core.ai.keep_used_models_on(used).await.expect("kept on");
+        assert_eq!(core.handle(turn_on(&told, "glm-5.3:cloud")).await, Response::Ok);
         assert_eq!(at(told.clone(), None).await, ("qwen3:8b".to_string(), Place::Local), "Automatic: local first");
         assert_eq!(at(told.clone(), Some("glm-5.3:cloud")).await, ("glm-5.3:cloud".to_string(), Place::Remote));
         assert_eq!(at(told.clone(), Some("qwen3:8b")).await, ("qwen3:8b".to_string(), Place::Local));
@@ -14925,6 +15262,7 @@ mod tests {
             .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
             .await
             .expect("openrouter");
+        assert_eq!(core.handle(turn_on(&remote.id, "qwen/qwen3-14b")).await, Response::Ok, "elsewhere: off at first");
         let place = |engine: String| {
             let core = &core;
             async move { Host::model(core, &engine, None).await.map(|access| access.place).expect("a model") }

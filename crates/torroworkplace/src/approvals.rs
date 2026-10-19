@@ -307,6 +307,20 @@ pub struct Facts {
     /// For `settings.set_setting reminders` (task ER1.3): the display names of the calendars the
     /// value names, by id, as the core caches them. A calendar it does not know keeps its id.
     pub calendars: BTreeMap<String, String>,
+    /// For `ai.set_model_enabled` (task S.24): the model as the account's list in the core describes
+    /// it, looked up by its id. `None` for a model the account does not list: the summary then says
+    /// "an unknown model". The account's label is [`Facts::name`].
+    pub model: Option<KnownModel>,
+}
+
+/// A model of an AI account as the core lists it, for the summary of `ai.set_model_enabled` (task
+/// S.24, [`Facts::model`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownModel {
+    /// Its name as the server lists it.
+    pub name: String,
+    /// It computes on this computer (the data rule's word); otherwise elsewhere.
+    pub here: bool,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -1042,6 +1056,25 @@ fn desktop_notifier(socket: Option<PathBuf>) -> Notifier {
     Notifier::new(ask, settled)
 }
 
+/// The summary of `ai.set_model_enabled` (task S.24): `account` as the core names it, the model by
+/// its listed name and where it computes ([`Facts::model`]); "an unknown model" for one the account
+/// does not list.
+fn model_switch_summary(account: &str, enabled: bool, facts: &Facts) -> String {
+    let Some(model) = &facts.model else {
+        return match enabled {
+            true => trf("Turn on an unknown model of {account}", &[("account", &account)]),
+            false => trf("Turn off an unknown model of {account}", &[("account", &account)]),
+        };
+    };
+    let name = quote(&model.name);
+    let words: [(&str, &dyn std::fmt::Display); 2] = [("model", &name), ("account", &account)];
+    match (enabled, model.here) {
+        (true, true) => trf("Turn on “{model}” of {account} (runs on this computer)", &words),
+        (true, false) => trf("Turn on “{model}” of {account} (runs elsewhere)", &words),
+        (false, _) => trf("Turn off “{model}” of {account}", &words),
+    }
+}
+
 /// What `request` would do, in words, for the person who decides: `Delete event "Team meeting" on
 /// Tue, 14 Oct 09:00 from "Work"`. In the core's language.
 ///
@@ -1071,6 +1104,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::SetAiAssignment { function, .. } => {
             trf("Let no model do “{function}” any more", &[("function", &function.label())])
         }
+        // Which models the suite may use (task S.24): account, model and place from the core's list.
+        Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
         Request::DeleteEvent { event } => match &facts.item {
             Some(item) => trf(
                 "Delete event \"{title}\" on {when} from \"{calendar}\"",

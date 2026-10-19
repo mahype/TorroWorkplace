@@ -576,6 +576,9 @@ fn describe(request: &Request) -> String {
         Request::SetNtfyLogin { .. } => "set ntfy login".into(),
         Request::SetNtfyTopic { account, .. } => format!("set a topic of {account}"),
         Request::AiModels { .. } => "ai models".into(),
+        // Never the model's name: the log names the account and the switch only (task S.24).
+        Request::SetModelEnabled { account, enabled: true, .. } => format!("turn on a model of {account}"),
+        Request::SetModelEnabled { account, enabled: false, .. } => format!("turn off a model of {account}"),
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::SearchMail { .. } => "search mail".into(),

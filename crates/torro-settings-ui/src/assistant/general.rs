@@ -167,6 +167,7 @@ pub fn default_models(default: &AssistantDefault, data: &Data) -> Vec<AiModel> {
             reasoning: None,
             remote: None,
             decision: None,
+            enabled: false,
         };
         models.insert(0, named);
     }

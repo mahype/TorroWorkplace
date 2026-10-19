@@ -845,6 +845,7 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         reasoning: Some(id.starts_with("qwen3")),
         remote: None,
         decision: None,
+        enabled: false,
     };
     match account {
         OLLAMA => Some(vec![

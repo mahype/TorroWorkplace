@@ -481,7 +481,9 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (entfällt mit #231, ersetzt 
   - fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
 ### S.24 Modelle an- und abschalten: Befehl und Regel im Kern
-- [ ] erledigt
+- [x] erledigt (Ablage und Schalten in `account/ai.rs`; das neue Feld `enabled` brauchte je eine Zeile in den
+  Struct-Literalen weiterer Dateien. Die Inbox-Funktionen (Vorschläge, `ai.set_assignment`, Kategorien) beachten die
+  Schalter noch nicht, das gehört zu S.26.)
 - **Modell:** Opus (neuer Befehl, Regel für alle Module, Datenregel) · **Dateien:** `crates/torro-ipc/src/lib.rs`,
   `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/ai/mod.rs`, `crates/torroworkplace/src/account/ai.rs`,
   `crates/torroworkplace/src/assistant/model.rs`, `crates/torroworkplace/src/assistant/delegate.rs`,

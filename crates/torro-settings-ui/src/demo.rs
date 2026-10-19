@@ -346,6 +346,7 @@ impl Demo {
                 reasoning: Some(true),
                 remote: Some(false),
                 decision: None,
+                enabled: false,
             },
             AiModel {
                 id: "nimble".into(),
@@ -356,6 +357,7 @@ impl Demo {
                 reasoning: Some(false),
                 remote: Some(false),
                 decision: Some(true),
+                enabled: false,
             },
         ]
     }

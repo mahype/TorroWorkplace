@@ -589,7 +589,8 @@ pub enum Request {
     /// server's order ([`Response::AiModels`]). Each says whether it can call tools and whether
     /// its weights are open, where the server tells. Without `all` only models known to have open
     /// weights and those the server says nothing about are listed (Open First: on OpenRouter only
-    /// open models, on a local server all of them).
+    /// open models, on a local server all of them). Each says whether it is turned on for the
+    /// suite (`enabled`, task S.24, [`Request::SetModelEnabled`]), from the core's switches.
     ///
     /// Error codes: `not-found` for an id that is no AI account, `not-connected` when the account
     /// needs a key and none is stored on this device, `auth` when the server refuses the key,
@@ -601,6 +602,35 @@ pub enum Request {
         /// Also list models whose weights are closed (OpenRouter).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all: bool,
+    },
+    /// Turns the model `model` of the AI account `account` on or off for the whole suite (task S.24,
+    /// `docs/settings.md` › KI): the assistant, its bots and every other module offer only models
+    /// that are on, and a module set to a model turned off answers with "Automatic" among the models
+    /// of the same account that are on. Answered with [`Response::Ok`]; switching to what it is
+    /// already changes nothing. Kept in `<config>/ai-models.json`, not in the settings.
+    ///
+    /// Turning on asks the account's server for its models first (the model must be one of them);
+    /// turning off needs no server, except the first time at an account whose models the core has
+    /// not listed yet: the models the rule had on are kept on then, so the list is asked for.
+    ///
+    /// Turning on a model that computes elsewhere (`remote`, or any model of a provider in the cloud)
+    /// is the person's alone, like `mail_to_cloud` (`docs/api.md`, "Was nie nach außen geht", 6):
+    /// every client key gets `forbidden`, whatever its rights. Turning one off, and turning on a
+    /// model that computes on this computer, are admin commands of `ai` with approval; the approval
+    /// names account, model and where it computes as the core lists them.
+    ///
+    /// Error codes: `not-found` for an id that is no AI account and for turning on a model the
+    /// account does not offer (turning one off works then too); `offline`, `auth`, `not-connected`
+    /// and `busy` when the server must be asked and cannot answer; `forbidden` as above; `error`
+    /// when the switches cannot be stored.
+    #[serde(rename = "ai.set_model_enabled")]
+    SetModelEnabled {
+        /// The account: `ai:<provider>@<host>` from `accounts.list_accounts`.
+        account: String,
+        /// The model's id from `ai.list_models` (`qwen3:8b`).
+        model: String,
+        /// `true` turns it on, `false` off.
+        enabled: bool,
     },
     /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434` and
     /// LM Studio at `localhost:1234`, by asking each for its models (`GET <server>/models`, a
@@ -1923,8 +1953,9 @@ pub enum Request {
     // except its memory (`api::loops_back`, `api::own_memory`), so it never drives itself. Every
     // request keeps the limits of [`assistant::limit_refusal`] (`error`). Profile and memory (task
     // C.10) live in `<config>/assistant/` (0600).
-    /// The engines the assistant can answer with ([`Response::Engines`]): every AI account in the
-    /// order they were added, then the test engine where the core offers it. Never fails.
+    /// The engines the assistant can answer with ([`Response::Engines`]): every AI account with at
+    /// least one model turned on (task S.24, [`Request::SetModelEnabled`]) in the order they were
+    /// added, then the test engine where the core offers it. Never fails.
     #[serde(rename = "assistant.list_engines")]
     ListEngines,
     /// Every conversation without its entries, pinned first, then the most recently active
@@ -1949,10 +1980,13 @@ pub enum Request {
     /// there already). Follow the answer with `assistant.get_conversation` and `after`.
     ///
     /// The assistant works with the rights of its own client, not the caller's; `without` narrows
-    /// them for this answer. Errors: `not-found` for an unknown conversation or engine, `busy`
-    /// while the conversation still answers, `unsupported` for an engine whose answers the core
-    /// cannot run (an AI account while the core has not started), `error` for a limit
-    /// ([`assistant::limit_refusal`]) or a conversation that cannot be stored.
+    /// them for this answer. A `model` turned off (task S.24, [`Request::SetModelEnabled`]) is
+    /// replaced by "Automatic" among the account's models that are on; the answer names the model
+    /// that wrote it. Errors: `not-found` for an unknown conversation or engine, `busy` while the
+    /// conversation still answers, `unsupported` for an engine whose answers the core cannot run (an
+    /// AI account while the core has not started, or one with no model turned on: never another
+    /// account instead), `error` for a limit ([`assistant::limit_refusal`]) or a conversation that
+    /// cannot be stored.
     #[serde(rename = "assistant.send_message")]
     SendMessage {
         /// The conversation to continue; left out, a new one starts with this message.
@@ -2145,7 +2179,8 @@ pub enum Request {
         avatar: Option<String>,
         /// The engine it answers with when asked: an id from `assistant.list_engines`.
         engine: String,
-        /// The model of that engine; left out, the engine picks one.
+        /// The model of that engine; left out, the engine picks one. One turned off (task S.24) is
+        /// replaced by "Automatic" among the account's models that are on while it stays off.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         /// How it speaks, at most 4,000 characters.
@@ -2171,7 +2206,8 @@ pub enum Request {
     /// its answer in the background with the bot's engine and model, like `assistant.send_message`
     /// ([`Response::Conversation`], at once). The bot works with its own client's rights.
     /// `not-found` for an unknown bot or conversation (also one of another bot), `busy` while the
-    /// conversation still answers, `error` for a limit.
+    /// conversation still answers, `unsupported` when the bot's AI account has no model turned on
+    /// (task S.24), `error` for a limit.
     #[serde(rename = "bots.ask_bot")]
     AskBot {
         /// The bot's id.

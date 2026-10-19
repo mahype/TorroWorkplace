@@ -83,6 +83,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
+| `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
@@ -552,6 +553,20 @@ Kalender seiner Auswahl (andere `not-found`), `update_settings` lässt die Kalen
 Befehl und Kennung, ein `href` als Prüfsumme, nie Titel oder Zeiten. Freigaben nennen Titel und Beginn des Termins aus
 dem Zwischenspeicher, nie den Text des Clients.
 
+²¹ **Modelle an und aus** (S.24, [settings.md](settings.md) › KI): `set_model_enabled { account, model, enabled }`
+schaltet ein Modell eines KI-Kontos für die ganze Suite an oder aus; `list_models` nennt je Modell `enabled`. Die
+Schalter stehen in `<config>/ai-models.json` (0600, atomar geschrieben), nicht in `settings.json`, damit
+`settings.update_settings` die Rechte in `ai` nicht umgeht und zwei Schaltvorgänge sich nicht überschreiben. Am
+Anfang an: Modelle mit Werkzeugen, die auf diesem Rechner rechnen; beim ersten Start nach dem Update zusätzlich der
+Standard neuer Chats und die Modelle der Bots. Anschalten fragt den Server nach seinen Modellen (`not-found` für
+eines, das er nicht meldet); Ausschalten geht immer, beim ersten Mal an einem Konto, dessen Modelle der Kern noch
+nicht kennt, fragt es die Liste, damit die übrigen angeschalteten an bleiben. Ein Modul mit einem abgeschalteten
+Modell antwortet mit „Automatic“ unter den angeschalteten desselben Kontos; ist dort keines an, antworten
+`assistant.send_message` und `bots.ask_bot` mit `unsupported` („Turn on a model of {provider} in Settings ›
+Accounts.“), und `assistant.list_engines` nennt das Konto nicht. Ein entferntes Modell anschalten nur Menschen
+(Punkt 6 unten). Freigaben nennen Konto, Modell und Ort aus der Liste des Kerns; das Protokoll nur Konto und
+`enabled`, nie den Modellnamen.
+
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
 Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
@@ -663,6 +678,15 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
    `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
+
+   Ebenso **ein Modell anschalten, das anderswo rechnet** (#231, Aufgabe S.24, `ai.set_model_enabled` mit
+   `enabled: true`): Ollamas Cloud-Modelle, OpenRouter, Anthropic und Server im Netz. Jeder Client bekommt
+   `forbidden`, auch mit Admin-Rechten in `ai`, und nichts wartet auf eine Freigabe; sonst bekäme ein Agent die
+   Modelle, an die die Module dann senden, was sie lesen. Hier entscheidet nicht der Wert allein, sondern der Ort
+   des Modells, den nur der Kern kennt: Er prüft ihn aus seiner Liste des Kontos (im Zweifel „anderswo“), nicht
+   `Request::kept_for_people`. Ausschalten und das Anschalten eines Modells, das hier rechnet, sind gewöhnliche
+   Admin-Änderungen mit Freigabe (Test `only_people_turn_on_a_model_elsewhere_and_agents_switch_with_approval` im
+   Kern).
 
    Ebenso **API und MCP einschalten** (#231, Schalter „Allow API keys“ und „Allow MCP“, Einstellungen
    `allow_api_keys` und `allow_mcp`): `settings.set_setting` mit `true` und ein `settings.update_settings`, das
