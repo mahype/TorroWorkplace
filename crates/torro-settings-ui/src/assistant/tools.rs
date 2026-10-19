@@ -28,16 +28,17 @@
 use std::fmt;
 use std::path::Path;
 
-use iced::widget::{Space, column, row, svg};
-use iced::{Alignment, Element, Theme};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, column, container, row, svg};
+use iced::{Alignment, Element, Fill, Theme};
 
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{Paper, PdfTemplate, PdfTemplateId, ToolId};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::style;
-use torro_gui::theme::{palette, space};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status};
+use torro_gui::{style, typo};
 use torro_ipc::api::{Access, Area};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{Request, SettingKey};
@@ -242,10 +243,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 /// the folder its files go to.
 fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a, Message> {
     let id = info.id;
-    let on = setting_row(
-        None,
+    let on = wrapping_row(
         switch_label(id),
-        Some(info.description.clone()),
+        info.description.as_str(),
         switch(info.enabled, move |on| Message::Switch(id, on)),
     );
     let mut rows = vec![on, access_row(data, id)];
@@ -258,6 +258,23 @@ fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a
     widgets::group(info.name.as_str(), rows, Some(footer.to_string()))
 }
 
+/// A row whose line below the label wraps instead of being cut: what a tool does is a sentence a
+/// narrow window must not cut off. With room for it on one line it is as high as a [`setting_row`]
+/// with a detail (56); it grows with each further line.
+fn wrapping_row<'a>(label: &'a str, detail: &'a str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let lines = column![
+        widgets::ellipsized(typo::body(), label, theme::text),
+        typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
+    ]
+    .width(Fill);
+    // A strut as high as a tall row inside its padding (56 − 2 × 8), so one line of detail gives
+    // exactly the height of the rows around it.
+    let strut = Space::new().height(size::header() + space::m() - space::l());
+    let text = row![strut, lines].width(Fill).align_y(Alignment::Center);
+    let content = row![text, control.into()].spacing(space::l()).align_y(Alignment::Center);
+    container(content).width(Fill).padding([space::s(), space::l()]).into()
+}
+
 /// What the switch of a tool is called.
 fn switch_label(id: ToolId) -> &'static str {
     match id {
@@ -265,15 +282,16 @@ fn switch_label(id: ToolId) -> &'static str {
     }
 }
 
-/// Whether the assistant may use the tool: a green dot, or a row that leads to the control centre,
-/// where its rights are chosen.
+/// Whether the assistant may use the tool: a green dot, or an orange one (the tool is on, but the
+/// assistant may not use it: something to do) and a row that leads to the control centre, where its
+/// rights are chosen.
 fn access_row<'a>(data: &Data, id: ToolId) -> Element<'a, Message> {
     if assistant_may_use(data, id) {
         return setting_row(Some(widgets::status_dot(Status::Ok)), tr("The assistant may use it"), None, Space::new());
     }
     let detail = tr("Allow it in Torro Workplace");
     let row = setting_row(
-        Some(widgets::status_dot(Status::Inactive)),
+        Some(widgets::status_dot(Status::Attention)),
         tr("The assistant may not use it"),
         Some(detail.to_string()),
         arrow(),
@@ -289,7 +307,8 @@ fn folder_row<'a>(data: &'a Data, words: bool) -> Element<'a, Message> {
     if folder.is_some() {
         buttons = buttons.push(match words {
             true => widgets::text_button(None, tr("Use desktop"), style::button::ghost, Some(Message::UseDesktop)),
-            false => widgets::icon_button(Icon::X, tr("Use desktop"), Some(Message::UseDesktop)),
+            // Not the ✕: nothing is deleted, the folder goes back to the desktop.
+            false => widgets::icon_button(Icon::History, tr("Use desktop"), Some(Message::UseDesktop)),
         });
     }
     setting_row(None, tr("Folder"), Some(detail), buttons.align_y(Alignment::Center))
@@ -330,7 +349,8 @@ fn template_group<'a>(
     widgets::group(template_name(id), rows, footer)
 }
 
-/// A header or footer: the field with what is stored or being typed, and "Save" while it differs.
+/// A header or footer: the field with what is stored or being typed, and "Save" – always there, so
+/// the field keeps its width while typing; it can be pressed only while the line differs.
 fn line_row<'a>(
     state: &'a State,
     id: PdfTemplateId,
@@ -341,16 +361,16 @@ fn line_row<'a>(
     let stored = line.of(template);
     let typing = state.draft.as_ref().filter(|draft| draft.template == id && draft.line == line);
     let value = typing.map_or(stored, |draft| draft.text.as_str());
-    let input = field(tr("For example {title} · {date}"), value)
-        .on_input(move |text| Message::Type(id, line, text))
-        .on_submit(Message::SaveLine);
-    let mut control = row![input].spacing(space::s()).align_y(Alignment::Center);
-    if typing.is_some_and(|draft| draft.text != stored) {
-        control = control.push(match words {
-            true => widgets::text_button(None, tr("Save"), style::button::secondary, Some(Message::SaveLine)),
-            false => widgets::icon_button(Icon::Check, tr("Save"), Some(Message::SaveLine)),
-        });
-    }
+    // Narrow, the field shares its row with the label and the check: only the example fits.
+    let placeholder = if words { tr("For example {title} · {date}") } else { tr("{title} · {date}") };
+    let input =
+        field(placeholder, value).on_input(move |text| Message::Type(id, line, text)).on_submit(Message::SaveLine);
+    let save = typing.is_some_and(|draft| draft.text != stored).then_some(Message::SaveLine);
+    let button = match words {
+        true => widgets::text_button(None, tr("Save"), style::button::secondary, save),
+        false => widgets::icon_button(Icon::Check, tr("Save"), save),
+    };
+    let control = row![input, button].spacing(space::s()).align_y(Alignment::Center);
     setting_row(None, line.label(), None, control)
 }
 

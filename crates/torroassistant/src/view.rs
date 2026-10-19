@@ -19,7 +19,9 @@
 //! ([`App::settings_frame`]) while they are open; the sidebar stays as it is.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, stack, text_editor, text_input};
+use iced::widget::{
+    Space, button, column, container, mouse_area, responsive, row, scrollable, stack, text_editor, text_input,
+};
 use iced::{Alignment, Background, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -42,6 +44,10 @@ use crate::chat::{self, Choice};
 
 mod cards;
 mod editor;
+
+/// The fewest lines of an answer worth scrolling in a glance with a file card under it; with less
+/// room the answer shows as one line.
+const GLANCE_LINES: f32 = 3.0;
 
 /// The anchors of the menus that float next to their buttons; new in every `view`.
 #[derive(Default)]
@@ -709,6 +715,9 @@ impl App {
                     outcome => trf("{tool} · {outcome}", &[("tool", &tool), ("outcome", &outcome)]),
                 }
             }
+            // The file card right under it names the file and its size: the line only says what
+            // was done ("Created PDF"), not the name a second time.
+            (None, None) if self.file_card_after(seq) => chat::tool_title(name),
             (None, _) => chat::tool_line(name, summary, error),
         };
         let line = row![
@@ -1122,7 +1131,50 @@ impl App {
     /// What the glance shows above (or beside) its composer: an approval that waits, in the
     /// core's words – the person decides in a larger window –, else the newest answer, scrolled to
     /// its end so nothing is cut off unseen; "Working …" while an answer runs without text yet.
+    ///
+    /// A file made for the newest message (task WZ.8) stands as one line under the answer, outside
+    /// its scrolling, so the scroll bar never lies over it; with room for fewer than three lines the
+    /// answer above it shrinks to one line cut with "…" (`chat::answer_line`), without room for one
+    /// it is left out.
     fn glance_answer(&self) -> Element<'_, Message> {
+        let card = self.newest_card_line();
+        let answer = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq));
+        match (card, answer) {
+            (Some(card), Some(entry)) if !self.waits_in_glance() => {
+                let answer = responsive(move |room| {
+                    let line_height = typo::line_height(typo::body());
+                    if room.height >= GLANCE_LINES * line_height {
+                        return self.glance_scroll();
+                    }
+                    // Not even one line: the card alone says what came of it.
+                    if room.height < line_height {
+                        return Space::new().into();
+                    }
+                    let line = match &entry.content {
+                        EntryContent::Answer { text, .. } => chat::answer_line(text),
+                        _ => String::new(),
+                    };
+                    container(widgets::ellipsized(typo::body(), line, theme::text))
+                        .width(Fill)
+                        .align_bottom(Fill)
+                        .into()
+                });
+                column![answer, card].spacing(space::s()).into()
+            }
+            _ => self.glance_scroll(),
+        }
+    }
+
+    /// Whether an approval waits in the conversation: the glance shows it instead of the answer.
+    fn waits_in_glance(&self) -> bool {
+        self.transcript
+            .approvals()
+            .into_iter()
+            .any(|id| self.approvals.get(id).is_some_and(|approval| approval.state.is_pending()))
+    }
+
+    /// The scrolling part of [`App::glance_answer`]: the approval, the answer, or a quiet word.
+    fn glance_scroll(&self) -> Element<'_, Message> {
         let waiting = self
             .transcript
             .approvals()
@@ -1142,12 +1194,7 @@ impl App {
             .spacing(space::xs())
             .into()
         } else if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
-            let answer = self.entry(entry, answer_colours(palette(&self.theme())));
-            // A file made for the newest message shows as one line under the answer (task WZ.8).
-            match self.newest_card_line() {
-                Some(card) => column![answer, card].spacing(space::s()).into(),
-                None => answer,
-            }
+            self.entry(entry, answer_colours(palette(&self.theme())))
         } else if self.transcript.running() {
             typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
         } else {

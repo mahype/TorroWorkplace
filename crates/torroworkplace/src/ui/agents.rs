@@ -1443,6 +1443,12 @@ fn tool_candidates(data: &Data) -> Vec<Candidate> {
         .collect()
 }
 
+/// Whether the tool `id` is known and switched off in the assistant's settings
+/// (`tools.list_tools`): granted, it still does nothing.
+fn tool_off(data: &Data, id: &str) -> bool {
+    data.tools.iter().any(|tool| tool.id.name() == id && !tool.enabled)
+}
+
 /// When a request was: "14:05" today, "yesterday 14:05", else "2026-10-09 14:05" (no month names,
 /// so it reads the same in every language).
 fn when(time: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -1811,9 +1817,13 @@ fn selection_group<'a>(
                 false,
             ));
         }
+        // A tool switched off in the assistant's settings gets a mark in the attention colour; the
+        // other tools keep its room, so the names line up.
+        let any_off = pick == Pick::Tools && offered.iter().any(|candidate| tool_off(data, &candidate.id));
         rows.extend(offered.into_iter().map(|candidate| {
             let ticked = selection.contains(&candidate.id);
-            candidate_row(pick, candidate, ticked, column)
+            let off = any_off.then(|| tool_off(data, &candidate.id));
+            candidate_row(pick, candidate, ticked, off, column)
         }));
         if pick == Pick::GithubRepos {
             rows.push(add_repo_row(repo_input));
@@ -1824,8 +1834,16 @@ fn selection_group<'a>(
 
 /// A candidate as on the Accounts page: a calendar's or list's colour only as a dot before the
 /// name (a calendar the core no longer knows keeps the dot's room, so the names line up), a
-/// neutral switch at the right; the whole row toggles it.
-fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Option<f32>) -> Element<'a, Message> {
+/// neutral switch at the right; the whole row toggles it. `off` marks a tool that is off in the
+/// assistant's settings (`Some(true)`, an alert in the attention colour) or keeps that mark's room
+/// (`Some(false)`); `None` has no such mark.
+fn candidate_row<'a>(
+    pick: Pick,
+    candidate: Candidate,
+    ticked: bool,
+    off: Option<bool>,
+    column: Option<f32>,
+) -> Element<'a, Message> {
     let Candidate { id, label, detail, color } = candidate;
     let switch_id = id.clone();
     let switch = toggler(ticked)
@@ -1834,6 +1852,12 @@ fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Opt
         .on_toggle(move |on| Message::Tick(pick, switch_id.clone(), on));
     let dot = match (pick, color) {
         (_, Some(color)) => Some(color_dot(color, space::s())),
+        (Pick::Tools, None) if off == Some(true) => Some(
+            icon::icon(Icon::CircleAlert, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
+                .into(),
+        ),
+        (Pick::Tools, None) if off == Some(false) => Some(Space::new().width(icon::SIZE).into()),
         (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::s()).into()),
         (Pick::GithubRepos | Pick::InboxSources | Pick::MailAccounts | Pick::Tools, None) => None,
     };
@@ -2277,8 +2301,11 @@ mod tests {
         assert_eq!(offered.iter().map(|c| (c.id.as_str(), c.label.as_str())).collect::<Vec<_>>(), [("pdf", "PDF")]);
         assert_eq!(offered[0].detail.as_deref(), Some(tr("Off in the assistant's settings")));
         assert!(offered[0].color.is_none());
+        assert!(tool_off(&data, "pdf"), "so its row gets the attention mark");
+        assert!(!tool_off(&data, "chart"), "a tool the core does not know is not off, it is gone");
         data.tools = vec![pdf(true)];
         assert_eq!(candidates(Pick::Tools, &data, &Selection::All)[0].detail.as_deref(), Some("Makes PDFs."));
+        assert!(!tool_off(&data, "pdf"));
         // A tool the core no longer knows stays in the list to be unticked.
         let stale = Selection::Only(vec!["pdf".into(), "chart".into()]);
         let all = candidates(Pick::Tools, &data, &stale);

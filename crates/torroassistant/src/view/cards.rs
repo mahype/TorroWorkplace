@@ -6,7 +6,8 @@
 //!   "…", whole in the tooltip), and three buttons – "Open", "Save as…", "Send by mail" – with their
 //!   words where the card has room, else as icons with the word as tooltip ("Open" keeps its word
 //!   first, `widgets::bar_words`).
-//! - **No longer available:** the file went, changed or is out of reach; no buttons.
+//! - **No longer available:** the file went, changed or is out of reach; no buttons, and the tile
+//!   only its quiet mark in `text_3` without its surface, so it never reads as a file to open.
 //! - **Short form:** one line for mini and strip tiles, the tile small, the name and the size.
 
 use iced::widget::text::Wrapping;
@@ -41,12 +42,17 @@ impl App {
     /// The card of the entry `seq` as one line, for mini and strip tiles; `None` while it is not
     /// resolved.
     pub(super) fn card_line(&self, seq: u64) -> Option<Element<'_, Message>> {
-        let tile = widgets::source_tile(TileFace::Icon(FILE_ICON), TileSize::Small, None);
-        let (name, size): (Element<'_, Message>, Option<String>) = match self.cards.get(&seq)? {
-            Card::File(file) => {
-                (widgets::ellipsized(typo::body(), file.name.as_str(), theme::text), Some(chat::size_text(file.size)))
-            }
-            Card::Unavailable => (widgets::ellipsized(typo::body(), tr("No longer available"), theme::text_3), None),
+        let (tile, name, size): (_, Element<'_, Message>, _) = match self.cards.get(&seq)? {
+            Card::File(file) => (
+                file_tile(TileSize::Small),
+                widgets::ellipsized(typo::body(), file.name.as_str(), theme::text),
+                Some(chat::size_text(file.size)),
+            ),
+            Card::Unavailable => (
+                gone_tile(TileSize::Small),
+                widgets::ellipsized(typo::body(), tr("No longer available"), theme::text_3),
+                None,
+            ),
         };
         let mut line = row![tile, container(name).width(Fill)].spacing(space::s()).align_y(Alignment::Center);
         if let Some(size) = size {
@@ -54,13 +60,31 @@ impl App {
         }
         Some(line.into())
     }
+
+    /// Whether the entry right after `seq` is a card the core resolved to a file: the tool line
+    /// above it then leaves the file's name to the card.
+    pub(crate) fn file_card_after(&self, seq: u64) -> bool {
+        self.transcript.card_after(seq).is_some_and(|card| matches!(self.cards.get(&card), Some(Card::File(_))))
+    }
+}
+
+/// The tile of a file: neutral, the paperclip in `text`.
+fn file_tile<'a>(size: TileSize) -> Element<'a, Message> {
+    widgets::source_tile(TileFace::Icon(FILE_ICON), size, None)
+}
+
+/// The tile of a file that is gone: the same room, but only the paperclip in `text_3`, without
+/// the tile's surface – quiet, so it does not look like a file that can be opened.
+fn gone_tile<'a>(size: TileSize) -> Element<'a, Message> {
+    let edge = size.edge();
+    let mark = if size == TileSize::Small { icon::SIZE_SM } else { icon::SIZE };
+    container(tinted(FILE_ICON, mark, |p| p.text_3)).center(edge).into()
 }
 
 /// A file of the register as the core keeps it: the tile, the name with template and size, the
 /// path, and the buttons.
 fn file_card(file: &FileInfo) -> Element<'_, Message> {
-    let tile = widgets::source_tile(TileFace::Icon(FILE_ICON), TileSize::Large, None);
-    let head = widgets::card_head(Some(tile), file.name.as_str(), chat::file_meta(file), None);
+    let head = widgets::card_head(Some(file_tile(TileSize::Large)), file.name.as_str(), chat::file_meta(file), None);
     let path = row![
         tinted(Icon::Folder, icon::SIZE_SM, |p| p.text_3),
         container(widgets::ellipsized(typo::meta(), file.path.as_str(), theme::text_2)).width(Fill)
@@ -96,7 +120,7 @@ fn file_buttons(file: &FileInfo) -> Element<'_, Message> {
 /// A card whose item is gone or out of reach: said so, without buttons; why is not told (the core
 /// does not say it either).
 fn gone_card<'a>() -> Element<'a, Message> {
-    let tile = widgets::source_tile(TileFace::Icon(FILE_ICON), TileSize::Large, None);
+    let tile = gone_tile(TileSize::Large);
     let head =
         widgets::card_head(Some(tile), tr("No longer available"), tr("Moved, changed, deleted or out of reach."), None);
     widgets::card(vec![head], false, None)

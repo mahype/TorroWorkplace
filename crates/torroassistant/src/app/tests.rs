@@ -240,6 +240,25 @@ fn file_cards_come_from_the_core_and_each_button_sends_its_request() {
     assert!(app.cards.is_empty());
 }
 
+/// Design review of WZ.8: a tool line right above a file card leaves the file's name to the card;
+/// above a card of a file that is gone it keeps the name, the card no longer shows it.
+#[test]
+fn a_tool_line_leaves_the_name_to_its_file_card() {
+    let app = started(&["--chat", CARDS]);
+    let made: Vec<u64> = app
+        .transcript
+        .entries
+        .iter()
+        .filter(|entry| matches!(&entry.content, EntryContent::Tool { name, .. } if name == "tools.create_pdf"))
+        .map(|entry| entry.seq)
+        .collect();
+    assert_eq!(made.len(), 2, "two PDFs were made");
+    assert!(!app.file_card_after(made[0]), "its file is gone");
+    assert!(app.file_card_after(made[1]));
+    let asked = app.transcript.entries.iter().find(|entry| matches!(entry.content, EntryContent::Tool { .. }));
+    assert!(!app.file_card_after(asked.map_or(0, |entry| entry.seq)), "an answer follows the first tool");
+}
+
 /// Task WZ.8: a card that comes while the window follows the answer is resolved at once; the cards
 /// of a conversation no longer open are not taken.
 #[test]

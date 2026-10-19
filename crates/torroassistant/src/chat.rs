@@ -114,6 +114,13 @@ impl Transcript {
             .collect()
     }
 
+    /// The number of the card that comes right after the entry `seq` (a tool that made a file, task
+    /// WZ.8); `None` when the next entry is no card or there is none.
+    pub fn card_after(&self, seq: u64) -> Option<u64> {
+        let next = self.entries.iter().find(|entry| entry.seq > seq)?;
+        matches!(next.content, EntryContent::Card { .. }).then_some(next.seq)
+    }
+
     /// The newest answer, the one still being written included: what the mini tile shows.
     pub fn last_answer(&self) -> Option<&Entry> {
         self.entries.iter().rev().find(|entry| matches!(entry.content, EntryContent::Answer { .. }))
@@ -491,6 +498,35 @@ pub fn tool_line(name: &str, summary: &str, error: Option<&str>) -> String {
     } else {
         trf("{tool} · {outcome}", &[("tool", &tool_title(name)), ("outcome", &outcome)])
     }
+}
+
+/// An answer as one plain line, for a mini tile with room for no more: its lines joined, the marks
+/// of Markdown left out (`**`, `` ` ``, `#`, list and quote marks, a link's address), so the caller
+/// can cut it with "…" (`typo::ellipsize`).
+pub fn answer_line(markdown: &str) -> String {
+    let lines = markdown.lines().map(|line| {
+        let line = line.trim_start().trim_start_matches(['#', '>']).trim_start();
+        let line = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line);
+        line.trim()
+    });
+    let joined = lines.filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut plain = String::with_capacity(joined.len());
+    let mut rest = joined.as_str();
+    // "[text](address)" keeps its text.
+    while let Some(open) = rest.find("](") {
+        let close = rest[open..].find(')').map(|at| open + at);
+        let start = rest[..open].rfind('[');
+        match (start, close) {
+            (Some(start), Some(close)) => {
+                plain.push_str(&rest[..start]);
+                plain.push_str(&rest[start + 1..open]);
+                rest = &rest[close + 1..];
+            }
+            _ => break,
+        }
+    }
+    plain.push_str(rest);
+    plain.chars().filter(|c| !matches!(c, '*' | '`')).collect()
 }
 
 /// The name of a PDF template as the assistant's settings write it ("Report").
@@ -974,5 +1010,28 @@ mod tests {
         );
         let (pinned, recent) = sidebar_groups(&list, "  LISBON ");
         assert_eq!((titles(pinned).len(), titles(recent)), (0, vec!["Trip to Lisbon".to_owned()]));
+    }
+
+    /// Fixes of the design review of WZ.8: the card right after a tool is found (its line then
+    /// leaves the file's name to the card), and an answer becomes one plain line for the mini tile.
+    #[test]
+    fn a_card_after_a_tool_and_an_answer_on_one_line() {
+        let card = |seq| Entry {
+            seq,
+            time: at(2),
+            content: EntryContent::Card { card: torro_ipc::assistant::CardRef::File { id: "5eedf11e".into() } },
+        };
+        let transcript = Transcript::new(
+            summary("c1", 5, false),
+            vec![message(1, "Make a PDF"), tool(2), card(3), tool(4), answer(5, "Done")],
+        );
+        assert_eq!(transcript.card_after(2), Some(3));
+        assert_eq!(transcript.card_after(4), None, "an answer follows");
+        assert_eq!(transcript.card_after(5), None, "nothing follows");
+
+        let markdown =
+            "## Done\n\n- **Release checklist-2.pdf** is on your [desktop](file:///home/anna/Desktop).\n> `84 KB`";
+        assert_eq!(answer_line(markdown), "Done Release checklist-2.pdf is on your desktop. 84 KB");
+        assert_eq!(answer_line("A [half link and (more)"), "A [half link and (more)");
     }
 }
