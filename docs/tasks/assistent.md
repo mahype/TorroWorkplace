@@ -15,6 +15,7 @@ KI.1a ── C.1 ──┬── C.2 ── C.3 ──┬── C.4 (App)
 C.8 (Skill-Datei und MCP-Prompt) parallel ab C.1
 C.9 (Sprache, Weckwort) nach C.4
 C.10 (Persönlichkeit, Gedächtnis) nach C.3
+KI.1b ── KI.1c ── KI.1d (Anbieter Anthropic, Issue #218) parallel ab KI.1a
 ```
 
 ### KI.1a Kern: KI-Konten, OpenAI-kompatibel (vorgezogener Teil von KI.1)
@@ -32,6 +33,142 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **MCP:** `accounts_connect_ai` **Never** (Punkt 5: Schlüssel nur über die Oberfläche) · `ai_list_models`
 - **Abnahme:** Tests mit `httpmock` für Ollama und OpenRouter (Modelle, Werkzeug-Aufruf, Streaming, Fehler);
   Schlüssel erscheint in keiner Antwort und keinem Protokoll.
+
+### KI.1b Anbieter Anthropic im Katalog und sein Format auf der Leitung (Issue #218)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** KI.1a · **Dateien:** `crates/torro-core/src/ai/mod.rs`,
+  `crates/torro-core/src/ai/anthropic.rs` (neu), `docs/einrichtung.md`, `docs/api-reference.md`
+- `AiProvider::Anthropic`, serde und `id()` `anthropic`, `name()` `Anthropic`, `default_url()`
+  `https://api.anthropic.com/v1`, `key_url()` `https://platform.claude.com/settings/keys` (geprüft am 2026-10-19;
+  die alte Adresse unter `console.anthropic.com` leitet dorthin um), `seat()` `Seat::Us`,
+  `china_url()` und `open_weights()` wie die anderen Anbieter der USA: keine, nein. In `ALL` und `CLOUD` steht
+  Anthropic vor `OpenAi` (Reihenfolge des Katalogs in `docs/einrichtung.md`), die Längen der Felder wachsen auf 13
+  bzw. 10.
+- `ai::anthropic`: das Format der Messages-API als reine Funktionen über JSON und Bytes, ohne Netz, wie
+  `ai::openai` – `chat_body`, `parse_reply`, `StreamDecoder` (`push`/`finish`), `parse_models`. Kopfzeilen und
+  Pfade gehören dem Sender (KI.1c), hier steht nur, was in den Rumpf geht und was aus der Antwort kommt.
+- **Rumpf** (`POST <base>/messages`): `model`, `max_tokens`, `stream`, `messages`, `tools`
+  (`{name, description, input_schema}`). `Role::System` wandert aus `messages` in das Feld `system` (mehrere mit
+  einer Leerzeile verbunden). Ein Werkzeug-Aufruf ist ein `tool_use`-Block der Antwort
+  (`{type, id, name, input}`), `input` ein Objekt: beim Zurückschicken `ToolCall::arguments` als JSON lesen und
+  nur ein Objekt übernehmen, sonst `{}`. `Role::Tool` wird eine `user`-Nachricht mit `tool_result`-Blöcken
+  (`tool_use_id`, `content`). Aufeinanderfolgende Nachrichten derselben Rolle werden zu **einer** zusammengefasst,
+  damit mehrere Werkzeug-Ergebnisse einer Runde in einer Nachricht stehen.
+- Kein leerer Block geht hinaus, Anthropic lehnt ihn ab: Eine Assistant-Nachricht, die nur Werkzeuge aufruft
+  (`ChatMessage::content` leer), bekommt keinen `text`-Block, und ein Werkzeug-Ergebnis ohne Text bekommt einen
+  kurzen Platzhalter statt eines leeren `content`. Die erste Nachricht muss `user` sein; was davor stünde, fällt
+  weg (nach dem Herausziehen des Systemtexts ist das der normale Fall).
+- `max_tokens` ist Pflicht, und keine Stelle der Suite nennt heute eine Zahl: ohne `ChatRequest::max_tokens` gilt
+  die Konstante `DEFAULT_MAX_TOKENS: u32 = 32_768` (in der Planung entschieden). Ihr Doc-Kommentar nennt beide
+  Gründe: Die Denk-Token zählen auf dieselbe Grenze, und sie muss mit Abstand unter die kleinste Ausgabegrenze der
+  angebotenen Modelle passen (64.000), damit ein neues Modell mit kleinerer Grenze keinen Fehler auslöst. Die
+  Grenze ist eine Decke, keine Reservierung: Erreicht die Antwort sie, ist das `Finish::Length`.
+- **Denkstufe:** mit `ChatRequest::effort` kommen `output_config: {"effort": "<Effort::id()>"}` und
+  `thinking: {"type": "adaptive"}` in den Rumpf, ohne Denkstufe keines von beiden. Nicht `thinking.budget_tokens`:
+  das lehnen die aktuellen Modelle mit HTTP 400 ab.
+- **Strom** (SSE): Zeilen `data:` mit JSON, kein `[DONE]`; `event:`-Zeilen, Leerzeilen und `ping` werden
+  übersprungen. Verzweigt über `type` des JSON: `message_start` (`message.usage.input_tokens`),
+  `content_block_start` (`index`, bei `tool_use` `id` und `name`), `content_block_delta` (`text_delta.text` an
+  `on_text`, `input_json_delta.partial_json` an den Aufruf des Blocks), `message_delta`
+  (`delta.stop_reason`, `usage.output_tokens`), `message_stop`, `error` (Fehler wie im ganzen Rumpf).
+  `thinking`-Blöcke und `thinking_delta` gehen nicht in `ChatReply::text`. `push` nimmt beliebige Stücke, auch
+  mitten in einer Zeile oder einem UTF-8-Zeichen; ein Strom ohne jedes Stück ist `AiError::Format`.
+- `stop_reason`: `end_turn` und `stop_sequence` `Finish::Stop`, `tool_use` `Finish::ToolCalls`, `max_tokens`
+  `Finish::Length`, alles andere `Finish::Other`.
+- **Modelle** (`GET <base>/models`, Antwort `{"data": [...]}`): `id`, `name` aus `display_name` (sonst die id),
+  `context` aus `max_input_tokens`, `reasoning` aus `capabilities.effort.supported` (`None`, wenn das Feld fehlt),
+  `tools` fest `Some(true)` – alle Claude-Modelle der Messages-API rufen Werkzeuge auf –, `open_weights` und
+  `remote` bleiben `None` wie bei jedem anderen Cloud-Anbieter. `open_weights` darf **nicht** `Some(false)` sein,
+  sonst filtern `open_weights_only`, `suggest::pick_model` und `ModelAccess::automatic` jedes Claude-Modell weg.
+- Fehler: `openai::error_of` und `openai::scrub` werden weiterverwendet, sie lesen `/error/message` und sind von
+  keinem Protokoll abhängig; der Doc-Kommentar beider sagt das dann.
+- Doku: der Modulkopf von `ai/mod.rs` („One protocol for now“, „follows in task KI.1“), die Zeile zu Anthropic im
+  Anbieter-Katalog von `docs/einrichtung.md` („Protokoll kommt mit KI.1“) und Entscheidung 2 desselben Dokuments
+  („Anthropic mit KI.1“) stimmen danach nicht mehr und werden mitgeschrieben.
+- `AiProvider` steht als schemars-Enum im Schema von `accounts.connect_ai`, deshalb wächst die erzeugte Referenz
+  schon mit dieser Aufgabe (`docs/api-reference.md`, Zeile der Werte von `provider`): `TORRO_BLESS=1 cargo test -p
+  torro-ipc` laufen lassen und die Datei mit committen, sonst bleibt `cargo test --workspace` rot. KI.1c schreibt
+  sie danach noch einmal, weil sie die Beschreibungen ändert.
+- Nachzuziehen im Crate: `name`, `id`, `default_url`, `key_url` und `seat` zählen die Anbieter vollständig auf
+  (`seat`: Anthropic in den Zweig `Seat::Us`), ebenso `openai::chat_body_for` – dort kommt ein Zweig
+  `AiProvider::Anthropic => {}` mit dem Grund dazu, dass Anthropic sein eigenes Format hat
+  (`ai::anthropic::chat_body`) und nie durch diese Funktion läuft. `china_url` und `open_weights` haben einen
+  Auffang-Zweig.
+- Nachzuziehen außerhalb: nachgesehen, nichts – `place_of` hat einen Auffang-Zweig, und die Oberflächen lesen den
+  Katalog (KI.1d nur dort, wo eine Liste von Hand steht).
+- **Abnahme:** Tests in `ai/anthropic.rs` über Bytes: Rumpf mit System, Werkzeugen und Werkzeug-Ergebnis;
+  Denkstufe als `output_config.effort` samt `adaptive`; Strom in beliebigen Stücken gibt Text in Reihenfolge und
+  einen vollständigen Werkzeug-Aufruf; `parse_models` liest Fähigkeiten und lässt `open_weights` offen; leerer
+  Strom und kaputtes JSON sind `AiError::Format`. Der Test aus `ai/mod.rs`
+  (`every_provider_is_written_by_its_id_…`) deckt Anthropic mit. Dazu `TORRO_BLESS=1 cargo test -p torro-ipc`, dann
+  `cargo fmt --all`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+  `TORRO_LANG=de cargo test --workspace`.
+
+### KI.1c Anthropic senden: zweite Umsetzung von `Provider` (Issue #218)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** KI.1b · **Dateien:** `crates/torroworkplace/src/account/ai.rs`,
+  `crates/torroworkplace/src/assistant/data_rule.rs` (nur Test), `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-core/src/ai/mod.rs` (Doku des Traits), `docs/api-reference.md`
+- Die Leitungs-Arbeit, die heute in `OpenAiCompatible` steckt (`request`, `authorized`, `send`, `body`,
+  `scrubbed`, die Schleife über `response.chunk()`), zieht in einen privaten Helfer desselben Moduls, den beide
+  Umsetzungen halten; wie der Schlüssel in die Kopfzeile kommt, ist sein Parameter. Nur so steht `scrub`,
+  „kein Redirect“ und „Kopfzeile vertraulich“ genau einmal im Code. Die öffentliche Oberfläche von
+  `OpenAiCompatible` bleibt, wie sie ist.
+- `struct Anthropic` mit `check()`, `list()` und `impl Provider`: `models()` ist `GET <base>/models` mit
+  `?limit=1000` (eine Anfrage, die Grenze liegt über dem ganzen Katalog), `chat()` ist
+  `POST <base>/messages` mit `stream: true`, gelesen als SSE mit `anthropic::StreamDecoder`; antwortet der Server
+  doch ganz (Inhaltstyp nicht `text/event-stream`), dann über `anthropic::parse_reply`, wie es
+  `OpenAiCompatible::stream` schon macht. `check()` ist `list()`: `/v1/models` braucht den Schlüssel, ein
+  abgelehnter ist `auth`.
+- **Kopfzeilen:** `x-api-key: <key>` und `anthropic-version: 2023-06-01`. Anthropic nimmt den Schlüssel dort, nicht
+  in `Authorization`; der Wert wird als vertraulich markiert (`HeaderValue::set_sensitive`), wie `bearer_auth` es
+  für den anderen Weg tut, damit er in keinem `Debug` und keinem Protokoll steht. Drei Doc-Kommentare behaupten
+  heute `Authorization` oder „Anthropic kommt später“ und werden darauf geändert, dass der Schlüssel nur in die
+  Schlüssel-Kopfzeile des Protokolls geht, nur an den Server des Kontos: der `Provider`-Trait in
+  `torro-core/src/ai/mod.rs` („only in the `Authorization` header“, dazu „later by Anthropic's“ im Satz darüber),
+  der Modulkopf von `account/ai.rs` und die Doku von `OpenAiCompatible::authorized`, die mit der Methode in den
+  Helfer zieht. `ai::key_may_travel` gilt unverändert.
+- `AiAccounts`: `client()` liefert beide Umsetzungen hinter einem Typ (ein `enum` des Moduls mit `check()` und
+  `impl Provider`), `provider()` kastet ihn wie bisher, `connect()` prüft damit auch ein Anthropic-Konto.
+  `find_local()` bleibt bei `OpenAiCompatible` – dort stehen nur Server dieses Rechners.
+- `torro-ipc`: in der Doku von `Request::ConnectAi` kommt `anthropic` in die Liste der Werte von `provider`; der
+  Satz, der „die OpenAI-kompatible Anbindung“ und „any other server by listing its models“ behauptet, nennt das
+  Anthropic-Protokoll mit, und das Feld `server` darunter („the base address of the server's **OpenAI-compatible**
+  API“) ebenso. Die Beschreibung von `accounts.connect_ai` im Katalog (`api.rs`) auch.
+  Katalogeintrag, Bereich, Zugriff und `Mcp::Never` bleiben, wie sie sind; `ai.list_models` bleibt `Mcp::Tool`.
+  Danach `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md` mit committen.
+- Datenregel: `place_of` braucht keinen neuen Zweig, sein Auffang-Zweig gibt `Place::Remote`, und die Schleife über
+  `AiProvider::CLOUD` in `local_servers_are_ollama_lm_studio_and_this_computer` deckt Anthropic von selbst mit,
+  sobald es in `CLOUD` steht. Dazu kommt eine Zeile für eine Adresse dieses Rechners, wie die Zeile „a proxy“ für
+  OpenRouter.
+- Nachzuziehen: nachgesehen – `label()` nennt das Konto am Standardweg „Anthropic“, `Account::ai` und der
+  Schlüsselbund brauchen nichts, `assistant.list_engines` zählt KI-Konten ohne Anbieterwissen.
+- **Abnahme:** Tests mit `httpmock` in `account/ai.rs`: Modell-Liste mit Fähigkeiten; `connect` legt Konto und
+  Schlüssel an und schickt ihn in `x-api-key`, nie in `Authorization`; Werkzeug-Aufruf im Strom; Text in beliebigen
+  Stücken mit gezählten Token; 401 ist `auth` und speichert nichts, 429 ist `busy`, ein toter Port ist `offline`;
+  kein Fehler und keine Antwort wiederholt den Schlüssel (wie
+  `a_refused_key_is_auth_stores_nothing_and_never_shows_the_key`). Agent `torro-api-review`. `cargo fmt --all`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+  `TORRO_LANG=de cargo test --workspace`.
+
+### KI.1d Anthropic in Accounts › Add › AI (Issue #218)
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** KI.1c · **Dateien:** `crates/torroworkplace/src/ui/setup/pages.rs`,
+  `crates/torroworkplace/src/ui/wizard.rs`
+- In `pages.rs` steht die Gruppe „Providers“ von Hand: Anthropic kommt dort an die erste Stelle, vor `OpenAi`.
+  Name, Sitz („Cloud · US“) und der Knopf „Add key“ kommen aus dem Katalog, die Zeile braucht keinen eigenen Text.
+- In `wizard.rs` zeigt `ai_step` die Anbieter aus `AiProvider::CLOUD`, Anthropic steht damit von selbst in „More
+  providers“, und `ai_key_step` nimmt Name, Schlüsselseite und Sitz aus dem Katalog. Zu ergänzen ist nur der
+  Platzhalter des Schlüsselfelds (`sk-ant-…`, wie `sk-or-v1-…` für OpenRouter) – kein Text für Menschen, keine
+  Übersetzung.
+- Keine neuen Texte über `tr`, also kein Eintrag in `crates/torro-core/src/i18n/de.rs`: „Cloud · US“, „Add key“
+  und der Satz „{provider} runs its models in its own cloud ({seat}). …“ stehen dort schon.
+- **Abnahme:** Der Test in `wizard.rs`, der einen Cloud-Anbieter wählt und seinen Schlüssel schickt, deckt
+  Anthropic mit (ein Fall mehr, wie `AiProvider::Kimi`). Sichtprüfung mit dem Demo-Stand `wizard-ai`
+  (`ui/launch.rs`) in allen Größenklassen, Skill `torro-design`, Agent `torro-design-review`. `cargo fmt --all`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+  `TORRO_LANG=de cargo test --workspace`.
 
 ### C.1 Gerüst: Bereich `assistant`, Requests, Katalog, Speicher, Client-Art
 - [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9; Test-Antrieb `test` nur in Tests und mit
