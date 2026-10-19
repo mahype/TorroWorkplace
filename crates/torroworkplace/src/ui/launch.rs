@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Local, Utc};
 use torro_core::AppId;
-use torro_core::ai::{AiError, AiProvider};
+use torro_core::ai::{AiError, AiModel, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_inbox::item::SourceHealth;
@@ -62,7 +62,8 @@ pub enum Open {
     AccountDetail,
     /// The detail page of the demo's GitHub account.
     GithubDetail,
-    /// The detail page of the demo's AI account (OpenRouter, task KI.1a).
+    /// The detail page of the demo's AI account (OpenRouter, task KI.1a) with its models, as the
+    /// demo lists them (task S.31, [`demo_models`]): search, "Show closed models" and switches.
     AiDetail,
     /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
     NtfyDetail,
@@ -185,7 +186,7 @@ impl Open {
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
-        ("ai-detail", Open::AiDetail),
+        ("account-detail-ai", Open::AiDetail),
         ("ntfy-detail", Open::NtfyDetail),
         ("ntfy-topic", Open::NtfyTopic),
         ("ntfy-login", Open::NtfyLogin),
@@ -999,6 +1000,12 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 account: None,
             }],
         }),
+        // The models of an AI account (task S.31), the same for every account; a switch is
+        // taken, nothing is stored.
+        Request::AiModels { account, .. } => {
+            Some(Response::AiModels { account: account.clone(), models: demo_models() })
+        }
+        Request::SetModelEnabled { .. } => Some(Response::Ok),
         Request::ConnectAi { key, .. } if key.expose() == "wrong" => {
             let refused = AiError::Auth;
             Some(Response::Error { code: refused.code().into(), message: refused.to_string() })
@@ -1116,6 +1123,33 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         }
         _ => None,
     }
+}
+
+/// The models the demo's AI account offers (task S.31), as OpenRouter lists them: open models with
+/// tools and thinking, one on, one that can't use tools, and two with closed weights, which the page
+/// shows only with "Show closed models".
+pub fn demo_models() -> Vec<AiModel> {
+    let model = |id: &str, name: &str, context: u64, reasoning: bool, enabled: bool| AiModel {
+        name: name.into(),
+        tools: Some(true),
+        open_weights: Some(true),
+        context: Some(context),
+        reasoning: Some(reasoning),
+        enabled,
+        ..AiModel::named(id)
+    };
+    vec![
+        model("qwen/qwen3-235b-a22b", "Qwen3 235B A22B", 131_072, true, true),
+        model("deepseek/deepseek-chat-v3.1", "DeepSeek V3.1", 163_840, true, false),
+        model("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct", 131_072, false, false),
+        model("mistralai/mistral-small-3.2-24b-instruct", "Mistral Small 3.2 24B", 128_000, false, false),
+        AiModel { tools: Some(false), ..model("google/gemma-3-27b-it", "Gemma 3 27B", 96_000, false, false) },
+        AiModel {
+            open_weights: Some(false),
+            ..model("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5", 1_000_000, true, false)
+        },
+        AiModel { open_weights: Some(false), ..model("openai/gpt-5", "GPT-5", 400_000, true, false) },
+    ]
 }
 
 /// TorroMail's id of the demo account whose keychain entry cannot be read.

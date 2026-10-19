@@ -769,7 +769,8 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.31 KI-Konto: Modelle an- und abschalten auf der Kontoseite
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS nicht möglich, `screencapture` bekam kein Bild; Design-Review steht aus. Das
+  Demo-Wort `ai-detail` heißt jetzt `account-detail-ai`.)
 - **Modell:** Sonnet · **Braucht:** S.24, S.30 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`,
   `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/launch.rs`
 - Ersetzt S.25. Die Kontoseite eines KI-Kontos (`accounts::detail` mit `AI_KIND`) bekommt zwischen Status und

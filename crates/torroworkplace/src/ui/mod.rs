@@ -2178,8 +2178,10 @@ mod tests {
         let password = started(&["--demo", "--open", "change-password"]);
         assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@posteo.de@posteo.de"));
         assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
-        let ai = started(&["--demo", "--open", "ai-detail"]);
+        // Its models come with the page (task S.31), from the demo's own answer.
+        let ai = started(&["--demo", "--open", "account-detail-ai"]);
         assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
+        assert!(ai.accounts.models.contains_key("ai:openrouter@openrouter.ai") && !ai.accounts.models_page.loading);
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
         for state in ["ntfy-detail", "ntfy-topic", "ntfy-login"] {
