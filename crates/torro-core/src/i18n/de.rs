@@ -3874,6 +3874,31 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Diese E-Mail sieht nach einem Täuschungsversuch aus. Der Link führt zu:",
     ),
     ("Open anyway", "Trotzdem öffnen"),
+    // Settings › Categorization of the mail window (E12.10).
+    ("Categorization", "Kategorisierung"),
+    ("Sort mail into categories", "E-Mails in Kategorien einordnen"),
+    (
+        "A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or          deleted, and you can change any category by hand.",
+        "Ein Modell auf deinem Rechner sagt, was jede E-Mail ist. Keine E-Mail verlässt diesen Rechner, nichts wird          versteckt, verschoben oder gelöscht, und jede Kategorie kannst du von Hand ändern.",
+    ),
+    (
+        "Only models on this computer are offered: mail stays here unless you allow more in the control centre.",
+        "Angeboten werden nur Modelle auf diesem Rechner: E-Mails bleiben hier, solange du in der Steuerzentrale          nichts anderes erlaubst.",
+    ),
+    ("Catch up", "Altbestand"),
+    ("Catch up now", "Jetzt nachrechnen"),
+    ("Not started", "Noch nicht begonnen"),
+    ("{done} of {total}", "{done} von {total}"),
+    (
+        "The inbox of the last 30 days, at most 500 messages per account.",
+        "Der Posteingang der letzten 30 Tage, höchstens 500 Nachrichten je Konto.",
+    ),
+    ("Show in the sidebar", "In der Seitenleiste zeigen"),
+    ("Senders you filed by hand", "Absender, die du von Hand eingeordnet hast"),
+    (
+        "What you kept with “Always for this sender?” is listed in the Notification Hub.",
+        "Was du mit „Immer für diesen Absender?“ behalten hast, steht in der Mitteilungszentrale.",
+    ),
     // The Rules page of the Notification Hub shows a kept category too (E12.2).
     ("Filed as “{category}”", "Abgelegt als „{category}“"),
     ("Filed {n} since {day}", "{n} abgelegt seit {day}"),

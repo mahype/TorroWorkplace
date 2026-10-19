@@ -4628,7 +4628,8 @@ mod tests {
                 "mail_view",
                 "mail_appearance",
                 "mail_to_cloud",
-                "reminders"
+                "reminders",
+                "hidden_categories"
             ]
         );
 

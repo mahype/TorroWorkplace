@@ -298,6 +298,8 @@ enum Change {
     /// The data rule for mail (task C.17). Who may switch it on is the core's check
     /// (`Request::kept_for_people`).
     MailToCloud(bool),
+    /// Which mail categories the sidebar leaves out (task E12.10).
+    HiddenCategories(Vec<torro_mail::Category>),
     /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
     /// defaults when parsed and merged onto the stored ones when applied ([`Reminders::merged`]).
     Reminders(serde_json::Value),
@@ -342,6 +344,9 @@ impl Change {
             }
             SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
             // Strict, like the night: the file's reading falls back to the defaults instead.
+            SettingKey::HiddenCategories => {
+                Change::HiddenCategories(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
             SettingKey::Reminders => {
                 Reminders::default().merged(value)?;
                 Change::Reminders(value.clone())
@@ -373,6 +378,7 @@ impl Change {
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
+            Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
             // Checked when parsed: what the stored ones hold cannot make the fields it names unfit.
             Change::Reminders(change) => {
                 if let Ok(merged) = settings.reminders.merged(&change) {
@@ -1016,6 +1022,7 @@ mod tests {
                 mail_to_cloud: false,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 ai_assignments: std::collections::BTreeMap::new(),
+                hidden_categories: Vec::new(),
             }
         );
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);

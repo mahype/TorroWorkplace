@@ -3140,7 +3140,15 @@ E12.10 braucht E12.5 und E12.6
   mit Agent `torro-design-review`, hell und dunkel. Übersetzungen im Bericht.
 
 ### E12.10 Einstellungen › Categorization
-- [ ] erledigt
+- [x] erledigt (2026-10-19): dritte Sektion `categorization` in `settings_mail::SECTIONS` mit
+  an/aus, Modellwahl (nur Modelle mit `decision`, und solange `mail_to_cloud` aus ist keines mit
+  `remote`, mit ruhiger Zeile dazu), Altbestand mit Stand und „Catch up now"/„Cancel", je
+  Kategorie ein Schalter für die Seitenleiste (`Settings::hidden_categories`, neuer `SettingKey`)
+  und ein Verweis auf die Regeln. Keine Einstellung für Zeitpunkt oder Konfidenzschwelle.
+  Abweichung: Der Verweis auf „Rules" **öffnet** den Notification Hub nicht – `Action` dieser
+  Bibliothek kennt kein „öffne diese App", und sie soll kein Fenster von sich aus aufmachen. Die
+  Zeile sagt stattdessen, wo die Regeln stehen.
+  **Sichtprüfung steht aus**, wie bei E12.8 und E12.9 (keine Screenshots auf dieser Maschine).
 - **Modell:** Opus · **Braucht:** E12.5, E12.6 · **Dateien:**
   `crates/torro-settings-ui/src/{lib,mail,demo}.rs`,
   `crates/torro-settings-ui/src/mail/categorization.rs` (neu),

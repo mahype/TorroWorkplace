@@ -875,12 +875,15 @@ pub fn opens_in_browser(url: &str) -> bool {
 
 /// How the window shows mail, as the settings `mail_view` and `mail_appearance` say (task M9.5).
 /// The switches over a mail start from it and go back to it whenever the setting changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MailLook {
     /// HTML or text first (`mail_view`); a mail without HTML always shows its text.
     pub format: MailFormat,
     /// The colours of the mail's content (`mail_appearance`); [`scheme_for`] resolves `app`.
     pub colors: MailAppearance,
+    /// The categories the sidebar leaves out (task E12.10, `hidden_categories`): what the person
+    /// switched off under Settings › Categorization.
+    pub hidden_categories: Vec<torro_mail::Category>,
 }
 
 /// Reads [`MailLook`] from the settings of the core (`settings.get_settings`), on every tick like
@@ -891,9 +894,11 @@ pub async fn stored_look(suite: &source::Source) -> Result<MailLook, String> {
         return Ok(MailLook::default());
     };
     match torro_ipc::client::call(&client.socket, &Request::Settings).await {
-        Ok(Response::Settings { settings }) => {
-            Ok(MailLook { format: settings.mail_view, colors: settings.mail_appearance })
-        }
+        Ok(Response::Settings { settings }) => Ok(MailLook {
+            format: settings.mail_view,
+            colors: settings.mail_appearance,
+            hidden_categories: settings.hidden_categories,
+        }),
         Ok(_) => Err("unexpected answer to settings.get_settings".to_owned()),
         Err(err) => Err(err.to_string()),
     }
@@ -3905,6 +3910,9 @@ mod tests {
         assert_eq!(scheme_for(MailAppearance::App, false), Scheme::Light);
         assert_eq!(scheme_for(MailAppearance::Light, true), Scheme::Light);
         assert_eq!(scheme_for(MailAppearance::Dark, false), Scheme::Dark);
-        assert_eq!(MailLook::default(), MailLook { format: MailFormat::Html, colors: MailAppearance::App });
+        assert_eq!(
+            MailLook::default(),
+            MailLook { format: MailFormat::Html, colors: MailAppearance::App, hidden_categories: Vec::new() }
+        );
     }
 }

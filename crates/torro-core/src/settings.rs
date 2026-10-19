@@ -110,6 +110,11 @@ pub struct Settings {
     /// fail.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", deserialize_with = "known_assignments")]
     pub ai_assignments: BTreeMap<crate::ai::AiFunction, crate::ai::AiAssignment>,
+    /// The mail categories the sidebar leaves out (task E12.10, `docs/kategorien.md`). Only the
+    /// ones hidden are stored, so a category added later starts shown. A key this version does
+    /// not know is dropped when the file is read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "known_categories")]
+    pub hidden_categories: Vec<torro_mail::Category>,
     /// The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps
     /// mail with models on the person's own computers; `true` lets it go to models elsewhere
     /// (OpenRouter, a provider's server) as well. Only a person switches it on
@@ -360,6 +365,14 @@ fn known_assignments<'de, D: Deserializer<'de>>(
         .collect())
 }
 
+/// The categories in a list as written (task E12.10), without the keys this version does not
+/// know and without anything that is not a key.
+fn known_categories<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<torro_mail::Category>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let keys = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(keys.iter().filter_map(|key| serde_json::from_value(key.clone()).ok()).collect())
+}
+
 /// The components in a list as written, without the names this version does not know (a file
 /// written by a newer one) and without anything that is not a name.
 fn known_components<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeSet<Component>, D::Error> {
@@ -400,6 +413,7 @@ impl Default for Settings {
             mail_to_cloud: false,
             reminders: Reminders::default(),
             ai_assignments: BTreeMap::new(),
+            hidden_categories: Vec::new(),
         }
     }
 }
@@ -1298,6 +1312,7 @@ mod tests {
             mail_to_cloud: false,
             reminders: Reminders::default(),
             ai_assignments: BTreeMap::new(),
+            hidden_categories: Vec::new(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -1447,6 +1462,7 @@ mod tests {
                 ..Reminders::default()
             },
             ai_assignments: BTreeMap::new(),
+            hidden_categories: Vec::new(),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

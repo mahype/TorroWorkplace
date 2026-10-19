@@ -2387,6 +2387,10 @@ pub enum SettingKey {
     /// "outsideWorkHours": true, "allDisplays": true, "neverDuringCall": true, "sound": "system" |
     /// "none"}`.
     Reminders,
+    /// Which mail categories the sidebar leaves out (task E12.10, `docs/kategorien.md`): a list
+    /// of category keys, e.g. `["spam", "auto_reply"]`. An empty list shows every category that
+    /// occurs. A key this version does not know is dropped when the file is read.
+    HiddenCategories,
 }
 
 /// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,

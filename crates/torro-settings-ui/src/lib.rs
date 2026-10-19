@@ -115,6 +115,15 @@ pub struct Data {
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
     pub accounts: Vec<AccountInfo>,
+    /// Which AI account and model each function uses (`ai.list_assignments`, task E12.10): the
+    /// mail window's section "Categorization" reads and changes the one for sorting mail.
+    pub assignments: Vec<torro_ipc::AiAssignmentInfo>,
+    /// How the sorting of mail by a model stands (`inbox.get_categorization`, task E12.10): the
+    /// backlog per account.
+    pub categorization: torro_ipc::inbox::Categorization,
+    /// The models of the AI account that sorts mail (`ai.list_models`), for its picker; only the
+    /// deciding ones are offered.
+    pub decider_models: Vec<AiModel>,
     /// The inbox sources the window may see, muted ones included (`inbox.list_sources`): the
     /// inbox's section "Sources" tells by them whether a source is muted (task S.20,
     /// [`inbox::sources`]).
@@ -140,7 +149,14 @@ impl Data {
             Response::Memories { notes } => self.memories = notes,
             Response::Bots { bots } => self.bots = bots,
             Response::Engines { engines } => self.engines = engines,
-            Response::AiModels { models } => self.default_models = models,
+            Response::AiModels { models } => {
+                // The assistant's default models and the ones for sorting mail come from the
+                // same command; the section that asked for them keeps both (task E12.10).
+                self.decider_models = models.clone();
+                self.default_models = models;
+            }
+            Response::AiAssignments { assignments } => self.assignments = assignments,
+            Response::Categorization { categorization } => self.categorization = categorization,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
             Response::Sources { sources } => self.sources = sources,

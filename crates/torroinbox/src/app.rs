@@ -1696,7 +1696,11 @@ impl Launch {
 
     /// The mail settings `stored` with `--mail-view` and `--mail-colors` over them (task M9.7).
     pub fn look(&self, stored: MailLook) -> MailLook {
-        MailLook { format: self.mail_view.unwrap_or(stored.format), colors: self.mail_colors.unwrap_or(stored.colors) }
+        MailLook {
+            format: self.mail_view.unwrap_or(stored.format),
+            colors: self.mail_colors.unwrap_or(stored.colors),
+            hidden_categories: stored.hidden_categories,
+        }
     }
 
     /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
@@ -3088,8 +3092,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn take_look(&mut self, stored: MailLook) {
         let look = self.launch.look(stored);
         if look != self.look {
-            self.look = look;
             self.mail_format = look.format;
+            self.look = look;
             self.mail_scheme = None;
         }
     }
@@ -7297,8 +7301,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if !open {
                 continue;
             }
-            // Only the categories that occur: an empty one would be a dead row.
-            for held in of_group.into_iter().filter(|held| held.unread > 0) {
+            // Only the categories that occur and that the person did not switch off under
+            // Settings › Categorization (task E12.10).
+            let hidden = &self.look.hidden_categories;
+            for held in of_group.into_iter().filter(|held| held.unread > 0 && !hidden.contains(&held.category)) {
                 let view = View::Category(mail::CategoryView { group, only: Some(held.category) });
                 entries.push(NavEntry {
                     mark: Mark::Tinted(mail::group_mark(group).0, self.category_colour(at)),
@@ -10779,7 +10785,7 @@ mod tests {
     }
 
     fn look(format: MailFormat, colors: MailAppearance) -> Message {
-        Message::MailLook(Ok(MailLook { format, colors }))
+        Message::MailLook(Ok(MailLook { format, colors, hidden_categories: Vec::new() }))
     }
 
     /// `mail_view = html` (the default) shows a mail's HTML, `text` its text; a mail without HTML
@@ -10869,8 +10875,12 @@ mod tests {
 
         let launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
         assert_eq!((launch.mail_view, launch.mail_colors), (Some(MailFormat::Text), Some(MailAppearance::Dark)));
-        let stored = MailLook { format: MailFormat::Html, colors: MailAppearance::Light };
-        assert_eq!(launch.look(stored), MailLook { format: MailFormat::Text, colors: MailAppearance::Dark });
+        let stored =
+            MailLook { format: MailFormat::Html, colors: MailAppearance::Light, hidden_categories: Vec::new() };
+        assert_eq!(
+            launch.look(stored),
+            MailLook { format: MailFormat::Text, colors: MailAppearance::Dark, hidden_categories: Vec::new() }
+        );
         let mut forced = in_folder("f:private-inbox");
         forced.launch = launch;
         let _ = forced.update(look(MailFormat::Html, MailAppearance::Light));
@@ -12506,7 +12516,8 @@ mod tests {
         for (words, ids) in [
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
-            (vec!["--view", "mail"], vec!["accounts", "reading"]),
+            // Task E12.10 adds "Categorization" to the mail window.
+            (vec!["--view", "mail"], vec!["accounts", "reading", "categorization"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
