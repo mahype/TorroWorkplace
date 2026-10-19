@@ -1701,8 +1701,8 @@ fn access_group<'a>(
 }
 
 /// Whether the rights of a client of `kind` meet the data rule (task C.17): the assistant's and its
-/// bots', which may answer with Claude Code or a cloud model. Other agents read through their own
-/// key whatever their rights grant.
+/// bots', which may answer with a cloud model. Other agents read through their own key whatever
+/// their rights grant.
 fn shows_data_rule(kind: &str) -> bool {
     kind == ASSISTANT_CLIENT || kind == BOT_CLIENT
 }

@@ -1364,7 +1364,7 @@ mod tests {
         let key = update(&mut setup, Message::AddAiKey(AiProvider::DeepSeek), &data());
         assert!(matches!(key, Outcome::Stay(Action::Send(Request::FindAiServers))), "the dialog looks too");
         assert!(setup.dialog_open());
-        let engine = update(&mut setup, Message::Engine("ai:ollama@localhost:11434".into()), &data());
+        let engine = update(&mut setup, Message::Engine("ai:openrouter@openrouter.ai".into()), &data());
         assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
     }
 

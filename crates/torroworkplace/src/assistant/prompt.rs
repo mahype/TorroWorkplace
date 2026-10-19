@@ -239,8 +239,7 @@ fn generated(context: &Context<'_>) -> String {
             "- You answer as the agent {0}, outside the person's computers (remote). The person's data rule keeps \
              mail on their own computers, so mail is not among your areas here: it is not given to {0}, whatever \
              the rights say. If the person asks for mail, say so instead of trying: they can let mail go to cloud \
-             models with \"Mail to cloud models\" in Torro Workplace › Assistant, or use an AI account on their \
-             own computer.",
+             models in Torro Workplace › Assistant, or use an AI account on their own computer.",
             one_line(context.engine)
         ),
         true => format!(

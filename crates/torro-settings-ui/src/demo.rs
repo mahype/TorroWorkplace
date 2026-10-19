@@ -313,7 +313,7 @@ impl Demo {
             name: "Travel planner".into(),
             description: "Plans trips by train".into(),
             avatar: LETTER_AVATAR.into(),
-            engine: "claude-code".into(),
+            engine: "ai:ollama@localhost:11434".into(),
             model: None,
             client: "c0000001".into(),
         }]

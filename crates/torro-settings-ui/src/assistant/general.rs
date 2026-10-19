@@ -84,7 +84,15 @@ fn status_group(data: &Data) -> Element<'_, Message> {
 /// "New chats", and for a default engine its "Model" and, where the model takes one, its "Effort"
 /// (issue #131): each row a check, a press stores the whole default.
 fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
-    let current = data.settings.assistant_default.as_ref();
+    // A stored default whose engine is not offered reads as "The one used last", because that is
+    // what a new chat really starts with (the window skips it, `chat::preferred_choice`). Without
+    // this the group would show no choice at all and a model under no engine. Issue #219 puts
+    // everyone who had Claude Code there into this state; a removed AI account does the same.
+    let current = data
+        .settings
+        .assistant_default
+        .as_ref()
+        .filter(|default| data.engines.iter().any(|engine| engine.id == default.engine));
     let footer = tr("What a new chat starts with. Each chat can pick another.");
     if data.engines.is_empty() {
         return vec![widgets::group(tr("New chats"), vec![no_engine_row()], Some(footer.to_string()))];

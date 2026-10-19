@@ -755,8 +755,8 @@ fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
         name: name.into(),
         description: description.into(),
         avatar: avatar.into(),
-        engine: "ai:ollama@localhost:11434".into(),
-        model: Some("qwen3:14b".into()),
+        engine: "ai:openrouter@openrouter.ai".into(),
+        model: Some("qwen/qwen3-32b".into()),
         client: client.into(),
     };
     vec![

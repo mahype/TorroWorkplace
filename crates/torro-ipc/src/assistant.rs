@@ -73,8 +73,8 @@ pub const TEST_ENGINE: &str = "test";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Engine {
     /// What `assistant.send_message` takes as `engine`: an AI account's id
-    /// (`ai:ollama@localhost:11434`), an agent's id (`claude-code`, [`EngineKind::Agent`]), or
-    /// [`TEST_ENGINE`].
+    /// (`ai:ollama@localhost:11434`) or [`TEST_ENGINE`]. An agent's id (`claude-code`,
+    /// [`EngineKind::Agent`]) is not offered any more (issue #219) and answers `not-found`.
     pub id: String,
     pub kind: EngineKind,
     /// What to call it: the AI account's label (`Ollama`, `OpenRouter`), the agent's name
