@@ -65,6 +65,7 @@
 //! Mini and strip tiles show the newest answer and a one-line composer, nothing else.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use iced::theme::Mode;
@@ -89,6 +90,7 @@ use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
 use torro_ipc::bots::{Bot, BotSummary};
+use torro_ipc::tools::PdfTemplateId;
 use torro_ipc::{ApprovalInfo, Request, Response};
 use torro_settings_ui::assistant::{self as settings, AppAction};
 use torro_settings_ui::{Host, Outcome};
@@ -393,6 +395,12 @@ pub enum Message {
     SettingsHost(torro_settings_ui::host::Message),
     /// What a widget of the open settings section reported.
     SettingsPage(settings::Message),
+    /// The system's folder chooser of Tools closed (task WZ.6): the folder chosen, `None` when
+    /// it was cancelled.
+    FolderPicked(Option<PathBuf>),
+    /// The system's logo chooser of Tools closed for this template: the picture chosen, `None`
+    /// when it was cancelled.
+    LogoPicked(PdfTemplateId, Option<PathBuf>),
     /// A link in an answer.
     OpenLink(String),
     /// "Retry" in the error state.
@@ -941,6 +949,15 @@ impl App {
                     pane.host.act(action)
                 };
                 return self.settings_outcome(outcome);
+            }
+            Message::FolderPicked(folder) => {
+                let request = folder.map(|folder| settings::tools::folder_request(&folder));
+                return self.settings_send(request);
+            }
+            Message::LogoPicked(template, logo) => {
+                let data = self.settings.as_ref().map(|pane| pane.host.data());
+                let request = data.zip(logo).map(|(data, logo)| settings::tools::logo_request(data, template, &logo));
+                return self.settings_send(request);
             }
             Message::OpenLink(url) => return open_link(url),
             Message::Retry => {
@@ -1711,7 +1728,29 @@ impl App {
             }
             // "Edit" at a bot: its editor takes the content area, so the settings close.
             Outcome::App(AppAction::EditBot(id)) => self.edit_bot(id),
+            // Tools (task WZ.6): only the app opens the system's choosers; a path chosen there by
+            // the person goes out as a setting ([`Message::FolderPicked`], [`Message::LogoPicked`]).
+            Outcome::App(AppAction::PickFolder) => Task::perform(pick_folder(), Message::FolderPicked),
+            Outcome::App(AppAction::PickLogo(template)) => {
+                Task::perform(pick_logo(), move |logo| Message::LogoPicked(template, logo))
+            }
         }
+    }
+
+    /// Sends a request a chooser of the settings ended in through their host, which loads them
+    /// again afterwards: `None` when the chooser was cancelled, `Some(None)` for a path that is
+    /// not plain text, which cannot be stored; nothing while the settings are closed meanwhile.
+    fn settings_send(&mut self, request: Option<Option<Request>>) -> Task<Message> {
+        let Some(request) = request else { return Task::none() };
+        let Some(request) = request else {
+            self.note(tr("This path cannot be used.").to_string());
+            return Task::none();
+        };
+        let outcome = {
+            let Some(pane) = self.settings.as_mut() else { return Task::none() };
+            pane.host.act(settings::Action::send(request))
+        };
+        self.settings_outcome(outcome)
     }
 
     fn toggle_sidebar(&mut self) -> Task<Message> {
@@ -1867,6 +1906,24 @@ fn open_link(url: String) -> Task<Message> {
         }
     })
     .discard()
+}
+
+/// Asks for the folder new PDFs go to, with the system's chooser (Tools, task WZ.6); `None` when
+/// it is cancelled.
+async fn pick_folder() -> Option<PathBuf> {
+    let chosen = rfd::AsyncFileDialog::new().set_title(tr("Choose a folder for PDFs")).pick_folder().await;
+    chosen.map(|folder| folder.path().to_path_buf())
+}
+
+/// Asks for a template's logo, with the system's chooser offering only the pictures a template
+/// takes (`.png`, `.jpg`, `.jpeg`); `None` when it is cancelled.
+async fn pick_logo() -> Option<PathBuf> {
+    let chosen = rfd::AsyncFileDialog::new()
+        .set_title(tr("Choose a logo"))
+        .add_filter(tr("Pictures"), &settings::tools::LOGO_EXTENSIONS)
+        .pick_file()
+        .await;
+    chosen.map(|logo| logo.path().to_path_buf())
 }
 
 /// The main window's keys: `[` for the sidebar when no text field took it, and Ctrl + N (⌘ N) for

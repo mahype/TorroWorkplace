@@ -6892,6 +6892,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
+ "rfd",
  "serde_json",
  "tempfile",
  "tokio",

@@ -25,6 +25,8 @@ iced.workspace = true
 serde_json.workspace = true
 # The voice listener (`--listen`, task C.9) asks the core from a plain loop, without a window.
 tokio.workspace = true
+# The system's choosers for the PDF tool's folder and logos in the settings (task WZ.6).
+rfd.workspace = true
 unicode-segmentation.workspace = true
 webbrowser.workspace = true
 

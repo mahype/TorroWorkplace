@@ -956,7 +956,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
   einer Werkzeugzeile; Vertragstest; `TORRO_BLESS=1 cargo test -p torro-ipc`.
 
 ### WZ.6 Assistent › Einstellungen › Tools
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WZ.2 · **Dateien:** `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`
   (`tools.rs` neu), `crates/torro-settings-ui/src/{lib,demo}.rs`, `crates/torroassistant/src/app.rs`,
   `crates/torroassistant/Cargo.toml` (`rfd`), `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`

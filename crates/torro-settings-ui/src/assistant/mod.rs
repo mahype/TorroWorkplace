@@ -7,6 +7,8 @@
 //!           starts with: engine, model, effort
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
 //! Bots      the bots, each with "Edit" in the assistant and "Access ↗" in the control centre
+//! Tools     the assistant's own tools: each switched on or off, whether the assistant may use it,
+//!           and the PDF tool's folder and templates (task WZ.6)
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
 //! History   how long conversations are kept
 //! ```
@@ -39,7 +41,8 @@
 //! }
 //! ```
 //!
-//! Escape goes to [`escape`] first (it closes a dialog of the Profile section) and only then to the
+//! Escape goes to [`escape`] first (it closes a dialog of the Profile section, drops a line being
+//! typed in Tools) and only then to the
 //! host, which closes the settings – but every way out of the settings passes [`closing`] first, so
 //! a profile that is typed and not saved is never dropped without "Discard changes?". The window's own subscription batches [`subscription`], the
 //! clock the open sections need (Voice asks how the listener stands after it was switched).
@@ -48,6 +51,7 @@ pub mod bots;
 pub mod general;
 pub mod history;
 pub mod profile;
+pub mod tools;
 pub mod voice;
 
 use iced::widget::text::Wrapping;
@@ -61,19 +65,22 @@ use torro_gui::theme::{self, palette, size};
 use torro_gui::{typo, widgets};
 use torro_ipc::api::ASSISTANT_CLIENT;
 use torro_ipc::assistant::EngineKind;
+use torro_ipc::tools::PdfTemplateId;
 use torro_ipc::{ClientInfo, Request, Response};
 
 use crate::parts::setting_row;
 use crate::{Data, Page, Section};
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <section>` takes.
-pub const SECTIONS: [Section; 5] = [
+pub const SECTIONS: [Section; 6] = [
     // General is first, so the gear lands on the status: what is on, and what a new chat starts
     // with.
     Section { id: "general", icon: Icon::SlidersHorizontal, label: "General" },
     Section { id: "profile", icon: Icon::User, label: "Profile" },
     // The suite has no robot icon; the sparkles stand for AI (design skill, section 5).
     Section { id: "bots", icon: Icon::Sparkles, label: "Bots" },
+    // The suite has no wrench icon; the layers stand for the pages a tool sets after a template.
+    Section { id: "tools", icon: Icon::Layers, label: "Tools" },
     // The suite has no microphone icon; talking is a conversation.
     Section { id: "voice", icon: Icon::MessageCircle, label: "Voice" },
     Section { id: "history", icon: Icon::History, label: "History" },
@@ -95,6 +102,15 @@ pub enum AppAction {
     /// Open the editor of the bot with this id: "Edit" in the Bots section. Who a bot is – its
     /// name, personality, instructions, skills and engine – is written in the assistant, not here.
     EditBot(String),
+    /// "Choose…" at the folder of the PDF tool (Tools): the app opens the system's folder chooser
+    /// and, once a folder is chosen, sends [`tools::folder_request`] through the host
+    /// ([`crate::Host::act`] with [`crate::Action::Send`]); cancelled, nothing. Only a person sets a
+    /// path (point 9 of "Was nie nach außen geht"), which is why only the app's chooser does.
+    PickFolder,
+    /// "Choose…" at a PDF template's logo (Tools): the app opens the system's file chooser for
+    /// pictures ([`tools::LOGO_EXTENSIONS`]) and, once one is chosen, sends
+    /// [`tools::logo_request`] with the template as the host holds it then; cancelled, nothing.
+    PickLogo(PdfTemplateId),
 }
 
 /// What a section of the assistant returns.
@@ -103,8 +119,8 @@ pub type Action = crate::Action<AppAction>;
 /// What one load of these sections asks for, in this order; the host sends it again after every
 /// change ([`crate::Host::new`]).
 ///
-/// `clients.list_clients` is read only, to tell whether the assistant is on; nothing here writes a
-/// client. The models of an AI account follow in a second round, because only the loaded settings
+/// `clients.list_clients` is read only, to tell whether the assistant is on and what it may use
+/// (Tools); nothing here writes a client. The models of an AI account follow in a second round, because only the loaded settings
 /// name the account ([`models_request`], [`Data::follow_up`]).
 pub fn wanted() -> Vec<Request> {
     vec![
@@ -113,6 +129,7 @@ pub fn wanted() -> Vec<Request> {
         Request::GetProfile,
         Request::ListMemories,
         Request::ListBots,
+        Request::ListTools,
         Request::ListEngines,
         Request::VoiceStatus,
     ]
@@ -138,6 +155,8 @@ pub struct State {
     /// Voice: what "Say something" is doing and what it heard. General, Bots and History read
     /// everything from [`Data`] and keep nothing.
     pub voice: voice::State,
+    /// Tools: the header or footer line being typed.
+    pub tools: tools::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -146,6 +165,7 @@ pub enum Message {
     General(general::Message),
     Profile(profile::Message),
     Bots(bots::Message),
+    Tools(tools::Message),
     Voice(voice::Message),
     History(history::Message),
 }
@@ -156,6 +176,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::General(message) => general::update(message, data),
         Message::Profile(message) => profile::update(&mut state.profile, message, data),
         Message::Bots(message) => bots::update(message, data),
+        Message::Tools(message) => tools::update(&mut state.tools, message, data),
         Message::Voice(message) => voice::update(&mut state.voice, message, data),
         Message::History(message) => history::update(message, data),
     }
@@ -170,6 +191,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
     match section {
         "profile" => wrap(profile::page(&state.profile, data, class), Message::Profile),
         "bots" => wrap(Page::new(bots::view(data, class)), Message::Bots),
+        "tools" => wrap(Page::new(tools::view(&state.tools, data, class)), Message::Tools),
         "voice" => wrap(Page::new(voice::view(&state.voice, data)), Message::Voice),
         "history" => wrap(Page::new(history::view(data)), Message::History),
         _ => wrap(Page::new(general::view(data)), Message::General),
@@ -196,10 +218,10 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     profile::overlay(&state.profile, data).map(|dialog| dialog.map(Message::Profile))
 }
 
-/// What Escape means in these sections: close the question, stop typing a note. `None` leaves it
-/// to the host, which closes the settings.
+/// What Escape means in these sections: close the question, stop typing a note, drop a header or
+/// footer being typed. `None` leaves it to the host, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    profile::escape(&state.profile).map(Message::Profile)
+    profile::escape(&state.profile).map(Message::Profile).or_else(|| tools::escape(&state.tools).map(Message::Tools))
 }
 
 /// What stands between the window and closing these settings: the question a section must ask
@@ -409,7 +431,7 @@ mod tests {
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 7, "one request per thing the sections read");
+        assert_eq!(wanted().len(), 8, "one request per thing the sections read");
         assert!(wanted().contains(&Request::ListClients), "to tell whether the assistant is on");
         let data = data().await;
         assert!(is_on(&data) && client(&data).is_some());
@@ -471,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn the_sections_are_named_and_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["general", "profile", "bots", "voice", "history"]);
+        assert_eq!(ids, ["general", "profile", "bots", "tools", "voice", "history"]);
         assert_eq!(SECTIONS[0].name(), tr("General"));
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {
