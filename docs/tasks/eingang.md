@@ -1933,7 +1933,7 @@ Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und L
   Paneel der Zentrale (`Kind::Hub`) unverändert wie in E9.4. Sichtprüfung (`torro-design-review`) Mail-Fenster in
   Schmal (480×900) und Mittel (800×600), hell und dunkel, und die Zentrale zum Vergleich. Übersetzungen im Bericht.
 
-## E12 Dichte kommt vom Design (Issue #226, Plan 2026-10-19)
+## E13 Dichte kommt vom Design (Issue #226, Plan 2026-10-19)
 
 Wie dicht die Einträge stehen, ist kein Fensterzustand mehr, sondern ein Wert des Designs
 (`torro_core::design::Design`). Der Umschalter „Compact | Comfortable“ aus E8.2, der Startschalter `--density` und der
@@ -1970,13 +1970,13 @@ Entschieden am 2026-10-19 (Planung #226):
    umschaltet, würde die Tests neben sich verfälschen.
 
 ```
-E12.1 ── E12.2 ─┬─ E12.3
-                └─ E12.4
+E13.1 ── E13.2 ─┬─ E13.3
+                └─ E13.4
 ```
 
-Nicht parallel zu E9.2, E9.3b und E11.x: E12.2 ändert `crates/torroinbox/src/app.rs` an vielen Stellen.
+Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/app.rs` an vielen Stellen.
 
-### E12.1 Dichte als Wert des Designs und Schlüssel des Paket-Formats
+### E13.1 Dichte als Wert des Designs und Schlüssel des Paket-Formats
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
   `crates/torro-core/src/design/{pack,rules}.rs`, `crates/torro-ipc/src/api.rs` (nur Beschreibungen),
@@ -2007,9 +2007,9 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E12.2 ändert `crates/torroinbox/src/ap
   grün; einer davon prüft zusätzlich, dass das Paket kompakt bleibt. `cargo fmt`, `clippy -D warnings`, `cargo test`,
   `TORRO_LANG=de cargo test`.
 
-### E12.2 Der Eingang zeichnet in der Dichte des Designs
+### E13.2 Der Eingang zeichnet in der Dichte des Designs
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** E12.1 · **Dateien:** `crates/torro-gui/src/layout.rs`,
+- **Modell:** Opus · **Braucht:** E13.1 · **Dateien:** `crates/torro-gui/src/layout.rs`,
   `crates/torroinbox/src/{app,hub,notifications,main}.rs`
 - **Token:** `torro_gui::layout::density()` → `design::with(|t| t.design.layout.density)`, Doc-Kommentar wie die anderen
   Rollen dieses Moduls (Standard: kompakt). Dichte des Designs, nicht des Fensters.
@@ -2055,9 +2055,9 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E12.2 ändert `crates/torroinbox/src/ap
     Größen, hell und dunkel – Zeilen, keine Kopfleiste mit „Compact | Comfortable“; dazu dieselben Fenster comfortable
     über ein Temp-Paket (`TORRO_DATA_HOME=<tmp>`, `--demo --design <id>`), damit die Karten nachweislich noch zeichnen.
 
-### E12.3 Umschalter, `Density` und `density` in `ui.json` entfernen
+### E13.3 Umschalter, `Density` und `density` in `ui.json` entfernen
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** E12.2 · **Dateien:** `crates/torro-gui/src/{ui_state,widgets}.rs`,
+- **Modell:** Haiku · **Braucht:** E13.2 · **Dateien:** `crates/torro-gui/src/{ui_state,widgets}.rs`,
   `crates/torro-gui/examples/gallery.rs`, `crates/torro-core/src/i18n/de.rs`
 - **`ui_state.rs`:** weg sind `Density`, die Konstante `DENSITY`, `density_from`, `save_density_to`,
   `load_density_task`, `save_density_task` und der dann ungenutzte `use crate::layout::SizeClass`. Der Modul-Kommentar
@@ -2080,9 +2080,9 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E12.2 ändert `crates/torroinbox/src/ap
   `cargo test`, `TORRO_LANG=de cargo test`; `cargo run --example gallery -- --cards` baut und zeigt die Karten-Seite
   ohne den Umschalter.
 
-### E12.4 Dokumente und Skill: die Dichte gehört zum Design
+### E13.4 Dokumente und Skill: die Dichte gehört zum Design
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** E12.2 · **Dateien:** `docs/eingang.md`, `docs/settings.md`,
+- **Modell:** Haiku · **Braucht:** E13.2 · **Dateien:** `docs/eingang.md`, `docs/settings.md`,
   `docs/tasks/eingang.md`, `.claude/skills/torro-design/SKILL.md`
 - **`docs/eingang.md`:** Abschnitt „Zwei Dichten“ wird „Dichte“: ein Wert des Designs für die ganze Suite, „Torro“
   zeigt eine Zeile je Eintrag, Karten zeigt ein Paket mit `layout.density = "comfortable"`; kein Umschalter, kein
@@ -2092,7 +2092,7 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E12.2 ändert `crates/torroinbox/src/ap
   bleiben); in der Tabelle der Startschalter `--density` entfernen; bei den Schlüsseln von `ui.json` `density`
   entfernen und den Satz dazu nachziehen.
 - **`docs/tasks/eingang.md`:** bei E8.2 ein Nachtrag in einer Zeile, dass Umschalter, `--density` und `density` in
-  `ui.json` mit E12 (Issue #226) weggefallen sind und die Dichte zum Design gehört; in der Liste der Startschalter bei
+  `ui.json` mit E13 (Issue #226) weggefallen sind und die Dichte zum Design gehört; in der Liste der Startschalter bei
   der alten Aufgabe `--density` streichen. Abgehakte Abnahmen nicht umschreiben.
 - **`.claude/skills/torro-design/SKILL.md`:** der Abschnitt „Zwei Dichten im Eingang“ beschreibt die Dichte als Wert
   des Designs (`torro_core::design::Density`, `torro_gui::layout::density()`, `layout.density` im Paket), Standard
@@ -2100,7 +2100,7 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E12.2 ändert `crates/torroinbox/src/ap
   Bausteine beider Dichten anzuschauen, bleibt.
 - **Oberfläche:** keine. **API/MCP:** keine.
 - **Abnahme:** `grep -rniI -- "--density|ui_state::Density|density_switch" docs .claude` findet nur noch die Stellen,
-  die das Wegfallen beschreiben (Nachtrag bei E8.2 und die Aufgaben von E12); die vier Dokumente beschreiben die Dichte
+  die das Wegfallen beschreiben (Nachtrag bei E8.2 und die Aufgaben von E13); die vier Dokumente beschreiben die Dichte
   als Wert des Designs; `scripts/ci-local.sh` grün.
 
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
