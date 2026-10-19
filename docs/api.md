@@ -850,7 +850,9 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `mcp`): nur über `mcp` und nur
     mit „Allow MCP“ (`allow_mcp`, Standard an).
   - Art `hook`: über beide Wege, nur mit „Allow MCP“, weil er zu einem Agenten gehört.
-  - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): an keinen Schalter gebunden.
+  - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): mit einem geliehenen Schlüssel an keinen
+    Schalter gebunden. Ihr eigener, gespeicherter Schlüssel wird nicht mehr herausgegeben; kommt doch einer (aus
+    einer früheren Version, in der ein Agent ihn in `TORRO_TOKEN` trug), gilt er wie der eines MCP-Clients.
   - Jede andere Art (etwa aus einer älteren `clients.json`): wie `script`. `clients.create_client` nimmt nur die
     genannten Arten an.
   - Passt es nicht: `unauthorized` mit einem Satz, der sagt, was in Torro Workplace aus ist bzw. welcher Weg

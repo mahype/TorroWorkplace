@@ -1627,10 +1627,17 @@ impl Core {
     /// The client of `key` and why it may not come in `door` now (#231,
     /// [`crate::clients::closed_door`] with the switches as stored), refused as
     /// [`Refused::Closed`] (`unauthorized`); `None` for the app key, a key the core does not know
-    /// (step 1 refuses it) and a client that may come this way.
+    /// (step 1 refuses it) and a client that may come this way. The assistant and bots are bound to
+    /// no switch only with a key the core lent them ([`Clients::lent_for`]): their own stored key is
+    /// handed out no more (#231), and one from before is checked like an MCP client's (the way it
+    /// was used: an agent with it in `TORRO_TOKEN`), so it cannot pass "Allow MCP".
     fn door_refusal(&self, key: Option<&Key>, door: Door, request: &Request) -> Option<(String, Refused)> {
         let id = self.client_of(key)?;
-        let kind = self.client_kind(&id)?;
+        let mut kind = self.client_kind(&id)?;
+        let lent = key.is_some_and(|key| self.clients.lent_for(key).is_some());
+        if !lent && [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&kind.as_str()) {
+            kind = "mcp".into();
+        }
         let settings = self.settings.current();
         let why = crate::clients::closed_door(&kind, Some(door), settings.allow_api_keys, settings.allow_mcp)?;
         Some((id, Refused::Closed { command: request.operation().name(), why }))
@@ -6185,10 +6192,16 @@ mod tests {
     }
 
     /// The way a client of `key`'s kind comes when it is used as meant (#231): MCP for an MCP
-    /// client, else the API (a script, a hook, the assistant, the app key, an unknown key).
+    /// client and for the stored key of the assistant or a bot (an agent carried it in
+    /// `TORRO_TOKEN`; a lent one passes either way), else the API (a script, a hook, the app key,
+    /// an unknown key).
     fn door_for(core: &Core, key: Option<&Key>) -> Door {
         let kind = core.client_of(key).and_then(|id| core.client_kind(&id));
-        if kind.as_deref().is_some_and(torro_ipc::api::is_mcp_kind) { Door::Mcp } else { Door::Api }
+        let by_mcp = |kind: &str| {
+            torro_ipc::api::is_mcp_kind(kind)
+                || [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&kind)
+        };
+        if kind.as_deref().is_some_and(by_mcp) { Door::Mcp } else { Door::Api }
     }
 
     fn code(response: &Response) -> &str {
@@ -6569,7 +6582,7 @@ mod tests {
             .await
             .expect("added");
         let (_, old) = core.clients.add("Old", "zed-editor", rights.clone()).await.expect("from an older version");
-        let (assistant, _) =
+        let (assistant, stored) =
             core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
         let lent = core.clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
         let app_key = crate::clients::tests::app_key(dir.path());
@@ -6582,6 +6595,7 @@ mod tests {
             (&hook, ["pong", "pong"], "hook"),
             (&old, ["pong", "unauthorized"], "an unknown kind"),
             (lent.key(), ["pong", "pong"], "lent"),
+            (&stored, ["unauthorized", "pong"], "the assistant's stored key, like an MCP client's"),
             (&app_key, ["pong", "pong"], "app key"),
         ] {
             let got = [ping_via(&core, key, Door::Api).await, ping_via(&core, key, Door::Mcp).await];
@@ -6614,6 +6628,7 @@ mod tests {
             assert_eq!(ping_via(&core, &hook, door).await, "unauthorized", "{door:?}");
             assert_eq!(ping_via(&core, &other, door).await, "unauthorized", "{door:?}");
             assert_eq!(ping_via(&core, lent.key(), door).await, "pong", "the assistant is bound to no switch");
+            assert_eq!(ping_via(&core, &stored, door).await, "unauthorized", "not its stored key");
         }
         assert_eq!(ping_via(&core, &script_key, Door::Api).await, "pong", "the API stays open");
         assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
