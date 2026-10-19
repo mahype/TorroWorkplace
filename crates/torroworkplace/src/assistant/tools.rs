@@ -9,9 +9,11 @@
 //!   (`torro_ipc::api::own_memory`, task C.10: `assistant_remember` only when the person asks, as its
 //!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot) and
 //!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
-//!   checks), and never a command kept from agents ([`Mcp::Never`]). Rights are not checked
-//!   here for safety – the core checks every call – but so the model is not offered what would be
-//!   `forbidden` anyway.
+//!   checks), and never a command kept from agents ([`Mcp::Never`]). A command of one of the
+//!   assistant's own tools (issue #225) only when the tool is in the rights' selection
+//!   ([`Rights::reaches_tool`]); callers cut that selection to the tools a person switched on first
+//!   ([`with_tools_on`]), so a tool needs both. Rights are not checked here for safety – the core
+//!   checks every call – but so the model is not offered what would be `forbidden` anyway.
 //! - **How many** ([`offered`]): all of them up to [`MAX_TOOLS`]; beyond that, and always for a
 //!   small model ([`is_small`]), the reading ones and the memory first, then [`FIND_TOOLS`], which
 //!   searches the allowed ones ([`find`]) and adds its matches from the next step on. The memory is
@@ -28,7 +30,10 @@ use std::sync::OnceLock;
 use serde_json::{Map, Value, json};
 use torro_core::ai::ToolSpec;
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Lack, Mcp, Operation, Rights, own_memory};
+use torro_core::settings::ToolId;
+use torro_ipc::api::{
+    ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Lack, Mcp, Operation, Rights, Selection, own_memory,
+};
 use torro_ipc::assistant::Mode;
 use torro_ipc::{Request, Response};
 
@@ -122,7 +127,8 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<&'static Tool> 
 
 /// The tools of the commands a client of `kind` with `rights` may use in a conversation without the
 /// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
-/// yet): none. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
+/// yet): none. A command of one of the assistant's own tools only with the tool in
+/// [`Rights::tools`]; pass rights cut by [`with_tools_on`], so a switched-off tool is not offered. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
 /// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134). Neither is offered any other tool
 /// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
@@ -137,9 +143,20 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area]) -> Vec
             let operation = Operation { command: tool.command, access: tool.command.access };
             let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
             let by_kind = (own && (tool.is_memory() || tool.is_bots())) || (assistant_or_bot && tool.is_my_access());
-            area.grantable() && !without.contains(&area) && (granted || by_kind)
+            let tool_reached = ToolId::of_command(tool.command.name).is_none_or(|own| rights.reaches_tool(own));
+            area.grantable() && !without.contains(&area) && (granted || by_kind) && tool_reached
         })
         .collect()
+}
+
+/// `rights` with their selection of the assistant's own tools (`Rights::tools`, issue #225) cut to
+/// the tools a person switched on (`on`, setting `tool_enabled`): what an answer of the assistant or
+/// a bot offers its model, tells it in the prompt and denies an agent go by these, so a tool is
+/// offered only with its switch **and** in the selection.
+pub fn with_tools_on(rights: &Rights, on: &BTreeSet<ToolId>) -> Rights {
+    let mut cut = rights.clone();
+    cut.tools = rights.tools.common(&Selection::Only(on.iter().map(|tool| tool.name().to_string()).collect()));
+    cut
 }
 
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
@@ -458,6 +475,30 @@ mod tests {
 
     fn names(specs: &[ToolSpec]) -> Vec<&str> {
         specs.iter().map(|spec| spec.name.as_str()).collect()
+    }
+
+    /// Issue #225: the PDF tool's commands are offered only with the tool switched on and in the
+    /// selection, and writing to `tools`; listing the tools needs neither.
+    #[test]
+    fn a_tool_is_offered_only_switched_on_and_selected() {
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let offered = |rights: &Rights, on: &[ToolId]| {
+            let cut = with_tools_on(rights, &on.iter().copied().collect());
+            allowed(Some(&cut), &[]).iter().map(|tool| tool.spec.name.clone()).collect::<Vec<_>>()
+        };
+        let both = offered(&rights, &[ToolId::Pdf]);
+        assert!(both.contains(&"tools_create_pdf".to_string()) && both.contains(&"tools_open_file".to_string()));
+        assert!(!both.contains(&"tools_save_file_as".to_string()), "never to a model");
+        let off = offered(&rights, &[]);
+        assert!(!off.contains(&"tools_create_pdf".to_string()) && off.contains(&"tools_list_tools".to_string()));
+        rights.tools = Selection::Only(Vec::new());
+        assert!(!offered(&rights, &[ToolId::Pdf]).contains(&"tools_create_pdf".to_string()), "not selected");
+        rights.tools = Selection::All;
+        assert_eq!(with_tools_on(&rights, &BTreeSet::new()).tools, Selection::Only(Vec::new()));
+        let cut = with_tools_on(&rights, &BTreeSet::from([ToolId::Pdf]));
+        assert!(cut.reaches_tool(ToolId::Pdf) && cut.areas == rights.areas, "only the selection changes");
     }
 
     /// Issue #132: a read-only answer is offered reading only, also of its memory and the bots; one

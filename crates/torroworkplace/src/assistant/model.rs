@@ -72,6 +72,14 @@ pub trait Host: Send + Sync {
         DataRule::default()
     }
 
+    /// The assistant's own tools a person switched on now (issue #225, setting `tool_enabled`): a
+    /// tool is offered to the model, named in the prompt and left to an agent only when it is here
+    /// and in the client's selection ([`super::tools::with_tools_on`]). The default is none, so a
+    /// host that cannot tell offers no tool.
+    fn tools_on(&self) -> BTreeSet<torro_core::settings::ToolId> {
+        BTreeSet::new()
+    }
+
     /// Runs `request` as the assistant's own client, exactly as a request with its key would run
     /// (`Core::handle_from`): its rights of now (`forbidden` when they do not cover it, and always
     /// for the area `assistant` but its memory, `torro_ipc::api::own_memory`), its collections
@@ -788,16 +796,29 @@ impl Answering {
     }
 
     /// Why the core refused `operation` with `forbidden` (issue #133), from the client's rights of
-    /// now and the areas switched off here; `None` for the core's fixed refusals.
+    /// now and the areas switched off here; `None` for the core's fixed refusals. A command of one of
+    /// the assistant's own tools the rights allow (issue #225): the tool switched off
+    /// ([`Lack::ToolOff`]), else not in the selection ([`Lack::Tool`]).
     fn lack(&self, operation: torro_ipc::api::Operation) -> Option<Lack> {
-        let rights = self.rights();
-        tools::lack_in(self.job.actor.kind(), rights.as_ref(), operation, &self.job.without, &[], self.job.mode)
+        let rights = self.host.client_of(&self.job.actor).map(|client| self.job.mode.narrow(&client.rights));
+        let kind = self.job.actor.kind();
+        let lack = tools::lack_in(kind, rights.as_ref(), operation, &self.job.without, &[], self.job.mode);
+        let tool = torro_core::settings::ToolId::of_command(operation.command.name);
+        match (lack, tool, rights) {
+            (None, Some(tool), Some(_)) if !self.host.tools_on().contains(&tool) => Some(Lack::ToolOff { tool }),
+            (None, Some(tool), Some(rights)) if !rights.reaches_tool(tool) => Some(Lack::Tool { tool }),
+            (lack, ..) => lack,
+        }
     }
 
-    /// The rights of the answer's client now, narrowed by the answer's permission mode (issue #132):
-    /// what the tools offered, the prompt and the reasons of a refusal go by.
+    /// The rights of the answer's client now, narrowed by the answer's permission mode (issue #132)
+    /// and with only the tools a person switched on (issue #225, [`tools::with_tools_on`]): what the
+    /// tools offered and the prompt go by.
     fn rights(&self) -> Option<torro_ipc::api::Rights> {
-        self.host.client_of(&self.job.actor).map(|client| self.job.mode.narrow(&client.rights))
+        let on = self.host.tools_on();
+        self.host
+            .client_of(&self.job.actor)
+            .map(|client| tools::with_tools_on(&self.job.mode.narrow(&client.rights), &on))
     }
 
     /// Hands `request` to the core as the assistant's client and waits for a person where it must.

@@ -899,7 +899,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
   erscheinen nicht; `\pagebreak` gibt zwei Seiten; jede Vorlage und jedes Papierformat.
 
 ### WZ.4 Kern: Befehle des Werkzeugs PDF, Ablage, Register, Angebot ans Modell
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WZ.3 · **Dateien:** `crates/torroworkplace/src/tools/{mod,place,files}.rs`,
   `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torroworkplace/src/mail/write.rs`,
   `crates/torro-ipc/src/assistant.rs` (`MyAccess`), `docs/api-reference.md`,

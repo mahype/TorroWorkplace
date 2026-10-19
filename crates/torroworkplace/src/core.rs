@@ -48,6 +48,7 @@ use crate::reminders::Reminders;
 use crate::settings_service::SettingsStore;
 use crate::sources::Sources;
 use crate::suggest::Wanted;
+use crate::tools::Maker;
 use crate::ui::Section;
 
 /// `name` next to the daemon's binary, else from `PATH`.
@@ -1144,6 +1145,9 @@ pub struct Core {
     /// The reminders of events (task ER1.3): the user's ledger ([`Reminders::system`]); tests keep
     /// theirs in memory.
     reminders: Arc<Reminders>,
+    /// The assistant's own tools and the register of their files (issue #225, task WZ.4): the user's
+    /// ([`crate::tools::Tools::system`]); tests bring theirs with temporary roots ([`Core::with_tools`]).
+    tools: Arc<crate::tools::Tools>,
 }
 
 impl Core {
@@ -1185,6 +1189,7 @@ impl Core {
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
+            tools: Arc::new(crate::tools::Tools::system()),
         }
     }
 
@@ -1325,6 +1330,13 @@ impl Core {
                 Response::Error { code: "error".into(), message }
             }
         }
+    }
+
+    /// The core with `tools` instead of the user's, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_tools(mut self, tools: crate::tools::Tools) -> Core {
+        self.tools = Arc::new(tools);
+        self
     }
 
     /// The core with `assistant` instead of the user's, for tests.
@@ -1810,11 +1822,18 @@ impl Core {
         {
             return Ok(refused);
         }
+        // A tool of the assistant that is switched off (issue #225) runs for nobody, and nobody is
+        // asked to approve it; more rights would not help.
+        if let Some(refused) = self.tool_off(&request) {
+            return Err(refused);
+        }
         // Changing mail (task M3.2): message and folder ids in reachable accounts only, a client's
-        // own drafts and files from the managed folder only; a move into a trash folder is
-        // deleting, and the rights are checked again for that.
+        // own drafts and files from the managed folder (or its own files of the tools' register,
+        // issue #225) only; a move into a trash folder is deleting, and the rights are checked
+        // again for that.
+        let tool_files = self.tool_files(Reach::Client(&rights));
         if let Some(refused) =
-            crate::mail::write::client_refusal(&self.mail, &id, Reach::Client(&rights), &request).await
+            crate::mail::write::client_refusal(&self.mail, &id, Reach::Client(&rights), &request, tool_files).await
         {
             return Ok(refused);
         }
@@ -1847,7 +1866,16 @@ impl Core {
         // Its own access (issue #134): the rights it was admitted with, which are already narrowed
         // as for every other command, and what the request came through.
         if matches!(request, Request::MyAccess) {
-            return Ok(my_access(&rights, &via.origin));
+            return Ok(my_access(&rights, &via.origin, &self.settings.current().tools));
+        }
+        // A tool of the assistant outside the client's selection (issue #225), and what the tool
+        // would refuse anyway: a title or text beyond the limits, a file the client did not make.
+        // Nobody is asked to approve any of it.
+        if let Some(refused) = tool_unselected(&rights, &request) {
+            return Err(refused);
+        }
+        if let Some(refused) = self.tool_request_refusal(&request, Maker::Client(&id)).await {
+            return Ok(refused);
         }
         // The assistant asks a bot (task B.2): only from its conversation, where the person asked for
         // the bot ([`crate::assistant::Assistant::delegate`]); the bot then runs with what both
@@ -2017,6 +2045,10 @@ impl Core {
         if let Request::PreviewReminder { .. } = request {
             let name = self.client_name(&id);
             return Ok(Box::pin(self.reminder_request(request, reach, Some((&id, &name)))).await);
+        }
+        // A file of a tool is its maker's (issue #225): the register remembers the client.
+        if request.operation().area() == Area::Tools {
+            return Ok(self.tools_request(request, reach, Maker::Client(&id)).await);
         }
         // Boxed: `handle_within` is a large future, and a client's request can run it again inside
         // (the inbox's quiet asks the core for settings and events); on the stack both no longer
@@ -2458,6 +2490,11 @@ impl Core {
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
             }
+            // A file of a tool by the title the register keeps (issue #225), never the client's text;
+            // whose it is was checked before.
+            Request::OpenFile { file } | Request::SaveFileAs { file, .. } => {
+                Facts { name: self.tools.file(file, Maker::App).await.map(|file| file.title), ..Facts::default() }
+            }
             request => self.pim.facts(request).await,
         }
     }
@@ -2559,6 +2596,11 @@ impl Core {
         {
             return Refused::Forbidden { command }.response();
         }
+        // A tool switched off or taken out of the selection meanwhile (issue #225); for a bot that
+        // ran for the assistant, out of what both may.
+        if let Some(refused) = self.tool_off(&request).or_else(|| tool_unselected(rights, &request)) {
+            return refused.response();
+        }
         // An allowed question of an agent runs nothing: the answer is the approval's state, which
         // the agent's hook reads (task E2.5).
         if let Request::AskPermission { .. } = request {
@@ -2574,7 +2616,9 @@ impl Core {
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
         }
-        if let Some(refused) = crate::mail::write::client_refusal(&self.mail, client, reach, &request).await {
+        let tool_files = self.tool_files(reach);
+        if let Some(refused) = crate::mail::write::client_refusal(&self.mail, client, reach, &request, tool_files).await
+        {
             return refused;
         }
         if let Request::SaveDraft { draft } = request {
@@ -2611,6 +2655,9 @@ impl Core {
         if let Request::PreviewReminder { .. } = request {
             let name = self.client_name(client);
             return Box::pin(self.reminder_request(request, reach, Some((client, &name)))).await;
+        }
+        if request.operation().area() == Area::Tools {
+            return self.tools_request(request, reach, Maker::Client(client)).await;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -3023,22 +3070,25 @@ impl Core {
             // A client's own access (issue #134) is answered in `handle_client`, which knows what the
             // request came through; here only its rights. The app key may do everything.
             Request::MyAccess => match reach {
-                Reach::Client(rights) => my_access(rights, &crate::approvals::Origin::default()),
+                Reach::Client(rights) => {
+                    my_access(rights, &crate::approvals::Origin::default(), &self.settings.current().tools)
+                }
                 Reach::Suite => Response::Error {
                     code: "unsupported".into(),
                     message: "assistant.my_access tells a client key its own rights; the app key may do everything"
                         .into(),
                 },
             },
-            // The assistant's own tools (issue #225): the commands and their checks are there, the
-            // tools themselves follow (task WZ.4).
-            request @ (Request::ListTools
-            | Request::CreatePdf { .. }
-            | Request::OpenFile { .. }
-            | Request::SaveFileAs { .. }) => Response::Error {
-                code: "unsupported".into(),
-                message: format!("{} is not available in this version yet", request.operation().name()),
-            },
+            // The assistant's own tools (issue #225, task WZ.4). A client's commands come with its id
+            // through `handle_client` and `run_approved`, which name it as the files' maker; without
+            // that id no file of the register is reached.
+            request @ Request::ListTools => self.tools_request(request, reach, Maker::App).await,
+            request @ (Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. }) => {
+                match reach {
+                    Reach::Suite => self.tools_request(request, reach, Maker::App).await,
+                    Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
+                }
+            }
         }
     }
 
@@ -4437,7 +4487,65 @@ impl Core {
             return refused;
         }
         let Request::SaveDraft { draft } = request else { return mail_not_yet(&request) };
-        crate::mail::write::save_draft(&self.mail, reach, draft, author).await
+        let tool_files = self.tool_files(reach);
+        crate::mail::write::save_draft_with(&self.mail, reach, draft, author, tool_files).await
+    }
+
+    /// The register of the tools' files when `reach` may attach its own files of it to drafts (issue
+    /// #225): a client with the PDF tool switched on, read access to `tools` and `pdf` in its
+    /// selection ([`crate::tools::reaches_files`]). `None` for every other client, and for the app
+    /// key, which may attach any file anyway.
+    fn tool_files(&self, reach: Reach<'_>) -> Option<&crate::tools::Register> {
+        match reach {
+            Reach::Suite => None,
+            Reach::Client(rights) => {
+                crate::tools::reaches_files(&self.settings.current().tools, rights).then(|| self.tools.register())
+            }
+        }
+    }
+
+    /// `forbidden` with [`torro_ipc::api::Lack::ToolOff`] for a command of one of the assistant's
+    /// own tools while a person has it switched off (issue #225, setting `tool_enabled`): for every
+    /// client and the app key, whatever the rights say. `None` for every other request.
+    fn tool_off(&self, request: &Request) -> Option<Refused> {
+        let command = request.operation().name();
+        let tool = torro_core::settings::ToolId::of_command(command)?;
+        let on = self.settings.current().tools.is_on(tool);
+        (!on).then_some(Refused::Lacks { command, lack: torro_ipc::api::Lack::ToolOff { tool } })
+    }
+
+    /// What a tool's command of the client `maker` would be refused with anyway, before anyone is
+    /// asked to approve it (issue #225): `tools.create_pdf` beyond its limits
+    /// ([`crate::tools::limit_refusal`]), `tools.open_file` and `tools.save_file_as` for a file the
+    /// client did not make or that changed (`not-found`). The handlers check again when it runs.
+    async fn tool_request_refusal(&self, request: &Request, maker: Maker<'_>) -> Option<Response> {
+        match request {
+            Request::CreatePdf { title, markdown, .. } => crate::tools::limit_refusal(title, markdown),
+            Request::OpenFile { file } | Request::SaveFileAs { file, .. } => match self.tools.file(file, maker).await {
+                Some(_) => None,
+                None => Some(Response::Error { code: "not-found".into(), message: tr("No such file.").into() }),
+            },
+            _ => None,
+        }
+    }
+
+    /// The `tools.*` requests (issue #225, task WZ.4) for `reach`, files made and reached as
+    /// `maker`: the switch once more (for the app key too, [`Core::tool_off`]), then the handlers
+    /// of [`crate::tools`] with the settings of now. `tools.save_file_as` is the app key's only.
+    async fn tools_request(&self, request: Request, reach: Reach<'_>, maker: Maker<'_>) -> Response {
+        if let Some(refused) = self.tool_off(&request) {
+            return refused.response();
+        }
+        let settings = self.settings.current();
+        match (request, maker) {
+            (Request::ListTools, _) => crate::tools::list(&settings.tools, reach),
+            (Request::CreatePdf { title, markdown, template }, maker) => {
+                self.tools.create_pdf(title, markdown, template, &settings, maker).await
+            }
+            (Request::OpenFile { file }, maker) => self.tools.open_file(&file, maker).await,
+            (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
+            (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
+        }
     }
 
     /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
@@ -5404,6 +5512,11 @@ impl crate::assistant::Host for Core {
         crate::assistant::DataRule { mail_to_cloud: self.settings.current().mail_to_cloud }
     }
 
+    /// The tools a person switched on now (issue #225, setting `tool_enabled`).
+    fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
+        self.settings.current().tools.enabled
+    }
+
     fn run<'a>(
         &'a self,
         request: Request,
@@ -5754,13 +5867,29 @@ fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<Stri
 /// what both may), the request coming as `origin` says: the engine, and its areas split into those the
 /// engine never gets ([`crate::assistant::never_given`]) – as far as the run went without them, which
 /// it does not with mail let out (task C.17) – and those switched off in the conversation.
-fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin) -> Response {
+fn my_access(
+    rights: &torro_ipc::api::Rights,
+    origin: &crate::approvals::Origin,
+    tools: &torro_core::settings::Tools,
+) -> Response {
     let never_given = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
     let never: Vec<Area> = never_given.iter().filter(|area| origin.without.contains(area)).copied().collect();
     let never = never.as_slice();
     let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
     let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
+    // The tools a person switched on (issue #225), so an agent tells a switched-off tool from one
+    // outside its selection.
+    let access = access.with_tools_on(tools.enabled.iter().copied().collect());
     Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
+}
+
+/// `forbidden` with [`torro_ipc::api::Lack::Tool`] for a command of one of the assistant's own
+/// tools that `rights` cover in the area `tools` but whose tool is not in their selection (issue
+/// #225, [`torro_ipc::api::Rights::reaches_tool`]). `None` for every other request.
+fn tool_unselected(rights: &torro_ipc::api::Rights, request: &Request) -> Option<Refused> {
+    let command = request.operation().name();
+    let tool = torro_core::settings::ToolId::of_command(command)?;
+    (!rights.reaches_tool(tool)).then_some(Refused::Lacks { command, lack: torro_ipc::api::Lack::Tool { tool } })
 }
 
 fn sees_local_notes(reach: Reach<'_>) -> bool {
@@ -6547,25 +6676,142 @@ mod tests {
         assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
     }
 
-    /// Issue #225: until the tools are built (task WZ.4) their commands answer `unsupported`, for
-    /// the app key and for a client its rights let through.
-    #[tokio::test]
-    async fn the_tools_answer_unsupported_until_they_are_built() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let requests = [
-            Request::ListTools,
-            Request::CreatePdf { title: "Offer".into(), markdown: "Hi".into(), template: None },
-            Request::OpenFile { file: "1a2b3c4d".into() },
-            Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/tmp/Offer.pdf".into() },
-        ];
-        for request in requests {
-            assert_eq!(code(&core.handle(request.clone()).await), "unsupported", "{request:?}");
+    /// The answer's file of a `tools.create_pdf`, also as an approval kept it.
+    fn made_file(response: &Response) -> torro_ipc::tools::FileInfo {
+        match response {
+            Response::File { file } => file.clone(),
+            other => panic!("expected a file, got {other:?}"),
         }
-        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
-        assert_eq!(code(&ask(&core, Some(&key), Request::ListTools).await), "unsupported");
-        let save = Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/tmp/Offer.pdf".into() };
-        assert_eq!(code(&ask(&core, Some(&key), save).await), "forbidden", "only the app key saves elsewhere");
+    }
+
+    /// The message of an error answer.
+    fn message(response: &Response) -> &str {
+        match response {
+            Response::Error { message, .. } => message,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    /// The person switches the PDF tool on or off.
+    async fn switch_pdf(core: &Core, on: bool) {
+        let value = serde_json::json!({"tool": "pdf", "enabled": on});
+        let set = Request::SetSetting { key: torro_ipc::SettingKey::ToolEnabled, value };
+        assert_eq!(core.handle(set).await, Response::Ok);
+    }
+
+    fn make_pdf(title: &str) -> Request {
+        Request::CreatePdf { title: title.into(), markdown: "# Offer\n\nÄpfel für Müller.".into(), template: None }
+    }
+
+    /// Issue #225, task WZ.4: a command of the PDF tool runs only with its switch and, for a client,
+    /// with the tool in its selection; both are checked before anyone is asked to approve it and
+    /// again when it runs. Switched off it is `forbidden` for the app key too.
+    #[tokio::test]
+    async fn the_pdf_tool_runs_only_switched_on_and_selected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let room = crate::tools::tests::Room::new();
+        let core = core(dir.path()).with_tools(room.tools());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (id, key) = client(&core, rights.clone()).await;
+        let nothing_asked = || async { core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty() };
+
+        // Off: refused for every key with the reason, nobody asked; listing still works.
+        let off = torro_ipc::api::Lack::ToolOff { tool: torro_core::settings::ToolId::Pdf }.message();
+        for key in [&key, &app_key] {
+            let refused = ask(&core, Some(key), make_pdf("Offer")).await;
+            assert_eq!(code(&refused), "forbidden");
+            assert!(message(&refused).contains(&off), "{refused:?}");
+        }
+        assert_eq!(code(&core.handle(Request::OpenFile { file: "1a2b3c4d".into() }).await), "forbidden");
+        assert!(nothing_asked().await, "nothing to approve");
+        let Response::Tools { tools } = ask(&core, Some(&key), Request::ListTools).await else { panic!("the tools") };
+        assert_eq!((tools[0].enabled, tools[0].allowed), (false, true));
+        assert_eq!(std::fs::read_dir(room.desktop()).expect("listed").count(), 0, "nothing written");
+
+        // On, but not in the client's selection: refused with that reason, nobody asked.
+        switch_pdf(&core, true).await;
+        rights.tools = Selection::Only(Vec::new());
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        let refused = ask(&core, Some(&key), make_pdf("Offer")).await;
+        let not_granted = torro_ipc::api::Lack::Tool { tool: torro_core::settings::ToolId::Pdf }.message();
+        assert!(code(&refused) == "forbidden" && message(&refused).contains(&not_granted), "{refused:?}");
+        assert!(nothing_asked().await);
+        // Beyond the limits: nothing to approve either.
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        assert_eq!(code(&ask(&core, Some(&key), make_pdf(" ")).await), "error");
+        assert!(nothing_asked().await);
+
+        // Selected: it waits for the person (every change), and runs once allowed.
+        let asked = waits(ask(&core, Some(&key), make_pdf("Offer")).await);
+        assert!(asked.summary.contains("Offer"), "{}", asked.summary);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        let file = made_file(&response);
+        assert_eq!(std::path::PathBuf::from(&file.path), room.desktop().join("Offer.pdf"));
+
+        // Taken out of the selection after the ask: refused when it runs; switched off likewise.
+        let asked = waits(ask(&core, Some(&key), make_pdf("Offer")).await);
+        rights.tools = Selection::Only(Vec::new());
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "forbidden");
+        rights.tools = Selection::All;
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        let asked = waits(ask(&core, Some(&key), make_pdf("Offer")).await);
+        switch_pdf(&core, false).await;
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "forbidden");
+        assert_eq!(std::fs::read_dir(room.desktop()).expect("listed").count(), 1, "only the allowed one");
+    }
+
+    /// Issue #225, task WZ.4: a client reaches only the files it made, the person all of them; only
+    /// the app key saves a copy elsewhere; a file changed behind the core's back is gone for all.
+    /// `assistant.my_access` names the switched-on tools.
+    #[tokio::test]
+    async fn the_tools_files_are_their_makers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let room = crate::tools::tests::Room::new();
+        let core = audited(dir.path()).with_tools(room.tools());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        switch_pdf(&core, true).await;
+        let (_, first) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let (_, second) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+
+        let mine = made_file(&ask(&core, Some(&first), make_pdf("Offer: A/B")).await);
+        assert_eq!(mine.name, "Offer A B.pdf");
+        let again = made_file(&ask(&core, Some(&first), make_pdf("Offer: A/B")).await);
+        assert_eq!(again.name, "Offer A B-2.pdf", "never replaced");
+        let open = |file: &str| Request::OpenFile { file: file.into() };
+        assert_eq!(ask(&core, Some(&first), open(&mine.id)).await, Response::Ok);
+        assert_eq!(code(&ask(&core, Some(&second), open(&mine.id)).await), "not-found", "another client's");
+        assert_eq!(ask(&core, Some(&app_key), open(&mine.id)).await, Response::Ok, "the person's are all");
+        assert_eq!(room.opened.lock().expect("lock").len(), 2);
+
+        let target = room.dir.path().join("Copy.pdf").to_string_lossy().into_owned();
+        let save = |file: &str| Request::SaveFileAs { file: file.into(), path: target.clone() };
+        assert_eq!(code(&ask(&core, Some(&first), save(&mine.id)).await), "forbidden", "people only");
+        assert_eq!(code(&ask(&core, Some(&app_key), save("00000000")).await), "not-found");
+        assert_eq!(ask(&core, Some(&app_key), save(&mine.id)).await, Response::Ok);
+
+        let assistant = core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await;
+        let (_, assistant) = assistant.expect("the assistant's client");
+        let Response::MyAccess { access } = ask(&core, Some(&assistant), Request::MyAccess).await else {
+            panic!("the access")
+        };
+        assert_eq!(access.tools_on, Some(vec![torro_core::settings::ToolId::Pdf]));
+
+        std::fs::write(&mine.path, b"%PDF exchanged").expect("exchanged");
+        assert_eq!(code(&ask(&core, Some(&first), open(&mine.id)).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&app_key), open(&mine.id)).await), "not-found");
+        // The log names the file's id, never its title or path.
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("the log");
+        assert!(log.contains("tools.create_pdf") && log.contains("tools.open_file"), "{log}");
+        assert!(!log.contains("Offer") && !log.contains(&*room.dir.path().to_string_lossy()), "{log}");
     }
 
     /// Task C.17: no client lets mail go to cloud models, not with every right,
@@ -13889,6 +14135,10 @@ mod tests {
             Host::approval(&*self.core, id)
         }
 
+        fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
+            Host::tools_on(&*self.core)
+        }
+
         // Bots (tasks B.1 and B.2) as the core runs them.
 
         fn client_of(&self, actor: &crate::assistant::Actor) -> Option<torro_ipc::ClientInfo> {
@@ -14144,6 +14394,58 @@ mod tests {
             Response::MyAccess { access } => access.clone(),
             other => panic!("expected the access, got {other:?}"),
         }
+    }
+
+    /// Issue #225, task WZ.4, end to end with a scripted model (engine A): `tools_create_pdf` is
+    /// offered and named in the prompt only while the tool is switched on and in the assistant's
+    /// selection; listing the tools needs neither.
+    #[tokio::test]
+    async fn the_model_is_offered_the_pdf_tool_only_switched_on_and_selected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let script = Script::new(Vec::new());
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let (core, _host, engine, client) =
+            assistant_core(dir.path(), &ollama, rights.clone(), Arc::clone(&script)).await;
+        let offered_now = |text: &'static str| {
+            let (core, engine, script) = (Arc::clone(&core), engine.clone(), Arc::clone(&script));
+            async move {
+                script.steps.lock().expect("lock").push_back(says("Done."));
+                // A large model is offered every allowed tool at once, not only the reading ones.
+                let send = Request::SendMessage {
+                    conversation: None,
+                    engine: engine.clone(),
+                    model: Some("qwen3:32b".into()),
+                    effort: None,
+                    text: text.into(),
+                    without: Vec::new(),
+                    mode: torro_ipc::assistant::Mode::Default,
+                    bot: None,
+                };
+                let Response::Conversation { conversation, .. } = core.handle(send).await else {
+                    panic!("a conversation")
+                };
+                let conversation = conversation.id;
+                conversation_until(&core, &conversation, |running, _| !running).await;
+                let asked = script.asked().pop().expect("the model was asked");
+                let tools: Vec<String> = asked.tools.iter().map(|tool| tool.name.clone()).collect();
+                let names_it = asked.messages[0].content.contains("- Your own tools");
+                (
+                    tools.contains(&"tools_create_pdf".to_string()),
+                    tools.contains(&"tools_list_tools".to_string()),
+                    names_it,
+                )
+            }
+        };
+
+        assert_eq!(offered_now("Make a PDF").await, (false, true, false), "switched off");
+        switch_pdf(&core, true).await;
+        assert_eq!(offered_now("Make a PDF").await, (true, true, true), "on and selected");
+        rights.tools = Selection::Only(Vec::new());
+        core.clients.update(&client, rights).await.expect("updated");
+        assert_eq!(offered_now("Make a PDF").await, (false, true, false), "not selected");
     }
 
     /// Issue #134, end to end with a scripted model (engine A): every right switched on, mail with

@@ -12,7 +12,8 @@
 //! 3. **This conversation** ([`Context`]): date, time zone, language, the person's name, the areas
 //!    the assistant may use with what it may do in each (level, admin, how many collections, sending,
 //!    what waits for approval, what the engine never gets; issue #134, [`access`]) and those switched
-//!    off, the model and where it runs, and the notes the
+//!    off, the assistant's own tools it may use (issue #225, [`own_tools`]), the model and where it
+//!    runs, and the notes the
 //!    person asked it to remember ([`Context::memory`], task C.10): each one line, all of them
 //!    within [`MEMORY_CHARS`], newest kept first, and none marked `local_only` for a model elsewhere
 //!    (the data rule).
@@ -30,7 +31,8 @@
 
 use chrono::{DateTime, Local};
 use torro_core::i18n::Lang;
-use torro_ipc::api::{Area, Confirm, Level, Outbound, Rights, Selection};
+use torro_core::settings::ToolId;
+use torro_ipc::api::{Access, Area, Confirm, Level, Outbound, Rights, Selection};
 use torro_ipc::assistant::{MAX_NOTE_CHARS, Note};
 use torro_ipc::bots::{Bot, MAX_INSTRUCTIONS_CHARS, MAX_NAME_CHARS, MAX_SKILL_CHARS, MAX_SKILL_NAME_CHARS, Skill};
 
@@ -80,6 +82,8 @@ pub struct Context<'a> {
     pub without: &'a [Area],
     /// The rights of the client that answers, as stored (issue #134): what it may do in each of
     /// [`Context::areas`] goes into the prompt, so it can tell the person. `None` leaves that out.
+    /// Their selection of the assistant's own tools is cut to the tools a person switched on
+    /// (`super::tools::with_tools_on`, issue #225): the prompt names those as the tools it may use.
     pub rights: Option<&'a Rights>,
     /// The areas the engine never gets whatever the rights say: `mail` for a coding agent
     /// (`super::engines`); empty for an AI account.
@@ -227,6 +231,7 @@ fn generated(context: &Context<'_>) -> String {
         areas => format!("- Areas you may use: {}.", names(areas)),
     });
     lines.extend(access(context));
+    lines.extend(own_tools(context));
     if !context.without.is_empty() {
         lines.push(format!(
             "- Switched off for this conversation: {}. The person turned them off here; if a request needs one, \
@@ -296,6 +301,31 @@ fn access(context: &Context<'_>) -> Vec<String> {
         }
     ));
     lines
+}
+
+/// The assistant's own tools it may use now (issue #225), one line: each tool switched on and in its
+/// selection ([`Context::rights`] come cut to the switched-on ones), with write access to `tools`
+/// and the area among [`Context::areas`]. Nothing when there is none.
+fn own_tools(context: &Context<'_>) -> Vec<String> {
+    let Some(rights) = context.rights else { return Vec::new() };
+    if !context.areas.contains(&Area::Tools) || !rights.area(Area::Tools).allows(Access::Write) {
+        return Vec::new();
+    }
+    let tools: Vec<String> = ToolId::ALL
+        .into_iter()
+        .filter(|tool| rights.reaches_tool(*tool))
+        .map(|tool| match tool {
+            ToolId::Pdf => "PDF (tools_create_pdf makes a PDF from your Markdown and saves it on this computer)".into(),
+        })
+        .collect();
+    if tools.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "- Your own tools, switched on by the person: {}. Use them when the person asks for such a file, and always \
+         tell them where it is.",
+        tools.join("; ")
+    )]
 }
 
 /// What `rights` allow in `area`, in words: `read, all calendars`, `full, 2 mail accounts; sending:
@@ -504,6 +534,32 @@ mod tests {
         assert!(!system(None, &context(&areas, &[])).contains("What you may do"));
     }
 
+    /// Issue #225: the prompt names the assistant's own tools it may use (rights cut to the
+    /// switched-on ones), and none without write access to `tools` or without one selected.
+    #[test]
+    fn the_prompt_names_the_own_tools_it_may_use() {
+        use torro_ipc::api::AreaRights;
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let areas = [Area::Calendar, Area::Tools];
+        let mut with_tools = context(&areas, &[]);
+        with_tools.rights = Some(&rights);
+        let prompt = system(None, &with_tools);
+        let tools = line(&prompt, "- Your own tools").unwrap_or_else(|| panic!("the tools' line: {prompt}"));
+        assert!(tools.contains("tools_create_pdf") && tools.contains("where it is"), "{tools}");
+
+        let switched_off = super::super::tools::with_tools_on(&rights, &Default::default());
+        with_tools.rights = Some(&switched_off);
+        assert!(line(&system(None, &with_tools), "- Your own tools").is_none(), "switched off");
+        let mut reading = rights.clone();
+        reading.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        with_tools.rights = Some(&reading);
+        assert!(line(&system(None, &with_tools), "- Your own tools").is_none(), "listing only");
+        let without = context(&areas[..1], &[]);
+        assert!(line(&system(None, &without), "- Your own tools").is_none(), "no rights");
+    }
+
     /// The line of the generated part that starts with `label`.
     fn line<'a>(prompt: &'a str, label: &str) -> Option<&'a str> {
         prompt.lines().find(|line| line.starts_with(label))
@@ -526,6 +582,9 @@ mod tests {
             "language of the person's last message",
             "time zone",
             "ask first",
+            "Your own tools",
+            "\\pagebreak",
+            "tell the person the path",
         ] {
             assert!(skill.contains(rule), "the skill lacks {rule:?}");
         }

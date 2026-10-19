@@ -24,6 +24,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Access, Area, Confirm, Level, Operation, Outbound, Rights, Selection};
+use crate::tools::ToolId;
 use crate::{Request, Response};
 
 /// At most this many characters in a message to the assistant (`assistant.send_message`).
@@ -345,12 +346,26 @@ pub struct MyAccess {
     /// it already. Left out for [`Mode::Default`].
     #[serde(default, skip_serializing_if = "Mode::is_default")]
     pub mode: Mode,
+    /// The assistant's own tools a person switched on (issue #225, setting `tool_enabled`), whatever
+    /// the rights say. A tool's command runs only when it is here **and** in
+    /// [`Rights::tools`](crate::api::Rights::tools): a tool missing here is switched off
+    /// ([`crate::api::Lack::ToolOff`], only the person switches it on), one missing there is not
+    /// granted ([`crate::api::Lack::Tool`]). Left out by older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_on: Option<Vec<ToolId>>,
 }
 
 impl MyAccess {
-    /// `rights` as they are for a client's own key: nothing withheld or switched off.
+    /// `rights` as they are for a client's own key: nothing withheld or switched off, no word on the
+    /// tools' switches ([`MyAccess::with_tools_on`]).
     pub fn of(rights: Rights, engine: Option<String>) -> MyAccess {
-        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new(), mode: Mode::Default }
+        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new(), mode: Mode::Default, tools_on: None }
+    }
+
+    /// `self` naming `tools` as the tools switched on now ([`MyAccess::tools_on`]).
+    pub fn with_tools_on(mut self, tools: Vec<ToolId>) -> MyAccess {
+        self.tools_on = Some(tools);
+        self
     }
 
     /// `self` in the permission mode `mode` (issue #132): the rights narrowed ([`Mode::narrow`]) and
@@ -610,6 +625,20 @@ mod tests {
         assert_eq!(access.rights.task_lists, Selection::Only(Vec::new()));
         assert_eq!(access.rights.inbox_sources, Selection::Only(vec!["agent:claude-code".into()]));
         assert_eq!(access.rights.calendars, Selection::All, "the rest stays");
+    }
+
+    /// Issue #225: the switched-on tools travel apart from the rights, left out when the core says
+    /// nothing of them, so an agent tells a switched-off tool from one it was not granted.
+    #[test]
+    fn the_switched_on_tools_are_named_apart_from_the_rights() {
+        let quiet = MyAccess::of(Rights::assistant(), None);
+        assert!(serde_json::to_value(&quiet).expect("json").get("tools_on").is_none(), "left out");
+        let on = quiet.clone().with_tools_on(vec![ToolId::Pdf]);
+        let json = serde_json::to_value(&on).expect("json");
+        assert_eq!(json["tools_on"], serde_json::json!(["pdf"]));
+        assert_eq!(serde_json::from_value::<MyAccess>(json).expect("reads"), on);
+        let none = quiet.with_tools_on(Vec::new()).withholding(&[Area::Tools]);
+        assert_eq!(none.tools_on, Some(Vec::new()), "none switched on is said too");
     }
 
     #[test]

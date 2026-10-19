@@ -57,6 +57,8 @@ webbrowser.workspace = true
 # The PDF tool (task WZ.3): Markdown read and set as pages.
 printpdf.workspace = true
 pulldown-cmark.workspace = true
+# Where the PDF tool saves when no folder is set: the system's desktop (task WZ.4).
+dirs.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
 # script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.

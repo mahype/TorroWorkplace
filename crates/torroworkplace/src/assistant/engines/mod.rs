@@ -383,8 +383,13 @@ impl Running {
         let lent = host.lend_in_mode(&actor, &self.job.conversation, &self.job.engine, &without, mode);
         let Some(lent) = lent else { return Err(no_client()) };
         let rights = mode.narrow(&client.rights);
-        let areas = allowed_areas(actor.kind(), &rights, &without, mode);
         self.rights = Some(rights.clone());
+        // The assistant's own tools (issue #225): only those switched on and in the selection are
+        // named in the prompt and left to the agent.
+        let rights = tools::with_tools_on(&rights, &host.tools_on());
+        let usable: Vec<torro_core::settings::ToolId> =
+            torro_core::settings::ToolId::ALL.into_iter().filter(|tool| rights.reaches_tool(*tool)).collect();
+        let areas = allowed_areas(actor.kind(), &rights, &without, mode);
         // The personality and the memory (task C.10); the prompt keeps the notes marked
         // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
         // memory (task B.1).
@@ -416,8 +421,8 @@ impl Running {
         })?;
         // The tools of the areas it does not get are not offered at all (issue #133): the model then
         // never tries them, and the prompt says why.
-        let arguments =
-            claude::arguments(&folder.config(), &system, self.job.model.as_deref(), self.job.effort, &without, mode);
+        let (model, effort) = (self.job.model.as_deref(), self.job.effort);
+        let arguments = claude::arguments(&folder.config(), &system, model, effort, &without, mode, &usable);
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;

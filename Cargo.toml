@@ -55,6 +55,9 @@ torro-appkit = { path = "crates/torro-appkit" }
 torro-htmlview = { path = "crates/torro-htmlview" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
+# The desktop folder of each system for the PDF tool's files (torroworkplace, WZ.4): XDG `user-dirs.dirs` on Linux,
+# the Known Folder on Windows, `~/Desktop` on macOS.
+dirs = "7.0.0"
 getrandom = "0.4.3"
 # DNS SRV and TXT lookups for finding a mail provider's CalDAV service (torro-pim-caldav, M7.1).
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
