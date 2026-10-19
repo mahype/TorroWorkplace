@@ -1218,9 +1218,12 @@ pub(crate) mod tests {
                 then.status(200).json_body(json!({"data": [
                     {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5",
                      "max_input_tokens": 1_000_000,
-                     "capabilities": {"effort": {"supported": true}, "thinking": {"supported": true}}},
+                     "capabilities": {"effort": {"supported": true},
+                      "thinking": {"supported": true, "types": {"adaptive": {"supported": true}}}}},
                     {"type": "model", "id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5",
-                     "max_input_tokens": 200_000, "capabilities": {"effort": {"supported": false}}},
+                     "max_input_tokens": 200_000,
+                     "capabilities": {"effort": {"supported": false},
+                      "thinking": {"supported": true, "types": {"adaptive": {"supported": false}}}}},
                 ], "has_more": false}));
             })
             .await;

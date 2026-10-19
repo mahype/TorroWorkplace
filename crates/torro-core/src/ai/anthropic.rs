@@ -122,8 +122,9 @@ fn blocks_of(message: &ChatMessage) -> Option<(&'static str, Vec<Value>)> {
         Role::Assistant => {
             let mut blocks = Vec::new();
             // An assistant message that only calls tools gets no text block: an empty one is
-            // refused.
-            if !message.content.is_empty() {
+            // refused. Blank counts as empty, or [`filled`] would put [`EMPTY`] into the model's
+            // own earlier words.
+            if has_text(&message.content) {
                 blocks.push(text_block(&message.content));
             }
             for call in &message.tool_calls {
@@ -154,10 +155,15 @@ fn text_block(text: &str) -> Value {
 
 /// `text`, or [`EMPTY`] where it is blank: the server refuses a block without content.
 fn filled(text: &str) -> &str {
-    match text.trim().is_empty() {
-        true => EMPTY,
-        false => text,
+    match has_text(text) {
+        true => text,
+        false => EMPTY,
     }
+}
+
+/// Whether `text` would make a block of its own: anything but blank.
+fn has_text(text: &str) -> bool {
+    !text.trim().is_empty()
 }
 
 /// The `input` of a tool call from the JSON text the model wrote ([`ToolCall::arguments`]): the
@@ -176,7 +182,7 @@ fn input_of(arguments: &str) -> Value {
 pub fn parse_reply(body: &[u8]) -> Result<ChatReply, AiError> {
     let answer: Value = serde_json::from_slice(body).map_err(|_| not_json())?;
     if answer.get("type").and_then(Value::as_str) == Some("error") {
-        return Err(openai::error_of(500, body));
+        return Err(openai::error_of(error_status(&answer), body));
     }
     let content = answer
         .get("content")
@@ -290,24 +296,33 @@ impl StreamDecoder {
         let chunk: Value = serde_json::from_str(data).map_err(|_| not_json())?;
         let kind = chunk.get("type").and_then(Value::as_str).unwrap_or_default();
         if kind == "error" {
-            return Err(openai::error_of(500, data.as_bytes()));
+            return Err(openai::error_of(error_status(&chunk), data.as_bytes()));
         }
         self.started = true;
         match kind {
-            "message_start" => self.usage = usage_of(chunk.pointer("/message/usage"), self.usage),
+            "message_start" => self.count(chunk.pointer("/message/usage")),
             "content_block_start" => self.block_start(&chunk),
             "content_block_delta" => self.block_delta(&chunk, on_text),
             "message_delta" => {
                 if let Some(finish) = finish_of(chunk.pointer("/delta/stop_reason")) {
                     self.finish = Some(finish);
                 }
-                self.usage = usage_of(chunk.get("usage"), self.usage);
+                self.count(chunk.get("usage"));
             }
             "message_stop" => self.done = true,
             // `ping`, `content_block_stop` and whatever the protocol adds later.
             _ => {}
         }
         Ok(())
+    }
+
+    /// What a chunk counted, over what an earlier one said. A chunk that counts nothing changes
+    /// nothing: `message_start` names the input and `message_delta` the output, and a chunk without
+    /// `usage` must not throw the other number away.
+    fn count(&mut self, usage: Option<&Value>) {
+        if let Some(counted) = usage_of(usage, self.usage) {
+            self.usage = Some(counted);
+        }
     }
 
     /// A block that starts: only a `tool_use` one is held, with the id and name the server gives it
@@ -381,11 +396,25 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools: Some(true),
                 open_weights: None,
                 context: model.get("max_input_tokens").and_then(Value::as_u64),
-                reasoning: model.pointer("/capabilities/effort/supported").and_then(Value::as_bool),
+                reasoning: takes_an_effort(model),
                 remote: None,
             })
         })
         .collect())
+}
+
+/// Whether the model takes an [`super::Effort`] **the way [`chat_body`] sends one**: the answer has
+/// to say that it supports `effort` and adaptive thinking, because the body carries both fields
+/// together. Claude Opus 4.5 is what makes the difference – it supports an effort but refuses
+/// adaptive thinking, so a request with both is HTTP 400 and the model must not be offered one.
+/// `None` where the answer says nothing about either, so apps still offer the effort.
+fn takes_an_effort(model: &Value) -> Option<bool> {
+    let effort = model.pointer("/capabilities/effort/supported").and_then(Value::as_bool);
+    let adaptive = model.pointer("/capabilities/thinking/types/adaptive/supported").and_then(Value::as_bool);
+    match (effort, adaptive) {
+        (None, None) => None,
+        (effort, adaptive) => Some(effort.unwrap_or(false) && adaptive.unwrap_or(false)),
+    }
 }
 
 /// The tokens a turn used: `input_tokens` and `output_tokens` where the chunk names them, over what
@@ -398,6 +427,23 @@ fn usage_of(value: Option<&Value>, so_far: Option<Usage>) -> Option<Usage> {
         prompt_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(held.prompt_tokens),
         completion_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(held.completion_tokens),
     })
+}
+
+/// The HTTP status an error body or event stands for, from its `error.type`: a stream carries no
+/// status, and an error in the middle of an answer means the same as the same error on the request
+/// itself, so both go through [`openai::error_of`] and a busy server is `busy` either way.
+fn error_status(chunk: &Value) -> u16 {
+    match chunk.pointer("/error/type").and_then(Value::as_str).unwrap_or_default() {
+        "authentication_error" => 401,
+        "permission_error" => 403,
+        "not_found_error" => 404,
+        "rate_limit_error" => 429,
+        // Anthropic's word for "too much traffic right now", its own status.
+        "overloaded_error" => 529,
+        "invalid_request_error" | "request_too_large" => 400,
+        // `api_error` and whatever the protocol names later.
+        _ => 500,
+    }
 }
 
 fn finish_of(value: Option<&Value>) -> Option<Finish> {
@@ -506,7 +552,8 @@ mod tests {
             let body = chat_body(&ChatRequest { effort: Some(effort), ..request() }, true);
             assert_eq!(body["output_config"], json!({"effort": effort.id()}), "{effort:?}");
             assert_eq!(body["thinking"], json!({"type": "adaptive"}), "{effort:?}");
-            assert!(body["thinking"].get("budget_tokens").is_none(), "a budget is refused with HTTP 400");
+            // A budget anywhere in the body is HTTP 400 on the current models.
+            assert!(!body.to_string().contains("budget_tokens"), "{body}");
         }
     }
 
@@ -587,7 +634,7 @@ mod tests {
         }
         let refused = br#"{"type":"error","error":{"type":"invalid_request_error","message":"model: wrong"}}"#;
         assert!(
-            matches!(parse_reply(refused), Err(AiError::Server { status: 500, message }) if message.contains("wrong")),
+            matches!(parse_reply(refused), Err(AiError::Server { status: 400, message }) if message.contains("wrong")),
             "{:?}",
             parse_reply(refused)
         );
@@ -684,7 +731,7 @@ mod tests {
         let event = br#"data: {"type":"error","error":{"type":"overloaded_error","message":"busy now"}}
 "#;
         let failed = refused.push(event, &mut |_| {});
-        assert!(matches!(&failed, Err(AiError::Server { message, .. }) if message.contains("busy now")), "{failed:?}");
+        assert!(matches!(&failed, Err(error) if error.code() == "busy"), "an overloaded server: {failed:?}");
     }
 
     #[test]
@@ -699,32 +746,99 @@ mod tests {
     }
 
     #[test]
+    fn an_error_in_the_body_or_the_stream_is_weighed_by_its_kind() {
+        for (kind, code) in [
+            ("authentication_error", "auth"),
+            ("rate_limit_error", "busy"),
+            ("overloaded_error", "busy"),
+            ("not_found_error", "not-found"),
+            ("invalid_request_error", "error"),
+            ("api_error", "error"),
+        ] {
+            let body = format!(r#"{{"type":"error","error":{{"type":"{kind}","message":"no"}}}}"#);
+            let whole = parse_reply(body.as_bytes()).expect_err(kind);
+            assert_eq!(whole.code(), code, "{kind} as a whole answer");
+
+            let mut decoder = StreamDecoder::new();
+            let event = format!("data: {body}\n");
+            let streamed = decoder.push(event.as_bytes(), &mut |_| {}).expect_err(kind);
+            assert_eq!(streamed.code(), code, "{kind} in the middle of a stream");
+        }
+    }
+
+    #[test]
+    fn a_chunk_that_counts_nothing_keeps_what_an_earlier_one_counted() {
+        let body = [
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":77,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#,
+            // A server or a gateway of its own that names no usage at the end.
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]
+        .join("\n");
+        let (reply, _) = pushed(body.as_bytes(), 23);
+        assert_eq!(
+            reply.usage,
+            Some(Usage { prompt_tokens: 77, completion_tokens: 1 }),
+            "the input it did count must not be thrown away"
+        );
+        assert_eq!(reply.finish, Finish::Stop);
+    }
+
+    #[test]
+    fn a_blank_assistant_text_becomes_no_block_at_all() {
+        let asked = ChatRequest {
+            messages: vec![
+                ChatMessage::user("Go."),
+                ChatMessage::assistant(
+                    "\n  ",
+                    vec![ToolCall { id: "a".into(), name: "one".into(), arguments: "{}".into() }],
+                ),
+            ],
+            ..request()
+        };
+        let body = chat_body(&asked, true);
+        let blocks = body["messages"][1]["content"].as_array().expect("blocks");
+        assert_eq!(blocks.len(), 1, "no text block for blank words: {body}");
+        assert_eq!(blocks[0]["type"], "tool_use");
+        assert!(!body.to_string().contains(EMPTY), "the model never reads its own words as (empty)");
+    }
+
+    #[test]
     fn the_model_list_reads_what_the_answer_tells_and_leaves_the_weights_open() {
         let body = br#"{"data":[
             {"type":"model","id":"claude-opus-5","display_name":"Claude Opus 5","max_input_tokens":1000000,
              "max_tokens":128000,"capabilities":{"image_input":{"supported":true},
              "effort":{"supported":true,"low":{"supported":true},"max":{"supported":true}},
-             "thinking":{"supported":true}}},
+             "thinking":{"supported":true,"types":{"enabled":{"supported":false},"adaptive":{"supported":true}}}}},
             {"type":"model","id":"claude-haiku-4-5","display_name":"","max_input_tokens":200000,
-             "capabilities":{"effort":{"supported":false}}},
+             "capabilities":{"effort":{"supported":false},"thinking":{"types":{"adaptive":{"supported":false}}}}},
+            {"type":"model","id":"claude-opus-4-5","display_name":"Claude Opus 4.5",
+             "capabilities":{"effort":{"supported":true},
+             "thinking":{"supported":true,"types":{"enabled":{"supported":true},"adaptive":{"supported":false}}}}},
             {"type":"model","id":"claude-old"},
             {"type":"model","display_name":"No id"}],"has_more":false}"#;
         let models = parse_models(body).expect("models");
-        assert_eq!(models.len(), 3, "the one without an id is dropped");
+        assert_eq!(models.len(), 4, "the one without an id is dropped");
         assert_eq!(models[0].id, "claude-opus-5");
         assert_eq!(models[0].name, "Claude Opus 5");
         assert_eq!(models[0].context, Some(1_000_000));
         assert_eq!(models[0].reasoning, Some(true));
         assert_eq!(models[1].name, "claude-haiku-4-5", "no name given: the id");
         assert_eq!(models[1].reasoning, Some(false), "so apps offer no effort for it");
-        assert_eq!(models[2].reasoning, None, "an answer that does not say");
-        assert_eq!(models[2].context, None);
+        assert_eq!(
+            models[2].reasoning,
+            Some(false),
+            "Claude Opus 4.5 takes an effort but refuses adaptive thinking, and the body sends both"
+        );
+        assert_eq!(models[3].reasoning, None, "an answer that does not say");
+        assert_eq!(models[3].context, None);
         for model in &models {
             assert_eq!(model.tools, Some(true), "{}: they all call tools", model.id);
             assert_eq!(model.open_weights, None, "{}: never Some(false), or the filter drops it", model.id);
             assert_eq!(model.remote, None, "{}: the account decides that, not the model", model.id);
         }
-        assert_eq!(crate::ai::open_weights_only(models).len(), 3, "Open First keeps them all");
+        assert_eq!(crate::ai::open_weights_only(models).len(), 4, "Open First keeps them all");
         assert!(matches!(parse_models(b"{}"), Err(AiError::Format(_))));
         assert!(matches!(parse_models(b"nope"), Err(AiError::Format(_))));
     }
