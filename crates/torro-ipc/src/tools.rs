@@ -2,8 +2,8 @@
 //! what the `tools.*` requests and answers carry – a tool as `tools.list_tools` lists it
 //! ([`ToolInfo`]) and a file a tool made ([`FileInfo`]) – and the limits of `tools.create_pdf`.
 //!
-//! A tool is a skill that only the assistant and its bots have, unlike the commands of the suite.
-//! Each has a switch, the setting `tool_enabled` (`torro_core::settings::Tools`), which only a person
+//! A tool is a skill of the suite's own, made first for the assistant and its bots and granted like
+//! any area (the templates of the rights include it). Each has a switch, the setting `tool_enabled` (`torro_core::settings::Tools`), which only a person
 //! switches on (point 9 of "Was nie nach außen geht" in `docs/api.md`), and a place in the rights:
 //! the area `tools` with the tools a client may use ([`crate::api::Rights::tools`]). A command of a
 //! tool ([`ToolId::of_command`]) runs only when both allow it; otherwise the core answers
@@ -38,8 +38,9 @@ pub struct ToolInfo {
     pub description: String,
     /// A person switched it on in the assistant's settings (`tool_enabled`).
     pub enabled: bool,
-    /// The key that asked may use it: read access to `tools` and the tool in its selection. Always
-    /// `true` for the app key. The tool works for the key only when this and `enabled` are true.
+    /// The key that asked may use it: write access to `tools` (its commands make and open files) and
+    /// the tool in its selection. Always `true` for the app key. The tool works for the key only when
+    /// this and `enabled` are true.
     pub allowed: bool,
 }
 

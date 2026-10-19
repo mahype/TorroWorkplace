@@ -1208,18 +1208,25 @@ impl Tools {
     }
 
     /// `sent` as a client may store it over these tools (as stored), for `settings.update_settings`:
-    /// a tool stays on only when it is on in both, the folder and the logos stay as stored, the
-    /// other fields of the templates are taken from `sent`. So a person who switched a tool off or
-    /// removed a path between the core's check and the write is not undone.
+    /// a tool stays on only when it is on in both; the folder and each logo are removed when `sent`
+    /// removes them and otherwise stay as stored; the other fields of the templates are taken from
+    /// `sent`. So a client removes a path like any admin change, and a person who switched a tool
+    /// off or removed a path between the core's check and the write is not undone.
     pub fn from_client(&self, sent: &Tools) -> Tools {
         let mut tools = sent.clone();
         tools.enabled = self.enabled.intersection(&sent.enabled).copied().collect();
-        tools.pdf.folder = self.pdf.folder.clone();
+        tools.pdf.folder = kept_or_removed(&self.pdf.folder, &sent.pdf.folder);
         for id in PdfTemplateId::ALL {
-            tools.pdf.template_mut(id).logo = self.pdf.template(id).logo.clone();
+            tools.pdf.template_mut(id).logo = kept_or_removed(&self.pdf.template(id).logo, &sent.pdf.template(id).logo);
         }
         tools
     }
+}
+
+/// A path as a client may store it: `None` when it sends none (removing is an admin change), else
+/// the stored one (setting a path is a person's, point 9).
+pub fn kept_or_removed(stored: &Option<String>, sent: &Option<String>) -> Option<String> {
+    sent.as_ref().and(stored.clone())
 }
 
 /// Whether `path` can be a path from outside: one line of at most [`MAX_PATH_BYTES`], absolute on
@@ -2300,10 +2307,15 @@ mod tests {
         assert!(!kept.is_on(ToolId::Pdf), "off stays off");
         assert_eq!((kept.pdf.folder.as_deref(), kept.pdf.template(PdfTemplateId::Note).logo.as_deref()), (None, None));
         assert_eq!(kept.pdf.template(PdfTemplateId::Report), fields.pdf.template(PdfTemplateId::Report), "the fields");
+        let kept = person.from_client(&sent);
+        assert_eq!(kept.pdf.folder, person.pdf.folder, "the folder stays, not the client's");
+        assert_eq!(kept.pdf.letter.logo, None, "removed, as the client sent none");
+        assert_eq!(kept.pdf.note.logo, None, "and no logo of the client's");
         let kept = person.from_client(&Tools::default());
         assert!(!kept.is_on(ToolId::Pdf), "a client may switch it off");
-        assert_eq!(kept.pdf.folder, person.pdf.folder, "the folder stays");
-        assert_eq!(kept.pdf.letter.logo, person.pdf.letter.logo, "and so does the logo");
-        assert!(person.from_client(&person).is_on(ToolId::Pdf), "on stays on");
+        assert_eq!((kept.pdf.folder, kept.pdf.letter.logo), (None, None), "and remove the paths");
+        let kept = person.from_client(&person);
+        assert!(kept.is_on(ToolId::Pdf), "on stays on");
+        assert_eq!(kept, person, "the stored paths stay");
     }
 }

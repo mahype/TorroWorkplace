@@ -171,6 +171,15 @@ impl SettingsStore {
         self.change(|settings| change.apply(settings))
     }
 
+    /// Like [`SettingsStore::set`], for clients: a PDF folder or a template's logo is written only
+    /// when it is removed or equals the stored one, read under the same lock as the write. The core
+    /// refuses a new path before (point 9, `Core::switches_on_for_people`); this keeps a path a
+    /// person removed between that check and the write removed.
+    pub fn set_by_client(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
+        let change = Change::parse(key, value)?;
+        self.change(|settings| change.limited_for_clients(settings).apply(settings))
+    }
+
     /// Shows or hides one collection in all apps (`Request::SetCollectionShown`). Whether the id
     /// belongs to an account is the caller's check.
     pub fn set_collection_shown(&self, collection: &str, shown: bool) -> Result<(), String> {
@@ -405,6 +414,20 @@ impl Change {
                 Change::PdfTemplate(id, template)
             }
         })
+    }
+
+    /// The change as a client may make it against `settings` (as stored): its paths only removed or
+    /// kept ([`torro_core::settings::kept_or_removed`]), everything else as sent.
+    fn limited_for_clients(self, settings: &Settings) -> Change {
+        use torro_core::settings::kept_or_removed;
+        match self {
+            Change::PdfFolder(folder) => Change::PdfFolder(kept_or_removed(&settings.tools.pdf.folder, &folder)),
+            Change::PdfTemplate(id, mut template) => {
+                template.logo = kept_or_removed(&settings.tools.pdf.template(id).logo, &template.logo);
+                Change::PdfTemplate(id, template)
+            }
+            other => other,
+        }
     }
 
     /// Puts the value into its field.
@@ -1291,8 +1314,39 @@ mod tests {
         assert!(kept.is_on(ToolId::Pdf), "on stays on");
         assert_eq!((&kept.pdf.folder, &kept.pdf.note.logo), (&person.pdf.folder, &person.pdf.note.logo));
         sent.tools.set_on(ToolId::Pdf, false);
-        store.update_keeping_hidden(sent).expect("written");
+        store.update_keeping_hidden(sent.clone()).expect("written");
         assert!(!store.current().tools.is_on(ToolId::Pdf), "a client may switch it off");
+        // Removing a path is an admin change like any other.
+        (sent.tools.pdf.folder, sent.tools.pdf.note.logo) = (None, None);
+        store.update_keeping_hidden(sent).expect("written");
+        let removed = store.current().tools;
+        assert_eq!((removed.pdf.folder, removed.pdf.note.logo), (None, None), "a client may remove the paths");
+    }
+
+    /// Issue #225, point 9: one setting at a time, a client keeps or removes a path but never sets
+    /// a new one, even when the core's check saw the stored one and a person changed it meanwhile.
+    #[test]
+    fn a_client_sets_no_path_one_setting_at_a_time() {
+        let (_dir, store) = store();
+        let folder = absolute("/sync/Out");
+        let logo = absolute("/pictures/logo.png");
+        store.set_by_client(SettingKey::PdfFolder, &json!(folder)).expect("written");
+        let mut note = PdfTemplate::standard(PdfTemplateId::Note);
+        (note.logo, note.font_size_pt) = (Some(logo.clone()), 12);
+        store.set_by_client(SettingKey::PdfTemplate, &note.to_value(PdfTemplateId::Note)).expect("written");
+        let kept = store.current().tools.pdf;
+        assert_eq!((kept.folder, kept.note.logo), (None, None), "no path of a client");
+        assert_eq!(kept.note.font_size_pt, 12, "the other fields are taken");
+
+        store.set(SettingKey::PdfFolder, &json!(folder)).expect("the person");
+        store.set(SettingKey::PdfTemplate, &note.to_value(PdfTemplateId::Note)).expect("the person");
+        store.set_by_client(SettingKey::PdfFolder, &json!(folder)).expect("the same folder");
+        assert_eq!(store.current().tools.pdf.folder, Some(folder), "the stored one stays");
+        store.set_by_client(SettingKey::PdfFolder, &json!(null)).expect("removed");
+        note.logo = None;
+        store.set_by_client(SettingKey::PdfTemplate, &note.to_value(PdfTemplateId::Note)).expect("removed");
+        let removed = store.current().tools.pdf;
+        assert_eq!((removed.folder, removed.note.logo), (None, None), "a client may remove the paths");
     }
 
     #[test]

@@ -1829,11 +1829,13 @@ impl Core {
         // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
         // whatever its rights in `assistant` say (task C.10).
         let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
-        if !allowed || self.switches_on_for_people(&request) {
+        let for_people = self.switches_on_for_people(&request);
+        if !allowed || for_people {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
-            // the rights say.
-            let lack = match allowed || request.kept_for_people() {
+            // the rights say, and so are a tool's switch and its paths (point 9): more rights would
+            // not help.
+            let lack = match allowed || for_people || request.kept_for_people() {
                 true => Some(torro_ipc::api::Lack::ForPeople),
                 false => {
                     let kind = self.client_kind(&id).unwrap_or_default();
@@ -2818,7 +2820,12 @@ impl Core {
                 }
             }
             Request::SetSetting { key, value } => {
-                let set = self.settings.set(key, &value);
+                // A client keeps or removes the PDF paths but never sets one (point 9, issue #225),
+                // judged again under the settings lock.
+                let set = match client {
+                    true => self.settings.set_by_client(key, &value),
+                    false => self.settings.set(key, &value),
+                };
                 self.follow_components();
                 match set {
                     Ok(()) => Response::Ok,

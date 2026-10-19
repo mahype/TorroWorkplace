@@ -1418,7 +1418,7 @@ Sends a message to a bot and starts its answer with the bot's engine and model, 
 
 Zugriff `read` · MCP-Tool `tools_list_tools`
 
-Lists the assistant's own tools (for now `pdf`, which makes PDF files from Markdown) with whether the person switched each on in the assistant's settings (`enabled`) and whether this key may use it (`allowed`). A tool works only when both are true; only the person switches a tool on and grants it.
+Lists the assistant's own tools (for now `pdf`, which makes PDF files from Markdown) with whether the person switched each on in the assistant's settings (`enabled`) and whether this key may use it (`allowed`: write access to `tools` and the tool in its selection). A tool works only when both are true; only the person switches a tool on and grants it.
 
 Keine Felder.
 
