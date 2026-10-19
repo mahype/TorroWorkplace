@@ -656,7 +656,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
    Schalter.
 
-   Ebenso **Mail an Claude Code und Cloud-Modelle geben** (Datenregel, Aufgabe C.17): `settings.set_setting`
+   Ebenso **Mail an Cloud-Modelle geben** (Datenregel, Aufgabe C.17, Schalter „Mail to cloud models“):
+   `settings.set_setting`
    mit `mail_to_cloud: true` und ein `settings.update_settings`, das es einschalten würde, bekommen
    von jedem Client `forbidden`, auch mit Admin-Rechten; sonst könnte sich ein Agent selbst Mail
    verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests

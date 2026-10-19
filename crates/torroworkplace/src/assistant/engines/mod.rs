@@ -33,7 +33,7 @@
 //!   minus the areas switched off in the conversation and minus `mail`: an agent sends what it
 //!   reads to its provider, and the data rule (`super::data_rule`, `docs/ki.md`: mail only to
 //!   models on the person's computers) keeps mail from it, unless the person lets mail go to
-//!   Claude Code and cloud models (setting `mail_to_cloud`, task C.17; read when the run starts).
+//!   cloud models (setting `mail_to_cloud`, task C.17; read when the run starts).
 //!   Without mail rights the inbox hides the entries of mail accounts too
 //!   (`Rights::reaches_source`). The core checks this, not the agent.
 //! - **History**: the agent keeps no session (`--no-session-persistence`); every message carries
@@ -109,7 +109,7 @@ const DETAIL_CHARS: usize = 300;
 const NEVER_TO_AGENTS: &[Area] = &[Area::Mail];
 
 /// The areas a run of an agent goes without under `rule`: [`NEVER_TO_AGENTS`], or none once the
-/// person let mail go to Claude Code and cloud models.
+/// person let mail go to cloud models.
 fn withheld_from_agents(rule: DataRule) -> &'static [Area] {
     match rule.mail_to_cloud {
         true => &[],

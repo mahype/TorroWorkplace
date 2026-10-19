@@ -91,7 +91,7 @@ pub struct Context<'a> {
     pub model: &'a str,
     /// Where the model runs, for the data rule's note and the notes it may read.
     pub place: Place,
-    /// The person lets mail go to Claude Code and cloud models (task C.17): the note on the data
+    /// The person lets mail go to cloud models (task C.17): the note on the data
     /// rule says so.
     pub mail_to_cloud: bool,
     /// The notes of the assistant's memory, oldest first, as the core keeps them; the prompt leaves
@@ -238,13 +238,14 @@ fn generated(context: &Context<'_>) -> String {
         true if context.withheld.contains(&Area::Mail) => format!(
             "- You answer as the agent {0}, outside the person's computers (remote). The person's data rule keeps \
              mail on their own computers, so mail is not among your areas here: it is not given to {0}, whatever \
-             the rights say. If the person asks for mail, say so instead of trying: they can let mail go to Claude \
-             Code and cloud models in Torro Workplace › Assistant, or use an AI account on their own computer.",
+             the rights say. If the person asks for mail, say so instead of trying: they can let mail go to cloud \
+             models with \"Mail to cloud models\" in Torro Workplace › Assistant, or use an AI account on their \
+             own computer.",
             one_line(context.engine)
         ),
         true => format!(
             "- You answer as the agent {}, outside the person's computers (remote). The person lets mail go to \
-             Claude Code and cloud models, so you read mail as far as the rights above allow.",
+             cloud models, so you read mail as far as the rights above allow.",
             one_line(context.engine)
         ),
         false => format!(
@@ -582,7 +583,7 @@ mod tests {
             ("Claude Code", "", Place::Remote, true);
         let agent = system(None, &context);
         let answer = line(&agent, "- You answer").expect("the engine's line");
-        assert!(answer.contains("lets mail go to Claude Code and cloud models"), "{answer}");
+        assert!(answer.contains("lets mail go to cloud models"), "{answer}");
         assert!(!answer.contains("not among your areas"), "{answer}");
 
         (context.engine, context.model) = ("ai:openrouter@openrouter.ai", "qwen/qwen3-14b");

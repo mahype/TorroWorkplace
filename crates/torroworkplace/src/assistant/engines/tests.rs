@@ -23,7 +23,7 @@ struct FakeHost {
     clients: Clients,
     /// The areas every key was lent without.
     lent: Mutex<Vec<Vec<Area>>>,
-    /// The person let mail go to Claude Code and cloud models (task C.17).
+    /// The person let mail go to cloud models (task C.17).
     mail_to_cloud: std::sync::atomic::AtomicBool,
 }
 
@@ -273,6 +273,11 @@ fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
     assert!(agents.find("claude-code").is_none(), "and no engine id finds one");
     assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays, for never_given");
     assert_eq!(never_given("claude-code"), [Area::Mail], "so an old conversation keeps its data rule");
+
+    // The product's own constructor, so rebuilding `engines` on `Agent::ALL` cannot slip past this
+    // test. The flag is read before anything is looked up, so no home directory is needed.
+    assert!(Agents::system().engines(true).is_empty(), "the user's agents are not offered either");
+    assert!(Agents::system().find("claude-code").is_none());
 }
 
 fn send_to_claude() -> Request {
@@ -382,7 +387,7 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     assert!(text.ends_with("And tomorrow?"), "{text}");
 }
 
-/// Task C.17: once the person lets mail go to Claude Code and cloud models, the run's key is lent
+/// Task C.17: once the person lets mail go to cloud models, the run's key is lent
 /// with mail, the agent's tools include it, and the prompt no longer says it is kept from it.
 #[tokio::test]
 async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
@@ -395,7 +400,7 @@ async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
     let prompt = arguments.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
     assert!(prompt.contains("  - mail: read"), "{prompt}");
     assert!(!prompt.contains("not given to you"), "{prompt}");
-    assert!(prompt.contains("lets mail go to Claude Code and cloud models"), "{prompt}");
+    assert!(prompt.contains("lets mail go to cloud models"), "{prompt}");
 }
 
 #[tokio::test]

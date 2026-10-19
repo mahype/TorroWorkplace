@@ -9,7 +9,8 @@
 //!
 //! **New chats** (issue #131): the engine, model and effort a new chat starts with
 //! (`settings.set_setting assistant_default`), or "The one used last" (`null`). The engines come
-//! from `assistant.list_engines` – an agent brings its own models –, an AI account's models from
+//! from `assistant.list_engines` – only AI accounts since issue #219; a coding agent would bring
+//! its own models –, an AI account's models from
 //! `ai.list_models` ([`super::models_request`]); the effort only where the model takes one. Each
 //! chat can still pick another. Without any engine the group says where an AI account is added.
 

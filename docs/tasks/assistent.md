@@ -512,7 +512,7 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
   App-Schlüssel (`Request::kept_for_people`, auch über `settings.update_settings`); ausschalten darf jeder, der
   Einstellungen ändern darf. Ein Agent kann sich so nie selbst Mail verschaffen.
 - **Sichtbar bei den Rechten:** In den Rechten des Assistenten (Steuerzentrale › Assistant, dorthin führt auch seine
-  Zeile in Agents & API) und jedes Bots steht direkt unter Mail der Schalter „Mail to Claude Code and cloud models“
+  Zeile in Agents & API) und jedes Bots steht direkt unter Mail der Schalter „Mail to cloud models“ (C.20)
   mit dem, was er bedeutet. Der Grund eines `forbidden` (`Lack::NeverToAgents`) und der Systemtext des Assistenten
   nennen den Schalter, die Werkzeugzeile im Chat sagt „(Datenregel)“.
 - **Oberfläche:** Rechte des Assistenten und der Bots. **API:** `settings.set_setting

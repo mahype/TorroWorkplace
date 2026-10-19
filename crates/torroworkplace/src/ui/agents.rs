@@ -1663,7 +1663,7 @@ pub(super) fn rights_groups<'a>(
 /// admin switch where it has one. The switch is a row of its own, not indented: admin commands are
 /// allowed per area whatever the level (`docs/api.md`, "Rechte"), so its line names the area
 /// instead. Under Mail of the assistant and its bots, the data rule ([`data_rule_row`]): it decides
-/// whether Claude Code and cloud models get the mail the rights grant (`mail_to_cloud`).
+/// whether cloud models get the mail the rights grant (`mail_to_cloud`).
 fn access_group<'a>(
     rights: &Rights,
     column: Option<f32>,

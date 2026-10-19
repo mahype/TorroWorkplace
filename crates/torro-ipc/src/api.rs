@@ -3837,7 +3837,7 @@ mod tests {
         assert_eq!(Request::VoiceStatus.operation().access, Access::Read);
     }
 
-    /// Task C.17: no client lets mail go to Claude Code and cloud models, not even with every
+    /// Task C.17: no client lets mail go to cloud models, not even with every
     /// right, so no agent gets mail by its own command; keeping mail local again is an ordinary
     /// admin change.
     #[test]
