@@ -168,7 +168,7 @@ impl Register {
     pub fn add(&self, entry: FileEntry) -> Result<(), RegisterError> {
         let file = self.file.as_ref().ok_or(RegisterError::NoFolder)?;
         let _held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut entries = read(file);
+        let mut entries = read_to_change(file)?;
         entries.push(entry);
         write(file, entries)
     }
@@ -176,11 +176,12 @@ impl Register {
     /// Keeps the entry `made` builds from a new id as the newest file and answers it; the oldest beyond
     /// [`MAX_FILES`] fall out. Makes the folder (0700) and writes the file (0600) whole, so a crash never leaves half
     /// a register. The id is drawn under the register's lock and is none the register holds: two files with one id
-    /// would make one of them unreachable (the first wins in [`Register::get`]).
+    /// would make one of them unreachable (the first wins in [`Register::get`]). A register that cannot be read is
+    /// never written over ([`read_to_change`]).
     pub fn add_new(&self, made: impl FnOnce(String) -> FileEntry) -> Result<FileEntry, RegisterError> {
         let file = self.file.as_ref().ok_or(RegisterError::NoFolder)?;
         let _held = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut entries = read(file);
+        let mut entries = read_to_change(file)?;
         let entry = made(unused_id(&entries, new_id)?);
         entries.push(entry.clone());
         write(file, entries).map(|()| entry)
@@ -228,6 +229,33 @@ fn read(file: &Path) -> Vec<FileEntry> {
         eprintln!("torroworkplace: the register of the tools' files is no register; it starts anew");
         Vec::new()
     })
+}
+
+/// The entries in `file` before a change is written: none when it is missing; an error when it cannot be read, so a
+/// passing read error never replaces the register by one entry and leaves every older file unreachable. A file that
+/// reads but is no register is kept aside as `files.json.broken` (replacing an older one) before the register starts
+/// anew, so what it held is not lost either.
+fn read_to_change(file: &Path) -> Result<Vec<FileEntry>, RegisterError> {
+    let bytes = match fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(RegisterError::Io(err)),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(entries) => Ok(entries),
+        Err(_) => {
+            fs::rename(file, broken(file)).map_err(RegisterError::Io)?;
+            eprintln!("torroworkplace: the register of the tools' files is no register; kept aside, it starts anew");
+            Ok(Vec::new())
+        }
+    }
+}
+
+/// Where a register that is no register is kept aside: `files.json.broken` next to it.
+fn broken(file: &Path) -> PathBuf {
+    let mut name = file.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    name.push(".broken");
+    file.with_file_name(name)
 }
 
 /// `entries` without the oldest beyond [`MAX_FILES`], written to `file` (0600) in a folder of its own (0700).
@@ -357,6 +385,36 @@ pub(crate) mod tests {
         assert_ne!(kept.id, taken.id);
         assert_eq!(register.get(&kept.id, Maker::Client("c1")), Some(kept));
         assert_eq!(register.entries().len(), 2);
+    }
+
+    /// A register that cannot be read is never written over by the next file: a read error refuses the file, and a
+    /// file that is no register is kept aside before the register starts anew.
+    #[test]
+    fn a_register_that_cannot_be_read_is_not_written_over() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tools = dir.path().join("tools");
+        let register = Register::in_dir(Some(tools.clone()));
+        let kept = registered(&register, dir.path(), "Kept.pdf", b"%PDF kept", Maker::App);
+        let path = dir.path().join("New.pdf");
+        fs::write(&path, b"%PDF new").expect("written");
+        let made = |id| FileEntry::of(id, path.clone(), "New", PdfTemplateId::Note, Maker::App, b"%PDF new");
+
+        // Unreadable: the register is a folder now, as an error of the file system would leave it.
+        let file = tools.join(FILE);
+        let aside = tools.join("aside");
+        fs::rename(&file, &aside).expect("moved");
+        fs::create_dir(&file).expect("a folder in its place");
+        assert!(matches!(register.add_new(made), Err(RegisterError::Io(_))), "the file is refused");
+        fs::remove_dir(&file).expect("removed");
+        fs::rename(&aside, &file).expect("back");
+        assert_eq!(register.get(&kept.id, Maker::App), Some(kept.clone()), "the register is untouched");
+
+        // No register: kept aside whole, then a new one.
+        let damaged = b"[{\"id\": \"broken";
+        fs::write(&file, damaged).expect("damaged");
+        let new = register.add_new(made).expect("kept");
+        assert_eq!(fs::read(tools.join("files.json.broken")).expect("kept aside"), damaged.to_vec());
+        assert_eq!(register.entries(), vec![new]);
     }
 
     #[test]
