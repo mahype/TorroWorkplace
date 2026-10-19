@@ -108,7 +108,8 @@ KI.1b ── KI.1c ── KI.1d (Anbieter Anthropic, Issue #218) parallel ab KI.
   `TORRO_LANG=de cargo test --workspace`.
 
 ### KI.1c Anthropic senden: zweite Umsetzung von `Provider` (Issue #218)
-- [ ] erledigt
+- [x] erledigt (der Helfer heißt `Wire`, sein Schlüssel-Weg `Auth`; `Wire::chunks` nimmt ein `Send`-Closure,
+  sonst wäre das Future von `chat` nicht mehr `Send`)
 - **Modell:** Opus · **Braucht:** KI.1b · **Dateien:** `crates/torroworkplace/src/account/ai.rs`,
   `crates/torroworkplace/src/assistant/data_rule.rs` (nur Test), `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torro-core/src/ai/mod.rs` (Doku des Traits), `docs/api-reference.md`

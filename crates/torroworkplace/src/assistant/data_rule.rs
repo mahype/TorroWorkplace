@@ -394,6 +394,11 @@ mod tests {
         assert_eq!(place_of(AiProvider::OpenAiCompatible, "https://ai.example.org/v1", &unknown), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenRouter, "https://openrouter.ai/api/v1", &unknown), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenRouter, "http://localhost:8080/api/v1", &local), Place::Remote, "a proxy");
+        assert_eq!(
+            place_of(AiProvider::Anthropic, "http://localhost:8080/v1", &local),
+            Place::Remote,
+            "a proxy to Anthropic is still Anthropic"
+        );
         for cloud in AiProvider::CLOUD {
             assert_eq!(place_of(cloud, cloud.default_url().unwrap_or_default(), &local), Place::Remote, "{cloud:?}");
         }
