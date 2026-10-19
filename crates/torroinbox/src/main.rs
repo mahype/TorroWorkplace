@@ -3,10 +3,9 @@
 //! Three windows from one program (task E8.1, [`app::Kind`]): `--view mail` (app id
 //! `torro-inbox-mail`), `--view notifications` (`torro-inbox-notifications`) and `--view hub` or no
 //! `--view` (`torro-inbox`), each its own entry of `torro_core::AppId::ALL`; an unknown `--view` is
-//! refused with the valid ones (exit 64). Each shows its entries in one of two densities (task
-//! E8.2, `torro_gui::ui_state::Density`): `--density compact|comfortable` at start, else the one
-//! the window remembers in `ui.json`, else comfortable (compact when narrow); an unknown one is
-//! refused the same way.
+//! refused with the valid ones (exit 64). How close their entries stand is not theirs to choose
+//! (task E13.2, `torro_core::design::Density`): all three show the density of the active design,
+//! one row per entry under "Torro", cards only with a pack that asks for them.
 //!
 //! An Iced window with a fixed app id per kind: everything that wants the user's attention
 //! in one place – waiting coding agents, approvals, account problems, notices from scripts – in

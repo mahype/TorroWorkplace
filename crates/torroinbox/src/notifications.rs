@@ -50,12 +50,12 @@
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, responsive, row, scrollable};
 use iced::{Alignment, Color, Element, Fill, Padding};
+use torro_core::design::Density;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::SidebarMode;
 use torro_gui::theme::{self, size, space};
-use torro_gui::ui_state::Density;
 use torro_gui::widgets::{self, BarWords, ButtonStyle, Mark, RowAction, TileFace, TileSize, Trail};
 use torro_gui::{style, typo};
 use torro_inbox::{Action, Item, Kind, Lane, Link, Order, SourceInfo, SourceKind, SourceRef, State};
@@ -174,7 +174,7 @@ impl Shown {
         Shown::Only(shown)
     }
 
-    /// The part of the window's name in `ui.json` (task E8.2, `Launch::density_key`) for a chosen
+    /// The part of the window's name in `ui.json` (task E13.2, `Launch::window_key`) for a chosen
     /// set: `source:` and the keys with `+` between them (`source:script:ci+script:deploy`); `None`
     /// for the windows that choose nothing.
     pub fn slice(&self) -> Option<String> {

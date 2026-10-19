@@ -2008,7 +2008,7 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/ap
   `TORRO_LANG=de cargo test`.
 
 ### E13.2 Der Eingang zeichnet in der Dichte des Designs
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E13.1 · **Dateien:** `crates/torro-gui/src/layout.rs`,
   `crates/torroinbox/src/{app,hub,notifications,main}.rs`
 - **Token:** `torro_gui::layout::density()` → `design::with(|t| t.design.layout.density)`, Doc-Kommentar wie die anderen
