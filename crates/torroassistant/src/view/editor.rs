@@ -356,14 +356,26 @@ impl App {
         row![preview, widgets::chip_row(chips)].spacing(space::l()).align_y(Alignment::Center).into()
     }
 
-    /// The engine and model, chosen in the picker; without any engine, where to add one.
+    /// The engine and model, chosen in the picker, with "Turned off in Settings › Accounts" beside
+    /// a model that is off (task S.26: the bot answers with "Automatic" then); without any engine,
+    /// where to add one, and with AI accounts but no model on, where to turn one on.
     fn engine_choice<'a>(&'a self, draft: &'a BotDraft, anchors: &Anchors) -> Element<'a, Message> {
         match &draft.choice {
             Some(choice) => {
                 let label = typo::ellipsize(&self.choice_label(choice), typo::caption(), size::sidebar());
                 let picker = widgets::select_button(&anchors.bot_picker, label, Message::ToggleMenu(Menu::BotPicker));
-                row![picker].into()
+                let off = self
+                    .turned_off(choice)
+                    .then(|| widgets::ellipsized(typo::meta(), tr("Turned off in Settings › Accounts"), theme::text_3));
+                row![picker].push(off).spacing(space::s()).align_y(Alignment::Center).into()
             }
+            None if self.no_model_on() => row![
+                typo::text(typo::meta(), tr("No model is turned on")).style(theme::text_3),
+                widgets::text_button(None, tr("Manage models…"), style::button::ghost, Some(Message::ManageModels)),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
             None => row![
                 typo::text(typo::meta(), tr("No AI account")).style(theme::text_3),
                 widgets::text_button(None, tr("Add an AI account"), style::button::ghost, Some(Message::AddAiAccount)),

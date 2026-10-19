@@ -695,7 +695,8 @@ fn sample_bots() -> Vec<Bot> {
             description: tr("Plans trips by train").into(),
             avatar: LETTER_AVATAR.into(),
             engine: OLLAMA.into(),
-            model: Some("qwen3:14b".into()),
+            // Turned off in the demo (task S.26): the editor and the picker say so.
+            model: Some("llama3.3:70b".into()),
             personality: crate::bots::Template::Calm.text().into(),
             instructions: tr("Suggest trains before flights. Ask for the budget first.").into(),
             skills: vec![Skill {
@@ -834,9 +835,12 @@ fn approval(now: DateTime<Utc>) -> ApprovalInfo {
     }
 }
 
-/// The models of the demo's AI accounts; `None` for any other id.
+/// The models of the demo's AI accounts; `None` for any other id. Which are on follows the rule of
+/// task S.24 with a person's switches on top: Ollama's models with tools, but `llama3.3:70b` turned
+/// off – the travel planner's, so its editor shows a model that is off (task S.26) –, and on
+/// OpenRouter the one model the person turned on.
 fn models(account: &str) -> Option<Vec<AiModel>> {
-    let model = |id: &str, name: &str, tools: Option<bool>| AiModel {
+    let model = |id: &str, name: &str, tools: Option<bool>, enabled: bool| AiModel {
         id: id.into(),
         name: name.into(),
         tools,
@@ -845,19 +849,19 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         reasoning: Some(id.starts_with("qwen3")),
         remote: None,
         decision: None,
-        enabled: false,
+        enabled,
     };
     match account {
         OLLAMA => Some(vec![
-            model("qwen3:14b", "qwen3:14b", Some(true)),
-            model("qwen3:8b", "qwen3:8b", Some(true)),
-            model("gemma3:4b", "gemma3:4b", Some(false)),
-            model("llama3.3:70b", "llama3.3:70b", Some(true)),
+            model("qwen3:14b", "qwen3:14b", Some(true), true),
+            model("qwen3:8b", "qwen3:8b", Some(true), true),
+            model("gemma3:4b", "gemma3:4b", Some(false), false),
+            model("llama3.3:70b", "llama3.3:70b", Some(true), false),
         ]),
         OPENROUTER => Some(vec![
-            model("qwen/qwen3-32b", "Qwen3 32B", Some(true)),
-            model("mistralai/mistral-small-3.2-24b-instruct", "Mistral Small 3.2 24B", Some(true)),
-            model("deepseek/deepseek-r1", "DeepSeek R1", Some(false)),
+            model("qwen/qwen3-32b", "Qwen3 32B", Some(true), true),
+            model("mistralai/mistral-small-3.2-24b-instruct", "Mistral Small 3.2 24B", Some(true), false),
+            model("deepseek/deepseek-r1", "DeepSeek R1", Some(false), false),
         ]),
         _ => None,
     }

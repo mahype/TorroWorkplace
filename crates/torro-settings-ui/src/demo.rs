@@ -334,7 +334,8 @@ impl Demo {
     }
 
     /// The models the sample AI account offers (`ai.list_models`): one that writes and one that
-    /// only decides, which is what sorting mail needs (task E12.10).
+    /// only decides, which is what sorting mail needs (task E12.10), both turned on; and one turned
+    /// off, which no choice offers (task S.26).
     fn models(&self) -> Vec<AiModel> {
         vec![
             AiModel {
@@ -346,12 +347,23 @@ impl Demo {
                 reasoning: Some(true),
                 remote: Some(false),
                 decision: None,
-                enabled: false,
+                enabled: true,
             },
             AiModel {
                 id: "nimble".into(),
                 name: "nimble".into(),
                 tools: Some(false),
+                open_weights: Some(true),
+                context: None,
+                reasoning: Some(false),
+                remote: Some(false),
+                decision: Some(true),
+                enabled: true,
+            },
+            AiModel {
+                id: "llama3.3:70b".into(),
+                name: "llama3.3:70b".into(),
+                tools: Some(true),
                 open_weights: Some(true),
                 context: None,
                 reasoning: Some(false),

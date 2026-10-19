@@ -84,9 +84,9 @@ pub const SECTIONS: [Section; 5] = [
 /// API; the word stays the same.
 pub const CONTROL_CENTRE: &str = "assistant";
 
-/// Where an AI account is added (`torroworkplace ui --section accounts`): where General points
-/// when there is no engine at all. Task S.25 brings a section `ai`; until then the accounts page
-/// is the place (task S.17).
+/// Where an AI account is added and its models are turned on and off
+/// (`torroworkplace ui --section accounts`): where General points when there is no engine at all
+/// and for "Manage models…" (task S.26). There is no section `ai` (issue #231).
 pub const AI_SECTION: &str = "accounts";
 
 /// What only the assistant app can do with these sections ([`crate::Action::App`]).
@@ -104,8 +104,9 @@ pub type Action = crate::Action<AppAction>;
 /// change ([`crate::Host::new`]).
 ///
 /// `clients.list_clients` is read only, to tell whether the assistant is on; nothing here writes a
-/// client. The models of an AI account follow in a second round, because only the loaded settings
-/// name the account ([`models_request`], [`Data::follow_up`]).
+/// client. `accounts.list_accounts` tells, while no AI account is an engine, whether there are AI
+/// accounts with no model on (task S.26). The models of an AI account follow in a second round,
+/// because only the loaded settings name the account ([`models_request`], [`Data::follow_up`]).
 pub fn wanted() -> Vec<Request> {
     vec![
         Request::Settings,
@@ -115,17 +116,26 @@ pub fn wanted() -> Vec<Request> {
         Request::ListBots,
         Request::ListEngines,
         Request::VoiceStatus,
+        Request::Accounts,
     ]
+}
+
+/// Whether there are AI accounts but none of them is an engine (task S.26): no model is turned on
+/// at any of them, so the core lists none (`assistant.list_engines`).
+pub fn no_model_on(data: &Data) -> bool {
+    let ai_engine = data.engines.iter().any(|engine| engine.kind == EngineKind::Ai);
+    !ai_engine && data.accounts.iter().any(|account| account.kind == "ai")
 }
 
 /// `ai.list_models` for the AI account the assistant's default engine names, so General can offer
 /// its models; `None` for an agent's engine (its models come with it), for the test engine and
-/// while no default is set.
+/// while no default is set. Closed models too: General offers the models turned on (task S.26),
+/// and a closed model may be one of them.
 pub fn models_request(data: &Data) -> Option<Request> {
     let default = data.settings.assistant_default.as_ref()?;
     let engine = data.engines.iter().find(|engine| engine.id == default.engine)?;
     match engine.kind {
-        EngineKind::Ai => Some(Request::AiModels { account: engine.id.clone(), all: false }),
+        EngineKind::Ai => Some(Request::AiModels { account: engine.id.clone(), all: true }),
         EngineKind::Agent | EngineKind::Test => None,
     }
 }
@@ -410,8 +420,9 @@ mod tests {
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 7, "one request per thing the sections read");
+        assert_eq!(wanted().len(), 8, "one request per thing the sections read");
         assert!(wanted().contains(&Request::ListClients), "to tell whether the assistant is on");
+        assert!(wanted().contains(&Request::Accounts), "to tell no model on from no AI account (task S.26)");
         let data = data().await;
         assert!(is_on(&data) && client(&data).is_some());
         assert!(!data.default_models.is_empty(), "the second round brought the AI account's models");
@@ -419,8 +430,8 @@ mod tests {
         let ai = data.engines.iter().find(|engine| engine.kind == EngineKind::Ai).expect("the demo has one");
         assert_eq!(
             models_request(&data),
-            Some(Request::AiModels { account: ai.id.clone(), all: false }),
-            "the account is asked for its models"
+            Some(Request::AiModels { account: ai.id.clone(), all: true }),
+            "the account is asked for its models, closed ones too (task S.26)"
         );
         // An agent brings its models with it; nothing to ask.
         let agent = agent_engine();

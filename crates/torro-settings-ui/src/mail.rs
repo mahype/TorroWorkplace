@@ -806,6 +806,28 @@ mod tests {
         assert_eq!((engine.as_deref(), model.as_deref(), *enabled), (Some("ai:x"), Some("tev1"), true));
     }
 
+    /// Task S.26: only models turned on are offered for sorting mail – switching it on takes the
+    /// first one that is on, and with none on there is nothing to switch on.
+    #[test]
+    fn sorting_mail_offers_only_models_that_are_on() {
+        use torro_core::ai::AiModel;
+
+        let decider = |id: &str, enabled: bool| {
+            ("ai:ollama@localhost:11434".to_string(), AiModel { decision: Some(true), enabled, ..AiModel::named(id) })
+        };
+        let data = Data { decider_models: vec![decider("off", false), decider("on", true)], ..Data::default() };
+        let on = categorization::update::<()>(categorization::Message::Enabled(true), &data);
+        let Action::Send(requests) = on else { panic!("a request") };
+        let [torro_ipc::Request::SetAiAssignment { model, .. }] = requests.as_slice() else { panic!("one assignment") };
+        assert_eq!(model.as_deref(), Some("on"), "the model that is off is not offered");
+        let _ = categorization::view(&data);
+
+        let none = Data { decider_models: vec![decider("off", false)], ..Data::default() };
+        let nothing = categorization::update::<()>(categorization::Message::Enabled(true), &none);
+        assert!(matches!(nothing, Action::None), "nothing on, nothing to switch on");
+        let _ = categorization::view(&none);
+    }
+
     /// Task E12.10: "Catch up now" starts the run, "Cancel" stops it.
     #[test]
     fn catching_up_starts_and_stops() {
@@ -951,11 +973,16 @@ pub mod categorization {
         column![sorting, models, shown, rules].spacing(layout::section_gap()).into()
     }
 
-    /// The models that may sort mail: every AI account's models that decide, and – while mail
-    /// may not leave this computer – only those that run here (`docs/ki.md`, principle 4). The
-    /// core refuses the others as well (task E12.5), so the rule holds even if this list were
-    /// wrong.
+    /// The models that may sort mail: every AI account's models that decide and are turned on for
+    /// the suite (task S.26, `AiModel::enabled`), and – while mail may not leave this computer –
+    /// only those that run here (`docs/ki.md`, principle 4). The core refuses the others as well
+    /// (task E12.5), so the rule holds even if this list were wrong.
     fn offered(data: &Data) -> Vec<(String, AiModel)> {
+        deciders(data).into_iter().filter(|(_, model)| model.enabled).collect()
+    }
+
+    /// The models that decide and may see mail, turned on or not.
+    fn deciders(data: &Data) -> Vec<(String, AiModel)> {
         let local_only = !data.settings.mail_to_cloud;
         data.decider_models
             .iter()
@@ -966,11 +993,15 @@ pub mod categorization {
     }
 
     /// One row per model that may sort mail, the assigned one checked; picking one switches the
-    /// sorting on. Without any, one row says so instead.
+    /// sorting on. Without any, one row says so instead: where to turn one on when there are
+    /// models that decide but none is on (task S.26), else where to add one.
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
         let offered = offered(data);
         if offered.is_empty() {
-            let detail = tr("Add a local AI such as Ollama under Accounts and load a model that decides.");
+            let detail = match deciders(data).is_empty() {
+                true => tr("Add a local AI such as Ollama under Accounts and load a model that decides."),
+                false => tr("Turn on models in Settings › Accounts."),
+            };
             let none = iced::widget::space().width(0);
             return vec![setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none)];
         }

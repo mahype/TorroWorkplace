@@ -195,7 +195,8 @@ fn the_picker_offers_only_models_that_can_call_tools() {
         Some(Ok(models)) => models.into_iter().map(|model| model.id).collect(),
         other => panic!("the models are in: {other:?}"),
     };
-    assert_eq!(offered, ["qwen3:14b", "qwen3:8b", "llama3.3:70b"], "gemma3:4b cannot call tools");
+    // Task S.26: only models turned on; gemma3:4b cannot call tools, llama3.3:70b is off.
+    assert_eq!(offered, ["qwen3:14b", "qwen3:8b"]);
     let mut app = app;
     let pick = Choice { engine: OLLAMA.into(), model: Some("qwen3:8b".into()) };
     let _ = app.update(Message::Pick(pick.clone()));
@@ -206,8 +207,9 @@ fn the_picker_offers_only_models_that_can_call_tools() {
     assert_eq!(app.choice, Some(pick));
 }
 
-/// Issue #131: Claude Code's own models, an effort only where the model takes one, and "Show all
-/// models" lists the AI accounts anew with closed models.
+/// Issue #131: Claude Code's own models and an effort only where the model takes one. Task S.26:
+/// "Manage models…" opens the control centre's accounts, and a picker that opens asks every AI
+/// account again for its models, closed ones too.
 #[test]
 fn the_effort_goes_with_the_message_where_the_model_thinks() {
     let mut app = started(&["--open", "effort"]);
@@ -234,7 +236,11 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
         [Request::SendMessage { effort: Some(torro_core::ai::Effort::High), model: Some(model), .. }] if model == "opus"
     ));
 
-    let _ = app.update(Message::ToggleAllModels);
+    let _ = app.update(Message::ManageModels);
+    assert_eq!(app.sections, [ACCOUNTS_PAGE], "where the models are turned on");
+    assert_eq!(ACCOUNTS_PAGE, "accounts");
+    let _ = app.update(Message::CloseMenu);
+    let _ = app.update(Message::ToggleMenu(Menu::Picker));
     let asked: Vec<bool> = sent(&mut app)
         .into_iter()
         .filter_map(|request| match request {
@@ -243,6 +249,54 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
         })
         .collect();
     assert_eq!(asked, [true, true], "each AI account again, closed models too");
+    let _ = app.update(Message::ToggleMenu(Menu::Picker));
+    assert!(sent(&mut app).is_empty(), "closing asks nothing");
+}
+
+/// Task S.26: a model a choice holds that is turned off – here the travel planner's – shows as
+/// turned off in the picker and the bot editor; the core answers with "Automatic" then.
+#[test]
+fn a_model_that_is_off_is_named_as_turned_off() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::NewBotChat(TRAVEL.into()));
+    let off = Choice { engine: OLLAMA.into(), model: Some("llama3.3:70b".into()) };
+    assert_eq!(app.choice.as_ref(), Some(&off), "the bot's model stays the choice");
+    assert!(app.turned_off(&off));
+    assert!(!app.turned_off(&Choice { engine: OLLAMA.into(), model: Some("qwen3:14b".into()) }), "on");
+    assert!(!app.turned_off(&Choice { engine: OLLAMA.into(), model: None }), "Automatic");
+    assert!(app.turned_off(&Choice { engine: OLLAMA.into(), model: Some("gone:1b".into()) }), "not listed");
+    let _ = app.update(Message::ToggleMenu(Menu::Picker));
+    settle(&mut app);
+    let _ = app.view();
+
+    let mut editor = started(&["--open", "bot-editor"]);
+    settle(&mut editor);
+    let draft = editor.bot_draft.as_ref().expect("the editor is open");
+    assert_eq!(draft.choice.as_ref(), Some(&off));
+    let _ = editor.update(Message::ToggleMenu(Menu::BotPicker));
+    settle(&mut editor);
+    let _ = editor.view();
+}
+
+/// Task S.26: AI accounts, but no model on at any – the core lists none as an engine: the welcome
+/// says so and leads to the accounts, not "No AI account yet".
+#[test]
+fn without_a_model_on_the_welcome_says_where_to_turn_one_on() {
+    let mut app = started(&["--open", "no-engines"]);
+    assert!(app.engines_loaded && app.engines.is_empty());
+    assert!(!app.no_model_on(), "the demo has no AI account then");
+    assert!(app.sent.is_empty(), "asked once, answered");
+    let _ = app.update(Message::AiAccounts(Ok(true)));
+    assert!(app.no_model_on());
+    let _ = app.view();
+    let _ = app.update(Message::ManageModels);
+    assert_eq!(app.sections, [ACCOUNTS_PAGE]);
+
+    // Once an AI account is an engine again, models are on.
+    let mut on = started(&[]);
+    assert!(on.ai_accounts && !on.no_model_on());
+    let asked: Vec<Request> = sent(&mut on);
+    assert!(!asked.iter().any(|request| matches!(request, Request::Accounts)), "nothing to ask: {asked:?}");
 }
 
 /// Issue #132: the mode picked under the composer goes with the message, a new chat starts with the
@@ -664,7 +718,8 @@ fn the_sidebar_opens_a_bots_chat_and_a_new_chat_goes_back_to_the_assistant() {
     assert_eq!((app.current.as_deref(), app.chat_bot()), (Some(BOT_CHAT), Some(TRAVEL)));
     let _ = app.update(Message::NewBotChat(TRAVEL.into()));
     assert_eq!((app.current.as_deref(), app.chat_bot()), (None, Some(TRAVEL)));
-    assert_eq!(app.choice, Some(Choice { engine: OLLAMA.into(), model: Some("qwen3:14b".into()) }), "the bot's engine");
+    let travel = Choice { engine: OLLAMA.into(), model: Some("llama3.3:70b".into()) };
+    assert_eq!(app.choice, Some(travel), "the bot's engine and model");
     let _ = app.update(Message::NewChat);
     assert_eq!(app.chat_bot(), None, "a new chat in the main window is the assistant's");
     let _ = app.update(Message::Select(BOT_CHAT.into()));

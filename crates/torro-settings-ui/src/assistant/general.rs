@@ -13,6 +13,13 @@
 //! its own models –, an AI account's models from
 //! `ai.list_models` ([`super::models_request`]); the effort only where the model takes one. Each
 //! chat can still pick another. Without any engine the group says where an AI account is added.
+//!
+//! **Only models turned on** (task S.26): "Model" offers an AI account's models that are turned on
+//! for the suite (`AiModel::enabled`) and ends with "Manage models…", which leads to the control
+//! centre's accounts, where they are switched. A stored model that is off stands on top with
+//! "Turned off in Settings › Accounts", because a new chat answers with "Automatic" then. With AI
+//! accounts but no model on anywhere – the core lists no engine then – the group says so
+//! ([`super::no_model_on`]).
 
 use iced::widget::{column, svg};
 use iced::{Element, Theme};
@@ -39,7 +46,8 @@ pub enum Message {
     /// A row of "New chats", "Model" or "Effort": the whole default as it is to be stored, so two
     /// windows never leave half of it behind; `None` for the one used last.
     Default(Option<AssistantDefault>),
-    /// "No AI account yet": the accounts of the control centre ([`AI_SECTION`]).
+    /// "No AI account yet", "No model is turned on" and "Manage models…": the accounts of the
+    /// control centre ([`AI_SECTION`]), where AI accounts are added and their models switched.
     Accounts,
 }
 
@@ -95,7 +103,8 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
         .filter(|default| data.engines.iter().any(|engine| engine.id == default.engine));
     let footer = tr("What a new chat starts with. Each chat can pick another.");
     if data.engines.is_empty() {
-        return vec![widgets::group(tr("New chats"), vec![no_engine_row()], Some(footer.to_string()))];
+        let row = if super::no_model_on(data) { no_model_row() } else { no_engine_row() };
+        return vec![widgets::group(tr("New chats"), vec![row], Some(footer.to_string()))];
     }
     let last = choice(tr("The one used last"), current.is_none(), Message::Default(None));
     let engines = data.engines.iter().map(|engine| {
@@ -109,11 +118,19 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
     let Some(default) = current else { return groups };
     let pick = |model: Option<String>| AssistantDefault { model, ..default.clone() };
     let automatic = choice(tr("Automatic"), default.model.is_none(), Message::Default(Some(pick(None))));
+    let off = default_turned_off(default, data);
     let rows = default_models(default, data).into_iter().map(|model| {
         let chosen = default.model.as_ref() == Some(&model.id);
-        choice(model.name, chosen, Message::Default(Some(pick(Some(model.id)))))
+        let message = Message::Default(Some(pick(Some(model.id))));
+        match chosen && off {
+            true => off_choice(model.name, message),
+            false => choice(model.name, chosen, message),
+        }
     });
-    groups.push(widgets::group(tr("Model"), std::iter::once(automatic).chain(rows).collect(), None));
+    // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
+    let manage = pressable(setting_row(None, tr("Manage models…"), None, arrow()), Some(Message::Accounts));
+    let rows = std::iter::once(automatic).chain(rows).chain([manage]).collect();
+    groups.push(widgets::group(tr("Model"), rows, None));
     if takes_effort(default, data) {
         let rows = std::iter::once(None)
             .chain(Effort::ALL.into_iter().map(Some))
@@ -135,6 +152,22 @@ fn no_engine_row<'a>() -> Element<'a, Message> {
     pressable(row, Some(Message::Accounts))
 }
 
+/// The row of "New chats" with AI accounts but no model on at any (task S.26): where models are
+/// turned on.
+fn no_model_row<'a>() -> Element<'a, Message> {
+    let detail = tr("Turn on models in Settings › Accounts.");
+    let row = setting_row(None, tr("No model is turned on"), Some(detail.to_string()), arrow());
+    pressable(row, Some(Message::Accounts))
+}
+
+/// The stored model that is turned off (task S.26), as a row of "Model": its name, why a new chat
+/// answers with "Automatic" instead, and the check of the stored choice.
+fn off_choice<'a>(name: String, on_press: Message) -> Element<'a, Message> {
+    let check = icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) });
+    let detail = tr("Turned off in Settings › Accounts").to_string();
+    pressable(setting_row(None, name, Some(detail), check), Some(on_press))
+}
+
 /// The arrow at the end of a row that leads to another window, as the section list has it
 /// ("Appearance ↗"): 16, `text_3`.
 fn arrow<'a, M: 'a>() -> Element<'a, M> {
@@ -146,32 +179,34 @@ fn arrow<'a, M: 'a>() -> Element<'a, M> {
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
 
 /// The models offered for the default's engine (issue #131): an agent's own, an AI account's that
-/// can call tools ([`Data::default_models`]); the stored model first when it is none of them (set
-/// in a chat, or closed weights), so its check shows.
+/// can call tools and are turned on (task S.26, [`Data::default_models`]); the stored model first
+/// when it is none of them (turned off, set in a chat, or gone from the server), so its check shows
+/// – with its name and what is known of it where the account still lists it.
 pub fn default_models(default: &AssistantDefault, data: &Data) -> Vec<AiModel> {
     let engine = data.engines.iter().find(|engine| engine.id == default.engine);
     let mut models: Vec<AiModel> = match engine.map(|engine| engine.kind) {
         Some(EngineKind::Agent) => engine.map(|engine| engine.models.clone()).unwrap_or_default(),
         Some(EngineKind::Ai) => {
-            data.default_models.iter().filter(|model| model.tools != Some(false)).cloned().collect()
+            data.default_models.iter().filter(|model| model.tools != Some(false) && model.enabled).cloned().collect()
         }
         Some(EngineKind::Test) | None => Vec::new(),
     };
     if let Some(stored) = default.model.as_ref().filter(|id| !models.iter().any(|model| &model.id == *id)) {
-        let named = AiModel {
-            id: stored.clone(),
-            name: stored.clone(),
-            tools: None,
-            open_weights: None,
-            context: None,
-            reasoning: None,
-            remote: None,
-            decision: None,
-            enabled: false,
-        };
-        models.insert(0, named);
+        let listed = data.default_models.iter().find(|model| &model.id == stored);
+        models.insert(0, listed.cloned().unwrap_or_else(|| AiModel::named(stored)));
     }
     models
+}
+
+/// Whether the default names a model of an AI account that is not turned on (task S.26): the
+/// account's models are in and have it off, or not at all. A new chat answers with "Automatic"
+/// then, which "Model" says beside it. `false` for "Automatic", an agent's model, and while the
+/// account's models are not in.
+pub fn default_turned_off(default: &AssistantDefault, data: &Data) -> bool {
+    let Some(model) = &default.model else { return false };
+    let ai = data.engines.iter().any(|engine| engine.id == default.engine && engine.kind == EngineKind::Ai);
+    ai && !data.default_models.is_empty()
+        && !data.default_models.iter().any(|known| &known.id == model && known.enabled)
 }
 
 /// Whether the default's model takes an effort (issue #131), as the chat decides it: an agent left
@@ -270,12 +305,55 @@ mod tests {
         assert_eq!(effort_label(None), tr("Automatic"));
     }
 
-    /// Without any engine the group says where an AI account is added (task S.25 brings `ai`).
+    /// Without any engine the group says where an AI account is added (there is no section `ai`,
+    /// issue #231).
     #[tokio::test]
     async fn without_an_engine_it_points_at_the_accounts() {
-        let data = Data { engines: Vec::new(), ..data().await };
+        let data = Data { engines: Vec::new(), accounts: Vec::new(), ..data().await };
+        assert!(!super::super::no_model_on(&data), "no AI account at all");
         let action = update(Message::Accounts, &data);
         assert!(matches!(action, Act::ControlCentre(ref section) if section == "accounts"), "{action:?}");
         let _ = view(&data);
+    }
+
+    /// Task S.26: "Model" offers only the models turned on; a stored model that is off is shown on
+    /// top as turned off, "Automatic" and a model that is on are not.
+    #[tokio::test]
+    async fn new_chats_offer_only_models_that_are_on() {
+        let mut data = data().await;
+        let stored = data.settings.assistant_default.clone().expect("the demo sets one");
+        assert!(data.default_models.iter().any(|model| model.id == "llama3.3:70b" && !model.enabled));
+        let ids: Vec<String> = default_models(&stored, &data).into_iter().map(|model| model.id).collect();
+        assert_eq!(ids, ["qwen3:8b"], "llama3.3:70b is off, nimble cannot use tools");
+        assert!(!default_turned_off(&stored, &data), "qwen3:8b is on");
+        assert!(!default_turned_off(&AssistantDefault { model: None, ..stored.clone() }, &data), "Automatic");
+
+        let off = AssistantDefault { model: Some("llama3.3:70b".into()), ..stored.clone() };
+        let ids: Vec<String> = default_models(&off, &data).into_iter().map(|model| model.id).collect();
+        assert_eq!(ids, ["llama3.3:70b", "qwen3:8b"], "the stored model stands on top");
+        assert!(default_turned_off(&off, &data));
+        let unknown = AssistantDefault { model: Some("gone:1b".into()), ..stored.clone() };
+        assert!(default_turned_off(&unknown, &data), "a model the account no longer lists is not on either");
+        data.settings.assistant_default = Some(off);
+        let _ = view(&data);
+        let action = update(Message::Accounts, &data);
+        assert!(matches!(action, Act::ControlCentre(ref section) if section == "accounts"), "Manage models…");
+
+        // Nothing known about the account's models yet: no claim that the model is off.
+        let unknown_list = Data { default_models: Vec::new(), ..data.clone() };
+        assert!(!default_turned_off(data.settings.assistant_default.as_ref().expect("set"), &unknown_list));
+    }
+
+    /// Task S.26: AI accounts but no model on at any – the core lists no engine – reads "No model
+    /// is turned on", not "No AI account yet", and leads to the accounts all the same.
+    #[tokio::test]
+    async fn with_ai_accounts_but_no_model_on_it_says_so() {
+        let data = Data { engines: Vec::new(), ..data().await };
+        assert!(data.accounts.iter().any(|account| account.kind == "ai"), "the demo has an AI account");
+        assert!(super::super::no_model_on(&data));
+        assert!(!super::super::no_model_on(&super::super::tests::data().await), "an engine: models are on");
+        let _ = view(&data);
+        let action = update(Message::Accounts, &data);
+        assert!(matches!(action, Act::ControlCentre(ref section) if section == "accounts"), "{action:?}");
     }
 }

@@ -582,7 +582,11 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (entfällt mit #231, ersetzt 
   1100, 500 und 360 px, hell und dunkel (Agent `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.26 Die Auswahlen der Module bieten nur angeschaltete Modelle
-- [ ] erledigt (geändert mit #210: Ort von New chats; mit #231: Verweise auf Accounts statt AI)
+- [x] erledigt (geändert mit #210: Ort von New chats; mit #231: Verweise auf Accounts statt AI. Die Auswahlen fragen
+  `ai.list_models` mit `all: true`, damit ein angeschaltetes geschlossenes Modell erscheint; „No model is turned on“
+  unterscheidet sich von „No AI account yet“ über `accounts.list_accounts`, weil der Kern Konten ohne angeschaltetes
+  Modell nicht als Engine nennt. Demo-Daten in `torroassistant/src/demo.rs` und `torro-settings-ui/src/demo.rs` mit
+  Schaltern. Sichtprüfung auf diesem Rechner nicht möglich: Bildschirm gesperrt, Aufnahmen schwarz.)
 - **Modell:** Sonnet · **Braucht:** S.24 · **Dateien:** `crates/torroworkplace/src/ui/assistant.rs` (bis S.21) und
   `crates/torro-settings-ui/src/assistant/` (sobald S.17 da ist), `crates/torro-settings-ui/src/mail.rs` (#231),
   `crates/torroassistant/src/view.rs`, `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app.rs`
