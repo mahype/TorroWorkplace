@@ -76,10 +76,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} h ago", "vor {n} Std."),
     ("{n} min ago", "vor {n} Min."),
     ("No accounts yet.", "Noch keine Konten."),
-    (
-        "No calendars or task lists yet. Use Sync now to fetch them from the server.",
-        "Noch keine Kalender oder Aufgabenlisten. Mit „Jetzt synchronisieren“ holst du sie vom Server.",
-    ),
     ("No home directory", "Kein Home-Verzeichnis"),
     ("Not running", "Läuft nicht"),
     ("Not set up", "Nicht eingerichtet"),
@@ -136,19 +132,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Applies to apps you open afterwards. “System” follows your system language.",
         "Gilt für Apps, die du danach öffnest. „System“ folgt der Systemsprache.",
     ),
-    ("Day, week, month and agenda", "Tag, Woche, Monat und Agenda"),
-    ("Installed", "Installiert"),
     ("Language", "Sprache"),
-    ("Lists, due dates and subtasks", "Listen, Fälligkeiten und Unteraufgaben"),
     ("Not installed", "Nicht installiert"),
     ("Open", "Öffnen"),
     ("Open link", "Link öffnen"),
-    (
-        "Opening an app brings its window to the front when it is already running.",
-        "Öffnen holt das Fenster einer bereits laufenden App nach vorn.",
-    ),
-    ("Suite apps", "Suite-Apps"),
-    ("Window class: {class}", "Fensterklasse: {class}"),
     ("Start at login", "Beim Anmelden starten"),
     (
         "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.",
@@ -860,7 +847,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Change a topic of the ntfy account {account}", "Ein Thema des ntfy-Kontos {account} ändern"),
     // Control centre: ntfy and inbox per account (E5.14)
-    ("Show notifications in the Notification Hub", "Benachrichtigungen in der Mitteilungszentrale zeigen"),
     ("From Nextcloud and its apps", "Von Nextcloud und seinen Apps"),
     ("Talk", "Talk"),
     ("Unread conversations and mentions", "Ungelesene Unterhaltungen und Erwähnungen"),
@@ -1152,20 +1138,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Kept {n} quiet since {day}", "{n} still gehalten seit {day}"),
     ("Nothing caught since {day}", "Nichts erfasst seit {day}"),
     ("today", "heute"),
-    (
-        "Rules appear here when you mute something with the bell, move notices to a lane for good or hide a sender in the Notification Hub.",
-        "Regeln erscheinen hier, wenn du in der Mitteilungszentrale etwas mit der Glocke stummschaltest, Hinweise dauerhaft einer Spur zuordnest oder einen Absender ausblendest.",
-    ),
-    (
-        "Entries are handled in the Notification Hub: mark them done, put them off for later, move them or mute them.",
-        "Einträge bearbeitest du in der Mitteilungszentrale: erledigen, auf später legen, verschieben oder stummschalten.",
-    ),
     // Window kinds everywhere, one word for later (E8.1b)
     ("Later until {time}", "Später bis {time}"),
     ("Later until", "Später bis"),
-    ("Your mail, from a quick look to a full client", "Deine Mail, vom schnellen Blick bis zum vollen Programm"),
-    ("What your apps report, one column per app", "Was deine Apps melden, eine Spalte je App"),
-    ("Decide, hand on and see where it all comes from", "Entscheiden, weitergeben und sehen, woher alles kommt"),
     // Tasks that keep their mail, in the windows (E8.7b)
     ("Open task", "Aufgabe öffnen"),
     ("Open mail", "Mail öffnen"),
@@ -1774,11 +1749,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("yesterday {time}", "gestern {time}"),
     ("{area} · each time with your approval", "{area} · jedes Mal mit deiner Freigabe"),
     ("Hook", "Hook"),
-    ("No agents connected", "Keine Agenten verbunden"),
-    (
-        "Choose Connect agent to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
-        "Wähle „Agent verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop oder Cursor einzurichten oder einen Schlüssel für ein Skript zu erstellen.",
-    ),
     (
         "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its Notification Hub hooks are removed too.",
         "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Agent verbinden“ sie eingerichtet hat, werden auch sein Konfigurationseintrag und seine Hooks für die Mitteilungszentrale entfernt.",
@@ -1857,20 +1827,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Rules", "Regeln"),
     (
-        "Rules appear here when you move notices to a lane for good, mute a source or hide a sender in the Notification Hub.",
-        "Regeln erscheinen hier, wenn du in der Mitteilungszentrale Meldungen dauerhaft in eine Spur verschiebst, eine Quelle stummschaltest oder einen Absender ausblendest.",
-    ),
-    (
         "Rules apply to new notices. Removing one leaves the entries in the Notification Hub as they are.",
         "Regeln gelten für neue Meldungen. Entfernen ändert nichts an den Einträgen in der Mitteilungszentrale.",
     ),
     ("Notices of {source} go to “{lane}”", "Meldungen von {source} landen in „{lane}“"),
     ("Remove", "Entfernen"),
-    ("App", "App"),
-    (
-        "Entries are handled in the Notification Hub: mark them done, snooze them, move them or mute their source.",
-        "Einträge bearbeitest du in der Mitteilungszentrale: erledigen, vertagen, verschieben oder ihre Quelle stummschalten.",
-    ),
     // Approvals: agents ask for permission (E2.5)
     (
         "{agent} wants to use {tool} in \"{project}\": {details}",
@@ -2372,7 +2333,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Server settings", "Servereinstellungen"),
     ("Server settings…", "Servereinstellungen …"),
-    ("Show new mail in the Notification Hub", "Neue E-Mails in der Mitteilungszentrale anzeigen"),
     ("Signature", "Signatur"),
     (
         "The draft changed after the approval was asked for. Nothing was sent; ask again.",
@@ -2940,7 +2900,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Conversations are deleted this long after their last message. Pinned ones are kept.",
         "Unterhaltungen werden so lange nach ihrer letzten Nachricht gelöscht. Angeheftete bleiben.",
     ),
-    ("Engines", "Antriebe"),
     ("Forever", "Für immer"),
     (
         "It chats with you and works in Torro Workplace with only what you allow here. You can change it any time.",
@@ -2954,10 +2913,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No AI account yet", "Noch kein KI-Konto"),
     ("Reads calendars, tasks and the Notification Hub", "Liest Kalender, Aufgaben und die Mitteilungszentrale"),
     ("Suggested", "Empfohlen"),
-    (
-        "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one set below.",
-        "Der Assistent antwortet mit den Modellen dieser Konten. Jeder Chat wählt eines; ein neuer Chat beginnt mit dem unten eingestellten.",
-    ),
     // Assistant: tool lines in a read-only conversation (issue #132)
     ("Read only in this conversation", "In dieser Unterhaltung nur lesend"),
     // Assistant: new chats, model and effort (issue #131)
@@ -3191,7 +3146,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Installed something?", "Etwas installiert?"),
     ("Listening for “Hey Torro”", "Hört auf „Hey Torro“"),
     ("Listening…", "Hört zu …"),
-    ("Looking for the programs …", "Suche die Programme …"),
     ("Microphone", "Mikrofon"),
     ("Mute microphone", "Mikrofon stummschalten"),
     ("Nothing understood. Speak a little louder or closer.", "Nichts verstanden. Sprich etwas lauter oder näher."),
@@ -3405,10 +3359,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Bot", "Bot"),
     ("Bot deleted", "Bot gelöscht"),
     ("Bot saved", "Bot gespeichert"),
-    (
-        "Bots are assistants for one field, each with rights of its own. A new bot may use nothing until you allow it here.",
-        "Bots sind Assistenten für ein Gebiet, jeder mit eigenen Rechten. Ein neuer Bot darf nichts, bis du es hier erlaubst.",
-    ),
     ("Couldn't confirm the bot.", "Der Bot konnte nicht bestätigt werden."),
     ("Couldn't delete the bot.", "Der Bot konnte nicht gelöscht werden."),
     ("Couldn't open the bot.", "Der Bot konnte nicht geöffnet werden."),
@@ -3428,22 +3378,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Wie der Bot spricht und sich verhält. Das ändert nie, was er nutzen darf, und die Regeln von Torro Workplace gehen immer vor.",
     ),
     ("Instructions", "Anweisungen"),
-    ("It was deleted, and its access with it.", "Er wurde gelöscht, sein Zugriff mit ihm."),
     (
         "It was deleted. Its conversations stay in the assistant's list.",
         "Er wurde gelöscht. Seine Unterhaltungen bleiben in der Liste des Assistenten.",
     ),
-    (
-        "Its profile, instructions and skills are edited in the assistant.",
-        "Profil, Anweisungen und Fähigkeiten bearbeitest du im Assistenten.",
-    ),
     ("Lets the agent act with a bot's rights.", "Lässt den Agenten mit den Rechten eines Bots handeln."),
     ("Looked up bots", "Bots nachgesehen"),
     ("Looked up its access", "Eigene Rechte nachgesehen"),
-    ("Make one in the assistant app with New bot.", "Leg einen in der Assistenten-App mit „Neuer Bot“ an."),
     ("Name of the bot", "Name des Bots"),
     ("New bot", "Neuer Bot"),
-    ("No access set up", "Kein Zugriff eingerichtet"),
     ("No bots yet", "Noch keine Bots"),
     ("Open chat", "Chat öffnen"),
     ("Pack light: one bag, layers and a rain jacket.", "Leicht packen: eine Tasche, Schichten und eine Regenjacke."),
@@ -3454,10 +3397,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Release helper", "Release-Helfer"),
     ("Release notes", "Release Notes"),
     ("Remove skill", "Fähigkeit entfernen"),
-    (
-        "Save the bot once in the assistant. It then starts with access to nothing.",
-        "Speichere den Bot einmal im Assistenten. Er beginnt dann ohne Zugriff.",
-    ),
     (
         "Should I take the train or the plane to Vienna next week?",
         "Soll ich nächste Woche mit dem Zug oder dem Flugzeug nach Wien?",
@@ -3627,11 +3566,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("sending: never", "Senden: nie"),
     ("sending: asks each time", "Senden: fragt jedes Mal"),
     ("sending: always", "Senden: immer"),
-    (
-        "Couldn't read the bot's access. You can set it in Torro Workplace.",
-        "Der Zugriff des Bots konnte nicht gelesen werden. Du kannst ihn in Torro Workplace festlegen.",
-    ),
-    ("More in Torro Workplace…", "Mehr in Torro Workplace…"),
     ("mutes sources", "schaltet Quellen stumm"),
     ("connects accounts", "verbindet Konten"),
     ("changes settings", "ändert Einstellungen"),
@@ -3639,10 +3573,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
         "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
-    ),
-    (
-        "Bot saved, but its access couldn't be set.",
-        "Bot gespeichert, aber sein Zugriff konnte nicht festgelegt werden.",
     ),
     // Inbox: AI task and AI event (issue #120)
     ("AI event", "KI-Termin"),
@@ -3734,10 +3664,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Shows a notification instead while an event with a call link runs",
         "Zeigt stattdessen eine Benachrichtigung, solange ein Termin mit Anruf-Link läuft",
     ),
-    (
-        "“Full screen” covers the screen until you react. Use it for calendars you must not miss.",
-        "„Vollbild“ deckt den Bildschirm ab, bis du reagierst. Nimm es für Kalender, die du nicht verpassen darfst.",
-    ),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),
@@ -3787,4 +3713,99 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{title} · in {n} min", "{title} · in {n} Min."),
     ("{title} · now", "{title} · jetzt"),
     ("{title} · started {n} min ago", "{title} · hat vor {n} Min. begonnen"),
+    // Settings in the windows of the apps, slim control centre (S.16-S.21, #210)
+    ("Close settings", "Einstellungen schließen"),
+    ("History", "Verlauf"),
+    ("Turn on in Torro Workplace", "In Torro Workplace einschalten"),
+    ("Change in Torro Workplace", "In Torro Workplace ändern"),
+    (
+        "Turning the assistant on or off, and what it may use, stay in Torro Workplace: its key is kept there.",
+        "Den Assistenten ein- und ausschalten und festlegen, was er nutzen darf, bleibt in Torro Workplace: Dort liegt sein Schlüssel.",
+    ),
+    (
+        "These settings are ready once you turn it on under General.",
+        "Diese Einstellungen stehen bereit, sobald du ihn unter Allgemein einschaltest.",
+    ),
+    ("Make one with New bot in the sidebar.", "Leg in der Seitenleiste mit „Neuer Bot“ einen an."),
+    (
+        "Bots are assistants for one field, each with rights of its own. A new bot may use nothing until you allow it in Torro Workplace.",
+        "Bots sind Assistenten für ein Gebiet, jeder mit eigenen Rechten. Ein neuer Bot darf nichts, bis du es in Torro Workplace erlaubst.",
+    ),
+    (
+        "Save the bot first; until then it may use nothing.",
+        "Speichere den Bot zuerst; bis dahin darf er nichts nutzen.",
+    ),
+    ("No calendars", "Keine Kalender"),
+    ("Calendars appear here once an account has one.", "Kalender erscheinen hier, sobald ein Konto einen hat."),
+    ("No lists", "Keine Listen"),
+    ("Lists appear here once an account has one.", "Listen erscheinen hier, sobald ein Konto eine hat."),
+    (
+        "Choose which kinds of events may remind you, whatever their own reminder says.",
+        "Wähle, welche Art von Terminen überhaupt erinnern darf, unabhängig von der eigenen Erinnerung des Termins.",
+    ),
+    ("No sources", "Keine Quellen"),
+    (
+        "Sources appear here once an account brings notifications or mail.",
+        "Quellen erscheinen hier, sobald ein Konto Benachrichtigungen oder E-Mails bringt.",
+    ),
+    (
+        "A muted source brings nothing new; what is already in the Notification Hub stays.",
+        "Eine stumme Quelle bringt nichts Neues; was schon in der Mitteilungszentrale steht, bleibt.",
+    ),
+    ("Every topic of this server", "Jedes Thema dieses Servers"),
+    ("Show new mail", "Neue E-Mails zeigen"),
+    (
+        "Muting takes the whole server, not one topic. Topics and their labels stay with the account in Torro Workplace.",
+        "Stumm gilt für den ganzen Server, nicht für ein Thema. Themen und ihre Etiketten bleiben beim Konto in Torro Workplace.",
+    ),
+    ("No rules", "Keine Regeln"),
+    (
+        "A rule appears here when you mute something with the bell, move notices to a lane for good or hide a sender.",
+        "Eine Regel erscheint hier, wenn du etwas mit der Glocke stummschaltest, Hinweise dauerhaft einer Spur zuordnest oder einen Absender ausblendest.",
+    ),
+    ("Reading", "Lesen"),
+    (
+        "Add a mail account in Torro Workplace, under Accounts.",
+        "Füge in Torro Workplace unter Konten ein E-Mail-Konto hinzu.",
+    ),
+    (
+        "The name and signature of each account, and how its mail is written.",
+        "Name und Signatur jedes Kontos, und wie seine E-Mails geschrieben werden.",
+    ),
+    ("All rules in the Notification Hub", "Alle Regeln in der Mitteilungszentrale"),
+    ("Connect program", "Programm verbinden"),
+    ("No programs connected", "Keine Programme verbunden"),
+    (
+        "Choose Connect program to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
+        "Wähle „Programm verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop oder Cursor einzurichten oder einen Schlüssel für ein Skript zu erstellen.",
+    ),
+    (
+        "The assistant chats with you and works in Torro Workplace with only what you allow it here.",
+        "Der Assistent unterhält sich mit dir und arbeitet in Torro Workplace nur mit dem, was du ihm hier erlaubst.",
+    ),
+    ("Take access away…", "Zugriff entziehen…"),
+    ("Take away", "Entziehen"),
+    (
+        "Its settings are behind the gear in its window.",
+        "Seine Einstellungen stehen hinter dem Zahnrad in seinem Fenster.",
+    ),
+    (
+        "Calendars and lists are chosen in Calendar and Tasks, under the gear.",
+        "Kalender und Listen wählst du in Kalender und Aufgaben, unter dem Zahnrad.",
+    ),
+    (
+        "What this account sends to the Notification Hub is switched on there, under the gear.",
+        "Was dieses Konto an die Mitteilungszentrale schickt, schaltest du dort unter dem Zahnrad an.",
+    ),
+    ("Sender name and signature", "Absendername und Signatur"),
+    (
+        "Sender name, signature, how new mail is written and which folder holds what are set in Mail, under the gear.",
+        "Absendername, Signatur, wie neue E-Mails geschrieben werden und welcher Ordner was enthält, stellst du in E-Mail unter dem Zahnrad ein.",
+    ),
+    ("New mail", "Neue E-Mails"),
+    (
+        "Whether new mail of this account shows up there is set in the Notification Hub, under the gear.",
+        "Ob neue E-Mails dieses Kontos dort auftauchen, stellst du in der Mitteilungszentrale unter dem Zahnrad ein.",
+    ),
+    ("Open Mail", "E-Mail öffnen"),
 ];

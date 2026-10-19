@@ -14,14 +14,14 @@
 //! 2026-10-18 on open question 3 of `docs/settings.md`): this section is the suite-wide, lasting
 //! choice behind the gear, not a replacement for them.
 
-use iced::widget::{column, row, toggler};
-use iced::{Alignment, Element};
+use iced::widget::{column, container, responsive, row, toggler};
+use iced::{Alignment, Element, Fill, Length};
 
 use torro_core::i18n::tr;
 use torro_core::settings::CalendarReminders;
 use torro_gui::theme::space;
 use torro_gui::widgets;
-use torro_gui::{layout, style};
+use torro_gui::{layout, style, typo};
 use torro_ipc::{AccountInfo, Request, SettingKey};
 
 use crate::parts::setting_row;
@@ -63,16 +63,22 @@ pub fn update<A>(message: Message) -> Action<A> {
     }
 }
 
+/// The page in the width it gets: a calendar's reminder kind stands beside its name only while
+/// the name still fits there ([`one_line`]).
+pub fn page(data: &Data, role: Role) -> Element<'_, Message> {
+    responsive(move |size| page_in(data, role, one_line(data, role, size.width))).height(Length::Shrink).into()
+}
+
 /// The page: one group per connected account that owns a collection of `role`, each row a switch
 /// (and, for a shown calendar, its reminder kind); a quiet hint while none does.
-pub fn page(data: &Data, role: Role) -> Element<'_, Message> {
+fn page_in(data: &Data, role: Role, one_line: bool) -> Element<'_, Message> {
     let footer = tr("Hidden calendars and lists stay on the server; the apps just don't show them.");
     let groups: Vec<(&str, Vec<Element<'_, Message>>)> = data
         .accounts
         .iter()
         .filter(|account| !account.id.is_empty())
         .filter_map(|account| {
-            let rows = rows_of(account, data, role);
+            let rows = rows_of(account, data, role, one_line);
             (!rows.is_empty()).then_some((account.label.as_str(), rows))
         })
         .collect();
@@ -92,8 +98,8 @@ pub fn page(data: &Data, role: Role) -> Element<'_, Message> {
 }
 
 /// One account's rows: its collections that fit `role`, a switch each and, shown and a calendar,
-/// the segmented reminder kind beside it.
-fn rows_of<'a>(account: &'a AccountInfo, data: &'a Data, role: Role) -> Vec<Element<'a, Message>> {
+/// the segmented reminder kind – beside the name with `one_line`, else under it ([`stacked_row`]).
+fn rows_of<'a>(account: &'a AccountInfo, data: &'a Data, role: Role, one_line: bool) -> Vec<Element<'a, Message>> {
     account
         .collections
         .iter()
@@ -109,18 +115,62 @@ fn rows_of<'a>(account: &'a AccountInfo, data: &'a Data, role: Role) -> Vec<Elem
                 .style(style::toggler)
                 .on_toggle(move |shown| Message::Shown { collection: id.clone(), shown });
             let dot = widgets::color_dot(widgets::collection_color(collection.color.as_deref()), space::s());
-            let control: Element<'a, Message> = if role == Role::Calendar && shown {
-                let active = data.settings.reminders.calendar(&collection.id);
-                row![switch, reminder_control(&collection.id, active)]
-                    .spacing(space::m())
-                    .align_y(Alignment::Center)
-                    .into()
-            } else {
-                switch.into()
-            };
-            setting_row(Some(dot), collection.name.as_str(), None, control)
+            let kind = (role == Role::Calendar && shown)
+                .then(|| reminder_control(&collection.id, data.settings.reminders.calendar(&collection.id)));
+            match (kind, one_line) {
+                (Some(kind), false) => stacked_row(dot, collection.name.as_str(), switch.into(), kind),
+                (Some(kind), true) => {
+                    let control = row![switch, kind].spacing(space::m()).align_y(Alignment::Center);
+                    setting_row(Some(dot), collection.name.as_str(), None, control)
+                }
+                (None, _) => setting_row(Some(dot), collection.name.as_str(), None, switch),
+            }
         })
         .collect()
+}
+
+/// A calendar's row where the reminder kind does not fit beside the name: dot, name and switch on
+/// the first line, the segmented control on its own under them. The metrics are those of
+/// `widgets::segment_row` without a column – 12 above and below, 16 at the sides, 8 between – so a
+/// narrow settings page looks the same wherever rights or reminders are set.
+fn stacked_row<'a>(
+    dot: Element<'a, Message>,
+    name: &'a str,
+    switch: Element<'a, Message>,
+    kind: Element<'a, Message>,
+) -> Element<'a, Message> {
+    // The name wraps instead of being cut: a line of its own leaves room for it, and the row is
+    // already as tall as two lines.
+    let head =
+        row![dot, typo::text(typo::body(), name).width(Fill), switch].spacing(space::m()).align_y(Alignment::Center);
+    container(column![head, kind].spacing(space::s())).width(Fill).padding([space::m(), space::l()]).into()
+}
+
+/// Whether a calendar's row keeps name, switch and reminder kind on one line in a page `width`
+/// wide: only while the longest name still fits beside them (`widgets::segment_column`, which
+/// reckons with the 16 at both sides and before the control). At 360 px it did not, and the name
+/// vanished altogether – the design review of task S.22 found it. Rows without a reminder kind
+/// (task lists, hidden calendars) always keep their one line.
+fn one_line(data: &Data, role: Role, width: f32) -> bool {
+    if role != Role::Calendar {
+        return true;
+    }
+    let names = data.accounts.iter().flat_map(|account| {
+        account
+            .collections
+            .iter()
+            .filter(|collection| collection.kind.has_events())
+            .filter(|collection| !data.settings.hidden_collections.contains(&collection.id))
+            .map(|collection| (collection.name.as_str(), None))
+    });
+    widgets::segment_column(reminder_slot(), names, width).is_some()
+}
+
+/// What a shown calendar's row needs beside its name: the colour dot and its gap, the switch (as
+/// wide as two of its height, the way Iced draws a toggler) and the segmented reminder kind.
+fn reminder_slot() -> f32 {
+    let labels = [tr("Off"), tr("Notification"), tr("Full screen")];
+    space::s() + space::m() + 2.0 * style::CHECK_SIZE + space::m() + widgets::segmented_width(&labels)
 }
 
 /// The reminder kind of a shown calendar: Off, Notification, Full screen, as a segmented control.

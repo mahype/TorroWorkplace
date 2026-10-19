@@ -278,11 +278,20 @@ mod tests {
     /// Nothing in this library may talk to the daemon itself: the host and the sections only speak
     /// through [`Backend`], so `--demo` cannot reach a socket. A section that needs a request asks
     /// the host for it (task S.16).
+    ///
+    /// Every way into the socket is watched, not only the plain one: `InboxClient` and `PimClient`
+    /// call it inside, and `socket_path` is the path itself (found in the API review of task S.22).
     #[test]
     fn no_source_file_speaks_to_the_socket() {
         // Spelled in pieces: the scan reads this file too, and the words below are what it looks
         // for, not something it should find.
-        let forbidden = [["client", "::call"].concat(), ["torro_ipc::", "client"].concat()];
+        let forbidden = [
+            ["client", "::call"].concat(),
+            ["torro_ipc::", "client"].concat(),
+            ["Inbox", "Client"].concat(),
+            ["Pim", "Client"].concat(),
+            ["socket", "_path"].concat(),
+        ];
         let mut found = Vec::new();
         visit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut |file: &Path, text: &str| {
             for line in code_of(text) {

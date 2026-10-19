@@ -80,9 +80,9 @@ Agenten im Terminal.
   Mail-Konten, Kalender, Listen, Quellen des Eingangs, Repositories). Vorlagen wie bei jedem Client
   (*Read only*, *Read and write*, *Full access*); vorausgewählt ist nur *Read only* für
   Kalender, Aufgaben und Eingang.
-- **Ändern jederzeit** in Steuerzentrale › Assistant („What the assistant may use“), dieselbe
-  Ansicht wie die Rechte eines Clients in Agents & API, und aus dem Chat heraus über einen Hinweis
-  „The assistant has no access to Mail. Change…“, wenn ein Werkzeug `forbidden` meldet. Wirkt ab der
+- **Ändern jederzeit** in Steuerzentrale › Agents & API beim Assistenten („What the assistant may
+  use“), dieselbe Ansicht wie die Rechte jedes anderen Programms, und aus dem Chat heraus über
+  einen Hinweis „The assistant has no access to Mail. Change…“, wenn ein Werkzeug `forbidden` meldet. Wirkt ab der
   nächsten Anfrage, auch mitten in einer Unterhaltung.
 - **Je Unterhaltung enger, nie weiter:** Im Eingabefeld lassen sich Bereiche für diese Unterhaltung
   abschalten („without Mail“). Mehr als die Einstellung geht nicht.
@@ -125,15 +125,16 @@ soweit freigegeben).
 
 - **Profil:** Name (Standard „Torro“), Bild/Symbol, kurze Beschreibung („Your assistant for this
   computer“), **Persönlichkeit** als freier Text in einer Datei (`<config>/assistant/persona.md`):
-  Ton (knapp, locker, förmlich), Haltung (fragt nach oder handelt), Eigenheiten. Die Steuerzentrale
-  bietet ein paar Vorlagen als Start, danach frei änderbar.
+  Ton (knapp, locker, förmlich), Haltung (fragt nach oder handelt), Eigenheiten. Die Einstellungen
+  des Assistenten (Zahnrad › Profile) bieten ein paar Vorlagen als Start, danach frei änderbar.
 - **Weckwort und Stimme** gehören zum Profil („Hey Torro“ passt zum Namen).
 - **Grenzen der Persönlichkeit:** Sie ändert Ton und Verhalten, nie Rechte oder Regeln. Der feste
   Teil des Prompts (Mail ist `untrusted`, vor großen Änderungen fragen, Freigaben) steht **nach**
   der Persönlichkeit und gewinnt bei Widersprüchen.
 - **Gedächtnis** (entschieden, Stufe 1): Notizen, die der Assistent sich auf Wunsch merkt
   („Anna ist meine Kollegin aus dem Vertrieb“), als lesbare Datei `<config>/assistant/memory.md`,
-  in der Steuerzentrale einsehbar, änderbar und löschbar. Nichts wird heimlich gemerkt.
+  in den Einstellungen des Assistenten (Zahnrad › Profile › Memory) einsehbar, änderbar und
+  löschbar. Nichts wird heimlich gemerkt.
   Hat die Unterhaltung fremde Daten gelesen (Mail, GitHub, Einträge von Agenten und Skripten), braucht jede
   neue Notiz eine Freigabe, damit kein Text von außen unbemerkt in den Prompt gelangt; Notizen, die ein lokales
   Modell nach dem Lesen von Mail anlegt, bleiben „Nur auf diesem Computer“ (C.10, C.11).
@@ -160,12 +161,12 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
   nie mehr als seine eigenen Rechte.
 - **Keine Ketten:** Ein Bot kann keine weiteren Bots fragen (Tiefe 1), damit nichts im Kreis läuft
   und man jeden Schritt nachvollziehen kann.
-- **Anlegen:** in der App oder der Steuerzentrale. Der Hauptbot kann einen Bot **vorschlagen**
+- **Anlegen:** in der App des Assistenten. Der Hauptbot kann einen Bot **vorschlagen**
   (Name, Beschreibung, Persönlichkeit, Anweisungen), ein neuer Bot hat aber keine Rechte, bis der
   Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Wer einen Bot selbst anlegt, vergibt
   die Rechte gleich im Bot-Editor (Abschnitt „Access“: Stufe je Bereich und „Ask first“, B.5);
   welche Kalender, Konten und Repositories, Senden und Admin-Befehle stellt man in der
-  Steuerzentrale ein.
+  Steuerzentrale unter Agents & API bei diesem Bot ein.
 - **Später:** Bots als Paket weitergeben (nur Daten: Profil, Anweisungen, Skills, verlangte
   Rechte), passend zu den Erweiterungen ([erweiterungen.md](erweiterungen.md), Punkt 5).
 
@@ -314,7 +315,8 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 | **Sprache → Text** | whisper.cpp bzw. faster-whisper (Modell wählbar nach Rechner) | optional über ein KI-Konto, wenn die Person es erlaubt |
 | **Text → Sprache** | Piper (offene Stimmen, auch Deutsch) | abschaltbar, dann nur Fenster |
 
-- **Standard aus.** Einschalten nur in der Steuerzentrale, mit Wahl des Mikrofons und Test.
+- **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
+  Wahl des Mikrofons und Test.
 - **Immer sichtbar:** Solange das Weckwort-Lauschen an ist, zeigt das Tray-Symbol das; während der
   Aufnahme deutlich (Punkt im Tray, Ton beim Start und Ende). Ein Kürzel schaltet sofort stumm.
 - **Kein Lauschen durch Agenten:** Mikrofon an- oder ausschalten ist ein Schalter des Menschen. Kein
@@ -328,7 +330,7 @@ Open First gilt auch hier, und das Mikrofon verlässt den Rechner nie, solange n
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Sprache an/aus, Weckwort, Mikrofon, Stimme | Steuerzentrale › Assistant › Voice, Tray | `settings.set_setting` · Admin | **Never** für das Einschalten des Mikrofons (Punkt 6); Stimme und Weckwort über `settings_set_setting` |
+| Sprache an/aus, Weckwort, Mikrofon, Stimme | Assistent › Einstellungen › Voice, Tray | `settings.set_setting` · Admin | **Never** für das Einschalten des Mikrofons (Punkt 6); Stimme und Weckwort über `settings_set_setting` |
 | Gesprochene Nachricht | Schnellfenster | `assistant.send_message` (gibt es dann) | ebenso |
 
 ## Wo die Logik liegt
@@ -358,18 +360,18 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
 | Unterhaltung löschen | Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
-| Standard-Antrieb, Aufbewahrung | Steuerzentrale › Assistant | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |
-| Rechte des Assistenten | Steuerzentrale › Assistant, erster Start | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
+| Standard-Antrieb, Aufbewahrung | Assistent › Einstellungen › General bzw. History | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |
+| Rechte des Assistenten | Steuerzentrale › Agents & API (beim Assistenten), erster Start | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
 | Bereiche je Unterhaltung abschalten | Eingabefeld | Feld `without` in `assistant.send_message` | ebenso |
-| Profil und Persönlichkeit lesen | Steuerzentrale › Assistant › Profile | `assistant.get_profile` · Read | `assistant_get_profile` |
+| Profil und Persönlichkeit lesen | Assistent › Einstellungen › Profile | `assistant.get_profile` · Read | `assistant_get_profile` |
 | Profil und Persönlichkeit ändern | ebenda | `assistant.update_profile` · Admin (mit Freigabe) | `assistant_update_profile` |
 | Gedächtnis lesen / ergänzen / löschen | ebenda › Memory; im Chat „Remember …“ | `assistant.list_memories` · Read, `assistant.remember` · Write, `assistant.forget` · Delete | `assistant_list_memories`, `assistant_remember`, `assistant_forget` |
-| Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Agents & API bzw. Assistant | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
+| Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Agents & API | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
 | **Stufe 2:** Bot anlegen/ändern (ohne Rechte) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
 | **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
-| **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in der Steuerzentrale › Assistant › Bots | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
+| **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in der Steuerzentrale › Agents & API bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
 | Freigabe im Chat entscheiden | Karte „Allow“/„Deny“, auf Entwurfs- und Eintragskarten „Send“/„Discard“ bzw. „Delete“/„Keep“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Einträge als Karten zeigen | Karten im Verlauf | `assistant.show_items` · Write (nur Kennungen aus dieser Unterhaltung, max. 10) | `assistant_show_items` |
 | Karten einer Unterhaltung auflösen | Karten im Verlauf | `assistant.get_cards` · Read (mit den Rechten des Assistenten) | `assistant_get_cards` |

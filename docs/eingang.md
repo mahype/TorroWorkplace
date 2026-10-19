@@ -139,8 +139,8 @@ Mail davon wird kein Eintrag, offene und vertagte passende Einträge werden erle
 bleibt **unverändert** im Postfach, nicht gelesen, nicht verschoben – anders als „erledigt“, das
 die Mail als gelesen markiert. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains); die
 Regel gilt für **alle** Mail-Konten (E3.11), auch Regeln, die vorher für ein Konto angelegt wurden.
-Die Regeln stehen in der Steuerzentrale › Notification Hub › Rules („Hidden: news@shop.example“, „Hidden:
-everything from shop.example“, darunter „All mail accounts“) mit „Remove“.
+Die Regeln stehen im Fenster des Notification Hub unter Einstellungen › Rules („Hidden: news@shop.example“,
+„Hidden: everything from shop.example“, darunter „All mail accounts“) mit „Remove“.
 
 **Rückgängig (E3.11):** Nach Done, Later und Hide erscheint unten mittig ein Hinweis
 (`widgets::toast`) mit „Undo“; er verschwindet nach 5 s oder mit `Escape`. `u` in der Liste und
@@ -262,11 +262,11 @@ weder Mail noch Slack).
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
 | Quelle stummschalten | Menü „Hide from Notification Hub“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
 | Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from Notification Hub“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
-| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from Notification Hub“ (`m`, „…“ im Paneel), Steuerzentrale › Notification Hub › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
+| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from Notification Hub“ (`m`, „…“ im Paneel), Notification Hub › Einstellungen › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
 | Rückgängig nach Done, Later, Hide (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
 | Verwerfen, nur Benachrichtigungen (E8.4) | ✕ oben rechts auf der Karte | vorhandenes `inbox.set_item_done` · Write | `inbox_set_item_done` |
 | Was sich an einem Eintrag stummschalten lässt (E8.6a) | Glocke auf der Karte öffnet das Menü | `inbox.list_mute_options` · Read | `inbox_list_mute_options` |
-| Stummschalten nach Merkmal, für eine Zeit (E8.6a) | Menü der Glocke, Steuerzentrale › Notification Hub › Rules | `inbox.mute_item` · Write nur für die Unterhaltung, sonst Admin | `inbox_mute_item` |
+| Stummschalten nach Merkmal, für eine Zeit (E8.6a) | Menü der Glocke, Notification Hub › Einstellungen › Rules | `inbox.mute_item` · Write nur für die Unterhaltung, sonst Admin | `inbox_mute_item` |
 | Aufgabe aus einer Mail in einem Ordner (E8.7a) | „Task“ im Mail-Fenster | `tasks.create_todo_from_mail` · Write (prüft auch Leserecht auf das Konto) | `tasks_create_todo_from_mail` |
 | Mail bzw. Aufgabe des Rückbezugs öffnen (E8.7a) | „Open mail“, „Open task“ | `apps.open_app` mit `target` · wie bisher | `apps_open_app` |
 | Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
@@ -427,8 +427,10 @@ Welche Merkmale eine Quelle mitbringt, und damit, wonach sich verlässlich stumm
 | Agenten | Agent, Projekt, Art (wartet, fertig) |
 | Mitgelesene Desktop-Benachrichtigungen (WhatsApp und andere) | **nur** App, Titel (Chat oder Person) und Text, also grober |
 
-Freigaben und Einträge der Suite lassen sich nie stummschalten (Sicherheitsregel 1). Alle Regeln stehen in der
-Steuerzentrale › Notification Hub › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab.
+Freigaben und Einträge der Suite lassen sich nie stummschalten (Sicherheitsregel 1). Alle Regeln stehen im Fenster
+des Notification Hub unter Einstellungen › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab. „All rules“
+im Menü der Glocke führt dorthin – im Mail-Fenster, das keine Rules hat, holt es das Fenster des Notification Hub
+nach vorn (S.20).
 
 **Kern (E8.6a, umgesetzt):** Der Dienst setzt die Merkmale beim Melden (`Item.facets`, nie vom Absender): Mail
 Konto, Absender, Domain, Liste (`List-Id`), Massenmail; Agenten Agent, Projekt (nur von Hooks), Art; Skripte der

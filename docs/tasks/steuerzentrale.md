@@ -385,7 +385,20 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   der Einrichtung; Sichtprüfung `--demo` bei 1100, 500 und 360 px; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.22 Abschluss
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (2026-10-19: 40 Übersetzungen eingetragen, 32 verwaiste Einträge entfernt; `docs/settings.md`
+  datiert den Bestand als Stand vor Stufe 2 und nennt den gebauten; offene Frage 2 beantwortet („Connect program“),
+  offene Frage 3 bleibt offen. Sichtprüfung auf macOS über Iceds `window::screenshot` mit einem nicht committeten
+  Wegwerf-Patch, 78 Bilder bei 1100/500/360 px hell und dunkel. Behoben: `parts::setting_row` kürzt mit „…“ und
+  Tooltip statt hart abzuschneiden, und im Kalender rückt die Erinnerungsart unter den Namen, sobald er sonst
+  verschwindet (`collections.rs`); dazu der Hinweis der API-Prüfung, dass der Socket-Wächter von
+  `torro-settings-ui` auch `InboxClient`, `PimClient` und `socket_path` kennen muss.
+  **Offen, je ein eigenes Issue wert:** Kopfleiste und Seiteninhalt liegen nicht auf einer Achse (Shell, gilt für
+  alle Apps); eine Zeile mit Marke rückt gegen ihre Nachbarn ein (`parts::setting_row` kennt die Gruppe nicht);
+  Name und Fehlergründe eines unbrauchbaren Design-Pakets mit zu wenig Kontrast und Fachjargon (`ui/general.rs`,
+  aus L.4); zwei sichtbare Aktionen je Zeile unter General › Apps (so im Konzept verlangt, dem Design-Skill
+  entgegen); der App Feed zeigt die Texte des Notification Hub (eine `SECTIONS` für beide Fensterarten, S.20);
+  gerade Anführungszeichen in „Only "For me"“ (aus E4.1). Der leere `text_editor` des Bot-Editors aus S.18 war
+  an diesen Bildern nicht prüfbar: Die Unterseite hat kein `--settings`-Wort.)
 - **Modell:** Opus · **Dateien:** `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`, `docs/assistent.md`,
   `docs/eingang.md`, `docs/einrichtung.md`
 - Übersetzungen eintragen (`crates/torro-core/src/i18n/de.rs`), `docs/settings.md` an den gebauten Stand anpassen,

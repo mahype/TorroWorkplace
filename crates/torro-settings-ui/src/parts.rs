@@ -18,9 +18,12 @@ use torro_gui::{style, typo, widgets};
 
 /// A row of a settings group (`widgets::group`) with the metrics of `widgets::group_row` – 44
 /// high, 56 with a `detail`, 16 at the sides, 16 before the `control` – plus an optional `mark`
-/// in front (a status or calendar dot) and label and detail on one line each, clipped instead of
-/// wrapped, so a long account name never breaks the row. The label takes the text colour of a
-/// surrounding button ([`pressable`]); the detail is `META` in `text_2`.
+/// in front (a status or calendar dot) and label and detail on one line each, so a long account
+/// name never breaks the row. A line too long for its room is cut with "…" and shows the whole
+/// text as a tooltip (`widgets::ellipsized`, task S.22): `BODY` in `text` for the label, `META` in
+/// `text_2` for the detail. Both colours are set explicitly, because a surrounding button
+/// ([`pressable`]) would otherwise hand the text its own – so a row of a *disabled* button does
+/// not fade; no page builds one, and `ui/general.rs` draws its unusable design packs itself.
 pub fn setting_row<'a, M: 'a>(
     mark: Option<Element<'a, M>>,
     label: impl IntoFragment<'a>,
@@ -28,9 +31,9 @@ pub fn setting_row<'a, M: 'a>(
     control: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
     let tall = detail.is_some();
-    let mut lines = column![one_line(typo::text(typo::body(), label))];
+    let mut lines = column![widgets::ellipsized(typo::body(), label, theme::text)];
     if let Some(detail) = detail {
-        lines = lines.push(one_line(typo::text(typo::meta(), detail).style(theme::text_2)));
+        lines = lines.push(widgets::ellipsized(typo::meta(), detail, theme::text_2));
     }
     let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
     row_frame(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center), tall)
