@@ -1486,6 +1486,44 @@ pub(crate) mod tests {
         assert_eq!(efforts, [Some(torro_core::ai::Effort::Low); 2]);
     }
 
+    /// Task KI.1e: what a protocol must get back unchanged travels from the answer into the
+    /// assistant message of the next request. Without this the tool round of an Anthropic account
+    /// fails, and the wire format alone cannot show it: the carrying happens here, in the loop.
+    #[tokio::test]
+    async fn the_loop_carries_the_blocks_a_protocol_wants_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let thought = serde_json::json!({"type": "thinking", "thinking": "Look it up.", "signature": "EqoBCksg"});
+        let call = ToolCall { id: "toolu_1".into(), name: "calendar_list_calendars".into(), arguments: "{}".into() };
+        let thinks = Step::Reply(
+            Vec::new(),
+            ChatReply {
+                tool_calls: vec![call],
+                finish: Finish::ToolCalls,
+                thinking: vec![thought.clone()],
+                ..ChatReply::default()
+            },
+        );
+        let script = Script::new(vec![thinks, says("No calendars.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Remote, Arc::clone(&script));
+        let id = ask_model(&assistant, None, "Which calendars?", Vec::new(), None).await;
+        finished(&assistant, &id).await;
+
+        let asked = script.asked();
+        assert_eq!(asked.len(), 2, "one round of tools: {asked:?}");
+        let second = &asked[1].messages;
+        let turn = second
+            .iter()
+            .find(|message| message.role == torro_core::ai::Role::Assistant)
+            .expect("the assistant's turn");
+        assert_eq!(turn.thinking, vec![thought], "unchanged, as the answer sent it");
+        assert_eq!(turn.tool_calls.len(), 1, "beside its call");
+        for other in second.iter().filter(|message| message.role != torro_core::ai::Role::Assistant) {
+            assert!(other.thinking.is_empty(), "nothing else carries blocks: {other:?}");
+        }
+        // The first request has no earlier turn, so nothing to carry.
+        assert!(asked[0].messages.iter().all(|message| message.thinking.is_empty()));
+    }
+
     /// Task C.10: the personality comes first in the system prompt and the notes in its generated
     /// part; a model elsewhere reads no note a local model kept after reading mail.
     #[tokio::test]

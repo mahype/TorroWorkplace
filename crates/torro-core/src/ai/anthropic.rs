@@ -104,6 +104,13 @@ fn system_of(messages: &[ChatMessage]) -> String {
 /// every other message turned into blocks, messages of the same role merged into one – so the
 /// results of one round of tools travel together – and everything before the first message of the
 /// person dropped, because the protocol starts with theirs.
+///
+/// Known limit: merging puts the blocks of the later message behind those of the earlier one, so
+/// two assistant messages in a row would leave the second one's thinking behind a text block,
+/// which the server refuses. Nothing produces that today – the core's history alternates strictly,
+/// and every round of tools puts the person's results between two assistant messages – but whoever
+/// makes it possible (thinking blocks kept in the store, a run that is continued) has to order the
+/// merged blocks, not only merge them.
 fn messages_json(messages: &[ChatMessage]) -> Vec<Value> {
     let mut turns: Vec<(&'static str, Vec<Value>)> = Vec::new();
     for message in messages {
@@ -296,7 +303,8 @@ impl StreamDecoder {
             })
             .collect();
         let thought = std::mem::take(&mut self.thought);
-        let thinking: Vec<Value> = thought.iter().filter_map(|index| self.thinking.remove(index)).collect();
+        let thinking: Vec<Value> =
+            thought.iter().filter_map(|index| self.thinking.remove(index)).filter(whole_thought).collect();
         Ok(ChatReply {
             text: self.text,
             tool_calls,
@@ -446,18 +454,21 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
         .collect())
 }
 
-/// Whether the model takes an [`super::Effort`] **the way [`chat_body`] sends one**: the answer has
-/// to say that it supports `effort` and adaptive thinking, because the body carries both fields
-/// together. Claude Opus 4.5 is what makes the difference – it supports an effort but refuses
-/// adaptive thinking, so a request with both is HTTP 400 and the model must not be offered one.
-/// `None` where the answer says nothing about either, so apps still offer the effort.
+/// Whether the model takes an [`super::Effort`] **the way [`chat_body`] sends one**: the body
+/// carries `output_config.effort` and adaptive thinking together, so a model that refuses either
+/// refuses the pair. Claude Opus 4.5 is what makes the difference – it supports an effort but
+/// refuses adaptive thinking, and a request with both is HTTP 400.
+///
+/// Only a capability the answer calls `false` makes this `false`. One it does not mention stays
+/// unknown, so a field this module does not find – renamed, flattened, left out by a gateway –
+/// hides the effort from no model that can take it.
 fn takes_an_effort(model: &Value) -> Option<bool> {
-    let effort = model.pointer("/capabilities/effort/supported").and_then(Value::as_bool);
-    let adaptive = model.pointer("/capabilities/thinking/types/adaptive/supported").and_then(Value::as_bool);
-    match (effort, adaptive) {
-        (None, None) => None,
-        (effort, adaptive) => Some(effort.unwrap_or(false) && adaptive.unwrap_or(false)),
+    let says = |path: &str| model.pointer(path).and_then(Value::as_bool);
+    let known = [says("/capabilities/effort/supported"), says("/capabilities/thinking/types/adaptive/supported")];
+    if known.contains(&Some(false)) {
+        return Some(false);
     }
+    known.iter().all(|said| *said == Some(true)).then_some(true)
 }
 
 /// The tokens a turn used: `input_tokens` and `output_tokens` where the chunk names them, over what
@@ -472,6 +483,20 @@ fn usage_of(value: Option<&Value>, so_far: Option<Usage>) -> Option<Usage> {
     })
 }
 
+/// Whether a thinking block arrived whole, so it may travel back: a `thinking` block needs its
+/// `signature`, a `redacted_thinking` one its `data`. A stream that ended early – a connection
+/// that broke, a gateway that lost an event – leaves a block without them, and the server refuses
+/// such a block with HTTP 400 every time the round is tried again. Half a thought is worth less
+/// than a turn that works, so it is dropped: the model then answers without that reasoning, which
+/// is the way back the protocol itself names.
+fn whole_thought(block: &Value) -> bool {
+    let has = |field: &str| block.get(field).and_then(Value::as_str).is_some_and(|text| !text.is_empty());
+    match block.get("type").and_then(Value::as_str) {
+        Some("redacted_thinking") => has("data"),
+        _ => has("signature"),
+    }
+}
+
 /// The HTTP status an error body or event stands for, from its `error.type`: a stream carries no
 /// status, and an error in the middle of an answer means the same as the same error on the request
 /// itself, so both go through [`openai::error_of`] and a busy server is `busy` either way.
@@ -483,7 +508,8 @@ fn error_status(chunk: &Value) -> u16 {
         "rate_limit_error" => 429,
         // Anthropic's word for "too much traffic right now", its own status.
         "overloaded_error" => 529,
-        "invalid_request_error" | "request_too_large" => 400,
+        "invalid_request_error" => 400,
+        "request_too_large" => 413,
         // `api_error` and whatever the protocol names later.
         _ => 500,
     }
@@ -796,6 +822,7 @@ mod tests {
             ("overloaded_error", "busy"),
             ("not_found_error", "not-found"),
             ("invalid_request_error", "error"),
+            ("request_too_large", "error"),
             ("api_error", "error"),
         ] {
             let body = format!(r#"{{"type":"error","error":{{"type":"{kind}","message":"no"}}}}"#);
@@ -923,6 +950,69 @@ mod tests {
         assert!(!body.to_string().contains("thinking"), "nothing was kept, so nothing goes back: {body}");
         let whole = br#"{"type":"message","content":[{"type":"text","text":"Hi."}],"stop_reason":"end_turn"}"#;
         assert!(parse_reply(whole).expect("reply").thinking.is_empty());
+    }
+
+    #[test]
+    fn only_a_capability_that_says_no_hides_the_effort() {
+        let reasoning = |capabilities: Value| {
+            let body = json!({"data": [{"id": "claude-x", "capabilities": capabilities}]}).to_string();
+            parse_models(body.as_bytes()).expect("models")[0].reasoning
+        };
+        assert_eq!(
+            reasoning(json!({"effort": {"supported": true}, "thinking": {"types": {"adaptive": {"supported": true}}}})),
+            Some(true)
+        );
+        assert_eq!(
+            reasoning(
+                json!({"effort": {"supported": false}, "thinking": {"types": {"adaptive": {"supported": true}}}})
+            ),
+            Some(false),
+            "no effort: the pair is refused"
+        );
+        assert_eq!(
+            reasoning(
+                json!({"effort": {"supported": true}, "thinking": {"types": {"adaptive": {"supported": false}}}})
+            ),
+            Some(false),
+            "Claude Opus 4.5: an effort but no adaptive thinking"
+        );
+        // What the answer does not mention stays unknown, so a renamed or flattened field never
+        // takes the effort away from every model at once.
+        assert_eq!(reasoning(json!({"effort": {"supported": true}})), None, "nothing said about thinking");
+        assert_eq!(reasoning(json!({"thinking": {"supported": true}})), None, "an older shape of the tree");
+        assert_eq!(reasoning(json!({})), None);
+    }
+
+    #[test]
+    fn a_thought_that_was_cut_off_does_not_travel_back() {
+        // The stream ends after the text of the thinking, before its signature.
+        let cut = [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"half a"}}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t","name":"one"}}"#,
+        ]
+        .join("\n")
+            + "\n";
+        let (reply, _) = pushed(cut.as_bytes(), 31);
+        assert!(reply.thinking.is_empty(), "a block without its signature is refused by the server: {reply:?}");
+        assert_eq!(reply.tool_calls.len(), 1, "the call it did send stays");
+
+        // A redacted block needs its data, not a signature.
+        let redacted = concat!(
+            r#"data: {"type":"content_block_start","index":0,"#,
+            r#""content_block":{"type":"redacted_thinking","data":"EroB"}}"#,
+            "\n",
+        );
+        let (kept, _) = pushed(redacted.as_bytes(), 17);
+        assert_eq!(kept.thinking, vec![json!({"type": "redacted_thinking", "data": "EroB"})]);
+
+        let empty = concat!(
+            r#"data: {"type":"content_block_start","index":0,"#,
+            r#""content_block":{"type":"redacted_thinking","data":""}}"#,
+            "\n",
+        );
+        let (dropped, _) = pushed(empty.as_bytes(), 17);
+        assert!(dropped.thinking.is_empty(), "nor without it");
     }
 
     #[test]

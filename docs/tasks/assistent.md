@@ -79,7 +79,11 @@ KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic,
 - `stop_reason`: `end_turn` und `stop_sequence` `Finish::Stop`, `tool_use` `Finish::ToolCalls`, `max_tokens`
   `Finish::Length`, alles andere `Finish::Other`.
 - **Modelle** (`GET <base>/models`, Antwort `{"data": [...]}`): `id`, `name` aus `display_name` (sonst die id),
-  `context` aus `max_input_tokens`, `reasoning` aus `capabilities.effort.supported` (`None`, wenn das Feld fehlt),
+  `context` aus `max_input_tokens`, `reasoning` nur `true`, wenn der Server `capabilities.effort` **und**
+  `capabilities.thinking.types.adaptive` bejaht (der Rumpf schickt beides zusammen; Claude Opus 4.5 nimmt eine
+  Denkstufe, lehnt adaptives Denken aber ab). `false` nur, wenn eine der beiden ausdrücklich `false` sagt, sonst
+  `None` — eine Fähigkeit, die der Server nicht nennt, nimmt keinem Modell die Denkstufe weg (nachgetragen aus dem
+  Review),
   `tools` fest `Some(true)` – alle Claude-Modelle der Messages-API rufen Werkzeuge auf –, `open_weights` und
   `remote` bleiben `None` wie bei jedem anderen Cloud-Anbieter. `open_weights` darf **nicht** `Some(false)` sein,
   sonst filtern `open_weights_only`, `suggest::pick_model` und `ModelAccess::automatic` jedes Claude-Modell weg.
