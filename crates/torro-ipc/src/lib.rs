@@ -1004,19 +1004,22 @@ pub enum Request {
     /// With `target` (task E8.7a) the app shows one thing: `mail:<address>:<Message-ID>` (a task's
     /// link, [`torro_pim::model::Link::mail_ref`]) a mail in the inbox's mail window
     /// (`torroinbox --view mail --message m:…`), `task:<uid>` a task in the tasks app
-    /// (`torrotasks --task=<uid>`). `app` must be the app the target opens in (any inbox window for
-    /// a mail), else `error`. The core checks the target and builds the arguments; nothing of it
+    /// (`torrotasks --task=<uid>`), `file:<id>` a new mail in the inbox's compose window with a file
+    /// of the assistant's tools attached (issue #225, the id of `tools.create_pdf`; `torroinbox
+    /// --compose --attach=<path>`). `app` must be the app the target opens in (any inbox window for
+    /// a mail, the inbox for a file), else `error`. The core checks the target and builds the arguments; nothing of it
     /// reaches a shell. A window open already cannot be told to show something else yet, so a
     /// target always starts a new window. Codes besides the above: `not-found` for a mail or task
     /// the caller may not see (a client needs read access to `mail` and the account, or to `tasks`
-    /// and the task's list) or that is gone; `error` for a target of another form or longer than
+    /// and the task's list; for a file one it made itself, the tool switched on, read access to
+    /// `tools` and the tool in its selection) or that is gone or changed; `error` for a target of another form or longer than
     /// 1000 bytes.
     #[serde(rename = "apps.open_app")]
     OpenApp {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
-        /// What the app shows: `mail:<address>:<Message-ID>` or `task:<uid>`; left out: the app as
-        /// it starts.
+        /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>` or `file:<id>` (a new
+        /// mail with that file of the assistant's tools attached); left out: the app as it starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
     },

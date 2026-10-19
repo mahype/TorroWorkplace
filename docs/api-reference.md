@@ -1596,7 +1596,7 @@ Opens an app of the suite by binary name or window class (from list_apps), or br
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `app` | string | ja | Binary name or window class, from `apps.list_apps`. |
-| `target` | string | nein | What the app shows: `mail:<address>:<Message-ID>` or `task:<uid>`; left out: the app as it starts. |
+| `target` | string | nein | What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>` or `file:<id>` (a new mail with that file of the assistant's tools attached); left out: the app as it starts. |
 
 ## `clients`
 

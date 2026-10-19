@@ -1221,6 +1221,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::OpenApp { app, target } => {
             let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
             match (target, &facts.item) {
+                // A file of the assistant's tools (issue #225) opens as a new mail with it attached.
+                (Some(target), Some(shown)) if target.starts_with("file:") => {
+                    trf("Open a new mail with the PDF \"{title}\" attached", &[("title", &quote(&shown.title))])
+                }
                 (Some(_), Some(shown)) => {
                     trf("Open \"{title}\" in {app}", &[("title", &quote(&shown.title)), ("app", &quote(name))])
                 }
@@ -3113,6 +3117,11 @@ pub(crate) mod tests {
         let named = trf("Open \"{title}\" in {app}", &[("title", &"Answer Anna"), ("app", &quote("Torro Tasks"))]);
         assert_eq!(summary(&target, &known), named);
         assert_eq!(summary(&target, &Facts::default()), trf("Open {app}", &[("app", &quote("Torro Tasks"))]));
+        // Issue #225: a file of the assistant's tools goes into a new mail, by the register's title.
+        let file = Request::OpenApp { app: "torroinbox".into(), target: Some("file:1a2b3c4d".into()) };
+        let offer = Facts { item: Some(Known { title: "Offer".into(), start: None }), ..Facts::default() };
+        let mailed = trf("Open a new mail with the PDF \"{title}\" attached", &[("title", &quote("Offer"))]);
+        assert_eq!(summary(&file, &offer), mailed);
     }
 
     /// Task E8.7a: a task made of a mail names title, list and the mail's subject as the core holds

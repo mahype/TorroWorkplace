@@ -1200,6 +1200,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Aufgabe „{title}“ in „{list}“ fällig {when} aus der Mail {subject} anlegen",
     ),
     ("Open \"{title}\" in {app}", "„{title}“ in {app} öffnen"),
+    ("Open a new mail with the PDF \"{title}\" attached", "Neue Mail mit der PDF „{title}“ im Anhang öffnen"),
     // Notifications window (E8.4)
     ("Dismiss notification", "Verwerfen"),
     ("Dismiss all", "Alle verwerfen"),
