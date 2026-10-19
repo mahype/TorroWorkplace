@@ -714,8 +714,10 @@ S.32 (Kern: Sperrliste, Weg, Schalter) ──┬── S.33 (Rechte-Editor) ─�
                                          └── S.35
 ```
 
-S.30 und S.32 können parallel laufen (keine gemeinsamen Dateien außer `de.rs`), ebenso S.24 neben beiden. S.31 und S.33
-ändern verschiedene Dateien und können nach ihren Vorgängern parallel laufen.
+S.30 und S.32 können parallel laufen (gemeinsam nur `ui/launch.rs`: S.30 die Demo-Wörter, S.32 die Demo-Antworten auf
+`CreateClient`; wer später kommt, führt zusammen). S.24 und S.32 ändern dieselben Kerndateien (`lib.rs`, `api.rs`,
+`core.rs`, `mcp.rs`) und laufen nacheinander, S.24 zuerst. S.31 und S.33 ändern beide `ui/mod.rs` und laufen
+nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 → S.33 → S.34 → S.35.
 
 ### S.30 Accounts: feste Gruppen, „Add“ je Gruppe, TorroMail-Import, Datenregel
 - [ ] erledigt
@@ -789,25 +791,47 @@ S.30 und S.32 können parallel laufen (keine gemeinsamen Dateien außer `de.rs`)
   `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/client.rs`, `crates/torro-ipc/src/server.rs`,
   `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/settings_service.rs`,
   `crates/torroworkplace/src/clients.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`,
-  `crates/torroworkplace/src/mcp.rs`, `docs/api-reference.md`
+  `crates/torroworkplace/src/mcp.rs`, `crates/torroworkplace/src/assistant/tools.rs`, `crates/torroworkplace/src/ui/launch.rs`
+  (nur die Demo-Antworten auf `CreateClient`), `docs/api-reference.md`
 - **Schnittstellen (mit dieser Planung freizugeben):**
   - `Rights::denied: BTreeSet<String>` (`#[serde(default, skip_serializing_if = "BTreeSet::is_empty")]`): Katalognamen
     gesperrter Befehle. `Rights::allows` lehnt einen Befehl ab, dessen `command.name` darin steht; `system.ping` nie.
-    `Rights::common` vereinigt die Sperrlisten. `clients.rs` verwirft beim Laden Namen, die `CATALOGUE` nicht kennt.
-  - `Envelope::via: Option<Via>` mit `enum Via { Api, Mcp }` (snake_case, `#[serde(default, skip_serializing_if =
-    "Option::is_none")]`), ebenso in `RawEnvelope`; fehlt es, gilt `Api`. `client.rs` bekommt einen Weg, `via`
-    mitzuschicken (z. B. `call_with_key_via`); `mcp.rs` sendet `Via::Mcp`, alle anderen bleiben ohne.
+    `Rights::common` vereinigt die Sperrlisten. `clients.rs` verwirft beim Laden **und** bei `clients.update_client`
+    Namen, die `CATALOGUE` nicht kennt, und `system.ping`. Ausnahme, ausdrücklich: Befehle, die eine Art schon wegen
+    ihrer Art darf (`api::allowed_by_kind`: Gedächtnis, `bots.*`, `my_access` des Assistenten), sperrt `denied` nicht;
+    der Editor zeigt diese Bereiche ohnehin nicht (`shows_area`).
+  - Feld `via` im Umschlag mit dem Typ `enum Door { Api, Mcp }` (snake_case; nicht `Via`, das gibt es privat schon in
+    `core.rs`): `Envelope::via: Option<Door>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`), ebenso
+    in `RawEnvelope`; fehlt es, gilt `Api`. Neue Signaturen: `Core::handle_from(key, door, request)` und der Handler von
+    `serve_with_key` `Fn(Option<Key>, Door, Request)`. `client.rs` bekommt einen Weg, `via` mitzuschicken (z. B.
+    `call_with_key_via`); `mcp.rs` sendet `Door::Mcp`, alle anderen bleiben ohne.
   - Einstellungen `allow_api_keys` und `allow_mcp` (`Settings`, Standard `true` über eine eigene Default-Funktion),
     `SettingKey::AllowApiKeys` und `SettingKey::AllowMcp`, in `settings_service.rs` wie `MailToCloud`.
   - `clients.create_client` mit der Art `assistant` antwortet ohne Schlüssel: neue Antwort `Response::Client { client:
     ClientInfo }` (neue Antwortart, verträglich nach api.md „Versionen“); die Katalogbeschreibung sagt das.
-  - Neue Client-Art `mcp` („Other MCP client“) neben `script`; `create_client` nimmt sie an.
-- **Prüfung im Kern** (`Core::handle_from`, nach `admit`, vor den übrigen Prüfungen; Regel in api.md › Transport): Art
+  - Neue Client-Art `mcp` („Other MCP client“) neben `script`; `create_client` nimmt sie an. Wie bei `script` ist der
+    Name ihre Quelle im Eingang (`post_source`: `agent:mcp:<name>` statt eines gemeinsamen `agent:mcp`) und muss
+    eindeutig sein (`script_name_taken` erweitert).
+  - **Arten geschlossen:** `create_client` lehnt Arten außer `script`, `mcp`, den fünf Agenten-Arten, `hook` und
+    `assistant` mit `error` ab (`bot` legt weiter nur `bots.save_bot` an). Eine unbekannte Art aus einer älteren
+    `clients.json` wird bei Weg und Schaltern wie `script` geprüft.
+  - `clients.new_key` lehnt die Arten `assistant` und `bot` mit `unsupported` ab (bisher verhinderte das nur die
+    Oberfläche).
+- **Prüfung im Kern** (`Core::handle_from`, direkt nachdem der Schlüssel einem Client zugeordnet ist, vor den Rechten,
+  vor den Befehlen, die eine Art von selbst darf, und auch vor `system.ping` mit Schlüssel, damit ein abgeschalteter Weg
+  immer gleich mit `unauthorized` antwortet; Regel in api.md › Transport): Art
   `script` nur mit `allow_api_keys` und über `Api`; MCP-Arten (`claude-code`, `codex`, `gemini`, `claude-desktop`,
-  `cursor`, `mcp`) nur mit `allow_mcp` und über `Mcp`; `hook` nur mit `allow_mcp`, über `Api`; geliehene Schlüssel
-  (`Clients::lent_for`) und die Arten `assistant`, `bot` ohne diese Prüfung. Ablehnung `unauthorized` mit Satz
+  `cursor`, `mcp`) nur mit `allow_mcp` und über `Mcp`; `hook` nur mit `allow_mcp`, über `Api`; die Arten `assistant`
+  und `bot` ohne diese Prüfung (nur sie bekommen geliehene Schlüssel, `Clients::lent_for`); jede andere Art wie
+  `script`. Ablehnung `unauthorized` mit Satz
   („The API is turned off in Torro Workplace, Settings › API.“ bzw. „… MCP …“, „This key belongs to an MCP client.“),
   Protokollzeile wie bei anderen Ablehnungen, keine Freigabe.
+- **Freigaben:** `run_approved` prüft vor dem Ausführen die Schalter nach der Art erneut (die Sperrliste prüft es mit
+  den Rechten schon): Eine Freigabe, die angelegt wurde, solange MCP an war, läuft nach „Allow“ nicht, wenn MCP
+  inzwischen aus ist oder der Befehl inzwischen gesperrt.
+- **Wo die Sperre sichtbar wird:** `Lack::of_in` (`clients.rs`) bekommt einen eigenen Grund („turned off for this
+  command“), damit die Meldung nicht zu einer höheren Stufe rät; `MyAccess::of` nennt gesperrte Befehle; die
+  Werkzeugliste des Assistenten (`assistant/tools.rs`) lässt gesperrte Befehle weg.
 - **Nur Menschen schalten ein:** `Request::kept_for_people` um `AllowApiKeys` und `AllowMcp` mit Wert ungleich `false`
   erweitern, `switches_on_for_people` um beide Felder (wie `mail_to_cloud`); `docs/api.md` Punkt 6 steht schon.
 - **Texte des MCP-Servers:** `INSTRUCTIONS` und `KEY_HINT` in `mcp.rs` nennen „Torro Workplace, Settings › MCP“ statt
@@ -820,13 +844,20 @@ S.30 und S.32 können parallel laufen (keine gemeinsamen Dateien außer `de.rs`)
 - **Abnahme:** Tests in `torro-ipc` und im Kern (Temp-Verzeichnisse):
   - ein gesperrter Befehl ist `forbidden`, obwohl die Stufe ihn erlaubt; ein nicht gesperrter Befehl desselben Bereichs
     geht; `system.ping` lässt sich nicht sperren; unbekannte Namen verschwinden beim Laden; alte `clients.json` ohne
-    `denied` lädt unverändert;
+    `denied` lädt unverändert; `update_client` verwirft unbekannte Namen und `system.ping`; Befehle aus
+    `allowed_by_kind` bleiben trotz Eintrag erlaubt; die Meldung nennt den Grund „turned off“; `my_access` und die
+    Werkzeugliste des Assistenten lassen gesperrte Befehle weg;
   - Umschlag ohne `via` ist `Api`; `mcp.rs` schickt `Mcp` (Test, dass das Tool den Umschlag so baut);
   - Script über `Api` geht, über `Mcp` nicht; Agent über `Mcp` geht, über `Api` nicht; Hook über `Api` geht; mit
     `allow_api_keys` aus wird Script abgelehnt, Agent nicht; mit `allow_mcp` aus werden Agent und Hook abgelehnt, ein
-    geliehener Schlüssel des Assistenten nicht;
+    geliehener Schlüssel des Assistenten nicht; eine unbekannte Art aus `clients.json` verhält sich wie `script`; mit
+    abgeschaltetem Weg antwortet auch `system.ping` mit Schlüssel `unauthorized`;
+  - Freigabe angelegt, danach Befehl gesperrt bzw. `allow_mcp` aus, Mensch erlaubt → nicht ausgeführt (`forbidden`
+    bzw. `unauthorized`);
   - ein Client kann `allow_mcp`/`allow_api_keys` nicht einschalten (`forbidden`), ausschalten mit Admin und Freigabe;
-  - `create_client` mit `assistant` liefert `Response::Client` ohne Schlüssel, mit `mcp` einen Schlüssel;
+  - `create_client` mit `assistant` liefert `Response::Client` ohne Schlüssel, mit `mcp` einen Schlüssel, mit einer
+    unbekannten Art `error`; zwei Clients der Art `mcp` haben getrennte Quellen; `new_key` für `assistant`/`bot` ist
+    `unsupported`;
   - Rechte-Tabelle und MCP-Vertragstest grün; API-Referenz neu (`TORRO_BLESS=1 cargo test -p torro-ipc`); fmt, clippy,
     test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
@@ -877,8 +908,10 @@ S.30 und S.32 können parallel laufen (keine gemeinsamen Dateien außer `de.rs`)
   `chat.rs` `area_name` für `Area::Clients`: „API and MCP“.
 - **Grenze im App-Prozess:** Der Test `no_section_touches_clients_rights_or_the_data_rule` gilt weiter für alle Abschnitte
   außer `assistant/access.rs`; dort sind nur `UpdateClient`, `ClientActivity` und für die Art `assistant`
-  `CreateClient`/`RemoveClient` erlaubt, nie `NewClientKey` (Test). Kommt doch eine Antwort mit Schlüssel, verwirft der
-  Abschnitt sie ungelesen.
+  `CreateClient`/`RemoveClient` erlaubt, nie `NewClientKey` (Test). Der Test erlaubt `rights::` (den Editor aus S.33,
+  der `UpdateClient` und `api::Rights` enthält) nur in `assistant/access.rs`; ein zweiter Test deckt
+  `crates/torroassistant/src/` ab. Kommt doch eine Antwort mit Schlüssel, verwirft der Abschnitt sie ungelesen. Die
+  Grenze ist eine Regel im Code, keine Prüfung im Kern: Der App-Schlüssel darf ohnehin alles.
 - **Oberfläche:** Assistent › Einstellungen › Access; Bot-Editor; Chat („Change access“)
 - **API:** keine neue Funktion; `clients.update_client`, `clients.create_client`, `clients.remove_client`,
   `clients.activity` · Admin, nur App-Schlüssel
@@ -905,7 +938,7 @@ S.30 und S.32 können parallel laufen (keine gemeinsamen Dateien außer `de.rs`)
   mit „Copy“); Detailseite mit Rechte-Editor (Naming `Endpoints`), letzten Aufrufen, „Create new key“, „Revoke…“.
 - **MCP** (`ui/mcp.rs`): Gruppe „MCP server“ mit „Allow MCP“ (`SetSetting AllowMcp`) und der Befehlszeile; Gruppe
   „Connected clients“ mit allen MCP-Arten; „Connect client“ öffnet `agent_wizard` ohne „Script“, mit „Other MCP client“
-  (Art `mcp`, Key einmal mit Befehlszeile). Detailseite mit Rechte-Editor (Naming `Tools`), Gruppe „Notification Hub“
+  (Art `mcp`, Name wie bei Skripten geprüft, Key einmal mit Befehlszeile). Detailseite mit Rechte-Editor (Naming `Tools`), Gruppe „Notification Hub“
   (nur Claude Code, Codex, Gemini CLI): Schalter „Report when waiting or done“ – an: `CreateClient { kind: hook, agent }`
   und `Job::Hook { owner }` wie im Dialog heute; aus: `Job::Disconnect` für den Hook-Client (nimmt nur seine Hooks
   heraus) und `RemoveClient`; Stand aus `client_setup.json` (eingerichtet, Codex muss vertrauen, Fehler mit Grund).

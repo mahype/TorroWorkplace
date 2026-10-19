@@ -705,8 +705,11 @@ dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
 - **Je Befehl ein Schalter** (#231): Unter der Stufe lässt sich jeder Befehl des Bereichs einzeln abschalten.
   Gespeichert als **Sperrliste** `Rights::denied` (Katalognamen, z. B. `calendar.delete_event`; fehlt sie, ist
   sie leer). Sie schränkt nur ein: `Rights::allows` lehnt einen gesperrten Befehl ab, auch wenn Stufe und
-  Admin-Schalter ihn erlauben, und kein Eintrag erlaubt mehr als die Stufe. Unbekannte Namen (ein Befehl, den
-  es nicht mehr gibt) werden beim Laden verworfen. `system.ping` lässt sich nicht sperren.
+  Admin-Schalter ihn erlauben, und kein Eintrag erlaubt mehr als die Stufe; auch eine Freigabe, die vor der Sperre
+  angelegt wurde, läuft danach nicht mehr. Unbekannte Namen (ein Befehl, den es nicht mehr gibt) werden beim
+  Speichern und beim Laden verworfen. `system.ping` lässt sich nicht sperren, ebenso wenig, was eine Art schon
+  wegen ihrer Art darf (Gedächtnis und Bots des Assistenten). Die Meldung einer Ablehnung nennt den Grund
+  („turned off for this command“), `assistant.my_access` die gesperrten Befehle.
 - **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten, Repositories,
   Quellen des Eingangs und Mail-Konten (später auch Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
@@ -816,13 +819,16 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   startet der MCP-Server ihn wie die Apps.
 - **Weg im Umschlag** (#231): `{"v":1,"key":…,"via":"mcp","request":…}`. `via` ist `api` oder `mcp`, ohne
   Angabe `api` (verträglich, ältere Programme schicken es nicht). `torroworkplace mcp` setzt `mcp`, alle anderen
-  setzen nichts. Der Kern prüft nach dem Schlüssel, ob Art, Weg und Schalter passen:
+  setzen nichts. Der Kern prüft direkt nach dem Schlüssel, vor den Rechten (auch bei `ping` mit Schlüssel und noch
+  einmal, bevor eine Freigabe ausgeführt wird), ob Art, Weg und Schalter passen:
   - Art `script`: nur über `api` und nur mit „Allow API keys“ (Einstellung `allow_api_keys`, Standard an).
   - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `mcp`): nur über `mcp` und nur
     mit „Allow MCP“ (`allow_mcp`, Standard an).
   - Art `hook`: über `api` (die Hooks rufen den Kern direkt), nur mit „Allow MCP“, weil er zu einem Agenten
     gehört.
-  - Geliehene Schlüssel des Assistenten und die Arten `assistant` und `bot`: an keinen Schalter gebunden.
+  - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): an keinen Schalter gebunden.
+  - Jede andere Art (etwa aus einer älteren `clients.json`): wie `script`. `clients.create_client` nimmt nur die
+    genannten Arten an.
   - Passt es nicht: `unauthorized` mit einem Satz, der sagt, was in Torro Workplace aus ist bzw. welcher Weg
     erwartet wird. Kein Eintrag in eine Freigabe; das Protokoll vermerkt Client, Befehl und `unauthorized`.
   - `via` ist eine Angabe des Programms, keine Prüfung (siehe „Was der Schlüssel schützt“): Sie verhindert
@@ -927,6 +933,8 @@ Getroffen am 2026-10-19 (#231):
 10. **Sperrliste je Befehl** (`Rights::denied`) unter der Stufe statt Schalter allein. Kein neuer Befehl:
     Sie reist mit `clients.update_client` in den ganzen Rechten.
 11. **Weg im Umschlag** (`via`) und die Schalter `allow_api_keys`, `allow_mcp`; einschalten nur Menschen.
-12. **Rechte von Assistent und Bots im Assistent-Fenster**; der Kern gibt für die Art `assistant` keinen
-    Schlüssel heraus (`clients.create_client` antwortet dort ohne Key), damit kein Schlüssel in einen
-    App-Prozess gelangt.
+12. **Rechte von Assistent und Bots im Assistent-Fenster**; der Kern gibt für die Arten `assistant` und `bot`
+    keinen Schlüssel heraus (`clients.create_client` antwortet für `assistant` ohne Key, `clients.new_key` ist für
+    beide `unsupported`), damit kein Schlüssel in einen App-Prozess gelangt.
+13. **„Other MCP client“** (Art `mcp`) hat wie ein Skript einen eindeutigen Namen, der seine Quelle im Eingang ist
+    (`agent:mcp:<name>`).

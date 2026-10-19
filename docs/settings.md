@@ -391,8 +391,9 @@ Assistent-Fenster denselben nutzen.
     „Allow MCP“, und nur über `mcp`.
   - Key der Art `hook`: nur mit „Allow MCP“ (er gehört zu einem Agenten), über `api` (die Hooks rufen den Kern
     direkt).
-  - Geliehene Keys des Assistenten (`clients.lent_for`) und die Arten `assistant` und `bot` hängen an keinem der
-    beiden Schalter: Sie sind die Suite selbst.
+  - Die Arten `assistant` und `bot` (auch ihre geliehenen Keys) hängen an keinem der beiden Schalter: Sie sind die
+    Suite selbst.
+  - Jede andere Art wird wie `script` geprüft; neue Clients gibt es nur in den genannten Arten.
 - **Ehrlich festgehalten:** Der Weg im Umschlag ist eine Angabe des Programms, keine Prüfung. Er schützt vor
   Fehlbedienung (ein Agent-Key in einem Skript), nicht vor bösartigem Code unter demselben Benutzer – wie die
   Keys selbst ([api.md](api.md), „Was der Schlüssel schützt“).
