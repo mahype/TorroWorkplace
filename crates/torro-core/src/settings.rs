@@ -1164,6 +1164,26 @@ impl PdfSettings {
             false => absolute_path(path).then(|| Some(path.to_string())).ok_or_else(refused),
         }
     }
+
+    /// Whether the folder and the templates that differ from `stored` fit, else why not: a folder
+    /// an absolute path, each template as [`PdfTemplate::check`] wants it. What equals `stored` is
+    /// not checked again: a hand-edited file is read as it is and must not block changing anything
+    /// else. For `settings.update_settings`, which carries these settings whole.
+    pub fn check_changes(&self, stored: &PdfSettings) -> Result<(), String> {
+        if self.folder != stored.folder
+            && let Some(folder) = &self.folder
+            && !absolute_path(folder)
+        {
+            return Err(format!("{folder:?} is not a folder: send an absolute path or null"));
+        }
+        for id in PdfTemplateId::ALL {
+            let template = self.template(id);
+            if template != stored.template(id) {
+                template.check().map_err(|err| format!("the PDF template {:?} does not fit: {err}", id.name()))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The assistant's own tools (issue #225): which are switched on, and the settings of each.
@@ -2271,6 +2291,28 @@ mod tests {
             assert!(refused.as_ref().is_err_and(|reason| reason.contains("absolute path")), "{wrong}: {refused:?}");
         }
         assert!(PdfSettings::folder_from(&serde_json::json!(format!("/{}", "a".repeat(MAX_PATH_BYTES)))).is_err());
+    }
+
+    /// Whole PDF settings are checked where they differ from the stored ones, nowhere else.
+    #[test]
+    fn only_the_changed_pdf_settings_are_checked() {
+        let stored = PdfSettings::default();
+        assert_eq!(stored.check_changes(&stored), Ok(()));
+        let mut sent = stored.clone();
+        sent.folder = Some("PDFs".into());
+        assert!(sent.check_changes(&stored).is_err_and(|reason| reason.contains("absolute path")));
+        sent.folder = Some(absolute("/Users/anna/PDFs"));
+        sent.note.font_size_pt = 12;
+        assert_eq!(sent.check_changes(&stored), Ok(()));
+        sent.report.header = "a".repeat(PdfTemplate::MAX_LINE_CHARS + 1);
+        assert!(sent.check_changes(&stored).is_err_and(|reason| reason.contains("\"report\"")));
+
+        // Stored out of bounds (a file edited by hand): not checked again while it stays.
+        let mut by_hand = stored.clone();
+        (by_hand.folder, by_hand.letter.margins_mm) = (Some("PDFs".into()), [99; 4]);
+        let mut sent = by_hand.clone();
+        sent.note.font_size_pt = 12;
+        assert_eq!(sent.check_changes(&by_hand), Ok(()));
     }
 
     /// Point 9: switching a tool on and setting a folder or a logo other than the stored ones is a

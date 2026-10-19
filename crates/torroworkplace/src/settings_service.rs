@@ -91,6 +91,8 @@ impl SettingsStore {
     /// A hidden collection named by a bare URL, as before several accounts existed, is refused
     /// and nothing is written (task M1.4): the old ids were rewritten once when the core started,
     /// and one coming back later would otherwise belong to no account, or by chance to the first.
+    /// So is a PDF template or folder that changes and does not fit, as `set_setting` refuses it
+    /// (`torro_core::settings::PdfSettings::check_changes`).
     pub fn update(&self, new: Settings) -> Result<(), String> {
         let ids = new.hidden_collections.iter().chain(new.list_orders.keys());
         if let Some(bare) = ids.into_iter().find(|id| torro_pim::account::is_legacy_id(id)) {
@@ -119,7 +121,7 @@ impl SettingsStore {
     /// Nor does a client switch on one of the assistant's own tools (point 9, issue #225): a tool
     /// stays on only when it is on as stored and in `new`, the PDF folder and the logos of the
     /// templates stay as stored (`torro_core::settings::Tools::from_client`); the other fields of
-    /// the templates come from `new`.
+    /// the templates come from `new`, refused like in [`SettingsStore::update`] when they do not fit.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
@@ -277,6 +279,12 @@ impl SettingsStore {
         // that broke after it was chosen must not block changing anything else.
         if new.design != old.design {
             self.check_design(&new.design)?;
+        }
+        // The same for the PDF templates and folder: `set_setting` checks them when it parses them,
+        // whole settings (`update_settings`) carry them unchecked. A header thousands of characters
+        // long would make every PDF slow (`tools::pdf`), margins out of bounds leave no page.
+        if new.tools.pdf != old.tools.pdf {
+            new.tools.pdf.check_changes(&old.tools.pdf)?;
         }
         let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
         save_to(file, &new)?;
@@ -1321,6 +1329,49 @@ mod tests {
         store.update_keeping_hidden(sent).expect("written");
         let removed = store.current().tools;
         assert_eq!((removed.pdf.folder, removed.pdf.note.logo), (None, None), "a client may remove the paths");
+    }
+
+    /// Issue #225: whole settings are checked like `set_setting`: a template out of bounds or a
+    /// folder that is no absolute path is refused and nothing is written. Only what changes is
+    /// checked, so a hand-edited file, read as it is, does not block changing anything else.
+    #[test]
+    fn whole_settings_with_a_template_out_of_bounds_are_refused() {
+        let (_dir, store) = store();
+        let stored = store.current();
+        let changed = |edit: &dyn Fn(&mut PdfTemplate)| {
+            let mut settings = stored.clone();
+            edit(settings.tools.pdf.template_mut(PdfTemplateId::Report));
+            settings
+        };
+        let refused = [
+            changed(&|template| template.margins_mm = [0; 4]),
+            changed(&|template| template.margins_mm[2] = 200),
+            changed(&|template| template.font_size_pt = 40),
+            changed(&|template| template.header = "a".repeat(100_000)),
+            changed(&|template| template.footer = "two\nlines".into()),
+        ];
+        for sent in refused {
+            assert!(store.update(sent.clone()).is_err(), "update: {:?}", sent.tools.pdf.report);
+            assert!(store.update_keeping_hidden(sent.clone()).is_err(), "client: {:?}", sent.tools.pdf.report);
+        }
+        let mut relative = stored.clone();
+        relative.tools.pdf.folder = Some("PDFs".into());
+        relative.tools.pdf.note.logo = Some("logo.png".into());
+        assert!(store.update(relative).is_err(), "a folder and a logo are absolute paths");
+        assert!(!file_exists(&store), "nothing was written");
+
+        // A file edited by hand is read as it is; changing something else still works.
+        let mut by_hand = stored.clone();
+        by_hand.tools.pdf.letter.margins_mm = [99; 4];
+        save_to(store.file.as_deref().expect("a file"), &by_hand).expect("written by hand");
+        let mut sent = store.current();
+        assert_eq!(sent.tools.pdf.letter.margins_mm, [99; 4], "read as it is");
+        sent.quiet_when_busy = !sent.quiet_when_busy;
+        store.update(sent.clone()).expect("the template did not change");
+        store.update_keeping_hidden(sent.clone()).expect("nor for a client");
+        sent.tools.pdf.note.font_size_pt = 12;
+        store.update(sent).expect("a template within bounds");
+        assert_eq!(store.current().tools.pdf.note.font_size_pt, 12);
     }
 
     /// Issue #225, point 9: one setting at a time, a client keeps or removes a path but never sets
