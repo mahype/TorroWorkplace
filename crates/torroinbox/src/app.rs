@@ -6421,7 +6421,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     ///
     /// The settings (task S.20), while they are open, take the header and the content area instead;
     /// the sidebar stays with the app switcher above it, and what is open behind them – the panel,
-    /// a search – is kept and comes back with the content area.
+    /// a search – is kept and comes back with the content area. Pressing the app switcher there
+    /// shows entries again ([`shows_entries`]), so the only layer over the settings is the host's
+    /// own section menu.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav) = (Anchor::new(), Anchor::new());
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
@@ -6429,20 +6431,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .then(|| self.sidebar(SidebarMode::Rail, &switcher));
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
-            // One layer at a time, as everywhere: the app switcher if it is open, else the host's
-            // own section menu (the medium layout's "Sources ▾").
-            let switcher_menu = (self.menu == Some(Menu::Switcher)).then(|| {
-                widgets::floating(
-                    &switcher,
-                    Placement::Below(Align::Start),
-                    shell::switcher_menu(self.launch.kind.app(), Message::Switcher),
-                    Message::CloseMenu,
-                )
-            });
+            // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
+            // The app switcher cannot be open at the same time: every `Message::Switcher` shows
+            // entries again ([`shows_entries`]), so pressing it closes the settings first – as in
+            // the calendar and the tasks app.
             return shell::shell(class, sidebar, frame.header, frame.body, None)
                 .rail(rail)
                 .drawer(self.drawer, Message::CloseMenu)
-                .overlay(switcher_menu.or(frame.overlay))
+                .overlay(frame.overlay)
                 .into();
         }
         let header = self.header(class, &nav);
@@ -12209,6 +12205,14 @@ mod tests {
         assert!(shows_entries(&Message::Show(View::ForMe)) && !shows_entries(&Message::Tick));
         let _ = app.update(Message::Show(View::ForMe));
         assert!(app.settings.is_none(), "a click in the sidebar shows entries again");
+
+        // The app switcher too, as in the calendar and the tasks app: it is never a layer over
+        // the open settings, so the settings branch of `window` draws only the host's own menu.
+        let _ = app.update(Message::OpenSettings);
+        let _ = app.update(Message::Switcher(Switcher::Toggle));
+        assert!(app.settings.is_none() && app.menu == Some(Menu::Switcher), "the switcher shows entries again");
+        app.menu = None;
+
         let _ = app.update(Message::OpenSettings);
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_none(), "Escape gives the content area back");
