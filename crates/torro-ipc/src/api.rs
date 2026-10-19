@@ -682,8 +682,8 @@ pub enum Lack {
     SwitchedOff { area: Area },
     /// The engine that runs never gets the area, whatever the rights say: a coding agent answers
     /// outside the person's computers, and the data rule keeps mail on them
-    /// (`NEVER_TO_AGENTS` in the core, task C.7) unless the person lets mail go to Claude Code and
-    /// cloud models (setting `mail_to_cloud`, task C.17).
+    /// (`NEVER_TO_AGENTS` in the core, task C.7) unless the person lets mail go to cloud models
+    /// (setting `mail_to_cloud`, task C.17).
     NeverToAgents { area: Area },
     /// The person set the conversation to read only (issue #132,
     /// [`crate::assistant::Mode::ReadOnly`]): nothing that changes something runs there.

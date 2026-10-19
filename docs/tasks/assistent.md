@@ -5,7 +5,9 @@ Konzept: [assistent.md](../assistent.md), KI-Konten: [ki.md](../ki.md). Issue #7
 Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review`.
 
 > **Stand 2026-10-13: freigegeben.** Alle offenen Punkte sind entschieden (Abschnitt „Entscheidungen“ im Konzept).
-> Open First: Antrieb A (KI-Konto mit Ollama/OpenRouter) zuerst, Antrieb B (Claude Code, Codex) danach.
+> Open First: Antrieb A (KI-Konto mit Ollama/OpenRouter) zuerst. Antrieb B (Agent als Antrieb, C.7) ist
+> gebaut, wird aber seit Issue #219 **nicht mehr angeboten** (C.18); Claude läuft als KI-Konto über
+> Anthropic (KI.1b–KI.1d).
 
 ```
 KI.1a ── C.1 ──┬── C.2 ── C.3 ──┬── C.4 (App)
@@ -16,9 +18,9 @@ C.8 (Skill-Datei und MCP-Prompt) parallel ab C.1
 C.9 (Sprache, Weckwort) nach C.4
 C.10 (Persönlichkeit, Gedächtnis) nach C.3
 KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic, Issue #218) parallel ab KI.1a
-C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #219) nach KI.1d
-     └── C.20 (Texte, Doku)
                  └── KI.1e (Denk-Blöcke)
+C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #219) nach KI.1d
+       └── C.20 (Texte, Doku)
 ```
 
 ### KI.1a Kern: KI-Konten, OpenAI-kompatibel (vorgezogener Teil von KI.1)
@@ -566,7 +568,9 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
   sie einen Standard ohne Antrieb; nachgetragen (zwingend mechanisch):
   `crates/torroassistant/src/app/tests.rs` — zwei Tests (Aufwand je Modell, Standard der
   Steuerzentrale) holten den Antrieb über `demo::CLAUDE_CODE` aus der Demo und bauen ihn nun selbst,
-  `demo::CLAUDE_CODE` entfällt damit)
+  `demo::CLAUDE_CODE` entfällt damit. Der Demo-Standard der Steuerzentrale zeigt auf das **verbundene**
+  KI-Konto (OpenRouter): Das Ollama der Demo ist gefunden, aber nicht verbunden, also ist es kein
+  Antrieb, und die Antriebsliste der Demo trägt wie der Kern keine Modelle)
 - **Modell:** Haiku · **Braucht:** C.18 · **Dateien:** `crates/torroassistant/src/demo.rs`,
   `crates/torro-settings-ui/src/demo.rs`, `crates/torro-settings-ui/src/assistant/{mod,general}.rs`,
   `crates/torroworkplace/src/ui/launch.rs`
@@ -586,10 +590,18 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
 
 ### C.20 Der Mail-Schalter heißt nach den Cloud-Modellen (Issue #219)
 - [x] erledigt (Schalter „Mail to cloud models“ / „Mail an Cloud-Modelle“; `Lack::NeverToAgents` und
-  `Lack::NeverToAgents::message` bleiben inhaltlich, nur der genannte Schaltername zieht nach;
-  nachgetragen (zwingend mechanisch): `crates/torro-core/src/settings.rs` — der Doc-Kommentar des
-  Feldes `mail_to_cloud` nennt Claude Code und steht in `docs/api-reference.md`, sonst wäre die
-  Referenz nach dem Neuerzeugen weiter falsch)
+  `Lack::NeverToAgents::message` bleiben inhaltlich, nur der genannte Schaltername zieht nach.
+  Nachgetragen, weil die Formulierung dort umbrochen oder umschrieben steht und der wörtliche Grep
+  der Abnahme sie nicht findet: `crates/torro-core/src/settings.rs` und `crates/torro-ipc/src/api.rs`
+  (Doc des Feldes bzw. der Variante; das Feld steht in `docs/api-reference.md`),
+  `crates/torroworkplace/src/{core,settings_service}.rs`,
+  `crates/torroworkplace/src/assistant/{data_rule,engines/mod,engines/tests}.rs` und
+  `docs/api.md` (Punkt 6, normative Zusage). **Nicht nur mechanisch:**
+  `crates/torroworkplace/src/assistant/prompt.rs` — der Systemtext eines Agenten-Antriebs schickte
+  dem Modell den alten Schalternamen; er nennt jetzt „Mail to cloud models“, der Wortlaut-Test dort
+  und in `engines/tests.rs` zieht nach. Dazu drei Doc-Kommentare, die einen Agenten noch als
+  angebotenen Antrieb beschrieben: `crates/torroassistant/src/{chat,view}.rs` und
+  `crates/torro-settings-ui/src/assistant/general.rs`)
 - **Modell:** Haiku · **Braucht:** C.18 · **Dateien:** `crates/torroworkplace/src/ui/agents.rs`,
   `crates/torro-ipc/src/{api,lib}.rs`, `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`,
   `docs/tasks/{assistent,steuerzentrale}.md`, `docs/{assistent,ki,settings}.md`

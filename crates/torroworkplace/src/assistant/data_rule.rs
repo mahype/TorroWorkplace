@@ -103,7 +103,7 @@ pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
 /// `mail_to_cloud` as it is when a run starts. The default keeps mail local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DataRule {
-    /// Mail may go to Claude Code and to models elsewhere as well.
+    /// Mail may go to models elsewhere as well.
     pub mail_to_cloud: bool,
 }
 
