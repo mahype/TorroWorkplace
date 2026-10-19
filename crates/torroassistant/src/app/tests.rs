@@ -538,6 +538,7 @@ fn claude_code() -> Engine {
         context: None,
         reasoning: Some(reasoning),
         remote: None,
+        decision: None,
     };
     Engine {
         id: CLAUDE_CODE.into(),

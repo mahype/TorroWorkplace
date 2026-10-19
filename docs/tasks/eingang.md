@@ -2777,7 +2777,11 @@ E12.10 braucht E12.5 und E12.6
   Prüfbefehle aus `docs/issue-workflow.md` sauber.
 
 ### E12.3 SystemOne/Jev im KI-Anbieter
-- [ ] erledigt
+- [x] erledigt (2026-10-19): `torro_core::ai::systemone` mit `DecisionRequest`, `Question`,
+  `DecisionReply`, `Answer`, `decide_body_for` und `read_decision`, Grenzen als Konstanten (die
+  engeren der Jev-Referenz); `openai::ollama_decision`, Feld `AiModel::decision`;
+  `Provider::decide` mit Vorgabe-Implementierung, gesetzt von `OpenAiCompatible` (nur Ollama) und
+  durchgereicht von `AiClient`. `httpmock`-Test gegen `/v1/systemone`, kein echtes Netz.
 - **Modell:** Opus · **Braucht:** E12.1 · **Dateien:**
   `crates/torro-core/src/ai/{mod,systemone,openai}.rs` (neu: `systemone.rs`),
   `crates/torroworkplace/src/account/ai.rs`

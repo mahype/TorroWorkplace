@@ -341,6 +341,7 @@ impl Demo {
             context: None,
             reasoning: Some(true),
             remote: Some(false),
+            decision: None,
         }]
     }
 

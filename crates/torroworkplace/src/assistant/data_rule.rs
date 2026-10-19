@@ -380,6 +380,7 @@ mod tests {
             context: None,
             reasoning: None,
             remote,
+            decision: None,
         }
     }
 

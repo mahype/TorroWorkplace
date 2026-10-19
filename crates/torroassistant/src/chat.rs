@@ -617,6 +617,7 @@ mod tests {
             context: None,
             reasoning: None,
             remote: None,
+            decision: None,
         }
     }
 

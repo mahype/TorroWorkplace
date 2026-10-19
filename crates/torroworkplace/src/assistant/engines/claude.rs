@@ -79,6 +79,7 @@ pub fn models() -> Vec<AiModel> {
             context: None,
             reasoning: Some(*effort),
             remote: None,
+            decision: None,
         })
         .collect()
 }

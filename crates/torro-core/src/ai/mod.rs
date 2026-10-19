@@ -20,6 +20,7 @@
 
 pub mod anthropic;
 pub mod openai;
+pub mod systemone;
 
 use std::fmt;
 use std::future::Future;
@@ -298,6 +299,12 @@ pub struct AiModel {
     /// the person's computer, not that its server does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<bool>,
+    /// The model decides instead of writing (task E12.3, `docs/kategorien.md`): it answers named
+    /// questions with probabilities at `<base>/systemone` ([`systemone`]). `true` or `false`
+    /// where the server says so (Ollama 0.35 and newer list the capability `decision` in
+    /// `/api/show`), `null` where it does not tell. Only such a model is offered for sorting mail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<bool>,
 }
 
 /// How hard a model thinks before it answers (issue #131): sent with a message
@@ -577,6 +584,20 @@ pub trait Provider: Send + Sync {
         request: &'a ChatRequest,
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> BoxFuture<'a, Result<ChatReply, AiError>>;
+
+    /// One call to a decision model (task E12.3, [`systemone`]): named questions in, an answer
+    /// with probabilities out. No text, nothing streamed.
+    ///
+    /// The default refuses, so only a server that speaks the protocol need override it – today
+    /// Ollama from 0.35 on. Anthropic and every other provider keep the default, and asking the
+    /// wrong account is an orderly [`AiError::Invalid`] instead of a request that goes nowhere.
+    fn decide<'a>(
+        &'a self,
+        request: &'a systemone::DecisionRequest,
+    ) -> BoxFuture<'a, Result<systemone::DecisionReply, AiError>> {
+        let _ = request;
+        Box::pin(async { Err(AiError::Invalid(tr("This AI server does not offer decision models.").into())) })
+    }
 }
 
 /// The base address of an OpenAI-compatible API from what a person typed: `localhost:11434` →
@@ -650,6 +671,7 @@ mod tests {
             context: None,
             reasoning: None,
             remote: None,
+            decision: None,
         }
     }
 
