@@ -244,7 +244,14 @@ fn apps(data: &Data) -> Element<'_, Message> {
 fn second_window<'a>(data: &'a Data, app: AppId, label: &'a str) -> Element<'a, Message> {
     let open = installed(data, app).then(|| Message::OpenApp(app.window_class.to_string()));
     let button = widgets::text_button(None, tr("Open"), style::button::secondary, open);
-    setting_row(None, label, app_detail(data, Some(app)), button)
+    // The switch's place stays empty, so every "Open" of the group stands in the same column.
+    let controls = row![button, blank().width(switch_width())].spacing(space::l()).align_y(Alignment::Center);
+    setting_row(None, label, app_detail(data, Some(app)), controls)
+}
+
+/// How wide Iced draws a switch of the suite: twice its height, which is what a row leaves for it.
+fn switch_width() -> f32 {
+    style::CHECK_SIZE + style::CHECK_SIZE
 }
 
 /// The line under an app's name: its window class, for window rules, and "Not installed" while the
