@@ -2262,8 +2262,8 @@ static TEST_VOICE: Command = Command {
     area: Area::Settings,
     access: Access::Admin,
     mcp: Mcp::Never,
-    description: "Records one sentence from the microphone and returns it as text, for the control centre's voice \
-                  test. Only for the app key: it opens the microphone.",
+    description: "Records one sentence from the microphone and returns it as text, for the microphone test in the \
+                  assistant's settings. Only for the app key: it opens the microphone.",
 };
 
 static UPDATE_SETTINGS: Command = Command {
