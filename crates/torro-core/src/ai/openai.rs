@@ -374,7 +374,7 @@ pub fn ollama_runs_elsewhere(id: &str, tags: Option<&HashMap<String, bool>>) -> 
 }
 
 /// The error of an answer with HTTP `status` and `body`: 401 and 403 are [`AiError::Auth`] (never
-/// with the server's words), 404 [`AiError::NotFound`], 402 and 429 [`AiError::Busy`], everything
+/// with the server's words), 404 [`AiError::NotFound`], 402, 429 and 529 [`AiError::Busy`], everything
 /// else [`AiError::Server`] with the server's message on one line. The message is read from
 /// `{"error": {"message": …}}`, `{"error": "…"}` or `{"message": …}`, else the body as text. It is
 /// whole: always pass the result through [`scrub`], which checks it for the key and then shortens
@@ -387,7 +387,9 @@ pub fn error_of(status: u16, body: &[u8]) -> AiError {
     match status {
         401 | 403 => AiError::Auth,
         402 => AiError::Busy(tr("The credit of this AI account is used up.").into()),
-        429 => AiError::Busy(tr("The AI server is busy or limits requests. Try again later.").into()),
+        // 529 is Anthropic's "overloaded", which is a server that is busy and no fault of the
+        // request; the trait's contract puts it with 429.
+        429 | 529 => AiError::Busy(tr("The AI server is busy or limits requests. Try again later.").into()),
         404 if message.is_empty() => {
             AiError::NotFound(tr("The AI server knows no such address or model. Check the address.").into())
         }
@@ -743,6 +745,8 @@ mod tests {
         assert_eq!(error_of(401, br#"{"error":{"message":"Incorrect API key sk-or-v1-abcdef"}}"#), AiError::Auth);
         assert_eq!(error_of(403, b""), AiError::Auth);
         assert!(matches!(error_of(429, b""), AiError::Busy(_)));
+        // Anthropic's "overloaded" is 529 and means the same for people.
+        assert!(matches!(error_of(529, b""), AiError::Busy(_)));
         assert!(matches!(error_of(402, b""), AiError::Busy(_)));
         let AiError::NotFound(missing) =
             error_of(404, br#"{"error":"model \"qwen9\" not found, try pulling it first"}"#)
