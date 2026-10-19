@@ -115,6 +115,7 @@ pub const DARK: Palette = Palette {
     tint: 0.18,
     // New with E8.8b, nothing drew charts before: the standard's chart colours.
     chart: [hex(0x3B78D8), hex(0xC9701E), hex(0x2E9E6B), hex(0xB5509A)],
+    category: [hex(0x4C8DF0), hex(0xCF8A2C), hex(0x2BA39A), hex(0xA99BD0)],
     chart_other: hex(0x5C6068),
     shadow: shadow(0.5),
     scrim: black(0.62),
@@ -156,6 +157,7 @@ pub const LIGHT: Palette = Palette {
     tint: 0.14,
     // New with E8.8b, as in the dark palette.
     chart: [hex(0x2F6BC9), hex(0xB8621A), hex(0x2A9466), hex(0xA8448C)],
+    category: [hex(0x3D77CE), hex(0xB1741F), hex(0x238A82), hex(0x756990)],
     chart_other: hex(0x50545B),
     shadow: shadow(0.12),
     scrim: black(0.3),

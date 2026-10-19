@@ -149,6 +149,7 @@ on_accent = "#04201F"
 bg = "#0B0D10"
 chart = ["#3B78D8", "#C9701E", "#2E9E6B", "#B5509A"]  # optional: Diagrammfarben in fester Reihenfolge (E8.8b)
 chart_other = "#5C6068"        # optional: Grau für „Other“ im Diagramm
+category = ["#4C8DF0", "#CF8A2C", "#2BA39A", "#A99BD0"]  # optional: je eine Farbe pro Kategoriegruppe (E12.7)
 
 [colors.light]
 accent = "#0B7A79"
@@ -219,6 +220,7 @@ Reihenfarben.
 |---|---|---|---|---|
 | `chart` | vier Reihen: Blau, Orange, Grün, Magenta | `#3B78D8` `#C9701E` `#2E9E6B` `#B5509A` | `#2F6BC9` `#B8621A` `#2A9466` `#A8448C` | eigene `calendar`-Farben in der Reihenfolge 1, 3, 2, 4; ohne eigene `calendar` die des Standards |
 | `chart_other` | alles, was keine der vier Reihen ist | `#5C6068` | `#50545B` | eigenes `text_3`, wenn das Paket `panel` ändert; sonst das des Standards |
+| `category` | vier Gruppen der Mail-Kategorien: wartet auf mich, Belege, Info, Müll | `#4C8DF0` `#CF8A2C` `#2BA39A` `#A99BD0` | `#3D77CE` `#B1741F` `#238A82` `#756990` | die des Standards |
 
 - **Reihenfolge ist Teil der Prüfung.** Die vier Farben wurden als Satz mit dem Dataviz-Validator geprüft
   (Helligkeitsband, Sättigung, Unterscheidbarkeit benachbarter Paare bei Rot-Grün-Schwäche ΔE ≥ 8 und bei normalem
@@ -240,7 +242,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Format | `format = 1`; `name` und `version` vorhanden; unbekannte Schlüssel sind ein Fehler (Tippfehler sollen auffallen) |
 | Nur Daten | Ein Paket enthält nie Code. Gelesen werden nur `design.toml`, SVG, PNG, TTF/OTF |
 | Kontrast Text | `text`, `text_2`, `text_3` ≥ 4,5:1 auf `bg`, `panel`, `raised`, `hover`, `selected`, `menu` (hell und dunkel) |
-| Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben, Diagrammfarben (`chart`, `chart_other`) ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
+| Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben, Diagrammfarben (`chart`, `chart_other`) und Kategoriefarben (`category`) ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
 | Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected` (auch mit zurückgefallenen Werten). Hat die Leiste eine eigene Fläche (`sidebar` ≠ `bg`): `focus_ring`, `accent`, `merged` und Kalenderfarben ≥ 3:1 auf `sidebar`, Statusfarben im dunklen Modus ebenso. Ohne eigene Fläche gilt für Grafik nichts Neues, ältere Pakete bleiben gültig |
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; `hero` 32–72 und `countdown` 20–48 (Erinnerung im Vollbild, ER1.5); jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |

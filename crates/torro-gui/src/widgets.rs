@@ -2894,6 +2894,54 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
         .into()
 }
 
+/// What a mail is, as a pill in the list, the reader and the panel (task E12.7,
+/// `docs/kategorien.md`): the group's icon and colour, the category's words.
+///
+/// `group` is the index of `torro_mail::CategoryGroup` (0 waiting for me, 3 junk) and picks the
+/// colour out of [`theme::Palette::category`]; a larger index falls back to the last. Colour and
+/// icon are per **group**, the words per category: 23 colours could not stay apart, and four can.
+///
+/// `suggested` marks a category a model chose (`docs/ki.md`, principle 5): the sparkles the suite
+/// puts on every AI result go in front. A category from a header or from the person has none.
+///
+/// Not a button: the click belongs to the row around it. Changing the category goes through the
+/// row's menu.
+pub fn category_pill<'a, M: 'a>(
+    icon: Icon,
+    group: usize,
+    label: impl IntoFragment<'a>,
+    suggested: bool,
+) -> Element<'a, M> {
+    let at = group.min(3);
+    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
+    if suggested {
+        content = content.push(sparkle(pill_icon()));
+    }
+    content = content.push(group_icon(icon, at)).push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
+    container(content)
+        .center_y(PILL_HEIGHT)
+        .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
+        .style(move |t| {
+            let p = palette(t);
+            container::Style {
+                text_color: Some(p.text_2),
+                border: border::rounded(radius::xs()).color(p.category[at]).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The icon of a category group in its own colour ([`category_pill`]).
+fn group_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
+    icon(which, pill_icon()).style(move |t, _| svg::Style { color: Some(palette(t).category[group]) }).into()
+}
+
+/// The sparkles the suite marks every AI result with, in the accent colour.
+fn sparkle<'a, M: 'a>(edge: f32) -> Element<'a, M> {
+    icon(Icon::Sparkles, edge).style(move |t, _| svg::Style { color: Some(palette(t).accent) }).into()
+}
+
 /// [`label_chip`]s side by side with 4 between them, wrapping onto more lines when they do not
 /// fit (the value of a "Labels" [`prop_line`]).
 pub fn label_chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
@@ -3685,6 +3733,24 @@ pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: O
 
 #[cfg(test)]
 mod tests {
+    /// Task E12.7: the four group colours stand out on the panel in both modes, stay apart from
+    /// one another, and there is one per group – no more.
+    #[test]
+    fn the_category_colours_are_visible_and_distinct() {
+        let standard = torro_core::design::Design::standard();
+        for (mode, p) in [("light", &standard.colors.light), ("dark", &standard.colors.dark)] {
+            assert_eq!(p.category.len(), 4, "one colour per group, not per category");
+            for (at, colour) in p.category.iter().enumerate() {
+                let ratio = colour.contrast(p.panel);
+                assert!(ratio >= 3.0, "{mode} category[{at}] is {ratio:.2}:1 on the panel");
+            }
+            for (at, colour) in p.category.iter().enumerate() {
+                for (other, second) in p.category.iter().enumerate().skip(at + 1) {
+                    assert_ne!(colour, second, "{mode}: category[{at}] reads like category[{other}]");
+                }
+            }
+        }
+    }
     use super::*;
 
     #[derive(Debug, Clone, PartialEq)]

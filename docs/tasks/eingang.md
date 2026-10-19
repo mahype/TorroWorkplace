@@ -3021,7 +3021,12 @@ E12.10 braucht E12.5 und E12.6
   nachjustiert werden kann. Ein Test, dass keine Protokollzeile Betreff, Absender oder Text enthält.
 
 ### E12.7 Bausteine: Kategorie-Pille und Gruppenfarben
-- [ ] erledigt
+- [x] erledigt (2026-10-19): `Palette::category` (vier Gruppenfarben, hell und dunkel, in
+  `design.rs`, `theme.rs` und `legacy.rs`), geprüft von `design/rules.rs` auf ≥ 3:1 gegen `panel`
+  – die Regel fing sofort eine zu dunkle Müll-Farbe im Paket `nord`; `widgets::category_pill` mit
+  Gruppen-Icon, Gruppenfarbe und Sparkles für einen Vorschlag; Galerie `--categories`;
+  `docs/design-pakete.md` und der Skill `torro-design` nachgezogen. `scripts/design-check.sh`
+  sauber.
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{theme,widgets}.rs`,
   `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/rules.rs`,
   `crates/torro-gui/examples/gallery.rs`, `docs/design-pakete.md`,
