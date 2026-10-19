@@ -5,14 +5,15 @@
 //!
 //! Each call opens its own connection, sends one [`crate::Envelope`] line and reads one response
 //! line. The suite's own programs use [`call`], which reads the app key of the core, so they
-//! never deal with keys; scripts and the MCP server bring their own key to [`call_with_key`].
+//! never deal with keys; scripts bring their own key to [`call_with_key`], the MCP server and the
+//! hooks of agents theirs to [`call_with_key_via`] with [`Door::Mcp`] (#231).
 //!
 //! On Windows the client checks who serves the pipe before it sends anything (X.1b): the pipe
 //! name is fixed and known, so while the core is not running another user could hold it.
 
 use std::path::Path;
 
-use crate::{IpcError, Key, Request, Response, app_key_path};
+use crate::{Door, IpcError, Key, Request, Response, app_key_path};
 
 /// Sends `request` to the core at `path` with the app key and waits for its response.
 /// [`IpcError::NotRunning`] when nothing listens there.
@@ -27,15 +28,35 @@ pub async fn call(path: &Path, request: &Request) -> Result<Response, IpcError> 
 }
 
 /// Sends `request` with `key` (or none) to the core at `path` and waits for its response.
-/// [`IpcError::NotRunning`] when nothing listens there.
+/// [`IpcError::NotRunning`] when nothing listens there. The envelope names no way (`via`), so the
+/// core takes it as come through the API ([`Door::Api`]).
 ///
 /// `path` is a socket file on Unix and a named pipe (`\\.\pipe\…`, see [`crate::socket_path`])
 /// on Windows; on Windows any other path counts as nothing listening, so a stray path never
 /// opens a file or device, and a pipe whose server runs as another user (or whose owner cannot be
 /// found out) gets nothing, not even a request without key: [`IpcError::Io`] with
 /// [`std::io::ErrorKind::PermissionDenied`]. Elsewhere [`IpcError::Unsupported`].
-#[cfg(unix)]
 pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) -> Result<Response, IpcError> {
+    send(path, key, None, request).await
+}
+
+/// [`call_with_key`] that tells the core the way the request came (`via`, #231): `torroworkplace
+/// mcp` and `torroworkplace hook` send [`Door::Mcp`], so the core lets their agents' keys in only
+/// while "Allow MCP" is on and refuses a script's key there. Everything else is as for
+/// [`call_with_key`].
+pub async fn call_with_key_via(
+    path: &Path,
+    key: Option<&Key>,
+    door: Door,
+    request: &Request,
+) -> Result<Response, IpcError> {
+    send(path, key, Some(door), request).await
+}
+
+/// Connects to the core at `path` and exchanges one envelope with `key`, `via` and `request` for
+/// its response; see [`call_with_key`].
+#[cfg(unix)]
+async fn send(path: &Path, key: Option<&Key>, via: Option<Door>, request: &Request) -> Result<Response, IpcError> {
     use std::io::ErrorKind;
 
     use tokio::net::UnixStream;
@@ -49,28 +70,21 @@ pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) ->
         Err(err) => return Err(IpcError::Io(err)),
     };
     let (read, write) = stream.into_split();
-    exchange(read, write, key, request).await
+    exchange(read, write, key, via, request).await
 }
 
-/// Sends `request` with `key` (or none) to the core at `path` and waits for its response.
-/// [`IpcError::NotRunning`] when nothing listens there.
-///
-/// `path` is a socket file on Unix and a named pipe (`\\.\pipe\…`, see [`crate::socket_path`])
-/// on Windows; on Windows any other path counts as nothing listening, so a stray path never
-/// opens a file or device, and a pipe whose server runs as another user (or whose owner cannot be
-/// found out) gets nothing, not even a request without key: [`IpcError::Io`] with
-/// [`std::io::ErrorKind::PermissionDenied`]. Elsewhere [`IpcError::Unsupported`].
+/// The named pipe side of [`send`] above.
 #[cfg(windows)]
-pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) -> Result<Response, IpcError> {
+async fn send(path: &Path, key: Option<&Key>, via: Option<Door>, request: &Request) -> Result<Response, IpcError> {
     let pipe = open_pipe(path).await?;
     let (read, write) = tokio::io::split(pipe);
-    exchange(read, write, key, request).await
+    exchange(read, write, key, via, request).await
 }
 
 /// Neither Unix nor Windows: [`IpcError::Unsupported`].
 #[cfg(not(any(unix, windows)))]
-pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) -> Result<Response, IpcError> {
-    let _ = (path, key, request);
+async fn send(path: &Path, key: Option<&Key>, via: Option<Door>, request: &Request) -> Result<Response, IpcError> {
+    let _ = (path, key, via, request);
     Err(IpcError::Unsupported)
 }
 
@@ -160,7 +174,13 @@ fn is_same_user(own: Option<&str>, server: Option<&str>) -> bool {
 
 /// Writes the envelope line of `request` to `write` and reads the one response line from `read`.
 #[cfg(any(unix, windows))]
-async fn exchange<R, W>(read: R, mut write: W, key: Option<&Key>, request: &Request) -> Result<Response, IpcError>
+async fn exchange<R, W>(
+    read: R,
+    mut write: W,
+    key: Option<&Key>,
+    via: Option<Door>,
+    request: &Request,
+) -> Result<Response, IpcError>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
@@ -169,7 +189,7 @@ where
 
     use crate::{API_VERSION, Envelope};
 
-    let envelope = Envelope { v: API_VERSION, key: key.cloned(), request: request.clone() };
+    let envelope = Envelope { v: API_VERSION, key: key.cloned(), via, request: request.clone() };
     let mut bytes = serde_json::to_vec(&envelope).map_err(|err| IpcError::Protocol(err.to_string()))?;
     bytes.push(b'\n');
     write.write_all(&bytes).await.map_err(IpcError::Io)?;

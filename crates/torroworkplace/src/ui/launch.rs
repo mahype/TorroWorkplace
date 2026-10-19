@@ -929,6 +929,7 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         mail_accounts: Selection::Only(Vec::new()),
         outbound: Outbound::Never,
         confirm: Confirm::Never,
+        denied: Default::default(),
     };
     let mut assistant = Rights::assistant();
     set(&mut assistant, Area::Calendar, Level::Write, false);
@@ -1106,6 +1107,10 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 rights: rights.clone().unwrap_or_else(|| template.rights()).for_kind(kind),
                 agent: *agent,
             };
+            // The assistant gets no key (#231): the core answers with the client alone.
+            if kind == torro_ipc::api::ASSISTANT_CLIENT {
+                return Some(Response::Client { client });
+            }
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "a3e81c0f6d2b9754".repeat(4))));
             Some(Response::ClientKey { client, key })
         }

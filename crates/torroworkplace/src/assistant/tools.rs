@@ -11,7 +11,7 @@
 //!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
 //!   checks), and never a command kept from agents ([`Mcp::Never`]). Rights are not checked
 //!   here for safety – the core checks every call – but so the model is not offered what would be
-//!   `forbidden` anyway.
+//!   `forbidden` anyway, a command the person switched off for it (`Rights::denied`, #231) too.
 //! - **How many** ([`offered`]): all of them up to [`MAX_TOOLS`]; beyond that, and always for a
 //!   small model ([`is_small`]), the reading ones and the memory first, then [`FIND_TOOLS`], which
 //!   searches the allowed ones ([`find`]) and adds its matches from the next step on. The memory is
@@ -415,6 +415,7 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
             trf("{engine} does not get {area} (data rule)", &[("engine", &engine), ("area", &area(a))])
         }
         Lack::ReadOnly => tr("Read only in this conversation").into(),
+        Lack::Denied { area: a } => trf("Turned off in {area}", &[("area", &area(a))]),
     }
 }
 
@@ -480,6 +481,27 @@ mod tests {
             "the switch first"
         );
         assert_eq!(lack_summary(Lack::ReadOnly, "Ollama"), tr("Read only in this conversation"));
+    }
+
+    /// #231: a command switched off for the assistant is not offered, its neighbours are, and what
+    /// it may by its kind (its memory) stays; a refusal of it reads "Turned off".
+    #[test]
+    fn a_command_switched_off_is_not_offered() {
+        let mut rights = Rights::assistant();
+        rights.denied = ["calendar.list_events", "assistant.remember"].map(String::from).into();
+        let tools = allowed(Some(&rights), &[]);
+        assert!(named(&tools, "calendar_list_events").is_none(), "switched off");
+        assert!(named(&tools, "calendar_list_calendars").is_some(), "the area stays");
+        assert!(named(&tools, "assistant_remember").is_some(), "its memory is its own");
+        let list = named(&allowed(Some(&Rights::assistant()), &[]), "calendar_list_events").expect("offered").command;
+        let operation = Operation { command: list, access: list.access };
+        let lack = lack_in(ASSISTANT_CLIENT, Some(&rights), operation, &[], &[], Mode::Default);
+        assert_eq!(lack, Some(Lack::Denied { area: Area::Calendar }));
+        let calendar = crate::ui::agents::area_label(Area::Calendar);
+        assert_eq!(
+            lack_summary(Lack::Denied { area: Area::Calendar }, "Ollama"),
+            trf("Turned off in {area}", &[("area", &calendar)])
+        );
     }
 
     #[test]

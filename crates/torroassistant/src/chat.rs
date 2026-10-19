@@ -458,6 +458,7 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
             "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
             &[("area", &name(area))],
         ),
+        Lack::Denied { area } => trf("You turned this off for the assistant in {area}.", &[("area", &name(area))]),
     };
     (text, lack.in_rights())
 }

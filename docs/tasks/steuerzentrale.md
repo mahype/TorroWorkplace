@@ -788,7 +788,7 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   grün.
 
 ### S.32 Kern: Sperrliste je Befehl, Weg im Umschlag, Schalter für API und MCP
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Rechte, Schlüssel, Schnittstellen) · **Dateien:** `crates/torro-ipc/src/api.rs`,
   `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/client.rs`, `crates/torro-ipc/src/server.rs`,
   `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/settings_service.rs`,

@@ -502,9 +502,11 @@ fn send(socket: &Path, key: &Key, request: &Request) -> Result<Response, HookErr
     runtime.block_on(call(socket, key, request))
 }
 
-/// One call to the core within [`BUDGET`], on the caller's runtime.
+/// One call to the core within [`BUDGET`], on the caller's runtime. It comes through MCP (#231,
+/// `via: mcp`): the hooks belong to an agent's connection, and without a key file `TORRO_TOKEN`
+/// may hold the agent's own key, which the core takes only that way.
 async fn call(socket: &Path, key: &Key, request: &Request) -> Result<Response, HookError> {
-    let call = torro_ipc::client::call_with_key(socket, Some(key), request);
+    let call = torro_ipc::client::call_with_key_via(socket, Some(key), torro_ipc::Door::Mcp, request);
     tokio::time::timeout(BUDGET, call).await.map_err(|_| HookError::TimedOut)?.map_err(HookError::Ipc)
 }
 
@@ -1419,6 +1421,46 @@ mod tests {
         assert!(matches!(refused, Err(HookError::Refused { .. })), "{refused:?}");
     }
 
+    /// #231: set up by hand, the hook takes `TORRO_TOKEN`, which may be the agent's own key: it
+    /// comes through MCP, so the core takes it there, while the same key through the API is refused;
+    /// with MCP turned off the hook is refused too.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_hook_reports_with_the_agents_own_key_through_mcp() {
+        use torro_ipc::api::RightsTemplate;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (socket, _) = core_on_socket(dir.path(), AgentKind::ClaudeCode).await;
+        let create = Request::CreateClient {
+            name: "Claude Code".into(),
+            kind: "claude-code".into(),
+            template: RightsTemplate::ReadAndWrite,
+            agent: None,
+            rights: None,
+        };
+        let Ok(Response::ClientKey { key, .. }) = torro_ipc::client::call(&socket, &create).await else {
+            panic!("the app key connects the agent");
+        };
+        let token = key.expose().to_string();
+        let report = |token: String| {
+            let socket = socket.clone();
+            tokio::task::spawn_blocking(move || {
+                let args = HookArgs { agent: AgentKind::ClaudeCode, key_file: None, answer: false };
+                let key = key_for(&args, Some(token))?;
+                run(AgentKind::ClaudeCode, Some(&fixture("claude-code-stop")), Some(&socket), key.as_ref())
+            })
+        };
+        let sent = report(token.clone()).await.expect("ran");
+        assert!(matches!(&sent, Ok(Outcome::Sent(_))), "{sent:?}");
+        let api = torro_ipc::client::call_with_key(&socket, Some(&Key::new(token.as_str())), &Request::Ping).await;
+        assert!(matches!(&api, Ok(Response::Error { code, .. }) if code == "unauthorized"), "{api:?}");
+
+        let off = Request::SetSetting { key: torro_ipc::SettingKey::AllowMcp, value: serde_json::json!(false) };
+        assert!(matches!(torro_ipc::client::call(&socket, &off).await, Ok(Response::Ok)));
+        let refused = report(token).await.expect("ran");
+        assert!(matches!(&refused, Err(HookError::Refused { code, .. }) if code == "unauthorized"), "{refused:?}");
+    }
+
     /// A core in `dir` serving its socket (`dir/state/core.sock`, the app key next to it) with a
     /// hook client of `agent`; returns the socket and the hook client's key. Nothing of the
     /// user's: approvals, inbox and clients all live in `dir`, and no notification is shown.
@@ -1447,9 +1489,9 @@ mod tests {
         let socket = dir.join("state").join("core.sock");
         let path = socket.clone();
         tokio::spawn(async move {
-            torro_ipc::server::serve_with_key(&path, move |key, request| {
+            torro_ipc::server::serve_with_key(&path, move |key, door, request| {
                 let core = Arc::clone(&core);
-                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+                async move { core.handle_from(key.as_ref(), door, request).await.unwrap_or_else(|r| r.response()) }
             })
             .await
         });

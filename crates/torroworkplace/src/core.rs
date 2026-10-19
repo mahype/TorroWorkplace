@@ -18,7 +18,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
 use torro_ipc::api::{Access, Area, Selection};
 use torro_ipc::assistant::Mode;
-use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
+use torro_ipc::{API_VERSION, AccountInfo, Door, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_mail::MailSettings;
 use torro_mail_imap::discover::{LoginHint, MailDiscoverer, MailDiscovery};
 use torro_pim::AccountState;
@@ -1551,9 +1551,14 @@ impl Core {
         (self.settle_done)(&self.sources(), item);
     }
 
-    /// A request from the socket with the key the client sent. Every request from outside the
-    /// core goes through here, in this order (`docs/api.md`, "Prüfung im Dienst"):
+    /// A request from the socket with the key the client sent, come the way `door` says (`via` in
+    /// the envelope). Every request from outside the core goes through here, in this order
+    /// (`docs/api.md`, "Prüfung im Dienst"):
     ///
+    /// 0. the way in (#231, [`crate::clients::closed_door`]): right after the key names a client,
+    ///    before its rights and before `system.ping`, its kind must come this way with its switch on
+    ///    (`allow_api_keys`, `allow_mcp`), else `unauthorized` with the reason, logged like other
+    ///    refusals and never an approval;
     /// 1. key and rights of the area ([`Clients::admit`]): `unauthorized` or `forbidden`;
     /// 2. for a client key, the collections a write or `set_collection_shown` touches: outside
     ///    its reach the answer is `not-found`, as if they did not exist;
@@ -1579,14 +1584,17 @@ impl Core {
     /// ([`crate::audit`]) once it is answered, refused ones too: its client (none for an unknown
     /// key), command, ids and result. A ping without a valid key is not logged: nothing ran and
     /// nobody is known.
-    pub async fn handle_from(&self, key: Option<&Key>, request: Request) -> Result<Response, Refused> {
-        let (client, admitted) = match self.clients.admit(key, &request) {
-            Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
-            Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
-            Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
-            Err(refused) => match self.admit_by_kind(key, &request) {
-                Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
-                None => (self.client_of(key), Err(refused)),
+    pub async fn handle_from(&self, key: Option<&Key>, door: Door, request: Request) -> Result<Response, Refused> {
+        let (client, admitted) = match self.door_refusal(key, door, &request) {
+            Some((id, refused)) => (Some(id), Err(refused)),
+            None => match self.clients.admit(key, &request) {
+                Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
+                Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
+                Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
+                Err(refused) => match self.admit_by_kind(key, &request) {
+                    Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
+                    None => (self.client_of(key), Err(refused)),
+                },
             },
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
@@ -1614,6 +1622,18 @@ impl Core {
         };
         self.audit.record(&shown);
         answer
+    }
+
+    /// The client of `key` and why it may not come in `door` now (#231,
+    /// [`crate::clients::closed_door`] with the switches as stored), refused as
+    /// [`Refused::Closed`] (`unauthorized`); `None` for the app key, a key the core does not know
+    /// (step 1 refuses it) and a client that may come this way.
+    fn door_refusal(&self, key: Option<&Key>, door: Door, request: &Request) -> Option<(String, Refused)> {
+        let id = self.client_of(key)?;
+        let kind = self.client_kind(&id)?;
+        let settings = self.settings.current();
+        let why = crate::clients::closed_door(&kind, Some(door), settings.allow_api_keys, settings.allow_mcp)?;
+        Some((id, Refused::Closed { command: request.operation().name(), why }))
     }
 
     /// The assistant's own client with `key` and its rights (lent ones narrowed as lent), when its
@@ -2575,6 +2595,12 @@ impl Core {
             return Response::Error { code: "forbidden".into(), message };
         };
         info.rights = effective;
+        // The way in as it is now (#231): an approval asked for while MCP was on does not run once a
+        // person turned it off. The command switched off meanwhile is refused with the rights below.
+        let settings = self.settings.current();
+        if let Some(why) = crate::clients::closed_door(&info.kind, None, settings.allow_api_keys, settings.allow_mcp) {
+            return Refused::Closed { command, why }.response();
+        }
         let rights = &info.rights;
         let allowed =
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
@@ -2874,11 +2900,31 @@ impl Core {
                 code: "error".into(),
                 message: "a bot's access is made with the bot (bots.save_bot)".into(),
             },
+            // The kinds are closed (#231): a kind the core does not know would be checked like a script.
+            Request::CreateClient { kind, .. } if !torro_ipc::api::CLIENT_KINDS.contains(&kind.trim()) => {
+                let kinds = torro_ipc::api::CLIENT_KINDS.join(", ");
+                Response::Error { code: "error".into(), message: format!("no client kind {kind:?}; one of {kinds}") }
+            }
             Request::CreateClient { name, kind, template, agent, rights } => {
                 let rights = rights.unwrap_or_else(|| template.rights());
-                issued(self.clients.add_client(&name, &kind, agent, rights).await)
+                let added = self.clients.add_client(&name, &kind, agent, rights).await;
+                match added {
+                    // The assistant gets no key (decision 12 in `docs/api.md`): the core runs its tools
+                    // itself, and no key may reach an app's process. Its key is dropped here unseen.
+                    Ok((client, _)) if client.kind == torro_ipc::api::ASSISTANT_CLIENT => Response::Client { client },
+                    added => issued(added),
+                }
             }
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
+            Request::NewClientKey { id }
+                if matches!(
+                    self.client_kind(&id).as_deref(),
+                    Some(torro_ipc::api::ASSISTANT_CLIENT | torro_ipc::api::BOT_CLIENT)
+                ) =>
+            {
+                let message = "the assistant and bots get no key: the core runs their tools itself".into();
+                Response::Error { code: "unsupported".into(), message }
+            }
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => self.remove_client(&id).await,
             Request::ClientActivity { id } => self.client_activity(id).await,
@@ -5333,13 +5379,17 @@ impl Core {
 
     /// Whether `request` from a client switches on through the whole settings what only a person
     /// switches on (`settings.update_settings` with it on while it is off): the microphone (point
-    /// 6) and mail to cloud models (`mail_to_cloud`, task C.17), refused like
-    /// `settings.set_setting` with `true` ([`torro_ipc::api::Rights::allows_request`]), which
-    /// carries the value itself.
+    /// 6), mail to cloud models (`mail_to_cloud`, task C.17) and the ways in (`allow_api_keys`,
+    /// `allow_mcp`, #231), refused like `settings.set_setting` with `true`
+    /// ([`torro_ipc::api::Rights::allows_request`]), which carries the value itself.
     fn switches_on_for_people(&self, request: &Request) -> bool {
         let Request::UpdateSettings { settings } = request else { return false };
         let now = self.settings.current();
-        (settings.voice.enabled && !now.voice.enabled) || (settings.mail_to_cloud && !now.mail_to_cloud)
+        let on = |new: bool, stored: bool| new && !stored;
+        on(settings.voice.enabled, now.voice.enabled)
+            || on(settings.mail_to_cloud, now.mail_to_cloud)
+            || on(settings.allow_api_keys, now.allow_api_keys)
+            || on(settings.allow_mcp, now.allow_mcp)
     }
 
     /// `settings.voice_status` (task C.9): what the listener does, and what the assistant app
@@ -6123,9 +6173,22 @@ mod tests {
         .with_inbox(crate::inbox::tests::inbox_in(dir))
     }
 
-    /// What a client on the socket gets back for `request` with `key`.
+    /// What a client on the socket gets back for `request` with `key`, come the way its kind comes
+    /// ([`door_for`]).
     async fn ask(core: &Core, key: Option<&Key>, request: Request) -> Response {
-        core.handle_from(key, request).await.unwrap_or_else(Refused::response)
+        core.handle_from(key, door_for(core, key), request).await.unwrap_or_else(Refused::response)
+    }
+
+    /// [`ask`] with the way `door` (#231).
+    async fn ask_via(core: &Core, key: Option<&Key>, door: Door, request: Request) -> Response {
+        core.handle_from(key, door, request).await.unwrap_or_else(Refused::response)
+    }
+
+    /// The way a client of `key`'s kind comes when it is used as meant (#231): MCP for an MCP
+    /// client, else the API (a script, a hook, the assistant, the app key, an unknown key).
+    fn door_for(core: &Core, key: Option<&Key>) -> Door {
+        let kind = core.client_of(key).and_then(|id| core.client_kind(&id));
+        if kind.as_deref().is_some_and(torro_ipc::api::is_mcp_kind) { Door::Mcp } else { Door::Api }
     }
 
     fn code(response: &Response) -> &str {
@@ -6366,7 +6429,8 @@ mod tests {
         let mut chosen = Rights::assistant();
         chosen.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         chosen.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
-        let Response::ClientKey { client, .. } = ask(&core, Some(&app_key), create(Some(chosen.clone()))).await else {
+        // The assistant gets no key (#231).
+        let Response::Client { client } = ask(&core, Some(&app_key), create(Some(chosen.clone()))).await else {
             panic!("created with its rights");
         };
         let expected = chosen.for_kind(torro_ipc::api::ASSISTANT_CLIENT);
@@ -6390,6 +6454,243 @@ mod tests {
         });
         let parsed: Request = serde_json::from_value(json).expect("parses without rights");
         assert!(matches!(parsed, Request::CreateClient { rights: None, .. }));
+    }
+
+    /// #231: the kinds `clients.create_client` takes are closed; the assistant gets its client
+    /// without a key, "Other MCP client" a key and a source of its own name; neither the assistant
+    /// nor a bot ever gets a new key.
+    #[tokio::test]
+    async fn create_client_takes_known_kinds_and_keeps_keys_from_the_assistant_and_bots() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let create = |name: &str, kind: &str| Request::CreateClient {
+            name: name.into(),
+            kind: kind.into(),
+            template: RightsTemplate::ReadOnly,
+            agent: None,
+            rights: None,
+        };
+        for kind in ["zed", "bot", "Script"] {
+            assert_eq!(code(&ask(&core, Some(&app_key), create("X", kind)).await), "error", "{kind}");
+        }
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: Vec::new() });
+
+        let Response::Client { client: assistant } =
+            ask(&core, Some(&app_key), create("Assistant", torro_ipc::api::ASSISTANT_CLIENT)).await
+        else {
+            panic!("the assistant's client, without a key");
+        };
+        let Response::ClientKey { client: zed, .. } = ask(&core, Some(&app_key), create("Zed", "mcp")).await else {
+            panic!("an MCP client gets a key");
+        };
+        let Response::ClientKey { client: warp, .. } = ask(&core, Some(&app_key), create("Warp", "mcp")).await else {
+            panic!("a second one with another name");
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), create("zed", "mcp")).await), "conflict", "its name is its source");
+        let source = |client: &torro_ipc::ClientInfo| torro_ipc::api::post_source(Some(client), None).map(|s| s.key());
+        assert_eq!((source(&zed), source(&warp)), (Ok("agent:mcp:Zed".into()), Ok("agent:mcp:Warp".into())));
+
+        let (bot, _) =
+            core.clients.add("Travel planner", torro_ipc::api::BOT_CLIENT, Rights::none()).await.expect("bot");
+        for id in [&assistant.id, &bot.id] {
+            let refused = ask(&core, Some(&app_key), Request::NewClientKey { id: id.clone() }).await;
+            assert_eq!(code(&refused), "unsupported", "{id}");
+        }
+        assert!(matches!(
+            ask(&core, Some(&app_key), Request::NewClientKey { id: zed.id.clone() }).await,
+            Response::ClientKey { .. }
+        ));
+        assert_eq!(code(&ask(&core, Some(&app_key), Request::NewClientKey { id: "gone".into() }).await), "not-found");
+    }
+
+    /// #231: a command switched off for a client is `forbidden` with its reason, though the level
+    /// allows it; the other commands of the area still run.
+    #[tokio::test]
+    async fn a_command_switched_off_is_refused_with_its_reason() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.denied = ["workspaces.delete_template".to_string()].into();
+        let (_, key) = client(&core, rights).await;
+        let refused = ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await;
+        let Response::Error { code, message } = &refused else { panic!("refused, got {refused:?}") };
+        assert_eq!(code, "forbidden");
+        assert!(message.contains("turned it off for this command"), "{message}");
+        assert!(core.store.load("dev").is_ok(), "nothing ran");
+        assert!(matches!(ask(&core, Some(&key), Request::ListTemplates).await, Response::Templates { .. }));
+        assert!(matches!(ask(&core, Some(&key), Request::Ping).await, Response::Pong { .. }));
+    }
+
+    /// #231: what the assistant may by its kind (its memory, its own access) stays allowed whatever
+    /// the list says; its access names the commands switched off, and those are refused.
+    #[tokio::test]
+    async fn the_assistant_keeps_what_its_kind_may_and_tells_what_is_switched_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core(dir.path()).with_assistant(assistant);
+        let mut rights = Rights::assistant();
+        rights.denied = ["assistant.list_memories", "assistant.my_access", "tasks.list_lists"].map(String::from).into();
+        let (_, key) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+        assert!(matches!(ask(&core, Some(&key), Request::ListMemories).await, Response::Memories { .. }));
+        let access = my_access_of(&ask(&core, Some(&key), Request::MyAccess).await);
+        assert!(access.rights.denied.contains("tasks.list_lists"), "{:?}", access.rights.denied);
+        assert_eq!(code(&ask(&core, Some(&key), Request::TaskCollections).await), "forbidden");
+        assert!(matches!(ask(&core, Some(&key), Request::CalendarCollections).await, Response::Collections { .. }));
+    }
+
+    /// What `system.ping` with `key` through `door` gets: `pong`, or the error code.
+    async fn ping_via(core: &Core, key: &Key, door: Door) -> String {
+        match ask_via(core, Some(key), door, Request::Ping).await {
+            Response::Pong { .. } => "pong".into(),
+            Response::Error { code, .. } => code,
+            other => panic!("expected a pong or an error, got {other:?}"),
+        }
+    }
+
+    /// #231 (`docs/api.md` "Transport"): a script comes through the API, an MCP client through MCP,
+    /// a hook either way; a kind from an older `clients.json` is checked like a script. With "Allow
+    /// API keys" off the script is refused and the agent is not; with "Allow MCP" off the agent and
+    /// the hook are, a key lent to the assistant is not. A closed way refuses `system.ping` too,
+    /// with the reason, and the log has the line.
+    #[tokio::test]
+    async fn each_kind_comes_its_way_while_its_switch_is_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let rights = RightsTemplate::ReadOnly.rights();
+        let (script, script_key) = core.clients.add("Backup", "script", rights.clone()).await.expect("added");
+        let (_, agent) = core.clients.add("Claude Code", "claude-code", rights.clone()).await.expect("added");
+        let (_, other) = core.clients.add("Zed", "mcp", rights.clone()).await.expect("added");
+        let (_, hook) = core
+            .clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
+            .await
+            .expect("added");
+        let (_, old) = core.clients.add("Old", "zed-editor", rights.clone()).await.expect("from an older version");
+        let (assistant, _) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        let lent = core.clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let ways = |answers: [&str; 2]| answers.map(String::from);
+        for (key, expected, who) in [
+            (&script_key, ["pong", "unauthorized"], "script"),
+            (&agent, ["unauthorized", "pong"], "agent"),
+            (&other, ["unauthorized", "pong"], "other MCP client"),
+            (&hook, ["pong", "pong"], "hook"),
+            (&old, ["pong", "unauthorized"], "an unknown kind"),
+            (lent.key(), ["pong", "pong"], "lent"),
+            (&app_key, ["pong", "pong"], "app key"),
+        ] {
+            let got = [ping_via(&core, key, Door::Api).await, ping_via(&core, key, Door::Mcp).await];
+            assert_eq!(got, ways(expected), "{who}");
+        }
+        let Response::Error { message, .. } = ask_via(&core, Some(&agent), Door::Api, Request::ListTemplates).await
+        else {
+            panic!("refused");
+        };
+        assert!(message.contains(crate::clients::MCP_KEY), "{message}");
+
+        let switch = |key, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
+        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, false)).await, Response::Ok);
+        let Response::Error { code, message } = ask_via(&core, Some(&script_key), Door::Api, Request::Ping).await
+        else {
+            panic!("refused");
+        };
+        assert_eq!((code.as_str(), message.contains(crate::clients::API_OFF)), ("unauthorized", true), "{message}");
+        assert_eq!(ping_via(&core, &old, Door::Api).await, "unauthorized");
+        assert_eq!(ping_via(&core, &agent, Door::Mcp).await, "pong", "MCP stays open");
+        assert_eq!(ping_via(&core, &hook, Door::Mcp).await, "pong");
+
+        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, true)).await, Response::Ok);
+        assert_eq!(core.handle(switch(SettingKey::AllowMcp, false)).await, Response::Ok);
+        let Response::Error { message, .. } = ask_via(&core, Some(&agent), Door::Mcp, Request::Ping).await else {
+            panic!("refused");
+        };
+        assert!(message.contains(crate::clients::MCP_OFF), "{message}");
+        for door in [Door::Api, Door::Mcp] {
+            assert_eq!(ping_via(&core, &hook, door).await, "unauthorized", "{door:?}");
+            assert_eq!(ping_via(&core, &other, door).await, "unauthorized", "{door:?}");
+            assert_eq!(ping_via(&core, lent.key(), door).await, "pong", "the assistant is bound to no switch");
+        }
+        assert_eq!(ping_via(&core, &script_key, Door::Api).await, "pong", "the API stays open");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let logged = audit_lines(dir.path());
+        assert!(
+            logged.iter().any(|line| line.client.as_deref() == Some(script.id.as_str())
+                && line.command == "system.ping"
+                && line.result == "unauthorized"),
+            "{logged:?}"
+        );
+    }
+
+    /// #231: an approval asked for while the command was on and MCP open runs after "Allow" only if
+    /// both still hold: switched off meanwhile it is `forbidden`, with MCP off `unauthorized`.
+    #[tokio::test]
+    async fn an_approval_does_not_run_once_its_command_or_its_way_is_turned_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        save_template(&core, "review");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (id, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let first = waits(ask(&core, Some(&key), delete("dev")).await);
+        let second = waits(ask(&core, Some(&key), delete("review")).await);
+        let outcome = |approval: torro_ipc::ApprovalInfo| match approval.state {
+            torro_ipc::ApprovalState::Done { response } => code(&response).to_string(),
+            other => panic!("expected a run, got {other:?}"),
+        };
+
+        let mut narrowed = RightsTemplate::ReadAndWrite.rights();
+        narrowed.denied = ["workspaces.delete_template".to_string()].into();
+        let update = Request::UpdateClient { id: id.clone(), rights: narrowed };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&first.id, true)).await);
+        assert_eq!(outcome(allowed), "forbidden");
+        assert!(core.store.load("dev").is_ok(), "not deleted");
+
+        let update = Request::UpdateClient { id, rights: RightsTemplate::ReadAndWrite.rights() };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let off = Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) };
+        assert_eq!(core.handle(off).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&second.id, true)).await);
+        assert_eq!(outcome(allowed), "unauthorized");
+        assert!(core.store.load("review").is_ok(), "not deleted");
+    }
+
+    /// #231: no client opens the API or MCP again, also with every right in `settings`; closing
+    /// them is an admin change that waits for a person.
+    #[tokio::test]
+    async fn only_people_open_the_api_and_mcp_and_clients_may_close_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        let (_, agent) = client(&core, rights.clone()).await;
+        let (_, script) = core.clients.add("Backup", "script", rights).await.expect("added");
+        let switch = |key, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
+        for (key, setting) in [(&script, SettingKey::AllowMcp), (&agent, SettingKey::AllowApiKeys)] {
+            assert_eq!(code(&ask(&core, Some(key), switch(setting, true)).await), "forbidden", "{setting:?}");
+        }
+        let mut whole = settings(&core).await;
+        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, false)).await, Response::Ok);
+        whole.allow_api_keys = true;
+        let refused = ask(&core, Some(&agent), Request::UpdateSettings { settings: whole }).await;
+        assert_eq!(code(&refused), "forbidden", "the whole settings do not open it either");
+        assert!(!settings(&core).await.allow_api_keys);
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let asked = waits(ask(&core, Some(&agent), switch(SettingKey::AllowMcp, false)).await);
+        assert!(settings(&core).await.allow_mcp, "not before a person allows it");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(!settings(&core).await.allow_mcp, "closed once the person allowed it");
+        assert_eq!(ask(&core, Some(&app_key), switch(SettingKey::AllowMcp, true)).await, Response::Ok);
     }
 
     /// The approval a `pending` answer names; panics on any other answer.
@@ -6968,7 +7269,9 @@ mod tests {
         let core = core(dir.path()).with_approvals(crate::approvals::Approvals::system());
         save_template(&core, "dev");
         let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
-        let refused = core.handle_from(Some(&key), Request::DeleteTemplate { id: "dev".into() }).await;
+        let refused = core
+            .handle_from(Some(&key), door_for(&core, Some(&key)), Request::DeleteTemplate { id: "dev".into() })
+            .await;
         assert_eq!(refused, Err(Refused::NeedsApproval { command: "workspaces.delete_template" }));
         assert_eq!(code(&Refused::NeedsApproval { command: "x" }.response()), "forbidden");
         assert!(core.store.load("dev").is_ok());
@@ -7441,7 +7744,9 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
-        let Err(refused) = core.handle_from(Some(&key), set).await else { panic!("refused") };
+        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), set).await else {
+            panic!("refused")
+        };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_github_token", lack: Lack::ForPeople });
         assert!(record.lock().expect("record").is_empty(), "nothing went to GitHub");
         assert_eq!(tokens.get_plain("github:mahype"), None);
@@ -13259,7 +13564,10 @@ mod tests {
         assert_eq!(asked.summary, trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")]));
         for request in [Request::GetProfile, Request::ListConversations] {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Err(Refused::Forbidden { command: name })
+            );
         }
         // The person sees every note.
         assert_eq!(
@@ -13375,7 +13683,7 @@ mod tests {
         for request in assistant_requests(&conversation.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), request).await,
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
                 Err(Refused::Forbidden { command: name }),
                 "{name}"
             );
@@ -13400,7 +13708,11 @@ mod tests {
         let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         for request in assistant_requests("0123456789abcdef") {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await.map_err(Refused::command), Err(name), "{name}");
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await.map_err(Refused::command),
+                Err(name),
+                "{name}"
+            );
         }
 
         let mut rights = RightsTemplate::ReadAndWrite.rights();
@@ -13542,7 +13854,10 @@ mod tests {
         requests.push(to_bot(&bot.id, Some(&conversation.id)));
         for request in requests {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request.clone()).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request.clone()).await,
+                Err(Refused::Forbidden { command: name })
+            );
             let actor = crate::assistant::Actor::Bot(bot.client.clone());
             let ran = crate::assistant::Host::run_as(&core, &actor, request, "test", false).await;
             assert_eq!(code(&ran), "forbidden", "{name} from the bot's answer");
@@ -13607,7 +13922,10 @@ mod tests {
             to_bot(&travel.id, None),
         ] {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Err(Refused::Forbidden { command: name })
+            );
         }
     }
 
@@ -13624,7 +13942,7 @@ mod tests {
         for request in bots_requests(&bot.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), request).await,
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
                 Err(Refused::Lacks { command: name, lack: Lack::Area { area: Area::Bots } })
             );
         }
@@ -13809,7 +14127,10 @@ mod tests {
             server: Some(server),
             key: torro_ipc::Secret::new(AI_KEY),
         };
-        let Err(refused) = core.handle_from(Some(&key), connect(ollama.url("/v1"))).await else { panic!("refused") };
+        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), connect(ollama.url("/v1"))).await
+        else {
+            panic!("refused")
+        };
         assert_eq!(refused, Refused::Lacks { command: "accounts.connect_ai", lack: Lack::ForPeople });
         assert_eq!(keys.get_plain(&format!("ai:ollama@127.0.0.1:{}", ollama.port())), None);
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
@@ -14990,7 +15311,9 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
 
-        let Err(refused) = core.handle_from(Some(&key), switch(&account.id, "glm-5.3:cloud", true)).await else {
+        let Err(refused) =
+            core.handle_from(Some(&key), door_for(&core, Some(&key)), switch(&account.id, "glm-5.3:cloud", true)).await
+        else {
             panic!("refused")
         };
         assert_eq!(refused, Refused::Lacks { command: "ai.set_model_enabled", lack: Lack::ForPeople });
@@ -15682,7 +16005,9 @@ mod tests {
             user: None,
             secret: torro_ipc::Secret::new("tk_clientSECRET"),
         };
-        let Err(refused) = core.handle_from(Some(&key), login).await else { panic!("refused") };
+        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), login).await else {
+            panic!("refused")
+        };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_ntfy_login", lack: Lack::ForPeople });
         assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");

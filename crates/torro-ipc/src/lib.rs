@@ -15,7 +15,8 @@
 //! ```
 //!
 //! The core answers with one bare [`Response`]. Without a valid key it answers only
-//! `system.ping`; everything else gets the error code `unauthorized`.
+//! `system.ping`; everything else gets the error code `unauthorized`. `torroworkplace mcp` and the
+//! hooks add `"via":"mcp"` ([`Door`]), so the core knows which way a key came (#231).
 //!
 //! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`]. The request set is
 //! the API of the suite (`docs/api.md`); [`api`] describes every request for API and MCP.
@@ -179,7 +180,7 @@ impl fmt::Debug for Key {
     }
 }
 
-/// One line from a client: API version, key and request.
+/// One line from a client: API version, key, the way it came and request.
 ///
 /// `key` may be missing; then the core answers only `system.ping`. The core answers with a bare
 /// [`Response`], not with an envelope.
@@ -189,7 +190,37 @@ pub struct Envelope {
     pub v: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<Key>,
+    /// The way the request came (#231, `docs/api.md` "Transport"): `torroworkplace mcp` and the
+    /// hook command `torroworkplace hook` send [`Door::Mcp`], every other program sends nothing.
+    /// Missing means [`Door::Api`], so older programs keep working ([`Envelope::door`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Door>,
     pub request: Request,
+}
+
+impl Envelope {
+    /// The way the request came: [`Envelope::via`], [`Door::Api`] when it is missing.
+    pub fn door(&self) -> Door {
+        self.via.unwrap_or_default()
+    }
+}
+
+/// The way a request reaches the core (#231, `via` in the [`Envelope`]): the API (scripts, the
+/// suite's own programs, `ctl`) or MCP (`torroworkplace mcp` and the hooks of coding agents).
+///
+/// The core checks right after the key whether the client's kind may come this way and whether
+/// its switch is on (`allow_api_keys`, `allow_mcp`): a script only over the API, an agent only
+/// over MCP, a hook client over both (`docs/api.md`, "Transport"). It is what the program says,
+/// not a proof: it keeps a key from being used in the wrong place, not malicious code of the same
+/// user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Door {
+    /// `"api"`: the socket as scripts and the suite's programs use it; also when `via` is missing.
+    #[default]
+    Api,
+    /// `"mcp"`: through `torroworkplace mcp` or `torroworkplace hook`.
+    Mcp,
 }
 
 /// What a client can ask the core for.
@@ -1063,14 +1094,23 @@ pub enum Request {
     /// and `rights` that [`Request::UpdateClient`] would refuse (a collection named by a bare URL,
     /// a bad GitHub or mail selection); nothing is created then. A `script` client named `cli` or
     /// like another script client is `conflict`: its name is its inbox source (`script:<name>`),
-    /// and the app key reports as `script:cli`.
+    /// and the app key reports as `script:cli`. So is an `mcp` client named like another one
+    /// (`agent:mcp:<name>`, #231).
+    ///
+    /// The kinds are closed (#231, [`api::CLIENT_KINDS`]): any other kind is `error`, `bot` too (a
+    /// bot's client is made with its bot, `bots.save_bot`). The assistant's client
+    /// ([`api::ASSISTANT_CLIENT`]) is answered with [`Response::Client`], without a key: the core
+    /// runs its tools itself, so no key ever reaches an app's process (decision 12 in
+    /// `docs/api.md`).
     #[serde(rename = "clients.create_client")]
     CreateClient {
         /// What the person calls it: `Claude Code`.
         name: String,
-        /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor`, `script`, or `hook`
-        /// for the hooks of coding agents ([`api::HOOK_CLIENT`]), which may only report to the
-        /// inbox ([`api::Rights::for_kind`]).
+        /// Which program ([`api::CLIENT_KINDS`]): `script` (a key for the API), an MCP client –
+        /// `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor` or `mcp` ("Other MCP
+        /// client", [`api::MCP_KINDS`]) –, `hook` for the hooks of coding agents
+        /// ([`api::HOOK_CLIENT`]), which may only report to the inbox ([`api::Rights::for_kind`]),
+        /// or `assistant` ([`api::ASSISTANT_CLIENT`]).
         kind: String,
         template: RightsTemplate,
         /// Only and always with kind `hook`: the coding agent whose hooks use the key. It is
@@ -1086,11 +1126,15 @@ pub enum Request {
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
-    /// bare URL instead of its id is `error` and changes nothing.
+    /// bare URL instead of its id is `error` and changes nothing. Names in
+    /// [`api::Rights::denied`] that the catalogue does not know, and `system.ping`, are dropped
+    /// ([`api::deniable`]).
     #[serde(rename = "clients.update_client")]
     UpdateClient { id: String, rights: Rights },
     /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops
-    /// working at once. An unknown id is `not-found`.
+    /// working at once. An unknown id is `not-found`; the clients of the assistant and of bots
+    /// ([`api::ASSISTANT_CLIENT`], [`api::BOT_CLIENT`]) are `unsupported`: they never get a key
+    /// (decision 12 in `docs/api.md`).
     #[serde(rename = "clients.new_key")]
     NewClientKey { id: String },
     /// Removes the client `id` and its key; the key stops working at once. Answered with
@@ -2435,6 +2479,16 @@ pub enum SettingKey {
     /// of category keys, e.g. `["spam", "auto_reply"]`. An empty list shows every category that
     /// occurs. A key this version does not know is dropped when the file is read.
     HiddenCategories,
+    /// "Allow API keys" (#231, Settings › API): `true` (the default) or `false`. Off, every key of
+    /// the kind `script` is refused with `unauthorized`. Only the app key may send `true` – a
+    /// person in the control centre (point 6 of "Was nie nach außen geht", `docs/api.md`); a
+    /// client gets `forbidden`, whatever its rights. Any client allowed to change settings may
+    /// send `false`.
+    AllowApiKeys,
+    /// "Allow MCP" (#231, Settings › MCP): `true` (the default) or `false`. Off, every key of an
+    /// MCP client and of a hook is refused with `unauthorized`. Only the app key may send `true`,
+    /// like [`SettingKey::AllowApiKeys`]; any client allowed to change settings may send `false`.
+    AllowMcp,
 }
 
 /// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
@@ -2571,6 +2625,12 @@ pub enum Response {
     ClientKey {
         client: ClientInfo,
         key: IssuedKey,
+    },
+    /// A new client without a key (#231): the assistant's ([`api::ASSISTANT_CLIENT`]), made by
+    /// [`Request::CreateClient`]. The core runs its tools itself, so it never hands out a key for
+    /// it.
+    Client {
+        client: ClientInfo,
     },
     /// The account a sign-in just connected ([`Request::ConnectGithub`],
     /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::ConnectNtfy`],
@@ -3516,7 +3576,9 @@ pub struct ClientInfo {
     pub id: String,
     /// `Claude Code`
     pub name: String,
-    /// `claude-code`, `codex`, `claude-desktop`, `cursor`, `script` or `hook`.
+    /// `script`, an MCP client (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`,
+    /// `mcp`), `hook`, `assistant` or `bot` ([`api::CLIENT_KINDS`]); a `clients.json` from an
+    /// older version may hold another, checked like `script`.
     pub kind: String,
     pub created: DateTime<Utc>,
     /// The last request with its key, to the minute.
@@ -3723,7 +3785,8 @@ mod tests {
 
     #[test]
     fn envelope_carries_version_key_and_request() {
-        let envelope = Envelope { v: API_VERSION, key: Some(Key::new("torro_app_00")), request: Request::Ping };
+        let envelope =
+            Envelope { v: API_VERSION, key: Some(Key::new("torro_app_00")), via: None, request: Request::Ping };
         let json = serde_json::to_string(&envelope).unwrap();
         assert_eq!(json, r#"{"v":1,"key":"torro_app_00","request":{"method":"system.ping"}}"#);
 
@@ -3734,16 +3797,30 @@ mod tests {
         assert_eq!(read.request, Request::Status);
     }
 
+    /// #231: an envelope without `via` came through the API; MCP says so.
+    #[test]
+    fn an_envelope_without_via_came_through_the_api() {
+        let read: Envelope = serde_json::from_str(r#"{"v":1,"request":{"method":"system.ping"}}"#).unwrap();
+        assert_eq!((read.via, read.door()), (None, Door::Api));
+        let mcp = Envelope { v: 1, key: None, via: Some(Door::Mcp), request: Request::Ping };
+        let json = serde_json::to_string(&mcp).unwrap();
+        assert_eq!(json, r#"{"v":1,"via":"mcp","request":{"method":"system.ping"}}"#);
+        let read: Envelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.door(), Door::Mcp);
+        let api: Envelope = serde_json::from_str(r#"{"v":1,"via":"api","request":{"method":"system.ping"}}"#).unwrap();
+        assert_eq!(api.door(), Door::Api);
+    }
+
     #[test]
     fn keys_do_not_show_in_debug_output() {
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), request: Request::Ping };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), via: None, request: Request::Ping };
         assert!(!format!("{envelope:?}").contains("secret"));
     }
 
     #[test]
     fn a_github_token_does_not_show_in_debug_output() {
         let request = Request::SetGithubToken { token: Secret::new("ghp_secret") };
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("secret"), "{envelope:?}");
         let json = serde_json::to_string(&request).expect("serializes");
         assert_eq!(json, r#"{"method":"accounts.set_github_token","token":"ghp_secret"}"#);
@@ -3760,7 +3837,7 @@ mod tests {
             calendars: true,
             tasks: false,
         };
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
         let json = serde_json::to_value(&request).expect("serializes");
         assert_eq!(json["method"], "accounts.connect_caldav");
@@ -3782,7 +3859,7 @@ mod tests {
             tasks: false,
             caldav: None,
         };
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
         let json = serde_json::to_value(&request).expect("serializes");
         assert_eq!(

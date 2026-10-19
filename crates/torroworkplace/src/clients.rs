@@ -16,7 +16,9 @@
 //! only the app key, and a missing one means "no clients", never "no checks".
 //!
 //! [`Clients::admit`] checks the first step of the rights (`docs/api.md`, "Prüfung im Dienst"):
-//! level and admin switch of the command's area ([`Rights::allows`]). Collections and approval
+//! level and admin switch of the command's area and the commands switched off one by one
+//! ([`Rights::allows`]). Before it the core checks the way in ([`closed_door`], #231): whether the
+//! client's kind may come the way the request came, with its switch on. Collections and approval
 //! follow in the core ([`crate::core::Core::handle_from`]).
 //!
 //! The file is written on blocking threads (`spawn_blocking`) and the keychain on a thread of its
@@ -48,9 +50,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use torro_inbox::{AgentKind, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Lack, Operation, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{
+    ASSISTANT_CLIENT, Area, BOT_CLIENT, HOOK_CLIENT, Lack, MCP_CLIENT, Operation, Rights, RightsTemplate,
+    SCRIPT_CLIENT, Selection, is_mcp_kind,
+};
 use torro_ipc::assistant::Mode;
-use torro_ipc::{ClientInfo, Key, Request, Response};
+use torro_ipc::{ClientInfo, Door, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
 const KEYCHAIN_SERVICE: &str = "torroworkplace";
@@ -138,6 +143,10 @@ pub enum Refused {
     /// A known client whose rights, conversation or engine do not cover the command, with the
     /// reason (issue #133): error code `forbidden`, its message says what is missing.
     Lacks { command: &'static str, lack: Lack },
+    /// A known client whose kind may not come the way the request came, or whose way a person
+    /// turned off (#231, [`closed_door`]): error code `unauthorized`, `why` says which. Checked
+    /// before the rights, so it answers the same for every command, `system.ping` too.
+    Closed { command: &'static str, why: &'static str },
 }
 
 impl Refused {
@@ -149,14 +158,15 @@ impl Refused {
             Refused::Unauthorized { command }
             | Refused::Forbidden { command }
             | Refused::NeedsApproval { command }
-            | Refused::Lacks { command, .. } => command,
+            | Refused::Lacks { command, .. }
+            | Refused::Closed { command, .. } => command,
         }
     }
 
     /// The answer to the client. It names the command, never the key.
     pub fn response(self) -> Response {
         let (code, message) = match self {
-            Refused::Unauthorized { command } => ("unauthorized", format!("{command} needs a valid key")),
+            Refused::Unauthorized { command } => ("unauthorized", format!("{command} {NO_KEY}")),
             Refused::Forbidden { command } => ("forbidden", format!("this client may not use {command}")),
             Refused::NeedsApproval { command } => {
                 ("forbidden", format!("{command} needs a person's approval, which the core cannot ask for now"))
@@ -164,6 +174,7 @@ impl Refused {
             Refused::Lacks { command, lack } => {
                 ("forbidden", format!("this client may not use {command}: {}", lack.message()))
             }
+            Refused::Closed { command, why } => ("unauthorized", format!("{command} was refused: {why}")),
         };
         Response::Error { code: code.into(), message }
     }
@@ -177,7 +188,9 @@ pub struct ClientRecord {
     pub id: String,
     /// What the person called it: `Claude Code`.
     pub name: String,
-    /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor`, `script`, `hook`.
+    /// Which program: `script`, `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`,
+    /// `mcp`, `hook`, `assistant`, `bot` ([`torro_ipc::api::CLIENT_KINDS`]); an older file may hold
+    /// another, which [`closed_door`] checks like `script`.
     pub kind: String,
     /// SHA-256 of the key, 64 lowercase hex digits.
     pub key_sha256: String,
@@ -213,6 +226,50 @@ impl ClientRecord {
 /// the safest template that still lets it work.
 fn legacy_rights() -> Rights {
     RightsTemplate::ReadOnly.rights()
+}
+
+/// How the answer to a missing or unknown key ends ([`Refused::Unauthorized`]): `torroworkplace mcp`
+/// adds how to get a key only to these, not to a known key refused for its way ([`Refused::Closed`]).
+pub const NO_KEY: &str = "needs a valid key";
+
+/// "Allow API keys" is off (#231).
+pub const API_OFF: &str = "The API is turned off in Torro Workplace, Settings › API.";
+/// "Allow MCP" is off (#231).
+pub const MCP_OFF: &str = "MCP is turned off in Torro Workplace, Settings › MCP.";
+/// The key of an MCP client came through the API (#231).
+pub const MCP_KEY: &str = "This key belongs to an MCP client.";
+/// A script's key came through MCP (#231).
+pub const SCRIPT_KEY: &str =
+    "This key belongs to a script and works only through the API; an agent needs its own key from Settings › MCP.";
+
+/// Why a client of `kind` may not come in `door` (`None`: whichever way, for an approved command
+/// that runs now) with the switches `allow_api_keys` and `allow_mcp` as they are (#231,
+/// `docs/api.md` "Transport"); `None` when it may. The core answers `unauthorized` with the reason
+/// ([`Refused::Closed`]), before it looks at any right.
+///
+/// - `script` only through the API, and only with `allow_api_keys` ([`API_OFF`], [`SCRIPT_KEY`]),
+/// - an MCP client ([`is_mcp_kind`]) only through MCP, and only with `allow_mcp` ([`MCP_OFF`],
+///   [`MCP_KEY`]),
+/// - `hook` either way, and only with `allow_mcp`: it belongs to an agent,
+/// - `assistant` and `bot` are bound to neither: only they get lent keys, and the core runs them,
+/// - any other kind (from an older `clients.json`) like `script`.
+///
+/// The switch is checked before the way, so a person who turned a way off always reads that.
+pub fn closed_door(kind: &str, door: Option<Door>, allow_api_keys: bool, allow_mcp: bool) -> Option<&'static str> {
+    match kind {
+        ASSISTANT_CLIENT | BOT_CLIENT => None,
+        HOOK_CLIENT => (!allow_mcp).then_some(MCP_OFF),
+        kind if is_mcp_kind(kind) => match door {
+            _ if !allow_mcp => Some(MCP_OFF),
+            Some(Door::Api) => Some(MCP_KEY),
+            Some(Door::Mcp) | None => None,
+        },
+        _ => match door {
+            _ if !allow_api_keys => Some(API_OFF),
+            Some(Door::Mcp) => Some(SCRIPT_KEY),
+            Some(Door::Api) | None => None,
+        },
+    }
 }
 
 /// A selection of calendars or task lists names a collection by a bare URL, as before several
@@ -714,9 +771,13 @@ impl Clients {
             _ => {}
         }
         check_selections(&rights)?;
+        let rights = rights.with_known_denied();
         let _changing = self.shared.changing.lock().await;
-        if kind == "script" && self.script_name_taken(name) {
+        if kind == SCRIPT_CLIENT && self.name_taken(kind, name) {
             return Err(ClientsError::Conflict("a script client of this name exists, or the name is cli"));
+        }
+        if kind == MCP_CLIENT && self.name_taken(kind, name) {
+            return Err(ClientsError::Conflict("an MCP client of this name exists"));
         }
         if kind == ASSISTANT_CLIENT && self.lock().clients.iter().any(|entry| entry.record.kind == ASSISTANT_CLIENT) {
             return Err(ClientsError::Conflict("the assistant has its client already"));
@@ -757,9 +818,11 @@ impl Clients {
     /// rewritten once when the core started, and a bare URL now would reach no collection. So is
     /// a GitHub selection with anything but `owner/name` and `owner` in it (task G.2), and a mail
     /// selection with anything but mail account ids (task M2.1). A hook client keeps at most
-    /// [`Rights::hook`] ([`Rights::for_kind`], task E1.1).
+    /// [`Rights::hook`] ([`Rights::for_kind`], task E1.1). Commands switched off that the catalogue
+    /// does not know, and `system.ping`, are dropped ([`Rights::with_known_denied`], #231).
     pub async fn update(&self, id: &str, rights: Rights) -> Result<(), ClientsError> {
         check_selections(&rights)?;
+        let rights = rights.with_known_denied();
         let _changing = self.shared.changing.lock().await;
         // Narrowed to what the client's kind may hold (a hook client: `Rights::hook`).
         let (old, new) = self.with_client(id, |record| {
@@ -948,15 +1011,16 @@ impl Clients {
         self.keychain_delete(id).await
     }
 
-    /// `name` is `cli` (the app key's inbox source) or the name of a script client, ignoring
-    /// case, so two posters would share one source or look alike in the inbox.
-    fn script_name_taken(&self, name: &str) -> bool {
-        name.eq_ignore_ascii_case("cli")
+    /// `name` is the name of a client of `kind` ignoring case, or for a script `cli` (the app
+    /// key's inbox source): the name of a script and of an "Other MCP client" is its inbox source
+    /// (`script:<name>`, `agent:mcp:<name>`), so two posters would share one source or look alike.
+    fn name_taken(&self, kind: &str, name: &str) -> bool {
+        (kind == SCRIPT_CLIENT && name.eq_ignore_ascii_case("cli"))
             || self
                 .lock()
                 .clients
                 .iter()
-                .any(|entry| entry.record.kind == "script" && entry.record.name.eq_ignore_ascii_case(name))
+                .any(|entry| entry.record.kind == kind && entry.record.name.eq_ignore_ascii_case(name))
     }
 
     /// The clients as `clients.json` lists them.
@@ -1152,7 +1216,9 @@ fn valid_app_key(text: &str) -> Option<&str> {
 }
 
 /// The clients in `file`; none when it does not exist. Every hash must be 64 hex digits, and no
-/// id or hash may appear twice, or the whole file counts as damaged.
+/// id or hash may appear twice, or the whole file counts as damaged. Commands switched off that
+/// the catalogue no longer knows are dropped from the rights ([`Rights::with_known_denied`], #231);
+/// the file keeps them until it is written next.
 fn read_clients(file: &Path) -> Result<Vec<Entry>, ClientsError> {
     let damaged = || ClientsError::Damaged(file.to_path_buf());
     let bytes = match fs::read(file) {
@@ -1166,7 +1232,10 @@ fn read_clients(file: &Path) -> Result<Vec<Entry>, ClientsError> {
     let entries = parsed
         .clients
         .into_iter()
-        .map(|record| Ok(Entry { hash: from_hex(&record.key_sha256).ok_or_else(damaged)?, record, locked: false }))
+        .map(|mut record| {
+            record.rights = record.rights.with_known_denied();
+            Ok(Entry { hash: from_hex(&record.key_sha256).ok_or_else(damaged)?, record, locked: false })
+        })
         .collect::<Result<Vec<_>, ClientsError>>()?;
     let ids: HashSet<_> = entries.iter().map(|entry| entry.record.id.as_str()).collect();
     let hashes: HashSet<_> = entries.iter().map(|entry| entry.hash).collect();
@@ -1720,6 +1789,102 @@ pub(crate) mod tests {
         assert_eq!(rights.github_repos, Selection::All, "the rest stays as stored");
         assert!(!rights.allows(Request::ListSources.operation()), "no inbox area yet");
         assert!(!rights.inbox_sources.contains("agent:claude-code"));
+    }
+
+    /// #231: a `clients.json` from before the deny list loads with none; names the catalogue does
+    /// not know and `system.ping` fall out of a stored list when it is read, the rest stays.
+    #[test]
+    fn a_deny_list_loads_without_unknown_names_and_older_files_load_unchanged() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = clients_file(dir.path());
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let record = |id: &str, digit: &str, denied: &str| {
+            format!(
+                r#"{{"id":"{id}","name":"Script {id}","kind":"script","keySha256":"{}",
+                "created":"2026-10-11T08:00:00Z","rights":{{"areas":{{"tasks":{{"level":"full","admin":false}}}},
+                "calendars":"all","taskLists":"all","confirm":"on_delete"{denied}}}}}"#,
+                digit.repeat(64)
+            )
+        };
+        let denied = r#","denied":["tasks.delete_todo","tasks.gone","system.ping"]"#;
+        let json = format!(r#"{{"clients":[{},{}]}}"#, record("a1b2c3d4", "1", ""), record("e5f6a7b8", "2", denied));
+        fs::write(&file, json).expect("write");
+        let listed = open_in(dir.path()).list();
+        assert_eq!(listed.len(), 2, "not damaged");
+        assert!(listed[0].rights.denied.is_empty(), "an older file switches nothing off");
+        let kept: Vec<&str> = listed[1].rights.denied.iter().map(String::as_str).collect();
+        assert_eq!(kept, ["tasks.delete_todo"]);
+        let command =
+            torro_ipc::api::CATALOGUE.iter().find(|c| c.name == "tasks.delete_todo").expect("in the catalogue");
+        assert!(!listed[1].rights.allows(Operation { command, access: command.access }), "switched off");
+    }
+
+    /// #231: changed rights keep only commands the catalogue knows in their deny list, never
+    /// `system.ping`; the stored file holds what applies.
+    #[tokio::test]
+    async fn changed_rights_drop_unknown_names_from_the_deny_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (client, key) = clients.add("Script", "script", read_only()).await.expect("added");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.denied = ["system.ping", "calendar.gone", "workspaces.delete_template"].map(String::from).into();
+        clients.update(&client.id, rights).await.expect("changed");
+        let stored: Vec<String> = open_in(dir.path()).records()[0].rights.denied.iter().cloned().collect();
+        assert_eq!(stored, ["workspaces.delete_template"]);
+        assert!(matches!(clients.admit(Some(&key), &Request::Ping), Ok(Caller::Client { .. })), "ping stays open");
+        let delete = Request::DeleteTemplate { id: "dev".into() };
+        let refused = clients.admit(Some(&key), &delete);
+        assert_eq!(
+            refused,
+            Err(Refused::Lacks {
+                command: "workspaces.delete_template",
+                lack: Lack::Denied { area: Area::Workspaces }
+            })
+        );
+    }
+
+    /// #231 (`docs/api.md` "Transport"): which kind comes which way with which switch.
+    #[test]
+    fn each_kind_has_its_way_and_its_switch() {
+        let (api, mcp) = (Some(Door::Api), Some(Door::Mcp));
+        // Kind, way, API keys on, MCP on: the reason it is refused, if any.
+        let table = [
+            ("script", api, true, true, None),
+            ("script", mcp, true, true, Some(SCRIPT_KEY)),
+            ("script", api, false, true, Some(API_OFF)),
+            ("script", api, true, false, None),
+            ("claude-code", mcp, true, true, None),
+            ("claude-code", api, true, true, Some(MCP_KEY)),
+            ("claude-code", mcp, false, true, None),
+            ("mcp", mcp, true, false, Some(MCP_OFF)),
+            ("cursor", api, true, false, Some(MCP_OFF)),
+            ("hook", api, true, true, None),
+            ("hook", mcp, true, true, None),
+            ("hook", api, true, false, Some(MCP_OFF)),
+            ("assistant", mcp, false, false, None),
+            ("bot", api, false, false, None),
+            ("zed-editor", api, true, true, None),
+            ("zed-editor", mcp, true, true, Some(SCRIPT_KEY)),
+            ("zed-editor", api, false, true, Some(API_OFF)),
+            // An approved command runs whichever way it came, only with the switch on.
+            ("script", None, true, true, None),
+            ("codex", None, true, false, Some(MCP_OFF)),
+        ];
+        for (kind, door, api_keys, mcp_on, expected) in table {
+            assert_eq!(closed_door(kind, door, api_keys, mcp_on), expected, "{kind} {door:?} {api_keys} {mcp_on}");
+        }
+    }
+
+    /// #231: an "Other MCP client" has a name of its own like a script, among the clients of its kind.
+    #[tokio::test]
+    async fn other_mcp_clients_have_unique_names() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        clients.add("Zed", MCP_CLIENT, read_only()).await.expect("added");
+        let again = clients.add(" zed ", MCP_CLIENT, read_only()).await;
+        assert!(matches!(&again, Err(err) if err.code() == "conflict"), "{again:?}");
+        clients.add("Zed", "script", read_only()).await.expect("a script may share it");
+        clients.add("cli", MCP_CLIENT, read_only()).await.expect("cli is the app key's script source only");
     }
 
     /// Task M2.1: a `clients.json` from before mail opens no mail account, and sending would wait

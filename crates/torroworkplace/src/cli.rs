@@ -884,9 +884,9 @@ mod tests {
         let socket = dir.path().join("state").join("core.sock");
         let path = socket.clone();
         tokio::spawn(async move {
-            torro_ipc::server::serve_with_key(&path, move |key, request| {
+            torro_ipc::server::serve_with_key(&path, move |key, door, request| {
                 let core = Arc::clone(&core);
-                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+                async move { core.handle_from(key.as_ref(), door, request).await.unwrap_or_else(|r| r.response()) }
             })
             .await
         });
@@ -1051,9 +1051,9 @@ mod tests {
         let socket = dir.path().join("state").join("core.sock");
         let path = socket.clone();
         tokio::spawn(async move {
-            torro_ipc::server::serve_with_key(&path, move |key, request| {
+            torro_ipc::server::serve_with_key(&path, move |key, door, request| {
                 let core = Arc::clone(&core);
-                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+                async move { core.handle_from(key.as_ref(), door, request).await.unwrap_or_else(|r| r.response()) }
             })
             .await
         });

@@ -5,7 +5,8 @@
 //!
 //! One [`crate::Envelope`] line in, one [`Response`] line out, per connection. Every connection
 //! runs in its own task, so a slow request does not hold up the others. This module only
-//! carries the key to the handler; deciding what a key may do is the core's job.
+//! carries the key and the way the request came ([`Door`], `via` in the envelope) to the handler;
+//! deciding what a key may do is the core's job.
 //!
 //! Only the user who runs the core may connect: on Unix the socket is 0600, on Windows the pipe
 //! carries an access list for that user alone. On Windows the pipe is created with
@@ -15,7 +16,7 @@
 use std::future::Future;
 use std::path::Path;
 
-use crate::{IpcError, Key, Request, Response};
+use crate::{Door, IpcError, Key, Request, Response};
 
 /// The longest request line the core reads, newline included. Longer lines are refused with
 /// `error` and the connection is closed, so a client cannot make the core buffer without end.
@@ -32,12 +33,13 @@ where
     H: Fn(Request) -> F + Send + Sync + 'static,
     F: Future<Output = Response> + Send + 'static,
 {
-    serve_with_key(path, move |_key, request| handler(request)).await
+    serve_with_key(path, move |_key, _door, request| handler(request)).await
 }
 
 /// Listens on `path` and answers each connection's request with `handler`, concurrently.
-/// `handler` gets the key the client sent (`None` without one) and must decide itself whether
-/// that key may run the request. Runs until the task is dropped; failing to accept one client
+/// `handler` gets the key the client sent (`None` without one), the way it says the request came
+/// ([`crate::Envelope::door`]: [`Door::Api`] when the envelope has no `via`) and must decide itself
+/// whether that key may run the request that way. Runs until the task is dropped; failing to accept one client
 /// is logged, not fatal.
 ///
 /// Before the handler runs, the line must be an envelope of [`crate::API_VERSION`]: another
@@ -60,7 +62,7 @@ where
 #[cfg(unix)]
 pub async fn serve_with_key<H, F>(path: &Path, handler: H) -> Result<(), IpcError>
 where
-    H: Fn(Option<Key>, Request) -> F + Send + Sync + 'static,
+    H: Fn(Option<Key>, Door, Request) -> F + Send + Sync + 'static,
     F: Future<Output = Response> + Send + 'static,
 {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -106,7 +108,7 @@ where
 #[cfg(windows)]
 pub async fn serve_with_key<H, F>(path: &Path, handler: H) -> Result<(), IpcError>
 where
-    H: Fn(Option<Key>, Request) -> F + Send + Sync + 'static,
+    H: Fn(Option<Key>, Door, Request) -> F + Send + Sync + 'static,
     F: Future<Output = Response> + Send + 'static,
 {
     use std::sync::Arc;
@@ -152,7 +154,7 @@ const PING_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(not(any(unix, windows)))]
 pub async fn serve_with_key<H, F>(path: &Path, handler: H) -> Result<(), IpcError>
 where
-    H: Fn(Option<Key>, Request) -> F + Send + Sync + 'static,
+    H: Fn(Option<Key>, Door, Request) -> F + Send + Sync + 'static,
     F: Future<Output = Response> + Send + 'static,
 {
     let _ = (path, handler);
@@ -213,12 +215,15 @@ struct RawEnvelope {
     v: u32,
     #[serde(default)]
     key: Option<Key>,
+    /// Missing: [`Door::Api`]. A value other than `api` or `mcp` makes the envelope malformed.
+    #[serde(default)]
+    via: Option<Door>,
     request: serde_json::Value,
 }
 
-/// The key and request of one line, or the code and message of the error response for it.
+/// The key, way and request of one line, or the code and message of the error response for it.
 #[cfg(any(unix, windows))]
-fn parse(line: &[u8]) -> Result<(Option<Key>, Request), (&'static str, String)> {
+fn parse(line: &[u8]) -> Result<(Option<Key>, Door, Request), (&'static str, String)> {
     use crate::API_VERSION;
 
     // serde's message could quote the key (a key in the wrong field), so it is not passed on.
@@ -237,7 +242,7 @@ fn parse(line: &[u8]) -> Result<(Option<Key>, Request), (&'static str, String)> 
             "malformed request: unknown method or arguments that do not fit it (see the API reference)".to_string(),
         )
     })?;
-    Ok((envelope.key, request))
+    Ok((envelope.key, envelope.via.unwrap_or_default(), request))
 }
 
 /// Reads the request line from `read`, answers it on `write`; the caller closes the connection.
@@ -249,7 +254,7 @@ async fn handle_connection<R, W, H, F>(read: R, mut write: W, handler: &H) -> Re
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
-    H: Fn(Option<Key>, Request) -> F,
+    H: Fn(Option<Key>, Door, Request) -> F,
     F: Future<Output = Response>,
 {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -266,7 +271,7 @@ where
         Response::Error { code: "error".into(), message: format!("request longer than {MAX_LINE} bytes") }
     } else {
         match parse(&line) {
-            Ok((key, request)) => handler(key, request).await,
+            Ok((key, door, request)) => handler(key, door, request).await,
             Err((code, message)) => Response::Error { code: code.into(), message },
         }
     };
@@ -543,14 +548,15 @@ mod tests {
         serde_json::from_str(&answer).expect("the answer is a response")
     }
 
-    /// A server whose handler answers with the key it was handed, as the error message.
+    /// A server whose handler answers with the key it was handed as the error message, and with
+    /// the way the request came as the code (`echo` for the API, `echo-mcp` for MCP).
     async fn echo_key_server(dir: &tempfile::TempDir) -> (PathBuf, tokio::task::JoinHandle<Result<(), IpcError>>) {
         let path = socket_in(dir);
-        let handler = |key: Option<Key>, request: Request| async move {
+        let handler = |key: Option<Key>, door: Door, request: Request| async move {
             match request {
                 Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
                 _ => Response::Error {
-                    code: "echo".into(),
+                    code: if door == Door::Mcp { "echo-mcp" } else { "echo" }.into(),
                     message: key.map(|k| k.expose().to_string()).unwrap_or_default(),
                 },
             }
@@ -573,6 +579,26 @@ mod tests {
         assert_eq!(response, Response::Error { code: "echo".into(), message: "torro_c1_abc".into() });
         let response = client::call_with_key(&path, None, &Request::Status).await.unwrap();
         assert_eq!(response, Response::Error { code: "echo".into(), message: String::new() });
+        server.abort();
+    }
+
+    /// #231: the handler learns the way the request came; without `via` it is the API.
+    #[tokio::test]
+    async fn the_handler_gets_the_way_of_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, server) = echo_key_server(&dir).await;
+
+        let key = Key::new("torro_c1_abc");
+        let response = client::call_with_key_via(&path, Some(&key), Door::Mcp, &Request::Status).await.unwrap();
+        assert_eq!(response, Response::Error { code: "echo-mcp".into(), message: "torro_c1_abc".into() });
+        let response = client::call_with_key_via(&path, Some(&key), Door::Api, &Request::Status).await.unwrap();
+        assert_eq!(response, Response::Error { code: "echo".into(), message: "torro_c1_abc".into() });
+        let response = send_line(&path, r#"{"v":1,"via":"mcp","request":{"method":"system.status"}}"#).await;
+        assert!(matches!(&response, Response::Error { code, .. } if code == "echo-mcp"), "{response:?}");
+        let response = send_line(&path, r#"{"v":1,"request":{"method":"system.status"}}"#).await;
+        assert!(matches!(&response, Response::Error { code, .. } if code == "echo"), "{response:?}");
+        let response = send_line(&path, r#"{"v":1,"via":"http","request":{"method":"system.status"}}"#).await;
+        assert!(matches!(&response, Response::Error { code, .. } if code == "error"), "an unknown way: {response:?}");
         server.abort();
     }
 
@@ -672,7 +698,7 @@ mod windows_tests {
     #[tokio::test]
     async fn requests_go_there_and_back_with_their_key() {
         let path = unique_pipe();
-        let handler = |key: Option<Key>, request: Request| async move {
+        let handler = |key: Option<Key>, _door: Door, request: Request| async move {
             match request {
                 Request::Ping => pong(),
                 _ => Response::Error {
