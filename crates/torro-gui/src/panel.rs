@@ -215,11 +215,11 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         self
     }
 
-    /// How wide the panel is in `class` ([`width_for`]), grown by its [`Panel::side`] where it has a
-    /// width of its own.
+    /// How wide the panel is in `class` ([`width_for`]), grown by its [`Panel::side`] and the gap
+    /// before it where it has a width of its own, so title and body keep theirs.
     fn width(&self, class: SizeClass) -> Length {
         match (width_for(class), &self.side) {
-            (Length::Fixed(width), Some((_, side))) => Length::Fixed(width + side),
+            (Length::Fixed(width), Some((_, side))) => Length::Fixed(width + space::xs() + side),
             (width, _) => width,
         }
     }
@@ -479,8 +479,9 @@ mod tests {
         let rail = widgets::RailMode::Collapsed.width();
         let sided = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).side(blank(), rail);
         assert!(sided.side.is_some());
-        // Task E14.3 (decision C): the panel grows by the rail where it has a width of its own.
-        assert_eq!(sided.width(SizeClass::Medium), Length::Fixed(size::panel() + rail));
+        // Task E14.3 (decision C): the panel grows by the rail and its gap where it has a width of its
+        // own, so title and body keep `size::panel()`.
+        assert_eq!(sided.width(SizeClass::Medium), Length::Fixed(size::panel() + space::xs() + rail));
         assert_eq!(sided.width(SizeClass::Narrow), Fill, "a panel filling the window stays so");
         assert_eq!(plain.width(SizeClass::Medium), Length::Fixed(size::panel()));
         for class in CLASSES {

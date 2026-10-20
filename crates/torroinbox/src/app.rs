@@ -3057,10 +3057,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let shown = self.wanted_letter();
+        let shape = self.rail_shape();
         let task = self.handle(message);
         // The open group of the rail is a hover card: it goes once another mail shows or a menu or
-        // dialog opens in its place (task E14.3), so only one card floats at a time.
-        if self.menu.is_some() || (shown.is_some() && self.wanted_letter() != shown) {
+        // dialog opens in its place (task E14.3), so only one card floats at a time. It also goes
+        // when the rail changes under it – its groups (a mail that loaded adds "Mark"), its mode or
+        // the window's size class –, since the open and waiting group are indices into the groups.
+        let reshaped = matches!((shape, self.rail_shape()), (Some(before), Some(after)) if before != after);
+        if self.menu.is_some() || (shown.is_some() && self.wanted_letter() != shown) || reshaped {
             self.rail_open = None;
             self.rail_pending = None;
         }
@@ -6374,7 +6378,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn toggle_actions(&mut self) -> Task<Message> {
         // Drawn collapsed for want of room, the rail cannot expand: `]` keeps the choice as it is
         // rather than switching it unseen.
-        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide || !self.rail_can_expand() {
+        // Without a mail open there is no rail to switch: `]` would change the next mail's unseen.
+        let no_rail = self.rail_groups(SizeClass::Wide, &detail::Anchors::default()).is_none();
+        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide || !self.rail_can_expand() || no_rail {
             return Task::none();
         }
         self.actions = self.actions.toggled();
@@ -6585,6 +6591,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// onto an icon opens its group after [`RAIL_DELAY`] – at once from an open group or just after
     /// one closed –, never over an open menu or dialog; leaving the icon before cancels it; a click
     /// on an icon without a click of its own opens the group now; leaving card and icon closes it.
+    /// What the rail looks like now, as far as an open or waiting group depends on it: the size
+    /// class, the mode it draws in and the icons of its groups (fixed per group, finding 8). `None`
+    /// while no group is open or waiting, so nothing is reckoned for every message.
+    fn rail_shape(&self) -> Option<(SizeClass, RailMode, Vec<Icon>)> {
+        if self.rail_open.is_none() && self.rail_pending.is_none() {
+            return None;
+        }
+        let class = self.class();
+        let groups = self.rail_groups(class, &detail::Anchors::default()).unwrap_or_default();
+        Some((class, self.rail_mode(class), groups.iter().map(|group| group.icon).collect()))
+    }
+
     fn rail_event(&mut self, event: RailEvent, now: Instant) {
         match event {
             RailEvent::Enter(_) if self.menu.is_some() => {}
@@ -6664,7 +6682,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// `Panel::side`), the whole window in a narrow one.
     fn panel_width(&self, class: SizeClass) -> f32 {
         match class {
-            SizeClass::Wide | SizeClass::Medium => size::panel() + RailMode::Collapsed.width(),
+            SizeClass::Wide | SizeClass::Medium => size::panel() + space::xs() + RailMode::Collapsed.width(),
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => self.size.width,
         }
     }
@@ -12432,6 +12450,27 @@ mod tests {
         let _ = app.view();
     }
 
+    /// Review of #241: the open group is an index into the rail's groups, so it goes once the rail
+    /// changes under it – here the window's size class; and `]` switches nothing while no mail is
+    /// open, so the next mail does not show a rail switched unseen.
+    #[test]
+    fn the_open_group_goes_with_a_changed_rail_and_brackets_need_a_mail() {
+        let mut app = mail_window(Density::Compact, &["--open", "mail-group"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::Rail(RailEvent::Open(1)));
+        assert_eq!(app.rail_open, Some(1));
+        let _ = app.update(Message::Rail(RailEvent::Enter(2)));
+        assert_eq!(app.rail_open, Some(2), "the same rail: the next group opens");
+        let _ = app.update(Message::Resized(MEDIUM));
+        assert_eq!((app.rail_open, app.rail_pending), (None, None), "another size class closes it");
+
+        let mut bare = mail_window(Density::Compact, &[]);
+        let _ = bare.update(Message::Resized(WIDE));
+        assert!(bare.rail_groups(SizeClass::Wide, &detail::Anchors::default()).is_none());
+        let _ = press(&mut bare, Key::Actions);
+        assert_eq!(bare.actions, RailMode::Collapsed, "no mail, no switch");
+    }
+
     /// Task E14.3: the demo's states for pictures – the rail expanded, and collapsed with "File" open.
     #[test]
     fn the_demo_opens_the_rail_expanded_or_with_a_group() {
@@ -12469,7 +12508,7 @@ mod tests {
             groups.iter().flat_map(|group| group.items.iter().map(|item| item.label.to_string())).collect()
         };
         // Decision C: over the medium window the panel keeps 400 for the mail, the rail beside it.
-        let medium = size::panel() + RailMode::Collapsed.width();
+        let medium = size::panel() + space::xs() + RailMode::Collapsed.width();
         for (size, width) in [(MEDIUM, medium), (NARROW, NARROW.width)] {
             let _ = app.update(Message::Resized(size));
             let class = app.class();

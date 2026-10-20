@@ -2085,7 +2085,8 @@ pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>) -> Element<'a, Message> {
 fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width: f32) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
     // The head lines up with the title: 16 from the panel's edges (`panel::inset`), the rail beside.
-    let room = (width - widgets::RailMode::Collapsed.width() - 2.0 * space::l()).max(0.0);
+    // The rail stands `space::xs()` apart from the body (`Panel::side`).
+    let room = (width - widgets::RailMode::Collapsed.width() - space::xs() - 2.0 * space::l()).max(0.0);
     let head = head_with(reading, entry, room, false);
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
