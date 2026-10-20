@@ -1565,6 +1565,42 @@ pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a,
     container(list).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
 }
 
+/// The action rail as a context menu: its groups form vertical sections with separators.
+/// Uses the rail's item rows so disabled actions and key hints have the same appearance.
+pub fn rail_context_menu<'a, M: Clone + 'a, N: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    on_action: impl Fn(M) -> N,
+    max_height: f32,
+) -> Element<'a, N> {
+    let mut list = column![];
+    for (index, group) in groups.into_iter().enumerate() {
+        if index > 0 {
+            list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));
+        }
+        let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
+        list = list.push(container(title).padding(flyout_title_padding()));
+        for item in group.items {
+            let item = RailItem {
+                icon: item.icon,
+                label: item.label,
+                key: item.key,
+                on_press: item.on_press.map(&on_action),
+                accent: item.accent,
+                lead: item.lead,
+                danger: item.danger,
+                anchor: None,
+            };
+            list = list.push(rail_row(item, RailPlace::Card, false));
+        }
+    }
+    let body = scrollable(list).height(Length::Shrink).width(Fill);
+    container(container(body).max_height(max_height))
+        .width(rail_flyout_width())
+        .padding(style::MENU_INSET)
+        .style(style::container::menu)
+        .into()
+}
+
 /// A header button that opens a menu, with a chevron: the navigation menu of the medium and
 /// narrow layouts ("☀ Today ▾"). Ghost, label `BODY` in `text`, icon 14. Registers `anchor`.
 pub fn menu_button<'a, M: Clone + 'a>(

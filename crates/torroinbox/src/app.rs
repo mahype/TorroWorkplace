@@ -1153,6 +1153,8 @@ pub enum Menu {
     Switcher,
     /// The navigation menu of the medium and narrow layouts ("For me ▾").
     Nav,
+    /// Actions of the message selected by right-click in the mail list.
+    MailContext,
     /// The snooze menu of `App::subject`: Later today, Tomorrow, Next week, Pick….
     Snooze,
     /// The date and time picker of "Pick…".
@@ -1996,6 +1998,8 @@ fn shows_entries(message: &Message) -> bool {
             | Message::Arrange(_)
             | Message::Select(_)
             | Message::SelectMail(_)
+            | Message::ContextMail(_)
+            | Message::ContextEntry(_)
             | Message::OpenRow(_)
             | Message::OpenForMe(_)
             | Message::OpenItem(_)
@@ -2506,6 +2510,12 @@ pub enum Message {
     OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
+    /// A right-click on a message row or card opens its actions beside the list.
+    ContextMail(String),
+    /// A right-click on a mail entry in the overview opens its reader's actions.
+    ContextEntry(String),
+    /// An action chosen from the message's context menu.
+    ContextAction(Box<Message>),
     /// The whole mail for the panel, or why it could not be read.
     LetterLoaded(String, Result<Box<Mail>, String>),
     /// From the panel or a key: do this with the message with this id.
@@ -3622,6 +3632,27 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if self.select_mail(id) {
                     return self.keep_opened_search();
                 }
+            }
+            Message::ContextMail(id) => {
+                if self.select_mail(id) {
+                    self.menu = Some(Menu::MailContext);
+                    self.menu_at = MenuAt::Row;
+                    return self.keep_opened_search();
+                }
+            }
+            Message::ContextEntry(id) => {
+                self.select(id);
+                if self.detail.is_some() {
+                    self.menu = Some(Menu::MailContext);
+                    self.menu_at = MenuAt::Row;
+                    return self.keep_opened_search();
+                }
+            }
+            Message::ContextAction(action) => {
+                self.menu = None;
+                let result = self.handle(*action);
+                self.menu_at = MenuAt::Row;
+                return result;
             }
             Message::LetterLoaded(id, result) => {
                 let mut result = result.map(|mail| *mail);
@@ -5070,7 +5101,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
-            Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
+            Some(Menu::Nav | Menu::Switcher | Menu::MailContext) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
             None if self.is_insights() => Focus::Elsewhere,
@@ -6928,6 +6959,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let dialog = if from_panel && rail_shown { Placement::Beside } else { dialog_placement(from_panel) };
         let layer = match self.menu {
             None => None,
+            Some(Menu::MailContext) => self.rail_groups(class, &anchors).map(|groups| {
+                widgets::floating(
+                    &rows.row,
+                    Placement::Beside,
+                    widgets::rail_context_menu(
+                        groups,
+                        |action| Message::ContextAction(Box::new(action)),
+                        (self.size.height - style::MENU_INSET * 8.0).max(200.0),
+                    ),
+                    Message::CloseMenu,
+                )
+            }),
             Some(Menu::Switcher) => Some(widgets::floating(
                 &switcher,
                 Placement::Below(Align::Start),
@@ -12285,6 +12328,40 @@ mod tests {
                 let _ = app.view();
             }
         }
+    }
+
+    #[test]
+    fn right_click_opens_the_selected_mails_rail_actions_as_a_menu() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let folder = folder_view(&app, "f:work-inbox");
+        let _ = app.update(Message::Show(folder));
+        load(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let id = app.messages.first().expect("a mail").id.clone();
+        let _ = app.update(Message::ContextMail(id.clone()));
+        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::MailContext), Some(id.as_str())));
+        assert_eq!(app.focus(), Focus::Elsewhere, "list shortcuts do not act behind the menu");
+        let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the mail's actions");
+        assert_eq!(groups.first().map(|group| group.label.to_string()), Some(tr("Reply").to_owned()));
+        assert!(groups.iter().any(|group| group.label == tr("File")));
+        assert!(groups.iter().any(|group| group.label == tr("Torro")));
+        let _ = app.view();
+        let _ = app.update(Message::ContextAction(Box::new(Message::AskMailTask(id.clone()))));
+        assert_eq!((app.menu, app.menu_at), (Some(Menu::Task), MenuAt::Row));
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.menu, None);
+        let _ = app.update(Message::ContextMail(id));
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.menu, None);
+
+        let mut overview = mail_window(Density::Compact, &["--open", "mail-entry"]);
+        let entry = overview.detail.as_ref().expect("a mail entry").id.clone();
+        let _ = overview.update(Message::ContextEntry(entry.clone()));
+        assert_eq!((overview.menu, overview.cursor.as_deref()), (Some(Menu::MailContext), Some(entry.as_str())));
+        let groups = overview.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the entry's actions");
+        let file = groups.iter().find(|group| group.label == tr("File")).expect("File group");
+        assert!(file.items.iter().any(|item| item.label == tr("Done")));
+        let _ = overview.view();
     }
 
     /// Task E14.3: `]` and the rail's button expand and collapse the rail of the wide mail window and

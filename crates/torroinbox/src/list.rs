@@ -72,7 +72,9 @@ use std::ops::Range;
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, center, column, container, responsive, row, rule, scrollable, space as blank, stack, svg};
+use iced::widget::{
+    button, center, column, container, mouse_area, responsive, row, rule, scrollable, space as blank, stack, svg,
+};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -351,6 +353,11 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
         notice_content(item, rows, width)
     };
     let row = sized_row(with_strip(content, actions, width), selected, Message::Select(item.id.clone()), height);
+    let row = if rows.bare && item.source.kind == SourceKind::Mail {
+        mouse_area(row).on_right_press(Message::ContextEntry(item.id.clone())).into()
+    } else {
+        row
+    };
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
     if selected { widgets::anchored(&rows.anchors.row, row) } else { row }
 }
@@ -667,7 +674,8 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
     let card =
         MailCard { lines, chips: entry_chips(item, rows.now), selected, on_press: Message::Select(item.id.clone()) };
-    let card = mail_card(card, width);
+    let card: Element<'a, Message> =
+        mouse_area(mail_card(card, width)).on_right_press(Message::ContextEntry(item.id.clone())).into();
     if selected { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 
