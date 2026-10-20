@@ -112,10 +112,19 @@ fn build(id: &str, about: About, root: &Root, file: FontSetFile, problems: &mut 
         }
     }
     let factor = size_adjust.unwrap_or_else(|| auto_adjust(&fonts.text, &infos));
-    let widest = files(&fonts.numbers).filter_map(|path| infos.get(path)?.widest_figure).reduce(f32::max);
+    // Figures that stay the embedded Inter Tabular have no file here to measure, but a `size_adjust`
+    // still widens them: their known width keeps the rule in force.
+    let widest = match fonts.numbers.regular {
+        Some(Face::Builtin) => Some(BUILTIN_WIDEST_FIGURE),
+        _ => files(&fonts.numbers).filter_map(|path| infos.get(path)?.widest_figure).reduce(f32::max),
+    };
     problems.extend(rules::font(size_adjust, factor, &fonts.numbers.family, widest));
     FontSet { id: id.to_string(), about, license: license.unwrap_or(standard.license), fonts, size_adjust: factor }
 }
+
+/// The widest figure of the embedded Inter Tabular, in em (1328 of 2048 units), for the figures rule of
+/// a font that keeps the embedded figures.
+const BUILTIN_WIDEST_FIGURE: f32 = 1328.0 / 2048.0;
 
 /// The size adjustment from the x-height of `text`'s regular face (task L.19): Inter's divided by its
 /// own, held to [`SIZE_ADJUST_AUTO`]. 1 for the embedded Inter and for a face without an x-height.
@@ -236,6 +245,38 @@ mod tests {
         assert_eq!(listed.len(), 1, "a missing folder lists only Torro");
         assert!(listed[0].standard && listed[0].valid());
         assert_eq!(listed[0].result.as_ref().map(|font| font.fonts.text.family.as_str()), Ok("Inter"));
+    }
+
+    /// A font that keeps the embedded figures and only enlarges them (`size_adjust` alone) is held to
+    /// the figures bound too: 0.648 × 1.2 is wider than the time axis holds.
+    #[test]
+    fn embedded_figures_are_held_to_the_bound_too() {
+        let data = Data::new();
+        let head = "format = 1\n\n[about]\nname = \"Loose\"\nversion = \"1.0.0\"\n";
+        data.write(Part::Font, "loose", &format!("size_adjust = 1.2\n{head}"));
+        assert!(
+            matches!(&problems(&data.dir(Part::Font), "loose")[..],
+                [DesignError::DigitsTooWide { family, .. }] if family == "Inter Tabular"),
+            "{:?}",
+            problems(&data.dir(Part::Font), "loose")
+        );
+        data.write(Part::Font, "loose", &format!("size_adjust = 1.1\n{head}"));
+        assert!(load_font(&data.dir(Part::Font), "loose").is_ok(), "0.648 × 1.1 = 0.713 still fits");
+    }
+
+    /// A `font.toml` that is a link to a file outside the font's folder is refused, never read.
+    #[cfg(unix)]
+    #[test]
+    fn a_font_toml_linked_from_outside_is_not_read() {
+        let data = Data::new();
+        let outside = data.dir(Part::Font).with_file_name("elsewhere.toml");
+        fs::create_dir_all(data.entry(Part::Font, "linked")).expect("entry folder");
+        fs::write(&outside, "format = 1\nsecret_key = 1\n").expect("outside");
+        std::os::unix::fs::symlink(&outside, data.entry(Part::Font, "linked").join("font.toml")).expect("link");
+        assert_eq!(
+            problems(&data.dir(Part::Font), "linked"),
+            [DesignError::PathOutside { key: "font.toml".into(), path: "font.toml".into() }]
+        );
     }
 
     /// Task L.19: Inter is the reference, so Inter from a folder has a size adjustment of exactly 1.

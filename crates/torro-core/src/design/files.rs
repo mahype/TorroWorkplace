@@ -97,9 +97,15 @@ impl Root {
         shown(&self.path, path)
     }
 
-    /// The TOML file `name` (`design.toml` …) as text, at most [`TOML_LIMIT`].
+    /// The TOML file `name` (`design.toml` …) as text, at most [`TOML_LIMIT`]. A link that leads out of
+    /// the folder is refused like any other path outside it, so nothing outside is read.
     pub(super) fn toml(&self, name: &str) -> Result<String, DesignError> {
-        let path = self.path.join(name);
+        let Ok(path) = fs::canonicalize(self.path.join(name)) else {
+            return Err(DesignError::MissingFile { key: name.into(), path: name.into() });
+        };
+        if !path.starts_with(&self.path) {
+            return Err(DesignError::PathOutside { key: name.into(), path: name.into() });
+        }
         if !path.is_file() {
             return Err(DesignError::MissingFile { key: name.into(), path: name.into() });
         }
