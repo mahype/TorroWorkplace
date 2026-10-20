@@ -255,6 +255,31 @@ const HINT_TICK: Duration = Duration::from_secs(1);
 /// the next, and back within this time after one closed, it goes at once.
 const RAIL_DELAY: Duration = Duration::from_millis(150);
 
+/// What an open or waiting group of the rail depends on ([`App::rail_shape`]): they are indices
+/// into the rail's groups, so the card goes once the rail moves under them.
+#[derive(Debug, Clone, PartialEq)]
+struct RailShape {
+    class: SizeClass,
+    mode: RailMode,
+    icons: Vec<Icon>,
+    /// The open and the waiting group.
+    held: [Option<usize>; 2],
+}
+
+impl RailShape {
+    /// Whether the rail moved from `self` to `after` under a group held in both: another size class
+    /// or mode, or another group at its index. Groups added or gone elsewhere (a mail that loaded
+    /// adds "Mark" after "Torro") leave an open "File" where it is; a group the pointer just went to
+    /// is no move.
+    fn moved(&self, after: &RailShape) -> bool {
+        if (self.class, self.mode) != (after.class, after.mode) {
+            return true;
+        }
+        let kept = self.held.iter().flatten().filter(|at| after.held.contains(&Some(**at)));
+        kept.into_iter().any(|&at| self.icons.get(at) != after.icons.get(at))
+    }
+}
+
 /// How often a group waiting for [`RAIL_DELAY`] checks its time. Only while one waits.
 const RAIL_TICK: Duration = Duration::from_millis(30);
 
@@ -3061,9 +3086,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let task = self.handle(message);
         // The open group of the rail is a hover card: it goes once another mail shows or a menu or
         // dialog opens in its place (task E14.3), so only one card floats at a time. It also goes
-        // when the rail changes under it – its groups (a mail that loaded adds "Mark"), its mode or
-        // the window's size class –, since the open and waiting group are indices into the groups.
-        let reshaped = matches!((shape, self.rail_shape()), (Some(before), Some(after)) if before != after);
+        // when the rail changes under it ([`RailShape::moved`]).
+        let reshaped = matches!((shape, self.rail_shape()), (Some(before), Some(after)) if before.moved(&after));
         if self.menu.is_some() || (shown.is_some() && self.wanted_letter() != shown) || reshaped {
             self.rail_open = None;
             self.rail_pending = None;
@@ -6478,7 +6502,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// (task E14.3), so its width – collapsed or expanded as chosen – is left out: the mail itself
     /// keeps at least `split::min_pane()`, also with the rail expanded.
     fn split_limits(&self) -> Limits {
-        let rail = if self.launch.kind == Kind::Mail { self.rail_mode(SizeClass::Wide).width() } else { 0.0 };
+        // The rail stands `space::xs()` apart from the mail (`mail::reader`).
+        let rail =
+            if self.launch.kind == Kind::Mail { space::xs() + self.rail_mode(SizeClass::Wide).width() } else { 0.0 };
         Limits::new(size::list(), self.content_width() - rail)
     }
 
@@ -6501,11 +6527,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.reader_room(RailMode::Expanded) >= size::form_max()
     }
 
-    /// How wide the reader's mail is beside a `rail` of that mode, the divider placed as with the
-    /// collapsed rail – an expanded one only narrows the list's room further, never the reader's.
+    /// How wide the reader's mail is beside a `rail` of that mode and the gap before it
+    /// (`mail::reader`), the divider placed as with the collapsed rail – an expanded one only
+    /// narrows the list's room further, never the reader's.
     fn reader_room(&self, rail: RailMode) -> f32 {
-        let limits = Limits::new(size::list(), self.content_width() - RailMode::Collapsed.width());
-        self.content_width() - self.split.width(limits) - split::handle_width() - rail.width()
+        let beside = |rail: RailMode| space::xs() + rail.width();
+        let limits = Limits::new(size::list(), self.content_width() - beside(RailMode::Collapsed));
+        self.content_width() - self.split.width(limits) - split::handle_width() - beside(rail)
     }
 
     /// What the narrow mail window's "For me" leads with (task E8.3, "N new for you"; task E8.11 in
@@ -6587,22 +6615,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         groups.iter().position(|group| group.label == label)
     }
 
-    /// What the pointer and a click on the collapsed rail do at `now` (decision B of E14): coming
-    /// onto an icon opens its group after [`RAIL_DELAY`] – at once from an open group or just after
-    /// one closed –, never over an open menu or dialog; leaving the icon before cancels it; a click
-    /// on an icon without a click of its own opens the group now; leaving card and icon closes it.
     /// What the rail looks like now, as far as an open or waiting group depends on it: the size
-    /// class, the mode it draws in and the icons of its groups (fixed per group, finding 8). `None`
-    /// while no group is open or waiting, so nothing is reckoned for every message.
-    fn rail_shape(&self) -> Option<(SizeClass, RailMode, Vec<Icon>)> {
+    /// class, the mode it draws in, the icons of its groups (fixed per group, finding 8) and the
+    /// open and waiting group. `None` while no group is open or waiting, so nothing is reckoned for
+    /// every message.
+    fn rail_shape(&self) -> Option<RailShape> {
         if self.rail_open.is_none() && self.rail_pending.is_none() {
             return None;
         }
         let class = self.class();
         let groups = self.rail_groups(class, &detail::Anchors::default()).unwrap_or_default();
-        Some((class, self.rail_mode(class), groups.iter().map(|group| group.icon).collect()))
+        Some(RailShape {
+            class,
+            mode: self.rail_mode(class),
+            icons: groups.iter().map(|group| group.icon).collect(),
+            held: [self.rail_open, self.rail_pending.map(|(at, _)| at)],
+        })
     }
 
+    /// What the pointer and a click on the collapsed rail do at `now` (decision B of E14): coming
+    /// onto an icon opens its group after [`RAIL_DELAY`] – at once from an open group or just after
+    /// one closed –, never over an open menu or dialog; leaving the icon before cancels it; a click
+    /// on an icon without a click of its own opens the group now; leaving card and icon closes it.
     fn rail_event(&mut self, event: RailEvent, now: Instant) {
         match event {
             RailEvent::Enter(_) if self.menu.is_some() => {}
@@ -12283,7 +12317,7 @@ mod tests {
         // Expanded, the groups stand open in the rail: no card beside it. The divider leaves the rail
         // out, so the mail keeps its least beside it.
         let _ = press(&mut app, Key::Actions);
-        assert_eq!(app.split_limits().total, app.content_width() - RailMode::Expanded.width());
+        assert_eq!(app.split_limits().total, app.content_width() - space::xs() - RailMode::Expanded.width());
         let _ = app.update(Message::Rail(RailEvent::Open(1)));
         let anchors = detail::Anchors::default().with_rail();
         assert!(app.rail_layer(SizeClass::Wide, &anchors).is_none(), "no card beside the expanded rail");
@@ -12435,7 +12469,7 @@ mod tests {
         let _ = app.update(Message::Resized(Size::new(1024.0, 760.0)));
         assert_eq!(app.class(), SizeClass::Wide);
         assert_eq!((app.actions, app.rail_mode(SizeClass::Wide)), (RailMode::Expanded, RailMode::Collapsed));
-        assert_eq!(app.split_limits().total, app.content_width() - RailMode::Collapsed.width());
+        assert_eq!(app.split_limits().total, app.content_width() - space::xs() - RailMode::Collapsed.width());
         let anchors = detail::Anchors::default().with_rail();
         let _ = app.update(Message::Rail(RailEvent::Open(1)));
         assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "drawn collapsed, its groups open beside it");
@@ -12469,6 +12503,23 @@ mod tests {
         assert!(bare.rail_groups(SizeClass::Wide, &detail::Anchors::default()).is_none());
         let _ = press(&mut bare, Key::Actions);
         assert_eq!(bare.actions, RailMode::Collapsed, "no mail, no switch");
+    }
+
+    /// Review of #241: a mail that loads adds "Mark" after "Torro" – an open "File" stays, a group
+    /// waiting on "Mute" (now "Mark" at its index) goes; another size class moves every group.
+    #[test]
+    fn a_group_goes_only_when_the_rail_moves_under_it() {
+        let loading = vec![Icon::Reply, Icon::Check, Icon::ListTodo, Icon::BellOff, Icon::Ellipsis];
+        let loaded = vec![Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Ellipsis];
+        let shape =
+            |icons: &[Icon], held, class| RailShape { class, mode: RailMode::Collapsed, icons: icons.to_vec(), held };
+        let file = [Some(1), None];
+        let medium = SizeClass::Medium;
+        assert!(!shape(&loading, file, medium).moved(&shape(&loaded, file, medium)), "File stays");
+        let mute = [None, Some(3)];
+        assert!(shape(&loading, mute, medium).moved(&shape(&loaded, mute, medium)), "Mute became Mark");
+        assert!(!shape(&loaded, file, medium).moved(&shape(&loaded, [Some(2), None], medium)), "to the neighbour");
+        assert!(shape(&loaded, file, medium).moved(&shape(&loaded, file, SizeClass::Wide)), "another size class");
     }
 
     /// Task E14.3: the demo's states for pictures – the rail expanded, and collapsed with "File" open.
