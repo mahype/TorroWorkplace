@@ -6372,7 +6372,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// the wide mail window, the one that can expand it (decision 5 of E14) – and remembers it for this
     /// window's key ([`Launch::window_key`]); not in the demo, which stores nothing.
     fn toggle_actions(&mut self) -> Task<Message> {
-        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide {
+        // Drawn collapsed for want of room, the rail cannot expand: `]` keeps the choice as it is
+        // rather than switching it unseen.
+        if self.launch.kind != Kind::Mail || self.class() != SizeClass::Wide || !self.rail_can_expand() {
             return Task::none();
         }
         self.actions = self.actions.toggled();
@@ -6481,10 +6483,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// with more room it shows expanded again.
     fn rail_mode(&self, class: SizeClass) -> RailMode {
         let expanded = self.actions == RailMode::Expanded;
-        if class != SizeClass::Wide || (expanded && self.reader_room(RailMode::Expanded) < size::form_max()) {
+        if class != SizeClass::Wide || (expanded && !self.rail_can_expand()) {
             return RailMode::Collapsed;
         }
         self.actions
+    }
+
+    /// Whether an expanded rail leaves the reader at least [`size::form_max()`] – without, the
+    /// rail draws collapsed ([`App::rail_mode`]) and offers no button to expand.
+    fn rail_can_expand(&self) -> bool {
+        self.reader_room(RailMode::Expanded) >= size::form_max()
     }
 
     /// How wide the reader's mail is beside a `rail` of that mode, the divider placed as with the
@@ -6544,11 +6552,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The mail's action rail of `groups` in `class` (`widgets::action_rail`): in the wide window in
-    /// the mode [`App::rail_mode`] draws, with its button; in medium and narrow always collapsed and
-    /// without the button (decision 5 of E14). The group open beside its icon, or whose menu or
+    /// the mode [`App::rail_mode`] draws, with its button while it can expand; in medium and narrow
+    /// always collapsed and without the button (decision 5 of E14). The group open beside its icon, or whose menu or
     /// dialog is open, stands selected ([`App::rail_active`]).
     fn rail<'a>(&self, class: SizeClass, groups: Vec<RailGroup<'a, Message>>) -> Element<'a, Message> {
-        let toggle = (class == SizeClass::Wide).then_some(Message::ToggleActions);
+        let toggle = (class == SizeClass::Wide && self.rail_can_expand()).then_some(Message::ToggleActions);
         let active = self.rail_active(&groups);
         widgets::action_rail(groups, self.rail_mode(class), active, Message::Rail, toggle)
     }
@@ -12414,6 +12422,10 @@ mod tests {
         let _ = app.update(Message::Rail(RailEvent::Open(1)));
         assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "drawn collapsed, its groups open beside it");
         let _ = app.view();
+        assert!(!app.rail_can_expand(), "no button to expand where it cannot");
+        let _ = app.update(Message::ToggleActions);
+        assert_eq!(app.actions, RailMode::Expanded, "`]` keeps the choice while the rail cannot expand");
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Actions(..))));
         let _ = app.update(Message::Resized(WIDE));
         assert_eq!(app.rail_mode(SizeClass::Wide), RailMode::Expanded, "with room it shows expanded");
         assert!(app.reader_room(RailMode::Expanded) >= size::form_max());
