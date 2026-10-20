@@ -2387,12 +2387,11 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
 /// (tasks E9.4, E11.3), so requests and keys stay the same:
 ///
 /// 1. **Reply** (the main group: a red icon collapsed, Reply strong expanded – decision A): Reply
-///    (`r`), Reply all (`a`), Forward (`f`) – [`Message::Mail`].
+///    (`r`), Reply all, Forward (`f`) – [`Message::Mail`].
 /// 2. **File**: for an `entry` Done (`e`, [`Message::SetDone`]) or Reopen once done, Later… (`s`,
 ///    `AskSnooze`, not for a done entry) and "Move to Info" or "Move to For me" (`l`, `AskLane`);
-///    then Archive and Delete (`#`) where the account has the folder and the mail does not lie in
-///    it already, as in rows ([`filing_actions`]; Archive's key `e` only for a folder's message,
-///    where `e` archives).
+///    then Archive (`a`) and Delete (`#`) where the account has the folder and the mail does not lie
+///    in it already, as in rows ([`filing_actions`]).
 /// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
 ///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
 ///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
@@ -2425,7 +2424,7 @@ pub fn action_groups<'a>(
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
     let reply = vec![
         RailItem::new(Icon::Reply, tr("Reply"), "R", mail(MailAction::Reply)).lead(),
-        RailItem::new(Icon::ReplyAll, tr("Reply all"), "A", mail(MailAction::ReplyAll)),
+        RailItem::new(Icon::ReplyAll, tr("Reply all"), "", mail(MailAction::ReplyAll)),
         RailItem::new(Icon::Forward, tr("Forward"), "F", mail(MailAction::Forward)),
     ];
     // A flagged mail says so at the group's icon (finding 9), in the colour of the flag in its row.
@@ -2468,9 +2467,7 @@ fn file_items<'a>(
         let filing = Filing::of(folders, &summary.account, Some(&summary.folder));
         let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
         if filing.archive {
-            // `e` archives only in a folder; at an entry it is Done.
-            let key = if entry.is_some() { "" } else { "E" };
-            items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), key, mail(MailAction::Archive)));
+            items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), "A", mail(MailAction::Archive)));
         }
         if filing.delete {
             // Never what a click on the group's icon does (finding 8).
@@ -3171,13 +3168,13 @@ mod tests {
             let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
             assert!(mail(marks[0].press(), MailAction::Flag(!flagged)));
             assert!(matches!(marks[1].press(), Some(Message::Mail(MailAction::Read(_), id)) if id == "m:w1"));
-            // The keys, as the window has them: `e` is Done at an entry, so Archive shows none.
+            // A in the opened mail archives; Reply all has no single-key shortcut here.
             let keys: Vec<Vec<&str>> = groups.iter().map(|g| g.items.iter().map(|i| i.key).collect()).collect();
             assert_eq!(
                 keys,
                 [
-                    vec!["R", "A", "F"],
-                    vec!["E", "S", "L", "", "#"],
+                    vec!["R", "", "F"],
+                    vec!["E", "S", "L", "A", "#"],
                     vec!["T", "C", ""],
                     vec!["", ""],
                     vec!["M"],

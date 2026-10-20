@@ -3866,7 +3866,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::ModifiersChanged(modifiers) => self.modifiers = modifiers,
             Message::SelectAllVisible => {
-                if !self.view.is_mail() || !matches!(self.focus(), Focus::List | Focus::Overview) {
+                if !self.view.is_mail() || !matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
                     return Task::none();
                 }
                 if !self.shows_search() {
@@ -3877,7 +3877,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     .map(|focused| Message::SelectAllVisibleChecked(focused.contains(&true)));
             }
             Message::SelectAllVisibleChecked(typing) => {
-                if !typing && self.view.is_mail() && matches!(self.focus(), Focus::List | Focus::Overview) {
+                if !typing && self.view.is_mail() && matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
                     self.selected_mail = self.messages.iter().map(|message| message.id.clone()).collect();
                     self.mail_anchor = self.selected_mail.first().cloned();
                 }
@@ -4754,7 +4754,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// ([`Message::ShortcutChecked`]). The dialogs with fields ("Make task", "Make event") take no
     /// shortcut at all ([`Focus::Task`]). Without a search field there is nothing to ask.
     fn shortcut(&mut self, command: shortcuts::Command) -> Task<Message> {
-        if !matches!(self.focus(), Focus::List | Focus::Overview) {
+        if !matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
             return Task::none();
         }
         if command.works_in_text_field() || !self.shows_search() {
@@ -4774,7 +4774,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return Task::none();
         }
         let Some(command) = keys::of_shortcut(command) else { return Task::none() };
-        if !matches!(self.focus(), Focus::List | Focus::Overview) {
+        if !matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
             return Task::none();
         }
         self.menu_at = MenuAt::Keys;
@@ -5522,6 +5522,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
             None if self.is_insights() => Focus::Elsewhere,
+            // In an opened mail, the rail's A archives; in the list it still answers all.
+            None if self.view.is_mail() && self.detail.is_some() => Focus::MailDetail,
             // The hub's "Act now" is one list of sections: `h`/`l` change no column there.
             None if self.view == View::Overview && !self.is_hub() => Focus::Overview,
             None => Focus::List,

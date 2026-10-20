@@ -10,7 +10,7 @@
 //!    ↓/↑) move, `Enter` opens, `e` done, `u` undo (as Ctrl + Z, ⌘ + Z on macOS, does in the whole
 //!    window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
 //!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
-//!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
+//!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all in the list (archive in an opened mail), `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
 //!    reader between HTML and text (task M9.7; the app decides whether it has HTML); in a menu of choices the digits pick
 //!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
@@ -127,6 +127,8 @@ pub enum Key {
 pub enum Focus {
     /// Nothing in front: the list (and the panel showing its entry) takes the triage keys.
     List,
+    /// A mail is open in the reader or side panel: `a` archives it instead of replying to all.
+    MailDetail,
     /// Nothing in front of the overview (task E3.9): the keys of the list, and the column keys.
     Overview,
     /// A menu of choices for an entry is open (snooze, lane, hide); its entries carry digits.
@@ -418,6 +420,8 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
 /// What `key` does while the keys go to `focus`; `None` when it does nothing there.
 pub fn command(focus: Focus, key: Key) -> Option<Command> {
     match (focus, key) {
+        (Focus::MailDetail, Key::A) => Some(Command::Archive),
+        (Focus::MailDetail, key) => command(Focus::List, key),
         (Focus::Overview, Key::Left | Key::H) => Some(Command::ColumnLeft),
         (Focus::Overview, Key::Right | Key::L) => Some(Command::ColumnRight),
         (Focus::Overview, key) => command(Focus::List, key),
@@ -522,6 +526,8 @@ mod tests {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
             assert_eq!(command(Focus::List, key), Some(wanted), "{key:?}");
         }
+        assert_eq!(command(Focus::MailDetail, Key::A), Some(Command::Archive));
+        assert_eq!(command(Focus::MailDetail, Key::R), Some(Command::Reply));
     }
 
     /// Task E14.3: `]` expands or collapses the mail's action rail – also typed with AltGr (Ctrl +
