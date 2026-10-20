@@ -3986,14 +3986,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Modelle für den Assistenten und seine Bots, auf diesem Rechner oder in der Cloud.",
     ),
     ("Name the client and choose what it may do.", "Gib dem Client einen Namen und wähle, was er darf."),
-    (
-        "No clients yet. Choose Connect client to set up Claude Code, Codex, Gemini CLI, Claude Desktop, Cursor or another MCP client.",
-        "Noch keine Clients. Wähle „Client verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop, Cursor oder einen anderen MCP-Client einzurichten.",
-    ),
-    (
-        "No keys yet. Choose Create key to give a script or program access.",
-        "Noch keine Schlüssel. Wähle „Schlüssel erstellen“, um einem Skript oder Programm Zugriff zu geben.",
-    ),
     ("No model is turned on", "Kein Modell ist eingeschaltet"),
     ("No models match.", "Kein Modell passt."),
     (
@@ -4209,4 +4201,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The new one with the due dates is on your desktop: Release checklist-2.pdf.",
         "Die neue mit den Fälligkeiten liegt auf deinem Schreibtisch: Release checklist-2.pdf.",
     ),
+    // Design review #231
+    ("Command", "Befehl"),
+    ("Refused while API keys are off", "Abgelehnt, solange API-Schlüssel aus sind"),
+    ("Refused while MCP is off", "Abgelehnt, solange MCP aus ist"),
+    ("Create key…", "Schlüssel erstellen…"),
+    ("Connect client…", "Client verbinden…"),
 ];

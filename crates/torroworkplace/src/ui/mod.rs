@@ -143,8 +143,9 @@ impl Section {
             Section::Accounts => Icon::Cloud,
             // Code: programs that call Torro Workplace.
             Section::Api => Icon::Code,
-            // The suite has no robot icon; the sparkles stand for AI agents.
-            Section::Mcp => Icon::Sparkles,
+            // A link: clients connected to Torro Workplace. Not the sparkles, which stand for AI in
+            // the suite, nor a robot, which it has not.
+            Section::Mcp => Icon::Link,
             // A person who confirms: the agent asks, the person decides.
             Section::Approvals => Icon::UserCheck,
             Section::Workspaces => Icon::Layers,

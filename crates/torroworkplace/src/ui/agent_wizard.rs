@@ -725,7 +725,7 @@ fn key_step(state: &State) -> Element<'_, Message> {
             )
             .style(theme::text_2),
         );
-        body = body.push(copy_line(&state.command, state.copied_command, Message::CopyCommand, Message::KeepKey));
+        body = body.push(command_line(&state.command, state.copied_command, Message::CopyCommand, Message::KeepKey));
     } else {
         body = body.push(
             typo::text(
@@ -739,14 +739,57 @@ fn key_step(state: &State) -> Element<'_, Message> {
         );
     }
     let key = state.key.as_ref().map_or("", IssuedKey::expose);
-    body.push(copy_line(key, state.copied, Message::CopyKey, Message::KeepKey)).into()
+    body.push(copy_line(tr("Key"), key, state.copied, Message::CopyKey, Message::KeepKey)).into()
 }
 
-/// `text` (a key, a command) in a field to select, in tabular figures – it is read and compared
-/// character by character –, and "Copy" sending `copy`, which says "Copied" once it was pressed.
-/// Typing into the field sends `keep`, which must change nothing.
-pub(super) fn copy_line<'a, M: Clone + 'a>(text: &'a str, copied: bool, copy: M, keep: M) -> Element<'a, M> {
-    let field = text_input("", text)
+/// `text` (a key) under its `label` in `CAPTION` (`text_3`), in a field to select, in tabular
+/// figures – it is read and compared character by character –, and "Copy" sending `copy`, which says
+/// "Copied" once it was pressed. Typing into the field sends `keep`, which must change nothing.
+pub(super) fn copy_line<'a, M: Clone + 'a>(
+    label: &'a str,
+    text: &'a str,
+    copied: bool,
+    copy: M,
+    keep: M,
+) -> Element<'a, M> {
+    copy_field(label, text.to_string(), None, copied, copy, keep)
+}
+
+/// The command an MCP client runs ([`crate::client_setup::mcp_command`]) as [`copy_line`] under
+/// "Command", its path cut at the front ([`short_command`]) so the end that tells what runs – the
+/// program and `mcp` – always shows; the whole command is the field's tooltip, and "Copy" copies all
+/// of it (the caller's `copy`).
+pub(super) fn command_line<'a, M: Clone + 'a>(command: &'a str, copied: bool, copy: M, keep: M) -> Element<'a, M> {
+    let shown = short_command(command);
+    let whole = (shown != command).then_some(command);
+    copy_field(tr("Command"), shown, whole, copied, copy, keep)
+}
+
+/// `command` with the folders of its program left out: "…/torroworkplace mcp" for
+/// "/Users/anna/bin/torroworkplace mcp" (quotes of a path with spaces dropped, it is only shown);
+/// as it is when it names no folder.
+fn short_command(command: &str) -> String {
+    match command.rfind(['/', '\\']) {
+        Some(at) => {
+            let separator = &command[at..at + 1];
+            let rest: String = command[at + 1..].chars().filter(|c| !matches!(c, '\'' | '"')).collect();
+            format!("…{separator}{rest}")
+        }
+        None => command.to_string(),
+    }
+}
+
+/// The parts of [`copy_line`] and [`command_line`]: `shown` in the field, `whole` as its tooltip
+/// where the field shows less. "Copy" is a bar button, as high as the field (32).
+fn copy_field<'a, M: Clone + 'a>(
+    label: &'a str,
+    shown: String,
+    whole: Option<&'a str>,
+    copied: bool,
+    copy: M,
+    keep: M,
+) -> Element<'a, M> {
+    let field = text_input("", &shown)
         .size(typo::body().size)
         .line_height(typo::body().line_height)
         .font(typo::body().tabular().font)
@@ -756,11 +799,16 @@ pub(super) fn copy_line<'a, M: Clone + 'a>(text: &'a str, copied: bool, copy: M,
         // Without an edit handler the field cannot take focus, so the text could not be selected.
         // Edits change nothing: the field always shows the text.
         .on_input(move |_| keep.clone());
-    let button = match copied {
-        true => widgets::text_button(Some(Icon::Check), tr("Copied"), style::button::secondary, Some(copy)),
-        false => widgets::text_button(Some(Icon::Copy), tr("Copy"), style::button::secondary, Some(copy)),
+    let field: Element<'a, M> = match whole {
+        Some(whole) => widgets::with_tooltip(field, whole),
+        None => field.into(),
     };
-    row![field, button].spacing(space::s()).align_y(Alignment::Center).into()
+    let button = match copied {
+        true => widgets::bar_button(Icon::Check, tr("Copied"), true, style::button::secondary, Some(copy)),
+        false => widgets::bar_button(Icon::Copy, tr("Copy"), true, style::button::secondary, Some(copy)),
+    };
+    let line = row![field, button].spacing(space::s()).align_y(Alignment::Center);
+    column![typo::text(typo::caption(), label).style(theme::text_3), line].spacing(space::xs()).into()
 }
 
 /// The error left (on the rights step), "Back", "Cancel" and the step's primary button right.
@@ -814,6 +862,17 @@ mod tests {
             rights: RightsTemplate::ReadAndWrite.rights(),
             agent: None,
         }
+    }
+
+    /// #231: the command shows its end – program and `mcp` –, the folders before it cut off.
+    #[test]
+    fn the_command_is_cut_at_the_front() {
+        assert_eq!(short_command("/Users/anna/bin/torroworkplace mcp"), "…/torroworkplace mcp");
+        assert_eq!(short_command("'/Users/anna/my apps/torroworkplace' mcp"), "…/torroworkplace mcp");
+        assert_eq!(short_command(r#""C:\Program Files\torroworkplace.exe" mcp"#), "…\\torroworkplace.exe mcp");
+        assert_eq!(short_command("torroworkplace mcp"), "torroworkplace mcp");
+        let program = std::path::Path::new("/opt/torro/torroworkplace");
+        assert!(short_command(&crate::client_setup::mcp_command(program)).ends_with("/torroworkplace mcp"));
     }
 
     #[test]

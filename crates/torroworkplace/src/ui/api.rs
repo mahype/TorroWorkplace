@@ -350,9 +350,12 @@ impl Page {
     }
 
     /// A client in the section's list: name, then what it is where the name does not say it (MCP),
-    /// its rights in words and when it was last used; the row opens its page.
-    pub fn row<'a>(&self, client: &'a ClientInfo, now: DateTime<Utc>) -> Element<'a, PageMessage> {
-        let mut parts: Vec<String> = kind_word(self.home, client).into_iter().collect();
+    /// its rights in words and when it was last used; the row opens its page. While the section's
+    /// switch is off (`refused`) the line starts with that the core refuses the client
+    /// ([`refused_text`]), so the list does not look as if it worked.
+    pub fn row<'a>(&self, client: &'a ClientInfo, now: DateTime<Utc>, refused: bool) -> Element<'a, PageMessage> {
+        let mut parts: Vec<String> = refused.then(|| refused_text(self.home).to_string()).into_iter().collect();
+        parts.extend(kind_word(self.home, client));
         parts.push(rights_summary(rights::shown(&self.rights, client), &client.kind));
         parts.push(last_used_text(client.last_used, now));
         let row = setting_row(None, client.name.as_str(), Some(parts.join(" · ")), chevron());
@@ -361,7 +364,8 @@ impl Page {
 
     /// The top of a client's page: its name with what it is and when it was last used, then the
     /// rights editor ([`rights::groups`], the commands named after the section), the controls in
-    /// `column` ([`control_column`]).
+    /// `column` ([`control_column`]). The name is the first part, so a section can put a group of its
+    /// own between it and the rights (MCP's "Notification Hub").
     pub fn head<'a>(
         &'a self,
         client: &'a ClientInfo,
@@ -399,12 +403,12 @@ impl Page {
         let title = tr("Recent activity");
         let entries = match &self.activity {
             Some((id, entries)) if *id == client.id => entries,
-            _ => return quiet_group(title, tr("Loading …")),
+            _ => return quiet_group(title, tr("Loading…")),
         };
         if entries.is_empty() {
             return quiet_group(title, tr("No requests yet."));
         }
-        let rows = entries.iter().take(ACTIVITY_SHOWN).map(|entry| activity_row(entry, now)).collect();
+        let rows = entries.iter().take(ACTIVITY_SHOWN).map(|entry| activity_row(self.home, entry, now)).collect();
         let footer = tr("Only the command and its result are logged, never what it contained.");
         widgets::group(title, rows, Some(footer.to_string()))
     }
@@ -455,6 +459,25 @@ pub fn kind_label(client: &ClientInfo) -> String {
 fn kind_word(home: Home, client: &ClientInfo) -> Option<String> {
     let kind = kind_label(client);
     (home == Home::Mcp && kind != client.name).then_some(kind)
+}
+
+/// The start of a client's line in the list while the section's switch is off: the core refuses
+/// every key of a script while "Allow API keys" is off, every MCP client while "Allow MCP" is.
+pub fn refused_text(home: Home) -> &'static str {
+    match home {
+        Home::Api => tr("Refused while API keys are off"),
+        Home::Mcp => tr("Refused while MCP is off"),
+    }
+}
+
+/// A command of the audit log (its catalogue name) as the section names commands: the endpoint
+/// (`calendar.list_events`) for a key, the MCP tool (`calendar_list_events`) for an MCP client –
+/// the names the rights editor above it uses ([`Naming`]).
+pub fn command_label(home: Home, command: &str) -> String {
+    match home {
+        Home::Api => command.to_string(),
+        Home::Mcp => command.replace('.', "_"),
+    }
 }
 
 /// "Used 5 min ago", or "Never used".
@@ -544,19 +567,20 @@ pub fn quiet_group<'a, M: 'a>(title: &'a str, sentence: &'a str) -> Element<'a, 
         .into()
 }
 
-/// A request: the command, below it the time in tabular figures (so the times of the rows line
-/// up), and the result at the right. Laid out like a `setting_row` with a detail, whose detail
-/// cannot be tabular.
-fn activity_row<'a, M: 'a>(entry: &'a ActivityEntry, now: DateTime<Utc>) -> Element<'a, M> {
+/// A request: the command as `home` names it ([`command_label`]), below it the time in tabular
+/// figures (so the times of the rows line up), and the result at the right. Laid out like a
+/// `setting_row` with a detail, whose detail cannot be tabular; a command too long for its room is
+/// cut with "…" and shown whole as tooltip.
+fn activity_row<'a, M: 'a>(home: Home, entry: &'a ActivityEntry, now: DateTime<Utc>) -> Element<'a, M> {
     let (status, word) = outcome(&entry.result);
     let result = row![widgets::status_dot(status), typo::text(typo::meta(), word).style(theme::text_2)]
         .spacing(space::s())
         .align_y(Alignment::Center);
     let lines = column![
-        typo::text(typo::body(), entry.command.as_str()).wrapping(Wrapping::None),
-        typo::text(typo::meta().tabular(), when(entry.time, now)).style(theme::text_2).wrapping(Wrapping::None),
+        widgets::ellipsized(typo::body(), command_label(home, &entry.command), theme::text),
+        widgets::ellipsized(typo::meta().tabular(), when(entry.time, now), theme::text_2),
     ];
-    let text = container(lines).width(Fill).clip(true);
+    let text = lines.width(Fill);
     row_frame(row![text, result].spacing(space::l()).align_y(Alignment::Center), true)
 }
 
@@ -584,7 +608,13 @@ fn key_dialog(home: Home, issued: &Issued) -> Element<'_, PageMessage> {
             "Copy it into the agent's configuration now. It is shown only this once; Torro Workplace keeps only a fingerprint of it.",
         ),
     };
-    let line = agent_wizard::copy_line(issued.key.expose(), issued.copied, PageMessage::CopyKey, PageMessage::KeepKey);
+    let line = agent_wizard::copy_line(
+        tr("Key"),
+        issued.key.expose(),
+        issued.copied,
+        PageMessage::CopyKey,
+        PageMessage::KeepKey,
+    );
     let done = widgets::text_button(None, tr("Done"), style::button::primary, Some(PageMessage::CloseKey));
     let content = column![
         typo::text(typo::title(), trf("New key for {name}", &[("name", &issued.name)])),
@@ -594,6 +624,14 @@ fn key_dialog(home: Home, issued: &Issued) -> Element<'_, PageMessage> {
     ]
     .spacing(space::l());
     dialog(content, size::form_max(), PageMessage::KeepKey)
+}
+
+/// A group's last row that makes the first of what the group lists ("+ Create key…", "+ Connect
+/// client…"): a ghost button on the content axis, as the groups of Accounts offer "+ Add …". It
+/// stands in a group that is empty otherwise, so the group keeps its frame and footer.
+pub fn add_row<'a, M: Clone + 'a>(label: &'a str, message: M) -> Element<'a, M> {
+    let add = widgets::text_button(Some(Icon::Plus), label, style::button::ghost, Some(message));
+    row_frame(on_axis(add), false)
 }
 
 /// The header's primary button: with its word, in narrow windows only its "+" icon, so the section
@@ -732,15 +770,14 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
     );
     let footer = tr("Programs reach Torro Workplace on this computer only. Only you can turn this on again.");
     let switch = widgets::group(tr("API"), vec![allow], Some(footer.to_string()));
-    let rows: Vec<Element<'a, Message>> =
-        listed(data, Home::Api).map(|client| state.page.row(client, now).map(Message::Page)).collect();
-    let keys = match rows.is_empty() {
-        true => quiet_group(tr("Keys"), tr("No keys yet. Choose Create key to give a script or program access.")),
-        false => {
-            let footer = tr("Scripts and other programs that use the API with their own key.");
-            widgets::group(tr("Keys"), rows, Some(footer.to_string()))
-        }
-    };
+    let refused = !data.settings.allow_api_keys;
+    let mut rows: Vec<Element<'a, Message>> =
+        listed(data, Home::Api).map(|client| state.page.row(client, now, refused).map(Message::Page)).collect();
+    if rows.is_empty() {
+        rows.push(add_row(tr("Create key…"), Message::Create));
+    }
+    let footer = tr("Scripts and other programs that use the API with their own key.");
+    let keys = widgets::group(tr("Keys"), rows, Some(footer.to_string()));
     column![switch, keys].spacing(layout::section_gap()).into()
 }
 
@@ -1007,6 +1044,25 @@ pub(super) mod tests {
         other.clients.push(client("s2", "other", "script", Rights::none()));
         let _ = update(&mut state, Message::Page(PageMessage::Open("s2".into())), &other);
         assert!(state.page.activity.is_none(), "another client's activity is not shown");
+    }
+
+    /// #231: the activity names commands as the section does, and a switched-off section says so in
+    /// every row of its list.
+    #[test]
+    fn activity_and_rows_speak_the_section_s_language() {
+        assert_eq!(command_label(Home::Api, "calendar.list_events"), "calendar.list_events");
+        assert_eq!(command_label(Home::Mcp, "calendar.list_events"), "calendar_list_events");
+        assert_eq!(refused_text(Home::Api), tr("Refused while API keys are off"));
+        assert_eq!(refused_text(Home::Mcp), tr("Refused while MCP is off"));
+        let mut data = data();
+        let state = State::default();
+        let now = Utc::now();
+        for allowed in [true, false] {
+            data.settings.allow_api_keys = allowed;
+            drop(view(&state, &data));
+            drop(state.page.row(&data.clients[2], now, !allowed));
+        }
+        drop(view(&State::default(), &Data::default()));
     }
 
     #[test]

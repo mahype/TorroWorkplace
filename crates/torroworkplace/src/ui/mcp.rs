@@ -12,7 +12,8 @@
 //!   "Connect client" in the header opens the dialog of `agent_wizard.rs` ([`agent_wizard::State::new`]).
 //! - **A client's page:** the shared page of `api.rs` ([`Page`]) with the commands named as MCP
 //!   tools, and for Claude Code, Codex and Gemini CLI the group "Notification Hub" between the
-//!   rights and the activity: the switch "Report when waiting or done" and where the hooks are.
+//!   name and the rights – one switch, which would be screens down below the editor: "Report when
+//!   waiting or done" and where the hooks are.
 //!
 //! **Hooks** are a client of their own (kind `hook`, `Rights::hook`), but no list shows them: the
 //! switch on the agent's page makes and removes them. On: `clients.create_client` for a hook client
@@ -37,20 +38,20 @@
 //! outcome comes back as [`Message::Setup`].
 
 use chrono::{DateTime, Utc};
-use iced::widget::{Space, column, responsive, svg, toggler};
-use iced::{Color, Element, Length, Subscription, Theme};
+use iced::widget::{Space, column, container, responsive, svg, toggler};
+use iced::{Color, Element, Fill, Length, Subscription, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::theme::{Palette, palette, size};
+use torro_gui::theme::{Palette, palette, size, space};
 use torro_gui::{style, widgets};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{HOOK_CLIENT, RightsTemplate, is_mcp_kind};
 use torro_ipc::{ClientInfo, Request, Response, SettingKey};
 use torro_settings_ui::rights::{control_column, in_column};
 
-use super::api::{self, Home, Page, PageMessage, allow_row, primary, quiet_group};
-use super::{Action, Data, Header, agent_wizard, confirm, dialog, row_frame, setting_row};
+use super::api::{self, Home, Page, PageMessage, add_row, allow_row, primary};
+use super::{Action, Data, Header, agent_wizard, confirm, dialog, setting_row};
 use crate::client_setup::{self, HookNote, Job, Outcome, Target};
 
 /// Page state of MCP.
@@ -486,21 +487,15 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
     let unread = state.notes_problem.as_deref().map(|problem| {
         super::notice(trf("What Connect client set up could not be read: {problem}", &[("problem", &problem)]))
     });
+    let refused = !data.settings.allow_mcp;
     let mut rows: Vec<Element<'a, Message>> =
-        api::listed(data, Home::Mcp).map(|client| state.page.row(client, now).map(Message::Page)).collect();
+        api::listed(data, Home::Mcp).map(|client| state.page.row(client, now, refused).map(Message::Page)).collect();
     rows.extend(orphans(data, state.notes.as_deref()).map(orphan_row));
-    let clients = match rows.is_empty() {
-        true => quiet_group(
-            tr("Connected clients"),
-            tr(
-                "No clients yet. Choose Connect client to set up Claude Code, Codex, Gemini CLI, Claude Desktop, Cursor or another MCP client.",
-            ),
-        ),
-        false => {
-            let footer = tr("Coding agents and apps that use Torro Workplace through MCP, each with its own key.");
-            widgets::group(tr("Connected clients"), rows, Some(footer.to_string()))
-        }
-    };
+    if rows.is_empty() {
+        rows.push(add_row(tr("Connect client…"), Message::Connect));
+    }
+    let footer = tr("Coding agents and apps that use Torro Workplace through MCP, each with its own key.");
+    let clients = widgets::group(tr("Connected clients"), rows, Some(footer.to_string()));
     column![]
         .push(problem)
         .push(unread)
@@ -510,7 +505,8 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
         .into()
 }
 
-/// "MCP server": the switch and the command to copy.
+/// "MCP server": the switch and, under "Command", the command to copy – its row as high as the
+/// label and the field need, 12 above and below like a wrapping row.
 fn server_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let allow = allow_row(
         tr("Allow MCP"),
@@ -519,10 +515,8 @@ fn server_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         tr("Every MCP client and its hooks are refused"),
         Message::Allow,
     );
-    let command = row_frame(
-        agent_wizard::copy_line(&state.command, state.copied, Message::CopyCommand, Message::KeepCommand),
-        false,
-    );
+    let command = agent_wizard::command_line(&state.command, state.copied, Message::CopyCommand, Message::KeepCommand);
+    let command = container(command).width(Fill).padding([space::m(), space::l()]).into();
     let footer = trf(
         "The command for a client you set up yourself; it takes the client's key as {variable}. Only you can turn MCP on again.",
         &[("variable", &client_setup::TOKEN_VARIABLE)],
@@ -541,8 +535,9 @@ fn orphan_row(hook: &ClientInfo) -> Element<'_, Message> {
     setting_row(None, tr("Hooks without an agent"), Some(api::kind_label(hook)), remove)
 }
 
-/// A client's page: the shared head of [`Page`], for an agent with hooks the group "Notification
-/// Hub", then the shared foot; the controls in `slot`.
+/// A client's page: the shared head of [`Page`] – for an agent with hooks the group "Notification
+/// Hub" between its name and the rights, so the one switch is not screens down –, then the shared
+/// foot; the controls in `slot`.
 fn detail<'a>(
     state: &'a State,
     client: &'a ClientInfo,
@@ -552,8 +547,10 @@ fn detail<'a>(
 ) -> Element<'a, Message> {
     let page = &state.page;
     let wrap = |part: Element<'a, PageMessage>| part.map(Message::Page);
-    let mut parts: Vec<Element<'a, Message>> = page.head(client, data, now, slot).into_iter().map(wrap).collect();
+    let mut head = page.head(client, data, now, slot).into_iter().map(wrap);
+    let mut parts: Vec<Element<'a, Message>> = head.next().into_iter().collect();
     parts.extend(hook_agent(&client.kind).map(|agent| hub_group(state, client, agent, data, slot)));
+    parts.extend(head);
     parts.extend(page.foot(client, now, slot).into_iter().map(wrap));
     column(parts).spacing(layout::section_gap()).into()
 }
