@@ -130,7 +130,7 @@ Overwrites the template with the windows of the active workspace, keeping its na
 
 Zugriff `delete` · MCP-Tool `workspaces_delete_template`
 
-Deletes the template. It cannot be restored.
+Deletes the template. It cannot be restored. While another template is saved or loaded, the answer is `busy`; try again then.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -151,7 +151,7 @@ Starts the template's apps on the active workspace and arranges their windows. M
 
 Zugriff `write` · MCP-Tool `workspaces_rename_template`
 
-Gives the template a new name; its id stays the same.
+Gives the template a new name; its id stays the same. While another template is saved or loaded, the answer is `busy`; try again then.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

@@ -257,6 +257,7 @@ pub enum Request {
     /// Overwrites a template with the active workspace, keeping its name and settings.
     #[serde(rename = "workspaces.update_template")]
     UpdateTemplate { id: String },
+    /// Deletes a template. Waits for no other template work: while one is saved or loaded, `busy`.
     #[serde(rename = "workspaces.delete_template")]
     DeleteTemplate { id: String },
     /// Loads a template onto the active workspace.
@@ -1108,7 +1109,7 @@ pub enum Request {
     /// cannot be changed `error`.
     #[serde(rename = "accounts.remove_account")]
     RemoveAccount { id: String },
-    /// Renames a template; its id stays.
+    /// Renames a template; its id stays. While another template is saved or loaded, `busy`.
     #[serde(rename = "workspaces.rename_template")]
     RenameTemplate { id: String, name: String },
     /// Opens or focuses one of the suite's apps by binary name (`torrocalendar`, `torrotasks`) or

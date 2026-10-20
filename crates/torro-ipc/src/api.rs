@@ -1812,7 +1812,8 @@ static DELETE_TEMPLATE: Command = Command {
     area: Area::Workspaces,
     access: Access::Delete,
     mcp: Mcp::Tool,
-    description: "Deletes the template. It cannot be restored.",
+    description: "Deletes the template. It cannot be restored. While another template is saved or loaded, \
+                  the answer is `busy`; try again then.",
 };
 
 static LOAD_TEMPLATE: Command = Command {
@@ -1830,7 +1831,8 @@ static RENAME_TEMPLATE: Command = Command {
     area: Area::Workspaces,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Gives the template a new name; its id stays the same.",
+    description: "Gives the template a new name; its id stays the same. While another template is saved or \
+                  loaded, the answer is `busy`; try again then.",
 };
 
 static SET_TEMPLATE_SHORTCUT: Command = Command {
