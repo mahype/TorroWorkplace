@@ -627,7 +627,7 @@ fn card<'a>(item: &'a Item, rows: &Rows<'a>, deciding: bool, width: f32) -> Elem
         .padding(space::m())
         .style(card_style(selected))
         .on_press(Message::Select(item.id.clone()));
-    let actions = rows.anchors.mark(selected, list::actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai));
+    let actions = rows.anchors.mark(selected, list::actions(item, rows.hidable.contains(&item.id.as_str())));
     let words = widgets::row_actions_words(&actions, inner);
     // Beside the card's own buttons, not over its text.
     let card = if has_buttons(item) {
@@ -886,7 +886,6 @@ mod tests {
             hidable: Vec::new(),
             look: Look::Rows,
             folders: &[],
-            ai: false,
             edge_strip: false,
         };
         for look in [Look::Rows, Look::Cards] {

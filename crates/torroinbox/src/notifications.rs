@@ -66,7 +66,6 @@ use crate::hub::{self, Act};
 use crate::keys::Command;
 use crate::list::{self, Rows};
 use crate::overview;
-use crate::suggest::{self, Wanted};
 
 /// How many lines of its text a card shows (the design's cards clamp to two or three; two keep a
 /// column of cards calm).
@@ -523,34 +522,11 @@ pub struct CardButton {
     /// Its look with its word ([`button_look`]): `ghost` for what lets the entry go, `secondary`
     /// for the rest.
     pub look: ButtonStyle,
-    /// The tooltip when it says more than the word (issue #168): why the button is off – "AI task ·
-    /// Set up an AI first". `None`: the word is the tooltip of the icon alone.
-    pub tip: Option<String>,
-    /// An AI button beside its plain one (issue #168): always its icon alone, with its word as
-    /// tooltip, and not weighed when the bar chooses between words and icons ([`worded`]) – so
-    /// "Task ✦ Event ✦ Later" keeps the words it had.
-    pub companion: bool,
 }
 
 impl CardButton {
     fn new(icon: Icon, label: impl Into<String>, on_press: Option<Message>) -> CardButton {
-        CardButton {
-            icon,
-            label: label.into(),
-            on_press,
-            lead: false,
-            look: button_look(false),
-            tip: None,
-            companion: false,
-        }
-    }
-
-    /// The AI button for `wanted` on `item` (issue #168, `suggest::row_action`): off with its reason
-    /// while no AI is set up (`ai` false).
-    fn ai(wanted: Wanted, item: &Item, ai: bool) -> CardButton {
-        let action = suggest::row_action(wanted, &item.id, ai);
-        let tip = action.blocked.is_some().then(|| action.tip());
-        CardButton { tip, companion: true, ..CardButton::new(action.icon, wanted.label(), action.press()) }
+        CardButton { icon, label: label.into(), on_press, lead: false, look: button_look(false) }
     }
 
     /// The same button as the lead of its bar ([`CardButton::lead`]).
@@ -586,16 +562,15 @@ fn is_agent(item: &Item) -> bool {
 ///   ([`asks_to_follow_up`], task E8.1b);
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
-/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · AI task
-///   (off without an AI, `ai`, issue #168) · Later.
+/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Later.
 ///
 /// The ✕ stands in the card's head ([`dismissable`]), the bell at the right ([`bell`]).
-pub fn card_buttons(item: &Item, deciding: bool, ai: bool) -> Vec<CardButton> {
+pub fn card_buttons(item: &Item, deciding: bool) -> Vec<CardButton> {
     let act = |command| Some(Message::Act(item.id.clone(), command));
     let open = || Some(Message::OpenRow(item.id.clone()));
     let window = || CardButton::new(Icon::AppWindow, tr("Go to window"), open());
     if asks_to_follow_up(item) {
-        return hub::acts(item).iter().map(|act| hub::card_button(act, item, deciding, ai)).collect();
+        return hub::acts(item).iter().map(|act| hub::card_button(act, item, deciding)).collect();
     }
     if detail::is_approval(item) {
         let decidable = item.state.is_open() && !deciding;
@@ -631,8 +606,7 @@ pub fn card_buttons(item: &Item, deciding: bool, ai: bool) -> Vec<CardButton> {
     if is_agent(item) {
         buttons.extend([later, CardButton::new(Icon::Check, tr("Done"), act(Command::Done)).quiet()]);
     } else {
-        let task = CardButton::new(Icon::ListTodo, tr("Task"), act(Command::MakeTask));
-        buttons.extend([task, CardButton::ai(Wanted::Task, item, ai), later]);
+        buttons.extend([CardButton::new(Icon::ListTodo, tr("Task"), act(Command::MakeTask)), later]);
     }
     buttons
 }
@@ -665,10 +639,10 @@ pub fn bell(item: &Item) -> Option<CardButton> {
 }
 
 /// The action bar of `item`'s row in the compact density (`widgets::row_actions`): Open or Go to
-/// window (`Enter`), Task (`t`), AI task (no key, off without an AI, `ai`, issue #168), Later (`s`) or Reopen (`e`) for a done entry, the bell (`m`,
+/// window (`Enter`), Task (`t`), Later (`s`) or Reopen (`e`) for a done entry, the bell (`m`,
 /// [`bell`]) and the ✕ (`x`, [`dismissable`]) – only what works for the entry, as its card. The
 /// suite's question after a finished task has Reply (`r`), Mark mail done and Not now (`e`) instead.
-pub fn row_actions<'a>(item: &Item, ai: bool) -> Vec<RowAction<'a, Message>> {
+pub fn row_actions<'a>(item: &Item) -> Vec<RowAction<'a, Message>> {
     if asks_to_follow_up(item) {
         return follow_up_actions(item);
     }
@@ -692,7 +666,6 @@ pub fn row_actions<'a>(item: &Item, ai: bool) -> Vec<RowAction<'a, Message>> {
     }
     if !approval {
         actions.push(RowAction::new(Icon::ListTodo, tr("Task"), "T", act(Command::MakeTask)));
-        actions.push(suggest::row_action(Wanted::Task, &item.id, ai));
     }
     if done {
         actions.push(RowAction::new(Icon::Inbox, tr("Reopen"), "E", act(Command::Done)));
@@ -910,8 +883,7 @@ fn card<'a>(item: &'a Item, data: &BoardData<'a>, names: Names) -> Element<'a, M
         });
         parts.push(container(lines).width(Fill).height(text_height()).clip(true).into());
     }
-    let bar =
-        buttons(card_buttons(item, data.deciding, data.rows.ai), bell(item), (data.rows.anchors.clone(), selected));
+    let bar = buttons(card_buttons(item, data.deciding), bell(item), (data.rows.anchors.clone(), selected));
     // The menus of a card's buttons (the bell's, "Later until", task E8.12, finding 6) open at the
     // button that opened them (issue #122): below it, or above it where the window has no room below
     // – never over it. Its row of buttons is the fallback, never the whole card.
@@ -944,16 +916,12 @@ fn buttons<'a>(main: Vec<CardButton>, bell: Option<CardButton>, at: (detail::Anc
 }
 
 /// A button of a card: icon and word in its look ([`CardButton::look`]), or the icon alone with the
-/// word as tooltip; a button that says more ([`CardButton::tip`]: why it is off) shows that instead.
-/// A companion ([`CardButton::companion`]) is always its icon alone.
+/// word as tooltip.
 pub fn card_button<'a>(button: CardButton, words: bool) -> Element<'a, Message> {
-    match (words && !button.companion, button.tip) {
-        (true, None) => widgets::text_button(Some(button.icon), button.label, button.look, button.on_press),
-        (true, Some(tip)) => widgets::with_tooltip(
-            widgets::text_button(Some(button.icon), button.label, button.look, button.on_press),
-            tip,
-        ),
-        (false, tip) => widgets::icon_button(button.icon, tip.unwrap_or(button.label), button.on_press),
+    if words {
+        widgets::text_button(Some(button.icon), button.label, button.look, button.on_press)
+    } else {
+        widgets::icon_button(button.icon, button.label, button.on_press)
     }
 }
 
@@ -962,14 +930,10 @@ pub fn card_button<'a>(button: CardButton, words: bool) -> Element<'a, Message> 
 /// the entry's lead ([`CardButton::lead`]), else none. The estimate takes the buttons' real gaps
 /// (the icon's 6, [`space::s()`] between buttons), so a design with roomier buttons (Plex) keeps its
 /// words where they fit.
-///
-/// Companions ([`CardButton::companion`]) count as icons beside the bell, never as words.
 pub fn worded(main: &[CardButton], bell: bool, width: f32) -> BarWords {
-    let labels: Vec<&str> =
-        main.iter().filter(|button| !button.companion).map(|button| button.label.as_str()).collect();
-    let companions = main.iter().filter(|button| button.companion).count();
+    let labels: Vec<&str> = main.iter().map(|button| button.label.as_str()).collect();
     let lead = main.first().is_some_and(|button| button.lead);
-    widgets::bar_words(&labels, lead, usize::from(bell) + companions, width)
+    widgets::bar_words(&labels, lead, usize::from(bell), width)
 }
 
 /// The row of `item` `width` wide in the compact density: the notice row of every view
@@ -979,7 +943,7 @@ fn entry_row<'a>(item: &'a Item, data: &BoardData<'a>, width: f32) -> Element<'a
     let height = list::row_height_of(item);
     let content = list::notice_content(item, &data.rows, width);
     let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = data.rows.anchors.mark(selected, row_actions(item, data.rows.ai));
+    let actions = data.rows.anchors.mark(selected, row_actions(item));
     let words = widgets::row_actions_words(&actions, width);
     let middle = list::first_line_middle(height, list::line_count(item));
     let line = widgets::row_actions_at(line, actions, selected, words, middle);
@@ -1227,17 +1191,13 @@ mod tests {
     fn buttons_follow_the_kind_of_entry() {
         let items = open();
         let by_id = |id: &str| items.iter().find(|item| item.id == id).expect("in the demo");
-        let words = |item: &Item| card_buttons(item, false, false).into_iter().map(|b| b.label).collect::<Vec<_>>();
+        let words = |item: &Item| card_buttons(item, false).into_iter().map(|b| b.label).collect::<Vec<_>>();
         assert_eq!(words(by_id("demo-3")), [tr("Allow"), tr("Deny")], "an approval: no Task, no Later");
         assert!(!dismissable(by_id("demo-3")) && bell(by_id("demo-3")).is_none(), "and no ✕, no bell");
-        assert!(card_buttons(by_id("demo-3"), true, false).iter().all(|b| b.on_press.is_none()), "off while deciding");
+        assert!(card_buttons(by_id("demo-3"), true).iter().all(|b| b.on_press.is_none()), "off while deciding");
         assert_eq!(words(by_id("demo-1")), [tr("Go to window"), tr("Later"), tr("Done")], "a waiting agent");
-        assert_eq!(
-            words(by_id("demo-6")),
-            [tr("Open"), tr("Task"), tr("AI task"), tr("Later")],
-            "a notice with a page"
-        );
-        assert_eq!(words(by_id("demo-12")), [tr("Task"), tr("AI task"), tr("Later")], "a notice without a link");
+        assert_eq!(words(by_id("demo-6")), [tr("Open"), tr("Task"), tr("Later")], "a notice with a page");
+        assert_eq!(words(by_id("demo-12")), [tr("Task"), tr("Later")], "a notice without a link");
         let bell_of = |id: &str| bell(by_id(id));
         assert_eq!(bell_of("demo-6").map(|b| b.label), Some(tr("Mute…").to_owned()));
         assert!(
@@ -1257,37 +1217,30 @@ mod tests {
         let mut question = open().into_iter().find(|item| item.id == "demo-9").expect("in the demo");
         app::demo_task(&mut question, now());
         assert!(hub::is_follow_up(&question));
-        let words: Vec<String> = card_buttons(&question, false, false).into_iter().map(|b| b.label).collect();
+        let words: Vec<String> = card_buttons(&question, false).into_iter().map(|b| b.label).collect();
         assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
-        let sent: Vec<Option<Message>> =
-            card_buttons(&question, false, false).into_iter().map(|b| b.on_press).collect();
+        let sent: Vec<Option<Message>> = card_buttons(&question, false).into_iter().map(|b| b.on_press).collect();
         assert!(matches!(&sent[0], Some(Message::Act(id, Command::Reply)) if id == "demo-9"));
         assert!(matches!(&sent[1], Some(Message::MarkMailDone(id)) if id == "demo-9"));
         assert!(matches!(&sent[2], Some(Message::Act(_, Command::Done))), "Not now closes the question");
         assert!(!dismissable(&question) && bell(&question).is_none(), "no ✕ beside Not now, no bell");
-        let bar = row_actions(&question, false);
+        let bar = row_actions(&question);
         let labels: Vec<String> = bar.iter().map(|action| action.label.to_string()).collect();
         assert_eq!(labels, words, "the row offers the same");
         assert_eq!(bar.iter().map(|action| action.key).collect::<Vec<_>>(), ["R", "", "E"]);
         // Answered, it is an entry like any other.
         question.state = State::Done { at: now() };
-        assert_eq!(
-            card_buttons(&question, false, false).into_iter().map(|b| b.label).collect::<Vec<_>>(),
-            [tr("Reopen")]
-        );
+        assert_eq!(card_buttons(&question, false).into_iter().map(|b| b.label).collect::<Vec<_>>(), [tr("Reopen")]);
     }
 
     #[test]
     fn the_row_bar_has_open_task_later_mute_and_dismiss() {
         let items = open();
         let deploy = items.iter().find(|item| item.id == "demo-6").expect("the deploy notice");
-        let labels: Vec<String> = row_actions(deploy, false).iter().map(|action| action.label.to_string()).collect();
-        assert_eq!(
-            labels,
-            [tr("Open"), tr("Task"), tr("AI task"), tr("Later"), tr("Mute…"), tr("Dismiss notification")]
-        );
+        let labels: Vec<String> = row_actions(deploy).iter().map(|action| action.label.to_string()).collect();
+        assert_eq!(labels, [tr("Open"), tr("Task"), tr("Later"), tr("Mute…"), tr("Dismiss notification")]);
         let approval = items.iter().find(|item| detail::is_approval(item)).expect("an approval");
-        assert!(row_actions(approval, false).is_empty(), "decided in the panel");
+        assert!(row_actions(approval).is_empty(), "decided in the panel");
     }
 
     #[test]
@@ -1314,7 +1267,6 @@ mod tests {
             hidable: Vec::new(),
             look: list::Look::Rows,
             folders: &[],
-            ai: false,
             edge_strip: false,
         };
         let time = list::time_text(backup, &view, now());
@@ -1383,13 +1335,12 @@ mod tests {
         let items = open();
         for id in ["demo-14", "demo-15", "demo-16", "demo-17", "demo-18"] {
             let item = items.iter().find(|item| item.id == id).expect("in the demo");
-            let words: Vec<String> = card_buttons(item, false, false).into_iter().map(|b| b.label).collect();
-            assert_eq!(words, [tr("Open"), tr("Task"), tr("AI task"), tr("Later")], "{id}");
-            assert!(card_buttons(item, false, false)[0].lead, "{id}: Open leads");
+            let words: Vec<String> = card_buttons(item, false).into_iter().map(|b| b.label).collect();
+            assert_eq!(words, [tr("Open"), tr("Task"), tr("Later")], "{id}");
+            assert!(card_buttons(item, false)[0].lead, "{id}: Open leads");
             assert!(dismissable(item) && bell(item).is_some(), "{id}: ✕ and the bell");
-            let bar: Vec<String> = row_actions(item, false).iter().map(|action| action.label.to_string()).collect();
-            let row = [tr("Open"), tr("Task"), tr("AI task"), tr("Later"), tr("Mute…"), tr("Dismiss notification")];
-            assert_eq!(bar, row, "{id}");
+            let bar: Vec<String> = row_actions(item).iter().map(|action| action.label.to_string()).collect();
+            assert_eq!(bar, [tr("Open"), tr("Task"), tr("Later"), tr("Mute…"), tr("Dismiss notification")], "{id}");
         }
     }
 
@@ -1409,7 +1360,7 @@ mod tests {
     fn a_bar_shows_all_words_or_only_its_lead() {
         let items = open();
         let agent = items.iter().find(|item| item.id == "demo-1").expect("a waiting agent");
-        let buttons = card_buttons(agent, false, false);
+        let buttons = card_buttons(agent, false);
         assert_eq!(worded(&buttons, true, size::content_max()), BarWords::All, "room for all words");
         assert_eq!(worded(&buttons, true, 0.0), BarWords::None, "no room: icons only");
         let steps: Vec<BarWords> = (0..=72).map(|step| worded(&buttons, true, step as f32 * space::s())).collect();
@@ -1422,7 +1373,7 @@ mod tests {
         assert!(steps.windows(2).all(|pair| rank(&pair[0]) <= rank(&pair[1])), "more room, more words");
         // Task and Later have no lead: all or none.
         let notice = items.iter().find(|item| item.id == "demo-12").expect("a notice without a link");
-        let plain = card_buttons(notice, false, false);
+        let plain = card_buttons(notice, false);
         assert!(!plain[0].lead);
         let mixed = (0..=72).map(|step| worded(&plain, true, step as f32 * space::s()));
         assert!(mixed.into_iter().all(|words| words != BarWords::Lead), "never one word among icons");
@@ -1434,7 +1385,7 @@ mod tests {
     fn a_card_exactly_as_wide_as_its_words_keeps_them() {
         let items = open();
         let notice = items.iter().find(|item| item.id == "demo-6").expect("a notice with a link");
-        let buttons = card_buttons(notice, false, false);
+        let buttons = card_buttons(notice, false);
         let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_str()).collect();
         let room = widgets::bar_width(&labels, BarWords::All, 1);
         assert_eq!(worded(&buttons, true, room), BarWords::All);

@@ -280,7 +280,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::GetItem { id: entry }
         | Request::OpenItem { id: entry }
         // The entry only, never what the AI suggested (issue #120).
-        | Request::SuggestTaskFromItem { id: entry }
+        | Request::SuggestTaskFromItem { id: entry, .. }
         | Request::SuggestEventFromItem { id: entry }
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }

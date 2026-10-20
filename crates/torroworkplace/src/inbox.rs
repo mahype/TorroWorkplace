@@ -648,9 +648,9 @@ impl Inbox {
             }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             // Nobody is asked to let the AI read an entry the client may not see (issue #120).
-            Request::OpenItem { id } | Request::SuggestTaskFromItem { id } | Request::SuggestEventFromItem { id } => {
-                visible_item(db, id, Some(client)).map(drop)
-            }
+            Request::OpenItem { id }
+            | Request::SuggestTaskFromItem { id, .. }
+            | Request::SuggestEventFromItem { id } => visible_item(db, id, Some(client)).map(drop),
             _ => Ok(()),
         });
         checked.err().map(Failure::response)
@@ -816,7 +816,7 @@ impl Inbox {
                 | Request::MuteItem { id, .. }
                 | Request::CreateTaskFromItem { id, .. }
                 | Request::CreateEventFromItem { id, .. }
-                | Request::SuggestTaskFromItem { id }
+                | Request::SuggestTaskFromItem { id, .. }
                 | Request::SuggestEventFromItem { id } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, ..InboxFacts::default() }

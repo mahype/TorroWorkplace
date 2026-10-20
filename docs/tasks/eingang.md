@@ -1589,6 +1589,29 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: gesperrte Knöpfe blenden das Icon ab; `RowAction::blocked` ohne Klick, mit Grund; KI-Knöpfe
   an Zeilen und Karten, ohne KI gesperrt mit Tooltip, mit KI schicken sie den Vorschlag; „To sort“ behält die Wörter.
 
+### E8.28 „Task“ füllt sich mit der KI, keine eigenen KI-Knöpfe, Task nicht mehr rot (Issue #234)
+- [x] erledigt (2026-10-19: Wunsch der Person: In der Leiste der gewählten Zeile (Archive · Delete · Later ·
+  Task · Mute…) ist Task nicht mehr rot (`list::edge_actions` setzt kein `RowAction::accent` mehr). „AI task“ und
+  „AI event“ gibt es nirgends mehr als eigene Knöpfe – nicht in Zeilen, Karten, Hub, Benachrichtigungen, Paneel
+  und Leser (E8.27 zurückgenommen, die gedimmten Knöpfe in `torro-gui` bleiben). Stattdessen trägt der Dialog von
+  „Make task“ und „Make event“ im Kopf „Fill in with AI“ (`Sparkles`, `App::ai_fill_button`): ohne KI aus mit
+  „Set up an AI first“, bei einer Ordnermail ohne Eintrag aus mit „The AI fills in only what waits in your inbox“.
+  Die KI benennt die Aufgabe, schreibt eine Notiz, schlägt eine der Listen des Dialogs vor und setzt ein Datum nur,
+  wenn die Mail eins nennt. Dafür bekommt `inbox.suggest_task_from_item` das optionale Feld `lists` (Namen aus
+  `tasks.list_lists`, höchstens 50) und `TaskSuggestion` das optionale `list` – nur ein angebotener Name, nie ein
+  erfundener (`suggest::list_of`). Der Dialog wartet mit der Frage, bis die Listen da sind
+  (`Suggesting::Waiting`). Die Dialoge sind 440 breit (statt 320), Notiz und Ort stehen immer da. Unterstrichene
+  Anfangsbuchstaben als Kürzel: verworfen, die Kürzel bleiben, wie sie sind)
+- **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{suggest,core,inbox,audit,daemon,mcp}.rs`,
+  `crates/torroworkplace/src/assistant/data_rule.rs`, `crates/torroinbox/src/{app,suggest,list,hub,notifications,overview,detail,mail}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`
+- **Oberfläche:** Dialoge „Make task“ / „Make event“. **API:** `inbox.suggest_task_from_item` mit `lists`.
+  **MCP:** `inbox_suggest_task_from_item` (neues Feld `lists`).
+- **Abnahme:** Tests: Leiste ohne rotes Icon und ohne KI-Knopf; der Dialog fragt die KI erst auf Knopfdruck, mit
+  den Listennamen, übernimmt eine angebotene Liste und keine erfundene, kein Datum ohne Datum; der Kern bietet die
+  Listen im Prompt an (`the_list_is_one_of_those_offered`). Übersetzungen: „Fill in with AI“ → „Mit KI ausfüllen“,
+  „The AI fills in only what waits in your inbox“ → „Die KI füllt nur aus, was in deinem Eingang wartet“.
+
 ## E9 Mail-Fenster: Posteingang (Plan 2026-10-15, Branch `feat/mail-inbox`)
 
 Die Seitenleiste des Mail-Fensters ist zu unklar: „Übersicht“ und „Info“ zeigen Einträge, nicht Mails, und nur
