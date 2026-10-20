@@ -2096,8 +2096,9 @@ impl Core {
     /// the whole pass. Focusing a screen while another load runs would put that load's windows on the
     /// wrong workspace, and an update running meanwhile would capture the wrong one; so the pass
     /// touches no screen before it has the turn, and while it runs, other saves and loads answer
-    /// `busy`. The turn also covers the wait for the screens (normally two seconds,
-    /// [`crate::startup_templates::settled_monitors`]); `run` gives no way in between.
+    /// `busy`. The wait for the screens ([`crate::startup_templates::settled_monitors`], up to a minute)
+    /// comes before the turn, so keys and the tray stay free meanwhile; under the turn `run` only reads
+    /// them again at once ([`crate::startup_templates::Pace::SETTLED`]).
     async fn load_at_login(
         &self,
         wm: &impl WindowManager,
@@ -2105,7 +2106,10 @@ impl Core {
         marking: crate::startup_templates::Marking<'_>,
         pace: crate::startup_templates::Pace,
     ) -> Option<Vec<crate::startup_templates::Done>> {
+        // Only reads the screens, moves nothing: needs no turn.
+        crate::startup_templates::settled_monitors(|| wm.monitors(), pace).await;
         let _turn = self.work.lock().await;
+        let pace = crate::startup_templates::Pace::SETTLED;
         let load = |id: String| async move {
             self.load_template(wm, launcher, &id, torro_setups::LoadMode::Add).await.unwrap_or_else(|err| error(&err))
         };

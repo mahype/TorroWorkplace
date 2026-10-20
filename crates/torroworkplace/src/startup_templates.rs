@@ -55,6 +55,8 @@ pub struct Pace {
 impl Pace {
     /// At login: once a second, for a minute at most.
     pub const LOGIN: Pace = Pace { every: Duration::from_secs(1), tries: 60 };
+    /// Once the screens settled already: [`SAME_IN_A_ROW`] reads at once, only to see they still hold.
+    pub const SETTLED: Pace = Pace { every: Duration::ZERO, tries: SAME_IN_A_ROW as u32 };
 }
 
 /// One session of the person: what tells a login from a restart of the daemon.
