@@ -3732,7 +3732,17 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   sender?“ und `inbox.remove_rule` laufen weiter; Verschieben ändert die Reihenfolge eindeutig.
 
 ### E15.4 KI und erneute Einordnung
-- [ ] offen
+- [x] erledigt (2026-10-21): `categorize::{Offer, offers, plan, Plan, request, group_request,
+  narrow_request, decide}`: Optionen aus dem Katalog (`model` oder `other`), lesbare Namen
+  (`option_name`, nie `custom_<n>`, nie doppelt, nie der Schlüssel einer anderen Kategorie der
+  Suite), Kriterium „Name: Beschreibung“ bei umbenannten und eigenen. Über 20 Optionen erst die
+  Gruppe (mit `needs_reply`/`urgency`), dann die Kategorie der Gruppe; eine Gruppe mit einer
+  Kategorie braucht keinen zweiten Aufruf; Konfidenz das Minimum beider. Die Grenze je Gruppe zählt
+  `other` mit, weil sie immer angeboten wird. Der Lauf nimmt erst Sortierregeln und Kopfzeilen
+  (`Inbox::rule_category`, `MailService::{sorting_facts, in_window}`), dann das Modell; mit
+  `again` geht er durch das ganze Fenster, lässt `person` stehen, läuft ohne Modell nur mit Regeln
+  und meldet Fortschritt in `CatchUp::progress` (`Categorization::again`). Ohne Regel und ohne
+  Modell behält eine Mail beim erneuten Einordnen, was sie hat.
 - **Modell:** Opus · **Braucht:** E15.3 · **Dateien:** `crates/torroworkplace/src/{categorize,core}.rs`,
   `crates/torroworkplace/src/mail/{service,store,inbox_feed}.rs`
 - **Fragen aus dem Katalog:** die Optionen sind alle Kategorien mit `model: true` (immer mit `other`),

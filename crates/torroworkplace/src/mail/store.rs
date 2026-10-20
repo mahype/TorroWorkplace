@@ -793,6 +793,16 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The mail of the inbox folder in the window the backlog run uses, newest first, with a
+    /// category or without (task E15.4): what sorting again goes through.
+    pub fn in_window(&self, since: DateTime<Utc>, limit: u32) -> Result<Vec<String>, MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+        let sql = "SELECT id FROM messages WHERE folder_id = ?1 AND date >= ?2 ORDER BY date DESC, seq DESC LIMIT ?3";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map(params![inbox.id, since.timestamp(), limit], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Which of `ids` already have a category (task E12.6), in no particular order: what the
     /// feed leaves alone when mail comes in again – after a gap in the change stream, or on the
     /// way back from "Later". Sorting it again would write a rule's answer over the person's.

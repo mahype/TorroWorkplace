@@ -1161,6 +1161,19 @@ impl Inbox {
         self.with(|db| catalogue::catalogue_in(db)).map_err(|failure| failure.to_string())
     }
 
+    /// What the sorting rules and the headers make of a mail of the inbox folder (task E15.4):
+    /// sorting again asks them before a model, as filing new mail does. `Err` holds the message
+    /// for the log.
+    pub fn rule_category(
+        &self,
+        input: &rules::SortInput<'_>,
+        invite: bool,
+        auto_submitted: Option<&str>,
+    ) -> Result<Option<MailCategory>, String> {
+        self.work(false, |db| rule_category_in(db, input, invite, auto_submitted, false))
+            .map_err(|failure| failure.to_string())
+    }
+
     /// Makes a category of the person's own (`inbox.create_category`, task E15.2). `Err` is the
     /// answer for the client.
     pub fn create_category(
@@ -4064,11 +4077,22 @@ impl MailLater {
 /// first sorting rule that holds (task E15.3; they hold for **every** mail account, like a hidden
 /// sender, task E3.11), else what the headers and the folder say ([`rules::mail_category`]).
 fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Result<Option<MailCategory>, Failure> {
-    // The sorting rules in their order (task E15.3), "Always for this sender?" among them.
-    let sorting = catalogue::sort_rules_in(db)?;
     let input = rules::SortInput { sender, subject: &mail.subject, text: &mail.snippet };
-    let kept = rules::sort_category(&sorting, &input);
-    Ok(rules::mail_category(kept, mail.invite, mail.auto_submitted.as_deref(), mail.junk))
+    rule_category_in(db, &input, mail.invite, mail.auto_submitted.as_deref(), mail.junk)
+}
+
+/// The sorting rules in their order (task E15.3), "Always for this sender?" among them, then the
+/// headers and the folder ([`rules::mail_category`]).
+fn rule_category_in(
+    db: &Connection,
+    input: &rules::SortInput<'_>,
+    invite: bool,
+    auto_submitted: Option<&str>,
+    junk: bool,
+) -> Result<Option<MailCategory>, Failure> {
+    let sorting = catalogue::sort_rules_in(db)?;
+    let kept = rules::sort_category(&sorting, input);
+    Ok(rules::mail_category(kept, invite, auto_submitted, junk))
 }
 
 /// The rule of "Always for this sender?" with the id `id`, as `inbox.list_rules` lists it (task

@@ -212,7 +212,9 @@ pub(super) fn check(catalogue: &[CategoryDef]) -> Result<(), Failure> {
         seen.push(folded);
     }
     for group in CategoryGroup::ALL {
-        let for_model = catalogue.iter().filter(|def| def.group == group && def.model).count();
+        // "Other" is always offered: it is what "nothing fits" means (task E15.4).
+        let offered = |def: &&CategoryDef| def.model || def.category == Category::Other;
+        let for_model = catalogue.iter().filter(|def| def.group == group).filter(offered).count();
         if for_model > MODEL_PER_GROUP_MAX {
             return Err(Failure::Invalid(trf(
                 "{group} would have {n} categories for the AI; at most {most} fit.",

@@ -1661,6 +1661,31 @@ impl MailService {
         }))
     }
 
+    /// What sorting one mail of `account` again needs (task E15.4): what a model reads, and what
+    /// the sorting rules and the headers look at, with the category it has now. `None` when the
+    /// store has no such message.
+    pub async fn sorting_facts(&self, account: &str, message: &str) -> Result<Option<SortingFacts>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let wanted = message.to_string();
+        let held = store.run(move |store| store.message(&wanted)).await?;
+        let Some(held) = held else { return Ok(None) };
+        let Some(content) = self.content_for_category(account, message).await? else { return Ok(None) };
+        Ok(Some(SortingFacts {
+            sender: held.summary.from.as_ref().map(|from| from.address.trim().to_lowercase()),
+            invite: held.summary.invite.is_some(),
+            auto_submitted: held.traits.auto_submitted.clone(),
+            category: held.summary.category,
+            content,
+        }))
+    }
+
+    /// The mail of `account` in the window the backlog run uses, category or not, newest first
+    /// (task E15.4): what sorting again goes through.
+    pub async fn in_window(&self, account: &str, since: DateTime<Utc>, limit: u32) -> Result<Vec<String>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        Ok(store.run(move |store| store.in_window(since, limit)).await?)
+    }
+
     /// The mail of `account` that has no category yet, newest first, within the window the
     /// backlog run uses (task E12.6).
     pub async fn uncategorised(
@@ -1829,6 +1854,22 @@ fn same_sign_in(before: &Account, after: &Account) -> bool {
         && before.server == after.server
         && before.login_name == after.login_name
         && servers(before) == servers(after)
+}
+
+/// What sorting a mail again looks at (task E15.4, [`MailService::sorting_facts`]): all of it from
+/// outside but `category`.
+#[derive(Debug, Clone)]
+pub struct SortingFacts {
+    /// The sender's address in small letters; `None` without one.
+    pub sender: Option<String>,
+    /// The mail invites to an event.
+    pub invite: bool,
+    /// What `Auto-Submitted` says, if anything.
+    pub auto_submitted: Option<String>,
+    /// The category it has now.
+    pub category: Option<torro_mail::MailCategory>,
+    /// What a model reads of it.
+    pub content: crate::categorize::Content,
 }
 
 #[cfg(test)]
