@@ -746,7 +746,11 @@ impl App {
         // A bot the assistant may not ask is the person's to name or confirm (task B.2), not a
         // right to change.
         if error == Some("forbidden") && area != Some(Area::Bots) {
-            let (what, change) = chat::refusal_hint(area, lack);
+            let who = match self.chat_bot() {
+                Some(bot) => chat::Answerer::Bot(self.listed_bot(bot).map(|listed| listed.name.as_str())),
+                None => chat::Answerer::Assistant,
+            };
+            let (what, change) = chat::refusal_hint(area, lack, who);
             let mut hint = row![typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
                 .spacing(space::s())
                 .align_y(Alignment::Center);

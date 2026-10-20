@@ -4218,4 +4218,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
         "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › Konten an.",
     ),
+    ("You turned this off for {bot} in {area}.", "Du hast das für {bot} in {area} abgeschaltet."),
+    ("You turned this off in {area}.", "Du hast das in {area} abgeschaltet."),
 ];

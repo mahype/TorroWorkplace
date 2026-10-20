@@ -449,12 +449,21 @@ pub fn tool_outcome(summary: &str, error: Option<&str>) -> String {
     }
 }
 
+/// Who answers in the chat a tool line shows in (#231): the assistant, or a bot – by its name where
+/// the window knows it, `None` before the bots are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answerer<'a> {
+    Assistant,
+    Bot(Option<&'a str>),
+}
+
 /// The sentence under a `forbidden` tool line of `area` and whether "Change access" goes with it
 /// (issue #133): the reason the core gave (`lack`), and the button only where changing the
 /// assistant's rights lifts it – not for what an agent never gets, not for an area switched off in
 /// this conversation, not for what only the person may do. Without a reason (an older line, a
-/// refusal of the core's own) the general sentence and the button, as before.
-pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
+/// refusal of the core's own) the general sentence and the button, as before. A command the person
+/// turned off names who answers (`who`, #231): in a bot's chat the bot, not the assistant.
+pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>, who: Answerer<'_>) -> (String, bool) {
     let name = |area: Area| area_name(area);
     let Some(lack) = lack else {
         let text = match area {
@@ -483,7 +492,13 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
             "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
             &[("area", &name(area))],
         ),
-        Lack::Denied { area } => trf("You turned this off for the assistant in {area}.", &[("area", &name(area))]),
+        Lack::Denied { area } => match who {
+            Answerer::Assistant => trf("You turned this off for the assistant in {area}.", &[("area", &name(area))]),
+            Answerer::Bot(Some(bot)) => {
+                trf("You turned this off for {bot} in {area}.", &[("bot", &bot), ("area", &name(area))])
+            }
+            Answerer::Bot(None) => trf("You turned this off in {area}.", &[("area", &name(area))]),
+        },
         Lack::ToolOff { tool } => {
             trf("The tool {tool} is switched off in the assistant's settings.", &[("tool", &tool.title())])
         }
@@ -937,9 +952,23 @@ mod tests {
     #[test]
     fn a_refusal_says_why_and_offers_a_change_only_where_it_helps() {
         let mail = Some(Area::Mail);
-        let hint = |lack| refusal_hint(mail, Some(lack));
+        let hint = |lack| refusal_hint(mail, Some(lack), Answerer::Assistant);
         let named = |text: &'static str| trf(text, &[("area", &tr("Mail"))]);
-        assert_eq!(refusal_hint(mail, None), (named("The assistant has no access to {area}."), true), "older lines");
+        let older = refusal_hint(mail, None, Answerer::Assistant);
+        assert_eq!(older, (named("The assistant has no access to {area}."), true), "older lines");
+        // #231: a command turned off names who answers.
+        let denied = Some(Lack::Denied { area: Area::Mail });
+        assert_eq!(
+            hint(Lack::Denied { area: Area::Mail }).0,
+            named("You turned this off for the assistant in {area}.")
+        );
+        let travel = refusal_hint(mail, denied, Answerer::Bot(Some("Travel planner"))).0;
+        assert_eq!(
+            travel,
+            trf("You turned this off for {bot} in {area}.", &[("bot", &"Travel planner"), ("area", &tr("Mail"))])
+        );
+        let unnamed = refusal_hint(mail, denied, Answerer::Bot(None)).0;
+        assert_eq!(unnamed, named("You turned this off in {area}."));
         assert_eq!(hint(Lack::Area { area: Area::Mail }), (named("The assistant has no access to {area}."), true));
         let write = hint(Lack::Level { area: Area::Mail, needs: Access::Write });
         assert_eq!(write, (named("The assistant needs write access to {area} for this."), true));
