@@ -1892,7 +1892,8 @@ impl Core {
         let for_people = self.switches_on_for_people(&request);
         // Turning on a model that computes elsewhere is the person's too (task S.24): the core's
         // list says where it computes, so it is checked here and not with the request alone.
-        if !allowed || for_people || self.turns_on_elsewhere(&request).await {
+        let elsewhere = self.turns_on_elsewhere(&request).await;
+        if !allowed || for_people || matches!(elsewhere, Ok(true)) {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
             // the rights say, and so are a tool's switch and its paths (point 9): more rights would
@@ -1905,6 +1906,11 @@ impl Core {
                 }
             };
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
+        }
+        // Without the account's list nobody can say where the model computes (#231): the server's
+        // problem (`offline`, …), nothing to approve; nothing is turned on without the list anyway.
+        if let Err(err) = elsewhere {
+            return Ok(ai_error(&err));
         }
         // An AI account that is not there is nothing to approve (task S.24).
         if let Request::SetModelEnabled { account, .. } = &request
@@ -2672,7 +2678,8 @@ impl Core {
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
         if !allowed
             || self.switches_on_for_people(&request)
-            || self.turns_on_elsewhere(&request).await
+            // Without a list it runs on: turning on asks the server again and answers its error.
+            || matches!(self.turns_on_elsewhere(&request).await, Ok(true))
             || torro_ipc::api::loops_back(&info.kind, request.operation())
             || self.bots_refusal(client, rights, &request).is_some()
         {
@@ -5540,11 +5547,13 @@ impl Core {
     /// person may, like letting mail go to the cloud (`docs/api.md`, "Was nie nach außen geht", 6),
     /// since every module would then send it what it reads. Where the model computes is the account's
     /// list in the core ([`AiAccounts::runs_elsewhere`], in doubt elsewhere). Turning a model off, and
-    /// turning on one that computes here, are ordinary admin commands.
-    async fn turns_on_elsewhere(&self, request: &Request) -> bool {
+    /// turning on one that computes here, are ordinary admin commands. The list's error when the core
+    /// holds none and the server cannot give one (#231): the caller answers with it, not with a
+    /// refusal the client did not earn.
+    async fn turns_on_elsewhere(&self, request: &Request) -> Result<bool, torro_core::ai::AiError> {
         match request {
             Request::SetModelEnabled { account, model, enabled: true } => self.ai.runs_elsewhere(account, model).await,
-            _ => false,
+            _ => Ok(false),
         }
     }
 
@@ -5557,7 +5566,7 @@ impl Core {
             if let Err(err) = self.ai.models(account, true).await {
                 return ai_error(&err);
             }
-            if self.ai.runs_elsewhere(account, model).await {
+            if matches!(self.ai.runs_elsewhere(account, model).await, Ok(true)) {
                 return Refused::Lacks { command: "ai.set_model_enabled", lack: torro_ipc::api::Lack::ForPeople }
                     .response();
             }
@@ -16363,6 +16372,31 @@ mod tests {
             |list: Vec<(String, bool)>| list.into_iter().filter(|(_, on)| *on).map(|(id, _)| id).collect::<Vec<_>>();
         assert_eq!(on(switched(&core, &cloud.id).await), ["qwen/qwen3-14b"]);
         assert_eq!(on(switched(&core, &claude.id).await), ["claude-opus-5"]);
+    }
+
+    /// #231: a client turning on a model of a server that does not answer gets the server's error,
+    /// not `forbidden`: without the list nobody can say where the model computes, and nothing is
+    /// turned on. The person gets the same.
+    #[tokio::test]
+    async fn turning_on_a_model_of_a_server_that_is_away_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        // An Ollama on this computer that was connected once and does not run now.
+        let account = torro_core::Account::ai(AiProvider::Ollama, NOBODY);
+        let file = crate::account::github::tests::accounts_file(dir.path());
+        torro_core::account::save_to(&file, std::slice::from_ref(&account)).expect("stored");
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Ai, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+
+        assert_eq!(code(&ask(&core, Some(&key), turn_on(&account.id, "qwen3:8b")).await), "offline");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(code(&ask(&core, Some(&app_key), turn_on(&account.id, "qwen3:8b")).await), "offline");
+        let stored = dir.path().join("config").join(torro_core::ai::MODELS_FILE);
+        assert!(!stored.exists(), "nothing turned on");
     }
 
     /// Task S.24: no client turns on a model that computes elsewhere, whatever its rights, and

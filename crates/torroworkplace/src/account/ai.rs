@@ -736,7 +736,7 @@ impl AiAccounts {
     }
 
     /// Reads the AI accounts of `accounts.json` and their keys.
-    async fn load(&self) -> Result<(), String> {
+    pub(crate) async fn load(&self) -> Result<(), String> {
         let Some(path) = self.accounts_file.clone() else { return Ok(()) };
         let keys = Arc::clone(&self.keys);
         let loaded = keychain(move || {
@@ -1113,13 +1113,15 @@ impl AiAccounts {
     /// Whether turning on `model` of the account `id` would let something compute elsewhere, what
     /// only a person may do (`docs/api.md`, "Was nie nach außen geht", 6): judged by the account's
     /// list as the core holds it (asked now when it lacks the model), else by its id alone, so in
-    /// doubt it counts as elsewhere for Ollama. `false` for an id that is no AI account: the command
-    /// then answers `not-found`.
-    pub async fn runs_elsewhere(&self, id: &str, model: &str) -> bool {
-        let Some(server) = self.server(id).await else { return false };
-        let listed = self.known_models(id, Some(model)).await.ok();
-        let described = listed.and_then(|models| models.into_iter().find(|known| known.id == model));
-        !computes_here(Some(&server), &described.unwrap_or_else(|| AiModel::named(model)))
+    /// doubt it counts as elsewhere for Ollama. `Ok(false)` for an id that is no AI account: the
+    /// command then answers `not-found`. The list's error when the core holds no list and cannot
+    /// load one (#231): then it cannot say, and the caller answers with the server's problem rather
+    /// than a refusal – safe, since nothing is turned on without the list.
+    pub async fn runs_elsewhere(&self, id: &str, model: &str) -> Result<bool, AiError> {
+        let Some(server) = self.server(id).await else { return Ok(false) };
+        let listed = self.known_models(id, Some(model)).await?;
+        let described = listed.into_iter().find(|known| known.id == model);
+        Ok(!computes_here(Some(&server), &described.unwrap_or_else(|| AiModel::named(model))))
     }
 
     /// The name of the model `model` of the account `id` and whether it computes on this computer,
@@ -2053,10 +2055,10 @@ pub(crate) mod tests {
         assert!(ai.offers_a_model(&ollama.id).await);
         assert!(!ai.offers_a_model(&openrouter.id).await && !ai.offers_a_model(&claude.id).await);
         assert!(!ai.offers_a_model("ai:ollama@nowhere.example").await, "no such account");
-        assert!(
-            ai.runs_elsewhere(&ollama.id, "glm-5.3:cloud").await && !ai.runs_elsewhere(&ollama.id, "qwen3:8b").await
-        );
-        assert!(ai.runs_elsewhere(&openrouter.id, "qwen/qwen3-14b").await, "open weights, but in the cloud");
+        assert_eq!(ai.runs_elsewhere(&ollama.id, "glm-5.3:cloud").await, Ok(true));
+        assert_eq!(ai.runs_elsewhere(&ollama.id, "qwen3:8b").await, Ok(false));
+        assert_eq!(ai.runs_elsewhere(&openrouter.id, "qwen/qwen3-14b").await, Ok(true), "open, but in the cloud");
+        assert_eq!(ai.runs_elsewhere("ai:ollama@nowhere.example", "qwen3:8b").await, Ok(false), "no account");
         assert!(!dir.path().join("config").join(ai::MODELS_FILE).exists(), "nothing stored by reading");
     }
 

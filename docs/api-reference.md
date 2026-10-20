@@ -1156,7 +1156,7 @@ Lists the models of an AI account (id `ai:…` from accounts_list_accounts), ask
 
 Zugriff `admin` · MCP-Tool `ai_set_model_enabled`
 
-Turns a model of an AI provider on or off for the whole suite; modules offer only models that are on. Turning on a model that runs elsewhere is kept for people. `account` is an id `ai:…` from accounts_list_accounts, `model` an id from ai_list_models. Needs the person's approval. A module set to a model turned off answers with another model of the same account that is on. `not-found` for an unknown account or for turning on a model the account does not offer.
+Turns a model of an AI provider on or off for the whole suite; modules offer only models that are on. Turning on a model that runs elsewhere is kept for people. `account` is an id `ai:…` from accounts_list_accounts, `model` an id from ai_list_models. Needs the person's approval. A module set to a model turned off answers with another model of the same account that is on. `not-found` for an unknown account or for turning on a model the account does not offer; `offline` (or the server's other error) when turning on and the server cannot list its models.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

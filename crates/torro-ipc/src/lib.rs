@@ -654,8 +654,9 @@ pub enum Request {
     ///
     /// Error codes: `not-found` for an id that is no AI account and for turning on a model the
     /// account does not offer (turning one off works then too); `offline`, `auth`, `not-connected`
-    /// and `busy` when the server must be asked and cannot answer; `forbidden` as above; `error`
-    /// when the switches cannot be stored.
+    /// and `busy` when the server must be asked and cannot answer – also for a client turning a
+    /// model on, before any approval, since without the list nobody can say where it computes
+    /// (#231); `forbidden` as above; `error` when the switches cannot be stored.
     #[serde(rename = "ai.set_model_enabled")]
     SetModelEnabled {
         /// The account: `ai:<provider>@<host>` from `accounts.list_accounts`.
