@@ -1204,6 +1204,9 @@ pub struct Core {
     /// ([`Core::report_shortcuts`]): bound or not, and why not. `None` until it reports, and where
     /// nothing binds them; `system.status` then names no `shortcuts`.
     shortcuts: std::sync::Mutex<Option<(bool, Option<String>)>>,
+    /// The template keys bound on Hyprland (task WS.3), so a change binds only the difference
+    /// ([`Core::bind_template_keys`]).
+    keys: crate::workspace_keys::BoundKeys,
 }
 
 impl Core {
@@ -1247,6 +1250,7 @@ impl Core {
             reminders: Arc::new(Reminders::system()),
             tools: Arc::new(crate::tools::Tools::system()),
             shortcuts: std::sync::Mutex::new(None),
+            keys: crate::workspace_keys::BoundKeys::default(),
         }
     }
 
@@ -1255,9 +1259,57 @@ impl Core {
     /// not, for people ("another program holds Ctrl + Alt + 3"). Whoever binds the keys calls this
     /// after every (re)binding, also after a failed one (`workspace_keys`, tasks WS.3 and WS.4);
     /// `system.status` shows it as [`torro_ipc::ShortcutStatus`] with the modifiers as now set.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the key binders of tasks WS.3 and WS.4 report here"))]
     pub fn report_shortcuts(&self, active: bool, problem: Option<String>) {
         *self.shortcuts.lock().unwrap_or_else(PoisonError::into_inner) = Some((active, problem));
+    }
+
+    /// The binds the template keys should have on Hyprland now (task WS.3): the keys of the stored
+    /// templates with the modifiers of the settings, each loading its template through this binary's
+    /// `ctl`. `Err` with the reason when the templates cannot be read.
+    fn wanted_keys(&self) -> Result<Vec<torro_wm::KeyBind>, String> {
+        let templates = self.store.list().map_err(|err| err.to_string())?;
+        let modifiers = self.settings.current().workspaces.modifiers;
+        let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+        Ok(crate::workspace_keys::hyprland_binds(&crate::workspace_keys::slots(&templates), modifiers, &program))
+    }
+
+    /// Binds the template keys on Hyprland as the templates and settings say now, only the difference
+    /// to what is bound ([`crate::workspace_keys::BoundKeys::sync`]), and reports the result
+    /// ([`Core::report_shortcuts`]). Elsewhere nothing: AeroSpace and GlazeWM have no run-time binds,
+    /// macOS and Windows bind the keys in the tray (task WS.4).
+    async fn bind_template_keys(&self) {
+        if !matches!(self.backend, Backend::Hyprland(_)) {
+            return;
+        }
+        let report = self.keys.sync(&self.backend, self.wanted_keys()).await;
+        self.report_shortcuts(report.active, report.problem);
+    }
+
+    /// Hyprland (task WS.3): binds the template keys now and again after every reload of its
+    /// configuration, which drops them ([`crate::workspace_keys::follow`]). Part of [`Core::start`].
+    fn follow_template_keys(self: &Arc<Self>) {
+        if !matches!(self.backend, Backend::Hyprland(_)) {
+            return;
+        }
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            // Subscribed before the first binding, so a reload in between is not missed.
+            match core.backend.events().await {
+                Ok(events) => {
+                    let report = |report: crate::workspace_keys::Report| {
+                        core.report_shortcuts(report.active, report.problem);
+                    };
+                    crate::workspace_keys::follow(&core.backend, &core.keys, events, || core.wanted_keys(), report)
+                        .await;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "torroworkplace: no window manager events, the keys are not bound again after a reload: {err}"
+                    );
+                    core.bind_template_keys().await;
+                }
+            }
+        });
     }
 
     /// The template keys as [`Core::report_shortcuts`] last told, with the modifiers the settings
@@ -1529,6 +1581,8 @@ impl Core {
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
         self.follow_voice();
+        // The template keys on Hyprland (task WS.3).
+        self.follow_template_keys();
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
         let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {
@@ -2887,7 +2941,23 @@ impl Core {
     /// (`hidden_collections` stays empty, so even the ids of hidden collections stay unknown).
     ///
     /// The checks of [`Core::handle_from`] must have passed before.
+    ///
+    /// When a template or the modifiers changed ([`crate::workspace_keys::rebinds_after`], and the
+    /// answer is no error), the template keys follow before the answer goes out, so `system.status`
+    /// right after tells how they stand (task WS.3).
     pub async fn handle_within(&self, request: Request, reach: Reach<'_>) -> Response {
+        let rebinds = crate::workspace_keys::rebinds_after(&request);
+        // Boxed: the answer's future is large, and waiting for the keys after it must not put it on
+        // the stack a second time.
+        let response = Box::pin(self.answer_within(request, reach)).await;
+        if rebinds && !matches!(response, Response::Error { .. }) {
+            self.bind_template_keys().await;
+        }
+        response
+    }
+
+    /// [`Core::handle_within`] without the template keys: the answer to `request` itself.
+    async fn answer_within(&self, request: Request, reach: Reach<'_>) -> Response {
         let client = matches!(reach, Reach::Client(_));
         match request {
             Request::Ping => Response::Pong { version: version(), api: API_VERSION },

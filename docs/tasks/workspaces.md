@@ -113,7 +113,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   null}` die Taste wegnimmt; `TORRO_BLESS=1 cargo test -p torro-ipc` erzeugt `docs/api-reference.md` neu.
 
 ### WS.3 Tasten unter Hyprland
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WS.2 · **Dateien:** `crates/torroworkplace/src/workspace_keys.rs` (neu),
   `crates/torroworkplace/src/{core,main}.rs`
 - `workspace_keys`: aus Vorlagen und `Settings.workspaces.modifiers` die Liste `KeyBind` bauen (Kommando
