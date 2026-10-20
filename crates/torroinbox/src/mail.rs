@@ -3251,7 +3251,7 @@ mod tests {
     }
 
     /// Task E14.3: a folder's message has no Done, Later, "Move to …", Event or Category – Task makes
-    /// a task of the message, the bell mutes its own traits, `e` archives it; in the trash it has no
+    /// a task of the message, the bell mutes its own traits, `a` archives it; in the trash it has no
     /// Delete, in an account without an archive folder no Archive.
     #[test]
     fn a_folders_message_files_as_its_account_allows() {
@@ -3265,7 +3265,7 @@ mod tests {
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
                 strings(&[trc("action", "Archive"), tr("Delete")])
             );
-            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder");
+            assert_eq!((file[0].key, file[1].key), ("A", "#"), "`a` archives an opened mail");
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;

@@ -3877,7 +3877,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     .map(|focused| Message::SelectAllVisibleChecked(focused.contains(&true)));
             }
             Message::SelectAllVisibleChecked(typing) => {
-                if !typing && self.view.is_mail() && matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
+                if !typing
+                    && self.view.is_mail()
+                    && matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview)
+                {
                     self.selected_mail = self.messages.iter().map(|message| message.id.clone()).collect();
                     self.mail_anchor = self.selected_mail.first().cloned();
                 }
@@ -9781,8 +9784,9 @@ mod tests {
         {
             let _ = app.update(Message::Resized(size));
             assert_eq!(app.is_glance(), glance, "{size:?}");
-            // The keys, ⌘F of the search (the demo has mail) and Escape.
-            let expected = if glance { wide - 3 } else { wide };
+            // The keys, the modifiers of a multi-selection, ⌘F of the search (the demo has mail) and
+            // Escape.
+            let expected = if glance { wide - 4 } else { wide };
             assert_eq!(app.subscription().units(), expected, "no keys and no Escape in a glance: {size:?}");
             let _ = app.view();
         }
