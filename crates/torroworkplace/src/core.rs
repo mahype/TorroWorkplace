@@ -3314,7 +3314,8 @@ impl Core {
             // The switches (task S.24, #231): a model that is off is not assigned, as no module
             // offers it. Only while the assignment is on, so a person can still switch it off.
             if wanted.enabled
-                && let Some(refused) = self.model_off_refusal(engine, wanted.model.as_deref(), &models).await
+                && let Some(refused) =
+                    self.model_off_refusal(engine, wanted.model.as_deref(), function.needs_decision(), &models).await
             {
                 return refused;
             }
@@ -5566,12 +5567,15 @@ impl Core {
 
     /// `unsupported` for `ai.set_assignment` (task S.24, #231) when the model `model` of the AI
     /// account `engine` is off in `models` (the account's list, marked with
-    /// [`AiAccounts::mark_enabled`]), or – `model` being `None` – when no model of it is on. A model
-    /// the list lacks is left to the caller (`error`, "offers no model"). `None` otherwise.
+    /// [`AiAccounts::mark_enabled`]), or – `model` being `None` – when no model of it is on, and for
+    /// a function that needs a decision model (`decides`) when none of those on decides
+    /// ([`torro_core::ai::AiModel::decision`]): "Automatic" would find nothing to ask. A model the
+    /// list lacks is left to the caller (`error`, "offers no model"). `None` otherwise.
     async fn model_off_refusal(
         &self,
         engine: &str,
         model: Option<&str>,
+        decides: bool,
         models: &[torro_core::ai::AiModel],
     ) -> Option<Response> {
         let message = match model {
@@ -5586,7 +5590,16 @@ impl Core {
                     &[("model", &listed.name), ("provider", &provider)],
                 )
             }
-            None if models.iter().any(|listed| listed.enabled) => return None,
+            None if models.iter().any(|listed| listed.enabled && (!decides || listed.decision == Some(true))) => {
+                return None;
+            }
+            None if decides && models.iter().any(|listed| listed.enabled) => {
+                let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+                trf(
+                    "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+                    &[("provider", &provider)],
+                )
+            }
             None => self.models_off_message(engine).await,
         };
         Some(Response::Error { code: "unsupported".into(), message })
@@ -14762,6 +14775,19 @@ mod tests {
             message: trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)]),
         };
         assert_eq!(core.handle(set(None, true)).await, none_on);
+
+        // A model on that does not decide is no model for sorting mail either (#231).
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "qwen3:8b")).await, Response::Ok);
+        let none_decides = Response::Error {
+            code: "unsupported".into(),
+            message: trf(
+                "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+                &[("provider", &provider)],
+            ),
+        };
+        assert_eq!(core.handle(set(None, true)).await, none_decides);
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "nimble")).await, Response::Ok);
+        assert!(matches!(core.handle(set(None, true)).await, Response::AiAssignments { .. }), "nimble decides");
     }
 
     #[tokio::test]

@@ -4214,4 +4214,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Code review #231
     ("Decides", "Entscheidet"),
     ("Can't use tools or decide", "Kann weder Werkzeuge nutzen noch entscheiden"),
+    (
+        "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+        "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › Konten an.",
+    ),
 ];
