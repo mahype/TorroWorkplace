@@ -1,0 +1,17 @@
+# The font of Channelr (task L.12, issue #80): Lato, as Slack. Its size adjustment comes from its
+# x-height.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Channelr"
+version = "1.0.0"
+author = "Torro"
+description = "Lato in Regular and Bold"
+
+# Lato (google/fonts, SIL OFL 1.1), unchanged: "Lato" is a Reserved Font Name. Regular and Bold
+# only, as Slack sets names and titles in bold. Its figures are tabular already.
+[fonts.text]
+family = "Lato"
+regular = "Lato-Regular.ttf"
+bold = "Lato-Bold.ttf"

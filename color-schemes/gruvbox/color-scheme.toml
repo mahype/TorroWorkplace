@@ -1,0 +1,59 @@
+# Gruvbox – after the open Gruvbox colour scheme (Pavel Pertsev, MIT) (task L.15, issue #80). Both of its modes; yellow accent in dark, orange in light.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Gruvbox"
+version = "1.0.0"
+author = "Torro, after Gruvbox by Pavel Pertsev (MIT)"
+description = "The Gruvbox colour scheme: warm retro browns, yellow and orange"
+
+# The scheme's colours wherever they pass the rules; moved for contrast: the dark selected and hover surfaces, the dark error red.
+[colors.dark]
+bg = "#1D2021"
+panel = "#282828"
+raised = "#32302F"
+hover = "#36322F"
+selected = "#3C3836"
+menu = "#32302F"
+text = "#EBDBB2"
+text_2 = "#D5C4A1"
+text_3 = "#BDAE93"
+line = "#EBDBB212"
+line_strong = "#EBDBB221"
+line_selected = "#EBDBB25C"
+focus_ring = "#83A598"
+accent = "#FABD2F"
+on_accent = "#282828"
+ok = "#B8BB26"
+attention = "#FE8019"
+error = "#FC7B6C"
+merged = "#D3869B"
+calendar = ["#83A598", "#B8BB26", "#FE8019", "#D3869B", "#8EC07C"]
+night = "#262626"
+
+[colors.light]
+bg = "#F2E5BC"
+panel = "#FBF1C7"
+raised = "#F5EAC1"
+hover = "#F2E5BC"
+selected = "#EBDBB2"
+menu = "#FBF1C7"
+text = "#282828"
+text_2 = "#3C3836"
+text_3 = "#504945"
+line = "#3C383617"
+line_strong = "#3C383629"
+line_selected = "#3C383670"
+focus_ring = "#076678"
+accent = "#AF3A03"
+on_accent = "#FFFFFF"
+ok = "#79740E"
+attention = "#B57614"
+error = "#9D0006"
+merged = "#8F3F71"
+calendar = ["#076678", "#79740E", "#AF3A03", "#8F3F71", "#427B58"]
+night = "#F2E8C4"
+
+[logo]
+mark = "logo.svg"

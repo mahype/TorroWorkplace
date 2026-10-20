@@ -105,7 +105,7 @@ fn main() -> ExitCode {
     // `--demo` there is none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
-    torro_gui::design::start_for(&suite, launch.design.as_deref());
+    torro_gui::design::start_for(&suite, &launch.forced());
     let result = match (launch.compose.is_some(), launch.demo) {
         (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch),
         (true, false) => compose(Arc::new(InboxClient::default()), suite, launch),

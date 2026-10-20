@@ -1,0 +1,24 @@
+# The font of Guildr (task L.13, issue #80): Figtree, an open stand-in for Discord's closed "gg sans".
+# Its size adjustment comes from its x-height.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Guildr"
+version = "1.0.0"
+author = "Torro"
+description = "Figtree with tabular figures"
+
+# Figtree (google/fonts, SIL OFL 1.1): static cuts of the variable font; Figtree Tabular has the
+# tabular figures frozen in, for clocks and counters.
+[fonts.text]
+family = "Figtree"
+regular = "Figtree-Regular.ttf"
+medium = "Figtree-Medium.ttf"
+semibold = "Figtree-SemiBold.ttf"
+bold = "Figtree-Bold.ttf"
+
+[fonts.numbers]
+family = "Figtree Tabular"
+regular = "FigtreeTabular-Regular.ttf"
+medium = "FigtreeTabular-Medium.ttf"

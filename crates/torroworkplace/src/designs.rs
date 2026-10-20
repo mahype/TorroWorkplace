@@ -1,218 +1,375 @@
-//! The example design packs the suite ships (tasks L.5, L.7–L.9, L.12–L.16): `designs/` in the repository,
-//! built into this binary and written to the designs folder when the suite starts.
+//! The examples the suite ships (tasks L.5, L.7–L.9, L.12–L.16, L.20): `designs/`, `fonts/` and
+//! `color-schemes/` in the repository, built into this binary and written to the same three folders in
+//! the data folder (`torro_core::design::{dir, font_dir, color_scheme_dir}`).
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
-//! centre write the designs folder; in `torro-core` every app would carry the fonts (about 1 MB)
-//! without ever using the copy.
+//! centre write these folders; in `torro-core` every app would carry the fonts (about 1 MB) without
+//! ever using the copy.
 //!
-//! Each example is offered once (task L.10): the folder keeps the ids it was offered in a hidden
-//! list, and a newer suite adds only the examples that are not on it. A pack the user deleted or
+//! Each example is offered once (task L.10): every folder keeps the ids it was offered in a hidden
+//! list, and a newer suite adds only the examples that are not on it. An example the user deleted or
 //! changed stays deleted or changed, a folder of their own with an example's name stays theirs, and
-//! an update of the suite never overwrites anything in the folder.
+//! an update of the suite never overwrites anything. Each of the three folders keeps its own list
+//! (task L.20).
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// One file of an example pack: its path inside the pack folder and its bytes.
+use torro_core::design::Part;
+
+/// One file of an example: its path inside the example's folder and its bytes.
 type File = (&'static str, &'static [u8]);
 
-/// An example pack: its id (the folder name) and its files.
+/// An example: its id (the folder name) and its files.
 struct Example {
     id: &'static str,
     files: &'static [File],
 }
 
-/// The hidden file in the designs folder that lists the examples the suite has offered, one id per
-/// line. `torro_core::design::list` reads only folders, so it never shows up as a pack.
+/// The hidden file in each of the three folders that lists the examples the suite has offered there,
+/// one id per line. The listings of `torro_core::design` read only folders, so it never shows up.
 const OFFERED: &str = ".torro-examples";
 
 /// The examples a designs folder from before the list (task L.10) was offered: only Plex existed.
 const BEFORE_THE_LIST: &[&str] = &["plex"];
 
-/// Builds the `(path, bytes)` pair of `designs/<pack>/<path>` in the repository.
-macro_rules! pack_file {
-    ($pack:literal, $path:literal) => {
-        ($path, include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../designs/", $pack, "/", $path)))
+/// Builds the `(path, bytes)` pair of `<folder>/<id>/<path>` in the repository.
+macro_rules! example_file {
+    ($folder:literal, $id:literal, $path:literal) => {
+        ($path, include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../", $folder, "/", $id, "/", $path)))
     };
 }
 
-/// Every example pack with every file it has; the test `the_embedded_files_are_the_whole_pack`
-/// fails when a file is added to `designs/` but not here.
-const EXAMPLES: &[Example] = &[
+// The lists below hold every example with every file it has; the test
+// `the_embedded_files_are_the_whole_example` fails when a file is added to the repository but not here.
+
+/// The example designs with every file they have (`designs/` in the repository).
+const DESIGNS: &[Example] = &[
+    Example {
+        id: "plex",
+        files: &[example_file!("designs", "plex", "design.toml"), example_file!("designs", "plex", "preview.png")],
+    },
+    Example {
+        id: "commitr",
+        files: &[
+            example_file!("designs", "commitr", "design.toml"),
+            example_file!("designs", "commitr", "preview.png"),
+        ],
+    },
+    Example {
+        id: "ribbon",
+        files: &[example_file!("designs", "ribbon", "design.toml"), example_file!("designs", "ribbon", "preview.png")],
+    },
+    Example {
+        id: "channelr",
+        files: &[
+            example_file!("designs", "channelr", "design.toml"),
+            example_file!("designs", "channelr", "preview.png"),
+        ],
+    },
+    Example {
+        id: "guildr",
+        files: &[example_file!("designs", "guildr", "design.toml"), example_file!("designs", "guildr", "preview.png")],
+    },
+    Example {
+        id: "quattro",
+        files: &[
+            example_file!("designs", "quattro", "design.toml"),
+            example_file!("designs", "quattro", "preview.png"),
+        ],
+    },
+];
+
+/// The example fonts with every file they have (`fonts/` in the repository).
+const FONTS: &[Example] = &[
     Example {
         id: "plex",
         files: &[
-            pack_file!("plex", "design.toml"),
-            pack_file!("plex", "logo.svg"),
-            pack_file!("plex", "tray.svg"),
-            pack_file!("plex", "preview.png"),
-            pack_file!("plex", "fonts/LICENSE.txt"),
-            pack_file!("plex", "fonts/IBMPlexSans-Regular.ttf"),
-            pack_file!("plex", "fonts/IBMPlexSans-Medium.ttf"),
-            pack_file!("plex", "fonts/IBMPlexSans-SemiBold.ttf"),
-            pack_file!("plex", "fonts/IBMPlexSans-Bold.ttf"),
+            example_file!("fonts", "plex", "font.toml"),
+            example_file!("fonts", "plex", "IBMPlexSans-Bold.ttf"),
+            example_file!("fonts", "plex", "IBMPlexSans-Medium.ttf"),
+            example_file!("fonts", "plex", "IBMPlexSans-Regular.ttf"),
+            example_file!("fonts", "plex", "IBMPlexSans-SemiBold.ttf"),
+            example_file!("fonts", "plex", "LICENSE.txt"),
         ],
     },
     Example {
         id: "commitr",
         files: &[
-            pack_file!("commitr", "design.toml"),
-            pack_file!("commitr", "logo.svg"),
-            pack_file!("commitr", "tray.svg"),
-            pack_file!("commitr", "preview.png"),
-            pack_file!("commitr", "fonts/LICENSE.txt"),
-            pack_file!("commitr", "fonts/MonaSans-Regular.ttf"),
-            pack_file!("commitr", "fonts/MonaSans-Medium.ttf"),
-            pack_file!("commitr", "fonts/MonaSans-SemiBold.ttf"),
-            pack_file!("commitr", "fonts/MonaSans-Bold.ttf"),
-            pack_file!("commitr", "fonts/CommitrFigures-Regular.ttf"),
-            pack_file!("commitr", "fonts/CommitrFigures-Medium.ttf"),
+            example_file!("fonts", "commitr", "font.toml"),
+            example_file!("fonts", "commitr", "CommitrFigures-Medium.ttf"),
+            example_file!("fonts", "commitr", "CommitrFigures-Regular.ttf"),
+            example_file!("fonts", "commitr", "LICENSE.txt"),
+            example_file!("fonts", "commitr", "MonaSans-Bold.ttf"),
+            example_file!("fonts", "commitr", "MonaSans-Medium.ttf"),
+            example_file!("fonts", "commitr", "MonaSans-Regular.ttf"),
+            example_file!("fonts", "commitr", "MonaSans-SemiBold.ttf"),
         ],
     },
     Example {
         id: "ribbon",
         files: &[
-            pack_file!("ribbon", "design.toml"),
-            pack_file!("ribbon", "logo.svg"),
-            pack_file!("ribbon", "tray.svg"),
-            pack_file!("ribbon", "preview.png"),
-            pack_file!("ribbon", "fonts/LICENSE.txt"),
-            pack_file!("ribbon", "fonts/Selawik-Regular.ttf"),
-            pack_file!("ribbon", "fonts/Selawik-SemiBold.ttf"),
-            pack_file!("ribbon", "fonts/Selawik-Bold.ttf"),
+            example_file!("fonts", "ribbon", "font.toml"),
+            example_file!("fonts", "ribbon", "LICENSE.txt"),
+            example_file!("fonts", "ribbon", "Selawik-Bold.ttf"),
+            example_file!("fonts", "ribbon", "Selawik-Regular.ttf"),
+            example_file!("fonts", "ribbon", "Selawik-SemiBold.ttf"),
         ],
     },
     Example {
         id: "channelr",
         files: &[
-            pack_file!("channelr", "design.toml"),
-            pack_file!("channelr", "logo.svg"),
-            pack_file!("channelr", "tray.svg"),
-            pack_file!("channelr", "preview.png"),
-            pack_file!("channelr", "fonts/LICENSE.txt"),
-            pack_file!("channelr", "fonts/Lato-Bold.ttf"),
-            pack_file!("channelr", "fonts/Lato-Regular.ttf"),
+            example_file!("fonts", "channelr", "font.toml"),
+            example_file!("fonts", "channelr", "LICENSE.txt"),
+            example_file!("fonts", "channelr", "Lato-Bold.ttf"),
+            example_file!("fonts", "channelr", "Lato-Regular.ttf"),
         ],
     },
     Example {
         id: "guildr",
         files: &[
-            pack_file!("guildr", "design.toml"),
-            pack_file!("guildr", "logo.svg"),
-            pack_file!("guildr", "tray.svg"),
-            pack_file!("guildr", "preview.png"),
-            pack_file!("guildr", "fonts/Figtree-Bold.ttf"),
-            pack_file!("guildr", "fonts/Figtree-Medium.ttf"),
-            pack_file!("guildr", "fonts/Figtree-Regular.ttf"),
-            pack_file!("guildr", "fonts/Figtree-SemiBold.ttf"),
-            pack_file!("guildr", "fonts/FigtreeTabular-Medium.ttf"),
-            pack_file!("guildr", "fonts/FigtreeTabular-Regular.ttf"),
-            pack_file!("guildr", "fonts/LICENSE.txt"),
+            example_file!("fonts", "guildr", "font.toml"),
+            example_file!("fonts", "guildr", "Figtree-Bold.ttf"),
+            example_file!("fonts", "guildr", "Figtree-Medium.ttf"),
+            example_file!("fonts", "guildr", "Figtree-Regular.ttf"),
+            example_file!("fonts", "guildr", "Figtree-SemiBold.ttf"),
+            example_file!("fonts", "guildr", "FigtreeTabular-Medium.ttf"),
+            example_file!("fonts", "guildr", "FigtreeTabular-Regular.ttf"),
+            example_file!("fonts", "guildr", "LICENSE.txt"),
         ],
     },
     Example {
         id: "quattro",
         files: &[
-            pack_file!("quattro", "design.toml"),
-            pack_file!("quattro", "logo.svg"),
-            pack_file!("quattro", "tray.svg"),
-            pack_file!("quattro", "preview.png"),
-            pack_file!("quattro", "fonts/LICENSE.txt"),
-            pack_file!("quattro", "fonts/RobotoFlex-Bold.ttf"),
-            pack_file!("quattro", "fonts/RobotoFlex-Medium.ttf"),
-            pack_file!("quattro", "fonts/RobotoFlex-Regular.ttf"),
-            pack_file!("quattro", "fonts/RobotoFlex-SemiBold.ttf"),
+            example_file!("fonts", "quattro", "font.toml"),
+            example_file!("fonts", "quattro", "LICENSE.txt"),
+            example_file!("fonts", "quattro", "RobotoFlex-Bold.ttf"),
+            example_file!("fonts", "quattro", "RobotoFlex-Medium.ttf"),
+            example_file!("fonts", "quattro", "RobotoFlex-Regular.ttf"),
+            example_file!("fonts", "quattro", "RobotoFlex-SemiBold.ttf"),
+        ],
+    },
+];
+
+/// The example colour schemes with every file they have (`color-schemes/` in the repository).
+const COLOR_SCHEMES: &[Example] = &[
+    Example {
+        id: "plex",
+        files: &[
+            example_file!("color-schemes", "plex", "color-scheme.toml"),
+            example_file!("color-schemes", "plex", "logo.svg"),
+        ],
+    },
+    Example {
+        id: "commitr",
+        files: &[
+            example_file!("color-schemes", "commitr", "color-scheme.toml"),
+            example_file!("color-schemes", "commitr", "logo.svg"),
+        ],
+    },
+    Example {
+        id: "ribbon",
+        files: &[
+            example_file!("color-schemes", "ribbon", "color-scheme.toml"),
+            example_file!("color-schemes", "ribbon", "logo.svg"),
+        ],
+    },
+    Example {
+        id: "channelr",
+        files: &[
+            example_file!("color-schemes", "channelr", "color-scheme.toml"),
+            example_file!("color-schemes", "channelr", "logo.svg"),
+        ],
+    },
+    Example {
+        id: "guildr",
+        files: &[
+            example_file!("color-schemes", "guildr", "color-scheme.toml"),
+            example_file!("color-schemes", "guildr", "logo.svg"),
+        ],
+    },
+    Example {
+        id: "quattro",
+        files: &[
+            example_file!("color-schemes", "quattro", "color-scheme.toml"),
+            example_file!("color-schemes", "quattro", "logo.svg"),
         ],
     },
     Example {
         id: "nord",
         files: &[
-            pack_file!("nord", "design.toml"),
-            pack_file!("nord", "logo.svg"),
-            pack_file!("nord", "tray.svg"),
-            pack_file!("nord", "preview.png"),
+            example_file!("color-schemes", "nord", "color-scheme.toml"),
+            example_file!("color-schemes", "nord", "logo.svg"),
         ],
     },
     Example {
         id: "solarized",
         files: &[
-            pack_file!("solarized", "design.toml"),
-            pack_file!("solarized", "logo.svg"),
-            pack_file!("solarized", "tray.svg"),
-            pack_file!("solarized", "preview.png"),
+            example_file!("color-schemes", "solarized", "color-scheme.toml"),
+            example_file!("color-schemes", "solarized", "logo.svg"),
         ],
     },
     Example {
         id: "catppuccin",
         files: &[
-            pack_file!("catppuccin", "design.toml"),
-            pack_file!("catppuccin", "logo.svg"),
-            pack_file!("catppuccin", "tray.svg"),
-            pack_file!("catppuccin", "preview.png"),
+            example_file!("color-schemes", "catppuccin", "color-scheme.toml"),
+            example_file!("color-schemes", "catppuccin", "logo.svg"),
         ],
     },
     Example {
         id: "gruvbox",
         files: &[
-            pack_file!("gruvbox", "design.toml"),
-            pack_file!("gruvbox", "logo.svg"),
-            pack_file!("gruvbox", "tray.svg"),
-            pack_file!("gruvbox", "preview.png"),
+            example_file!("color-schemes", "gruvbox", "color-scheme.toml"),
+            example_file!("color-schemes", "gruvbox", "logo.svg"),
         ],
     },
     Example {
         id: "dracula",
         files: &[
-            pack_file!("dracula", "design.toml"),
-            pack_file!("dracula", "logo.svg"),
-            pack_file!("dracula", "tray.svg"),
-            pack_file!("dracula", "preview.png"),
+            example_file!("color-schemes", "dracula", "color-scheme.toml"),
+            example_file!("color-schemes", "dracula", "logo.svg"),
         ],
     },
     Example {
         id: "everforest",
         files: &[
-            pack_file!("everforest", "design.toml"),
-            pack_file!("everforest", "logo.svg"),
-            pack_file!("everforest", "tray.svg"),
-            pack_file!("everforest", "preview.png"),
+            example_file!("color-schemes", "everforest", "color-scheme.toml"),
+            example_file!("color-schemes", "everforest", "logo.svg"),
         ],
     },
 ];
 
-/// Creates the designs folder `dir` with the example packs in it, if `dir` does not exist yet.
-/// Returns whether it did; an existing folder is never touched, even when it is empty.
-///
-/// The packs are written to a hidden folder next to `dir` first and moved into place in one step,
-/// so a start that is cut short leaves no half pack behind, and a second process starting at the
-/// same time finds either no folder or the whole one.
-pub fn install_if_missing(dir: &Path) -> io::Result<bool> {
-    if fs::symlink_metadata(dir).is_ok() {
-        return Ok(false);
+/// The examples of `part`.
+fn examples(part: Part) -> &'static [Example] {
+    match part {
+        Part::Design => DESIGNS,
+        Part::Font => FONTS,
+        Part::ColorScheme => COLOR_SCHEMES,
     }
-    let parent = dir.parent().ok_or_else(|| io::Error::other("the designs folder has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let staging = parent.join(format!(".designs-{}", std::process::id()));
-    if let Err(err) = write_examples(&staging).and_then(|()| fs::rename(&staging, dir)) {
-        let _ = fs::remove_dir_all(&staging);
-        // Another process put the folder there in the meantime: it has the packs.
-        return if dir.is_dir() { Ok(false) } else { Err(err) };
-    }
-    Ok(true)
 }
 
-/// Writes every example pack into the new folder `to`, with the list that says they were offered.
-fn write_examples(to: &Path) -> io::Result<()> {
-    for example in EXAMPLES {
-        write_pack(&to.join(example.id), example)?;
+/// The three folders of the look in one data folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folders {
+    /// `designs/`.
+    pub designs: PathBuf,
+    /// `fonts/`.
+    pub fonts: PathBuf,
+    /// `color-schemes/`.
+    pub color_schemes: PathBuf,
+}
+
+impl Folders {
+    /// The user's folders (`torro_core::design::{dir, font_dir, color_scheme_dir}`); `None` without a
+    /// home directory.
+    pub fn user() -> Option<Folders> {
+        Some(Folders {
+            designs: torro_core::design::dir()?,
+            fonts: torro_core::design::font_dir()?,
+            color_schemes: torro_core::design::color_scheme_dir()?,
+        })
     }
-    let ids: Vec<String> = EXAMPLES.iter().map(|example| example.id.to_string()).collect();
-    fs::write(to.join(OFFERED), list_text(&ids))
+
+    /// The folder of `part`.
+    pub fn get(&self, part: Part) -> &Path {
+        match part {
+            Part::Design => &self.designs,
+            Part::Font => &self.fonts,
+            Part::ColorScheme => &self.color_schemes,
+        }
+    }
+}
+
+/// The three parts, in the order they are brought up to date.
+const PARTS: [Part; 3] = [Part::Design, Part::Font, Part::ColorScheme];
+
+/// Brings all three `folders` up to the examples of this suite ([`install_new`] for each), each on
+/// its own: an error in one does not keep the others from their examples. Returns every error with
+/// its part.
+pub fn install_all(folders: &Folders) -> Vec<(Part, io::Error)> {
+    PARTS.into_iter().filter_map(|part| install_new(folders.get(part), part).err().map(|err| (part, err))).collect()
+}
+
+/// Brings the folder `dir` of `part` up to this suite's examples of that part: a missing folder is
+/// created with all of them, an existing one gets each example it was not offered yet, unless a
+/// folder of that name is already there. Returns the ids it wrote. Each folder keeps its own list.
+///
+/// Every example is written to a hidden folder and moved into place in one step, the list too, so a
+/// start that is cut short leaves nothing half done; an example another process put there in the
+/// meantime counts as written.
+pub fn install_new(dir: &Path, part: Part) -> io::Result<Vec<&'static str>> {
+    if fs::symlink_metadata(dir).is_err() {
+        return create(dir, part);
+    }
+    let (mut offered, known) = offered_so_far(dir, part)?;
+    let mut added = Vec::new();
+    let mut changed = !known;
+    for example in examples(part) {
+        if offered.iter().any(|id| id == example.id) {
+            continue;
+        }
+        let target = dir.join(example.id);
+        if fs::symlink_metadata(&target).is_err() {
+            add_example(dir, &target, example)?;
+            added.push(example.id);
+        }
+        offered.push(example.id.to_string());
+        changed = true;
+    }
+    if changed {
+        write_list(dir, &offered)?;
+    }
+    Ok(added)
+}
+
+/// What the existing folder `dir` (of `part`) was offered so far, and whether it has a list. Without
+/// a list: for designs the examples of before the list and every example whose folder is there (an
+/// older suite or the user put it there); for fonts and colour schemes nothing.
+fn offered_so_far(dir: &Path, part: Part) -> io::Result<(Vec<String>, bool)> {
+    match fs::read_to_string(dir.join(OFFERED)) {
+        Ok(text) => Ok((text.lines().map(str::trim).filter(|id| !id.is_empty()).map(String::from).collect(), true)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            Ok((if part == Part::Design { before_the_list(dir) } else { Vec::new() }, false))
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// What a designs folder without the list was offered: the examples of before the list, and every
+/// example whose folder is there.
+fn before_the_list(dir: &Path) -> Vec<String> {
+    let present = DESIGNS.iter().map(|example| example.id).filter(|id| dir.join(id).exists());
+    let present = present.filter(|id| !BEFORE_THE_LIST.contains(id));
+    BEFORE_THE_LIST.iter().copied().chain(present).map(String::from).collect()
+}
+
+/// Creates the missing folder `dir` with every example of `part` and the list, through a hidden
+/// folder beside it moved into place in one step: a second process starting at the same time finds
+/// either no folder or the whole one.
+fn create(dir: &Path, part: Part) -> io::Result<Vec<&'static str>> {
+    let parent = dir.parent().ok_or_else(|| io::Error::other("the folder has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let name = dir.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let staging = parent.join(format!(".{name}-{}", std::process::id()));
+    let ids: Vec<&'static str> = examples(part).iter().map(|example| example.id).collect();
+    let offered: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+    let written = examples(part)
+        .iter()
+        .try_for_each(|example| write_example(&staging.join(example.id), example))
+        .and_then(|()| fs::create_dir_all(&staging))
+        .and_then(|()| fs::write(staging.join(OFFERED), list_text(&offered)))
+        .and_then(|()| fs::rename(&staging, dir));
+    if let Err(err) = written {
+        let _ = fs::remove_dir_all(&staging);
+        // Another process put the folder there in the meantime: it has the examples.
+        return if dir.is_dir() { Ok(Vec::new()) } else { Err(err) };
+    }
+    Ok(ids)
 }
 
 /// Writes the files of `example` into the folder `to`.
-fn write_pack(to: &Path, example: &Example) -> io::Result<()> {
+fn write_example(to: &Path, example: &Example) -> io::Result<()> {
     for (path, bytes) in example.files {
         let target = to.join(path);
         if let Some(folder) = target.parent() {
@@ -223,58 +380,12 @@ fn write_pack(to: &Path, example: &Example) -> io::Result<()> {
     Ok(())
 }
 
-/// Brings the designs folder `dir` up to the examples of this suite: a missing folder is created
-/// with all of them ([`install_if_missing`]); an existing one gets each example it was not offered
-/// yet, unless a folder of that name is already there. Returns the ids it wrote.
-///
-/// Every pack is written to a hidden folder in `dir` and moved into place in one step, the list
-/// too, so a start that is cut short leaves nothing half done; a pack another process put there in
-/// the meantime counts as written.
-pub fn install_new(dir: &Path) -> io::Result<Vec<&'static str>> {
-    if install_if_missing(dir)? {
-        return Ok(EXAMPLES.iter().map(|example| example.id).collect());
-    }
-    let (mut offered, known) = match fs::read_to_string(dir.join(OFFERED)) {
-        Ok(text) => (text.lines().map(str::trim).filter(|id| !id.is_empty()).map(String::from).collect(), true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => (offered_before_the_list(dir), false),
-        Err(err) => return Err(err),
-    };
-    let mut added = Vec::new();
-    let mut changed = !known;
-    for example in EXAMPLES {
-        if offered.iter().any(|id| id == example.id) {
-            continue;
-        }
-        let target = dir.join(example.id);
-        if fs::symlink_metadata(&target).is_err() {
-            add_pack(dir, &target, example)?;
-            added.push(example.id);
-        }
-        offered.push(example.id.to_string());
-        changed = true;
-    }
-    if changed {
-        let staging = dir.join(format!("{OFFERED}.{}", std::process::id()));
-        fs::write(&staging, list_text(&offered))?;
-        fs::rename(&staging, dir.join(OFFERED))?;
-    }
-    Ok(added)
-}
-
-/// What a folder without the list was offered: the examples of before the list, and every example
-/// whose folder is there (an older suite or the user put it there).
-fn offered_before_the_list(dir: &Path) -> Vec<String> {
-    let present = EXAMPLES.iter().map(|example| example.id).filter(|id| dir.join(id).exists());
-    let present = present.filter(|id| !BEFORE_THE_LIST.contains(id));
-    BEFORE_THE_LIST.iter().copied().chain(present).map(String::from).collect()
-}
-
-/// Writes `example` as the pack folder `target` in `dir`, through a hidden folder beside it.
-fn add_pack(dir: &Path, target: &Path, example: &Example) -> io::Result<()> {
+/// Writes `example` as the folder `target` in `dir`, through a hidden folder beside it.
+fn add_example(dir: &Path, target: &Path, example: &Example) -> io::Result<()> {
     let staging = dir.join(format!(".example-{}-{}", example.id, std::process::id()));
-    if let Err(err) = write_pack(&staging, example).and_then(|()| fs::rename(&staging, target)) {
+    if let Err(err) = write_example(&staging, example).and_then(|()| fs::rename(&staging, target)) {
         let _ = fs::remove_dir_all(&staging);
-        // Another process put the pack there in the meantime.
+        // Another process put the example there in the meantime.
         if !target.is_dir() {
             return Err(err);
         }
@@ -282,30 +393,68 @@ fn add_pack(dir: &Path, target: &Path, example: &Example) -> io::Result<()> {
     Ok(())
 }
 
+/// Replaces the list of `dir` in one step.
+fn write_list(dir: &Path, ids: &[String]) -> io::Result<()> {
+    let staging = dir.join(format!("{OFFERED}.{}", std::process::id()));
+    fs::write(&staging, list_text(ids))?;
+    fs::rename(&staging, dir.join(OFFERED))
+}
+
 /// The list file's text: one id per line.
 fn list_text(ids: &[String]) -> String {
     ids.iter().map(|id| format!("{id}\n")).collect()
 }
 
-/// [`install_new`] for the user's designs folder (`torro_core::design::dir`), where errors are
-/// only reported: the suite works without the examples. Called when the core starts and before the
-/// control centre opens the folder.
+/// [`install_all`] for the user's folders, where errors are only reported: the suite works without
+/// the examples. Called before the control centre opens a folder; it never carries old packs over,
+/// so only the core service ever writes `designs/.torro-migrated`.
 pub fn install_examples() {
-    let Some(dir) = torro_core::design::dir() else { return };
-    if let Err(err) = install_new(&dir) {
-        eprintln!("torroworkplace: cannot write the example designs to {}: {err}", dir.display());
+    let Some(folders) = Folders::user() else { return };
+    report(&folders, install_all(&folders));
+}
+
+/// Prints each error with the folder it happened in.
+fn report(folders: &Folders, errors: Vec<(Part, io::Error)>) {
+    for (part, err) in errors {
+        eprintln!("torroworkplace: cannot write the examples to {}: {err}", folders.get(part).display());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use torro_core::design::{
+        self, ColorScheme, Design, DesignError, FontSet, LevelName, MIN_TEXT_SIZE, Rgba, STANDARD_ID, Selection, Weight,
+    };
 
     use super::*;
 
-    /// `designs/` in the repository.
-    fn repo_designs() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../designs")
+    /// `<folder>/` of `part` in the repository.
+    fn repo(part: Part) -> PathBuf {
+        let folder = match part {
+            Part::Design => "designs",
+            Part::Font => "fonts",
+            Part::ColorScheme => "color-schemes",
+        };
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(folder)
+    }
+
+    /// The three folders under `data`.
+    fn folders(data: &Path) -> Folders {
+        Folders { designs: data.join("designs"), fonts: data.join("fonts"), color_schemes: data.join("color-schemes") }
+    }
+
+    /// The design, font and colour scheme `id` of the repository, each from its own folder.
+    fn shipped(id: &str) -> Selection {
+        let fail = |part: &str, problems: Vec<DesignError>| -> ! {
+            let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            panic!("{part}/{id} must be valid: {reasons:#?}")
+        };
+        Selection {
+            design: design::load(&repo(Part::Design), id).unwrap_or_else(|p| fail("designs", p)),
+            font: design::load_font(&repo(Part::Font), id).unwrap_or_else(|p| fail("fonts", p)),
+            scheme: design::load_color_scheme(&repo(Part::ColorScheme), id)
+                .unwrap_or_else(|p| fail("color-schemes", p)),
+        }
     }
 
     /// Every file under `dir`, relative, with `/` between folders.
@@ -320,142 +469,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_plex_pack_in_the_repository_passes_every_rule() {
-        let design = torro_core::design::load(&repo_designs(), "plex").unwrap_or_else(|problems| {
-            let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
-            panic!("designs/plex must be valid: {reasons:#?}")
-        });
-        assert_eq!(design.about.name, "Plex");
-        assert_eq!(design.fonts.text.family, "IBM Plex Sans");
-        assert_eq!(design.fonts.numbers, design.fonts.text, "Plex's figures are tabular already");
-        assert_eq!((design.typo.body.size, design.typo.body.line, design.size.row), (14.0, 22.0, 44.0));
-        assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some());
-        let listed = torro_core::design::list(&repo_designs());
-        assert!(listed.iter().all(|pack| pack.valid()), "every pack in designs/ is valid");
-    }
-
-    #[test]
-    fn the_commitr_pack_in_the_repository_passes_every_rule() {
-        let design = torro_core::design::load(&repo_designs(), "commitr").unwrap_or_else(|problems| {
-            let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
-            panic!("designs/commitr must be valid: {reasons:#?}")
-        });
-        assert_eq!(design.about.name, "Commitr");
-        assert_eq!(design.fonts.text.family, "Mona Sans");
-        assert_eq!(design.fonts.numbers.family, "Commitr Figures", "Mona Sans's figures, made tabular");
-        let light = design.colors.light;
-        assert!(light.own_sidebar() && !design.colors.dark.own_sidebar(), "a dark sidebar in light mode only");
-        assert_eq!(light.accent, torro_core::design::Rgba::hex(0x1F883D));
-        assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some());
-    }
-
-    #[test]
-    fn the_ribbon_pack_in_the_repository_passes_every_rule() {
-        use torro_core::design::Weight;
-        let design = torro_core::design::load(&repo_designs(), "ribbon").unwrap_or_else(|problems| {
-            let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
-            panic!("designs/ribbon must be valid: {reasons:#?}")
-        });
-        assert_eq!(design.about.name, "Ribbon");
-        assert_eq!(design.fonts.text.family, "Selawik");
-        assert_eq!(design.fonts.numbers, design.fonts.text, "Selawik's figures are tabular already");
-        assert!(design.fonts.text.medium.is_none(), "Selawik has no Medium");
-        assert_eq!((design.typo.caption.weight, design.typo.body_strong.weight), (Weight::Semibold, Weight::Semibold));
-        assert!(!design.colors.light.own_sidebar() && !design.colors.dark.own_sidebar());
-        assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some());
-    }
-
-    #[test]
-    fn the_dracula_pack_keeps_the_scheme_where_it_can() {
-        let design = torro_core::design::load(&repo_designs(), "dracula").expect("designs/dracula is valid");
-        let rgb = torro_core::design::Rgba::hex;
-        assert_eq!(design.fonts, torro_core::design::Design::standard().fonts, "Dracula keeps Inter");
-        assert_eq!((design.colors.dark.panel, design.colors.light.panel), (rgb(0x282A36), rgb(0xFFFBEB)));
-        assert_eq!((design.colors.dark.accent, design.colors.dark.focus_ring), (rgb(0xBD93F9), rgb(0xFF79C6)));
-    }
-
-    #[test]
-    fn the_further_packs_pass_every_rule() {
-        // id, name, text font, figures font
-        let packs: &[(&str, &str, &str, &str)] = &[
-            ("channelr", "Channelr", "Lato", "Lato"),
-            ("guildr", "Guildr", "Figtree", "Figtree Tabular"),
-            ("quattro", "Quattro", "Roboto Flex", "Roboto Flex"),
-            ("nord", "Nord", "Inter", "Inter Tabular"),
-            ("solarized", "Solarized", "Inter", "Inter Tabular"),
-            ("catppuccin", "Catppuccin", "Inter", "Inter Tabular"),
-            ("gruvbox", "Gruvbox", "Inter", "Inter Tabular"),
-            ("dracula", "Dracula", "Inter", "Inter Tabular"),
-            ("everforest", "Everforest", "Inter", "Inter Tabular"),
-            // further packs
-        ];
-        for (id, name, text, numbers) in packs {
-            let design = torro_core::design::load(&repo_designs(), id).unwrap_or_else(|problems| {
-                let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
-                panic!("designs/{id} must be valid: {reasons:#?}")
-            });
-            assert_eq!(design.about.name, *name);
-            assert_eq!((design.fonts.text.family.as_str(), design.fonts.numbers.family.as_str()), (*text, *numbers));
-            assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some(), "{id}");
-        }
-    }
-
-    #[test]
-    fn the_embedded_files_are_the_whole_pack() {
-        let designs = repo_designs();
-        let mut folders: Vec<String> = fs::read_dir(&designs)
-            .expect("designs/")
-            .flatten()
-            .filter(|entry| entry.path().is_dir())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        folders.sort();
-        let mut ids: Vec<&str> = EXAMPLES.iter().map(|example| example.id).collect();
-        ids.sort_unstable();
-        assert_eq!(folders, ids, "every folder in designs/ is an example");
-        for example in EXAMPLES {
-            let mut on_disk = Vec::new();
-            files_in(&designs.join(example.id), "", &mut on_disk);
-            on_disk.sort();
-            let mut embedded: Vec<String> = example.files.iter().map(|(path, _)| path.to_string()).collect();
-            embedded.sort();
-            assert_eq!(embedded, on_disk, "{}", example.id);
-        }
-    }
-
-    #[test]
-    fn a_missing_folder_gets_the_examples_and_they_load() {
-        let home = tempfile::tempdir().expect("temp dir");
-        let dir = home.path().join("data").join("designs");
-        assert!(install_if_missing(&dir).expect("install"));
-        for id in [
-            "plex",
-            "commitr",
-            "ribbon",
-            "channelr",
-            "guildr",
-            "quattro",
-            "nord",
-            "solarized",
-            "catppuccin",
-            "gruvbox",
-            "dracula",
-            "everforest",
-        ] {
-            assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
-        }
-        let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();
-        assert_eq!(left.len(), 1, "no staging folder stays behind");
-    }
-
     /// The ids in the list of `dir`.
     fn offered(dir: &Path) -> Vec<String> {
         fs::read_to_string(dir.join(OFFERED)).expect("list").lines().map(String::from).collect()
     }
 
-    fn all_ids() -> Vec<String> {
-        EXAMPLES.iter().map(|example| example.id.to_string()).collect()
+    fn ids(part: Part) -> Vec<String> {
+        examples(part).iter().map(|example| example.id.to_string()).collect()
     }
 
     /// Every entry of `dir`, sorted.
@@ -466,27 +486,240 @@ mod tests {
         names
     }
 
+    /// Every file in the three folders, for "nothing changed".
+    fn everything(all: &Folders) -> Vec<(String, Vec<u8>)> {
+        let mut found = Vec::new();
+        for part in PARTS {
+            let mut names = Vec::new();
+            files_in(all.get(part), &format!("{part:?}/"), &mut names);
+            let dir = all.get(part).to_path_buf();
+            found.extend(names.into_iter().map(|name| {
+                let rel = name.split_once('/').map_or(name.as_str(), |(_, rel)| rel).to_string();
+                let bytes = fs::read(dir.join(&rel)).expect("read");
+                (name, bytes)
+            }));
+        }
+        found.sort();
+        found
+    }
+
+    /// The six examples that are a design, a font and a colour scheme.
+    const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
+    /// The six examples that are only a colour scheme (task L.20).
+    const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
+
     #[test]
-    fn a_new_folder_gets_every_example_and_the_list() {
-        let home = tempfile::tempdir().expect("temp dir");
-        let dir = home.path().join("designs");
-        assert_eq!(install_new(&dir).expect("install").len(), EXAMPLES.len());
-        assert_eq!(offered(&dir), all_ids());
-        assert!(install_new(&dir).expect("again").is_empty(), "nothing twice");
-        assert!(torro_core::design::list(&dir).iter().all(|pack| pack.valid()), "the list is no pack");
+    fn the_embedded_files_are_the_whole_example() {
+        for part in PARTS {
+            let mut folders = entries(&repo(part));
+            folders.retain(|name| repo(part).join(name).is_dir());
+            let mut expected = ids(part);
+            expected.sort();
+            assert_eq!(folders, expected, "every folder in {} is an example", repo(part).display());
+            for example in examples(part) {
+                let mut on_disk = Vec::new();
+                files_in(&repo(part).join(example.id), "", &mut on_disk);
+                on_disk.sort();
+                let mut embedded: Vec<String> = example.files.iter().map(|(path, _)| path.to_string()).collect();
+                embedded.sort();
+                assert_eq!(embedded, on_disk, "{part:?} {}", example.id);
+                assert!(!on_disk.iter().any(|file| file.ends_with("tray.svg")), "no tray symbol any more (#114)");
+            }
+        }
+    }
+
+    /// Task L.20: Nord and the other five are only colour schemes; the six others are all three parts,
+    /// and every one of them is valid.
+    #[test]
+    fn every_example_loads_without_reasons_in_its_folders() {
+        let listed = |part: Part| -> Vec<String> {
+            let found: Vec<(String, Vec<DesignError>)> = match part {
+                Part::Design => {
+                    design::list(&repo(part)).into_iter().map(|l| (l.id.clone(), l.problems().to_vec())).collect()
+                }
+                Part::Font => {
+                    design::list_fonts(&repo(part)).into_iter().map(|l| (l.id.clone(), l.problems().to_vec())).collect()
+                }
+                Part::ColorScheme => design::list_color_schemes(&repo(part))
+                    .into_iter()
+                    .map(|l| (l.id.clone(), l.problems().to_vec()))
+                    .collect(),
+            };
+            for (id, problems) in &found {
+                assert!(problems.is_empty(), "{part:?} {id}: {problems:?}");
+            }
+            found.into_iter().map(|(id, _)| id).filter(|id| id != STANDARD_ID).collect()
+        };
+        assert_eq!(listed(Part::Design), COMPLETE);
+        assert_eq!(listed(Part::Font), COMPLETE);
+        let mut schemes: Vec<&str> = COMPLETE.iter().chain(&SCHEMES_ONLY).copied().collect();
+        schemes.sort_unstable();
+        assert_eq!(listed(Part::ColorScheme), schemes);
+        for id in COMPLETE {
+            let design = design::load(&repo(Part::Design), id).expect("valid");
+            assert_eq!((design.about.font.as_deref(), design.about.color_scheme.as_deref()), (Some(id), Some(id)));
+            assert!(design.preview.is_some(), "{id} keeps its preview");
+        }
+        for id in COMPLETE.iter().chain(&SCHEMES_ONLY) {
+            assert!(design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid").logo.mark.is_some());
+        }
+    }
+
+    /// The text levels of an example as they were drawn before task L.20: the standard's, with what
+    /// the old complete pack set. `(level, size, line)`.
+    fn before(id: &str) -> Vec<(LevelName, f32, f32)> {
+        let own: &[(LevelName, f32, f32)] = match id {
+            "plex" => &[
+                (LevelName::Meta, 12.0, 18.0),
+                (LevelName::Body, 14.0, 22.0),
+                (LevelName::BodyStrong, 14.0, 22.0),
+                (LevelName::Read, 15.0, 24.0),
+                (LevelName::Title, 17.0, 24.0),
+                (LevelName::Headline, 24.0, 30.0),
+                (LevelName::Display, 30.0, 36.0),
+            ],
+            "ribbon" => &[],
+            _ => &[(LevelName::Body, 14.0, 20.0), (LevelName::BodyStrong, 14.0, 20.0)],
+        };
+        let standard = Design::standard().typo;
+        LevelName::ALL
+            .iter()
+            .map(|name| {
+                let level = standard.get(*name);
+                own.iter().find(|(own, ..)| own == name).copied().unwrap_or((*name, level.size, level.line))
+            })
+            .collect()
+    }
+
+    /// Task L.20: the sizes of the designs are meant for Inter now; in their own font they are drawn as
+    /// large as before, at most 0.5 px off. The one exception is the smallest level: a design may not
+    /// go below 11 ([`MIN_TEXT_SIZE`]), so in a font drawn more than 6.8 % larger than Inter (Lato,
+    /// Figtree, Selawik) `micro` is 12 instead of 11.
+    #[test]
+    fn the_designs_look_as_before_in_their_own_font() {
+        for id in COMPLETE {
+            let look = shipped(id);
+            for (name, size, line) in before(id) {
+                let drawn = look.level(name);
+                let smallest = name == LevelName::Micro && look.design.typo.micro.size == MIN_TEXT_SIZE;
+                let off =
+                    if smallest { (MIN_TEXT_SIZE * look.font.size_adjust * 2.0).round() / 2.0 - size } else { 0.5 };
+                assert!((drawn.size - size).abs() <= off.max(0.5), "{id} {name:?}: {} for {size}", drawn.size);
+                assert!((drawn.line - line).abs() <= 0.5, "{id} {name:?}: line {} for {line}", drawn.line);
+            }
+            // Inter draws them smaller now: the sizes are Inter's.
+            let inter = Selection { font: FontSet::standard(), ..look.clone() };
+            assert!(inter.level(LevelName::Body).size <= look.level(LevelName::Body).size, "{id}");
+        }
+    }
+
+    /// The size adjustments the samples were measured with in task L.19.
+    #[test]
+    fn the_fonts_adjust_as_measured() {
+        for (id, factor) in [
+            ("plex", 1.058),
+            ("commitr", 1.038),
+            ("channelr", 1.078),
+            ("guildr", 1.092),
+            ("quattro", 1.063),
+            ("ribbon", 1.092),
+        ] {
+            let font = design::load_font(&repo(Part::Font), id).expect("valid");
+            assert!((font.size_adjust - factor).abs() < 0.001, "{id}: {}", font.size_adjust);
+        }
     }
 
     #[test]
-    fn an_old_folder_with_plex_gets_the_others_and_keeps_plex() {
+    fn the_plex_example_is_its_three_parts() {
+        let look = shipped("plex");
+        assert_eq!((look.design.about.name.as_str(), look.font.about.name.as_str()), ("Plex", "Plex"));
+        assert_eq!(look.font.fonts.text.family, "IBM Plex Sans");
+        assert_eq!(look.font.fonts.numbers, look.font.fonts.text, "Plex's figures are tabular already");
+        let body = look.level(LevelName::Body);
+        assert_eq!((body.size, body.line, look.design.size.row), (14.0, 22.0, 44.0));
+        assert_eq!(look.scheme.colors.dark.accent, Rgba::hex(0x3AA6A0));
+        assert!(look.scheme.logo.mark.is_some());
+    }
+
+    #[test]
+    fn the_commitr_example_is_its_three_parts() {
+        let look = shipped("commitr");
+        assert_eq!(look.font.fonts.text.family, "Mona Sans");
+        assert_eq!(look.font.fonts.numbers.family, "Commitr Figures", "Mona Sans's figures, made tabular");
+        let light = look.scheme.colors.light;
+        assert!(light.own_sidebar() && !look.scheme.colors.dark.own_sidebar(), "a dark sidebar in light mode only");
+        assert_eq!(light.accent, Rgba::hex(0x1F883D));
+    }
+
+    #[test]
+    fn the_ribbon_example_is_its_three_parts() {
+        let look = shipped("ribbon");
+        assert_eq!(look.font.fonts.text.family, "Selawik");
+        assert!(look.font.fonts.text.medium.is_none(), "Selawik has no Medium");
+        let weight = |name| look.level(name).weight;
+        assert_eq!((weight(LevelName::Caption), weight(LevelName::BodyStrong)), (Weight::Semibold, Weight::Semibold));
+        assert!(!look.scheme.colors.light.own_sidebar() && !look.scheme.colors.dark.own_sidebar());
+    }
+
+    #[test]
+    fn the_further_fonts_are_their_families() {
+        // id, text font, figures font
+        for (id, text, numbers) in [
+            ("channelr", "Lato", "Lato"),
+            ("guildr", "Figtree", "Figtree Tabular"),
+            ("quattro", "Roboto Flex", "Roboto Flex"),
+        ] {
+            let font = shipped(id).font;
+            assert_eq!((font.fonts.text.family.as_str(), font.fonts.numbers.family.as_str()), (text, numbers));
+        }
+        assert_eq!(shipped("channelr").level(LevelName::Title).weight, Weight::Bold, "Lato has no SemiBold");
+    }
+
+    #[test]
+    fn dracula_is_a_colour_scheme_only() {
+        let scheme = design::load_color_scheme(&repo(Part::ColorScheme), "dracula").expect("valid");
+        let rgb = Rgba::hex;
+        assert_eq!((scheme.colors.dark.panel, scheme.colors.light.panel), (rgb(0x282A36), rgb(0xFFFBEB)));
+        assert_eq!((scheme.colors.dark.accent, scheme.colors.dark.focus_ring), (rgb(0xBD93F9), rgb(0xFF79C6)));
+        assert!(
+            matches!(design::load(&repo(Part::Design), "dracula"), Err(p) if matches!(p[..], [DesignError::NotFound { .. }]))
+        );
+        assert_ne!(scheme, ColorScheme::standard());
+    }
+
+    #[test]
+    fn a_new_data_folder_gets_every_example_and_the_lists() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let all = folders(&home.path().join("data"));
+        let errors = install_all(&all);
+        assert!(errors.is_empty(), "{errors:?}");
+        for part in PARTS {
+            let mut expected = ids(part);
+            expected.push(OFFERED.to_string());
+            expected.sort();
+            assert_eq!(entries(all.get(part)), expected, "{part:?}");
+            assert_eq!(offered(all.get(part)), ids(part));
+        }
+        assert!(design::list(&all.designs).iter().all(|entry| entry.valid()), "the copies are valid, the list is none");
+        assert!(design::list_fonts(&all.fonts).iter().all(|entry| entry.valid()));
+        assert!(design::list_color_schemes(&all.color_schemes).iter().all(|entry| entry.valid()));
+        let before = everything(&all);
+        install_all(&all);
+        assert_eq!(everything(&all), before, "nothing twice");
+        let left = entries(&home.path().join("data"));
+        assert_eq!(left, ["color-schemes", "designs", "fonts"], "no staging folder stays behind");
+    }
+
+    #[test]
+    fn an_old_designs_folder_with_plex_gets_the_others_and_keeps_plex() {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("designs");
         fs::create_dir_all(dir.join("plex")).expect("plex");
         fs::write(dir.join("plex").join("design.toml"), "format = 1\n").expect("changed plex");
-        let added = install_new(&dir).expect("install");
-        assert_eq!(added, all_ids().iter().filter(|id| *id != "plex").map(String::as_str).collect::<Vec<_>>());
+        let added = install_new(&dir, Part::Design).expect("install");
+        assert_eq!(added, ids(Part::Design).iter().filter(|id| *id != "plex").map(String::as_str).collect::<Vec<_>>());
         assert_eq!(fs::read_to_string(dir.join("plex").join("design.toml")).expect("read"), "format = 1\n");
-        assert_eq!(offered(&dir).len(), EXAMPLES.len());
-        let mut expected = all_ids();
+        let mut expected = ids(Part::Design);
         expected.push(OFFERED.to_string());
         expected.sort();
         assert_eq!(entries(&dir), expected, "no hidden work folder stays behind");
@@ -495,48 +728,71 @@ mod tests {
     #[test]
     fn a_deleted_example_stays_deleted() {
         let home = tempfile::tempdir().expect("temp dir");
-        // An old folder whose Plex the user deleted: Plex does not come back, the others do.
+        // An old designs folder whose Plex the user deleted: Plex does not come back, the others do.
         let old = home.path().join("old");
         fs::create_dir(&old).expect("empty designs folder");
-        assert!(!install_new(&old).expect("install").contains(&"plex"));
+        assert!(!install_new(&old, Part::Design).expect("install").contains(&"plex"));
         assert!(!old.join("plex").exists());
 
-        // Deleted after it was offered: it stays deleted.
-        let dir = home.path().join("designs");
-        install_new(&dir).expect("install");
-        let gone = EXAMPLES[EXAMPLES.len() - 1].id;
-        fs::remove_dir_all(dir.join(gone)).expect("delete");
-        assert!(install_new(&dir).expect("again").is_empty());
-        assert!(!dir.join(gone).exists());
+        // Deleted after it was offered: it stays deleted, in every folder.
+        let all = folders(&home.path().join("data"));
+        install_all(&all);
+        for part in PARTS {
+            let gone = examples(part)[examples(part).len() - 1].id;
+            fs::remove_dir_all(all.get(part).join(gone)).expect("delete");
+        }
+        let before = everything(&all);
+        install_all(&all);
+        assert_eq!(everything(&all), before);
+    }
+
+    /// Task L.20: each folder keeps its own list; a new fonts or colour schemes folder gets all of
+    /// its examples, whatever the designs folder was offered.
+    #[test]
+    fn each_folder_keeps_its_own_list() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let all = folders(&home.path().join("data"));
+        fs::create_dir_all(&all.designs).expect("designs");
+        fs::write(all.designs.join(OFFERED), list_text(&ids(Part::Design))).expect("every design offered");
+        let errors = install_all(&all);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(entries(&all.designs), [OFFERED], "deleted designs stay deleted");
+        for part in [Part::Font, Part::ColorScheme] {
+            assert_eq!(offered(all.get(part)), ids(part));
+            assert!(ids(part).iter().all(|id| all.get(part).join(id).is_dir()), "{part:?}");
+        }
+        // A colour schemes folder the user made without a list gets every example it has no folder of.
+        let own = folders(&home.path().join("own"));
+        fs::create_dir_all(own.color_schemes.join("nord")).expect("own nord");
+        install_new(&own.color_schemes, Part::ColorScheme).expect("install");
+        assert_eq!(entries(&own.color_schemes.join("nord")), Vec::<String>::new(), "theirs stays theirs");
+        assert!(own.color_schemes.join("dracula").is_dir());
     }
 
     #[test]
     fn a_folder_of_the_users_own_with_an_examples_name_stays_theirs() {
         let home = tempfile::tempdir().expect("temp dir");
-        let dir = home.path().join("designs");
-        let own = EXAMPLES[EXAMPLES.len() - 1].id;
-        fs::create_dir_all(dir.join(own)).expect("own");
-        fs::write(dir.join(OFFERED), "plex\n").expect("an older list");
-        fs::write(dir.join(own).join("notes.txt"), "mine").expect("own file");
-        assert!(!install_new(&dir).expect("install").contains(&own));
-        assert_eq!(entries(&dir.join(own)), ["notes.txt"]);
-        assert!(offered(&dir).iter().any(|id| id == own), "offered, so it is not tried again");
+        for part in PARTS {
+            let dir = home.path().join(format!("{part:?}"));
+            let own = examples(part)[examples(part).len() - 1].id;
+            fs::create_dir_all(dir.join(own)).expect("own");
+            fs::write(dir.join(OFFERED), "plex\n").expect("an older list");
+            fs::write(dir.join(own).join("notes.txt"), "mine").expect("own file");
+            assert!(!install_new(&dir, part).expect("install").contains(&own));
+            assert_eq!(entries(&dir.join(own)), ["notes.txt"]);
+            assert!(offered(&dir).iter().any(|id| id == own), "offered, so it is not tried again");
+        }
     }
 
     #[test]
-    fn an_existing_folder_is_never_touched() {
+    fn a_changed_example_keeps_the_change() {
         let home = tempfile::tempdir().expect("temp dir");
-        let dir = home.path().join("designs");
-        fs::create_dir(&dir).expect("empty designs folder");
-        assert!(!install_if_missing(&dir).expect("install"));
-        assert_eq!(fs::read_dir(&dir).expect("read").count(), 0, "a deleted example stays deleted");
-
-        // An installed pack the user changed keeps the change.
-        let other = home.path().join("other");
-        assert!(install_if_missing(&other).expect("install"));
-        let toml = other.join("plex").join("design.toml");
+        let all = folders(home.path());
+        install_all(&all);
+        let toml = all.fonts.join("plex").join("font.toml");
         fs::write(&toml, "format = 1\n").expect("change");
-        assert!(!install_if_missing(&other).expect("install"));
+        fs::remove_file(all.fonts.join(OFFERED)).expect("even without its list");
+        install_all(&all);
         assert_eq!(fs::read_to_string(&toml).expect("read"), "format = 1\n");
     }
 }

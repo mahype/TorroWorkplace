@@ -1,0 +1,14 @@
+# IBM Plex Sans (copied in by the test): its size adjustment comes from its x-height.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Plex"
+version = "1.0.0"
+
+[fonts.text]
+family = "IBM Plex Sans"
+regular = "IBMPlexSans-Regular.ttf"
+medium = "IBMPlexSans-Medium.ttf"
+semibold = "IBMPlexSans-SemiBold.ttf"
+bold = "IBMPlexSans-Bold.ttf"

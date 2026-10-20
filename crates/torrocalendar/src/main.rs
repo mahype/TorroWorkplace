@@ -75,7 +75,7 @@ fn main() -> ExitCode {
     };
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
-    torro_gui::design::start_for(&source, launch.design.as_deref());
+    torro_gui::design::start_for(&source, &launch.forced());
     let result = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(app::App::title)

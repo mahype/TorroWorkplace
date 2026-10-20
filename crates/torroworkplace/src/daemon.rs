@@ -523,6 +523,8 @@ fn describe(request: &Request) -> String {
         Request::OpenApp { app, .. } => format!("open {app}"),
         Request::ListApps => "apps".into(),
         Request::ListDesigns => "designs".into(),
+        Request::ListFonts => "fonts".into(),
+        Request::ListColorSchemes => "colour schemes".into(),
         Request::ListClients => "clients".into(),
         Request::CreateClient { .. } => "create client".into(),
         Request::UpdateClient { id, .. } => format!("update client {id}"),

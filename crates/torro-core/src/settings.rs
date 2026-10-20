@@ -69,6 +69,23 @@ pub struct Settings {
     /// the standard, and the control centre shows why.
     #[serde(default = "standard_design")]
     pub design: String,
+    /// The font every window draws with (task L.22, `docs/design-pakete.md` "Wählen"): its id, the folder
+    /// name under `<data>/fonts/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the standard. Kept as
+    /// written like [`Settings::design`]; choosing a design never changes it.
+    ///
+    /// A settings file without it reads as the standard. Left out of `settings.update_settings` (or sent
+    /// as `""`), the stored one stays.
+    // Read from JSON without it, it is empty until `Settings::fill_unnamed_parts` fills it in: `load`
+    // with the standard, the core with the stored one.
+    #[serde(default)]
+    pub font: String,
+    /// The colour scheme every window draws with (task L.22): its id, the folder name under
+    /// `<data>/color-schemes/`, or `"torro"` for the standard. Kept as written; choosing a design never
+    /// changes it. A settings file without it reads as the standard. Left out of
+    /// `settings.update_settings` (or sent as `""`), the stored one stays.
+    // Empty until filled in, like `font`.
+    #[serde(default)]
+    pub color_scheme: String,
     /// How long the assistant keeps a conversation after its last entry (task C.1, decision 8 in
     /// `docs/assistent.md`): 30 days unless changed, or forever. Pinned conversations stay anyway.
     #[serde(default)]
@@ -399,9 +416,25 @@ fn known_names<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Ord>(
     Ok(names.iter().filter_map(|name| serde_json::from_value(name.clone()).ok()).collect())
 }
 
-/// The id of the standard design, for settings from before design packs.
+/// The id of the standard design, font and colour scheme, for settings from before design packs.
 fn standard_design() -> String {
     crate::design::STANDARD_ID.to_string()
+}
+
+impl Settings {
+    /// Puts the font and the colour scheme of `stored` where these settings name none (an empty id: the
+    /// field was left out of the JSON they were read from, task L.22). For the settings file `stored` is
+    /// [`Settings::default`], so a file without them draws with the standard; for the settings a client
+    /// sends it is the stored settings, so a client that does not know the fields keeps the person's
+    /// choice.
+    pub fn fill_unnamed_parts(&mut self, stored: &Settings) {
+        if self.font.is_empty() {
+            self.font = stored.font.clone();
+        }
+        if self.color_scheme.is_empty() {
+            self.color_scheme = stored.color_scheme.clone();
+        }
+    }
 }
 
 /// `true`, for settings that are on unless the file says otherwise.
@@ -421,6 +454,8 @@ impl Default for Settings {
             list_orders: BTreeMap::new(),
             quiet_when_busy: on(),
             design: standard_design(),
+            font: standard_design(),
+            color_scheme: standard_design(),
             assistant_retention: Retention::default(),
             voice: Voice::default(),
             assistant_default: None,
@@ -982,7 +1017,7 @@ pub enum Paper {
 }
 
 /// How one PDF template sets its pages (setting `pdf_template`). The font is always the text and
-/// heading font of the active design pack, so a PDF looks like the suite.
+/// heading font of the chosen font ([`Settings::font`], task L.22), so a PDF looks like the suite.
 ///
 /// Checked by [`PdfTemplate::check`] whenever it comes from outside; a hand-edited file is read as
 /// it is.
@@ -1462,10 +1497,12 @@ fn load_from(path: &Path) -> Settings {
             return Settings::default();
         }
     };
-    serde_json::from_str(&text).unwrap_or_else(|err| {
+    let mut settings: Settings = serde_json::from_str(&text).unwrap_or_else(|err| {
         eprintln!("torroworkplace: ignoring {}, it is not valid settings JSON: {err}", path.display());
         Settings::default()
-    })
+    });
+    settings.fill_unnamed_parts(&Settings::default());
+    settings
 }
 
 fn save_to(path: &Path, settings: &Settings) -> Result<(), String> {
@@ -1708,6 +1745,8 @@ mod tests {
             list_orders: BTreeMap::new(),
             quiet_when_busy: true,
             design: "torro".into(),
+            font: "torro".into(),
+            color_scheme: "torro".into(),
             assistant_retention: Retention::DEFAULT,
             voice: Voice::default(),
             assistant_default: None,
@@ -1819,6 +1858,35 @@ mod tests {
         assert_eq!(load_from(&path).design, "plex", "kept as written, whether the pack exists or not");
     }
 
+    /// Task L.22: font and colour scheme are settings of their own, the standard unless chosen, never
+    /// taken over from the design; settings sent without them keep the stored ones.
+    #[test]
+    fn font_and_colour_scheme_are_the_standard_unless_chosen() {
+        let dir = TempDir::new("parts");
+        let path = dir.file("settings.json");
+        let standard = Settings::default();
+        assert_eq!((standard.font.as_str(), standard.color_scheme.as_str()), ("torro", "torro"));
+        fs::write(&path, r#"{"design":"plex"}"#).expect("write");
+        let read = load_from(&path);
+        assert_eq!((read.font.as_str(), read.color_scheme.as_str()), ("torro", "torro"), "missing fields");
+        fs::write(&path, r#"{"design":"plex","font":"channelr","colorScheme":"nord"}"#).expect("write");
+        let read = load_from(&path);
+        assert_eq!(
+            (read.design.as_str(), read.font.as_str(), read.color_scheme.as_str()),
+            ("plex", "channelr", "nord")
+        );
+        let json = serde_json::to_value(&read).expect("json");
+        assert_eq!((json["font"].as_str(), json["colorScheme"].as_str()), (Some("channelr"), Some("nord")));
+
+        let mut sent: Settings = serde_json::from_str(r#"{"language":"german"}"#).expect("a client's settings");
+        assert!(sent.font.is_empty() && sent.color_scheme.is_empty(), "left out: not named yet");
+        sent.fill_unnamed_parts(&read);
+        assert_eq!((sent.font.as_str(), sent.color_scheme.as_str()), ("channelr", "nord"), "the stored ones stay");
+        let mut chosen = Settings { font: "torro".into(), ..read.clone() };
+        chosen.fill_unnamed_parts(&read);
+        assert_eq!(chosen.font, "torro", "a font that is named is kept");
+    }
+
     #[test]
     fn unknown_fields_are_ignored() {
         let dir = TempDir::new("unknown");
@@ -1863,6 +1931,8 @@ mod tests {
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             quiet_when_busy: false,
             design: "plex".into(),
+            font: "channelr".into(),
+            color_scheme: "nord".into(),
             assistant_retention: Retention::Days(90),
             voice: Voice {
                 enabled: true,

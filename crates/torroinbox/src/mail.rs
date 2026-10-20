@@ -3265,7 +3265,7 @@ mod tests {
                 file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
                 strings(&[trc("action", "Archive"), tr("Delete")])
             );
-            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder");
+            assert_eq!((file[0].key, file[1].key), ("A", "#"), "`a` archives in a folder");
             assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
             assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;

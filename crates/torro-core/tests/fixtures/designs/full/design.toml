@@ -1,4 +1,4 @@
-# Every key the format knows, with valid values (fonts are copied in by the test).
+# An old complete pack (before task L.19): form, fonts, colours, logo and tray in one design.toml; fonts are copied in by the test.
 format = 1
 
 [about]

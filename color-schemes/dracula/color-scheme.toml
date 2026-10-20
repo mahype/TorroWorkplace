@@ -1,0 +1,66 @@
+# Dracula – after the open Dracula Theme (draculatheme.com, MIT, Zeno Rocha and contributors):
+# dark mode is "Dracula", light mode "Alucard" (task L.8, issue #80). Everything left out here comes
+# from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Dracula"
+version = "1.0.0"
+author = "Torro, after Dracula Theme (MIT)"
+description = "The Dracula colour scheme: purple accent, pink focus; light mode is Alucard"
+
+# Dracula's own colours wherever they pass the rules. Two moved: the comment colour #6272A4 reaches
+# only about 3:1 as text, so text_3 is a lighter blue-grey; red #FF5555 as error text falls under
+# 4.5:1 on `selected`, so error is #FF8080. Status and calendar colours are Dracula's palette.
+[colors.dark]
+bg = "#21222C"
+panel = "#282A36"
+raised = "#2C2E3B"
+hover = "#323443"
+selected = "#383A4B"
+menu = "#30323F"
+text = "#F8F8F2"
+text_2 = "#D0D2E0"
+text_3 = "#A9AFCB"
+line = "#FFFFFF10"
+line_strong = "#FFFFFF1C"
+line_selected = "#FFFFFF52"
+focus_ring = "#FF79C6"
+accent = "#BD93F9"
+on_accent = "#191A21"
+ok = "#50FA7B"
+attention = "#F1FA8C"
+error = "#FF8080"
+inactive = "#7C88B5"
+merged = "#BD93F9"
+calendar = ["#8BE9FD", "#50FA7B", "#FFB86C", "#FF79C6", "#BD93F9"]
+night = "#232531"
+
+# Alucard: cream surfaces, the same hues darkened.
+[colors.light]
+bg = "#F3EED9"
+panel = "#FFFBEB"
+raised = "#FBF7E6"
+hover = "#F2EEDC"
+selected = "#E6E2EC"
+menu = "#FFFDF3"
+text = "#1F1F1F"
+text_2 = "#4A4740"
+text_3 = "#5A5585"
+line = "#0000000F"
+line_strong = "#0000001C"
+line_selected = "#0000005C"
+focus_ring = "#A3144D"
+accent = "#644AC9"
+on_accent = "#FFFFFF"
+ok = "#14710A"
+attention = "#846E15"
+error = "#CB3A2A"
+inactive = "#635D97"
+merged = "#644AC9"
+calendar = ["#036A96", "#14710A", "#A34D14", "#A3144D", "#644AC9"]
+night = "#F0EAD0"
+
+# Purple square with a vampire's mouth.
+[logo]
+mark = "logo.svg"

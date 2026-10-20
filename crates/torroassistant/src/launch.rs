@@ -16,7 +16,7 @@
 //!   links of an answer stay on `http(s)` ([`crate::app`]).
 //! - `--open <state>`: start in a state ([`Open`]), for screenshots; needs `--demo`.
 //! - `--appearance light|dark|system`: this process only, nothing is stored.
-//! - `--design <id>`: draw with this design pack; needs `--demo`.
+//! - `--design <id>`, `--font <id>`, `--color-scheme <id>`: draw with this design, font or colour scheme (task L.22, each from its own folder); needs `--demo`.
 //! - `--size <W>x<H>`: open the window at this size in logical pixels; needs `--demo`. For the
 //!   screenshots of every size class where no tiling manager resizes the window (macOS).
 
@@ -145,6 +145,11 @@ pub struct Launch {
     /// section with this [`torro_settings_ui::Section::id`].
     pub settings: Option<String>,
     pub design: Option<String>,
+    /// `--font <id>` (task L.22): draw with this font instead of the stored one; needs `--demo`.
+    pub font: Option<String>,
+    /// `--color-scheme <id>` (task L.22): draw with this colour scheme instead of the stored one;
+    /// needs `--demo`.
+    pub color_scheme: Option<String>,
     /// `--size`: the window's size at start, width and height in logical pixels.
     pub size: Option<(u16, u16)>,
 }
@@ -192,6 +197,11 @@ fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a s
 }
 
 impl Launch {
+    /// `--design`, `--font` and `--color-scheme` for `design::start` (task L.22).
+    pub fn forced(&self) -> design::Forced {
+        design::Forced { design: self.design.clone(), font: self.font.clone(), color_scheme: self.color_scheme.clone() }
+    }
+
     /// Reads the start parameters from `args` (the words after the program name). Words it does
     /// not know are left alone.
     pub fn parse(args: &[String]) -> Result<Launch, LaunchError> {
@@ -224,21 +234,27 @@ impl Launch {
                 return Err(unknown("--settings", word, SECTIONS.iter().map(|section| section.id).collect()));
             }
         };
-        let design = match flag_value(args, "--design")? {
-            None => None,
-            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
-            Some(id) if design::is_choice(id) => Some(id.to_owned()),
-            Some(id) => {
-                let valid = design::choices();
-                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+        // `--design`, `--font` and `--color-scheme` each take the valid ids of their own folder (task L.22).
+        let part = |flag: &'static str, part: design::Part| -> Result<Option<String>, LaunchError> {
+            match flag_value(args, flag)? {
+                None => Ok(None),
+                Some(_) if !demo => Err(LaunchError::NeedsDemo(flag)),
+                Some(id) if design::is_choice(part, id) => Ok(Some(id.to_owned())),
+                Some(id) => {
+                    let valid = design::choices(part);
+                    Err(unknown(flag, id, valid.iter().map(String::as_str).collect()))
+                }
             }
         };
+        let design = part("--design", design::Part::Design)?;
+        let font = part("--font", design::Part::Font)?;
+        let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
         let size = match flag_value(args, "--size")? {
             None => None,
             Some(_) if !demo => return Err(LaunchError::NeedsDemo("--size")),
             Some(word) => Some(size_of(word).ok_or_else(|| unknown("--size", word, vec!["<width>x<height>"]))?),
         };
-        Ok(Launch { demo, window, open, appearance, settings, design, size })
+        Ok(Launch { demo, window, open, appearance, settings, design, font, color_scheme, size })
     }
 }
 
@@ -351,6 +367,15 @@ mod tests {
     fn demo_switches_need_the_demo_and_known_values() {
         assert_eq!(Launch::parse(&args(&["--open", "tools"])), Err(LaunchError::NeedsDemo("--open")));
         assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+
+        // Task L.22: a font and a colour scheme of their own, each from its folder, also only with the demo.
+        let parts = Launch::parse(&args(&["--demo", "--font", "torro", "--color-scheme", "torro"])).expect("standards");
+        assert_eq!((parts.font.as_deref(), parts.color_scheme.as_deref()), (Some("torro"), Some("torro")));
+        assert_eq!((parts.forced().design, parts.forced().font.as_deref()), (None, Some("torro")));
+        assert_eq!(Launch::parse(&args(&["--font", "torro"])), Err(LaunchError::NeedsDemo("--font")));
+        assert_eq!(Launch::parse(&args(&["--color-scheme", "torro"])), Err(LaunchError::NeedsDemo("--color-scheme")));
+        let unknown = Launch::parse(&args(&["--demo", "--color-scheme", "no-such-scheme"])).expect_err("unknown");
+        assert!(unknown.to_string().contains("--color-scheme"), "{unknown}");
         assert_eq!(Launch::parse(&args(&["--size", "800x600"])), Err(LaunchError::NeedsDemo("--size")));
         let sized = Launch::parse(&args(&["--demo", "--size", "800x600"])).expect("a size");
         assert_eq!(sized.size, Some((800, 600)));

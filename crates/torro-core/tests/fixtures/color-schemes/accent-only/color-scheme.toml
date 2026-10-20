@@ -1,0 +1,9 @@
+# Only the accent: everything else comes from the standard colour scheme.
+format = 1
+
+[about]
+name = "Teal"
+version = "1.0.0"
+
+[colors.dark]
+accent = "#0E7C7B"

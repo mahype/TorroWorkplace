@@ -104,9 +104,9 @@ use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_pim::{PimAccount, account::account_of};
 
-use crate::design;
 use crate::icon::{self, Icon};
 use crate::layout::{self, SizeClass};
+use crate::scheme;
 use crate::style;
 use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
@@ -969,10 +969,10 @@ fn center_x<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content).center_x(Fill).center_y(Fill).into()
 }
 
-/// The app logo, 20 × 20: the design's own mark (`logo.mark`, an SVG from the pack) if it has one,
-/// otherwise the suite's: a white "T" on the accent colour, radius 4.
+/// The app logo, 20 × 20: the active colour scheme's own mark (`logo.mark`, an SVG from its folder)
+/// if it has one, otherwise the suite's: a white "T" on the accent colour, radius 4.
 fn logo<'a, M: 'a>() -> Element<'a, M> {
-    if let Some(mark) = design::active().logo.mark.clone() {
+    if let Some(mark) = scheme::active().logo.mark.clone() {
         return iced::widget::svg(iced::widget::svg::Handle::from_path(mark)).width(LOGO).height(LOGO).into();
     }
     container(

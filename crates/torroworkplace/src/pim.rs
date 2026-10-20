@@ -1158,6 +1158,8 @@ impl PimService {
             | Request::OpenApp { .. }
             | Request::ListApps
             | Request::ListDesigns
+            | Request::ListFonts
+            | Request::ListColorSchemes
             | Request::ListClients
             | Request::CreateClient { .. }
             | Request::UpdateClient { .. }

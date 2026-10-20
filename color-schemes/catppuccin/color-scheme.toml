@@ -1,0 +1,59 @@
+# Catppuccin – after the open Catppuccin colour scheme (the Catppuccin organisation, MIT) (task L.15, issue #80). Dark is Mocha, light is Latte; mauve accent.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Catppuccin"
+version = "1.0.0"
+author = "Torro, after Catppuccin by the Catppuccin organisation (MIT)"
+description = "The Catppuccin colour scheme: Mocha dark, Latte light, mauve accent"
+
+# The scheme's colours wherever they pass the rules; moved for contrast: in Latte the third text colour, the focus ring, attention, and peach and pink as calendar colours.
+[colors.dark]
+bg = "#181825"
+panel = "#1E1E2E"
+raised = "#232334"
+hover = "#2A2B3C"
+selected = "#313244"
+menu = "#181825"
+text = "#CDD6F4"
+text_2 = "#BAC2DE"
+text_3 = "#A6ADC8"
+line = "#CDD6F412"
+line_strong = "#CDD6F421"
+line_selected = "#CDD6F45C"
+focus_ring = "#B4BEFE"
+accent = "#CBA6F7"
+on_accent = "#11111B"
+ok = "#A6E3A1"
+attention = "#F9E2AF"
+error = "#F38BA8"
+merged = "#CBA6F7"
+calendar = ["#89B4FA", "#A6E3A1", "#FAB387", "#F5C2E7", "#CBA6F7"]
+night = "#1B1B2A"
+
+[colors.light]
+bg = "#E6E9EF"
+panel = "#EFF1F5"
+raised = "#EAEDF2"
+hover = "#E4E7EE"
+selected = "#DCE0E8"
+menu = "#EFF1F5"
+text = "#4C4F69"
+text_2 = "#4C4F69"
+text_3 = "#5C5F77"
+line = "#4C4F6917"
+line_strong = "#4C4F6929"
+line_selected = "#4C4F6970"
+focus_ring = "#5972FD"
+accent = "#8839EF"
+on_accent = "#FFFFFF"
+ok = "#40A02B"
+attention = "#A3600A"
+error = "#D20F39"
+merged = "#8839EF"
+calendar = ["#1E66F5", "#3B9327", "#D6520A", "#C8549F", "#8839EF"]
+night = "#E3E7EF"
+
+[logo]
+mark = "logo.svg"

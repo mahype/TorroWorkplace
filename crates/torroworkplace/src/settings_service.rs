@@ -7,8 +7,9 @@
 //! (`~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist`) and the value
 //! `TorroWorkplace` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows.
 //! Hidden collections are applied by `pim.rs`, which reads [`SettingsStore::current`] on every
-//! request. A design pack (task L.3) is checked against the rules of `torro_core::design` before it
-//! is stored; the apps follow the setting themselves.
+//! request. A design (task L.3), a font and a colour scheme (task L.22) are checked against the rules
+//! of `torro_core::design` before they are stored, each in its own folder; the apps follow the
+//! settings themselves.
 //!
 //! The file is not looked up here but handed in ([`SettingsStore`]): the daemon uses the user's
 //! `settings.json`, tests a file in a temp directory, so no test reads or writes the real one
@@ -25,7 +26,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use torro_core::design;
+use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
     self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, PdfSettings,
     PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice, Zoom,
@@ -46,6 +47,11 @@ pub struct SettingsStore {
     /// The folder of the design packs (`torro_core::design::dir`), where a chosen design must be
     /// found and valid; `None` without a home directory, then only the standard can be chosen.
     designs: Option<PathBuf>,
+    /// The folder of the fonts (`torro_core::design::font_dir`), like [`SettingsStore::designs`].
+    fonts: Option<PathBuf>,
+    /// The folder of the colour schemes (`torro_core::design::color_scheme_dir`), like
+    /// [`SettingsStore::designs`].
+    color_schemes: Option<PathBuf>,
     /// Whether a change of `start_at_login` is applied to the system's login item. Only the
     /// daemon's store does: the entry points at the running program, and from a test that is the
     /// test binary, which the next login would start instead of the daemon (task X.12).
@@ -56,29 +62,62 @@ impl SettingsStore {
     /// The user's `settings.json` (`torro_core::settings::settings_file`), as the daemon uses it.
     /// Changing `start_at_login` here writes or removes the system's login item.
     pub fn system() -> SettingsStore {
-        SettingsStore { file: settings::settings_file(), designs: design::dir(), applies_login_item: true }
+        SettingsStore {
+            file: settings::settings_file(),
+            designs: design::dir(),
+            fonts: design::font_dir(),
+            color_schemes: design::color_scheme_dir(),
+            applies_login_item: true,
+        }
     }
 
     /// The settings in `file`, for tests. `start_at_login` is only stored in `file`; the
-    /// system's login item is never touched, so tests may switch it freely. The design packs are
-    /// the folder `designs` next to `file`.
+    /// system's login item is never touched, so tests may switch it freely. The designs, fonts and
+    /// colour schemes are the folders `designs`, `fonts` and `color-schemes` next to `file`.
     #[cfg(test)]
     pub fn at(file: PathBuf) -> SettingsStore {
-        let designs = file.parent().map(|dir| dir.join("designs"));
-        SettingsStore { file: Some(file), designs, applies_login_item: false }
+        let beside = |name: &str| file.parent().map(|dir| dir.join(name));
+        SettingsStore {
+            designs: beside("designs"),
+            fonts: beside("fonts"),
+            color_schemes: beside("color-schemes"),
+            file: Some(file),
+            applies_login_item: false,
+        }
     }
 
     /// No file at all, for tests that do not look at the settings: reads give the defaults,
     /// changes fail. Like [`SettingsStore::at`], it never touches the system's login item.
     #[cfg(test)]
     pub fn without_file() -> SettingsStore {
-        SettingsStore { file: None, designs: None, applies_login_item: false }
+        SettingsStore { file: None, designs: None, fonts: None, color_schemes: None, applies_login_item: false }
     }
 
     /// The folder of the design packs, for `settings.list_designs`; `None` without a home
     /// directory (only the standard exists then).
     pub fn designs(&self) -> Option<&Path> {
         self.designs.as_deref()
+    }
+
+    /// The folder of the fonts, for `settings.list_fonts` (task L.22); `None` without a home
+    /// directory (only the standard exists then).
+    pub fn fonts(&self) -> Option<&Path> {
+        self.fonts.as_deref()
+    }
+
+    /// The folder of the colour schemes, for `settings.list_color_schemes` (task L.22); `None`
+    /// without a home directory (only the standard exists then).
+    pub fn color_schemes(&self) -> Option<&Path> {
+        self.color_schemes.as_deref()
+    }
+
+    /// The folder of `part`.
+    fn folder(&self, part: Part) -> Option<&Path> {
+        match part {
+            Part::Design => self.designs(),
+            Part::Font => self.fonts(),
+            Part::ColorScheme => self.color_schemes(),
+        }
     }
 
     /// The settings as stored now; the defaults when there is no file or it cannot be read.
@@ -277,13 +316,22 @@ impl SettingsStore {
         let old = self.current();
         let mut new = old.clone();
         edit(&mut new);
+        // Settings sent without a font or colour scheme (a client that does not know them, task
+        // L.22) keep the stored ones.
+        new.fill_unnamed_parts(&old);
         if new == old {
             return Ok(());
         }
-        // Checked on every way in (set_setting, update_settings), but only when it changes: a pack
+        // Checked on every way in (set_setting, update_settings), but only when it changes: a part
         // that broke after it was chosen must not block changing anything else.
-        if new.design != old.design {
-            self.check_design(&new.design)?;
+        for (part, new_id, old_id) in [
+            (Part::Design, &new.design, &old.design),
+            (Part::Font, &new.font, &old.font),
+            (Part::ColorScheme, &new.color_scheme, &old.color_scheme),
+        ] {
+            if new_id != old_id {
+                self.check_part(part, new_id)?;
+            }
         }
         // The same for the PDF templates and folder: `set_setting` checks them when it parses them,
         // whole settings (`update_settings`) carry them unchecked. A header thousands of characters
@@ -299,19 +347,53 @@ impl SettingsStore {
         Ok(())
     }
 
-    /// Whether the design `id` can be chosen: the standard, or a pack in [`SettingsStore::designs`]
-    /// that passes every rule. Otherwise every reason, for the person or agent who chose it.
-    fn check_design(&self, id: &str) -> Result<(), String> {
-        let refused = |reasons: String| format!("the design {id:?} can't be used: {reasons}");
-        let Some(dir) = self.designs.as_deref() else {
+    /// Whether the design, font or colour scheme `id` can be chosen: the standard, or one in the
+    /// folder of `part` that passes every rule. Otherwise every reason, for the person or agent who
+    /// chose it; an id the folder lacks but another holds also names the key that chooses it there
+    /// (`"nord" is a colour scheme: choose it with the key color_scheme.`, task L.22).
+    fn check_part(&self, part: Part, id: &str) -> Result<(), String> {
+        let refused = |reasons: String| format!("the {} {id:?} can't be used: {reasons}", part_name(part));
+        let Some(dir) = self.folder(part) else {
             return match id == design::STANDARD_ID {
                 true => Ok(()),
-                false => Err(refused("there is no designs folder without a home directory".into())),
+                false => Err(refused(format!("there is no {} folder without a home directory", folder_name(part)))),
             };
         };
-        design::load(dir, id)
-            .map(|_| ())
-            .map_err(|problems| refused(problems.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")))
+        let Err(problems) = load_part(part, dir, id) else { return Ok(()) };
+        let mut reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        if matches!(problems[..], [DesignError::NotFound { .. }])
+            && let Some(hint) = self.found_elsewhere(part, id)
+        {
+            reasons.push(hint);
+        }
+        Err(refused(reasons.join(" ")))
+    }
+
+    /// Which other parts have a folder `id` (valid or not), as a hint naming the key that chooses
+    /// each; `None` when no other folder has it.
+    fn found_elsewhere(&self, part: Part, id: &str) -> Option<String> {
+        let found: Vec<Part> = [Part::Design, Part::Font, Part::ColorScheme]
+            .into_iter()
+            .filter(|other| *other != part)
+            .filter(|other| {
+                let Some(dir) = self.folder(*other) else { return false };
+                !matches!(
+                    load_part(*other, dir, id).as_ref().map_err(Vec::as_slice),
+                    Err([DesignError::NotFound { .. }])
+                )
+            })
+            .collect();
+        let names: Vec<&str> = found.iter().map(|part| part_name(*part)).collect();
+        let keys: Vec<&str> = found.iter().map(|part| part_key(*part)).collect();
+        match found.len() {
+            0 => None,
+            1 => Some(format!("{id:?} is a {}: choose it with the key {}.", names[0], keys[0])),
+            _ => Some(format!(
+                "{id:?} is a {}: choose them with the keys {}.",
+                names.join(" and a "),
+                keys.join(" and ")
+            )),
+        }
     }
 
     /// The state the system's login item must be switched to after `old` became `new`, or
@@ -334,8 +416,12 @@ enum Change {
     /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
     ListOrder(ListOrderEntry),
     QuietWhenBusy(bool),
-    /// Whether the pack exists and is valid is [`SettingsStore::check_design`]'s check.
+    /// Whether the pack exists and is valid is [`SettingsStore::check_part`]'s check.
     Design(String),
+    /// The font (task L.22), checked like [`Change::Design`].
+    Font(String),
+    /// The colour scheme (task L.22), checked like [`Change::Design`].
+    ColorScheme(String),
     /// How long the assistant keeps conversations (task C.1).
     AssistantRetention(Retention),
     /// Voice on or off (task C.9). Who may switch it on is the core's check
@@ -399,7 +485,9 @@ impl Change {
             SettingKey::Night => Change::Night(Night::from_value(value)?),
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
-            SettingKey::Design => Change::Design(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::Design => Change::Design(part_id(key, value)?),
+            SettingKey::Font => Change::Font(part_id(key, value)?),
+            SettingKey::ColorScheme => Change::ColorScheme(part_id(key, value)?),
             // Strict, like the night: the file's reading falls back to 30 days instead.
             SettingKey::AssistantRetention => Change::AssistantRetention(Retention::from_value(value)?),
             SettingKey::VoiceEnabled => Change::VoiceEnabled(serde_json::from_value(value.clone()).map_err(invalid)?),
@@ -461,6 +549,8 @@ impl Change {
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::Design(id) => settings.design = id,
+            Change::Font(id) => settings.font = id,
+            Change::ColorScheme(id) => settings.color_scheme = id,
             Change::AssistantRetention(retention) => settings.assistant_retention = retention,
             Change::VoiceEnabled(enabled) => settings.voice.enabled = enabled,
             Change::WakeWord(phrase) => settings.voice.wake_word = phrase,
@@ -490,6 +580,52 @@ impl Change {
     }
 }
 
+/// The id `value` names for the design, font or colour scheme `key`: a string that is not empty (an
+/// empty one would mean "left out", [`Settings::fill_unnamed_parts`]). Whether the folder has it is
+/// [`SettingsStore::check_part`]'s check.
+fn part_id(key: SettingKey, value: &serde_json::Value) -> Result<String, String> {
+    match value.as_str() {
+        Some(id) if !id.is_empty() => Ok(id.to_string()),
+        _ => Err(format!("{value} is not a value for {key:?}: send the id as a string, \"torro\" for the standard")),
+    }
+}
+
+/// Reads the design, font or colour scheme `id` from `dir`, only for its reasons.
+fn load_part(part: Part, dir: &Path, id: &str) -> Result<(), Vec<DesignError>> {
+    match part {
+        Part::Design => design::load(dir, id).map(drop),
+        Part::Font => design::load_font(dir, id).map(drop),
+        Part::ColorScheme => design::load_color_scheme(dir, id).map(drop),
+    }
+}
+
+/// What a part is called in messages.
+fn part_name(part: Part) -> &'static str {
+    match part {
+        Part::Design => "design",
+        Part::Font => "font",
+        Part::ColorScheme => "colour scheme",
+    }
+}
+
+/// The folder of a part, in messages.
+fn folder_name(part: Part) -> &'static str {
+    match part {
+        Part::Design => "designs",
+        Part::Font => "fonts",
+        Part::ColorScheme => "colour schemes",
+    }
+}
+
+/// The key of `settings.set_setting` that chooses a part.
+fn part_key(part: Part) -> &'static str {
+    match part {
+        Part::Design => "design",
+        Part::Font => "font",
+        Part::ColorScheme => "color_scheme",
+    }
+}
+
 /// Removes `collection` from the hidden ones, or adds it once.
 fn show_in(settings: &mut Settings, collection: &str, shown: bool) {
     let hidden = &mut settings.hidden_collections;
@@ -515,10 +651,13 @@ fn load_from(path: &Path) -> Settings {
             return Settings::default();
         }
     };
-    serde_json::from_str(&text).unwrap_or_else(|err| {
+    let mut settings: Settings = serde_json::from_str(&text).unwrap_or_else(|err| {
         eprintln!("torroworkplace: ignoring {}, it is not valid settings JSON: {err}", path.display());
         Settings::default()
-    })
+    });
+    // A file without a font or colour scheme draws with the standard (task L.22).
+    settings.fill_unnamed_parts(&Settings::default());
+    settings
 }
 
 /// Writes `settings` to a temporary file next to `path` and renames it over `path`, so a crash
@@ -1042,7 +1181,7 @@ mod tests {
         pack(
             &store,
             "teal",
-            "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[colors.dark]\naccent = \"#0E7C7B\"\n",
+            "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[radius]\nscale = [3, 5, 7, 9]\n",
         );
         assert_eq!(store.current().design, "torro", "the standard until one is chosen");
         store.set(SettingKey::Design, &json!("teal")).expect("a valid pack");
@@ -1054,14 +1193,10 @@ mod tests {
     #[test]
     fn a_missing_or_broken_design_is_refused_with_its_reasons() {
         let (_dir, store) = store();
-        pack(
-            &store,
-            "pale",
-            "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n",
-        );
-        let broken = store.set(SettingKey::Design, &json!("pale")).expect_err("too little contrast");
+        pack(&store, "pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[size]\nrow = 20\n");
+        let broken = store.set(SettingKey::Design, &json!("pale")).expect_err("rows too low");
         assert!(broken.contains("\"pale\" can't be used"), "{broken}");
-        assert!(broken.contains("colors.dark.text"), "names the broken key: {broken}");
+        assert!(broken.contains("size.row"), "names the broken key: {broken}");
         let missing = store.set(SettingKey::Design, &json!("plex")).expect_err("no such pack");
         assert!(missing.contains("\"plex\""), "{missing}");
         assert!(store.set(SettingKey::Design, &json!(7)).is_err(), "an id is a string");
@@ -1070,6 +1205,70 @@ mod tests {
         let all = Settings { design: "plex".into(), ..Settings::default() };
         assert!(store.update(all).is_err());
         assert_eq!(store.current().design, "torro");
+    }
+
+    /// Writes `toml` after `format` and `[about]` as the file `file` of `id` in the store's folder `folder`.
+    fn part(store: &SettingsStore, folder: Part, id: &str, file: &str, toml: &str) {
+        let folder = store.folder(folder).expect("a test store has every folder").join(id);
+        fs::create_dir_all(&folder).expect("part folder");
+        let text = format!("format = 1\n[about]\nname = \"Sample\"\nversion = \"1.0.0\"\n{toml}");
+        fs::write(folder.join(file), text).expect("toml");
+    }
+
+    /// Task L.22: font and colour scheme are chosen apart from the design, each checked in its own
+    /// folder; an id that only another folder has is refused with the key that chooses it.
+    #[test]
+    fn font_and_colour_scheme_are_chosen_on_their_own_and_misplaced_ids_name_their_key() {
+        let (_dir, store) = store();
+        part(&store, Part::Font, "plain", "font.toml", "");
+        part(&store, Part::ColorScheme, "nord", "color-scheme.toml", "");
+        part(&store, Part::ColorScheme, "murky", "color-scheme.toml", "[colors.dark]\ntext = \"#151515\"\n");
+        store.set(SettingKey::Font, &json!("plain")).expect("a valid font");
+        store.set(SettingKey::ColorScheme, &json!("nord")).expect("a valid colour scheme");
+        let current = store.current();
+        assert_eq!(
+            (current.design.as_str(), current.font.as_str(), current.color_scheme.as_str()),
+            ("torro", "plain", "nord")
+        );
+
+        let wrong = store.set(SettingKey::Design, &json!("nord")).expect_err("nord is no design");
+        assert!(wrong.contains("the design \"nord\" can't be used"), "{wrong}");
+        assert!(wrong.contains("is a colour scheme: choose it with the key color_scheme."), "{wrong}");
+        let wrong = store.set(SettingKey::ColorScheme, &json!("plain")).expect_err("plain is no colour scheme");
+        assert!(wrong.contains("choose it with the key font."), "{wrong}");
+        let missing = store.set(SettingKey::Font, &json!("gone")).expect_err("no such font");
+        assert!(missing.contains("\"gone\"") && !missing.contains("the key"), "{missing}");
+        let broken = store.set(SettingKey::ColorScheme, &json!("murky")).expect_err("text too dark");
+        assert!(broken.contains("can't be used") && !broken.contains("the key"), "{broken}");
+        for empty in [json!(""), json!(null), json!(3)] {
+            assert!(store.set(SettingKey::Font, &empty).is_err(), "{empty}");
+        }
+        assert_eq!(store.current(), current, "nothing changed");
+        store.set(SettingKey::Font, &json!("torro")).expect("the standard is always there");
+        assert_eq!(store.current().font, "torro");
+    }
+
+    /// Task L.22: whole settings without the font and colour scheme (a client that does not know
+    /// them) keep the stored ones; with them, they are checked like set_setting.
+    #[test]
+    fn whole_settings_without_font_and_colour_scheme_keep_them() {
+        let (_dir, store) = store();
+        part(&store, Part::Font, "plain", "font.toml", "");
+        part(&store, Part::ColorScheme, "nord", "color-scheme.toml", "");
+        store.set(SettingKey::Font, &json!("plain")).expect("valid");
+        store.set(SettingKey::ColorScheme, &json!("nord")).expect("valid");
+        let sent: Settings = serde_json::from_value(json!({"appearance": "dark"})).expect("a client's settings");
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let current = store.current();
+        assert_eq!(current.appearance, Appearance::Dark);
+        assert_eq!((current.font.as_str(), current.color_scheme.as_str()), ("plain", "nord"), "kept");
+        store.update(sent).expect("the app key's way keeps them too");
+        assert_eq!(store.current().font, "plain");
+        let chosen = Settings { font: "gone".into(), ..store.current() };
+        assert!(store.update_keeping_hidden(chosen).is_err(), "a font that is not there is refused");
+        let back = Settings { font: "torro".into(), color_scheme: "torro".into(), ..store.current() };
+        store.update_keeping_hidden(back).expect("named: the standard");
+        assert_eq!((store.current().font.as_str(), store.current().color_scheme.as_str()), ("torro", "torro"));
     }
 
     #[test]
@@ -1093,6 +1292,8 @@ mod tests {
         Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
         Change::parse(SettingKey::Design, &json!("plex")).expect("an id").apply(&mut settings);
+        Change::parse(SettingKey::Font, &json!("channelr")).expect("an id").apply(&mut settings);
+        Change::parse(SettingKey::ColorScheme, &json!("nord")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::AssistantRetention, &json!("forever")).expect("forever").apply(&mut settings);
         let default = json!({"engine": "claude-code", "model": "opus", "effort": "medium"});
         Change::parse(SettingKey::AssistantDefault, &default).expect("a default").apply(&mut settings);
@@ -1113,6 +1314,8 @@ mod tests {
                 list_orders: Default::default(),
                 quiet_when_busy: false,
                 design: "plex".into(),
+                font: "channelr".into(),
+                color_scheme: "nord".into(),
                 assistant_retention: Retention::Forever,
                 voice: Voice::default(),
                 assistant_default: AssistantDefault::from_value(&default).expect("a default"),
@@ -1596,8 +1799,7 @@ mod tests {
     fn the_daemons_store_applies_only_a_changed_start_at_login() {
         // Built like `system()` but on a temp file, so the decision is checked without a call.
         let dir = tempfile::tempdir().expect("temp dir");
-        let store =
-            SettingsStore { file: Some(dir.path().join("settings.json")), designs: None, applies_login_item: true };
+        let store = SettingsStore { applies_login_item: true, ..SettingsStore::at(dir.path().join("settings.json")) };
         assert!(SettingsStore::system().applies_login_item);
         let (off, on) = (Settings::default(), Settings { start_at_login: true, ..Settings::default() });
         assert_eq!(store.login_item_change(&off, &on), Some(true));

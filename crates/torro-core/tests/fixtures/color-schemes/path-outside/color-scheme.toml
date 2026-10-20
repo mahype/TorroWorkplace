@@ -1,0 +1,9 @@
+# Broken: the logo lies outside the folder.
+format = 1
+
+[about]
+name = "Path outside"
+version = "1.0.0"
+
+[logo]
+mark = "../x.svg"

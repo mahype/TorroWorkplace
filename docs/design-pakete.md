@@ -4,8 +4,8 @@ Stand: 2026-10-13. **Entschieden:** Stufe 1 jetzt, Stufe 2 später (welche Schal
 Stufe 3 (freie Anordnung über eine Layout-Sprache) nicht. Aufgaben: [tasks/design-pakete.md](tasks/design-pakete.md).
 **Ergänzt 2026-10-13:** eigene Farben für die Seitenleiste ([unten](#seitenleiste-mit-eigenen-farben), L.6), damit
 Pakete wie Commitr und Ribbon (Issue #80) eine farbige Leiste neben hellem Inhalt haben können.
-**Vorgeschlagen 2026-10-15:** Design, Schrift und Farbschema getrennt wählbar
-([unten](#design-schrift-und-farbschema-getrennt), L.18–L.29).
+**Geplant 2026-10-20 (Issue #189):** Design, Schrift und Farbschema getrennt wählbar, jedes aus einem eigenen Ordner
+([unten](#design-schrift-und-farbschema-getrennt), L.18–L.30).
 
 ## Worum es geht
 
@@ -263,65 +263,94 @@ Tastenbelegung, Anordnung (Stufe 2).
 
 ## Ein Paket bauen
 
-Am Beispiel **Plex** (`designs/plex/` im Repository, Aufgabe L.5): IBM Plex Sans, mehr Luft, ein ruhiger
-Petrol-Akzent. Die Suite legt ihre Beispiele (Plex, Dracula, Commitr, Ribbon) in den Design-Ordner, der Dienst beim
-Start, die Steuerzentrale bei „Open designs folder“. Jedes Beispiel wird **einmal angeboten** (L.10): Die versteckte
-Datei `.torro-examples` im Ordner hält fest, welche schon da waren, und eine neue Fassung der Suite legt nur Beispiele
-nach, die dort noch nicht stehen und für die es keinen Ordner gleichen Namens gibt. Ein gelöschtes oder geändertes
-Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dateien stecken in `torroworkplace`
-(`src/designs.rs`), nicht im Kern, damit nicht jede App die Schriften mitschleppt.
+Seit Aufgabe L.20 besteht ein Aussehen aus drei Teilen in drei Ordnern ([Drei Ordner](#drei-ordner)): einem
+**Design** (die Form), einer **Schrift** und einem **Farbschema**. Am Beispiel **Plex** (Aufgabe L.5): IBM Plex Sans,
+mehr Luft, ein ruhiger Petrol-Akzent, im Repository `designs/plex/`, `fonts/plex/` und `color-schemes/plex/`.
+
+| Ordner | Datei | trägt | dazu |
+|---|---|---|---|
+| `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `color_scheme`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | `preview.png` |
+| `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
+| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg` |
+
+Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird für sich geprüft. Wer nur einen Teil
+ändern will, legt nur dessen Ordner an: ein eigenes Farbschema braucht kein Design und keine Schrift.
+
+Die Suite legt ihre Beispiele in dieselben drei Ordner im Datenordner, der Dienst beim Start, die Steuerzentrale bei
+„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Design, Schrift und Farbschema, Nord,
+Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema. Jedes Beispiel wird **einmal angeboten**
+(L.10): Die versteckte Datei `.torro-examples` in jedem der drei Ordner hält fest, welche schon da waren, und eine neue
+Fassung der Suite legt nur Beispiele nach, die dort noch nicht stehen und für die es keinen Ordner gleichen Namens gibt.
+Jeder Ordner führt seine Liste für sich. Ein gelöschtes oder geändertes Beispiel bleibt gelöscht oder geändert;
+überschrieben wird nie etwas. Die Dateien stecken in `torroworkplace` (`src/designs.rs`), nicht im Kern, damit nicht
+jede App die Schriften mitschleppt.
 
 ### Schritte
 
-1. **Ordner anlegen:** `<data>/designs/<id>/`, `<id>` klein (`a-z`, `0-9`, `-`). Am schnellsten: Steuerzentrale ›
-   Appearance › Design › „Open designs folder“, dort `plex` kopieren und umbenennen.
-2. **`design.toml` beginnen:** `format = 1`, `[about]` mit `name` und `version`. Damit ist das Paket schon gültig – es
-   sieht aus wie Torro. Ab hier nur eintragen, was abweicht.
-3. **Schrift:** TTF/OTF nach `fonts/`, die Lizenz als `fonts/LICENSE.txt`, `font_license` in `[about]`.
-   `family` ist der Familienname in der Datei (Plex: „IBM Plex Sans“; die Schnitte Medium und SemiBold tragen ihn als
-   typografische Familie, das reicht). Jedes Gewicht, das eine Stufe nutzt, braucht eine Datei; Torro nutzt
-   regular, medium und semibold. **Ziffern:** Sind die Standardziffern verschieden breit (Inter), gehört eine Familie
-   mit festen Ziffern nach `[fonts.numbers]`. Plex braucht keine: Alle Ziffern sind in allen vier Schnitten gleich
-   breit (600 von 1000 Einheiten), `numbers` fällt auf `text` zurück.
-4. **Stufen und Abstände:** Plex setzt `body` und `body_strong` auf 14/22, `meta` auf 12/18, `title` 17/24,
-   `headline` 24/30, `display` 30/36; Radien `[2, 4, 6, 8]` (eckiger als Torro); `[layout]` inset 10, Seiten 32 × 40,
-   Paneele 20 × 20, Zeilen 0 × 20, Knöpfe 0 × 12, Gruppen 32, Elemente 10; `[size]` Zeile 44, zweizeilig 56,
+1. **Ordner anlegen:** `<data>/designs/<id>/`, `<data>/fonts/<id>/`, `<data>/color-schemes/<id>/`, `<id>` klein
+   (`a-z`, `0-9`, `-`), in allen dreien gleich, wenn sie zusammengehören. Am schnellsten: Steuerzentrale › Appearance ›
+   Design › „Open designs folder“, dort `plex` in allen drei Ordnern kopieren und umbenennen.
+2. **`design.toml` beginnen:** `format = 1`, `[about]` mit `name` und `version`. Damit ist das Design schon gültig –
+   es hat die Form von Torro. Mit `font = "<id>"` und `color_scheme = "<id>"` in `[about]` schlägt es Schrift und
+   Farbschema vor, gewählt wird getrennt. Ab hier nur eintragen, was abweicht.
+3. **Schrift:** `font.toml` mit `format = 1`, `license` (SPDX, Plex: `"OFL-1.1"`) und `[about]`; die TTF/OTF-Dateien
+   direkt in `fonts/<id>/`, die Lizenz als `LICENSE.txt` daneben. `family` ist der Familienname in der Datei (Plex:
+   „IBM Plex Sans“; die Schnitte Medium und SemiBold tragen ihn als typografische Familie, das reicht). Pflicht ist
+   nur `regular` von `[fonts.text]`; fehlt ein Gewicht, das ein Design nutzt, nimmt die Suite das nächste (Lato ohne
+   Medium zeichnet Medium als Regular). **Ziffern:** Sind die Standardziffern verschieden breit (Inter), gehört eine
+   Familie mit festen Ziffern nach `[fonts.numbers]`. Plex braucht keine: Alle Ziffern sind in allen vier Schnitten
+   gleich breit (600 von 1000 Einheiten), `numbers` fällt auf `text` zurück. **Größenausgleich:** von selbst aus der
+   x-Höhe (Plex 1,058: IBM Plex Sans wirkt bei gleicher Größe kleiner als Inter); `size_adjust` (0,85–1,25) setzt ihn
+   von Hand.
+4. **Stufen und Abstände (`design.toml`): Größen meinen Inter.** Die Suite multipliziert jede Größe mit dem
+   Größenausgleich der gewählten Schrift und rundet auf 0,5, nie unter 11. Wer eine Größe für die eigene Schrift im
+   Kopf hat, teilt sie durch deren Ausgleich: Plex will Text in IBM Plex Sans 14/22, im Design steht darum `body`
+   13/22 (13 × 1,058 = 13,75, gerundet 14). Weggelassene Stufen sind die von Torro, also auch für Inter gedacht; die
+   Beispiele tragen darum alle elf Stufen ein. Die Zeilenhöhe bleibt die des Designs, mindestens aber 1,2 × die
+   wirksame Größe; eine enge Stufe (Zeile unter 1,2 × Größe, Torro `display` 28/32) wird mit demselben Faktor kleiner
+   geschrieben, sonst wird sie lockerer. Plex: Radien `[2, 4, 6, 8]` (eckiger als Torro); `[layout]` inset 10, Seiten
+   32 × 40, Paneele 20 × 20, Zeilen 0 × 20, Knöpfe 0 × 12, Gruppen 32, Elemente 10; `[size]` Zeile 44, zweizeilig 56,
    Seitenleiste 30 und 248 breit, Gruppenkopf 36, Kopfleiste 48, Knöpfe 30/34/40, Stunde und Zeitachse 56.
-5. **Farben hell und dunkel:** Flächen (`bg` bis `menu`), Textstufen, Linien, Akzent mit `on_accent`. Plex dunkel:
-   `bg #0C1013`, `panel #12171B`, `selected #1B2226`, Text `#E3E8EB` / `#A9B4BB` / `#86929A`, Akzent `#3AA6A0` mit
-   dunkler Schrift `#03201E` (5,8:1). Hell: `bg #ECF0F1`, `panel #FFFFFF`, `selected #DEE5E8`, Text `#141B1F` /
-   `#475359` / `#59656C`, Akzent `#0C6B66` mit Weiß (6,3:1). Status- und Kalenderfarben bleiben die des Standards.
-6. **Logo:** `logo.svg` quadratisch mit `viewBox`, nur Formen, keine Verweise; es steht auf hellem und dunklem
-   Grund, also eine eigene Fläche mitbringen (Plex: Petrol-Quadrat mit drei weißen Balken). Ein `tray.svg` braucht es
-   nicht mehr: Das Tray-Symbol ist für alle Pakete gleich (Issue #114).
-7. **Vorschau:** `preview.png` höchstens 1200 × 800, am besten ein Ausschnitt des eigenen Demo-Fensters im
-   Seitenverhältnis 3 : 2 (Plex: 600 × 400, 60 KB).
-8. **Prüfen:** Steuerzentrale › Appearance › Design › „Reload“: Das Paket steht in der Liste, ungültig mit jedem Grund
-   in einer eigenen Zeile. Ansehen ohne die eigene Einstellung zu ändern: `torrocalendar --demo --design <id>` (ebenso
-   `torrotasks`, `torroinbox`, `torroworkplace ui`), mit `--appearance light` und `dark`.
+5. **Farben hell und dunkel (`color-scheme.toml`):** `format = 1`, `[about]`, dann Flächen (`bg` bis `menu`),
+   Textstufen, Linien, Akzent mit `on_accent`. Plex dunkel: `bg #0C1013`, `panel #12171B`, `selected #1B2226`, Text
+   `#E3E8EB` / `#A9B4BB` / `#86929A`, Akzent `#3AA6A0` mit dunkler Schrift `#03201E` (5,8:1). Hell: `bg #ECF0F1`,
+   `panel #FFFFFF`, `selected #DEE5E8`, Text `#141B1F` / `#475359` / `#59656C`, Akzent `#0C6B66` mit Weiß (6,3:1).
+   Status- und Kalenderfarben bleiben die des Standards.
+6. **Logo:** `color-schemes/<id>/logo.svg` und `[logo] mark = "logo.svg"`, quadratisch mit `viewBox`, nur Formen,
+   keine Verweise; es steht auf hellem und dunklem Grund, also eine eigene Fläche mitbringen (Plex: Petrol-Quadrat
+   mit drei weißen Balken). Das Logo gehört zum Farbschema, weil es in dessen Farben gezeichnet ist. Ein Tray-Symbol
+   gibt es nicht mehr: Es ist für alle gleich (Issue #114), `tray` in `[logo]` ist ein unbekannter Schlüssel.
+7. **Vorschau:** `designs/<id>/preview.png` höchstens 1200 × 800, am besten ein Ausschnitt des eigenen Demo-Fensters
+   im Seitenverhältnis 3 : 2 (Plex: 600 × 400, 60 KB). Sie zeigt die Form und gehört zum Design.
+8. **Prüfen:** Steuerzentrale › Appearance › Design › „Reload“: Das Design steht in der Liste, ungültig mit jedem
+   Grund in einer eigenen Zeile. Ansehen ohne die eigene Einstellung zu ändern: `torrocalendar --demo --design <id>`
+   (ebenso `torrotasks`, `torroinbox`, `torroworkplace ui`), mit `--appearance light` und `dark`; bis Aufgabe L.22
+   zeichnet das Design, Schrift und Farbschema derselben id.
 
 ### Häufige Fehler
 
 | Grund in der Steuerzentrale | Abhilfe |
 |---|---|
-| Unbekannter Schlüssel („Unknown setting …“) | Tippfehler; Namen wie in `torro_gui::theme::Palette` und `size`, z. B. `text_3`, `row_sidebar` |
+| Unbekannter Schlüssel („Unknown setting …“) | Tippfehler (Namen wie in `torro_gui::theme::Palette` und `size`, z. B. `text_3`, `row_sidebar`) oder ein Abschnitt in der falschen Datei: Farben und Logo gehören nach `color-scheme.toml`, Schriften nach `font.toml` |
+| Gehört nach `color-schemes/` bzw. `fonts/` | Ein `design.toml` ohne Form, aber mit Farben oder Schriften, ist ein altes reines Farb- oder Schriftpaket: in den richtigen Ordner verschieben |
 | `text_3` oder `error_text` unter 4,5:1 auf `selected` | `selected` ist die hellste Fläche im Dunkeln (die dunkelste im Hellen) und fällt zuerst durch. Bei Plex lag das Fehlerrot im Dunkeln erst bei 4,4:1 – `selected` wurde einen Hauch dunkler |
 | `on_accent` zu schwach | Heller Akzent → dunkle Schrift darauf, dunkler Akzent → Weiß. Ein Akzent, der im Dunkeln leuchtet, braucht meist dunkle Schrift |
 | Kante des Gewählten (`line_selected`) | muss mindestens dreimal so deutlich sein wie `line_strong` und schwächer als `focus_ring`; beim Ändern der Linien alle drei zusammen ansehen |
-| Gewicht ohne Datei | Eine Stufe nutzt `semibold`, aber `[fonts.text]` nennt keine SemiBold-Datei |
 | Familie stimmt nicht | `family` wie in der Datei, nicht wie der Dateiname („IBM Plex Sans“, nicht „IBMPlexSans“) |
-| Schrift ohne Lizenz | `fonts/LICENSE.txt` fehlt oder liegt woanders |
+| Schrift ohne Lizenz | `LICENSE.txt` fehlt in `fonts/<id>/` oder `license` in `font.toml` |
 | Logo nicht quadratisch, SVG mit Verweis | `viewBox="0 0 24 24"`; Bilder und Schriften nicht verlinken, sondern als Formen zeichnen |
 
-Nicht als Grund gemeldet, aber im Bild zu sehen: Höhere Zeilen in der Seitenleiste brauchen Platz. Die Seitenleiste
-des Kalenders rollt nicht; in niedrigen Fenstern schiebt sie dann „Settings“ unten aus dem Bild (gesehen mit
-Zeilen 32 bei 760 Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
+Nicht als Grund gemeldet, aber im Bild zu sehen: Größen, die für die eigene Schrift statt für Inter eingetragen sind,
+wirken um deren Ausgleich zu groß. Höhere Zeilen in der Seitenleiste brauchen Platz. Die Seitenleiste des Kalenders
+rollt nicht; in niedrigen Fenstern schiebt sie dann „Settings“ unten aus dem Bild (gesehen mit Zeilen 32 bei 760
+Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
 
 ## Design, Schrift und Farbschema getrennt
 
-> **Vorschlag 2026-10-15, noch nicht entschieden** (entschieden ist nur: die Schrift ist eine eigene, dritte Wahl,
-> nicht Teil des Designs). Aufgaben L.18–L.29 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
-> Entscheidung gilt alles oben unverändert.
+> **Plan zu Issue #189, Stand 2026-10-20.** Entschieden: die Schrift ist eine eigene, dritte Wahl (2026-10-15); drei
+> Ordner statt eines Pakets mit Abschnitten, die Seite Appearance wird kompakt mit Kacheln, keine Übernahme alter
+> Pakete und Einstellungen (2026-10-20). Aufgaben L.18–L.30 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
+> Umsetzung gilt alles oben unverändert.
 
 ### Warum
 
@@ -336,7 +365,7 @@ aus *d* Designs, *s* Schriften und *f* Farbschemata *d × s × f* Looks, ohne da
 |---|---|---|
 | **Design** | Schriftstufen (Rolle, Größe, Zeilenhöhe, Gewicht), Abstände, Radien, Layout-Abstände, Maße; später die Layout-Schalter (Stufe 2) | `Design`, „Design“ |
 | **Schrift** | die Familien der drei Rollen Text, Überschrift, Ziffern mit ihren Schnitten, dazu der Größenausgleich | `FontSet`, „Font“ |
-| **Farbschema** | alle Farbrollen hell und dunkel (Flächen, Text, Linien, Akzent, Status, Kalender, Diagramm, Seitenleiste) und das Logo | `ColorScheme`, „Colour scheme“ |
+| **Farbschema** | alle Farbrollen hell und dunkel (Flächen, Text, Linien, Akzent, Status, Kalender, Diagramm, Seitenleiste) und das Logo | `ColorScheme`, „Color scheme“ |
 | **Aussehen** | Design + Schrift + Farbschema + Modus (hell, dunkel, System) | `Appearance`, „Appearance“ (heißt die Seite schon) |
 
 Nicht „Layout“ für das Design: Das Wort gehört schon Stufe 2 und 3. Nicht „Theme“: Bei Iced meint es die Farben,
@@ -377,7 +406,7 @@ deshalb Text in 14 statt 13. Getrennt übernimmt das der Kern mit drei Regeln:
 
 **Ziffern in der Zeitachse** sind die eine Stelle, an der Breite zählt: `00:00` in `numbers` muss in `axis` passen.
 Darum gilt für jede Schrift eine Höchstbreite der Ziffern (in em, nach Ausgleich), für jedes Design eine Mindestbreite
-der Zeitachse für genau diese Höchstbreite. Die Grenze wird in L.18 an den Beispielschriften gemessen (breiteste plus
+der Zeitachse für genau diese Höchstbreite. Die Grenze wird in L.19 an den Beispielschriften gemessen (breiteste plus
 Spielraum). Breite Schriften kürzen Beschriftungen in Listen eher mit „…“; das ist zu sehen, aber nicht kaputt.
 
 ### Warum das Logo zum Farbschema gehört
@@ -387,41 +416,49 @@ Dracula: violettes Quadrat). Ein violettes Logo über Nord-Farben passt nicht. O
 bisher das „T“ auf dem Akzent des Farbschemas. Die Vorschau `preview.png` zeigt die Form und gehört zum Design;
 Schriften zeigt die Steuerzentrale als Schriftprobe, Farbschemata als Farbmuster.
 
-### Ein Paket
+### Drei Ordner
 
-Ein Paket bleibt ein Ordner unter `designs/<id>/` mit `design.toml`, **`format = 1` bleibt**: Jedes heutige Paket ist
-weiter gültig. Was es mitbringt, ergibt sich aus seinen Abschnitten:
+Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Unterordner mit einer Datei und `format = 1`:
 
-| Das Paket hat … (mindestens einen) | … und bringt damit |
-|---|---|
-| `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | ein **Design** |
-| `[fonts.*]` | eine **Schrift** |
-| `[colors.*]`, `[logo]` | ein **Farbschema** |
-| nur `[about]` | ein Design (gleich Torro) |
+| Ordner | Datei | bringt | dazu |
+|---|---|---|---|
+| `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | ein **Design** | `preview.png` |
+| `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
+| `color-schemes/<id>/` | `color-scheme.toml`: `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg` |
 
-- Mehrere Teile tragen dieselbe id. Torro ist alle drei.
-- Neu und optional in `[about]`: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das Farbschema, die zum
-  Design gedacht sind. Fehlt ein Schlüssel und bringt das Paket den Teil selbst, ist es der eigene. Nur Vorschläge,
-  gewählt wird getrennt.
-- Ein Paket, das eine Regel bricht, wird **ganz** abgelehnt, mit allen Teilen, wie bisher.
-- In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), darunter das Paket („Plex“).
-- **Beispiele aufräumen** (L.22): Dracula und Everforest verlieren `[radius]` und sind reine Farbschemata. Plex,
-  Commitr, Channelr, Guildr, Quattro und Ribbon bleiben alle drei Teile; ihre `[type.*]`-Größen werden auf Inter
+- Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
+  stehen (Commitr in allen dreien). `torro` ist alle drei, eingebaut, ohne Ordner.
+- Neu und optional im `[about]` eines Designs: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das
+  Farbschema, die zum Design gedacht sind. Nur Vorschläge, gewählt wird getrennt.
+- Jeder Teil wird für sich geprüft und für sich abgelehnt.
+- Ein Tray-Symbol gibt es im neuen Format nicht mehr: Der Tray zeichnet immer das rote Raster (Issue #114).
+- In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), im Tooltip der Name aus
+  `[about]` („Plex“).
+- **Beispiele im Repository** liegen genauso in `designs/`, `fonts/` und `color-schemes/` (L.20): Nord, Solarized,
+  Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschemata (Dracula und Everforest verlieren `[radius]`); Plex,
+  Commitr, Channelr, Guildr, Quattro und Ribbon in allen drei Ordnern, ihre `[type.*]`-Größen auf Inter
   zurückgerechnet (geteilt durch den Ausgleich ihrer Schrift), damit sie mit der eigenen Schrift so groß bleiben wie
-  heute. Kopien in Design-Ordnern der Nutzer werden wie immer nicht angefasst; ein altes Plex wirkt dort mit seiner
-  eigenen Schrift eine Spur größer als vorher.
+  heute. Jeder Ordner hat seine eigene `.torro-examples`; in einem neu angelegten Ordner gelten die ids aus
+  `designs/.torro-examples` als schon angeboten, damit ein gelöschtes Beispiel nicht als Farbschema wiederkommt.
+
+### Keine Übernahme alter Pakete
+
+Es gibt noch keine ausgelieferte Version (Entscheidung 2026-10-20). Darum übernimmt die Suite weder alte
+Komplettpakete noch alte Einstellungen: In `designs/` sind `[fonts.*]`, `[colors.*]` und `[logo]` unbekannte Schlüssel
+wie jeder andere, und `font` und `color_scheme` beginnen mit `torro`. Wer noch einen Ordner `designs/` von vorher hat,
+benennt ihn einmal um oder löscht ihn; beim nächsten Start legt die Suite die Beispiele in alle drei Ordner.
 
 ### Wählen
 
 - Drei Einstellungen: `design` (gibt es), neu `font` und `color_scheme`, alle mit `torro` als Standard.
-- **Übernahme alter Einstellungen**, einmal beim Lesen, für `font` und `color_scheme` je für sich, wenn es fehlt:
-  Bringt das gewählte Paket den Teil mit, wird er gewählt, sonst `torro`. Commitr → Commitr/Commitr/Commitr (sieht aus wie
-  vorher), Nord → Torro/Torro/Nord.
-- **Steuerzentrale**, General › Appearance, untereinander: Modus · **Design** (`preview.png` oder drei Probezeilen in
-  den Abständen des Designs) · **Font** (je Zeile eine Probe „Aa 09:41 The quick brown fox“ in der Schrift) ·
-  **Colour scheme** (Farbmuster aus `bg`, `panel`, `accent`, `text` im aktuellen Modus und Logo).
+- **Steuerzentrale**, Appearance, kompakt untereinander (Entwurf in Issue #189): **Color mode** als Segment mit
+  Symbolen (Bildschirm, Sonne, Mond) · **Design** · **Font** · **Color scheme** · Interface. Die drei Wahlen sind
+  Raster kleiner Kacheln: Design mit `preview.png` oder Farbmuster, Font mit „Aa 09“ in der Schrift, Color scheme mit
+  Streifen aus `bg`, `panel`, `accent`, `text` im aktuellen Modus. Name unter der Kachel, Version und Autor im Tooltip,
+  die gewählte umrandet mit Häkchen. Unbrauchbare sind ausgegraut mit Warnsymbol; ein Klick zeigt ihre Gründe unter dem
+  Raster. Jede Gruppe hat „Open … folder“ rechts in der Überschrift.
 - Ein Design wählen ändert Schrift und Farbschema **nicht**. Schlägt das gewählte Design andere vor als die aktiven,
-  steht in deren Liste „Suggested for Commitr“ (ein Klick wählt sie).
+  trägt deren Kachel die Marke „Suggested“ (Tooltip „Suggested for Commitr“, ein Klick wählt sie).
 - Ungültige Teile, Wechsel ohne Wartezeit und Rückfall auf Torro gelten für alle drei wie unten beschrieben. Ein
   Wechsel der Schrift lädt Schriften (`iced::font::load`), ein Wechsel von Design oder Farbschema nicht.
 
@@ -429,12 +466,13 @@ weiter gültig. Was es mitbringt, ergibt sich aus seinen Abschnitten:
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Designs auflisten | Appearance › Design | `settings.list_designs` · Read (gibt es; listet nur noch Pakete mit Design, neue Felder `font` und `colorScheme` mit den Vorschlägen) | `settings_list_designs` |
+| Designs auflisten | Appearance › Design | `settings.list_designs` · Read (gibt es; listet nur `designs/`, neue Felder `font` und `colorScheme` mit den Vorschlägen) | `settings_list_designs` |
 | Design wählen | Appearance › Design | `settings.set_setting { key: design }` · Admin (gibt es; eine id ohne Design wird mit Hinweis auf `font`/`color_scheme` abgelehnt) | `settings_set_setting` |
 | Schriften auflisten (id, Familie, Paket, Version, Autor, Lizenz, Standard, gültig, Gründe, aktiv) | Appearance › Font | neu `settings.list_fonts` · Read | neu `settings_list_fonts` |
 | Schrift wählen | Appearance › Font | `settings.set_setting { key: font }` · Admin | `settings_set_setting` |
-| Farbschemata auflisten (id, Name, Version, Autor, Beschreibung, Standard, gültig, Gründe, aktiv) | Appearance › Colour scheme | neu `settings.list_color_schemes` · Read | neu `settings_list_color_schemes` |
-| Farbschema wählen | Appearance › Colour scheme | `settings.set_setting { key: color_scheme }` · Admin | `settings_set_setting` |
+| Farbschemata auflisten (id, Name, Version, Autor, Beschreibung, Standard, gültig, Gründe, aktiv) | Appearance › Color scheme | neu `settings.list_color_schemes` · Read | neu `settings_list_color_schemes` |
+| Farbschema wählen | Appearance › Color scheme | `settings.set_setting { key: color_scheme }` · Admin | `settings_set_setting` |
+| Ordner öffnen | „Open … folder“ je Gruppe | – (lokale Aktion der Steuerzentrale wie heute „Open designs folder“) | – |
 | Gewählte lesen | – | `settings.get_settings` · Read (Felder `design`, `font`, `colorScheme`) | `settings_get_settings` |
 
 Verträglich nach `docs/api.md`: neue Befehle, neue Schlüssel, neue Felder. Dass `list_designs` reine Schriften und
@@ -443,9 +481,10 @@ Fehler, der ihn zu `font` oder `color_scheme` schickt, je nachdem, was das Paket
 
 ### Technik
 
-- **`torro_core::design`:** `Design` verliert `fonts`, `colors` und `logo`. Neu `FontSet { id, about, fonts, size_adjust }`
-  und `ColorScheme { id, about, colors, logo }`, je mit `standard()`. `load` liefert das Design eines Pakets, neu
-  `load_font` und `load_color_scheme`; `list` meldet je Paket seine Teile. Wirksame Stufen (Größenausgleich, Ersatz
+- **`torro_core::design`:** `Design` verliert `fonts`, `colors` und `logo`, `About` verliert `font_license`. Neu
+  `FontSet { id, about, license, fonts, size_adjust }` und `ColorScheme { id, about, colors, logo }`, je mit
+  `standard()`. Neben `dir()` (`designs/`) neu `font_dir()` und `color_scheme_dir()`; je Ordner `load`/`list`,
+  `load_font`/`list_fonts`, `load_color_scheme`/`list_color_schemes`. Wirksame Stufen (Größenausgleich, Ersatz
   der Gewichte) rechnet der Kern: `Selection { design, font, scheme }` mit `level(name)`, damit Kern, Steuerzentrale und
   Tests dasselbe sehen.
 - **`torro_gui`:** drei aktive Teile statt einem (`design::active()`, `font::active()`, `scheme::active()`).

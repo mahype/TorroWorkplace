@@ -193,6 +193,21 @@ impl Drop for SearchSlot<'_> {
     }
 }
 
+/// The listing of the part folder `dir` by `list` (designs, fonts or colour schemes, tasks L.3 and
+/// L.22). Without a home directory only the standard exists; a folder that is not there lists just
+/// that.
+fn listed_in<T>(
+    dir: Option<&std::path::Path>,
+    list: fn(&std::path::Path) -> Vec<torro_core::design::Listed<T>>,
+) -> Vec<torro_core::design::Listed<T>> {
+    list(dir.unwrap_or(std::path::Path::new("")))
+}
+
+/// Why a listed part can't be used, one sentence per reason, for people.
+fn problems_of<T>(listed: &torro_core::design::Listed<T>) -> Vec<String> {
+    listed.problems().iter().map(ToString::to_string).collect()
+}
+
 /// The answer to a client that runs [`MAX_SEARCHES`] searches already.
 fn too_many_searches() -> Response {
     Response::Error {
@@ -3009,6 +3024,8 @@ impl Core {
             Request::TestVoice => self.test_voice().await,
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::ListDesigns => Response::Designs { designs: self.list_designs() },
+            Request::ListFonts => Response::Fonts { fonts: self.list_fonts() },
+            Request::ListColorSchemes => Response::ColorSchemes { color_schemes: self.list_color_schemes() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
             Request::RemoveAccount { id } => self.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
@@ -5498,21 +5515,16 @@ impl Core {
         self.backend.events().await
     }
 
-    /// `settings.list_designs` (task L.3): every design pack with what the control centre and
-    /// agents need to choose one. Packs hold no secrets, so every reader sees all of them.
+    /// `settings.list_designs` (task L.3): every design with what the control centre and agents
+    /// need to choose one, with the font and colour scheme it suggests (task L.22). Packs hold no
+    /// secrets, so every reader sees all of them.
     fn list_designs(&self) -> Vec<torro_ipc::DesignInfo> {
         let chosen = self.settings.current().design;
-        let listed = match self.settings.designs() {
-            Some(dir) => torro_core::design::list(dir),
-            // Without a home directory only the standard exists; a folder that is not there
-            // lists just that.
-            None => torro_core::design::list(std::path::Path::new("")),
-        };
-        listed
+        listed_in(self.settings.designs(), torro_core::design::list)
             .into_iter()
             .map(|pack| torro_ipc::DesignInfo {
                 valid: pack.valid(),
-                problems: pack.problems().iter().map(ToString::to_string).collect(),
+                problems: problems_of(&pack),
                 active: pack.id == chosen,
                 id: pack.id,
                 name: pack.about.name,
@@ -5520,6 +5532,52 @@ impl Core {
                 author: pack.about.author,
                 description: pack.about.description,
                 standard: pack.standard,
+                font: pack.about.font,
+                color_scheme: pack.about.color_scheme,
+            })
+            .collect()
+    }
+
+    /// `settings.list_fonts` (task L.22): every font with its family and licence, like
+    /// [`Core::list_designs`].
+    fn list_fonts(&self) -> Vec<torro_ipc::FontInfo> {
+        let chosen = self.settings.current().font;
+        listed_in(self.settings.fonts(), torro_core::design::list_fonts)
+            .into_iter()
+            .map(|font| {
+                let found = font.result.as_ref().ok();
+                torro_ipc::FontInfo {
+                    family: found.map(|set| set.fonts.text.family.clone()),
+                    license: found.map(|set| set.license.clone()),
+                    valid: font.valid(),
+                    problems: problems_of(&font),
+                    active: font.id == chosen,
+                    id: font.id,
+                    name: font.about.name,
+                    version: font.about.version,
+                    author: font.about.author,
+                    description: font.about.description,
+                    standard: font.standard,
+                }
+            })
+            .collect()
+    }
+
+    /// `settings.list_color_schemes` (task L.22): every colour scheme, like [`Core::list_designs`].
+    fn list_color_schemes(&self) -> Vec<torro_ipc::ColorSchemeInfo> {
+        let chosen = self.settings.current().color_scheme;
+        listed_in(self.settings.color_schemes(), torro_core::design::list_color_schemes)
+            .into_iter()
+            .map(|scheme| torro_ipc::ColorSchemeInfo {
+                valid: scheme.valid(),
+                problems: problems_of(&scheme),
+                active: scheme.id == chosen,
+                id: scheme.id,
+                name: scheme.about.name,
+                version: scheme.about.version,
+                author: scheme.about.author,
+                description: scheme.about.description,
+                standard: scheme.standard,
             })
             .collect()
     }
@@ -6754,7 +6812,7 @@ mod tests {
         let designs = settings_file(dir.path()).with_file_name("designs");
         for (id, toml) in [
             ("teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.2.0\"\nauthor = \"Anna\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[size]\nrow = 20\n"),
         ] {
             std::fs::create_dir_all(designs.join(id)).expect("pack folder");
             std::fs::write(designs.join(id).join("design.toml"), toml).expect("design.toml");
@@ -6770,7 +6828,7 @@ mod tests {
         assert_eq!(ids, ["torro", "pale", "teal"], "the standard first, then by folder name");
         assert!(listed[0].standard && listed[0].valid && listed[0].active);
         assert!(!listed[1].valid && !listed[1].problems.is_empty(), "{:?}", listed[1]);
-        assert!(listed[1].problems.iter().any(|problem| problem.contains("colors.dark.text")));
+        assert!(listed[1].problems.iter().any(|problem| problem.contains("size.row")));
         assert_eq!((listed[2].name.as_str(), listed[2].version.as_str()), ("Teal", "1.2.0"));
         assert_eq!(listed[2].author.as_deref(), Some("Anna"));
         assert!(listed[2].valid && listed[2].problems.is_empty() && !listed[2].standard);
@@ -6783,6 +6841,80 @@ mod tests {
         let active: Vec<String> =
             list(core.handle(Request::ListDesigns).await).into_iter().filter(|d| d.active).map(|d| d.id).collect();
         assert_eq!(active, ["teal"]);
+    }
+
+    /// `settings.list_fonts` and `settings.list_color_schemes` (task L.22): the standard first, then
+    /// each folder, valid or with its reasons, the chosen one marked; designs name what they suggest.
+    /// Reading is enough to list, choosing takes `Admin`; an id of another folder names its key.
+    #[tokio::test]
+    async fn fonts_and_colour_schemes_are_listed_and_chosen_by_admins_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let data = settings_file(dir.path()).with_file_name("");
+        let write = |folder: &str, id: &str, file: &str, toml: &str| {
+            let at = data.join(folder).join(id);
+            std::fs::create_dir_all(&at).expect("part folder");
+            let head = format!("format = 1\n[about]\nname = \"{id}\"\nversion = \"1.0.0\"\nauthor = \"Anna\"\n");
+            std::fs::write(at.join(file), head + toml).expect("toml");
+        };
+        write("fonts", "plain", "font.toml", "");
+        write("fonts", "lost", "font.toml", "[fonts.text]\nfamily = \"Lost\"\nregular = \"Lost.ttf\"\n");
+        write("color-schemes", "nord", "color-scheme.toml", "");
+        write("color-schemes", "murky", "color-scheme.toml", "[colors.dark]\ntext = \"#151515\"\n");
+        write("designs", "airy", "design.toml", "");
+        let airy = data.join("designs").join("airy").join("design.toml");
+        let text = std::fs::read_to_string(&airy).expect("design.toml");
+        let suggesting =
+            text.replace("author = \"Anna\"\n", "author = \"Anna\"\nfont = \"plain\"\ncolor_scheme = \"nord\"\n");
+        std::fs::write(&airy, suggesting).expect("design.toml");
+
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let Response::Fonts { fonts } = ask(&core, Some(&reader), Request::ListFonts).await else { panic!("fonts") };
+        let ids: Vec<&str> = fonts.iter().map(|font| font.id.as_str()).collect();
+        assert_eq!(ids, ["torro", "lost", "plain"], "the standard first, then by folder name");
+        assert!(fonts[0].standard && fonts[0].valid && fonts[0].active);
+        assert_eq!((fonts[0].family.as_deref(), fonts[0].license.as_deref()), (Some("Inter"), Some("OFL-1.1")));
+        assert!(!fonts[1].valid && fonts[1].problems.iter().any(|p| p.contains("Lost.ttf")), "{:?}", fonts[1]);
+        assert_eq!((fonts[1].family.as_deref(), fonts[1].license.as_deref()), (None, None), "unknown when broken");
+        assert!(fonts[2].valid && !fonts[2].active && fonts[2].author.as_deref() == Some("Anna"));
+        let Response::ColorSchemes { color_schemes } = ask(&core, Some(&reader), Request::ListColorSchemes).await
+        else {
+            panic!("colour schemes")
+        };
+        let ids: Vec<&str> = color_schemes.iter().map(|scheme| scheme.id.as_str()).collect();
+        assert_eq!(ids, ["torro", "murky", "nord"]);
+        assert!(!color_schemes[1].valid && !color_schemes[1].problems.is_empty());
+        assert!(color_schemes[2].valid && color_schemes[2].version == "1.0.0");
+        let Response::Designs { designs } = core.handle(Request::ListDesigns).await else { panic!("designs") };
+        let airy = designs.iter().find(|design| design.id == "airy").expect("listed");
+        assert_eq!((airy.font.as_deref(), airy.color_scheme.as_deref()), (Some("plain"), Some("nord")));
+        assert!(designs.iter().all(|design| design.id != "nord"), "only designs");
+
+        let choose = |key, id: &str| Request::SetSetting { key, value: serde_json::json!(id) };
+        assert_eq!(code(&ask(&core, Some(&reader), choose(SettingKey::Font, "plain")).await), "forbidden");
+        assert_eq!(code(&core.handle(choose(SettingKey::Font, "lost")).await), "error", "a broken font");
+        let Response::Error { message, .. } = core.handle(choose(SettingKey::Design, "nord")).await else {
+            panic!("nord is no design")
+        };
+        assert!(message.contains("color_scheme"), "names the right key: {message}");
+        assert_eq!(core.handle(choose(SettingKey::Font, "plain")).await, Response::Ok);
+        assert_eq!(core.handle(choose(SettingKey::ColorScheme, "nord")).await, Response::Ok);
+        let chosen = settings(&core).await;
+        assert_eq!(
+            (chosen.design.as_str(), chosen.font.as_str(), chosen.color_scheme.as_str()),
+            ("torro", "plain", "nord")
+        );
+        let Response::Fonts { fonts } = core.handle(Request::ListFonts).await else { panic!("fonts") };
+        assert_eq!(fonts.iter().filter(|font| font.active).map(|font| font.id.as_str()).collect::<Vec<_>>(), ["plain"]);
+
+        // A client that does not know the new fields sends settings without them: they stay.
+        let sent = serde_json::json!({"method": "settings.update_settings", "settings": {"appearance": "dark"}});
+        let request: Request = serde_json::from_value(sent).expect("a request");
+        let rights = RightsTemplate::FullAccess.rights();
+        assert_eq!(core.handle_within(request, Reach::Client(&rights)).await, Response::Ok);
+        let kept = settings(&core).await;
+        assert_eq!((kept.font.as_str(), kept.color_scheme.as_str()), ("plain", "nord"));
+        assert_eq!(kept.appearance, torro_core::theme::Appearance::Dark);
     }
 
     #[tokio::test]
@@ -15489,13 +15621,14 @@ mod tests {
         }
     }
 
-    /// Reads conversation `id` until `done` holds for its state, at most four seconds.
+    /// Reads conversation `id` until `done` holds for its state, at most twenty seconds: a turn that sets a PDF
+    /// takes well under a second on its own, but a full `cargo test --workspace` in debug can starve it for seconds.
     async fn conversation_until(
         core: &Core,
         id: &str,
         done: impl Fn(bool, &[torro_ipc::assistant::Entry]) -> bool,
     ) -> Vec<torro_ipc::assistant::Entry> {
-        for _ in 0..800 {
+        for _ in 0..4000 {
             let Response::Conversation { conversation, entries } =
                 core.handle(Request::GetConversation { id: id.into(), after: None }).await
             else {

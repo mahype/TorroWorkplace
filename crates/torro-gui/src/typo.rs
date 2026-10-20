@@ -1,8 +1,9 @@
 //! The type scale: every piece of text in the apps uses one of these levels.
 //!
-//! The levels come from the active design ([`crate::design`]); the standard design gives the values
-//! of the design skill (`.claude/skills/torro-design`, section 3). A level fixes size, absolute line
-//! height and font cut together, so text lines up on the same grid everywhere and apps never write
+//! The levels come from the active design as drawn in the active font ([`crate::design`]: the design's
+//! sizes, meant for Inter, times the font's size adjustment, and the nearest weight the font has); the
+//! standard gives the values of the design skill (`.claude/skills/torro-design`, section 3). A level
+//! fixes size, absolute line height and font cut together, so text lines up on the same grid everywhere and apps never write
 //! `.size(…)` by hand. The base size is 13 in the standard, as in Linear; a larger interface comes
 //! from Iced's `scale_factor` (the zoom), never from other sizes. Hierarchy comes from the
 //! level *and* the colour (`text` → `text_2` → `text_3`); colour stays the caller's choice and
@@ -38,7 +39,7 @@ pub struct Level {
 }
 
 impl Level {
-    /// The same level with tabular figures (the design's `numbers` font, "Inter Tabular" in the
+    /// The same level with tabular figures (the font's `numbers` family, "Inter Tabular" in the
     /// standard), for digits that change: clocks, time axes, counters, dates in columns. Keeps size
     /// and line height.
     ///
@@ -50,14 +51,17 @@ impl Level {
     }
 }
 
-/// The level `pick` chooses from the active design's type scale.
+/// The level `pick` chooses from the active design's type scale, as drawn in the active font
+/// (`torro_core::design::Selection::level`).
 fn level(pick: fn(&design::TypeScale) -> design::Level) -> Level {
-    let level = crate::design::with(|t| pick(&t.design.typo));
-    Level {
-        size: Pixels(level.size),
-        line_height: LineHeight::Absolute(Pixels(level.line)),
-        font: crate::design::font(level.font, level.weight),
-    }
+    crate::design::with(|t| {
+        let level = pick(&t.drawn);
+        Level {
+            size: Pixels(level.size),
+            line_height: LineHeight::Absolute(Pixels(level.line)),
+            font: t.font(level.font, level.weight),
+        }
+    })
 }
 
 /// 11/14, Regular, always tabular: the calendar's time axis, times inside events, weekday
@@ -88,12 +92,12 @@ pub fn body_strong() -> Level {
 pub fn read() -> Level {
     level(|t| t.read)
 }
-/// 16/22, SemiBold: card and dialog titles (the design's heading font).
+/// 16/22, SemiBold: card and dialog titles (the font's heading family).
 pub fn title() -> Level {
     level(|t| t.title)
 }
 /// 22/28, SemiBold: detail titles ("Review API concept"), view titles without a header bar (the
-/// design's heading font).
+/// font's heading family).
 pub fn headline() -> Level {
     level(|t| t.headline)
 }
@@ -103,12 +107,12 @@ pub fn display() -> Level {
 }
 
 /// 48/56, SemiBold: the title of a reminder over the whole screen (task ER1.5), two lines at most;
-/// nowhere else (the design's heading font).
+/// nowhere else (the font's heading family).
 pub fn hero() -> Level {
     level(|t| t.hero)
 }
 /// 28/32, Medium, tabular: the countdown of a reminder over the whole screen ("Starts in 4:32"),
-/// and the clock beside it (the design's numbers font).
+/// and the clock beside it (the font's numbers family).
 pub fn countdown() -> Level {
     level(|t| t.countdown)
 }

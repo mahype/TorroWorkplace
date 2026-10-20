@@ -1,0 +1,64 @@
+# Everforest – after the open Everforest colour scheme (task L.16): soft forest greens on warm,
+# muted surfaces, dark and light ("medium" contrast of the original).
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Everforest"
+version = "1.0.0"
+author = "Torro, after Everforest by sainnhe (MIT)"
+description = "The Everforest colour scheme: soft forest green on warm, muted surfaces"
+
+# The scheme's colours wherever they pass the rules. Moved for contrast: in dark mode the second
+# and third text colour, the error red; in light mode the text colours (the scheme's #5C6A72 is
+# soft), the accent green (white text on it), attention, error and the calendar colours, a shade
+# darker.
+[colors.dark]
+bg = "#232A2E"
+panel = "#2D353B"
+raised = "#323C41"
+hover = "#343F44"
+selected = "#3D484D"
+menu = "#343F44"
+text = "#E2D9C0"
+text_2 = "#D3C6AA"
+text_3 = "#ACB7AF"
+line = "#D3C6AA14"
+line_strong = "#D3C6AA24"
+line_selected = "#D3C6AA5C"
+focus_ring = "#83C092"
+accent = "#A7C080"
+on_accent = "#232A2E"
+ok = "#A7C080"
+attention = "#DBBC7F"
+error = "#EDA0A1"
+merged = "#D699B6"
+calendar = ["#7FBBB3", "#A7C080", "#E69875", "#D699B6", "#83C092"]
+night = "#283035"
+
+[colors.light]
+bg = "#EFEBD4"
+panel = "#FDF6E3"
+raised = "#F8F2DE"
+hover = "#F4F0D9"
+selected = "#E6E2CC"
+menu = "#FDF6E3"
+text = "#2F3B41"
+text_2 = "#46535A"
+text_3 = "#59666E"
+line = "#5C6A7217"
+line_strong = "#5C6A7229"
+line_selected = "#5C6A7270"
+focus_ring = "#3588B4"
+accent = "#6D7D01"
+on_accent = "#FFFFFF"
+ok = "#7D8E01"
+attention = "#B88800"
+error = "#D63F3C"
+merged = "#DA51AF"
+calendar = ["#388EBE", "#7D8E01", "#DC620A", "#DA51AF", "#309770"]
+night = "#F2EDD5"
+
+# A pine tree on forest green.
+[logo]
+mark = "logo.svg"

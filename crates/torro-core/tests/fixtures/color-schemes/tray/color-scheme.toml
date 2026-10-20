@@ -1,0 +1,9 @@
+# Broken: a tray symbol is not part of the format any more (issue #114).
+format = 1
+
+[about]
+name = "Tray"
+version = "1.0.0"
+
+[logo]
+tray = "tray.svg"

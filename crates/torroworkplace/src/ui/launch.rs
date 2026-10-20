@@ -21,9 +21,9 @@ use torro_ipc::api::{
     Selection,
 };
 use torro_ipc::{
-    AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, ServerService, ServiceState,
-    Status, TorroMailAccount,
+    AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, ColorSchemeInfo,
+    DesignInfo, FolderChoice, FontInfo, IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request,
+    Response, ServerService, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -31,7 +31,7 @@ use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
-use super::general::Pack;
+use super::general::{DesignEntry, Entry, FontEntry, Lists, SchemeEntry};
 use super::wizard;
 use super::{Appearance, Data, Section};
 use crate::account::ntfy::NtfyAccountError;
@@ -136,7 +136,8 @@ pub enum Open {
     ConnectClientDone,
     /// "Connect client" with the key of a new "Other MCP client" and its command, shown once.
     ConnectClientOther,
-    /// Appearance › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
+    /// Appearance with the demo's designs, fonts and colour schemes ([`demo_looks`]), one of each
+    /// broken; the design "Harbor" is chosen, so its suggestions are marked.
     Design,
     /// The first-run setup at this step (task W.4), with the demo's sample data.
     Setup(super::setup::Step),
@@ -257,7 +258,7 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
-/// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
+/// - `--design <id>`, `--font <id>`, `--color-scheme <id>`: draw with this design, font or colour scheme (task L.22, each from its own folder) instead of the stored one (task L.3); needs
 ///   `--demo`. An id that is not a valid pack is refused with the valid ones.
 /// - `--setup`: open the first-run setup (task W.4, `docs/einrichtung.md`) instead of a section;
 ///   `--step <step>` starts it at that step (needs `--setup` or `--setup-if-open`). The core opens
@@ -274,6 +275,11 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
+    /// `--font <id>` (task L.22): draw with this font instead of the stored one; needs `--demo`.
+    pub font: Option<String>,
+    /// `--color-scheme <id>` (task L.22): draw with this colour scheme instead of the stored one;
+    /// needs `--demo`.
+    pub color_scheme: Option<String>,
     /// `--setup`: the step the setup starts at; `None` without the setup.
     pub setup: Option<super::setup::Step>,
     /// `--setup-if-open`: [`Launch::setup`] only while the setup is not done (task W.9).
@@ -289,6 +295,8 @@ impl Default for Launch {
             open: None,
             appearance: None,
             design: None,
+            font: None,
+            color_scheme: None,
             setup: None,
             setup_if_open: false,
         }
@@ -338,6 +346,15 @@ fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a s
 }
 
 impl Launch {
+    /// `--design`, `--font` and `--color-scheme` for `torro_gui::design::start` (task L.22).
+    pub fn forced(&self) -> torro_gui::design::Forced {
+        torro_gui::design::Forced {
+            design: self.design.clone(),
+            font: self.font.clone(),
+            color_scheme: self.color_scheme.clone(),
+        }
+    }
+
     /// Reads the start parameters from `args` (the words after `ui`).
     pub fn parse(args: &[String]) -> Result<Launch, LaunchError> {
         let demo = args.iter().any(|arg| arg == "--demo");
@@ -375,15 +392,21 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
-        let design = match flag_value(args, "--design")? {
-            None => None,
-            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
-            Some(id) if torro_gui::design::is_choice(id) => Some(id.to_owned()),
-            Some(id) => {
-                let valid = torro_gui::design::choices();
-                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+        // `--design`, `--font` and `--color-scheme` each take the valid ids of their own folder (task L.22).
+        let part = |flag: &'static str, part: torro_gui::design::Part| -> Result<Option<String>, LaunchError> {
+            match flag_value(args, flag)? {
+                None => Ok(None),
+                Some(_) if !demo => Err(LaunchError::NeedsDemo(flag)),
+                Some(id) if torro_gui::design::is_choice(part, id) => Ok(Some(id.to_owned())),
+                Some(id) => {
+                    let valid = torro_gui::design::choices(part);
+                    Err(unknown(flag, id, valid.iter().map(String::as_str).collect()))
+                }
             }
         };
+        let design = part("--design", torro_gui::design::Part::Design)?;
+        let font = part("--font", torro_gui::design::Part::Font)?;
+        let color_scheme = part("--color-scheme", torro_gui::design::Part::ColorScheme)?;
         let setup_if_open = args.iter().any(|arg| arg == "--setup-if-open");
         let asked = args.iter().any(|arg| arg == "--setup") || setup_if_open;
         let setup = match (asked, flag_value(args, "--step")?) {
@@ -395,7 +418,7 @@ impl Launch {
                     .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
             ),
         };
-        Ok(Launch { section, client, demo, open, appearance, design, setup, setup_if_open })
+        Ok(Launch { section, client, demo, open, appearance, design, font, color_scheme, setup, setup_if_open })
     }
 }
 
@@ -425,12 +448,39 @@ fn is_bot_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= torro_ipc::assistant::MAX_ID_BYTES && id.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
-/// The design packs of `--demo` (Appearance › Design, task L.4), in memory like all its data: the
-/// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
-/// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
-/// samples use Inter, the only font the demo has without a folder.
-pub fn demo_designs() -> Vec<Pack> {
-    use torro_core::design::{Design, DesignError, Mode, Rgba};
+/// What the demo's samples say about themselves: name, version, author "Torro samples" and a
+/// description.
+fn sample_about(name: &str, version: &str, description: &str) -> torro_core::design::About {
+    torro_core::design::About {
+        name: name.into(),
+        version: version.into(),
+        author: Some("Torro samples".into()),
+        description: Some(description.into()),
+        ..torro_core::design::About::default()
+    }
+}
+
+/// The designs, fonts and colour schemes of `--demo` (Appearance, tasks L.4 and L.23), in memory like
+/// all its data, each list with the standard first, samples that can be chosen and are drawn at
+/// once, and one that breaks rules and says so:
+///
+/// - designs: "Harbor" (the standard's form under its own name, so the demo can show it chosen
+///   without changing the window; it suggests the font "Tabular" and the colour scheme "Harbor"),
+///   "Paper" (rounder and roomier, suggests the colour scheme "Paper"), "Neon" (broken);
+/// - fonts: "Tabular" (Inter's tabular cut as text font: the only other family the demo has without
+///   a folder), "Brush" (broken);
+/// - colour schemes: "Harbor" (teal accent, cool surfaces), "Paper" (warm light surfaces, blue
+///   accent), "Neon" (broken).
+///
+/// A part `--design`, `--font` or `--color-scheme` names (read from its folder at start, so it is the
+/// active one) joins its list after the samples, so its tile carries the check mark.
+pub fn demo_looks() -> Lists {
+    Lists { designs: Ok(demo_designs()), fonts: Ok(demo_fonts()), schemes: Ok(demo_schemes()) }
+}
+
+/// The designs of [`demo_looks`].
+fn demo_designs() -> Vec<DesignEntry> {
+    use torro_core::design::{Design, DesignError, Radius, Space};
     let info = |design: &Design| DesignInfo {
         id: design.id.clone(),
         name: design.about.name.clone(),
@@ -441,31 +491,130 @@ pub fn demo_designs() -> Vec<Pack> {
         valid: true,
         problems: Vec::new(),
         active: false,
+        font: design.about.font.clone(),
+        color_scheme: design.about.color_scheme.clone(),
     };
-    let pack = |id: &str, name: &str, version: &str, description: &str| {
-        let mut design = Design::standard();
-        design.id = id.into();
-        design.about.name = name.into();
-        design.about.version = version.into();
-        design.about.author = Some("Torro samples".into());
-        design.about.description = Some(description.into());
-        design
+    let sample = |id: &str, about| Design { id: id.into(), about, ..Design::standard() };
+    let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "The standard's form, own suggestions"));
+    (harbor.about.font, harbor.about.color_scheme) = (Some("tabular".into()), Some("harbor".into()));
+    let mut paper = sample("paper", sample_about("Paper", "0.9.1", "Rounder and roomier"));
+    paper.about.color_scheme = Some("paper".into());
+    paper.radius = Radius { xs: 6.0, sm: 8.0, md: 10.0, lg: 14.0 };
+    paper.space = Space { xs: 6.0, s: 10.0, m: 14.0, l: 20.0, xl: 28.0, xxl: 40.0 };
+    let neon = DesignInfo {
+        id: "neon".into(),
+        name: "Neon".into(),
+        version: "0.3.0".into(),
+        author: Some("Torro samples".into()),
+        description: None,
+        standard: false,
+        valid: false,
+        problems: [
+            DesignError::OutOfRange { key: "type.body.size".into(), value: 9.0, min: 11.0, max: 20.0 },
+            DesignError::LineHeight { key: "type.caption".into(), line: 12.0, size: 14.0 },
+            DesignError::UnknownKey { key: "space.xxxl".into() },
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect(),
+        active: false,
+        font: None,
+        color_scheme: None,
     };
-    let mut harbor = pack("harbor", "Harbor", "1.2.0", "Teal accent, cool surfaces");
+    let mut designs: Vec<Design> = vec![Design::standard(), harbor, paper];
+    let forced = torro_gui::design::active();
+    if !designs.iter().any(|design| design.id == forced.id) {
+        designs.push((*forced).clone());
+    }
+    let mut entries: Vec<DesignEntry> =
+        designs.into_iter().map(|design| Entry::design(info(&design), Some(design))).collect();
+    entries.push(Entry::design(neon, None));
+    entries
+}
+
+/// The fonts of [`demo_looks`].
+fn demo_fonts() -> Vec<FontEntry> {
+    use torro_core::design::{DesignError, FontSet};
+    let info = |font: &FontSet| FontInfo {
+        id: font.id.clone(),
+        family: Some(font.fonts.text.family.clone()),
+        name: font.about.name.clone(),
+        version: font.about.version.clone(),
+        author: font.about.author.clone(),
+        description: font.about.description.clone(),
+        license: Some(font.license.clone()),
+        standard: font.is_standard(),
+        valid: true,
+        problems: Vec::new(),
+        active: false,
+    };
+    let standard = FontSet::standard();
+    let figures = standard.fonts.numbers.clone();
+    let mut tabular = FontSet {
+        id: "tabular".into(),
+        about: sample_about("Tabular", "1.0.0", "Inter with tabular figures"),
+        ..FontSet::standard()
+    };
+    (tabular.fonts.text, tabular.fonts.heading) = (figures.clone(), figures);
+    let brush = FontInfo {
+        id: "brush".into(),
+        family: None,
+        name: "Brush".into(),
+        version: "0.2.0".into(),
+        author: Some("Torro samples".into()),
+        description: None,
+        license: None,
+        standard: false,
+        valid: false,
+        problems: [
+            DesignError::MissingFile { key: "fonts.text.regular".into(), path: "Brush-Regular.ttf".into() },
+            DesignError::FontLicense,
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect(),
+        active: false,
+    };
+    let mut fonts = vec![standard, tabular];
+    let forced = torro_gui::font::active();
+    if !fonts.iter().any(|font| font.id == forced.id) {
+        fonts.push((*forced).clone());
+    }
+    let mut entries: Vec<FontEntry> = fonts.into_iter().map(|font| Entry::new(info(&font), Some(font))).collect();
+    entries.push(Entry::new(brush, None));
+    entries
+}
+
+/// The colour schemes of [`demo_looks`].
+fn demo_schemes() -> Vec<SchemeEntry> {
+    use torro_core::design::{ColorScheme, DesignError, Mode, Rgba};
+    let info = |scheme: &ColorScheme| ColorSchemeInfo {
+        id: scheme.id.clone(),
+        name: scheme.about.name.clone(),
+        version: scheme.about.version.clone(),
+        author: scheme.about.author.clone(),
+        description: scheme.about.description.clone(),
+        standard: scheme.is_standard(),
+        valid: true,
+        problems: Vec::new(),
+        active: false,
+    };
+    let sample = |id: &str, about| ColorScheme { id: id.into(), about, ..ColorScheme::standard() };
+    let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "Teal accent, cool surfaces"));
     let dark = &mut harbor.colors.dark;
     (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x0A0E10), Rgba::hex(0x101518), Rgba::hex(0x151B1F));
     (dark.accent, dark.on_accent) = (Rgba::hex(0x14B8A6), Rgba::hex(0x042F2C));
     let light = &mut harbor.colors.light;
     (light.bg, light.panel) = (Rgba::hex(0xEEF3F4), Rgba::hex(0xFFFFFF));
     (light.accent, light.on_accent) = (Rgba::hex(0x0B7A72), Rgba::hex(0xFFFFFF));
-    let mut paper = pack("paper", "Paper", "0.9.1", "Warm paper, ink blue");
+    let mut paper = sample("paper", sample_about("Paper", "0.9.1", "Warm paper, ink blue"));
     let dark = &mut paper.colors.dark;
     (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x12100D), Rgba::hex(0x1A1714), Rgba::hex(0x201C18));
     (dark.accent, dark.on_accent) = (Rgba::hex(0x7C9CF5), Rgba::hex(0x0B1530));
     let light = &mut paper.colors.light;
     (light.bg, light.panel, light.raised) = (Rgba::hex(0xF3EEE4), Rgba::hex(0xFFFCF6), Rgba::hex(0xF8F4EC));
     (light.accent, light.on_accent) = (Rgba::hex(0x2A4FC4), Rgba::hex(0xFFFFFF));
-    let neon = DesignInfo {
+    let neon = ColorSchemeInfo {
         id: "neon".into(),
         name: "Neon".into(),
         version: "0.3.0".into(),
@@ -483,10 +632,15 @@ pub fn demo_designs() -> Vec<Pack> {
         .collect(),
         active: false,
     };
-    let mut packs: Vec<Pack> =
-        [Design::standard(), harbor, paper].into_iter().map(|design| Pack::new(info(&design), Some(design))).collect();
-    packs.push(Pack::new(neon, None));
-    packs
+    let mut schemes = vec![ColorScheme::standard(), harbor, paper];
+    let forced = torro_gui::scheme::active();
+    if !schemes.iter().any(|scheme| scheme.id == forced.id) {
+        schemes.push((*forced).clone());
+    }
+    let mut entries: Vec<SchemeEntry> =
+        schemes.into_iter().map(|scheme| Entry::new(info(&scheme), Some(scheme))).collect();
+    entries.push(Entry::new(neon, None));
+    entries
 }
 
 /// The entry the core lists while a Nextcloud sign-in runs (empty id, the login link), for the
@@ -1534,6 +1688,15 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
         let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
         assert_eq!(launch.design.as_deref(), Some("torro"));
+
+        // Task L.22: a font and a colour scheme of their own, each from its folder, also only with the demo.
+        let parts = Launch::parse(&args(&["--demo", "--font", "torro", "--color-scheme", "torro"])).expect("standards");
+        assert_eq!((parts.font.as_deref(), parts.color_scheme.as_deref()), (Some("torro"), Some("torro")));
+        assert_eq!((parts.forced().design, parts.forced().font.as_deref()), (None, Some("torro")));
+        assert_eq!(Launch::parse(&args(&["--font", "torro"])), Err(LaunchError::NeedsDemo("--font")));
+        assert_eq!(Launch::parse(&args(&["--color-scheme", "torro"])), Err(LaunchError::NeedsDemo("--color-scheme")));
+        let unknown = Launch::parse(&args(&["--demo", "--color-scheme", "no-such-scheme"])).expect_err("unknown");
+        assert!(unknown.to_string().contains("--color-scheme"), "{unknown}");
     }
 
     #[test]

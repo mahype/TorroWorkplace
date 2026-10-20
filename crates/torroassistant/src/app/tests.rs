@@ -106,7 +106,7 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
             other => Err(Refusal::unexpected(&other)),
         })),
         Request::Settings => Message::Settings(result.and_then(|response| match response {
-            Response::Settings { settings } => Ok(settings),
+            Response::Settings { settings } => Ok(Box::new(settings)),
             other => Err(Refusal::unexpected(&other)),
         })),
         Request::ListBots => Message::Bots(result.and_then(|response| match response {
@@ -445,7 +445,7 @@ fn a_new_chat_starts_with_the_default_of_the_control_centre() {
         effort: Some(torro_core::ai::Effort::Low),
     };
     let settings = Settings { assistant_default: Some(default), ..Settings::default() };
-    let _ = app.update(Message::Settings(Ok(settings)));
+    let _ = app.update(Message::Settings(Ok(Box::new(settings))));
     assert_eq!(app.choice, Some(Choice { engine: CLAUDE_CODE.into(), model: Some("sonnet".into()) }));
     assert_eq!(app.effort, Some(torro_core::ai::Effort::Low));
 }

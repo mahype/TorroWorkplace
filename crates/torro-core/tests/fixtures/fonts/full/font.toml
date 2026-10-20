@@ -1,0 +1,25 @@
+# Every key the format knows, with valid values (Inter is copied in by the test).
+format = 1
+license = "OFL-1.1"
+size_adjust = 1.0
+
+[about]
+name = "Full"
+version = "2.1.0"
+author = "Torro tests"
+description = "Every key set once"
+
+[fonts.text]
+family = "Inter"
+regular = "Inter-Regular.ttf"
+medium = "Inter-Medium.ttf"
+semibold = "Inter-SemiBold.ttf"
+
+[fonts.heading]
+family = "Inter"
+semibold = "Inter-SemiBold.ttf"
+
+[fonts.numbers]
+family = "Inter Tabular"
+regular = "InterTabular-Regular.ttf"
+medium = "InterTabular-Medium.ttf"

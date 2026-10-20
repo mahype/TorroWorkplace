@@ -1,82 +1,53 @@
-# Quattro – inspired by Google Workspace and Material 3 (task L.14, issue #80): soft surfaces, the
-# blue selection pill, large radii, Roboto Flex, Google's colours for calendars. Not Google's name
-# or logo. Everything left out here comes from the standard design "Torro".
+# Quattro – inspired by Google Workspace and Material 3 (task L.14, issue #80): large radii, made for
+# the font and colour scheme of the same name. Not Google's name or logo. Everything left out here
+# comes from the standard design "Torro".
 format = 1
 
 [about]
 name = "Quattro"
 version = "1.0.0"
 author = "Torro"
-description = "Inspired by Google Workspace: Material 3 surfaces, blue pills, Roboto Flex"
-font_license = "OFL-1.1"
+description = "Inspired by Google Workspace: Material 3's large radii"
+font = "quattro"
+color_scheme = "quattro"
 
-# Roboto Flex (google/fonts, SIL OFL 1.1): static cuts of the variable font. Its figures are
-# tabular already.
-[fonts.text]
-family = "Roboto Flex"
-regular = "fonts/RobotoFlex-Regular.ttf"
-medium = "fonts/RobotoFlex-Medium.ttf"
-semibold = "fonts/RobotoFlex-SemiBold.ttf"
-bold = "fonts/RobotoFlex-Bold.ttf"
-
+# Body 14 in Roboto Flex.
+# Sizes here are meant for Inter (task L.20): the sizes the pack had in Roboto Flex, divided by the
+# font's size adjustment 1.063, so they look as before in their own font. Every level is set,
+# because a level left out would be the standard's, meant for Inter too.
+[type.micro]
+size = 11
+line = 14
+[type.caption]
+size = 11.5
+line = 16
+[type.meta]
+size = 11.5
+line = 16
 [type.body]
-size = 14
+size = 13
 line = 20
 [type.body_strong]
-size = 14
+size = 13
 line = 20
+[type.read]
+size = 13
+line = 22
+[type.title]
+size = 15
+line = 22
+[type.headline]
+size = 20.5
+line = 28
+[type.display]
+size = 26.5
+line = 30.5
+[type.hero]
+size = 45
+line = 52.5
+[type.countdown]
+size = 26.5
+line = 30.5
 
 [radius]
 scale = [6, 10, 14, 16]
-
-# Material 3 colours of Gmail and Calendar; dark mode with M3's light-blue primary.
-
-[colors.light]
-bg = "#F6F8FC"
-panel = "#FFFFFF"
-raised = "#F8FAFD"
-hover = "#EEF2F9"
-selected = "#D3E3FD"
-menu = "#FFFFFF"
-text = "#1F1F1F"
-text_2 = "#444746"
-text_3 = "#575A59"
-line = "#1F1F1F14"
-line_strong = "#1F1F1F26"
-line_selected = "#1F1F1F6B"
-focus_ring = "#0B57D0"
-accent = "#0B57D0"
-on_accent = "#FFFFFF"
-ok = "#1E8E3E"
-attention = "#B06000"
-error = "#D93025"
-merged = "#8430CE"
-calendar = ["#1A73E8", "#1E8E3E", "#B06000", "#D93025", "#8430CE"]
-night = "#EEF2FA"
-
-[colors.dark]
-bg = "#131314"
-panel = "#1E1F20"
-raised = "#242527"
-hover = "#282A2C"
-selected = "#2E3A4E"
-menu = "#2A2B2D"
-text = "#E3E3E3"
-text_2 = "#C4C7C5"
-text_3 = "#ABAEAD"
-line = "#FFFFFF14"
-line_strong = "#FFFFFF24"
-line_selected = "#FFFFFF5C"
-focus_ring = "#A8C7FA"
-accent = "#A8C7FA"
-on_accent = "#062E6F"
-ok = "#6DD58C"
-attention = "#FDD663"
-error = "#F28B82"
-merged = "#D7AEFB"
-calendar = ["#8AB4F8", "#81C995", "#FDD663", "#F28B82", "#D7AEFB"]
-night = "#1A1C22"
-
-[logo]
-mark = "logo.svg"
-tray = "tray.svg"
