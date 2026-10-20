@@ -43,7 +43,7 @@ use torro_ntfy::NtfyError;
 pub enum Open {
     /// Accounts without any account (task S.30): every group with only its sentence and "Add".
     AccountsEmpty,
-    /// Accounts with the provider AI chosen (task S.37): its accounts, "Add" and the data rule.
+    /// The AI section with its accounts, "Add" and the data rule.
     AccountsAi,
     /// The add-account dialog as Nextcloud's "Add" opens it: the server address.
     WizardNextcloud,
@@ -244,7 +244,7 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`: the page to
+/// - `--section overview|accounts|ai|api|mcp|approvals|workspaces|appearance|general`: the page to
 ///   start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section accounts`). The words of pages
 ///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `apps` and
@@ -1522,7 +1522,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, api, mcp, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, apps, inbox"
+                "valid values: overview, accounts, ai, api, mcp, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, apps, inbox"
             ),
             "{err}"
         );

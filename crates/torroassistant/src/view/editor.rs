@@ -357,7 +357,7 @@ impl App {
         row![preview, widgets::chip_row(chips)].spacing(space::l()).align_y(Alignment::Center).into()
     }
 
-    /// The engine and model, chosen in the picker, with "Turned off in Settings › Accounts" beside
+    /// The engine and model, chosen in the picker, with "Turned off in Settings › AI" beside
     /// a model that is off (task S.26: the bot answers with "Automatic" then); without any engine,
     /// where to add one, and with AI accounts but no model on, where to turn one on.
     fn engine_choice<'a>(&'a self, draft: &'a BotDraft, anchors: &Anchors) -> Element<'a, Message> {
@@ -369,8 +369,7 @@ impl App {
                 // model than the one shown, which is worth noticing, not only reading.
                 let off = self.turned_off(choice).then(|| {
                     let mark = tinted(Icon::CircleAlert, icon::SIZE, |p| p.attention_text);
-                    let words =
-                        widgets::ellipsized(typo::meta(), tr("Turned off in Settings › Accounts"), theme::text_3);
+                    let words = widgets::ellipsized(typo::meta(), tr("Turned off in Settings › AI"), theme::text_3);
                     row![mark, words].spacing(space::xs()).align_y(Alignment::Center)
                 });
                 row![picker].push(off).spacing(space::s()).align_y(Alignment::Center).into()

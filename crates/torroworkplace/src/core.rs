@@ -5686,7 +5686,7 @@ impl Core {
     /// reads it.
     async fn models_off_message(&self, engine: &str) -> String {
         let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
-        trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)])
+        trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &provider)])
     }
 
     /// `unsupported` for `ai.set_assignment` (task S.24, #231) when the model `model` of the AI
@@ -5710,7 +5710,7 @@ impl Core {
                 }
                 let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
                 trf(
-                    "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+                    "“{model}” of {provider} is turned off. Turn it on in Settings › AI.",
                     &[("model", &listed.name), ("provider", &provider)],
                 )
             }
@@ -5720,7 +5720,7 @@ impl Core {
             None if decides && models.iter().any(|listed| listed.enabled) => {
                 let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
                 trf(
-                    "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+                    "No model of {provider} that decides is on. Turn one on in Settings › AI.",
                     &[("provider", &provider)],
                 )
             }
@@ -15168,7 +15168,7 @@ mod tests {
         let off = Response::Error {
             code: "unsupported".into(),
             message: trf(
-                "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+                "“{model}” of {provider} is turned off. Turn it on in Settings › AI.",
                 &[("model", &"nimble"), ("provider", &provider)],
             ),
         };
@@ -15200,7 +15200,7 @@ mod tests {
         // No model named and none on at the account: refused with the sentence of task S.24.
         let none_on = Response::Error {
             code: "unsupported".into(),
-            message: trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)]),
+            message: trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &provider)]),
         };
         assert_eq!(core.handle(set(None, true)).await, none_on);
 
@@ -15209,7 +15209,7 @@ mod tests {
         let none_decides = Response::Error {
             code: "unsupported".into(),
             message: trf(
-                "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+                "No model of {provider} that decides is on. Turn one on in Settings › AI.",
                 &[("provider", &provider)],
             ),
         };
@@ -16929,7 +16929,7 @@ mod tests {
             bot: None,
         };
         let label = core.ai.label_of(&account.id).await.expect("a label");
-        let off = trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &label)]);
+        let off = trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &label)]);
         assert_eq!(core.handle(send).await, Response::Error { code: "unsupported".into(), message: off.clone() });
         let asked = Request::AskBot { bot: automatic.id.clone(), text: "Hello".into(), conversation: None };
         assert_eq!(core.handle(asked).await, Response::Error { code: "unsupported".into(), message: off.clone() });
