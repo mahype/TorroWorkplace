@@ -373,17 +373,19 @@ im Eingang, nur die Oberfläche teilt sich auf.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
 
-### Zwei Dichten
+### Dichte
 
-Jedes Fenster hat oben rechts **Compact | Comfortable**, gemerkt je Fenster und mit der Workspace-Vorlage
-wiederhergestellt (`--density`).
+Wie dicht die Einträge stehen, gehört zum **Aussehen der Suite** und bestimmt deshalb das Design
+(`torro_core::design::Density`, Schlüssel `layout.density` im Paket-Format, Issue #226). Es gilt an einer Stelle für
+alle Fenster, nicht je Fenster neu: keinen Umschalter oben rechts, keinen Startschalter, nichts Gemerktes. Unser
+Design „Torro“ zeigt **kompakt**.
 
 - **Compact** ist der Stand bis E3.11: eine Zeile je Eintrag, Aktionen an der Zeile unter Maus oder Cursor. Gut
-  für kleine Kacheln.
+  für kleine Kacheln. Alle mitgelieferten Designs zeigen so.
 - **Comfortable** zeigt **Karten**: mehr Abstand, Vorschau über zwei bis drei Zeilen, Chips (Anhang, „Answer by
   Fri“), und **alle Knöpfe immer sichtbar**, nicht erst beim Überfahren. Vorbild für Mail ist Canary Mail. Lesetext
-  im Leser 14/22 (neue Schriftstufe).
-- Mini und Leiste bleiben Anzeigen wie bisher.
+  im Leser 14/22 (neue Schriftstufe). Karten zeigt nur ein Design-Paket mit `layout.density = "comfortable"`.
+- Das Design entscheidet in jeder Größenklasse; Mini und Leiste bleiben Anzeigen ohne Dichte.
 
 ### Knöpfe je Eintrag
 
@@ -581,7 +583,7 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
 | **E5 Nextcloud, GitHub, ntfy** | drei Quellen ohne Firmenfreigabe | E1 |
 | **E6 Ruhe und Ordnung** | Screener, Lernen, Fokus mit dem Kalender, Sammelmeldung, Zusammenführen über Quellen | E4 |
 | **E7 Slack** | Assistent „eigene Slack-App“, Socket Mode | E1 |
-| **E8 Drei Fenster** | Mail, Benachrichtigungen, Zentrale; zwei Dichten; Verwerfen, Stummschalten nach Merkmal, Aufgabe mit Rückbezug, Insights, „Go to window“ am Mac | E3, E4 |
+| **E8 Drei Fenster** | Mail, Benachrichtigungen, Zentrale; Dichte (seit #226 ein Wert des Designs, E13); Verwerfen, Stummschalten nach Merkmal, Aufgabe mit Rückbezug, Insights, „Go to window“ am Mac | E3, E4 |
 | später | Mitlesen von Desktop-Benachrichtigungen (Linux), Beeper, GitLab/Linear, Teams, Zusammenfassungen durch ein Modell, Tagesplan | |
 
 E1 bis E3 brauchen weder Mail noch eine fremde Anmeldung und machen schon den Agenten-Alltag
@@ -609,7 +611,7 @@ dazukommt.
 | # | Frage | Entscheidung |
 |---|---|---|
 | 12 | Aufteilung | **Drei Fenster:** Mail, Benachrichtigungen, Inbox als Zentrale, aus einem Programm (siehe [Drei Fenster](#drei-fenster-entschieden-2026-10-13)). Ändert Weg A (Nr. 2) nur in der Oberfläche |
-| 13 | Dichte | **Zwei Ansichten je Fenster:** kompakt wie bisher und luftig mit Karten und immer sichtbaren Knöpfen |
+| 13 | Dichte | **Ein Wert des Designs** (#226, E13): kompakt wie bisher, oder luftig mit Karten und immer sichtbaren Knöpfen – an einer Stelle für alle Fenster, nicht je Fenster gewählt. Zuerst (E8.2) war es eine Wahl je Fenster |
 | 14 | Verwerfen | **Auf jeder Benachrichtigung**, nicht im Mail-Fenster, nicht bei Freigaben |
 | 15 | Aufgabe | **Aus jeder Nachricht und jeder Mail**, der Bezug bleibt erhalten, auch in Nextcloud |
 | 16 | Stummschalten | **Nach Quelle, Absender, Unterhaltung, Kanal oder Art**, für eine Zeit oder immer |

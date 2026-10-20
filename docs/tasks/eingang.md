@@ -702,8 +702,7 @@ E8.9   unabhängig (torro-wm, core.rs)
 
 1. **E8.1:** `torro_core::app::AppId` bekommt Startargumente (z. B. `args: &'static [&'static str]`), und es gibt
    drei Einträge `INBOX_MAIL`, `INBOX_NOTIFICATIONS`, `INBOX` mit den Fensterklassen `torro-inbox-mail`,
-   `torro-inbox-notifications` und `torro-inbox`. Startargumente `--view mail|notifications|hub` und
-   `--density compact|comfortable`.
+   `torro-inbox-notifications` und `torro-inbox`. Startargument `--view mail|notifications|hub`.
 2. **E8.6a:** `Item` bekommt Merkmale (`facets`, optional, `#[serde(default)]`), `Rule` bekommt Merkmal, Ablauf
    (`until`) und Wirkung (`NoPopup | Info | Hide`); neue Requests `inbox.list_mute_options` und `inbox.mute_item`
    mit `scope: conversation | facet { key }`; `inbox.set_item_done` bekommt das optionale Feld `dismissed`.
@@ -784,6 +783,8 @@ E8.9   unabhängig (torro-wm, core.rs)
   schon, Karten nutzen ihn mit `state_pill`; `typo::all()` bleibt bei acht Stufen; Galerie `-- --cards`, auch
   `--design <id>`; Sichtprüfung am Mac: Galerie dunkel, hell, Plex; Inbox nur Breit, Mittel/Schmal ließ sich ohne
   Hyprland nicht einstellen)
+- **Nachtrag E13 (Issue #226, 2026-10-19):** Umschalter, `--density` und `density` in `ui.json` sind weggefallen –
+  die Dichte gehört zum Design (`torro_core::design::Density`, `layout.density` im Paket); die Bausteine bleiben.
 - **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{design.rs,design/rules.rs}`,
   `crates/torro-gui/src/{typo,theme,widgets,ui_state}.rs`, `crates/torro-gui/examples/gallery.rs`,
   `crates/torroinbox/src/{main,app}.rs`, `.claude/skills/torro-design/SKILL.md`, `docs/design-pakete.md`
@@ -2081,7 +2082,7 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/ap
   ohne den Umschalter.
 
 ### E13.4 Dokumente und Skill: die Dichte gehört zum Design
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** E13.2 · **Dateien:** `docs/eingang.md`, `docs/settings.md`,
   `docs/tasks/eingang.md`, `.claude/skills/torro-design/SKILL.md`
 - **`docs/eingang.md`:** Abschnitt „Zwei Dichten“ wird „Dichte“: ein Wert des Designs für die ganze Suite, „Torro“

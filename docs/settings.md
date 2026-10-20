@@ -18,8 +18,9 @@ gibt es **genau einmal**, hinter dem Zahnrad der App im selben Fenster; die Steu
 noch einmal, sie verweist nur hin. Einzige Ausnahme ist die Einrichtung beim ersten Start, die das Nötigste
 (Kalender, Listen, Quellen, neue Chats) einmal abfragt.
 
-Was eine App nur für ein Fenster merkt (Seitenleiste, Dichte, Breite, Reihenfolge der Anzeige), ist keine
+Was eine App nur für ein Fenster merkt (Seitenleiste, Breite, Reihenfolge der Anzeige), ist keine
 Einstellung und erscheint nirgends in den Einstellungen (`ui.json`, siehe [Bestand](#bestand-stand-2026-10-16)).
+Die Dichte des Eingangs gehört seit Issue #226 nicht mehr dazu: Sie ist ein Wert des Designs (`layout.density`).
 
 Die Apps haben keine eigenen Kontoeinstellungen. Fehlt ihnen ein Konto, zeigen sie einen Hinweis mit dem
 Knopf „Open Settings“, der die Steuerzentrale an der richtigen Stelle öffnet.
@@ -520,7 +521,7 @@ Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder
 | `--settings <abschnitt>` | öffnet eine App mit offenen Einstellungen | alle Apps (S.18–S.20) | bleibt; kein Request, nur ein Startwort |
 | `--demo` | Beispieldaten statt Dienst, schreibt nichts | alle | bleibt (Sichtprüfung) |
 | `--appearance light\|dark\|system`, `--design <id>` | überschreibt `appearance` bzw. `design` für dieses Fenster (`--design` nur mit `--demo`) | alle | bleibt (Sichtprüfung) |
-| `--density`, `--mail-view`, `--mail-colors` | überschreiben Dichte, `mailView` und `mailAppearance` für dieses Fenster | Eingang, Mail | bleibt (Sichtprüfung) |
+| `--mail-view`, `--mail-colors` | überschreiben `mailView` und `mailAppearance` für dieses Fenster | Eingang, Mail | bleibt (Sichtprüfung) |
 | `--view`, `--lane`, `--source`, `--account`, `--open`, `--size`, `--now`, `--task` | wählen Fensterart, Ausschnitt, Größe und Zeitpunkt | Apps | bleibt, keine Einstellung |
 | `--reminders`, `--all-displays`, `--monitors`, `--cover` | das Erinnerungsfenster, das der Kern selbst startet (`torrocalendar::reminder`) | Kalender | bleibt, keine Einstellung |
 
@@ -531,8 +532,9 @@ am 2026-10-16 auf Accounts (Befund 1) und öffnet seit S.18–S.21 die Einstellu
 ### Kein Einstellungs-Ort
 
 Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine API und bleibt in der App: `sidebar`
-(alle Apps), `lastRepo` (Aufgaben), `unfolded`, `density` (Compact/Comfortable), `order` (Newest/Oldest first),
-`split` (Breite der Liste), `recentSearches` (alle im Eingang). Ebenso nur im Speicher: Ansicht des Kalenders
+(alle Apps), `lastRepo` (Aufgaben), `unfolded`, `order` (Newest/Oldest first),
+`split` (Breite der Liste), `recentSearches` (alle im Eingang). Ein `density` aus älteren Versionen wird nicht mehr
+gelesen oder geschrieben (Issue #226), bleibt aber in der Datei stehen. Ebenso nur im Speicher: Ansicht des Kalenders
 (Day … Radar), Filter der Aufgaben, Spalten und Kacheln des Eingangs, „By app/By time“, Suchumfang.
 
 ### Befunde
@@ -561,7 +563,7 @@ Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine AP
 9. **Abweichungen Konzept–Code:** S.15 („All rules“) ist gebaut, aber nicht abgehakt. Das Konzept nennt die Seite
    „Inbox“, die Oberfläche „Notification Hub“. Das Eingangs-Programm hat drei Fensterarten (Notification Hub, App
    Feed, Mail), das Konzept kennt Eingang und Mail. `ai-models.json` gibt es noch nicht (kommt mit S.24). Im
-   Mail-Fenster wird die Listenbreite (`split`) auch mit `--demo` gespeichert, anders als `density` und `order`.
+   Mail-Fenster wird die Listenbreite (`split`) auch mit `--demo` gespeichert, anders als `order`.
 
 **Entwürfe der neuen Struktur (S.28):** https://claude.ai/artifact/5pp7TeLH386QHgp9aHisMy (A · Gespiegelt, B · Schlanke
 Zentrale, C · Nach Themen). Gewählt wird mit dem Kommentar „Entscheidung Struktur“ an #210.
