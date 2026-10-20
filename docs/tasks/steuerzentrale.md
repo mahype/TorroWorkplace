@@ -1006,7 +1006,7 @@ Beide ändern `ui/accounts.rs` und laufen nacheinander, S.36 zuerst.
   Id; Suche nach Id und nach Name. fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.37 Accounts: Anbieter links, Konten des gewählten Anbieters rechts
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS in Breit und Mittel; Schmal nicht, die Fenstergröße ließ sich nicht erzwingen)
 - **Modell:** Opus · **Braucht:** S.36 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`,
   `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/launch.rs`,
   `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`

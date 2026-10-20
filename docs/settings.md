@@ -60,7 +60,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | Abschnitt | Inhalt | |
 |---|---|---|
 | **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
-| **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, AI, ntfy), je Gruppe „Add“; Detailseite je Konto: Status, Verbindung, Dienste, bei KI-Konten die Modelle mit Schaltern, Entfernen. Siehe [Accounts, API und MCP](#accounts-api-und-mcp-231) | v1, neu geordnet mit #231 (S.30, S.31) |
+| **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, AI, ntfy): die Anbieter links, rechts die Konten des gewählten mit seinem Satz darüber und „Add“ (#244); Detailseite je Konto: Status, Verbindung, Dienste, bei KI-Konten die Modelle mit Schaltern, Entfernen. Siehe [Accounts, API und MCP](#accounts-api-und-mcp-231) | v1, neu geordnet mit #231 (S.30, S.31) |
 | **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
 | **MCP** | Ob Agenten Torro über MCP nutzen dürfen; die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub | #231 (S.35) |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
@@ -318,6 +318,12 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
 - **Feste Gruppen**, immer sichtbar, in dieser Reihenfolge: **Nextcloud**, **Mail** (mit den CalDAV-Konten
   eines Mail-Anbieters, Art `caldav`), **GitHub**, **AI**, **ntfy**. Eine leere Gruppe sagt in einem Satz, was
   hierher gehört („Add a Nextcloud for calendars and tasks.“), statt zu verschwinden.
+- **Anbieter links, Konten rechts** (#244, S.37): Die Gruppen stehen als Anbieter in einer Spalte am linken
+  Rand des Inhalts (Breit mit Namen und Zahl, Mittel nur mit Symbolen, Schmal als Chips über der Liste); das
+  Symbol färbt sich, wenn ein Konto Aufmerksamkeit braucht oder einen Fehler hat. Rechts steht nur der gewählte
+  Anbieter: Name, darunter der Satz, was hierher gehört, dann seine Konten und „Add“. Ohne Wahl ist der erste
+  Anbieter mit Konto gewählt; das Öffnen eines Kontos wählt seinen Anbieter, damit „Back“ dort landet. Entwurf:
+  `docs/prototypes/accounts/index.html` (Variante A).
 - **„+ Add“ je Gruppe** (in der Kopfzeile der Gruppe bzw. als Zeile am Ende der leeren Gruppe) öffnet den
   Add-Dialog direkt beim ersten Schritt dieses Anbieters. Der Dialog hat keinen Katalog mehr und kein „Back“
   zu einem Katalog; „Back“ gibt es nur noch zwischen den Schritten eines Anbieters. Der globale Knopf „Add

@@ -1,11 +1,13 @@
 //! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2, fixed groups
-//! since S.30): the accounts as rows of fixed settings groups (status dot, label on one line,
-//! status and last sync below, chevron), in this order and also without an account – Nextcloud,
-//! Mail (with the CalDAV accounts of a mail provider), GitHub, AI, ntfy ([`Group`]); an account of
-//! a kind none of them holds gets a group of its own at the end. Each group says in a sentence
-//! what belongs there and ends with its "Add" ([`Message::Add`]), which opens the add-account
-//! dialog (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of
-//! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
+//! since S.30, providers beside their accounts since S.37): the providers in this order and also
+//! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub, AI,
+//! ntfy ([`Group`]); an account of a kind none of them holds gets a provider of its own at the
+//! end. They stand in a column at the left edge of the content ([`provider_column`]: wide with
+//! names and counts, medium only icons) or as chips above the list (narrow), the icon tinted where
+//! an account needs the person. The list shows one provider ([`chosen`]): its name and the sentence
+//! of what belongs there, then its accounts as rows (status dot, label on one line, status and last
+//! sync below, chevron) and its "Add" ([`Message::Add`]), which opens the add-account dialog
+//! (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
 //! has an account to take over: the page asks for TorroMail's accounts when it opens ([`opened`])
 //! and after the dialog closes, not with every reload. Under AI stands the data rule "Mail to
 //! cloud models" (`settings.set_setting mail_to_cloud`, task C.17), for the assistant and all its
@@ -87,8 +89,9 @@ use torro_core::settings::Settings;
 use torro_gui::dialog::frame as dialog_frame;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Status};
+use torro_gui::shell::{self, SidebarMode};
+use torro_gui::theme::{self, Palette, palette, size, space};
+use torro_gui::widgets::{self, Mark, Status, Trail};
 use torro_gui::{style, typo};
 use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
@@ -110,6 +113,10 @@ pub struct State {
     pub wizard: Option<wizard::State>,
     /// The account whose detail page is open (its `AccountInfo::id`); `None` shows the list.
     pub selected: Option<String>,
+    /// The provider the list shows (task S.37), by the key of its group ([`Listed::key`]); `None`
+    /// until one is chosen, then [`chosen`] takes the first with an account. Kept while the window
+    /// runs, not in `ui.json`: the accounts are what makes a provider worth opening first.
+    pub provider: Option<String>,
     /// The "Remove this account?" confirmation is open.
     pub confirm_remove: bool,
     /// The "Change password" dialog of the open CalDAV or mail account.
@@ -342,6 +349,9 @@ pub enum Message {
     /// read the mail the assistant and its bots may read – a setting of the suite, not a right.
     MailToCloud(bool),
     Wizard(wizard::Message),
+    /// A provider in the column or the chips of the list (task S.37), by the key of its group
+    /// ([`Listed::key`]): the list shows its accounts.
+    ShowProvider(String),
     /// Opens the detail page of an account.
     Open(String),
     /// Back from a detail page to the list.
@@ -468,7 +478,15 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Some(wizard) => wizard::update(wizard, message, data),
             None => Action::None,
         },
+        Message::ShowProvider(key) => {
+            state.provider = Some(key);
+            Action::None
+        }
+        // "Back" leads to the account's provider, wherever the list stood before.
         Message::Open(id) => {
+            if let Some(account) = listed(&data.accounts).find(|account| account.id == id) {
+                state.provider = Some(key_of(&account.kind).to_string());
+            }
             state.selected = Some(id);
             close_dialogs(state);
             state.models_page = ModelsPage::default();
@@ -998,12 +1016,61 @@ fn refusal(result: &Result<Response, String>) -> Option<String> {
     }
 }
 
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// The page in `class`: an account's detail page, else the list of the chosen provider – in the
+/// narrow class with the providers as chips above it, in the others beside [`provider_column`].
+/// `palette` colours a provider whose accounts need the person ([`provider_mark`]).
+pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, palette: &Palette) -> Element<'a, Message> {
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now),
+        None => list(state, data, now, !beside(class), palette),
     }
+}
+
+/// The providers as a column at the left edge of the content (task S.37), for the shell to set
+/// beside the scrolling page: in the wide class with names and counts, in the medium one only their
+/// icons, names and counts as tooltips (the accounts keep their width). `None` on a detail page and
+/// in the narrow class, where the list has chips instead.
+pub fn provider_column<'a>(
+    state: &'a State,
+    data: &'a Data,
+    class: SizeClass,
+    palette: &Palette,
+) -> Option<Element<'a, Message>> {
+    if selected(state, data).is_some() {
+        return None;
+    }
+    let (mode, width) = match class {
+        SizeClass::Wide => (SidebarMode::Expanded, size::sidebar()),
+        SizeClass::Medium => (SidebarMode::Rail, shell::rail()),
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => return None,
+    };
+    let entries = entries(data);
+    let groups = providers(&entries);
+    let shown = chosen(state.provider.as_deref(), &groups, &entries);
+    let items = groups.iter().map(|&group| {
+        let count = accounts_in(group, &entries);
+        widgets::sidebar_item_in(
+            mode,
+            provider_mark(group, &entries, palette),
+            group.title(),
+            if count > 0 { Trail::Count(count) } else { Trail::None },
+            group == shown,
+            Message::ShowProvider(group.key().to_string()),
+        )
+    });
+    let items = column(items).spacing(space::xs()).width(Fill);
+    Some(container(items).width(width).height(Fill).padding(space::s()).into())
+}
+
+/// Whether the providers stand in a column beside the list ([`provider_column`]): wide and medium.
+fn beside(class: SizeClass) -> bool {
+    matches!(class, SizeClass::Wide | SizeClass::Medium)
+}
+
+/// The accounts, then the sign-ins in progress, so a new row appears below the others.
+fn entries(data: &Data) -> Vec<&AccountInfo> {
+    listed(&data.accounts).chain(pending(&data.accounts)).collect()
 }
 
 /// The page's dialog over the whole window: the add-account dialog, else the password dialog, else
@@ -1130,7 +1197,9 @@ pub struct StatusLine {
     pub tone: Tone,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// How an account stands, from fine to failing: the order is what [`group_tone`] takes the worst
+/// of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tone {
     Ok,
     /// Waiting for the user or for the server.
@@ -1215,7 +1284,7 @@ impl Group {
         provider_name(self.kinds()[0])
     }
 
-    /// The sentence under the group: what belongs here.
+    /// The sentence under the provider's name: what belongs here.
     fn about(self) -> &'static str {
         match self {
             Group::Nextcloud => tr("Calendars and tasks from your Nextcloud."),
@@ -1246,12 +1315,78 @@ enum Listed<'a> {
     Other(&'a str),
 }
 
-impl Listed<'_> {
+impl<'a> Listed<'a> {
     fn holds(self, kind: &str) -> bool {
         match self {
             Listed::Fixed(group) => group.kinds().contains(&kind),
             Listed::Other(other) => other == kind,
         }
+    }
+
+    /// What [`State::provider`] keeps of the group (task S.37): a fixed group's first kind, else
+    /// the kind itself.
+    fn key(self) -> &'a str {
+        match self {
+            Listed::Fixed(group) => group.kinds()[0],
+            Listed::Other(kind) => kind,
+        }
+    }
+
+    fn title(self) -> String {
+        match self {
+            Listed::Fixed(group) => group.title(),
+            Listed::Other(kind) => provider_name(kind),
+        }
+    }
+
+    /// The provider's icon in the column and the chips: the ones the suite uses for these
+    /// services elsewhere (Nextcloud a cloud, AI the sparkles, ntfy the bell of notifications).
+    fn icon(self) -> Icon {
+        match self {
+            Listed::Fixed(Group::Nextcloud) => Icon::Cloud,
+            Listed::Fixed(Group::Mail) => Icon::Mail,
+            Listed::Fixed(Group::GitHub) => Icon::Github,
+            Listed::Fixed(Group::Ai) => Icon::Sparkles,
+            Listed::Fixed(Group::Ntfy) => Icon::Bell,
+            Listed::Other(_) => Icon::Folder,
+        }
+    }
+}
+
+/// The key of the group an account of `kind` stands in ([`Listed::key`]): a fixed group's, else the
+/// kind's own.
+fn key_of(kind: &str) -> &str {
+    Group::ALL.into_iter().find(|group| group.kinds().contains(&kind)).map_or(kind, |group| group.kinds()[0])
+}
+
+/// The group the list shows (task S.37): the one `choice` names while it is among `groups`, else
+/// the first that holds one of `entries` (accounts and sign-ins in progress), else the first of
+/// all. A kind of its own leaves `groups` with its last account, so its choice falls back too.
+fn chosen<'a>(choice: Option<&str>, groups: &[Listed<'a>], entries: &[&AccountInfo]) -> Listed<'a> {
+    let named = choice.and_then(|key| groups.iter().copied().find(|group| group.key() == key));
+    let busy = || groups.iter().copied().find(|group| entries.iter().any(|entry| group.holds(&entry.kind)));
+    named.or_else(busy).unwrap_or(Listed::Fixed(Group::Nextcloud))
+}
+
+/// How many accounts `group` has: the count beside the provider. A sign-in in progress is no
+/// account yet ([`pending`]).
+fn accounts_in(group: Listed<'_>, entries: &[&AccountInfo]) -> usize {
+    entries.iter().filter(|entry| !entry.id.is_empty() && group.holds(&entry.kind)).count()
+}
+
+/// The worst way an entry of `group` stands, sign-ins in progress included (they wait for the
+/// person); `None` without any.
+fn group_tone(group: Listed<'_>, entries: &[&AccountInfo]) -> Option<Tone> {
+    entries.iter().filter(|entry| group.holds(&entry.kind)).map(|entry| status_line(&entry.state).tone).max()
+}
+
+/// The provider's icon, in the colour of a status where one of its accounts needs the person
+/// (`attention`) or fails (`error`) – the colour only in the icon, the words on the account's row.
+fn provider_mark(group: Listed<'_>, entries: &[&AccountInfo], palette: &Palette) -> Mark {
+    match group_tone(group, entries) {
+        Some(Tone::Attention) => Mark::Tinted(group.icon(), palette.attention),
+        Some(Tone::Error) => Mark::Tinted(group.icon(), palette.error),
+        Some(Tone::Ok) | None => Mark::Icon(group.icon()),
     }
 }
 
@@ -1308,36 +1443,74 @@ fn selected<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-/// The fixed groups, each with its accounts, its sentence and its "Add", and the data rule under AI;
-/// then a group for each kind of account none of them holds. A group without an account is its
-/// "Add" and its sentence, so the page is never empty.
-fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    // The accounts first, then the sign-ins in progress, so a new row appears below the others.
-    let entries: Vec<&AccountInfo> = listed(&data.accounts).chain(pending(&data.accounts)).collect();
+/// The chosen provider ([`chosen`], task S.37): its name with the sentence of what belongs there
+/// above its accounts, then the group "Accounts" with them, the sign-ins in progress and its "Add"
+/// ("No account yet." before it while there is none), and under AI the data rule. A kind of
+/// account none of the fixed groups holds has no "Add". With `chips` (narrow) the providers stand
+/// as chips above it all.
+fn list<'a>(
+    state: &'a State,
+    data: &'a Data,
+    now: DateTime<Utc>,
+    chips: bool,
+    palette: &Palette,
+) -> Element<'a, Message> {
+    let entries = entries(data);
+    let groups = providers(&entries);
+    let shown = chosen(state.provider.as_deref(), &groups, &entries);
     let mut page = column![].spacing(layout::section_gap());
-    for group in providers(&entries) {
-        let mut rows: Vec<Element<'a, Message>> = entries
-            .iter()
-            .filter(|account| group.holds(&account.kind))
-            .map(|account| match account.id.is_empty() {
-                true => pending_row(account),
-                false => account_row(account, models_on(state, &account.id), now),
-            })
-            .collect();
-        let fixed = match group {
-            Listed::Fixed(fixed) => fixed,
-            Listed::Other(kind) => {
-                page = page.push(widgets::group(provider_name(kind), rows, None));
-                continue;
-            }
-        };
-        rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
-        page = page.push(widgets::group(fixed.title(), rows, Some(fixed.about().to_string())));
-        if fixed == Group::Ai {
-            page = page.push(data_rule_group(data.settings.mail_to_cloud));
+    if chips {
+        page = page.push(provider_chips(&groups, shown, &entries, palette));
+    }
+    page = page.push(provider_heading(shown));
+    let mut rows: Vec<Element<'a, Message>> = entries
+        .iter()
+        .filter(|account| shown.holds(&account.kind))
+        .map(|account| match account.id.is_empty() {
+            true => pending_row(account),
+            false => account_row(account, models_on(state, &account.id), now),
+        })
+        .collect();
+    if let Listed::Fixed(fixed) = shown {
+        if rows.is_empty() {
+            rows.push(quiet_row(tr("No account yet.")));
         }
+        rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
+    }
+    page = page.push(widgets::group(tr("Accounts"), rows, None));
+    if shown == Listed::Fixed(Group::Ai) {
+        page = page.push(data_rule_group(data.settings.mail_to_cloud));
     }
     page.into()
+}
+
+/// The providers as chips above the list in the narrow class (task S.37), the shown one chosen.
+fn provider_chips<'a>(
+    groups: &[Listed<'_>],
+    shown: Listed<'_>,
+    entries: &[&AccountInfo],
+    palette: &Palette,
+) -> Element<'a, Message> {
+    let chips = groups.iter().map(|&group| {
+        widgets::choice_chip(
+            group.title(),
+            Some(provider_mark(group, entries, palette)),
+            group == shown,
+            Some(Message::ShowProvider(group.key().to_string())),
+        )
+    });
+    widgets::chip_row(chips.collect())
+}
+
+/// The shown provider's name and, for a fixed group, the sentence of what belongs there – above
+/// its accounts, as the name of an account heads its detail page ([`heading`]).
+fn provider_heading<'a>(group: Listed<'_>) -> Element<'a, Message> {
+    let name = typo::text(typo::headline(), group.title()).wrapping(Wrapping::None);
+    let mut heading = column![container(name).width(Fill).clip(true)].spacing(space::xs());
+    if let Listed::Fixed(fixed) = group {
+        heading = heading.push(typo::text(typo::meta(), fixed.about()).style(theme::text_2));
+    }
+    heading.into()
 }
 
 /// The group Mail offers "Import from TorroMail…": the last list TorroMail gave has an account the
@@ -2387,6 +2560,79 @@ mod tests {
         AccountInfo { kind: kind.into(), ..account(id, connected(None, None)) }
     }
 
+    /// Builds the page in every class with a window, and the provider column where it has one.
+    fn draw(state: &State, data: &Data) {
+        let palette = Palette::dark();
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            drop(view(state, data, class, &palette));
+            drop(provider_column(state, data, class, &palette));
+        }
+    }
+
+    /// Task S.37: without a choice the list shows the first provider with an account or a sign-in
+    /// in progress, else Nextcloud; a choice holds while its group is listed, and a kind of its own
+    /// that lost its last account falls back.
+    #[test]
+    fn the_list_shows_the_chosen_provider_or_the_first_with_accounts() {
+        let (github, slack) = (of_kind("github:anna", "github"), of_kind("slack:anna", "slack"));
+        let signing_in =
+            AccountInfo { id: String::new(), kind: "ai".into(), ..account("", AccountState::NotConnected) };
+        let shown = |choice: Option<&str>, entries: &[&AccountInfo]| {
+            let groups = providers(entries);
+            chosen(choice, &groups, entries).key().to_string()
+        };
+        assert_eq!(shown(None, &[]), "nextcloud", "nothing: the first group");
+        assert_eq!(shown(None, &[&slack, &github]), "github", "the first fixed group with an account");
+        assert_eq!(shown(None, &[&signing_in]), "ai", "a sign-in in progress counts");
+        assert_eq!(shown(Some("ntfy"), &[&github]), "ntfy", "an empty fixed group can be chosen");
+        assert_eq!(shown(Some("slack"), &[&slack]), "slack");
+        assert_eq!(shown(Some("slack"), &[&github]), "github", "a kind of its own without accounts falls back");
+        assert_eq!(shown(Some("nowhere"), &[]), "nextcloud");
+        assert_eq!((key_of("caldav"), key_of("mail"), key_of("slack")), ("mail", "mail", "slack"));
+    }
+
+    /// Task S.37: the column counts the accounts of a provider, not the sign-ins in progress, and
+    /// takes the worst way one of them stands for the colour of its icon.
+    #[test]
+    fn a_provider_counts_its_accounts_and_takes_the_worst_tone() {
+        let ok = of_kind("nextcloud:a", "nextcloud");
+        let broken = AccountInfo { id: "nextcloud:b".into(), ..account("", connected(None, Some("Server gone"))) };
+        let waiting = AccountInfo { id: String::new(), ..account("", AccountState::NotConnected) };
+        let nextcloud = Listed::Fixed(Group::Nextcloud);
+        assert_eq!(accounts_in(nextcloud, &[&ok, &waiting]), 1, "the sign-in is no account yet");
+        assert_eq!(accounts_in(Listed::Fixed(Group::Mail), &[&ok]), 0);
+        assert_eq!(group_tone(nextcloud, &[]), None);
+        assert_eq!(group_tone(nextcloud, &[&ok]), Some(Tone::Ok));
+        assert_eq!(group_tone(nextcloud, &[&ok, &waiting]), Some(Tone::Attention));
+        assert_eq!(group_tone(nextcloud, &[&waiting, &broken, &ok]), Some(Tone::Error));
+        let palette = Palette::dark();
+        assert_eq!(provider_mark(nextcloud, &[&ok], &palette), Mark::Icon(Icon::Cloud));
+        assert_eq!(provider_mark(nextcloud, &[&waiting], &palette), Mark::Tinted(Icon::Cloud, palette.attention));
+        assert_eq!(provider_mark(nextcloud, &[&broken], &palette), Mark::Tinted(Icon::Cloud, palette.error));
+    }
+
+    /// Task S.37: choosing a provider shows it; opening an account chooses its provider, so "Back"
+    /// lands there – a CalDAV account under Mail.
+    #[test]
+    fn opening_an_account_chooses_its_provider() {
+        let caldav = AccountInfo { kind: "caldav".into(), ..account("caldav:anna", connected(None, None)) };
+        let data = Data { accounts: vec![of_kind("github:anna", "github"), caldav], ..Data::default() };
+        let mut state = State::default();
+        update(&mut state, Message::ShowProvider("ntfy".into()), &data);
+        assert_eq!(state.provider.as_deref(), Some("ntfy"));
+        draw(&state, &data);
+        update(&mut state, Message::Open("caldav:anna".into()), &data);
+        update(&mut state, Message::Back, &data);
+        assert_eq!(state.provider.as_deref(), Some("mail"));
+        assert!(provider_column(&state, &data, SizeClass::Wide, &Palette::dark()).is_some());
+        assert!(provider_column(&state, &data, SizeClass::Narrow, &Palette::dark()).is_none(), "chips there");
+        update(&mut state, Message::Open("github:anna".into()), &data);
+        assert!(
+            provider_column(&state, &data, SizeClass::Wide, &Palette::dark()).is_none(),
+            "not beside a detail page"
+        );
+    }
+
     /// Task S.30: the groups stand in a fixed order whatever accounts there are, also with none; a
     /// kind no group holds gets a group of its own at the end, once.
     #[test]
@@ -2411,8 +2657,8 @@ mod tests {
         let titles: Vec<String> = Group::ALL.into_iter().map(Group::title).collect();
         assert_eq!(titles, [tr("Nextcloud"), tr("Mail"), tr("GitHub"), tr("AI"), "ntfy"]);
         // Every page builds: no accounts, accounts, an unknown kind.
-        drop(view(&State::default(), &Data::default()));
-        drop(view(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() }));
+        draw(&State::default(), &Data::default());
+        draw(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() });
     }
 
     /// Task S.30: a mail provider's CalDAV account stands in the group Mail and says "CalDAV".
@@ -2491,7 +2737,7 @@ mod tests {
         assert!(answered(&mut broken, &Err("TorroMail's state.json is not valid JSON".into())));
         assert!(!offers_import(&broken) && !unlisted(&broken));
         assert!(!answered(&mut broken, &Err("no template".into())), "only the one answer it waited for");
-        drop(view(&state, &data));
+        draw(&state, &data);
     }
 
     /// Task S.30: the data rule stands under AI and its switch sends the setting, never a right.
@@ -2529,10 +2775,10 @@ mod tests {
         let data =
             Data { accounts: vec![anna, account("nextcloud:ben", AccountState::NotConnected)], ..Data::default() };
         let mut state = State::default();
-        drop(view(&state, &data));
+        draw(&state, &data);
         update(&mut state, Message::Open("nextcloud:anna@cloud.example.org".into()), &data);
-        drop(view(&state, &data));
-        drop(view(&State::default(), &Data::default()));
+        draw(&state, &data);
+        draw(&State::default(), &Data::default());
     }
 
     fn two_accounts() -> Data {
@@ -2576,9 +2822,9 @@ mod tests {
         assert_eq!(pending(&data.accounts).count(), 1);
         assert_eq!(pending_name(&waiting), "cloud.example.org");
         assert_eq!(status_line(&waiting.state).text, tr("Signing in…"));
-        drop(view(&State::default(), &data));
+        draw(&State::default(), &data);
         // Only a sign-in: a row instead of the empty state.
-        drop(view(&State::default(), &Data { accounts: vec![waiting], ..Data::default() }));
+        draw(&State::default(), &Data { accounts: vec![waiting], ..Data::default() });
     }
 
     #[test]
@@ -2611,7 +2857,7 @@ mod tests {
             github.scopes = scopes;
             let data = Data { accounts: vec![github.clone()], ..Data::default() };
             let state = State { selected: Some(github.id.clone()), ..State::default() };
-            drop(view(&state, &data));
+            draw(&state, &data);
         }
     }
 
@@ -2685,9 +2931,9 @@ mod tests {
         assert_eq!(provider_name("caldav"), tr("CalDAV"));
         let data = caldav_data();
         let mut state = State::default();
-        drop(view(&state, &data));
+        draw(&state, &data);
         update(&mut state, Message::Open(CALDAV.into()), &data);
-        drop(view(&state, &data));
+        draw(&state, &data);
     }
 
     #[test]
@@ -2790,7 +3036,7 @@ mod tests {
     fn the_mail_page_builds_in_every_state() {
         for id in [MAILBOX, "mail:anna@work.example.net"] {
             let (mut state, data) = open_mail(id);
-            drop(view(&state, &data));
+            draw(&state, &data);
             update(&mut state, Message::ChangePassword, &data);
             assert!(overlay(&state, &data).is_some());
             update(&mut state, Message::ChangeServers, &data);
@@ -2800,7 +3046,7 @@ mod tests {
         // Not signed in: one status row, and the password can still be given.
         let (mut state, mut data) = open_mail(MAILBOX);
         data.accounts[0].state = AccountState::NotConnected;
-        drop(view(&state, &data));
+        draw(&state, &data);
         update(&mut state, Message::ChangePassword, &data);
         assert!(state.password.is_some());
     }
@@ -2991,9 +3237,9 @@ mod tests {
     fn a_mail_account_builds_with_and_without_a_calendar_address() {
         let (state, mut data) = open_mail("mail:anna@work.example.net");
         assert!(data.accounts[1].mail.as_ref().is_some_and(|mail| mail.caldav.is_none()));
-        drop(view(&state, &data));
+        draw(&state, &data);
         data.accounts[1].mail.as_mut().expect("mail").caldav = Some("https://dav.example.net/".into());
-        drop(view(&state, &data));
+        draw(&state, &data);
     }
 
     // ----- An AI account's models (task S.31) ----------------------------------------------------
@@ -3011,7 +3257,7 @@ mod tests {
             "opening the page asks for all its models: {request:?}"
         );
         assert!(state.models_page.loading);
-        drop(view(&state, &data));
+        draw(&state, &data);
         let answer = super::super::launch::demo_answer(&request, &data).expect("the demo's models");
         assert!(answered(&mut state, &Ok(answer)));
         assert!(!state.models_page.loading);
@@ -3046,7 +3292,7 @@ mod tests {
             model_detail(qwen, place),
             [tr("Tools"), tr("Thinking"), &trf("{n}K context", &[("n", &131)]), tr("Cloud")].join(" · ")
         );
-        drop(view(&state, &data));
+        draw(&state, &data);
         let mut nextcloud = State::default();
         let action = update(&mut nextcloud, Message::Open("nextcloud:anna@cloud.example.org".into()), &data);
         assert!(matches!(action, Action::None) && !nextcloud.models_page.loading, "no models elsewhere");
@@ -3154,9 +3400,9 @@ mod tests {
         update(&mut state, Message::ModelSearch("qwen".into()), &data);
         update(&mut state, Message::ShowClosed(true), &data);
         assert_eq!((state.models_page.search.as_str(), state.models_page.show_closed), ("qwen", true));
-        drop(view(&state, &data));
+        draw(&state, &data);
         update(&mut state, Message::ModelSearch("nothing like it".into()), &data);
-        drop(view(&state, &data));
+        draw(&state, &data);
         update(&mut state, Message::Back, &data);
         assert!(state.models_page.search.is_empty() && !state.models_page.show_closed);
         assert!(state.models.contains_key(OPENROUTER), "the list's row still counts them");
@@ -3193,7 +3439,7 @@ mod tests {
         assert!(listed_model(&state, "qwen/qwen3-235b-a22b").enabled, "turned back on");
         assert!(listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled, "the other one waits");
         assert_eq!(state.models_page.refused.as_deref(), Some("The server cannot be reached."));
-        drop(view(&state, &data));
+        draw(&state, &data);
         assert!(answered(&mut state, &Ok(refused)));
         assert!(!listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled);
         assert_eq!(state.models_page.refused.as_deref(), Some("Only a person turns this on."));
@@ -3214,7 +3460,7 @@ mod tests {
         assert!(answered(&mut state, &Ok(refused)));
         assert_eq!(state.models_page.error.as_deref(), Some("The server refused the key."));
         assert!(!state.models_page.loading);
-        drop(view(&state, &data));
+        draw(&state, &data);
         assert!(!answered(&mut state, &Err("later".into())), "it waits for nothing any more");
         let again = sent(update(&mut state, Message::LoadModels, &data));
         assert!(matches!(again, Request::AiModels { all: true, .. }) && state.models_page.error.is_none());
@@ -3276,7 +3522,7 @@ mod tests {
                 for info in &mut data.sources {
                     info.health = Some(health);
                 }
-                drop(view(&state, &data));
+                draw(&state, &data);
             }
         }
     }
@@ -3289,7 +3535,7 @@ mod tests {
         assert_eq!(topics_text(3), trf("{n} topics", &[("n", &3)]));
         assert_eq!(topics_text(1), tr("1 topic"));
         let (state, data) = open_demo(NTFY);
-        drop(view(&state, &data));
+        draw(&state, &data);
         drop(account_row(ntfy, None, Utc::now()));
     }
 
