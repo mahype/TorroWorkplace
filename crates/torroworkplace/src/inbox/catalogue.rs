@@ -14,12 +14,19 @@
 //! moves the mail, and [`finish_removal`] moves the entries and deletes the row. While a removal
 //! stands, the category is out of the catalogue; one cut short is taken up again when the core
 //! starts ([`pending`]).
+//!
+//! **The sorting rules** (task E15.3) live here too: in the order the person gives them
+//! (`position`, 0 first, no gaps), checked before they are kept ([`checked_rule`]). "Always for
+//! this sender?" keeps one with a single condition on the sender and the mail account it was made
+//! in ([`keep_sender`]); `inbox.list_rules` lists those as it always did ([`kept_rules`]).
 
 use rusqlite::{Connection, OptionalExtension, params};
+use torro_inbox::item::{SORT_CONDITIONS_MAX, SORT_RULES_MAX, SORT_VALUE_MAX};
+use torro_inbox::{Rule, RuleEffect, SortCondition, SortField, SortRule, SourceRef};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
 use torro_mail::{Category, CategoryDef, CategoryGroup, CustomCategory};
 
-use super::{Failure, Scope, read_items, stamp, text, write_item};
+use super::{Failure, Scope, StoreError, read_items, stamp, text, write_item};
 use chrono::{DateTime, Utc};
 use torro_core::i18n::{tr, trf};
 
@@ -341,4 +348,306 @@ pub(super) fn replacement_of(db: &Connection, category: Category) -> Result<Opti
         })
         .optional()?;
     Ok(noted.flatten().as_deref().and_then(Category::from_key))
+}
+
+// ----- sorting rules (task E15.3) -----
+
+/// Every sorting rule in its order, first first.
+pub(super) fn sort_rules_in(db: &Connection) -> Result<Vec<SortRule>, Failure> {
+    let mut statement = db.prepare("SELECT data FROM sort_rules ORDER BY position, id")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut rules = Vec::new();
+    for data in rows {
+        rules.push(serde_json::from_str(&data?)?);
+    }
+    Ok(rules)
+}
+
+/// The sorting rule `id`, as stored; `None` without one.
+pub(super) fn sort_rule_in(db: &Connection, id: &str) -> Result<Option<SortRule>, Failure> {
+    let data: Option<String> =
+        db.query_row("SELECT data FROM sort_rules WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+    Ok(data.map(|data| serde_json::from_str(&data)).transpose()?)
+}
+
+/// `inbox.list_sort_rules`: the rules in their order.
+pub(super) fn list_rules(db: &Connection) -> Result<Vec<SortRule>, Failure> {
+    sort_rules_in(db)
+}
+
+/// What `inbox.create_sort_rule` and `inbox.update_sort_rule` ask for.
+pub(super) struct RuleWords {
+    pub category: Category,
+    pub conditions: Vec<SortCondition>,
+    pub exceptions: Vec<SortCondition>,
+    pub enabled: bool,
+}
+
+/// Adds a sorting rule at `position` (left out: last) and gives it back with its place.
+pub(super) fn create_rule(
+    db: &mut Connection,
+    words: RuleWords,
+    position: Option<u32>,
+    now: DateTime<Utc>,
+) -> Result<(SortRule, u32), Failure> {
+    let (conditions, exceptions) = checked_rule(db, &words)?;
+    let tx = db.transaction()?;
+    let mut order = order_of(&tx)?;
+    if order.len() >= SORT_RULES_MAX {
+        let most = SORT_RULES_MAX.to_string();
+        return Err(Failure::Invalid(trf(
+            "There are {most} sorting rules already; remove one first.",
+            &[("most", &most)],
+        )));
+    }
+    let rule = SortRule {
+        id: super::new_id()?,
+        category: words.category,
+        conditions,
+        exceptions,
+        enabled: words.enabled,
+        created: now,
+    };
+    tx.execute(
+        "INSERT INTO sort_rules (id, position, category, source, data) VALUES (?1, ?2, ?3, NULL, ?4)",
+        params![rule.id, order.len() as i64, rule.category.key(), serde_json::to_string(&rule)?],
+    )?;
+    let at = position.map_or(order.len(), |wanted| (wanted as usize).min(order.len()));
+    order.insert(at, rule.id.clone());
+    renumber(&tx, &order)?;
+    tx.commit()?;
+    Ok((rule, at as u32))
+}
+
+/// Changes the sorting rule `id`: all of it but its id, its place and when it was made.
+pub(super) fn update_rule(db: &mut Connection, id: &str, words: RuleWords) -> Result<(SortRule, u32), Failure> {
+    let (conditions, exceptions) = checked_rule(db, &words)?;
+    let mut rule = sort_rule_in(db, id)?.ok_or_else(|| no_rule(id))?;
+    rule.category = words.category;
+    rule.conditions = conditions;
+    rule.exceptions = exceptions;
+    rule.enabled = words.enabled;
+    db.execute(
+        "UPDATE sort_rules SET category = ?2, data = ?3 WHERE id = ?1",
+        params![id, rule.category.key(), serde_json::to_string(&rule)?],
+    )?;
+    let at = order_of(db)?.iter().position(|held| held == id).unwrap_or_default();
+    Ok((rule, at as u32))
+}
+
+/// Removes the sorting rule `id`; `not-found` without one. The others close the gap.
+pub(super) fn remove_rule(db: &mut Connection, id: &str) -> Result<(), Failure> {
+    let tx = db.transaction()?;
+    if tx.execute("DELETE FROM sort_rules WHERE id = ?1", [id])? == 0 {
+        return Err(no_rule(id));
+    }
+    let order = order_of(&tx)?;
+    renumber(&tx, &order)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Moves the sorting rule `id` to `position` (past the end: last); the others keep their order
+/// around it.
+pub(super) fn move_rule(db: &mut Connection, id: &str, position: u32) -> Result<(), Failure> {
+    let tx = db.transaction()?;
+    let mut order = order_of(&tx)?;
+    let from = order.iter().position(|held| held == id).ok_or_else(|| no_rule(id))?;
+    let moved = order.remove(from);
+    let at = (position as usize).min(order.len());
+    order.insert(at, moved);
+    renumber(&tx, &order)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// "Always for this sender?" (`inbox.set_item_category` with `remember`): the sorting rule that
+/// files `sender`'s mail as `category`, with the mail account it was made in. One sender has one:
+/// the same again is the rule there (`false`); another category replaces it (`true`). A new one
+/// goes first, since the person just decided about this very sender.
+pub(super) fn keep_sender(
+    db: &Connection,
+    sender: &str,
+    category: Category,
+    source: &SourceRef,
+    now: DateTime<Utc>,
+) -> Result<(SortRule, bool), Failure> {
+    let mut order = order_of(db)?;
+    let kept: Vec<SortRule> =
+        sort_rules_in(db)?.into_iter().filter(|rule| only_sender(rule).as_deref() == Some(sender)).collect();
+    if let Some(same) = kept.iter().find(|rule| rule.category == category && rule.enabled) {
+        return Ok((same.clone(), false));
+    }
+    for old in &kept {
+        db.execute("DELETE FROM sort_rules WHERE id = ?1", [&old.id])?;
+        order.retain(|held| *held != old.id);
+    }
+    let rule = SortRule {
+        id: super::new_id()?,
+        category,
+        conditions: vec![SortCondition { field: SortField::Sender, value: sender.to_string() }],
+        exceptions: Vec::new(),
+        enabled: true,
+        created: now,
+    };
+    db.execute(
+        "INSERT INTO sort_rules (id, position, category, source, data) VALUES (?1, 0, ?2, ?3, ?4)",
+        params![rule.id, rule.category.key(), source.key(), serde_json::to_string(&rule)?],
+    )?;
+    order.insert(0, rule.id.clone());
+    renumber(db, &order)?;
+    Ok((rule, true))
+}
+
+/// The sender a rule of "Always for this sender?" is about: exactly one condition on the sender
+/// and no exception. `None` for every other rule.
+fn only_sender(rule: &SortRule) -> Option<String> {
+    match (rule.conditions.as_slice(), rule.exceptions.is_empty()) {
+        ([condition], true) if condition.field == SortField::Sender => Some(condition.value.clone()),
+        _ => None,
+    }
+}
+
+/// The sorting rules "Always for this sender?" made, as `inbox.list_rules` has always listed them
+/// (a [`Rule`] with [`RuleEffect::Category`]): those that still are one sender or one domain, on,
+/// without exception. Changed in the editor into more, a rule is only the editor's.
+pub(super) fn kept_rules(db: &Connection) -> Result<Vec<Rule>, Failure> {
+    let mut statement = db.prepare("SELECT source, data FROM sort_rules WHERE source IS NOT NULL ORDER BY position")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut kept = Vec::new();
+    for row in rows {
+        let (source, data) = row?;
+        let rule: SortRule = serde_json::from_str(&data)?;
+        if let Some(view) = as_rule(&rule, &source) {
+            kept.push(view);
+        }
+    }
+    Ok(kept)
+}
+
+/// `rule` as a [`Rule`] of the mail account `source`, if it is one sender or one domain, on and
+/// without exception.
+fn as_rule(rule: &SortRule, source: &str) -> Option<Rule> {
+    if !rule.enabled || !rule.exceptions.is_empty() {
+        return None;
+    }
+    let [condition] = rule.conditions.as_slice() else { return None };
+    let (sender, domain) = match condition.field {
+        SortField::Sender => (Some(condition.value.clone()), None),
+        SortField::Domain => (None, Some(condition.value.clone())),
+        SortField::Subject | SortField::Text => return None,
+    };
+    Some(Rule {
+        id: rule.id.clone(),
+        source: source.parse().ok()?,
+        sender,
+        domain,
+        effect: RuleEffect::Category { category: rule.category },
+        created: rule.created,
+        facet: None,
+        until: None,
+    })
+}
+
+/// The ids of the rules in their order.
+fn order_of(db: &Connection) -> Result<Vec<String>, Failure> {
+    let mut statement = db.prepare("SELECT id FROM sort_rules ORDER BY position, id")?;
+    let ids = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<_, _>>()?;
+    Ok(ids)
+}
+
+/// Gives the rules of `order` the places 0, 1, 2 …: no gaps, no two in one place.
+fn renumber(db: &Connection, order: &[String]) -> Result<(), Failure> {
+    for (position, id) in order.iter().enumerate() {
+        db.execute("UPDATE sort_rules SET position = ?2 WHERE id = ?1", params![id, position as i64])?;
+    }
+    Ok(())
+}
+
+fn no_rule(id: &str) -> Failure {
+    Failure::NotFound(trf("There is no sorting rule {id}.", &[("id", &id)]))
+}
+
+/// The conditions and exceptions of `words` as they are kept, after checking them: at least one
+/// condition, at most [`SORT_CONDITIONS_MAX`] of each, every value one line of at most
+/// [`SORT_VALUE_MAX`] characters, and a category of the catalogue. A sender and a domain are kept
+/// in small letters, without `@` and final dot for a domain; words of the subject and text as
+/// typed.
+fn checked_rule(db: &Connection, words: &RuleWords) -> Result<(Vec<SortCondition>, Vec<SortCondition>), Failure> {
+    find(&catalogue_in(db)?, words.category)?;
+    if words.conditions.is_empty() {
+        return Err(Failure::Invalid(tr("A sorting rule needs at least one condition.").into()));
+    }
+    if words.conditions.len() > SORT_CONDITIONS_MAX || words.exceptions.len() > SORT_CONDITIONS_MAX {
+        let most = SORT_CONDITIONS_MAX.to_string();
+        return Err(Failure::Invalid(trf(
+            "A sorting rule has at most {most} conditions and {most} exceptions.",
+            &[("most", &most)],
+        )));
+    }
+    let kept = |conditions: &[SortCondition]| -> Result<Vec<SortCondition>, Failure> {
+        conditions
+            .iter()
+            .map(|condition| {
+                let value = match condition.field {
+                    SortField::Sender | SortField::Domain => {
+                        torro_inbox::rules::sort_value(condition.field, &condition.value)
+                    }
+                    SortField::Subject | SortField::Text => condition.value.trim().to_string(),
+                };
+                if value.is_empty() {
+                    return Err(Failure::Invalid(tr("A condition needs a value.").into()));
+                }
+                if value.chars().any(char::is_control) {
+                    return Err(Failure::Invalid(tr("A condition's value is one line.").into()));
+                }
+                if value.chars().count() > SORT_VALUE_MAX {
+                    let most = SORT_VALUE_MAX.to_string();
+                    return Err(Failure::Invalid(trf(
+                        "A condition's value has at most {most} characters.",
+                        &[("most", &most)],
+                    )));
+                }
+                Ok(SortCondition { field: condition.field, value })
+            })
+            .collect()
+    };
+    Ok((kept(&words.conditions)?, kept(&words.exceptions)?))
+}
+
+/// The migration to schema 11 (task E15.3): every rule "Always for this sender?" kept before –
+/// `rules` with effect `category`, a sender or a domain – becomes a sorting rule of the account it
+/// was made in, in the order they were made, and leaves `rules`.
+pub(super) fn move_kept_rules(db: &Connection) -> Result<(), StoreError> {
+    let mut statement = db.prepare("SELECT data FROM rules WHERE effect = 'category'")?;
+    let mut kept: Vec<Rule> = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .map(|data| Ok(serde_json::from_str::<Rule>(&data?)?))
+        .collect::<Result<_, StoreError>>()?;
+    drop(statement);
+    kept.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    let mut position = 0_i64;
+    for rule in kept {
+        let RuleEffect::Category { category } = rule.effect else { continue };
+        let condition = match (&rule.sender, &rule.domain) {
+            (Some(sender), _) => SortCondition { field: SortField::Sender, value: sender.clone() },
+            (None, Some(domain)) => SortCondition { field: SortField::Domain, value: domain.clone() },
+            (None, None) => continue,
+        };
+        let sorting = SortRule {
+            id: rule.id.clone(),
+            category,
+            conditions: vec![condition],
+            exceptions: Vec::new(),
+            enabled: true,
+            created: rule.created,
+        };
+        db.execute(
+            "INSERT INTO sort_rules (id, position, category, source, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![sorting.id, position, category.key(), rule.source.key(), serde_json::to_string(&sorting)?],
+        )?;
+        position += 1;
+    }
+    db.execute("DELETE FROM rules WHERE effect = 'category'", [])?;
+    Ok(())
 }

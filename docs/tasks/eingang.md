@@ -3694,7 +3694,15 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   mit der alten Kennung zurück; die Herkunft (`person`, `rule`, `model`) bleibt beim Umstellen.
 
 ### E15.3 Regeln und Vorrang
-- [ ] offen
+- [x] erledigt (2026-10-21): `rules::{SortInput, sort_category, sort_holds, condition_holds,
+  sort_value}`; Tabelle `sort_rules` mit Spalte `source` (das Mailkonto, in dem „Always for this
+  sender?“ die Regel anlegte); Migration der gemerkten Kategorieregeln in Reihenfolge ihrer
+  Anlage; die fünf Befehle im Eingang, Reihenfolge ohne Lücken; `inbox.list_sort_rules` zeigt
+  einem Schlüssel ohne Leserecht auf Mail nichts. „Always for this sender?“ legt eine
+  Sortierregel an die erste Stelle und antwortet weiter mit einer `Rule`; `inbox.list_rules`,
+  `inbox.remove_rule` und die Freigabe dazu erreichen solche Regeln weiter (nur solange sie genau
+  ein Absender oder eine Domain ohne Ausnahme sind und an). Neue Mail fragt die Sortierregeln vor
+  Einladung, Abwesenheit und Junk-Ordner; „Text“ ist beim Eintreffen der Anfang der Mail.
 - **Modell:** Opus · **Braucht:** E15.2 · **Dateien:** `crates/torro-inbox/src/rules.rs`,
   `crates/torroworkplace/src/{core,inbox,approvals}.rs`, `crates/torroworkplace/src/mail/inbox_feed.rs`,
   `crates/torro-settings-ui/src/inbox.rs`

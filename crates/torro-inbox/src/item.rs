@@ -854,6 +854,15 @@ pub struct SortRule {
     pub created: DateTime<Utc>,
 }
 
+/// The most conditions of one [`SortRule`], and the most exceptions (task E15.3).
+pub const SORT_CONDITIONS_MAX: usize = 10;
+
+/// The most characters of a [`SortCondition::value`].
+pub const SORT_VALUE_MAX: usize = 200;
+
+/// The most sorting rules the core keeps.
+pub const SORT_RULES_MAX: usize = 500;
+
 /// One test of a [`SortRule`] on a mail. Upper and lower case never count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SortCondition {

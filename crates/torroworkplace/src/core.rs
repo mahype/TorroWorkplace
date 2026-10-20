@@ -4063,13 +4063,8 @@ impl Core {
             Request::RemoveCategory { category, replacement } => {
                 Box::pin(self.remove_category(category, replacement)).await
             }
-            // The sorting rules and sorting again: their handlers come with tasks E15.3 and E15.4.
-            Request::CatchUpCategories { again: true, .. }
-            | Request::ListSortRules
-            | Request::CreateSortRule { .. }
-            | Request::UpdateSortRule { .. }
-            | Request::RemoveSortRule { .. }
-            | Request::MoveSortRule { .. } => Response::Error {
+            // Sorting again: its handler comes with task E15.4.
+            Request::CatchUpCategories { again: true, .. } => Response::Error {
                 code: "unsupported".into(),
                 message: tr("This core cannot change the mail categories yet.").to_string(),
             },
