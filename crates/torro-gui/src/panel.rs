@@ -143,8 +143,8 @@ pub struct Panel<'a, M> {
     footer: Vec<Element<'a, M>>,
     /// A bar fixed under the head, edge to edge ([`Panel::bar`]).
     bar: Option<Element<'a, M>>,
-    /// A column fixed at the right of title and body ([`Panel::side`]).
-    side: Option<Element<'a, M>>,
+    /// A column fixed at the right of title and body ([`Panel::side`]), and how wide it is.
+    side: Option<(Element<'a, M>, f32)>,
     on_close: M,
 }
 
@@ -205,11 +205,22 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
 
     /// A column fixed at the right of title and body (task E14.1: the mail's action rail,
     /// `widgets::action_rail`): from under the head – and under a [`Panel::bar`] – down to the
-    /// footer, as wide as `side` makes itself, beside the scrolling title and body, which take the
-    /// width it leaves. It does not scroll with them and brings its own line; the panel adds none.
-    pub fn side(mut self, side: impl Into<Element<'a, M>>) -> Self {
-        self.side = Some(side.into());
+    /// footer, `width` wide (`RailMode::width`), beside the scrolling title and body, [`space::xs()`]
+    /// apart so the scrollbar keeps clear of it. The panel grows by `width` where it is not as wide
+    /// as the window (task E14.3, decision C): title and body keep [`size::panel()`]. It does not
+    /// scroll with them and brings its own line; the panel adds none.
+    pub fn side(mut self, side: impl Into<Element<'a, M>>, width: f32) -> Self {
+        self.side = Some((side.into(), width));
         self
+    }
+
+    /// How wide the panel is in `class` ([`width_for`]), grown by its [`Panel::side`] where it has a
+    /// width of its own.
+    fn width(&self, class: SizeClass) -> Length {
+        match (width_for(class), &self.side) {
+            (Length::Fixed(width), Some((_, side))) => Length::Fixed(width + side),
+            (width, _) => width,
+        }
     }
 
     /// The panel as a column for `class`: the head, the scrolling title and body, the footer, on
@@ -238,7 +249,7 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
             .width(Fill)
             .height(Fill);
         let middle: Element<'a, M> = match side {
-            Some(side) => row![scroll, side].height(Fill).into(),
+            Some((side, _)) => row![scroll, side].spacing(space::xs()).height(Fill).into(),
             None => scroll.into(),
         };
         let mut inner = column![head].push(bar).push(middle);
@@ -362,8 +373,8 @@ pub fn place<'a, M: Clone + 'a>(
     };
     match mode_for(class) {
         PanelMode::Beside => {
-            let side =
-                container(panel.view(class)).width(size::panel()).height(Fill).style(style::container::panel_flush);
+            let width = panel.width(class);
+            let side = container(panel.view(class)).width(width).height(Fill).style(style::container::panel_flush);
             let body = row![container(content).width(Fill).height(Fill), side].into();
             Placed { body, overlay: layer }
         }
@@ -378,6 +389,7 @@ pub fn place<'a, M: Clone + 'a>(
 /// The panel over the window: scrim with the close catcher, the panel at the right edge.
 fn over<'a, M: Clone + 'a>(panel: Panel<'a, M>, class: SizeClass) -> Element<'a, M> {
     let on_close = panel.on_close.clone();
+    let width = panel.width(class);
     let scrim = container(blank().width(Fill).height(Fill)).style(|t| container::Style {
         background: Some(Background::Color(palette(t).scrim)),
         ..container::Style::default()
@@ -393,11 +405,11 @@ fn over<'a, M: Clone + 'a>(panel: Panel<'a, M>, class: SizeClass) -> Element<'a,
         background: Some(Background::Color(palette(t).panel)),
         ..container::Style::default()
     });
-    let sheet = container(surface).width(width_for(class)).height(Fill).style(move |t| {
+    let sheet = container(surface).width(width).height(Fill).style(move |t| {
         let p = palette(t);
         // The menu shadow falls sideways, to the left: the panel's edge is vertical. A panel that
         // fills the window has nothing beside it to cast a shadow on.
-        let shadow = if width_for(class) == Fill {
+        let shadow = if width == Fill {
             Shadow::default()
         } else {
             Shadow { offset: Vector::new(-space::m(), 0.0), ..p.shadow }
@@ -463,11 +475,16 @@ mod tests {
     fn a_side_column_stands_beside_the_body() {
         let plain = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go);
         assert!(plain.side.is_none());
-        let sided = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).side(blank());
+        let rail = widgets::RailMode::Collapsed.width();
+        let sided = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).side(blank(), rail);
         assert!(sided.side.is_some());
+        // Task E14.3 (decision C): the panel grows by the rail where it has a width of its own.
+        assert_eq!(sided.width(SizeClass::Medium), Length::Fixed(size::panel() + rail));
+        assert_eq!(sided.width(SizeClass::Narrow), Fill, "a panel filling the window stays so");
+        assert_eq!(plain.width(SizeClass::Medium), Length::Fixed(size::panel()));
         for class in CLASSES {
             let rail = widgets::action_rail(Vec::new(), widgets::RailMode::Collapsed, None, |_| Msg::Go, None);
-            let _ = sample().bar(blank()).side(rail).view(class);
+            let _ = sample().bar(blank()).side(rail, widgets::RailMode::Collapsed.width()).view(class);
         }
     }
 

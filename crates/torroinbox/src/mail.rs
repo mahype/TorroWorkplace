@@ -2193,7 +2193,8 @@ pub fn reader<'a>(
             .height(Fill);
         column![page].push(attachment_line(&reading, widths.head, side)).into()
     });
-    row![page, rail].height(Fill).into()
+    // The reader's scrollbar keeps clear of the rail's line (decision B).
+    row![page, rail].spacing(space::xs()).height(Fill).into()
 }
 
 /// The padding around the reader's head: the page's, a little less below, where the line under the
@@ -2373,7 +2374,8 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
 /// order – each item with its icon, word and key and the message its button or key sent before
 /// (tasks E9.4, E11.3), so requests and keys stay the same:
 ///
-/// 1. **Reply** (in the accent): Reply (`r`), Reply all (`a`), Forward (`f`) – [`Message::Mail`].
+/// 1. **Reply** (the main group: a red icon collapsed, Reply strong expanded – decision A): Reply
+///    (`r`), Reply all (`a`), Forward (`f`) – [`Message::Mail`].
 /// 2. **File**: for an `entry` Done (`e`, [`Message::SetDone`]) or Reopen once done, Later… (`s`,
 ///    `AskSnooze`, not for a done entry) and "Move to Info" or "Move to For me" (`l`, `AskLane`);
 ///    then Archive and Delete (`#`) where the account has the folder and the mail does not lie in
@@ -2386,13 +2388,16 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
 /// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
 /// 5. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
 ///    for a folder's message).
-/// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Show as text or Show as HTML
-///    (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`, while the HTML shows), Copy text
-///    (`CopyText`), and with `close` (the reader; the panel has its ✕) Close (Escape, `CloseDetail`).
+/// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Copy text (`CopyText`) first,
+///    then Show as text or Show as HTML (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`,
+///    while the HTML shows), and with `close` (the reader; the panel has its ✕) Close (Escape,
+///    `CloseDetail`).
 ///
 /// A group without items is left out (Mark and More while the mail loads, Mute for an entry that
-/// cannot be muted). A group's icon is its first item's, Mute's the bell and More's "…"; a click on
-/// it sends its first item. Each group registers its icon in `anchors.rail`, each item that opens a
+/// cannot be muted). Every group has its fixed icon, as design D draws it (finding 8): Reply, the
+/// check of File, Torro's task, Mark's flag – in the attention colour while the mail is flagged –,
+/// the bell and "…". A click on it sends its first item; Delete is marked `danger` and never that
+/// click – a File whose first item would be Delete opens its card instead. Each group registers its icon in `anchors.rail`, each item that opens a
 /// menu or dialog its row in the matching anchor of `anchors` (Later `snooze`, "Move to …" `lane`,
 /// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
 /// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
@@ -2407,26 +2412,22 @@ pub fn action_groups<'a>(
     let rail = &anchors.rail;
     let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
     let reply = vec![
-        RailItem::new(Icon::Reply, tr("Reply"), "R", mail(MailAction::Reply)).accent(),
+        RailItem::new(Icon::Reply, tr("Reply"), "R", mail(MailAction::Reply)).lead(),
         RailItem::new(Icon::ReplyAll, tr("Reply all"), "A", mail(MailAction::ReplyAll)),
         RailItem::new(Icon::Forward, tr("Forward"), "F", mail(MailAction::Forward)),
     ];
+    // A flagged mail says so at the group's icon (finding 9), in the colour of the flag in its row.
+    let flagged = reading.summary().is_some_and(|summary| summary.flags.contains(&Flag::Flagged));
+    let mark = RailGroup::new(Icon::Flag, tr("Mark"), mark_items(reading)).at(&rail.mark);
     let groups = [
         RailGroup::new(Icon::Reply, tr("Reply"), reply).accent().at(&rail.reply),
-        rail_group(tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
-        rail_group(tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
-        rail_group(tr("Mark"), mark_items(reading)).at(&rail.mark),
+        RailGroup::new(Icon::Check, tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
+        RailGroup::new(Icon::ListTodo, tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
+        if flagged { mark.tinted(reading.attention) } else { mark },
         RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
         RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), close)).foot().at(&rail.more),
     ];
     groups.into_iter().filter(|group| !group.items.is_empty()).collect()
-}
-
-/// A group of the rail titled `label` whose icon is its first item's ([`action_groups`]), so a click
-/// on it does what the icon shows.
-fn rail_group<'a>(label: &'static str, items: Vec<RailItem<'a, Message>>) -> RailGroup<'a, Message> {
-    let icon = items.first().map_or(Icon::Ellipsis, |item| item.icon);
-    RailGroup::new(icon, label, items)
 }
 
 /// The items of the rail's group "File" ([`action_groups`]).
@@ -2460,7 +2461,8 @@ fn file_items<'a>(
             items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), key, mail(MailAction::Archive)));
         }
         if filing.delete {
-            items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)));
+            // Never what a click on the group's icon does (finding 8).
+            items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)).danger());
         }
     }
     items
@@ -2528,6 +2530,10 @@ fn mute_items<'a>(
 /// with HTML, the other colours while its HTML shows, "Copy text", and with `close` Close.
 fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
     let mut items = Vec::new();
+    // First, so a click on "…" copies the text (decision D): the safest of the group.
+    if tools.copy {
+        items.push(RailItem::new(Icon::Copy, tr("Copy text"), "", Some(Message::CopyText)));
+    }
     match tools.format {
         Some(MailFormat::Html) => {
             items.push(RailItem::new(
@@ -2550,9 +2556,6 @@ fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
             items.push(RailItem::new(Icon::Sun, tr("Light colours"), "", Some(Message::MailColors(Scheme::Light))));
         }
         None => {}
-    }
-    if tools.copy {
-        items.push(RailItem::new(Icon::Copy, tr("Copy text"), "", Some(Message::CopyText)));
     }
     if close {
         items.push(RailItem::new(Icon::X, tr("Close"), "Esc", Some(Message::CloseDetail)));
@@ -3121,7 +3124,7 @@ mod tests {
             );
             let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
             assert_eq!(feet, [false, false, false, false, true, true], "Mute and More at the foot");
-            assert!(groups[0].accent && groups[0].items[0].accent, "Reply in the accent");
+            assert!(groups[0].accent && groups[0].items[0].lead, "Reply the main group, its row strong");
             assert!(groups[1..].iter().all(|group| !group.accent));
             let mail = |sent: Option<Message>, action: MailAction| matches!(sent, Some(Message::Mail(sent, id)) if sent == action && id == "m:w1");
             let (reply, file, torro) = (tr("Reply"), tr("File"), tr("Torro"));
@@ -3174,10 +3177,12 @@ mod tests {
                 assert_eq!(format!("{:?}", group.first_press()), format!("{:?}", group.items[0].press()));
                 assert!(group.anchor.is_some(), "{}: the open group hangs at its icon", group.label);
             }
-            for group in &groups[1..4] {
-                assert_eq!(group.icon, group.items[0].icon, "{}", group.label);
-            }
-            assert_eq!((groups[4].icon, groups[5].icon), (Icon::BellOff, Icon::Ellipsis));
+            // Fixed icons, whatever the first item (finding 8).
+            let icons: Vec<Icon> = groups.iter().map(|group| group.icon).collect();
+            assert_eq!(icons, [Icon::Reply, Icon::Check, Icon::ListTodo, Icon::Flag, Icon::BellOff, Icon::Ellipsis]);
+            assert!(group(&groups, tr("File")).items.iter().filter(|i| i.danger).all(|i| i.label == tr("Delete")));
+            let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
+            assert_eq!(group(&groups, tr("Mark")).tint.is_some(), flagged, "a flagged mail shows at Mark");
             // The items that open a menu or dialog hang it at their row; the others need no anchor.
             let anchored: Vec<String> = groups
                 .iter()
@@ -3199,13 +3204,8 @@ mod tests {
             // Expanded and collapsed, with and without its button, a group open or none.
             for mode in [widgets::RailMode::Collapsed, widgets::RailMode::Expanded] {
                 for open in [None, Some(1), Some(5)] {
-                    let _ = widgets::action_rail(
-                        groups.clone(),
-                        mode,
-                        open,
-                        Message::RailOpen,
-                        Some(Message::ToggleActions),
-                    );
+                    let _ =
+                        widgets::action_rail(groups.clone(), mode, open, Message::Rail, Some(Message::ToggleActions));
                 }
             }
         });
@@ -3257,7 +3257,8 @@ mod tests {
                 strings(&[trc("action", "Archive"), tr("Delete")])
             );
             assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder");
-            assert_eq!(group(&groups, tr("File")).icon, Icon::Archive, "the icon does what a click does");
+            assert_eq!(group(&groups, tr("File")).icon, Icon::Check, "the group's fixed icon");
+            assert!(group(&groups, tr("File")).first_press().is_some(), "a click archives");
             let torro = &group(&groups, tr("Torro")).items;
             assert_eq!(torro.len(), 1);
             assert!(matches!(torro[0].press(), Some(Message::AskMailTask(id)) if id == "m:w1"));
@@ -3268,6 +3269,7 @@ mod tests {
             let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
             let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
             assert_eq!(file, strings(&[tr("Delete")]));
+            assert!(group(&groups, tr("File")).first_press().is_none(), "Delete alone: a click opens the card");
         });
         // The trash's message (`m:w12`) is not deleted again.
         reading_of("m:w12", MailFormat::Html, true, |reading| {
@@ -3298,23 +3300,23 @@ mod tests {
             assert_eq!(
                 more(reading, true),
                 Some(vec![
+                    item(tr("Copy text"), "", Message::CopyText),
                     item(tr("Show as text"), "V", Message::ShowMailAs(MailFormat::Text)),
                     item(tr("Dark colours"), "", Message::MailColors(Scheme::Dark)),
-                    item(tr("Copy text"), "", Message::CopyText),
                     item(tr("Close"), "Esc", Message::CloseDetail),
                 ])
             );
             let dark = HtmlReading { scheme: Scheme::Dark, ..reading.html.expect("its HTML") };
             let dark = Reading { html: Some(dark), ..*reading };
             let light = more(&dark, false).expect("More");
-            assert_eq!(light[1], item(tr("Light colours"), "", Message::MailColors(Scheme::Light)));
+            assert_eq!(light[2], item(tr("Light colours"), "", Message::MailColors(Scheme::Light)));
         });
         reading_of("m:p2", MailFormat::Text, true, |reading| {
             assert_eq!(
                 more(reading, false),
                 Some(vec![
-                    item(tr("Show as HTML"), "V", Message::ShowMailAs(MailFormat::Html)),
                     item(tr("Copy text"), "", Message::CopyText),
+                    item(tr("Show as HTML"), "V", Message::ShowMailAs(MailFormat::Html)),
                 ]),
                 "no colours for the text"
             );
@@ -3573,7 +3575,7 @@ mod tests {
                         let _ = body(&reading, Bars::Split);
                         let groups = action_groups(&reading, entry, &folders, true, &anchors);
                         let rail =
-                            widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::RailOpen, None);
+                            widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::Rail, None);
                         let _ = reader(reading, entry, rail);
                         // The reader's head, which it lays out only once it knows its width.
                         let _ = head(&reading, entry, 900.0);

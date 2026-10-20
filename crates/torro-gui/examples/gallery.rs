@@ -2332,12 +2332,17 @@ fn action_rails() -> Element<'static, Msg> {
         labelled("“More” open · at the foot", more),
         labelled("Expanded · Archive off", expanded(tall)),
     ]
-    .spacing(space::l());
+    .spacing(space::l())
+    // Wraps in a narrow gallery window, so no frame is cut off.
+    .wrap()
+    .vertical_spacing(space::l());
     let second = row![
         labelled("In the panel · no button", panel),
         labelled("Expanded in a low window · the top scrolls, the foot stays", expanded(low)),
     ]
-    .spacing(space::l());
+    .spacing(space::l())
+    .wrap()
+    .vertical_spacing(space::l());
     let section: Element<'static, Msg> = column![first, second].spacing(space::xl()).into();
     iced::widget::stack(std::iter::once(section).chain(layers)).into()
 }
@@ -2352,7 +2357,7 @@ fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
             Icon::Reply,
             "Reply",
             vec![
-                item(Icon::Reply, "Reply", "R").accent(),
+                item(Icon::Reply, "Reply", "R").lead(),
                 item(Icon::ReplyAll, "Reply all", "A"),
                 item(Icon::Forward, "Forward", "F"),
             ],
@@ -2366,7 +2371,7 @@ fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
                 item(Icon::Clock, "Later…", "S"),
                 item(Icon::Info, "Move to Info", "L"),
                 RailItem::new(Icon::Archive, "Archive", "", None),
-                item(Icon::Trash2, "Delete", "#"),
+                item(Icon::Trash2, "Delete", "#").danger(),
             ],
         ),
         RailGroup::new(
@@ -2374,21 +2379,22 @@ fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
             "Torro",
             vec![
                 item(Icon::ListTodo, "Task", "T"),
-                item(Icon::CalendarPlus, "Event", ""),
-                item(Icon::Tag, "Category…", "C"),
+                item(Icon::CalendarPlus, "Event", "C"),
+                item(Icon::Tag, "Category…", ""),
                 item(Icon::Sparkles, "Re-categorize", "").accent(),
             ],
         ),
-        RailGroup::new(Icon::Flag, "Mark", vec![item(Icon::Flag, "Flag", ""), item(Icon::Mail, "Mark unread", "U")]),
+        RailGroup::new(Icon::Flag, "Mark", vec![item(Icon::Flag, "Unflag", ""), item(Icon::Mail, "Mark unread", "")])
+            .tinted(iced::Color::from_rgb8(0xE8, 0xA3, 0x3D)),
         RailGroup::new(Icon::BellOff, "Mute", vec![item(Icon::BellOff, "Mute…", "M")]).foot(),
         RailGroup::new(
             Icon::Ellipsis,
             "More",
             vec![
-                item(Icon::AlignLeft, "Show as text", ""),
-                item(Icon::Sun, "Light colours", ""),
                 item(Icon::Copy, "Copy text", ""),
-                item(Icon::X, "Close", ""),
+                item(Icon::AlignLeft, "Show as text", "V"),
+                item(Icon::Sun, "Light colours", ""),
+                item(Icon::X, "Close", "Esc"),
             ],
         )
         .foot(),

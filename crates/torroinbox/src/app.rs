@@ -184,7 +184,7 @@ use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{
-    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailGroup, RailMode, ToastAction, Trail,
+    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailEvent, RailGroup, RailMode, ToastAction, Trail,
 };
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -249,6 +249,14 @@ pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
 
 /// How often a shown hint checks whether its time is up. Only while a hint shows.
 const HINT_TICK: Duration = Duration::from_secs(1);
+
+/// How long the pointer rests on an icon of the collapsed action rail before its group opens (task
+/// E14.3, decision B): a pointer crossing the rail on its way opens nothing. From an open group to
+/// the next, and back within this time after one closed, it goes at once.
+const RAIL_DELAY: Duration = Duration::from_millis(150);
+
+/// How often a group waiting for [`RAIL_DELAY`] checks its time. Only while one waits.
+const RAIL_TICK: Duration = Duration::from_millis(30);
 
 /// "In 5 min" puts a reminder's entry off for this many minutes (task ER1.4).
 const REMINDER_SNOOZE_MINUTES: i64 = 5;
@@ -2213,6 +2221,11 @@ pub struct App<S> {
     /// The group of the collapsed rail whose card is open beside its icon (hover, an index into
     /// [`App::rail_groups`]); closed by every item clicked, a menu opening, another mail and Escape.
     rail_open: Option<usize>,
+    /// The group whose icon the pointer came onto, and when: it opens once the pointer rested
+    /// [`RAIL_DELAY`] there ([`Message::RailTick`]), unless it left before.
+    rail_pending: Option<(usize, Instant)>,
+    /// When the pointer last left an open group: the next one opens at once within [`RAIL_DELAY`].
+    rail_left: Option<Instant>,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -2436,9 +2449,12 @@ pub enum Message {
     /// The button at the top of the mail's action rail, or `]` (task E14.3): expand or collapse the
     /// rail of the wide mail window and remember it.
     ToggleActions,
-    /// The pointer entered the icon of this group of the collapsed rail (its index in
-    /// [`App::rail_groups`]): its card opens beside it; `None` when the pointer left card and icon.
-    RailOpen(Option<usize>),
+    /// The pointer on the icons of the collapsed rail and its open card, or a click on an icon
+    /// without a click of its own (task E14.3, `widgets::RailEvent`; indices into
+    /// [`App::rail_groups`]): a group opens after [`RAIL_DELAY`], closes as the pointer leaves.
+    Rail(RailEvent),
+    /// The timer of a group waiting to open ([`App::rail_pending`]).
+    RailTick(Instant),
     /// The rail remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
     StoredActions(Option<RailMode>),
     /// Close the open menu and the drawer (click beside them).
@@ -2904,6 +2920,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             actions: RailMode::default(),
             actions_chosen: false,
             rail_open: None,
+            rail_pending: None,
+            rail_left: None,
             launch,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -3016,6 +3034,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             subscriptions.push(iced::time::every(search::TICK).map(Message::SearchTick));
         }
         // The end of a drag of the divider, wherever the button is released (issue #130).
+        // A group of the rail waits for the pointer to rest on its icon (decision B of E14).
+        if self.rail_pending.is_some() {
+            subscriptions.push(iced::time::every(RAIL_TICK).map(Message::RailTick));
+        }
         if self.split.dragging {
             subscriptions.push(split::release().map(|()| Message::Split(SplitEvent::Release)));
         }
@@ -3040,6 +3062,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // dialog opens in its place (task E14.3), so only one card floats at a time.
         if self.menu.is_some() || (shown.is_some() && self.wanted_letter() != shown) {
             self.rail_open = None;
+            self.rail_pending = None;
         }
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
@@ -3121,6 +3144,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // a button sends one message only, so the window closes it.
         if closes_rail(&message) {
             self.rail_open = None;
+            self.rail_pending = None;
         }
         // The sidebar stays while the settings are open; anything that would show entries again
         // takes the content area back from them (task S.20).
@@ -3474,9 +3498,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::ToggleActions => return self.toggle_actions(),
-            // Hovering the rail opens no card over an open menu or dialog: one floats at a time.
-            Message::RailOpen(Some(_)) if self.menu.is_some() => {}
-            Message::RailOpen(open) => self.rail_open = open,
+            Message::Rail(event) => self.rail_event(event, Instant::now()),
+            Message::RailTick(now) => {
+                if let Some((at, since)) = self.rail_pending
+                    && now.saturating_duration_since(since) >= RAIL_DELAY
+                {
+                    self.rail_pending = None;
+                    self.rail_open = Some(at);
+                }
+            }
             Message::StoredActions(stored) => {
                 // A switch made before the file answered wins.
                 if let Some(stored) = stored.filter(|_| !self.actions_chosen) {
@@ -3502,6 +3532,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if self.rail_open.is_some() {
                     // The open group of the rail lies in front of everything but the menus, which close it.
                     self.rail_open = None;
+                    self.rail_pending = None;
                 } else if self.menu.is_some() || self.drawer {
                     self.close_menus();
                 } else if self.hint.is_some() {
@@ -6347,6 +6378,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.actions = self.actions.toggled();
         self.actions_chosen = true;
         self.rail_open = None;
+        self.rail_pending = None;
         if self.launch.demo {
             return Task::none();
         }
@@ -6438,8 +6470,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// (task E14.3), so its width – collapsed or expanded as chosen – is left out: the mail itself
     /// keeps at least `split::min_pane()`, also with the rail expanded.
     fn split_limits(&self) -> Limits {
-        let rail = if self.launch.kind == Kind::Mail { self.actions.width() } else { 0.0 };
+        let rail = if self.launch.kind == Kind::Mail { self.rail_mode(SizeClass::Wide).width() } else { 0.0 };
         Limits::new(size::list(), self.content_width() - rail)
+    }
+
+    /// The mode the mail's action rail is drawn in, in `class` (task E14.3): medium and narrow always
+    /// collapsed (decision 5); wide the one the person chose ([`App::actions`]) – but collapsed while an
+    /// expanded rail would leave the reader less than [`size::form_max()`] (finding 1 of the review),
+    /// so the mail never gets squeezed. The choice stays as it is: `]` and the button switch it, and
+    /// with more room it shows expanded again.
+    fn rail_mode(&self, class: SizeClass) -> RailMode {
+        let expanded = self.actions == RailMode::Expanded;
+        if class != SizeClass::Wide || (expanded && self.reader_room(RailMode::Expanded) < size::form_max()) {
+            return RailMode::Collapsed;
+        }
+        self.actions
+    }
+
+    /// How wide the reader's mail is beside a `rail` of that mode, the divider placed as with the
+    /// collapsed rail – an expanded one only narrows the list's room further, never the reader's.
+    fn reader_room(&self, rail: RailMode) -> f32 {
+        let limits = Limits::new(size::list(), self.content_width() - RailMode::Collapsed.width());
+        self.content_width() - self.split.width(limits) - split::handle_width() - rail.width()
     }
 
     /// What the narrow mail window's "For me" leads with (task E8.3, "N new for you"; task E8.11 in
@@ -6492,12 +6544,67 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The mail's action rail of `groups` in `class` (`widgets::action_rail`): in the wide window in
-    /// the mode the person chose ([`App::actions`]) with its button; in medium and narrow always
-    /// collapsed and without the button (decision 5 of E14).
+    /// the mode [`App::rail_mode`] draws, with its button; in medium and narrow always collapsed and
+    /// without the button (decision 5 of E14). The group open beside its icon, or whose menu or
+    /// dialog is open, stands selected ([`App::rail_active`]).
     fn rail<'a>(&self, class: SizeClass, groups: Vec<RailGroup<'a, Message>>) -> Element<'a, Message> {
         let toggle = (class == SizeClass::Wide).then_some(Message::ToggleActions);
-        let mode = if toggle.is_some() { self.actions } else { RailMode::Collapsed };
-        widgets::action_rail(groups, mode, self.rail_open, Message::RailOpen, toggle)
+        let active = self.rail_active(&groups);
+        widgets::action_rail(groups, self.rail_mode(class), active, Message::Rail, toggle)
+    }
+
+    /// The group of `groups` that stands selected in the collapsed rail (finding 14): the one open
+    /// beside its icon, else the one whose menu or dialog is open at the rail – Later, its picker
+    /// and "Move to …" at File; Task, Event and the categories at Torro; the bell's menus and "Move
+    /// to folder" at Mute.
+    fn rail_active(&self, groups: &[RailGroup<'_, Message>]) -> Option<usize> {
+        if self.rail_open.is_some() {
+            return self.rail_open;
+        }
+        let label = match self.menu? {
+            Menu::Snooze | Menu::Pick | Menu::Lane => tr("File"),
+            Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
+            Menu::Hide | Menu::Mute | Menu::Move => tr("Mute"),
+            _ => return None,
+        };
+        if !self.menu_from_panel() {
+            return None;
+        }
+        groups.iter().position(|group| group.label == label)
+    }
+
+    /// What the pointer and a click on the collapsed rail do at `now` (decision B of E14): coming
+    /// onto an icon opens its group after [`RAIL_DELAY`] – at once from an open group or just after
+    /// one closed –, never over an open menu or dialog; leaving the icon before cancels it; a click
+    /// on an icon without a click of its own opens the group now; leaving card and icon closes it.
+    fn rail_event(&mut self, event: RailEvent, now: Instant) {
+        match event {
+            RailEvent::Enter(_) if self.menu.is_some() => {}
+            RailEvent::Enter(at) => {
+                let just_left = self.rail_left.is_some_and(|left| now.saturating_duration_since(left) < RAIL_DELAY);
+                if self.rail_open.is_some() || just_left {
+                    self.rail_open = Some(at);
+                    self.rail_pending = None;
+                } else {
+                    self.rail_pending = Some((at, now));
+                }
+            }
+            RailEvent::Leave(at) => {
+                if self.rail_pending.is_some_and(|(waiting, _)| waiting == at) {
+                    self.rail_pending = None;
+                }
+            }
+            RailEvent::Open(at) => {
+                self.rail_open = Some(at);
+                self.rail_pending = None;
+            }
+            RailEvent::Close => {
+                if self.rail_open.take().is_some() {
+                    self.rail_left = Some(now);
+                }
+                self.rail_pending = None;
+            }
+        }
     }
 
     /// `panel` with the mail's action rail at its right (task E14.3, `Panel::side`): the mail window's
@@ -6510,7 +6617,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         panel: panel::Panel<'a, Message>,
     ) -> panel::Panel<'a, Message> {
         match self.rail_groups(class, anchors) {
-            Some(groups) => panel.side(self.rail(class, groups)),
+            Some(groups) => panel.side(self.rail(class, groups), RailMode::Collapsed.width()),
             None => panel,
         }
     }
@@ -6520,11 +6627,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// same `anchors` as the rail's ([`App::rail_groups`]). `None` while no group is open, while the
     /// rail is expanded (its groups stand open in it) and once the group is gone.
     fn rail_layer<'a>(&'a self, class: SizeClass, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
-        let expanded = class == SizeClass::Wide && self.actions == RailMode::Expanded;
-        let open = self.rail_open.filter(|_| !expanded)?;
+        let open = self.rail_open.filter(|_| self.rail_mode(class) == RailMode::Collapsed)?;
         let group = self.rail_groups(class, anchors)?.into_iter().nth(open)?;
         let anchor = group.anchor.clone().unwrap_or_default();
-        Some(widgets::rail_flyout(group, &anchor, Message::RailOpen(None)))
+        Some(widgets::rail_flyout(group, &anchor, Message::Rail(RailEvent::Close)))
     }
 
     /// The entry the mail in the reader belongs to: the one in the panel; `None` for a folder's
@@ -6545,11 +6651,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         mail::Bars::Command { entry: self.reader_entry(), width: self.panel_width(class) }
     }
 
-    /// How wide the panel is in `class` (`torro_gui::panel`): [`size::panel()`] beside the content and
-    /// over the medium window, the whole window in a narrow one.
+    /// How wide the mail window's panel is in `class` (`torro_gui::panel`): over the medium window
+    /// [`size::panel()`] for the mail and the collapsed rail beside it (task E14.3, decision C,
+    /// `Panel::side`), the whole window in a narrow one.
     fn panel_width(&self, class: SizeClass) -> f32 {
         match class {
-            SizeClass::Wide | SizeClass::Medium => size::panel(),
+            SizeClass::Wide | SizeClass::Medium => size::panel() + RailMode::Collapsed.width(),
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => self.size.width,
         }
     }
@@ -8010,6 +8117,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Some(open @ (Open::MailEntry | Open::MailActions | Open::MailGroup)) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
+                // Its row is the cursor's, as after a click on it: the pictures show the selection.
+                self.cursor = self.detail.as_ref().map(|item| item.id.clone());
                 // The rail as the picture needs it, over what `ui.json` remembers (task E14.3): expanded,
                 // or collapsed with "File" open – the second group, after Reply, for every entry.
                 match open {
@@ -12149,7 +12258,7 @@ mod tests {
         // out, so the mail keeps its least beside it.
         let _ = press(&mut app, Key::Actions);
         assert_eq!(app.split_limits().total, app.content_width() - RailMode::Expanded.width());
-        let _ = app.update(Message::RailOpen(Some(1)));
+        let _ = app.update(Message::Rail(RailEvent::Open(1)));
         let anchors = detail::Anchors::default().with_rail();
         assert!(app.rail_layer(SizeClass::Wide, &anchors).is_none(), "no card beside the expanded rail");
         // Medium and narrow: the rail in the panel, collapsed, `]` does nothing.
@@ -12160,7 +12269,7 @@ mod tests {
             let _ = press(&mut app, Key::Actions);
             assert_eq!((app.actions, app.sent.len()), (RailMode::Expanded, saved), "{class:?}: `]` does nothing");
             assert!(app.rail_groups(class, &anchors).is_some(), "{class:?}: the panel has the rail");
-            let _ = app.update(Message::RailOpen(Some(1)));
+            let _ = app.update(Message::Rail(RailEvent::Open(1)));
             assert!(app.rail_layer(class, &anchors).is_some(), "{class:?}: collapsed, its group opens beside it");
             let _ = app.view();
         }
@@ -12185,36 +12294,42 @@ mod tests {
         let id = app.wanted_letter().expect("its mail");
         deliver_letter(&mut app, &id);
         let anchors = detail::Anchors::default().with_rail();
-        let _ = app.update(Message::RailOpen(Some(1)));
+        let _ = app.update(Message::Rail(RailEvent::Open(1)));
         assert_eq!(app.rail_open, Some(1));
         assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "File beside its icon");
         let _ = app.view();
-        let _ = app.update(Message::RailOpen(None));
+        let _ = app.update(Message::Rail(RailEvent::Close));
         assert_eq!(app.rail_open, None, "the pointer left card and icon");
         // A click on "Later…" in the card: the snooze menu takes its place, at the rail.
-        let _ = app.update(Message::RailOpen(Some(1)));
+        let _ = app.update(Message::Rail(RailEvent::Open(1)));
         let _ = app.update(Message::AskSnooze(entry.clone()));
         assert_eq!((app.rail_open, app.menu, app.menu_from_panel()), (None, Some(Menu::Snooze), true));
-        let _ = app.update(Message::RailOpen(Some(2)));
-        assert_eq!(app.rail_open, None, "no group over an open menu");
+        let _ = app.update(Message::Rail(RailEvent::Enter(2)));
+        assert_eq!((app.rail_open, app.rail_pending), (None, None), "no group over an open menu");
+        // Finding 14: the group whose menu is open stands selected.
+        let groups = app.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
+        assert_eq!(app.rail_active(&groups), Some(1), "File, the snooze menu's group");
+        // The row of the mail keeps its selection while the menu is open (finding 14).
+        let rows = detail::Anchors::default();
+        assert_eq!(app.rows_data(&rows).selected, Some(entry.as_str()));
         let _ = app.view();
         let _ = app.update(Message::CloseMenu);
         // The rail's other menus and dialogs.
         for ask in
             [Message::AskLane(entry.clone()), Message::AskCategory(entry.clone()), Message::AskHide(entry.clone())]
         {
-            let _ = app.update(Message::RailOpen(Some(2)));
+            let _ = app.update(Message::Rail(RailEvent::Open(2)));
             let _ = app.update(ask);
             assert!(app.rail_open.is_none() && app.menu.is_some() && app.menu_from_panel());
             let _ = app.view();
             let _ = app.update(Message::CloseMenu);
         }
         // Escape closes the group first, then the reader.
-        let _ = app.update(Message::RailOpen(Some(5)));
+        let _ = app.update(Message::Rail(RailEvent::Open(5)));
         let _ = app.update(Message::Escape);
         assert!(app.rail_open.is_none() && app.detail.is_some(), "Escape closes the group first");
         // An item that opens nothing closes it too.
-        let _ = app.update(Message::RailOpen(Some(5)));
+        let _ = app.update(Message::Rail(RailEvent::Open(5)));
         let _ = app.update(Message::CopyText);
         assert_eq!(app.rail_open, None, "Copy text");
         // Another mail.
@@ -12225,7 +12340,7 @@ mod tests {
             .find(|item| item.id != entry && matches!(item.link, Some(Link::Mail { .. })))
             .map(|item| item.id.clone())
             .expect("another mail entry");
-        let _ = app.update(Message::RailOpen(Some(3)));
+        let _ = app.update(Message::Rail(RailEvent::Open(3)));
         let _ = app.update(Message::Select(other));
         assert_ne!(app.wanted_letter(), Some(id.clone()), "another mail");
         assert_eq!(app.rail_open, None, "another mail closes it");
@@ -12240,8 +12355,69 @@ mod tests {
                 }
             }
         }
-        assert!(closes_rail(&Message::ToggleActions) && !closes_rail(&Message::RailOpen(Some(1))));
+        assert!(closes_rail(&Message::ToggleActions) && !closes_rail(&Message::Rail(RailEvent::Open(1))));
         assert!(!closes_rail(&Message::Tick) && !closes_rail(&Message::HintTick(Instant::now())), "timers keep it");
+    }
+
+    /// Task E14.3 (decision B): the pointer resting on an icon opens its group after the delay, one
+    /// crossing it opens nothing; from an open group the next opens at once, and so does one entered
+    /// just after a group closed.
+    #[test]
+    fn a_group_opens_once_the_pointer_rests_on_its_icon() {
+        let mut app = mail_window(Density::Compact, &["--open", "mail-entry"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let start = Instant::now();
+        app.rail_event(RailEvent::Enter(1), start);
+        assert_eq!((app.rail_open, app.rail_pending.map(|(at, _)| at)), (None, Some(1)), "waits");
+        let _ = app.update(Message::RailTick(start + RAIL_DELAY / 2));
+        assert_eq!(app.rail_open, None, "not yet");
+        let _ = app.update(Message::RailTick(start + RAIL_DELAY));
+        assert_eq!((app.rail_open, app.rail_pending), (Some(1), None), "opened after the delay");
+        // From the open group to the next at once.
+        app.rail_event(RailEvent::Enter(2), start + RAIL_DELAY);
+        assert_eq!(app.rail_open, Some(2));
+        // The pointer leaves; entering the next just after opens it at once, much later it waits.
+        let left = start + RAIL_DELAY * 2;
+        app.rail_event(RailEvent::Close, left);
+        assert_eq!(app.rail_open, None);
+        app.rail_event(RailEvent::Enter(3), left + RAIL_DELAY / 3);
+        assert_eq!(app.rail_open, Some(3), "just after one closed");
+        app.rail_event(RailEvent::Close, left);
+        app.rail_event(RailEvent::Enter(1), left + RAIL_DELAY * 4);
+        assert_eq!(app.rail_open, None, "later it waits again");
+        // Crossing an icon opens nothing.
+        app.rail_event(RailEvent::Leave(1), left + RAIL_DELAY * 4);
+        assert_eq!(app.rail_pending, None);
+        let _ = app.update(Message::RailTick(left + RAIL_DELAY * 10));
+        assert_eq!(app.rail_open, None, "the pointer only crossed it");
+        // Leaving another icon keeps what waits; a click opens at once.
+        let later = left + RAIL_DELAY * 20;
+        app.rail_event(RailEvent::Enter(1), later);
+        app.rail_event(RailEvent::Leave(0), later);
+        assert!(app.rail_pending.is_some());
+        let _ = app.update(Message::Rail(RailEvent::Open(5)));
+        assert_eq!((app.rail_open, app.rail_pending), (Some(5), None), "a click opens now");
+        let _ = app.view();
+    }
+
+    /// Task E14.3 (finding 1): an expanded rail that would leave the reader less than a form's width
+    /// draws collapsed – in the wide window at 1024 – while the choice stays expanded, and expands
+    /// again with room; the divider reckons with the rail as drawn.
+    #[test]
+    fn the_rail_draws_collapsed_where_the_reader_would_be_squeezed() {
+        let mut app = mail_window(Density::Compact, &["--open", "mail-actions"]);
+        let _ = app.update(Message::Resized(Size::new(1024.0, 760.0)));
+        assert_eq!(app.class(), SizeClass::Wide);
+        assert_eq!((app.actions, app.rail_mode(SizeClass::Wide)), (RailMode::Expanded, RailMode::Collapsed));
+        assert_eq!(app.split_limits().total, app.content_width() - RailMode::Collapsed.width());
+        let anchors = detail::Anchors::default().with_rail();
+        let _ = app.update(Message::Rail(RailEvent::Open(1)));
+        assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "drawn collapsed, its groups open beside it");
+        let _ = app.view();
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.rail_mode(SizeClass::Wide), RailMode::Expanded, "with room it shows expanded");
+        assert!(app.reader_room(RailMode::Expanded) >= size::form_max());
+        let _ = app.view();
     }
 
     /// Task E14.3: the demo's states for pictures – the rail expanded, and collapsed with "File" open.
@@ -12256,6 +12432,8 @@ mod tests {
         let mut group = mail_window(Density::Compact, &["--open", "mail-group"]);
         let _ = group.update(Message::Resized(WIDE));
         assert_eq!((group.actions, group.rail_open), (RailMode::Collapsed, Some(1)));
+        let shown = group.detail.as_ref().map(|item| item.id.clone());
+        assert_eq!(group.cursor, shown, "its row is the cursor's, as after a click");
         let anchors = detail::Anchors::default().with_rail();
         let groups = group.rail_groups(SizeClass::Wide, &anchors).expect("the rail");
         assert_eq!(groups[1].label, tr("File"), "the second group is File");
@@ -12278,7 +12456,9 @@ mod tests {
             let groups = app.rail_groups(class, &anchors).expect("the rail");
             groups.iter().flat_map(|group| group.items.iter().map(|item| item.label.to_string())).collect()
         };
-        for (size, width) in [(MEDIUM, size::panel()), (NARROW, NARROW.width)] {
+        // Decision C: over the medium window the panel keeps 400 for the mail, the rail beside it.
+        let medium = size::panel() + RailMode::Collapsed.width();
+        for (size, width) in [(MEDIUM, medium), (NARROW, NARROW.width)] {
             let _ = app.update(Message::Resized(size));
             let class = app.class();
             match app.panel_bars(class) {
