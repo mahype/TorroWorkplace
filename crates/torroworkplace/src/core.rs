@@ -2657,8 +2657,14 @@ impl Core {
         info.rights = effective;
         // The way in as it is now (#231): an approval asked for while MCP was on does not run once a
         // person turned it off. The command switched off meanwhile is refused with the rights below.
+        // The assistant and bots pass no switch only where the core ran them or lent their key – the
+        // approval's origin names the engine or the assistant then –, never with their stored key,
+        // which is checked like an MCP client's as at the door ([`Core::door_refusal`]).
         let settings = self.settings.current();
-        if let Some(why) = crate::clients::closed_door(&info.kind, None, settings.allow_api_keys, settings.allow_mcp) {
+        let run_by_core = origin.engine.is_some() || origin.behalf.is_some();
+        let own = [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&info.kind.as_str());
+        let kind = if own && !run_by_core { torro_ipc::api::MCP_CLIENT } else { info.kind.as_str() };
+        if let Some(why) = crate::clients::closed_door(kind, None, settings.allow_api_keys, settings.allow_mcp) {
             return Refused::Closed { command, why }.response();
         }
         let rights = &info.rights;
@@ -7033,6 +7039,38 @@ mod tests {
         let allowed = approval(ask(&core, Some(&app_key), decide(&second.id, true)).await);
         assert_eq!(outcome(allowed), "unauthorized");
         assert!(core.store.load("review").is_ok(), "not deleted");
+    }
+
+    /// #231: an approval asked for with the assistant's stored key (handed out before #231, used like
+    /// an MCP client's) does not run once MCP is off, as no request with it would; one asked for with
+    /// a key the core lent the assistant is bound to no switch and runs.
+    #[tokio::test]
+    async fn an_approval_of_a_stored_assistant_key_does_not_pass_allow_mcp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        save_template(&core, "review");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let rights = RightsTemplate::ReadAndWrite.rights();
+        let (assistant, stored) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("added");
+        let lent = core.clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let by_stored = waits(ask_via(&core, Some(&stored), Door::Mcp, delete("dev")).await);
+        let by_lent = waits(ask_via(&core, Some(lent.key()), Door::Mcp, delete("review")).await);
+
+        let off = Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) };
+        assert_eq!(core.handle(off).await, Response::Ok);
+        let ran = |approval: torro_ipc::ApprovalInfo| match approval.state {
+            torro_ipc::ApprovalState::Done { response } => *response,
+            other => panic!("expected a run, got {other:?}"),
+        };
+        let allowed = ran(approval(ask(&core, Some(&app_key), decide(&by_stored.id, true)).await));
+        assert_eq!(code(&allowed), "unauthorized", "the stored key is checked like an MCP client's");
+        assert!(core.store.load("dev").is_ok(), "not deleted");
+        let allowed = ran(approval(ask(&core, Some(&app_key), decide(&by_lent.id, true)).await));
+        assert_eq!(allowed, Response::Ok, "a lent key passes");
+        assert!(core.store.load("review").is_err(), "deleted");
     }
 
     /// #231: no client opens the API or MCP again, also with every right in `settings`; closing
