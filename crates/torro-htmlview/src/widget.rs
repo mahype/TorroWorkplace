@@ -185,8 +185,12 @@ impl<Message> Widget<Message, Theme, Renderer> for HtmlView<'_, Message> {
         let Some(frame) = self.content.frame(bounds.width, self.scale, self.scheme, top, visible.height) else {
             return;
         };
-        let at = Rectangle { x: bounds.x, y: bounds.y + frame.top, width: frame.width, height: frame.height };
-        renderer.draw_image(Image { snap: true, ..Image::new(frame.handle) }, at, visible);
+        for tile in frame.tiles {
+            let at = Rectangle { x: bounds.x, y: bounds.y + tile.top, width: frame.width, height: tile.height };
+            if at.intersection(&visible).is_some() {
+                renderer.draw_image(Image { snap: true, ..Image::new(tile.handle) }, at, visible);
+            }
+        }
     }
 
     fn mouse_interaction(

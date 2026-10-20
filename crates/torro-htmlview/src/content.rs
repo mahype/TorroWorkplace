@@ -45,6 +45,11 @@ const VIEWPORT_HEIGHT: f32 = 800.0;
 /// The largest picture painted at once, in device pixels per side (what GPUs take as one texture).
 const MAX_PICTURE: u32 = 8192;
 
+/// Iced 0.14 uploads smaller raster images in the current frame; larger ones are queued on a
+/// worker and leave the mail's background visible until the next redraw. Stay below its 2 MiB
+/// threshold so every newly scrolled band is complete on the first frame.
+const MAX_TILE_BYTES: usize = 2 * 1024 * 1024 - 1;
+
 /// A pointer press further than this from where it started (logical pixels) selects instead of clicking.
 const CLICK_SLOP: f32 = 4.0;
 
@@ -154,10 +159,18 @@ pub(crate) fn surface(scheme: Scheme) -> iced::Color {
     }
 }
 
+/// One image tile, positioned in logical pixels relative to the mail's top.
+#[derive(Debug, Clone)]
+pub(crate) struct FrameTile {
+    pub(crate) handle: image::Handle,
+    pub(crate) top: f32,
+    pub(crate) height: f32,
+}
+
 /// The picture the widget shows: a band of the mail, in logical pixels relative to the mail's top.
 #[derive(Debug, Clone)]
 pub(crate) struct Frame {
-    pub(crate) handle: image::Handle,
+    pub(crate) tiles: Vec<FrameTile>,
     pub(crate) top: f32,
     pub(crate) width: f32,
     pub(crate) height: f32,
@@ -339,8 +352,22 @@ impl Content {
         let extra = height / 2.0;
         let (from, to) = inner.band(fit, top - extra, bottom + extra);
         let rgba = inner.paint(fit, from, to, key.colors);
+        let bytes_per_row = fit.width as usize * 4;
+        let rows_per_tile = (MAX_TILE_BYTES / bytes_per_row).max(1);
+        let tiles = rgba
+            .chunks(rows_per_tile * bytes_per_row)
+            .enumerate()
+            .map(|(index, pixels)| {
+                let rows = (pixels.len() / bytes_per_row) as u32;
+                FrameTile {
+                    handle: image::Handle::from_rgba(fit.width, rows, pixels.to_vec()),
+                    top: (from as usize + index * rows_per_tile) as f32 / fit.scale,
+                    height: rows as f32 / fit.scale,
+                }
+            })
+            .collect();
         let frame = Frame {
-            handle: image::Handle::from_rgba(fit.width, to - from, rgba),
+            tiles,
             top: from as f32 / fit.scale,
             width: fit.width as f32 / fit.scale,
             height: (to - from) as f32 / fit.scale,

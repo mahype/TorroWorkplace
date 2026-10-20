@@ -356,12 +356,12 @@ fn selecting_repaints() {
     let content = content("<p style=\"font-size:20px\">Select these words please</p>");
     let before = content.frame(600.0, 1.0, Scheme::Light, 0.0, 100.0).expect("frame");
     let again = content.frame(600.0, 1.0, Scheme::Light, 0.0, 100.0).expect("frame");
-    assert_eq!(before.handle.id(), again.handle.id(), "nothing changed: the cached picture");
+    assert_eq!(before.tiles[0].handle.id(), again.tiles[0].handle.id(), "nothing changed: the cached picture");
     content.press(Point::new(9.0, 40.0));
     content.drag(Point::new(400.0, 40.0));
     content.release(Point::new(400.0, 40.0));
     let after = content.frame(600.0, 1.0, Scheme::Light, 0.0, 100.0).expect("frame");
-    assert_ne!(before.handle.id(), after.handle.id());
+    assert_ne!(before.tiles[0].handle.id(), after.tiles[0].handle.id());
 }
 
 #[test]
@@ -372,8 +372,28 @@ fn a_frame_covers_the_visible_band_and_some_more() {
     assert!(frame.height <= 1400.0 + 1.0);
     assert_eq!(frame.width, 600.0);
     let near = content.frame(600.0, 2.0, Scheme::Light, 5100.0, 700.0).expect("frame");
-    assert_eq!(frame.handle.id(), near.handle.id(), "a small scroll step reuses the picture");
+    assert_eq!(frame.tiles[0].handle.id(), near.tiles[0].handle.id(), "a small scroll step reuses the picture");
     assert!(content.frame(600.0, 2.0, Scheme::Light, -500.0, 100.0).is_none(), "above the mail");
+}
+
+#[test]
+fn every_scrolled_tile_is_small_enough_to_draw_in_the_current_frame() {
+    let content = content(&long_mail());
+    for scheme in [Scheme::Light, Scheme::Dark] {
+        let frame = content.frame(700.0, 2.0, scheme, 25_000.0, 700.0).expect("frame");
+        assert!(frame.tiles.len() > 1, "the high-resolution band must be tiled");
+        let mut next = frame.top;
+        for tile in &frame.tiles {
+            let image::Handle::Rgba { width, height, pixels, .. } = &tile.handle else {
+                panic!("a tile must contain RGBA pixels");
+            };
+            assert_eq!(pixels.len(), (*width * *height * 4) as usize);
+            assert!(pixels.len() <= MAX_TILE_BYTES, "a larger tile would be uploaded asynchronously");
+            assert!((tile.top - next).abs() < 0.01, "gap between tiles at {next}");
+            next = tile.top + tile.height;
+        }
+        assert!((next - frame.top - frame.height).abs() < 0.01, "tiles must cover the whole painted band");
+    }
 }
 
 #[test]
