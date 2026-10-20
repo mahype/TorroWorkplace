@@ -4002,8 +4002,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The PDF cannot be made: {reason}", "Die PDF kann nicht erstellt werden: {reason}"),
     ("The file cannot be written: {reason}", "Die Datei kann nicht geschrieben werden: {reason}"),
     (
-        "The PDF cannot be kept: Torro Workplace cannot write its list of files.",
-        "Die PDF kann nicht behalten werden: Torro Workplace kann seine Dateiliste nicht schreiben.",
+        "The PDF cannot be kept: Torro Workplace cannot read or write its list of files.",
+        "Die PDF kann nicht behalten werden: Torro Workplace kann seine Dateiliste nicht lesen oder schreiben.",
     ),
     (
         "The file cannot be opened: no program for it started.",

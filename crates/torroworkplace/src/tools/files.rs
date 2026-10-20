@@ -141,7 +141,7 @@ impl std::fmt::Display for RegisterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RegisterError::NoFolder => f.write_str("the register has no folder (no home directory)"),
-            RegisterError::Io(err) => write!(f, "the register cannot be written ({})", err.kind()),
+            RegisterError::Io(err) => write!(f, "the register cannot be read or written ({})", err.kind()),
             RegisterError::Random => f.write_str("no random numbers for a file id"),
         }
     }
@@ -226,7 +226,9 @@ fn read(file: &Path) -> Vec<FileEntry> {
         }
     };
     serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        eprintln!("torroworkplace: the register of the tools' files is no register; it starts anew");
+        eprintln!(
+            "torroworkplace: the register of the tools' files is no register; kept aside when the next file is added"
+        );
         Vec::new()
     })
 }
@@ -245,7 +247,7 @@ fn read_to_change(file: &Path) -> Result<Vec<FileEntry>, RegisterError> {
         Ok(entries) => Ok(entries),
         Err(_) => {
             fs::rename(file, broken(file)).map_err(RegisterError::Io)?;
-            eprintln!("torroworkplace: the register of the tools' files is no register; kept aside, it starts anew");
+            eprintln!("torroworkplace: the register of the tools' files was no register; kept aside, a new one starts");
             Ok(Vec::new())
         }
     }

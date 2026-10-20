@@ -343,8 +343,10 @@ pub enum DraftAttachment {
         part: String,
     },
     /// A file on this computer, at most 25 MiB, no symbolic link. A client key may only attach
-    /// files from the core's attachment folder (where `mail.get_attachment` puts them); any other
-    /// path is `forbidden` (security rule 1 of M2.1).
+    /// files from the core's attachment folder (where `mail.get_attachment` puts them) and a PDF it
+    /// made itself with `tools.create_pdf` (the `path` from its answer) while that tool is switched
+    /// on, it may read `tools` and `pdf` is among its tools; any other path is `forbidden`
+    /// (security rule 1 of M2.1).
     File {
         /// The file's absolute path.
         path: String,
