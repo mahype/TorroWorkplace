@@ -478,7 +478,10 @@ eine neue Schrift vorschlagen, warten auf L.24.
   Lato bei `font = "channelr"`. API-Referenz neu: `TORRO_BLESS=1 cargo test -p torro-ipc`. `torro-api-review`.
 
 ### L.23 Steuerzentrale: Schrift und Farbschema wählen
-- [ ] erledigt
+- [x] erledigt (2026-10-20: „Suggested“ als eigene Zeile unter dem Namen (`widgets::preview_tile_noted`), weil die
+  Vorschau mit 28 px für ein Wort darauf zu niedrig ist; die Steuerzentrale folgt beim Neuladen allen drei
+  Einstellungen (`Follow::follow`); `Folders::look` wird nicht mehr benutzt; Demo: Design „Harbor“ gewählt (Form des
+  Standards), Schrift „Tabular“ (Inter Tabular), je ein unbrauchbarer Eintrag)
 - **Modell:** Opus · **Braucht:** L.18, L.22 · **Dateien:** `crates/torroworkplace/src/ui/{general,mod,launch}.rs`,
   `docs/api.md` (Fußnote ⁹)
 - **Oberfläche:** Appearance, untereinander: Color mode · Design · neu „Font“ · neu „Colour scheme“ · Interface, alle

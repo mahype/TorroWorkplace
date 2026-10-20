@@ -312,9 +312,13 @@ Design zu wählen ändert Schrift und Farbschema nicht. Ein fehlendes oder ungü
 darum genügt `Read` zum Auflisten. Name, Familie, Version, Autor, Beschreibung, Lizenz, die vorgeschlagenen ids und
 alles in `problems` (Dateinamen, Schlüssel, Meldungen des Parsers) sind Text aus dem Ordner, ebenso die Gründe in einer
 Ablehnung von `set_setting`: Die Beschreibungen der Tools sagen Agenten, ihn als Daten zu behandeln, nie als
-Anweisung. Die
-Apps folgen den drei Einstellungen wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem Takt und lesen
-nur den Teil neu, der sich geändert hat; nur eine neue Schrift lädt Schriftdateien.
+Anweisung. Die Apps folgen den drei Einstellungen wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem
+Takt und lesen nur den Teil neu, der sich geändert hat; nur eine neue Schrift lädt Schriftdateien. „Open designs
+folder“, „Open fonts folder“ und „Open colour schemes folder“ (Steuerzentrale › Appearance, L.18/L.23) haben keinen
+Befehl und kein MCP-Tool: Sie öffnen nur den Dateimanager am Desktop eines Menschen (fehlt der Ordner, legt die
+Steuerzentrale ihn mit seinen Beispielen an) – sie geben keine Daten heraus, ändern keine Einstellung und brauchen
+keine Rechte. Ein Agent hätte davon nichts; Teile hinzufügen bleibt Sache des Menschen im Ordner, auflisten und
+wählen geht über die Befehle oben.
 
 ¹⁰ `hide_sender { id, scope: conversation | sender | domain }` (E3.10, E3.11) hat je Umfang eine
 andere Stufe: `conversation` ist `Write` (nur dieser Eintrag wird erledigt, keine Regel; eine neue

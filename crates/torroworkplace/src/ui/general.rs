@@ -8,8 +8,9 @@
 //!   "Startup" has the "Start at login" switch; "Setup" runs the first-run setup again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance; compact since L.18): "Color mode" is one row with a segment of three parts, each with
-//!   its symbol and word (System, Light, Dark); "Design" is a grid of small tiles (below);
-//!   "Interface" has the zoom of the suite with −, the value, + and "Reset" (task Z.1).
+//!   its symbol and word (System, Light, Dark); "Design", "Font" and "Colour scheme" are grids of
+//!   small tiles (below); "Interface" has the zoom of the suite with −, the value, + and "Reset"
+//!   (task Z.1).
 //!
 //! What a single app or window shows and how it behaves is set in that window, behind its gear
 //! (task S.21): the calendar's night and reminders, how mail is read, the sources of the
@@ -20,44 +21,60 @@
 //! The zoom goes through the window's own zoom instead (`Action::Zoom`), which saves it and
 //! applies it at once, also in the demo. The page shows `data.settings`, so it follows the daemon.
 //!
-//! # Design (tasks L.4 and L.18, concept `docs/design-pakete.md`)
+//! # Design, font and colour scheme (tasks L.4, L.18 and L.23, concept `docs/design-pakete.md`)
 //!
-//! One tile per pack as the core lists them (`settings.list_designs`, asked by the shell when the
-//! page opens and on "Reload"), in a grid that takes as many as fit the width
-//! (`widgets::preview_grid`): on top a sample – the pack's `preview.png`, or a swatch of its `bg`,
-//! `panel`, `accent` and `text` with "Aa" in its text font, in the window's light or dark mode, at
-//! the tile's size –, under it the name, "version · author" as tooltip, and a frame with a check
-//! mark at the one the windows draw with. Choosing one is [`Action::Design`]: the shell draws its
-//! own window with it at once and saves it (`settings.set_setting design`); no question first.
+//! The three parts of the look are chosen apart, each in a grid of tiles that takes as many as fit
+//! the width (`widgets::preview_grid`), one tile per entry as the core lists them
+//! (`settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes`, asked by the
+//! shell when the page opens and on "Reload"). Each tile shows only its own part:
 //!
-//! A pack that breaks a rule is a greyed-out tile with an alert mark in place of the sample. A
-//! click on it shows, under the grid, its name, "Can't be used:" and every reason in full,
+//! - **Design** – the design's `preview.png`, or a sample of its form (spacing, radius, text size)
+//!   drawn in the active font and colour scheme; the name under it, "version · author" as tooltip.
+//! - **Font** – "Aa 09" in the font's text family at the size the font draws body text; named by
+//!   the family, "pack · version · author · licence" as tooltip.
+//! - **Colour scheme** – stripes of its `bg`, `panel`, `accent` and `text` in the window's light or
+//!   dark mode; the name, "version · author" as tooltip.
+//!
+//! The one each part is drawn with has a frame and a check mark. Choosing a tile is
+//! [`Action::Choose`]: the shell draws its own window with it at once and saves it
+//! (`settings.set_setting design | font | color_scheme`); no question first. Choosing a design
+//! changes neither font nor colour scheme; when the design drawn suggests others than the active
+//! ones (`DesignInfo::font`, `DesignInfo::color_scheme`), their tiles say "Suggested" under the name
+//! with "Suggested for {design}" in the tooltip, and a click chooses them like any other.
+//!
+//! An entry that breaks a rule is a greyed-out tile with an alert mark in place of the sample. A
+//! click on it shows, under its grid, its name, "Can't be used:" and every reason in full,
 //! wrapping – a list of reasons is too long for a tooltip and must be readable without a mouse
-//! over it. A second click, or a click on another tile, closes or swaps that ([`Message::Problems`]).
+//! over it. A second click, or a click on another tile, closes or swaps that
+//! ([`Message::Problems`]); one entry's reasons are shown at a time on the whole page.
 //!
-//! "Reload" and "Open designs folder" (created if it is missing, its path as tooltip) are quiet
-//! actions at the right of the heading.
+//! "Reload" (once, at the heading "Design": it lists all three again) and "Open … folder" in each
+//! heading (created with its examples if it is missing, its path as tooltip) are quiet actions at
+//! the right of the headings. Opening a folder is a local action of the control centre without a
+//! request: it only shows the file manager on this desktop (`docs/api.md`, footnote 9).
 //!
-//! The list comes from the core; the sample's picture comes from the design's folder, its font and
-//! colours from the font and colour scheme of the same id (until task L.22 one id names all three),
-//! read here the way every window reads the look it draws with (`torro_gui::design::Folders::look`):
-//! [`Pack::new`].
+//! The lists come from the core; the parts for the samples are read here, only for the ids the
+//! core listed as usable, the way every window reads the part it draws with
+//! (`torro_core::design::load`, `load_font`, `load_color_scheme`): [`Entry`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use iced::border::Radius;
+use iced::widget::text::LineHeight;
 use iced::widget::{column, container, responsive, row, space as blank, svg, text};
-use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Length, Padding, Size, Theme};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Padding, Pixels, Size, Theme};
 use torro_core::AppId;
-use torro_core::design::{ColorScheme, FontRole, Mode, STANDARD_ID, Selection, Weight};
+use torro_core::design::{ColorScheme, Design, FontRole, FontSet, Mode, Part, STANDARD_ID, Weight};
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Component, ComponentSwitch, Language, Zoom};
+use torro_core::settings::{Component, ComponentSwitch, Language, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
 use torro_gui::widgets::PreviewState;
 use torro_gui::zoom::{self, Step};
 use torro_gui::{layout, style, typo, widgets};
-use torro_ipc::{DesignInfo, Request, SettingKey};
+use torro_ipc::{ColorSchemeInfo, DesignInfo, FontInfo, Request, SettingKey};
 use torro_settings_ui::parts::{choice, switch};
 
 use super::setup::component_name;
@@ -65,53 +82,160 @@ use super::{Action, Data, Section, setting_row};
 
 #[derive(Debug, Default)]
 pub struct State {
-    /// The design packs as the core listed them last, the standard first; `Err` when it did not
-    /// answer, `None` until the first answer.
-    designs: Option<Result<Vec<Pack>, String>>,
-    /// The pack that can't be used whose reasons are shown under the grid (its id), after a click
-    /// on its tile; `None` while no reasons are shown.
-    problems: Option<String>,
+    /// The designs as the core listed them last, the standard first; `Err` when it did not answer,
+    /// `None` until the first answer. The fonts and colour schemes alike.
+    designs: Option<Result<Vec<DesignEntry>, String>>,
+    fonts: Option<Result<Vec<FontEntry>, String>>,
+    schemes: Option<Result<Vec<SchemeEntry>, String>>,
+    /// The entry that can't be used whose reasons are shown under its grid (its part and id), after
+    /// a click on its tile; `None` while no reasons are shown. The part, because one id can name a
+    /// design, a font and a colour scheme at once (`plex`).
+    problems: Option<(Part, String)>,
 }
 
-/// One design pack of the list: what the core says about it and what its tile shows of its look.
+/// One entry of a list of the core – a design, a font or a colour scheme (`info`) – with the part
+/// itself as read here for its sample.
 #[derive(Debug, Clone)]
-pub struct Pack {
-    pub info: DesignInfo,
-    /// The design as read from its folder here, with the font and colour scheme of the same id: the
-    /// font and the colours of the swatch, and what the window draws with when it is chosen. `None`
-    /// for a design that can't be used (or whose folder changed since the core listed it).
-    pub look: Option<Arc<Selection>>,
-    /// `preview.png` as an SVG image: Iced here draws SVG but not PNG (no `image` feature), and
-    /// its SVG renderer takes a PNG embedded as a `data:` address. Built once per listing, so Iced
-    /// rasterises it once.
+pub struct Entry<I, T> {
+    pub info: I,
+    /// The part as read from its folder: what the sample shows and what the demo draws with when it
+    /// is chosen. `None` for one that can't be used (or whose folder changed since the core listed
+    /// it).
+    pub part: Option<Arc<T>>,
+    /// A design's `preview.png` as an SVG image: Iced here draws SVG but not PNG (no `image`
+    /// feature), and its SVG renderer takes a PNG embedded as a `data:` address. Built once per
+    /// listing, so Iced rasterises it once. Always `None` for fonts and colour schemes.
     preview: Option<svg::Handle>,
 }
 
-impl Pack {
-    /// The row of `info`, with `look` read from the folders (`None` when the design can't be
-    /// used). Reads the design's `preview.png` if it has one (checked by `design::load`: a PNG of at
-    /// most 2 MB and 1200 × 800); a picture that can't be read gives the swatch.
-    pub fn new(info: DesignInfo, look: Option<Selection>) -> Pack {
-        let preview = look.as_ref().and_then(|l| l.design.preview.as_ref()).and_then(|path| std::fs::read(path).ok());
-        Pack { info, preview: preview.as_deref().and_then(png_as_svg), look: look.map(Arc::new) }
+/// A design of the list (`settings.list_designs`).
+pub type DesignEntry = Entry<DesignInfo, Design>;
+/// A font of the list (`settings.list_fonts`).
+pub type FontEntry = Entry<FontInfo, FontSet>;
+/// A colour scheme of the list (`settings.list_color_schemes`).
+pub type SchemeEntry = Entry<ColorSchemeInfo, ColorScheme>;
+
+impl<I, T> Entry<I, T> {
+    /// The row `info` with `part` as read from its folder (`None` when it can't be used). For a
+    /// design, use [`Entry::design`], which reads its picture too.
+    pub fn new(info: I, part: Option<T>) -> Entry<I, T> {
+        Entry { info, part: part.map(Arc::new), preview: None }
     }
 }
 
-/// Stores the packs the core listed (`settings.list_designs`), or why it could not list them.
-pub fn listed(state: &mut State, designs: Result<Vec<Pack>, String>) {
-    state.designs = Some(designs);
+impl DesignEntry {
+    /// [`Entry::new`] for a design: reads its `preview.png` if it has one (checked by
+    /// `design::load`: a PNG of at most 2 MB and 1200 × 800); a picture that can't be read gives the
+    /// sample.
+    pub fn design(info: DesignInfo, design: Option<Design>) -> DesignEntry {
+        let png = design.as_ref().and_then(|d| d.preview.as_ref()).and_then(|path| std::fs::read(path).ok());
+        Entry { preview: png.as_deref().and_then(png_as_svg), ..Entry::new(info, design) }
+    }
 }
 
-/// Whether the packs have not been listed yet, so the shell asks the core when the page opens.
+/// The three lists of one listing ("Reload" lists all three at once), each `Err` with what went wrong
+/// when the core did not list it.
+#[derive(Debug, Clone)]
+pub struct Lists {
+    pub designs: Result<Vec<DesignEntry>, String>,
+    pub fonts: Result<Vec<FontEntry>, String>,
+    pub schemes: Result<Vec<SchemeEntry>, String>,
+}
+
+impl Lists {
+    /// Three lists that all failed for `problem` (no home directory, a worker that died).
+    pub fn failed(problem: String) -> Lists {
+        Lists { designs: Err(problem.clone()), fonts: Err(problem.clone()), schemes: Err(problem) }
+    }
+}
+
+/// What the page needs of every list's rows, whichever part they list.
+trait Listed {
+    fn id(&self) -> &str;
+    /// The name its tile shows.
+    fn name(&self) -> &str;
+    fn valid(&self) -> bool;
+    fn problems(&self) -> &[String];
+}
+
+impl Listed for DesignInfo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn valid(&self) -> bool {
+        self.valid
+    }
+    fn problems(&self) -> &[String] {
+        &self.problems
+    }
+}
+
+impl Listed for FontInfo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    /// A font is named by its family (`IBM Plex Sans`), its pack's name goes in the tooltip; one
+    /// that can't be used has no family, then the pack's name.
+    fn name(&self) -> &str {
+        self.family.as_deref().filter(|family| !family.is_empty()).unwrap_or(&self.name)
+    }
+    fn valid(&self) -> bool {
+        self.valid
+    }
+    fn problems(&self) -> &[String] {
+        &self.problems
+    }
+}
+
+impl Listed for ColorSchemeInfo {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn valid(&self) -> bool {
+        self.valid
+    }
+    fn problems(&self) -> &[String] {
+        &self.problems
+    }
+}
+
+/// Stores the lists of one listing ([`Lists`]).
+pub fn listed(state: &mut State, lists: Lists) {
+    state.designs = Some(lists.designs);
+    state.fonts = Some(lists.fonts);
+    state.schemes = Some(lists.schemes);
+}
+
+/// Whether nothing has been listed yet, so the shell asks the core when the page opens.
 pub fn unlisted(state: &State) -> bool {
     state.designs.is_none()
 }
 
-/// The look of the pack `id` as read for its row, for a window that cannot read it from the
-/// folders (`--demo`, whose packs live in memory).
-pub fn look_of(state: &State, id: &str) -> Option<Arc<Selection>> {
-    let packs = state.designs.as_ref()?.as_ref().ok()?;
-    packs.iter().find(|pack| pack.info.id == id)?.look.clone()
+/// The design `id` as read for its row, for a window that cannot read it from the folders
+/// (`--demo`, whose entries live in memory). `None` when it is not listed or can't be used.
+pub fn design_of(state: &State, id: &str) -> Option<Arc<Design>> {
+    part_of(&state.designs, id)
+}
+
+/// [`design_of`] for a font.
+pub fn font_of(state: &State, id: &str) -> Option<Arc<FontSet>> {
+    part_of(&state.fonts, id)
+}
+
+/// [`design_of`] for a colour scheme.
+pub fn scheme_of(state: &State, id: &str) -> Option<Arc<ColorScheme>> {
+    part_of(&state.schemes, id)
+}
+
+fn part_of<I: Listed, T>(list: &Option<Result<Vec<Entry<I, T>>, String>>, id: &str) -> Option<Arc<T>> {
+    let entries = list.as_ref()?.as_ref().ok()?;
+    entries.iter().find(|entry| entry.info.id() == id)?.part.clone()
 }
 
 #[derive(Debug, Clone)]
@@ -129,16 +253,17 @@ pub enum Message {
     OpenApp(String),
     /// "Open" of Workspaces, which has no window of its own: the Workspaces page.
     OpenWorkspaces,
-    /// A design pack's tile: draw every window with this pack (its id). Closes the reasons of a
-    /// pack that can't be used, if they are shown.
-    Design(String),
-    /// The tile of a pack that can't be used (its id): show its reasons under the grid, or hide
-    /// them if they are shown already. Asks nothing of the shell.
-    Problems(String),
-    /// "Reload": list the packs again, after one was added to or changed in the folder.
-    ReloadDesigns,
-    /// "Open designs folder".
-    OpenDesignsFolder,
+    /// The tile of a design, a font or a colour scheme (`part`, its id): draw every window with it.
+    /// Closes the reasons of an entry that can't be used, if they are shown.
+    Choose(Part, String),
+    /// The tile of an entry that can't be used (`part`, its id): show its reasons under its grid,
+    /// or hide them if they are shown already. Asks nothing of the shell.
+    Problems(Part, String),
+    /// "Reload": list designs, fonts and colour schemes again, after one was added to or changed
+    /// in a folder.
+    Reload,
+    /// "Open designs folder", "Open fonts folder" or "Open colour schemes folder".
+    OpenFolder(Part),
     /// "Run setup again" (task W.9).
     RunSetup,
 }
@@ -160,16 +285,17 @@ pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
         Message::OpenApp(app) => return Action::Send(Request::OpenApp { app, target: None }),
         Message::OpenWorkspaces => return Action::Select(Section::Workspaces),
         // The shell draws its own window with it at once, then saves it.
-        Message::Design(id) => {
+        Message::Choose(part, id) => {
             state.problems = None;
-            return Action::Design(id);
+            return Action::Choose(part, id);
         }
-        Message::Problems(id) => {
-            state.problems = if state.problems.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+        Message::Problems(part, id) => {
+            let shown = state.problems.as_ref().is_some_and(|(p, i)| *p == part && *i == id);
+            state.problems = if shown { None } else { Some((part, id)) };
             return Action::None;
         }
-        Message::ReloadDesigns => return Action::ListDesigns,
-        Message::OpenDesignsFolder => return Action::OpenDesignsFolder,
+        Message::Reload => return Action::ListLooks,
+        Message::OpenFolder(part) => return Action::OpenFolder(part),
         Message::RunSetup => return Action::OpenSetup,
     };
     Action::Send(Request::SetSetting { key, value })
@@ -317,7 +443,7 @@ fn installed(data: &Data, app: AppId) -> bool {
         .any(|listed| listed.window_class == app.window_class && listed.installed)
 }
 
-/// The page Appearance: light or dark, the design pack, the zoom.
+/// The page Appearance: light or dark, design, font, colour scheme, the zoom.
 pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings;
     let interface = widgets::group(
@@ -328,7 +454,16 @@ pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
                 .to_string(),
         ),
     );
-    column![color_mode(settings.appearance), designs(state, data), interface].spacing(layout::section_gap()).into()
+    let suggested = suggestion(state, settings);
+    column![
+        color_mode(settings.appearance),
+        designs(state, settings),
+        fonts(state, settings, suggested.as_ref()),
+        schemes(state, settings, suggested.as_ref()),
+        interface
+    ]
+    .spacing(layout::section_gap())
+    .into()
 }
 
 /// The three colour modes in the order of the segment, each with its symbol and word.
@@ -368,41 +503,79 @@ fn mode_words_need() -> f32 {
     3.0 * space::l() + typo::text_width(tr("Color mode"), typo::body()) + widgets::icon_segmented_width(&labels, true)
 }
 
-/// The block "Design": the heading with "Reload" and "Open designs folder", the grid of packs, the
-/// reasons of the one opened, and the sentence that explains it.
-fn designs<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let body: Element<'a, Message> = match &state.designs {
-        // Quiet until the core answers, which takes a moment at most.
-        None => typo::text(typo::body(), tr("Loading …")).style(torro_gui::theme::text_3).into(),
-        Some(Err(problem)) => {
-            let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
-                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
-            let row = setting_row(
-                Some(alert.into()),
-                tr("The designs can't be listed."),
-                Some(problem.clone()),
-                None::<Element<'a, Message>>,
-            );
-            container(row).width(Fill).style(style::container::group).into()
-        }
-        Some(Ok(packs)) => {
-            let drawn = drawn(packs, &data.settings.design);
-            let open = opened(packs, state.problems.as_deref());
-            let tiles = packs
-                .iter()
-                .map(|pack| pack_tile(pack, pack.info.id == drawn, open.is_some_and(|o| o.info.id == pack.info.id)));
-            let grid = widgets::preview_grid(tiles.collect());
-            match open {
-                Some(pack) => column![grid, problems(pack)].spacing(layout::item_gap()).into(),
-                None => grid,
-            }
-        }
-    };
+/// The block "Design": the heading with "Reload" (for all three lists) and "Open designs folder",
+/// the grid, the reasons of the one opened, and the sentence that explains it.
+fn designs<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Message> {
+    let body = listing(&state.designs, tr("The designs can't be listed."), Part::Design, state, |entries, open| {
+        let drawn = drawn(entries, &settings.design);
+        let one = |entry: &'a DesignEntry| {
+            let info = &entry.info;
+            let tip = byline([Some(info.version.as_str()), info.author.as_deref()]);
+            tile(entry, Part::Design, info.id == drawn, open, None, tip, || design_sample(entry))
+        };
+        entries.iter().map(one).collect()
+    });
+    let reload = widgets::icon_button(Icon::RefreshCw, tr("Reload"), Some(Message::Reload));
     let footer = tr(
-        "Colors, fonts and spacing of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
+        "Spacing, sizes and corner radii of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
     );
+    block(tr("Design"), vec![reload, open_folder(Part::Design)], body, footer)
+}
+
+/// The block "Font": the heading with "Open fonts folder", the grid, the reasons of the one opened,
+/// and its sentence. The font the drawn design suggests says so under its name ([`suggestion`]).
+fn fonts<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Suggestion<'a>>) -> Element<'a, Message> {
+    let (mark, design) = suggested.map_or((None, ""), |s| (s.font, s.design));
+    let body = listing(&state.fonts, tr("The fonts can't be listed."), Part::Font, state, |entries, open| {
+        let drawn = drawn(entries, &settings.font);
+        let one = |entry: &'a FontEntry| {
+            let info = &entry.info;
+            let tip = byline([
+                Some(info.name.as_str()),
+                Some(info.version.as_str()),
+                info.author.as_deref(),
+                info.license.as_deref(),
+            ]);
+            let (note, tip) = noted(mark == Some(info.id.as_str()), design, tip);
+            tile(entry, Part::Font, info.id == drawn, open, note, tip, || font_sample(entry))
+        };
+        entries.iter().map(one).collect()
+    });
+    let footer = tr(
+        "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder.",
+    );
+    block(tr("Font"), vec![open_folder(Part::Font)], body, footer)
+}
+
+/// The block "Colour scheme": the heading with "Open colour schemes folder", the grid, the reasons
+/// of the one opened, and its sentence; the colour scheme the drawn design suggests says so.
+fn schemes<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Suggestion<'a>>) -> Element<'a, Message> {
+    let (mark, design) = suggested.map_or((None, ""), |s| (s.scheme, s.design));
+    let failed = tr("The colour schemes can't be listed.");
+    let body = listing(&state.schemes, failed, Part::ColorScheme, state, |entries, open| {
+        let drawn = drawn(entries, &settings.color_scheme);
+        let one = |entry: &'a SchemeEntry| {
+            let info = &entry.info;
+            let tip = byline([Some(info.version.as_str()), info.author.as_deref()]);
+            let (note, tip) = noted(mark == Some(info.id.as_str()), design, tip);
+            tile(entry, Part::ColorScheme, info.id == drawn, open, note, tip, || scheme_sample(entry))
+        };
+        entries.iter().map(one).collect()
+    });
+    let footer =
+        tr("The colours of all Torro apps, light and dark. More colour schemes go into the colour schemes folder.");
+    block(tr("Colour scheme"), vec![open_folder(Part::ColorScheme)], body, footer)
+}
+
+/// One block of the page: the heading with its quiet `actions`, `body` and the sentence `footer`.
+fn block<'a>(
+    title: &'a str,
+    actions: Vec<Element<'a, Message>>,
+    body: Element<'a, Message>,
+    footer: &'a str,
+) -> Element<'a, Message> {
     column![
-        widgets::group_heading(tr("Design"), folder_actions()),
+        widgets::group_heading(title, actions),
         body,
         typo::text(typo::meta(), footer).style(torro_gui::theme::text_2),
     ]
@@ -410,99 +583,256 @@ fn designs<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     .into()
 }
 
-/// The id of the pack the windows draw with: the chosen one (`Settings::design`) if it can be
-/// used, else the standard, which the suite falls back to (concept: "Wählen und wechseln").
-fn drawn<'a>(packs: &'a [Pack], chosen: &'a str) -> &'a str {
-    if packs.iter().any(|pack| pack.info.id == chosen && pack.info.valid) { chosen } else { STANDARD_ID }
+/// The body of a block: quiet "Loading …" until the core answered, a row saying that `failed` with
+/// the core's reason, or the grid of the tiles `tiles` builds – it gets the entries and the id of
+/// the one whose reasons are open – with those reasons under it.
+fn listing<'a, I: Listed, T>(
+    list: &'a Option<Result<Vec<Entry<I, T>>, String>>,
+    failed: &'a str,
+    part: Part,
+    state: &'a State,
+    tiles: impl FnOnce(&'a [Entry<I, T>], Option<&'a str>) -> Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    match list {
+        // Quiet until the core answers, which takes a moment at most.
+        None => typo::text(typo::body(), tr("Loading …")).style(torro_gui::theme::text_3).into(),
+        Some(Err(problem)) => {
+            let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+            let row = setting_row(Some(alert.into()), failed, Some(problem.clone()), None::<Element<'a, Message>>);
+            container(row).width(Fill).style(style::container::group).into()
+        }
+        Some(Ok(entries)) => {
+            let open = opened(entries, part, state.problems.as_ref());
+            let grid = widgets::preview_grid(tiles(entries, open.map(|entry| entry.info.id())));
+            match open {
+                Some(entry) => column![grid, problems(&entry.info)].spacing(layout::item_gap()).into(),
+                None => grid,
+            }
+        }
+    }
 }
 
-/// The pack whose reasons are shown: the one `open` names, while it is listed and can't be used.
-/// After "Reload" a pack that was fixed shows its sample again, and nothing is left open for it.
-fn opened<'a>(packs: &'a [Pack], open: Option<&str>) -> Option<&'a Pack> {
-    let open = open?;
-    packs.iter().find(|pack| pack.info.id == open && !pack.info.valid)
-}
-
-/// "version · author" of a pack, the tooltip of its tile; `None` when it names neither.
-fn byline(info: &DesignInfo) -> Option<String> {
-    let parts: Vec<&str> =
-        [Some(info.version.as_str()), info.author.as_deref()].into_iter().flatten().filter(|p| !p.is_empty()).collect();
-    (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
-/// One pack as a tile: its sample, its name and the check mark at the one `drawn` with. One that
-/// can't be used is greyed out; its click shows or hides its reasons (`open`: they are shown).
-fn pack_tile<'a>(pack: &'a Pack, drawn: bool, open: bool) -> Element<'a, Message> {
-    let info = &pack.info;
-    if !info.valid {
-        let state = PreviewState::Unusable { open };
-        return widgets::preview_tile(None, &info.name, byline(info), state, Some(Message::Problems(info.id.clone())));
+/// One entry as a tile: `sample` on top, its name, `note` under it ("Suggested"), `tip` as
+/// tooltip, and the check mark at the one `drawn` with. One that can't be used is greyed out
+/// without its sample; its click shows or hides its reasons (`open`: the id whose reasons are
+/// shown).
+fn tile<'a, I: Listed, T>(
+    entry: &'a Entry<I, T>,
+    part: Part,
+    drawn: bool,
+    open: Option<&str>,
+    note: Option<&'a str>,
+    tip: Option<String>,
+    sample: impl FnOnce() -> Element<'a, Message>,
+) -> Element<'a, Message> {
+    let info = &entry.info;
+    let id = info.id().to_string();
+    if !info.valid() {
+        let state = PreviewState::Unusable { open: open == Some(info.id()) };
+        return widgets::preview_tile(None, info.name(), tip, state, Some(Message::Problems(part, id)));
     }
     let state = if drawn { PreviewState::Chosen } else { PreviewState::Plain };
-    widgets::preview_tile(Some(sample(pack)), &info.name, byline(info), state, Some(Message::Design(info.id.clone())))
+    widgets::preview_tile_noted(Some(sample()), info.name(), note, tip, state, Some(Message::Choose(part, id)))
 }
 
-/// Under the grid, for the pack that can't be used whose tile was clicked: its name, "Can't be
+/// The id of the entry the windows draw with: `chosen` (`Settings::design`, `font` or
+/// `color_scheme`) if it is listed and can be used, else the standard, which the suite falls back to
+/// (concept: "Wählen und wechseln"). An empty `chosen` (a core from before task L.22) is the
+/// standard too.
+fn drawn<'a, I: Listed, T>(entries: &'a [Entry<I, T>], chosen: &'a str) -> &'a str {
+    if entries.iter().any(|entry| entry.info.id() == chosen && entry.info.valid()) { chosen } else { STANDARD_ID }
+}
+
+/// The entry whose reasons are shown: the one `open` names, while its list is `part`'s and it is
+/// listed and can't be used. After "Reload" an entry that was fixed shows its sample again, and
+/// nothing is left open for it.
+fn opened<'a, I: Listed, T>(
+    entries: &'a [Entry<I, T>],
+    part: Part,
+    open: Option<&(Part, String)>,
+) -> Option<&'a Entry<I, T>> {
+    let (which, id) = open?;
+    if *which != part {
+        return None;
+    }
+    entries.iter().find(|entry| entry.info.id() == id && !entry.info.valid())
+}
+
+/// What the design drawn suggests and is not drawn: the name of the design, for the tooltip, and the
+/// ids of the font and the colour scheme it suggests (`DesignInfo::font`, `color_scheme`), each only
+/// when it is listed, can be used and is not the one drawn.
+#[derive(Debug, PartialEq, Eq)]
+struct Suggestion<'a> {
+    design: &'a str,
+    font: Option<&'a str>,
+    scheme: Option<&'a str>,
+}
+
+/// The [`Suggestion`] of the design drawn; `None` while the designs are not listed.
+fn suggestion<'a>(state: &'a State, settings: &'a Settings) -> Option<Suggestion<'a>> {
+    let designs = state.designs.as_ref()?.as_ref().ok()?;
+    let id = drawn(designs, &settings.design);
+    let info = &designs.iter().find(|entry| entry.info.id == id)?.info;
+    Some(Suggestion {
+        design: &info.name,
+        font: other(info.font.as_deref(), &state.fonts, &settings.font),
+        scheme: other(info.color_scheme.as_deref(), &state.schemes, &settings.color_scheme),
+    })
+}
+
+/// `suggested` if the list has it as usable and it is not the one drawn of `chosen`.
+fn other<'a, I: Listed, T>(
+    suggested: Option<&'a str>,
+    list: &'a Option<Result<Vec<Entry<I, T>>, String>>,
+    chosen: &'a str,
+) -> Option<&'a str> {
+    let suggested = suggested?;
+    let entries = list.as_ref()?.as_ref().ok()?;
+    let usable = entries.iter().any(|entry| entry.info.id() == suggested && entry.info.valid());
+    (usable && suggested != drawn(entries, chosen)).then_some(suggested)
+}
+
+/// The note and the tooltip of a tile that is `suggested` for the design `design`: "Suggested" under
+/// its name, "Suggested for {design}" over the rest of the tooltip. Unchanged when it is not.
+fn noted(suggested: bool, design: &str, tip: Option<String>) -> (Option<&'static str>, Option<String>) {
+    if !suggested {
+        return (None, tip);
+    }
+    let why = trf("Suggested for {design}", &[("design", &design)]);
+    let tip = match tip {
+        Some(tip) => format!("{why}\n{tip}"),
+        None => why,
+    };
+    (Some(tr("Suggested")), Some(tip))
+}
+
+/// Under the grid, for the entry that can't be used whose tile was clicked: its name, "Can't be
 /// used:" and every reason, at full strength and wrapping – they say what to fix, one per line, so
-/// a pack with many can be worked through like a list.
-fn problems<'a>(pack: &'a Pack) -> Element<'a, Message> {
+/// an entry with many can be worked through like a list.
+fn problems<'a, I: Listed>(info: &'a I) -> Element<'a, Message> {
     let mark =
         icon::icon(Icon::CircleAlert, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    let name = row![mark, typo::text(typo::body_strong(), pack.info.name.as_str())]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
+    let name = row![mark, typo::text(typo::body_strong(), info.name())].spacing(space::s()).align_y(Alignment::Center);
     let mut lines = column![name, typo::text(typo::meta(), tr("Can't be used:")).style(torro_gui::theme::text_2)]
         .spacing(space::xs());
-    for reason in &pack.info.problems {
+    for reason in info.problems() {
         lines = lines.push(typo::text(typo::meta(), reason.as_str()).style(torro_gui::theme::text_2));
     }
     container(lines).width(Fill).padding(layout::panel_padding()).style(style::container::group).into()
 }
 
-/// A pack's sample at the tile's preview size (`widgets::preview_size`): its `preview.png`, or a
-/// swatch – the colour scheme's `bg` as the window with its `panel` set in (like the suite's frame),
-/// on it "Aa" in the font's text family and the scheme's `text` colour and a dot in its `accent` – in
-/// the mode the window is in.
-fn sample<'a>(pack: &Pack) -> Element<'a, Message> {
+/// The parts of a tooltip that are there and not empty, joined with " · " ("1.2.0 · Anna Berg");
+/// `None` when none is.
+fn byline<'s>(parts: impl IntoIterator<Item = Option<&'s str>>) -> Option<String> {
+    let parts: Vec<&str> = parts.into_iter().flatten().filter(|part| !part.is_empty()).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// The frame of every sample, at the tile's preview size (`widgets::preview_size`): a `line` frame
+/// with the radius of the tile's inside, filled with the colour `ground` picks from the window's
+/// palette, or nothing (a picture, an empty place).
+fn frame<'a>(content: Element<'a, Message>, ground: Option<fn(&Palette) -> Color>) -> Element<'a, Message> {
     let area = widgets::preview_size();
-    let frame = |content: Element<'a, Message>, ground: Option<Arc<Selection>>| {
-        container(content).width(area.width).height(area.height).clip(true).style(move |t: &Theme| container::Style {
-            background: ground.as_ref().map(|l| Background::Color(colors(&l.scheme, t).bg)),
+    container(content)
+        .width(area.width)
+        .height(area.height)
+        .clip(true)
+        .style(move |t: &Theme| container::Style {
+            background: ground.map(|pick| Background::Color(pick(&palette(t)))),
             border: Border { color: palette(t).line, width: size::HAIRLINE, radius: radius::xs().into() },
             ..container::Style::default()
         })
-    };
-    let Some(look) = pack.look.clone() else {
-        return frame(blank().into(), None).into();
-    };
-    if let Some(preview) = &pack.preview {
-        return frame(svg(preview.clone()).content_fit(ContentFit::Cover).width(Fill).height(Fill).into(), None).into();
+        .into()
+}
+
+/// A design's sample: its `preview.png`, or its form in small – the window's `bg` with its `panel`
+/// set in by the design's own spacing and corner radius, on it "Aa" at the size of the design's body
+/// text and a dot in `accent` – drawn in the active font and colour scheme, so the tile shows only
+/// what the design changes.
+fn design_sample<'a>(entry: &DesignEntry) -> Element<'a, Message> {
+    if let Some(preview) = &entry.preview {
+        return frame(svg(preview.clone()).content_fit(ContentFit::Cover).width(Fill).height(Fill).into(), None);
     }
-    let font = torro_gui::design::font_of(&look.font, FontRole::Text, Weight::Regular);
-    let ink = Arc::clone(&look);
+    let Some(design) = entry.part.as_deref() else {
+        return frame(blank().into(), None);
+    };
+    // The design's body level as the active font draws it; one line, so no room above or below it,
+    // which the small panel does not have.
+    let level = torro_gui::font::active().apply(design.typo.body);
     let aa = typo::text(typo::body(), "Aa")
-        .font(font)
-        .style(move |t: &Theme| text::Style { color: Some(colors(&ink.scheme, t).text) });
-    let tint = Arc::clone(&look);
-    let dot = container(blank().width(space::s()).height(space::s())).style(move |t: &Theme| container::Style {
-        background: Some(Background::Color(colors(&tint.scheme, t).accent)),
+        .size(Pixels(level.size))
+        .line_height(LineHeight::Absolute(Pixels(level.size)))
+        .style(|t: &Theme| text::Style { color: Some(palette(t).text) });
+    let dot = container(blank().width(space::s()).height(space::s())).style(|t: &Theme| container::Style {
+        background: Some(Background::Color(palette(t).accent)),
         border: Border { radius: (space::s() / 2.0).into(), ..Border::default() },
         ..container::Style::default()
     });
-    let ground = Arc::clone(&look);
+    let corner = design.radius.xs;
     let panel = container(row![aa, blank::horizontal(), dot].align_y(Alignment::Center))
-        .padding([0.0, space::xs()])
+        .padding([0.0, design.space.xs])
         .width(Fill)
         .height(Fill)
         .center_y(Fill)
         .style(move |t: &Theme| container::Style {
-            background: Some(Background::Color(colors(&ground.scheme, t).panel)),
-            border: Border { radius: radius::xs().into(), ..Border::default() },
+            background: Some(Background::Color(palette(t).panel)),
+            border: Border { radius: corner.into(), ..Border::default() },
             ..container::Style::default()
         });
     // The sidebar's strip at the left, the panel set in by the rest: the suite's frame in small.
-    let inset = Padding { top: space::xs(), right: space::xs(), bottom: space::xs(), left: space::s() };
-    frame(container(panel).padding(inset).into(), Some(look)).into()
+    let (inset, strip) = (design.space.xs, design.space.s);
+    let inset = Padding { top: inset, right: inset, bottom: inset, left: strip };
+    frame(container(panel).padding(inset).into(), Some(|p: &Palette| p.bg))
+}
+
+/// A font's sample: "Aa 09" in its text family, Regular, at the size the font draws the active
+/// design's body text (its size adjustment applied), in `text` on `panel`.
+fn font_sample<'a>(entry: &FontEntry) -> Element<'a, Message> {
+    let Some(font) = entry.part.as_deref() else {
+        return frame(blank().into(), None);
+    };
+    let level = font.apply(torro_gui::design::active().typo.body);
+    let sample = typo::text(typo::body(), "Aa 09")
+        .font(torro_gui::design::font_of(font, FontRole::Text, Weight::Regular))
+        .size(Pixels(level.size))
+        .line_height(LineHeight::Absolute(Pixels(level.line)))
+        .wrapping(text::Wrapping::None)
+        .style(|t: &Theme| text::Style { color: Some(palette(t).text) });
+    // At the left like the design's "Aa", so the check mark of the chosen one at the right never
+    // covers it.
+    let sample = container(sample).padding([0.0, space::xs()]).width(Fill).height(Fill).center_y(Fill);
+    frame(sample.into(), Some(|p: &Palette| p.panel))
+}
+
+/// The four colours a colour scheme's sample shows, left to right.
+fn stripes() -> [fn(&Palette) -> Color; 4] {
+    [|p| p.bg, |p| p.panel, |p| p.accent, |p| p.text]
+}
+
+/// A colour scheme's sample: a stripe each of its `bg`, `panel`, `accent` and `text`, side by side,
+/// in the mode the window is in. Inside the frame's line, the outer stripes rounded to follow it.
+fn scheme_sample<'a>(entry: &SchemeEntry) -> Element<'a, Message> {
+    let Some(scheme) = entry.part.clone() else {
+        return frame(blank().into(), None);
+    };
+    let last = stripes().len() - 1;
+    let inner = radius::xs() - size::HAIRLINE;
+    let parts = stripes().into_iter().enumerate().map(|(index, pick)| {
+        let scheme = Arc::clone(&scheme);
+        let left = if index == 0 { inner } else { 0.0 };
+        let right = if index == last { inner } else { 0.0 };
+        let corners = Radius { top_left: left, bottom_left: left, top_right: right, bottom_right: right };
+        let stripe = container(blank().width(Fill).height(Fill)).width(Fill).height(Fill);
+        stripe
+            .style(move |t: &Theme| container::Style {
+                background: Some(Background::Color(pick(&colors(&scheme, t)))),
+                border: Border { radius: corners, ..Border::default() },
+                ..container::Style::default()
+            })
+            .into()
+    });
+    frame(container(row(parts)).padding(size::HAIRLINE).into(), None)
 }
 
 /// The colours of `scheme` in the mode of `theme` (the window's light or dark).
@@ -511,20 +841,29 @@ fn colors(scheme: &ColorScheme, theme: &Theme) -> Palette {
     Palette::of(scheme, mode)
 }
 
-/// The quiet actions of the heading "Design": "Reload" and "Open designs folder", which names the
-/// folder (from home, as `~/…`) in its tooltip.
-fn folder_actions<'a>() -> Vec<Element<'a, Message>> {
-    let open = widgets::text_button(
-        Some(Icon::Folder),
-        tr("Open designs folder"),
-        style::button::ghost,
-        Some(Message::OpenDesignsFolder),
-    );
-    let open = match torro_core::design::dir() {
+/// The folder of `part` in the data directory (`designs/`, `fonts/`, `color-schemes/`); `None`
+/// without a home directory.
+pub fn folder(part: Part) -> Option<PathBuf> {
+    match part {
+        Part::Design => torro_core::design::dir(),
+        Part::Font => torro_core::design::font_dir(),
+        Part::ColorScheme => torro_core::design::color_scheme_dir(),
+    }
+}
+
+/// "Open designs folder", "Open fonts folder" or "Open colour schemes folder", a quiet action of a
+/// heading that names the folder (from home, as `~/…`) in its tooltip.
+fn open_folder<'a>(part: Part) -> Element<'a, Message> {
+    let label = match part {
+        Part::Design => tr("Open designs folder"),
+        Part::Font => tr("Open fonts folder"),
+        Part::ColorScheme => tr("Open colour schemes folder"),
+    };
+    let open = widgets::text_button(Some(Icon::Folder), label, style::button::ghost, Some(Message::OpenFolder(part)));
+    match folder(part) {
         Some(dir) => widgets::with_tooltip(open, home_relative(&dir)),
         None => open,
-    };
-    vec![widgets::icon_button(Icon::RefreshCw, tr("Reload"), Some(Message::ReloadDesigns)), open]
+    }
 }
 
 /// `path` with the home directory written as `~`, so the part that matters fits the row.
@@ -637,16 +976,20 @@ mod tests {
         }
     }
 
-    /// Task L.18: a tile draws with its pack, the heading's actions list the packs again and open
-    /// the folder – each without a question first.
+    /// Tasks L.18 and L.23: a tile of each part draws with it, "Reload" lists all three again and
+    /// each heading opens its own folder – each without a question first.
     #[test]
-    fn a_design_tile_draws_with_it_and_the_heading_lists_and_opens() {
-        let choose = update(&mut State::default(), Message::Design("harbor".into()), &Data::default());
-        assert!(matches!(choose, Action::Design(ref id) if id == "harbor"), "{choose:?}: no question first");
-        let reload = update(&mut State::default(), Message::ReloadDesigns, &Data::default());
-        assert!(matches!(reload, Action::ListDesigns), "{reload:?}");
-        let open = update(&mut State::default(), Message::OpenDesignsFolder, &Data::default());
-        assert!(matches!(open, Action::OpenDesignsFolder), "{open:?}");
+    fn each_tile_draws_with_its_part_and_the_headings_list_and_open() {
+        for part in [Part::Design, Part::Font, Part::ColorScheme] {
+            let choose = update(&mut State::default(), Message::Choose(part, "harbor".into()), &Data::default());
+            assert!(matches!(choose, Action::Choose(p, ref id) if p == part && id == "harbor"), "{choose:?}");
+            let open = update(&mut State::default(), Message::OpenFolder(part), &Data::default());
+            assert!(matches!(open, Action::OpenFolder(p) if p == part), "{open:?}");
+        }
+        let reload = update(&mut State::default(), Message::Reload, &Data::default());
+        assert!(matches!(reload, Action::ListLooks), "{reload:?}");
+        assert_eq!(folder(Part::Font), torro_core::design::font_dir());
+        assert_eq!(folder(Part::ColorScheme), torro_core::design::color_scheme_dir());
     }
 
     /// Task L.18: the colour mode's segment sets the appearance, one segment per mode in the order
@@ -668,79 +1011,160 @@ mod tests {
         }
     }
 
-    /// Task L.18: a click on a tile that can't be used shows its reasons, a second click hides them,
-    /// a click on another one swaps them; choosing a pack closes them. None of it asks the shell.
+    /// The demo's lists, as the page keeps them.
+    fn demo() -> State {
+        let mut state = State::default();
+        listed(&mut state, super::super::launch::demo_looks());
+        state
+    }
+
+    /// Tasks L.18 and L.23: a click on a tile that can't be used shows its reasons, a second click
+    /// hides them, a click on another one swaps them – also to another part's, the same id in
+    /// another list being another entry; choosing anything closes them. None of it asks the shell.
     #[test]
     fn an_unusable_tile_opens_and_closes_its_reasons() {
         let data = Data::default();
-        let mut state = State::default();
-        listed(&mut state, Ok(super::super::launch::demo_designs()));
-        let packs = match &state.designs {
-            Some(Ok(packs)) => packs.clone(),
-            other => panic!("listed: {other:?}"),
+        let mut state = demo();
+        let open = |state: &State, part: Part| match part {
+            Part::Design => {
+                ok(&state.designs).and_then(|e| opened(e, part, state.problems.as_ref())).map(|e| e.info.id.clone())
+            }
+            Part::Font => {
+                ok(&state.fonts).and_then(|e| opened(e, part, state.problems.as_ref())).map(|e| e.info.id.clone())
+            }
+            Part::ColorScheme => {
+                ok(&state.schemes).and_then(|e| opened(e, part, state.problems.as_ref())).map(|e| e.info.id.clone())
+            }
         };
-        assert!(opened(&packs, None).is_none());
+        assert_eq!(open(&state, Part::Design), None);
 
-        let action = update(&mut state, Message::Problems("neon".into()), &data);
+        let action = update(&mut state, Message::Problems(Part::Design, "neon".into()), &data);
         assert!(matches!(action, Action::None), "{action:?}");
-        assert_eq!(opened(&packs, state.problems.as_deref()).map(|p| p.info.id.as_str()), Some("neon"));
+        assert_eq!(open(&state, Part::Design).as_deref(), Some("neon"));
+        assert_eq!(open(&state, Part::ColorScheme), None, "the scheme \"neon\" is another entry");
         let _: Element<'_, Message> = appearance(&state, &data);
 
-        let _ = update(&mut state, Message::Problems("neon".into()), &data);
+        let _ = update(&mut state, Message::Problems(Part::Design, "neon".into()), &data);
         assert_eq!(state.problems, None, "a second click hides them");
 
-        let _ = update(&mut state, Message::Problems("neon".into()), &data);
-        let _ = update(&mut state, Message::Problems("other".into()), &data);
-        assert_eq!(state.problems.as_deref(), Some("other"), "another tile swaps them");
-        assert!(opened(&packs, Some("other")).is_none(), "an id that is not an unusable pack shows nothing");
-        assert!(opened(&packs, Some("harbor")).is_none(), "nor does a pack that can be used");
+        let _ = update(&mut state, Message::Problems(Part::Design, "neon".into()), &data);
+        let _ = update(&mut state, Message::Problems(Part::ColorScheme, "neon".into()), &data);
+        assert_eq!((open(&state, Part::Design), open(&state, Part::ColorScheme).as_deref()), (None, Some("neon")));
+        let _ = update(&mut state, Message::Problems(Part::Font, "brush".into()), &data);
+        assert_eq!(open(&state, Part::Font).as_deref(), Some("brush"), "another tile swaps them");
+        let _: Element<'_, Message> = appearance(&state, &data);
+        let _ = update(&mut state, Message::Problems(Part::Font, "tabular".into()), &data);
+        assert_eq!(open(&state, Part::Font), None, "nor does an entry that can be used");
 
-        let _ = update(&mut state, Message::Problems("neon".into()), &data);
-        let _ = update(&mut state, Message::Design("harbor".into()), &data);
-        assert_eq!(state.problems, None, "choosing a pack closes them");
+        let _ = update(&mut state, Message::Problems(Part::Font, "brush".into()), &data);
+        let _ = update(&mut state, Message::Choose(Part::ColorScheme, "harbor".into()), &data);
+        assert_eq!(state.problems, None, "choosing closes them");
+    }
+
+    /// A list as the page keeps it, when the core listed it.
+    fn ok<I, T>(list: &Option<Result<Vec<Entry<I, T>>, String>>) -> Option<&[Entry<I, T>]> {
+        list.as_ref()?.as_ref().ok().map(Vec::as_slice)
+    }
+
+    /// Task L.23: designs and colour schemes say version and author, fonts the pack, its version,
+    /// author and licence; a font is named by its family, one that can't be used by its pack.
+    #[test]
+    fn the_tooltip_of_a_tile_says_who_made_it() {
+        assert_eq!(byline([Some("1.2.0"), Some("Torro samples")]).as_deref(), Some("1.2.0 · Torro samples"));
+        assert_eq!(byline([Some(""), None]), None);
+        let state = demo();
+        let fonts = ok(&state.fonts).expect("fonts");
+        let tabular = &fonts.iter().find(|e| e.info.id == "tabular").expect("tabular").info;
+        assert_eq!(tabular.name(), "Inter Tabular", "named by its family");
+        let tip = byline([
+            Some(tabular.name.as_str()),
+            Some(tabular.version.as_str()),
+            tabular.author.as_deref(),
+            tabular.license.as_deref(),
+        ]);
+        assert_eq!(tip.as_deref(), Some("Tabular · 1.0.0 · Torro samples · OFL-1.1"));
+        let brush = &fonts.iter().find(|e| e.info.id == "brush").expect("brush").info;
+        assert_eq!(brush.name(), "Brush", "no family: its pack's name");
+    }
+
+    /// The check mark of each part is at the one the windows draw with.
+    #[test]
+    fn the_check_mark_is_at_the_part_the_windows_draw_with() {
+        let state = demo();
+        let designs = ok(&state.designs).expect("designs");
+        assert_eq!(drawn(designs, "harbor"), "harbor");
+        assert_eq!(drawn(designs, "torro"), "torro");
+        assert_eq!(drawn(designs, "neon"), "torro", "a broken design is not drawn: the standard is");
+        assert_eq!(drawn(designs, "gone"), "torro", "nor a missing one");
+        let fonts = ok(&state.fonts).expect("fonts");
+        assert_eq!(drawn(fonts, "tabular"), "tabular");
+        assert_eq!(drawn(fonts, ""), "torro", "a core from before task L.22 names none");
+        assert_eq!(drawn(ok(&state.schemes).expect("schemes"), "neon"), "torro");
+    }
+
+    /// Task L.23: the tiles of the font and the colour scheme the drawn design suggests say so, as
+    /// long as they are not drawn, are listed and can be used; the standard suggests nothing.
+    #[test]
+    fn the_suggestions_of_the_drawn_design_are_marked() {
+        let state = demo();
+        let mut settings = Settings { design: "harbor".into(), ..Settings::default() };
+        let marked = suggestion(&state, &settings).expect("listed");
+        assert_eq!(marked, Suggestion { design: "Harbor", font: Some("tabular"), scheme: Some("harbor") });
+
+        settings.font = "tabular".into();
+        assert_eq!(suggestion(&state, &settings).map(|s| s.font), Some(None), "drawn already");
+        settings.design = "paper".into();
+        let paper = suggestion(&state, &settings).expect("listed");
+        assert_eq!((paper.font, paper.scheme), (None, Some("paper")), "Paper suggests no font");
+        settings.design = "neon".into();
+        let standard = suggestion(&state, &settings).expect("listed");
+        assert_eq!(standard, Suggestion { design: "Torro", font: None, scheme: None }, "a broken one is not drawn");
+        assert_eq!(suggestion(&State::default(), &settings), None);
+
+        let (note, tip) = noted(true, "Harbor", Some("1.2.0".into()));
+        assert_eq!(note, Some(tr("Suggested")));
+        let why = trf("Suggested for {design}", &[("design", &"Harbor")]);
+        assert_eq!(tip, Some(format!("{why}\n1.2.0")));
+        assert_eq!(noted(false, "Harbor", Some("1.2.0".into())), (None, Some("1.2.0".into())));
+        assert_eq!(noted(true, "Harbor", None).1, Some(why));
+
+        // The other suggestion of a design that is not there (or broken) marks nothing.
+        let broken = Some("neon");
+        assert_eq!(other(broken, &state.schemes, "torro"), None);
+        assert_eq!(other(Some("gone"), &state.fonts, "torro"), None);
     }
 
     #[test]
-    fn the_tooltip_of_a_tile_names_version_and_author() {
-        let packs = super::super::launch::demo_designs();
-        let harbor = packs.iter().find(|p| p.info.id == "harbor").expect("harbor");
-        assert_eq!(byline(&harbor.info).as_deref(), Some("1.2.0 · Torro samples"));
-        let bare = DesignInfo { version: String::new(), author: None, ..harbor.info.clone() };
-        assert_eq!(byline(&bare), None);
-    }
-
-    #[test]
-    fn the_check_mark_is_at_the_pack_the_windows_draw_with() {
-        let packs = super::super::launch::demo_designs();
-        assert_eq!(drawn(&packs, "harbor"), "harbor");
-        assert_eq!(drawn(&packs, "torro"), "torro");
-        assert_eq!(drawn(&packs, "neon"), "torro", "a broken pack is not drawn: the standard is");
-        assert_eq!(drawn(&packs, "gone"), "torro", "nor a missing one");
-    }
-
-    #[test]
-    fn listed_packs_are_kept_with_their_looks() {
+    fn listed_parts_are_kept_with_what_they_draw_with() {
         let mut state = State::default();
         assert!(unlisted(&state));
-        listed(&mut state, Ok(super::super::launch::demo_designs()));
+        listed(&mut state, super::super::launch::demo_looks());
         assert!(!unlisted(&state));
-        assert!(look_of(&state, "paper").is_some(), "a pack that can be used carries its look");
-        assert!(look_of(&state, "neon").is_none(), "one that can't, none");
-        assert!(look_of(&state, "gone").is_none());
-        listed(&mut state, Err("core is not running".into()));
-        assert!(look_of(&state, "paper").is_none());
+        assert!(design_of(&state, "paper").is_some(), "an entry that can be used carries its part");
+        assert!(font_of(&state, "tabular").is_some());
+        assert!(scheme_of(&state, "harbor").is_some());
+        assert!(design_of(&state, "neon").is_none(), "one that can't, none");
+        assert!(font_of(&state, "brush").is_none());
+        assert!(scheme_of(&state, "gone").is_none());
+        listed(&mut state, Lists::failed("core is not running".into()));
+        assert!(design_of(&state, "paper").is_none());
+        assert!(font_of(&state, "tabular").is_none());
     }
 
     #[test]
     fn page_builds_while_loading_listed_and_failed() {
         let data = Data::default();
-        let (loading, mut packs, mut failed) = (State::default(), State::default(), State::default());
-        listed(&mut packs, Ok(super::super::launch::demo_designs()));
-        listed(&mut failed, Err("core is not running".into()));
-        for state in [&loading, &packs, &failed] {
+        let (loading, listing, mut failed) = (State::default(), demo(), State::default());
+        listed(&mut failed, Lists::failed("core is not running".into()));
+        // One list failed, the others listed.
+        let mut partly = demo();
+        partly.fonts = Some(Err("no fonts".into()));
+        for state in [&loading, &listing, &failed, &partly] {
             let _page: Element<'_, Message> = view(state, &data);
             let _page: Element<'_, Message> = appearance(state, &data);
         }
+        let marked = Data { settings: Settings { design: "harbor".into(), ..Settings::default() }, ..Data::default() };
+        let _page: Element<'_, Message> = appearance(&listing, &marked);
     }
 
     #[test]

@@ -3427,6 +3427,30 @@ pub fn preview_tile<'a, M: Clone + 'a>(
     state: PreviewState,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    preview_tile_noted(preview, name, None, tip, state, on_press)
+}
+
+/// [`preview_tile`] with `note` (task L.23: "Suggested" on the font or colour scheme the chosen
+/// design suggests): one word on a line of its own under the name, in `CAPTION` and `text_3`, cut
+/// with "…" to the tile's width like the name. It sits under the name rather than on the preview,
+/// so it never covers the sample, which is only [`size::control_sm()`] high; the tile grows by one
+/// `CAPTION` line and [`space::xs()`] (20 in the standard), and [`preview_grid`] aligns the tiles of
+/// a row at the top. `None` is exactly [`preview_tile`].
+///
+/// The note is a mark, not the explanation: say in `tip` what it means ("Suggested for Commitr ·
+/// 1.0 · IBM"), because the word alone does not name the design.
+///
+/// ```ignore
+/// widgets::preview_tile_noted(Some(sample), "IBM Plex Sans", Some(tr("Suggested")), Some(tip), PreviewState::Plain, Some(Message::Font(id)))
+/// ```
+pub fn preview_tile_noted<'a, M: Clone + 'a>(
+    preview: Option<Element<'a, M>>,
+    name: &str,
+    note: Option<&str>,
+    tip: Option<String>,
+    state: PreviewState,
+    on_press: Option<M>,
+) -> Element<'a, M> {
     let area = preview_size();
     let (on, usable) = match state {
         PreviewState::Plain => (false, true),
@@ -3455,7 +3479,13 @@ pub fn preview_tile<'a, M: Clone + 'a>(
     let cut = shown != name;
     // No colour of its own: the name takes the tile's text colour, so it follows hover and state.
     let label = container(typo::text(typo::caption(), shown).wrapping(Wrapping::None)).width(area.width).clip(true);
-    let tile = button(column![picture, label].spacing(space::xs()))
+    let mut parts = column![picture, label].spacing(space::xs());
+    if let Some(note) = note {
+        let note = typo::ellipsize(note, typo::caption(), area.width);
+        let note = typo::text(typo::caption(), note).wrapping(Wrapping::None).style(theme::text_3);
+        parts = parts.push(container(note).width(area.width).clip(true));
+    }
+    let tile = button(parts)
         .width(preview_tile_width())
         .padding(space::xs())
         .style(style::button::preview_tile(on, usable))
@@ -4946,6 +4976,13 @@ mod tests {
                 preview_tile(None, "Commitr Dark Extended Edition", Some("1.2 · Anna".into()), state, Some(Msg::Go))
             })
             .chain([preview_tile(Some(blank().into()), "Torro", None, PreviewState::Plain, None)])
+            // Task L.23: a note under the name, in every state, also one that must be cut.
+            .chain(
+                states.into_iter().map(|state| {
+                    preview_tile_noted(None, "IBM Plex Sans", Some("Suggested"), None, state, Some(Msg::Go))
+                }),
+            )
+            .chain([preview_tile_noted(None, "Plex", Some("A note far too long for one tile"), None, states[0], None)])
             .collect();
         let _: Element<'_, Msg> = preview_grid(tiles);
         assert_eq!(preview_tip("Torro", false, None), None);
