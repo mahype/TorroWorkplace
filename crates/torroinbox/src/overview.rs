@@ -886,7 +886,7 @@ mod tests {
             hidable: Vec::new(),
             look: Look::Rows,
             folders: &[],
-            edge_strip: false,
+            bare: false,
         };
         for look in [Look::Rows, Look::Cards] {
             let data = ColumnData {

@@ -5168,11 +5168,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let sections = Sections::of(&self.items, column, self.now).ordered(self.order);
             let open = self.info_open[column.index()];
             let (look, lead, width) = (self.look(), self.lead().is_some(), self.card_width());
-            // `overview::row_span` counts the hub's strip under the cursor's row; the mail window's
-            // stands in the row (issue #227), its bottom lies that much higher (`taller` is negative).
+            // `overview::row_span` counts the hub's strip under the cursor's row; the mail window's rows
+            // are bare (task E14.2), its bottom lies that much higher (`taller` is negative).
             // Cards and the waiting cards – only the notices' column has those (`Sections::of`) –
             // carry no strip.
-            let taller = list::strip_height_in(self.edge_strip()) - list::strip_height();
+            let taller = list::strip_height_in(self.bare_rows()) - list::strip_height();
             let span = sections.order(open).get(index).and_then(|item| {
                 let span = overview::row_span(&sections, open, &item.id, look, lead, width)?;
                 let waiting = column == Column::Notices && list::is_waiting(item);
@@ -5190,18 +5190,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     list::card_span(above, mail::message_card_height(message, width))
                 }
                 Look::Rows => {
-                    // The cursor's row carries the strip with its actions: the hub's below the row, the
-                    // mail window's in it (issue #227), which grows by `edge_strip_extra` at most.
+                    // The cursor's row carries the hub's strip below it; the mail window's rows are bare
+                    // (task E14.2), as high as any.
                     let row = list::message_height();
                     let top = index as f32 * row;
-                    (top, top + row + list::strip_height_in(self.edge_strip()))
+                    (top, top + row + list::strip_height_in(self.bare_rows()))
                 }
             });
             (self.scroll, span, list::SCROLL)
         } else {
             let (items, look, width) = (&self.items, self.look(), self.card_width());
-            // The mail window's strip under the cursor's row is its own (task E11.2).
-            let span = match self.edge_strip() {
+            // The mail window's rows are bare (task E14.2): no strip under the cursor's row.
+            let span = match self.bare_rows() {
                 true => list::row_span_in(items, index, look, width, true),
                 false => list::row_span(items, index, look, width),
             };
@@ -6675,7 +6675,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // card under the cursor with its buttons (`rows`). A menu hangs at the button that opened it.
         let (anchors, rows) = (detail::Anchors::default(), detail::Anchors::default());
         let from_panel = self.menu_from_panel();
-        let at = |pick: fn(&detail::Anchors) -> &Anchor| menu_anchor(from_panel, &anchors, &rows, pick);
+        let bare = self.bare_rows();
+        let at = |pick: fn(&detail::Anchors) -> &Anchor| menu_anchor(from_panel, bare, &anchors, &rows, pick);
         let (snooze_at, task_at, event_at, hide_at) =
             (at(|a| &a.snooze), at(|a| &a.task), at(|a| &a.event), at(|a| &a.hide));
         // Opened by a key, the pills' menus (Task, Event, Mute…, "Move to folder") hang at the
@@ -7061,7 +7062,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     folders: &self.folders,
                     highlights: &self.highlights,
                     text: palette(&self.theme()).text,
-                    edge_strip: self.edge_strip(),
+                    bare: self.bare_rows(),
                 })
             }
         } else if self.is_board() {
@@ -7133,14 +7134,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             hidable: self.items.iter().filter(|item| self.hidable(item)).map(|item| item.id.as_str()).collect(),
             look: self.look(),
             folders: &self.folders,
-            edge_strip: self.edge_strip(),
+            bare: self.bare_rows(),
         }
     }
 
-    /// Whether the selected row of a list carries the mail window's strip from edge to edge (task
-    /// E11.2, `list::Rows::edge_strip`, `mail::MailList::edge_strip`): in the mail window. The hub and
-    /// the app feed keep their strip of buttons.
-    fn edge_strip(&self) -> bool {
+    /// Whether the rows and cards of the lists are bare (task E14.2, `list::Rows::bare`,
+    /// `mail::MailList::bare`): in the mail window, whose mail's actions stand in the reader's rail and
+    /// whose keys act on the row; the menus and dialogs of the keys hang at the row then
+    /// ([`menu_anchor`]). The hub and the app feed keep their strip of buttons.
+    fn bare_rows(&self) -> bool {
         self.launch.kind == Kind::Mail
     }
 
@@ -8210,17 +8212,27 @@ enum KeyLook {
 /// E8.12, finding 7): the panel ends at the window's edge, so the card stays over the panel, above
 /// the footer where there is no room below (`widgets::Placement::Below`).
 /// Where a menu for an entry hangs (issue #122): at the button `pick` names (Later, Move to …, Task,
-/// Make event, "…") – of the panel or reader (`panel`) when `from_panel`, else of the row or card
-/// under the cursor (`rows`). A button that is not on screen gives way to the row's, then to the
-/// row itself; with none of them the menu stands in the window's middle (`widgets::floating`).
+/// Make event, "…") – of the panel or reader (`panel`) when `from_panel`, else in the row or card
+/// under the cursor (`rows`, [`row_trigger`]: in a bare list the row itself). A button that is not on
+/// screen gives way to the row's, then to the row itself; with none of them the menu stands in the
+/// window's middle (`widgets::floating`).
 fn menu_anchor(
     from_panel: bool,
+    bare: bool,
     panel: &detail::Anchors,
     rows: &detail::Anchors,
     pick: fn(&detail::Anchors) -> &Anchor,
 ) -> Anchor {
-    let row = pick(rows).or(&rows.row);
+    // In a bare list the trigger is the row already; its fallback to itself changes nothing.
+    let row = row_trigger(rows, bare, pick).or(&rows.row);
     if from_panel { pick(panel).or(&row) } else { row }
+}
+
+/// What a menu or dialog for the entry under the cursor hangs at in the list (`rows`, task E14.2):
+/// the row's button that `pick` names (`t` → Task, `s` → Later …), or – where the rows are bare
+/// (`bare`, the mail window: no buttons, [`App::bare_rows`]) – the row itself (`rows.row`).
+fn row_trigger(rows: &detail::Anchors, bare: bool, pick: fn(&detail::Anchors) -> &Anchor) -> &Anchor {
+    if bare { &rows.row } else { pick(rows) }
 }
 
 fn dialog_placement(panel: bool) -> Placement {
@@ -11796,21 +11808,43 @@ mod tests {
         app
     }
 
-    /// Task E11.2: the mail window's rows carry the strip from edge to edge, its search field spans
-    /// the list and its sidebar has no magnifier; the hub keeps its strip of buttons (`with_strip`)
-    /// and its sidebar's search button. Every size draws with a row under the cursor.
+    /// Task E14.2 (E11.2): the mail window's rows are bare, its search field spans the list and its
+    /// sidebar has no magnifier; the hub keeps its strip of buttons (`with_strip`) and its sidebar's
+    /// search button. Every size draws with a row under the cursor.
     #[test]
-    fn the_mail_window_has_the_edge_strip_and_the_hub_its_buttons() {
+    fn the_mail_window_has_bare_rows_and_the_hub_its_buttons() {
         let anchors = detail::Anchors::default();
         let mut mail = mail_window(Density::Compact, &[]);
-        assert!(mail.rows_data(&anchors).edge_strip && mail.edge_strip());
+        assert!(mail.rows_data(&anchors).bare && mail.bare_rows());
         assert!(!mail.sidebar_search(), "the field over the list is the search");
         let hub = overview_at(&["--view", "hub"]);
-        assert!(!hub.rows_data(&anchors).edge_strip, "the hub keeps `with_strip`");
+        assert!(!hub.rows_data(&anchors).bare, "the hub keeps `with_strip`");
         assert!(hub.sidebar_search());
         assert!(overview_at(&["--view", "notifications"]).sidebar_search(), "the app feed too");
         let _ = press(&mut mail, Key::Down);
         assert!(mail.cursor.is_some());
+        for size in SIZES {
+            let _ = mail.update(Message::Resized(size));
+            let _ = mail.view();
+        }
+    }
+
+    /// Task E14.2: `t` at the row of the mail window – whose rows have no buttons – opens the task
+    /// dialog at the row itself (`rows.row`), not at a button of the row; the hub's dialog keeps
+    /// hanging at its row's "Task". Opened by the key with nothing open, it hangs in the list.
+    #[test]
+    fn t_at_the_mail_windows_row_opens_the_dialog_at_the_row() {
+        let mut mail = mail_window(Density::Compact, &[]);
+        let _ = press(&mut mail, Key::Down);
+        assert!(mail.cursor.is_some() && !mail.panel_open(), "the cursor on a row, nothing open");
+        let _ = press(&mut mail, Key::T);
+        assert_eq!(mail.menu, Some(Menu::Task), "the dialog of Task");
+        assert!(!mail.menu_from_panel(), "it hangs in the list");
+        let rows = detail::Anchors::default();
+        let task: fn(&detail::Anchors) -> &Anchor = |a| &a.task;
+        assert!(std::ptr::eq(row_trigger(&rows, mail.bare_rows(), task), &rows.row), "at the row");
+        let hub = overview_at(&["--view", "hub"]);
+        assert!(std::ptr::eq(row_trigger(&rows, hub.bare_rows(), task), &rows.task), "the hub: at its button");
         for size in SIZES {
             let _ = mail.update(Message::Resized(size));
             let _ = mail.view();
@@ -11855,7 +11889,7 @@ mod tests {
     }
 
     /// Task E8.3: cards in the comfortable mail window, rows elsewhere; task E8.11: the same cards in
-    /// every layout (their words follow the room, `list::spoken`), the wide cards beside the reader.
+    /// every layout (without buttons since task E14.2), the wide cards beside the reader.
     #[test]
     fn comfortable_mail_is_cards_and_everything_else_rows() {
         let mut app = mail_window(Density::Comfortable, &[]);

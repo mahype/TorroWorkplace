@@ -21,7 +21,8 @@
 //!   mail has HTML from the same `mail.get_message` that brings its text ([`MailSource::get_mail`]
 //!   asks with `include_html`).
 //! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
-//!   window (task E8.3, [`message_card`]) – and the smart view "With attachments" ([`attachments`]:
+//!   window (task E8.3, [`message_card`]), in the mail window without buttons (task E14.2,
+//!   [`MailList::bare`]) – and the smart view "With attachments" ([`attachments`]:
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3), the text in
 //!   the reading level (`typo::read()`); [`empty_reader`] keeps its column while no mail is open
@@ -1229,11 +1230,11 @@ pub struct MailList<'a> {
     pub highlights: &'a [MailHighlight],
     /// The text colour of the theme, for the matches in a passage.
     pub text: Color,
-    /// The strip of the selected row (task E11.2, as `list::Rows::edge_strip`): `true` in the mail
-    /// window – flat cells from edge to edge in place of the preview line (`list::with_row_strip`,
-    /// issue #227), Archive · Delete · Task · Mute… (`list::edge_actions`) –, else the strip of buttons
-    /// where the text starts.
-    pub edge_strip: bool,
+    /// Rows and cards without buttons (task E14.2, as `list::Rows::bare`): `true` in the mail window –
+    /// the selected row shows its preview and is as high as unchosen, its menus hang at the row –,
+    /// else (a search of mail in the hub) the strip of buttons where the text starts ([`message_buttons`]).
+    /// Cards show only in the mail window and never carry buttons.
+    pub bare: bool,
 }
 
 impl<'a> MailList<'a> {
@@ -1304,10 +1305,8 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 /// `list::mail_content`) – avatar with the sender's initials in the account's colour, sender ·
 /// domain · paperclip · flag · time, the subject (medium weight while unread, with the dot at the
 /// avatar), the start of the text –, [`list::message_height`] high. Under the cursor its action bar
-/// (issue #118) hangs below its lines, as an entry's row – in the mail window (task E11.2,
-/// [`MailList::edge_strip`]) as the strip from edge to edge (`list::with_row_strip`, in the order of
-/// `list::edge_actions`), in place of the preview, so the row keeps its height (issue #227) – and
-/// holds what its card offers ([`message_buttons`]), the bell last.
+/// (issue #118, [`row_buttons`]) hangs below its lines, as an entry's row – not in the mail window,
+/// whose rows are bare (task E14.2, [`MailList::bare`]): there the row stays as high as any.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     // What the mail is (task E12.8), before the other marks: it says most about the row.
@@ -1339,30 +1338,29 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     };
     let selected = data.selected == Some(message.id.as_str());
     let on_press = Message::SelectMail(message.id.clone());
-    let mut height = list::message_height();
-    let mut actions = Vec::new();
-    if selected {
-        let (buttons, more) = message_buttons(message, data.entries, data.folders, data.now);
-        actions = data.anchors.mark(true, buttons);
-        actions.extend(data.anchors.mark(true, more.into_iter().collect()));
-    }
+    let actions = data.anchors.mark(true, row_buttons(data, message));
     // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
-    if !actions.is_empty() {
-        height += list::strip_height_in(data.edge_strip);
-    }
-    let row = if data.edge_strip {
-        let strip = list::with_row_strip(list::edge_actions(actions), width);
-        let content = list::mail_content_in(lines, width, strip.is_none());
-        list::strip_row(content, strip, 3, selected, on_press, height)
-    } else {
-        let content = list::mail_content(lines, width);
-        list::sized_row(list::with_strip(content, actions, width), selected, on_press, height)
-    };
+    let strip = if actions.is_empty() { 0.0 } else { list::strip_height() };
+    let content = list::with_strip(list::mail_content(lines, width), actions, width);
+    let row = list::sized_row(content, selected, on_press, list::message_height() + strip);
+    // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
     if selected { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
-/// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row, as chips
-/// "Attachments" and "Flagged", and its buttons ([`message_buttons`]). An invitation (task E8.3b)
+/// What the strip of `message`'s row holds ([`message_row`]): under the cursor its buttons
+/// with the bell last ([`message_buttons`]); nothing for the other rows and for every bare row
+/// ([`MailList::bare`], the mail window, task E14.2).
+fn row_buttons<'a>(data: &MailList<'_>, message: &MessageSummary) -> Vec<RowAction<'a, Message>> {
+    if data.bare || data.selected != Some(message.id.as_str()) {
+        return Vec::new();
+    }
+    let (mut buttons, more) = message_buttons(message, data.entries, data.folders, data.now);
+    buttons.extend(more);
+    buttons
+}
+
+/// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row and, as
+/// chips, "Attachments" and "Flagged"; no buttons (task E14.2). An invitation (task E8.3b)
 /// shows when it is and the answer given as chips. In the smart views, which hold every account's
 /// mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
@@ -1378,7 +1376,6 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
-    let (buttons, more) = message_buttons(message, data.entries, data.folders, data.now);
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let smart = matches!(data.view, View::Attachments | View::Invitations | View::Search(_));
@@ -1397,16 +1394,13 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         hits: data.hits(&message.id),
     };
     let selected = data.selected == Some(message.id.as_str());
-    let buttons = data.anchors.mark(selected, buttons);
-    let more = data.anchors.mark(selected, more.into_iter().collect()).pop();
-    let card =
-        list::MailCard { lines, chips, buttons, more, selected, on_press: Message::SelectMail(message.id.clone()) };
+    let card = list::MailCard { lines, chips, selected, on_press: Message::SelectMail(message.id.clone()) };
     let card = list::mail_card(card, width);
     if selected { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
-/// The buttons of the card (and the action bar of the row) of `message` at `now`, with the bell
-/// "Mute…" (`m`, issue #123) as the second part:
+/// The action bar of the row of `message` at `now` outside the mail window (a search of mail in the
+/// hub, [`MailList::bare`] `false`), with the bell "Mute…" (`m`, issue #123) as the second part:
 ///
 /// - a message: Archive (`e`, what "done" is in a folder) and Delete (`#`, into the trash) as far as
 ///   its account has those folders ([`filing_actions`], issue #118), then Task (`t`,
@@ -3436,7 +3430,7 @@ mod tests {
         .expect("the demo answers");
         for accounts in [Vec::new(), vec!["anna@work.example.org", "anna@example.org"]] {
             for (view, look) in views.iter().flat_map(|view| looks.map(|look| (view, look))) {
-                for (messages, edge_strip) in [(&summaries[..], false), (&summaries[..], true), (&[], true)] {
+                for (messages, bare) in [(&summaries[..], false), (&summaries[..], true), (&[], true)] {
                     let data = MailList {
                         messages,
                         view,
@@ -3452,7 +3446,7 @@ mod tests {
                         folders: &folders,
                         highlights: &highlights,
                         text: Color::BLACK,
-                        edge_strip,
+                        bare,
                     };
                     let _ = list(data);
                 }
@@ -3520,11 +3514,11 @@ mod tests {
         }
     }
 
-    /// Task E8.11 (finding 3): an invitation's card in "Invitations" offers Later and "…" for its
-    /// entry, as the same mail does under "For me"; without an open entry only the answers and Task;
-    /// a message as any has Archive · Delete · Task (issue #118).
+    /// Task E8.11 (finding 3): an invitation's row in a search of the hub offers Later and the bell
+    /// for its entry, as the same mail does under "For me"; without an open entry only the answers and
+    /// Task; a message as any has Archive · Delete · Task (issue #118).
     #[test]
-    fn an_invitation_card_offers_later_and_more_for_its_entry() {
+    fn an_invitation_row_offers_later_and_more_for_its_entry() {
         let mut message = demo::mail_sample(now()).remove(0).summary;
         let start = now() + chrono::TimeDelta::days(1);
         message.invite = Some(Invite { title: "Planning".into(), start, end: None, all_day: false, answered: None });
@@ -3555,35 +3549,49 @@ mod tests {
         assert_eq!(words_of, [trc("action", "Archive"), tr("Delete"), tr("Task")]);
     }
 
-    /// Task E11.2: a message's strip in the mail window – its buttons and then the bell, in the order
-    /// of `list::edge_actions` – is Archive · Delete · Task · Mute… (no icon red), an invitation's
-    /// Accept · Maybe · Decline · Later · Task · Mute…: the bell stays last, nothing is lost.
+    /// Task E14.2: in the mail window (bare rows) the selected message's row holds no buttons – a
+    /// plain message and an invitation alike – and stays as high as any row; outside it (a search of
+    /// mail in the hub) the selected row keeps its strip: the buttons and the bell last.
     #[test]
-    fn a_messages_strip_files_it_then_task_then_the_bell() {
-        let strip = |message: &MessageSummary, entries: &[Item]| {
-            let (mut buttons, more) = message_buttons(message, entries, &folders(), now());
-            buttons.extend(more);
-            let before: Vec<String> = buttons.iter().map(|b| format!("{:?}", b.on_press)).collect();
-            let strip = list::edge_actions(buttons);
-            let after: Vec<String> = strip.iter().map(|b| format!("{:?}", b.on_press)).collect();
-            assert_eq!(after, before, "the order the buttons had already");
-            assert!(strip.iter().all(|b| !b.accent), "no red icon, Task's neither");
-            strip.iter().map(|b| b.label.to_string()).collect::<Vec<_>>()
-        };
-        let mut message = demo::mail_sample(now()).remove(0).summary;
-        let plain = MessageSummary { invite: None, ..message.clone() };
-        assert_eq!(strip(&plain, &[]), [trc("action", "Archive"), tr("Delete"), tr("Task"), tr("Mute…")]);
+    fn a_messages_row_in_the_mail_window_has_no_buttons() {
+        let folders = folders();
+        let view = View::Mail;
+        let mut invitation = demo::mail_sample(now()).remove(0).summary;
         let start = now() + chrono::TimeDelta::days(1);
-        message.invite = Some(Invite { title: "Planning".into(), start, end: None, all_day: false, answered: None });
-        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
-            &DemoSource::new(now()),
-            Default::default(),
-        ))
-        .expect("the demo answers");
-        let mail = all.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
-        let entry = Item { link: Some(Link::Mail { message: message.id.clone() }), state: State::New, ..mail.clone() };
-        let answers = [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task"), tr("Mute…")];
-        assert_eq!(strip(&message, &[entry]), answers);
+        invitation.invite = Some(Invite { title: "Planning".into(), start, end: None, all_day: false, answered: None });
+        let plain = MessageSummary { invite: None, ..invitation.clone() };
+        let messages = [plain.clone(), invitation.clone()];
+        let data = |bare, selected: &'static str| MailList {
+            messages: &messages,
+            view: &view,
+            no_accounts: false,
+            selected: Some(selected),
+            now: now(),
+            anchors: detail::Anchors::default(),
+            accounts: Vec::new(),
+            more: false,
+            attention: Color::BLACK,
+            look: Look::Rows,
+            entries: &[],
+            folders: &folders,
+            highlights: &[],
+            text: Color::BLACK,
+            bare,
+        };
+        for message in &messages {
+            let bare = MailList { selected: Some(message.id.as_str()), ..data(true, "") };
+            assert!(row_buttons(&bare, message).is_empty(), "{}: no buttons in the mail window", message.id);
+            let hub = MailList { selected: Some(message.id.as_str()), ..data(false, "") };
+            let (mut buttons, more) = message_buttons(message, &[], &folders, now());
+            buttons.extend(more);
+            let words =
+                |actions: &[RowAction<'_, Message>]| actions.iter().map(|a| a.label.to_string()).collect::<Vec<_>>();
+            assert_eq!(words(&row_buttons(&hub, message)), words(&buttons), "the hub's strip, the bell last");
+            assert!(row_buttons(&data(false, "someone-else"), message).is_empty(), "only the cursor's row");
+            for width in [0.0, 240.0, 480.0] {
+                let _ = message_row(&bare, message, width);
+            }
+        }
     }
 
     /// Issue #118: a message's row and card file it – Archive (`e`) and Delete (`#`) send what the

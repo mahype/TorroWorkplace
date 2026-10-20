@@ -80,7 +80,8 @@ use crate::{hub, list, mail};
 #[derive(Debug, Clone, Default)]
 pub struct Anchors {
     /// The row or card under the cursor in the list (registered by `list.rs` and its kin); unused in
-    /// the panel's set.
+    /// the panel's set. In a bare list (the mail window, task E14.2: rows without buttons) every menu
+    /// and dialog of the keys hangs here (`app::row_trigger`).
     pub row: Anchor,
     /// "Later": the snooze menu and the picker open here.
     pub snooze: Anchor,

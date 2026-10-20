@@ -9,8 +9,8 @@
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
 //! mail window's large buttons (task E11.1): the reader's command bar ([`command_bar`] with
-//! [`command_cell`], [`command_split`], [`command_more`]), the strip in the chosen mail's row
-//! ([`row_strip`]), the Torro pills ([`pill_button`]), the sunken view switch ([`view_switch`]) and
+//! [`command_cell`], [`command_split`], [`command_more`]), the Torro pills ([`pill_button`]), the
+//! sunken view switch ([`view_switch`]) and
 //! the chips of attachments ([`file_chip`]). For the mail's actions at its right edge (task E14.1):
 //! the action rail ([`action_rail`] with [`RailGroup`]s of [`RailItem`]s, collapsed or expanded,
 //! [`RailMode`]) and the layer of an open group ([`rail_flyout`]).
@@ -806,65 +806,6 @@ pub fn command_words(labels: &[&str], room: f32) -> bool {
     cells * (share + LINE) + size::command() <= room
 }
 
-/// The strip of actions under the chosen row of the mail window's list (task E11.1): the `actions`
-/// as flat cells (`style::button::cell`) side by side, equally wide over the row's whole width,
-/// [`size::control_sm()`] high, a `line` above the strip and a vertical `line` between each two
-/// cells. Each cell shows the icon and its word in `typo::body()` – or, without `words`, the icon
-/// alone (16); [`row_strip_words`] chooses. An action marked [`RowAction::accent`] (Task) has its
-/// icon in the accent colour. Every cell's tooltip names the action with its key ([`kbd`]), as in
-/// [`row_actions_strip`]; an action that is off ([`RowAction::blocked`]) stands faded and says why.
-/// The strip is [`row_strip_height`] high; empty without actions. It stands where the row's preview
-/// line stands, so the chosen row is as high as any other (issue #227). The hub keeps
-/// [`row_actions_strip`].
-///
-/// ```ignore
-/// let words = widgets::row_strip_words(&actions, width);
-/// column![row_lines, widgets::row_strip(actions, words)]
-/// ```
-pub fn row_strip<'a, M: Clone + 'a>(actions: Vec<RowAction<'a, M>>, words: bool) -> Element<'a, M> {
-    if actions.is_empty() {
-        return column![].into();
-    }
-    let cells = actions.into_iter().map(|action| strip_cell(action, words)).collect();
-    column![rule::horizontal(LINE).style(style::rule), cells_with_lines(cells, size::control_sm())].width(Fill).into()
-}
-
-/// The height of a [`row_strip`]: its cells ([`size::control_sm()`]) and the line above them.
-pub fn row_strip_height() -> f32 {
-    size::control_sm() + LINE
-}
-
-/// Whether the cells of the [`row_strip`] of `actions` show their words over a row `width` wide:
-/// only when every cell holds its icon and word in its equal share – all words or none.
-pub fn row_strip_words<M>(actions: &[RowAction<'_, M>], width: f32) -> bool {
-    let share = actions.iter().map(|action| cell_need(action.label.as_ref(), typo::body())).fold(0.0, f32::max);
-    let lines = LINE * actions.len().saturating_sub(1) as f32;
-    actions.len() as f32 * share + lines <= width
-}
-
-/// One cell of [`row_strip`].
-fn strip_cell<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
-    let press = action.press();
-    let on = press.is_some();
-    let tooltip = action_tip(&action);
-    let accent = action.accent;
-    let mark: Element<'a, M> = icon(action.icon, if words { icon::SIZE_SM } else { icon::SIZE })
-        .style(move |t, _| {
-            let p = palette(t);
-            svg::Style { color: Some(if accent { p.accent } else { p.text }) }
-        })
-        .opacity(icon_opacity(on))
-        .into();
-    let cell = button(cell_content(mark, action.label, typo::body(), words))
-        .width(Fill)
-        .height(Fill)
-        .padding([0.0, space::s()])
-        .style(style::button::cell)
-        .on_press_maybe(press);
-    let cell = tip(cell, tooltip, tooltip::Position::Bottom);
-    anchored_if(action.anchor.as_ref(), cell)
-}
-
 /// A Torro pill in the mail reader (task E11.1: Task, AI task, Event, AI event, Mute…):
 /// [`size::pill()`] high, fully round with a frame in the accent (`style::button::pill`), the icon
 /// (16) in the accent and `label` in `typo::body()` in `text`, [`space::l()`] in at the sides. The
@@ -1160,25 +1101,12 @@ pub struct RowAction<'a, M> {
     /// opacity, takes no press and says in its tooltip why ([`RowAction::tip`]). Whoever draws an
     /// action asks [`RowAction::press`] for the message, never `on_press` directly.
     pub blocked: Option<iced::widget::text::Fragment<'a>>,
-    /// The icon in the accent colour (task E11.1: Task in the mail window's strip, what Torro adds
-    /// to a mail), set with [`RowAction::accent`]. Only [`row_strip`] draws it; the floating bar and
-    /// [`row_actions_strip`] of the hub keep their icons in `text`.
-    pub accent: bool,
 }
 
 impl<'a, M> RowAction<'a, M> {
     /// A button with `icon`, `label` and the key hint `key` that sends `on_press`; no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: M) -> Self {
-        Self { icon, label: label.into_fragment(), key, on_press, anchor: None, blocked: None, accent: false }
-    }
-
-    /// The same button with its icon in the accent colour ([`RowAction::accent`]).
-    ///
-    /// ```ignore
-    /// RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::Act(id.clone(), Command::Task)).accent()
-    /// ```
-    pub fn accent(self) -> Self {
-        Self { accent: true, ..self }
+        Self { icon, label: label.into_fragment(), key, on_press, anchor: None, blocked: None }
     }
 
     /// The same button, off for `reason` ([`RowAction::blocked`]): "AI task" without an AI.
@@ -4809,31 +4737,6 @@ mod tests {
         assert!(command_words(&[], 0.0), "an empty bar has nothing to cut");
     }
 
-    /// Task E11.1: the strip under a row shows its words only when every cell holds its word in its
-    /// equal share, and is a cell high plus its line.
-    #[test]
-    fn the_row_strip_shows_words_only_when_every_cell_holds_its_word() {
-        let actions = actions();
-        let share = actions.iter().map(|a| cell_need(a.label.as_ref(), typo::body())).fold(0.0, f32::max);
-        let exact = 4.0 * share + 3.0 * LINE;
-        assert!(row_strip_words(&actions, exact), "exactly the room");
-        assert!(!row_strip_words(&actions, exact - 1.0), "a pixel too little");
-        assert!(row_strip_words::<Msg>(&[], 0.0));
-        assert_eq!(row_strip_height(), size::control_sm() + LINE);
-    }
-
-    /// Task E11.1: an action marked accent keeps everything else; only the strip draws it red.
-    #[test]
-    fn an_accent_action_is_the_same_action_with_a_red_icon() {
-        let plain = RowAction::new(Icon::ListTodo, "Task", "T", Msg::Go);
-        assert!(!plain.accent);
-        let red = plain.clone().accent();
-        assert!(red.accent);
-        assert_eq!((red.key, red.press(), red.tip()), (plain.key, plain.press(), plain.tip()));
-        let off = RowAction::new(Icon::Sparkles, "AI task", "", Msg::Go).accent().blocked("Set up an AI first");
-        assert!(off.accent && off.press().is_none(), "blocked keeps the accent");
-    }
-
     /// Task E11.1: every block of the mail window builds with and without words, on and off.
     #[test]
     fn the_mail_blocks_build_in_every_variant() {
@@ -4846,12 +4749,7 @@ mod tests {
                 command_more(Some(Msg::Close)),
             ];
             let _: Element<'_, Msg> = command_bar(cells);
-            let mut strip = actions();
-            strip[0] = strip[0].clone().accent();
-            strip[1] = strip[1].clone().blocked("Not now");
-            let _: Element<'_, Msg> = row_strip(strip, words);
         }
-        let _: Element<'_, Msg> = row_strip(Vec::new(), true);
         let _: Element<'_, Msg> = command_split(Icon::Reply, "Reply", true, None, None);
         let _: Element<'_, Msg> = command_more(None);
         let _: Element<'_, Msg> = pill_button(Icon::ListTodo, "Task", Some(Msg::Go));

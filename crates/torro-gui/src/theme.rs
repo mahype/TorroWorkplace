@@ -526,8 +526,7 @@ pub mod size {
         design::with(|t| t.design.size.control_lg)
     }
     /// 44: the buttons of a reminder over the whole screen (task ER1.5), with text in
-    /// `typo::body_strong()`; nowhere else. (The strip of the chosen mail in the mail window's list,
-    /// `widgets::row_strip`, was this high until issue #227; it is `control_sm()` now.)
+    /// `typo::body_strong()`; nowhere else.
     pub fn control_xl() -> f32 {
         design::with(|t| t.design.size.control_xl)
     }

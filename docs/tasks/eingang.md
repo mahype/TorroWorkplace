@@ -2206,7 +2206,7 @@ Nicht parallel: E14.2 und E14.3 ändern beide `crates/torroinbox/src/{list,mail,
   sauber. Übersetzungen im Bericht.
 
 ### E14.2 Liste des Mail-Fensters ohne Knöpfe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E14.1 · **Dateien:** `crates/torroinbox/src/{list,mail,app,detail}.rs`,
   `crates/torro-gui/src/{widgets,theme}.rs` und `crates/torro-gui/examples/gallery.rs` (nur Entfernen)
 - **Zeilen:** Im Mail-Fenster (`Rows::edge_strip`) hat die gewählte Zeile keine Leiste mehr und zeigt wie jede andere

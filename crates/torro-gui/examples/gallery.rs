@@ -2273,25 +2273,6 @@ fn mailbar() -> Element<'static, Msg> {
         labelled_owned(format!("{width} wide · {note} · Delete off at 900"), container(bar).width(width).into())
     });
 
-    let strips = [390.0, 640.0].map(|width| {
-        let actions = strip_actions();
-        let words = widgets::row_strip_words(&actions, width);
-        let lines =
-            column![typo::text(typo::body_strong(), "Jonas Weber"), typo::text(typo::body(), "Budget review for Q4"),]
-                .padding(layout::row_padding());
-        // The strip stands where the preview line is (issue #227): the row keeps its height.
-        let above = size::row_message() - widgets::row_strip_height();
-        let chosen =
-            column![container(lines).padding([space::l(), 0.0]).height(above), widgets::row_strip(actions, words)]
-                .width(width);
-        let chosen = container(chosen).style(|t: &Theme| container::Style {
-            background: Some(Background::Color(palette(t).selected)),
-            ..container::Style::default()
-        });
-        let note = if words { "words" } else { "icons" };
-        labelled_owned(format!("{width} wide · {note} · AI task off"), chosen.into())
-    });
-
     let pill_row = row![
         widgets::pill_button(Icon::ListTodo, "Task", Some(Msg::Noop)),
         widgets::with_tooltip(widgets::pill_button(Icon::Sparkles, "AI task", None), "AI task · Set up an AI first"),
@@ -2330,7 +2311,6 @@ fn mailbar() -> Element<'static, Msg> {
         section("Action rail of a mail (E14.1)", action_rails()),
         section("Styles in every state", styles.into()),
         section("Command bar (reader) in three widths", column(bars).spacing(space::l()).into()),
-        section("Strip under the chosen row (list)", column(strips).spacing(space::l()).into()),
         section("Torro pills", pill_row.into()),
         section("Attachments and the reader's foot", reader_end.into()),
     ]
@@ -2476,19 +2456,6 @@ fn views() -> [(Icon, &'static str, Msg); 2] {
 /// The view switch Light | Dark of the reader's foot.
 fn looks() -> [(Icon, &'static str, Msg); 2] {
     [(Icon::Sun, "Light", Msg::Noop), (Icon::Moon, "Dark", Msg::Noop)]
-}
-
-/// The actions of the strip under a mail row, in the order of task E11.2; Task in the accent, AI
-/// task off.
-fn strip_actions() -> Vec<widgets::RowAction<'static, Msg>> {
-    vec![
-        widgets::RowAction::new(Icon::Archive, "Archive", "E", Msg::Noop),
-        widgets::RowAction::new(Icon::Trash2, "Delete", "#", Msg::Noop),
-        widgets::RowAction::new(Icon::Clock, "Later", "S", Msg::Noop),
-        widgets::RowAction::new(Icon::ListTodo, "Task", "T", Msg::Noop).accent(),
-        widgets::RowAction::new(Icon::BellOff, "Mute…", "M", Msg::Noop),
-        widgets::RowAction::new(Icon::Sparkles, "AI task", "", Msg::Noop).blocked("Set up an AI first"),
-    ]
 }
 
 /// [`labelled`] with a title made at run time.
