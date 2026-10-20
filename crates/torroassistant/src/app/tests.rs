@@ -950,7 +950,11 @@ fn the_bot_editor_saves_the_bot_and_never_its_access() {
             assert!(
                 !matches!(
                     request,
-                    Request::UpdateClient { .. } | Request::CreateClient { .. } | Request::RemoveClient { .. }
+                    Request::UpdateClient { .. }
+                        | Request::CreateClient { .. }
+                        | Request::RemoveClient { .. }
+                        | Request::NewClientKey { .. }
+                        | Request::ClientActivity { .. }
                 ),
                 "the editor touches a client: {request:?}"
             );
