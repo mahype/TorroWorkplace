@@ -2576,10 +2576,10 @@ static CREATE_CLIENT: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Never,
     description: "Connects a new agent or script with the rights of a template, or with the rights given (narrowed \
-                  to what its kind may hold and checked like clients.update_client), and returns its key. The key is \
-                  in this answer only; the core keeps just its hash. Kinds: `script`, the MCP clients `claude-code`, \
-                  `codex`, `gemini`, `claude-desktop`, `cursor` and `mcp`, `hook` (names the agent it reports for) \
-                  and `assistant`, which is answered with the client alone (result `client`), never with a key; \
+                  to what its kind may hold and checked like clients.update_client), and returns its key (the \
+                  assistant: the client only, result `client`, never a key). The key is in this answer only; the \
+                  core keeps just its hash. Kinds: `script`, the MCP clients `claude-code`, `codex`, `gemini`, \
+                  `claude-desktop`, `cursor` and `mcp`, `hook` (names the agent it reports for) and `assistant`; \
                   any other kind is an error.",
 };
 
