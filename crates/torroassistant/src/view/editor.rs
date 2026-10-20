@@ -4,10 +4,11 @@
 //!
 //! The editor is a form of reading width ([`size::form_max`]) in settings groups: name,
 //! description, picture, personality (with the assistant's templates), instructions, skills as
-//! named texts, the engine, and one row "Access ↗" that leads to the bot's page in the control
-//! centre (task S.18). **What a bot may use is not written here:** its rights are its client's,
-//! and `clients.*` is the app key's alone (point 2 of "Was nie nach außen geht" in `docs/api.md`),
-//! so the editor saves with `bots.save_bot` and nothing else. "Save" in the header is the window's
+//! named texts, the engine, and one row "What the bot may use" that opens the settings at Access at
+//! this bot, in the same window (task S.34). **What a bot may use is not written here:** its rights
+//! are its client's, and `clients.*` is the app key's alone (point 2 of "Was nie nach außen geht"
+//! in `docs/api.md`), which only Access sends; the editor saves with `bots.save_bot` and nothing
+//! else. "Save" in the header is the window's
 //! one primary button while the editor is open. Problems show after the first "Save" only.
 
 use iced::widget::text::Wrapping;
@@ -169,7 +170,7 @@ impl App {
         }
         let ask = column![
             typo::text(typo::body_strong(), tr("What can I do for you?")).align_x(Alignment::Center),
-            typo::text(typo::body(), tr("The bot uses only what you allowed it in the control centre."))
+            typo::text(typo::body(), tr("The bot uses only what you allowed it under Access."))
                 .style(theme::text_2)
                 .align_x(Alignment::Center),
             widgets::text_button(None, tr("Access…"), style::button::ghost, Some(Message::BotAccess(bot.id.clone()))),
@@ -423,18 +424,18 @@ impl App {
 }
 
 /// The one row in place of the former section "Access" (task S.18): what the bot may use is
-/// chosen in the control centre at the bot's page (`--section bot:<id>`), because a bot's rights
-/// are its client's and `clients.*` never leaves the app key. A bot without an id has no page yet –
-/// the row waits for the first save.
+/// chosen in the settings section Access at this bot, in the same window (task S.34), because a
+/// bot's rights are its client's and only Access sends `clients.*`. A bot without an id has no
+/// client yet – the row waits for the first save.
 fn access_group<'a>(draft: &'a BotDraft) -> Element<'a, Message> {
     let detail = match draft.id {
         Some(_) => None,
         None => Some(tr("Save the bot first; until then it may use nothing.").to_owned()),
     };
     let row =
-        setting_row(None, tr("What the bot may use"), detail, tinted(Icon::ArrowUpRight, icon::SIZE, |p| p.text_3));
+        setting_row(None, tr("What the bot may use"), detail, tinted(Icon::ChevronRight, icon::SIZE, |p| p.text_3));
     let footer = tr(
-        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
+        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen under Settings › Access.",
     );
     let open = draft.id.clone().map(Message::BotAccess);
     widgets::group(tr("Access"), vec![pressable(row, open)], Some(footer.to_string()))

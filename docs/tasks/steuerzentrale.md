@@ -900,7 +900,8 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   Editors (Steuerzentrale, Detailseite eines Agenten) in allen Größen; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.34 Assistent und Bots: Access im Assistent-Fenster
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS nicht möglich, `screencapture` erfasste nicht das App-Fenster; Design-Review
+  steht aus. `Preset` liegt jetzt in `torro_settings_ui::assistant::access`, `agents.rs` importiert es bis S.35.)
 - **Modell:** Opus (Rechte in einem App-Prozess) · **Braucht:** S.33 · **Dateien:**
   `crates/torro-settings-ui/src/assistant/access.rs` (neu), `crates/torro-settings-ui/src/assistant/mod.rs`,
   `crates/torro-settings-ui/src/assistant/bots.rs`, `crates/torro-settings-ui/src/assistant/general.rs`,

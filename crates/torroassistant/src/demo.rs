@@ -13,9 +13,9 @@
 //! conversation of a bot that was deleted ([`GONE`]). They are made, changed and deleted in memory,
 //! so `torroassistant --demo --bot b0000001` opens the travel planner's chat. Each bot has a client
 //! with rights (task B.5): the travel planner reads two of the three calendars and one of the two
-//! mail accounts, the release helper has none, as the assistant's proposal would leave it; the
-//! demo lists calendars, task lists, inbox sources and accounts for the editor's section "Access"
-//! and takes `clients.update_client`.
+//! mail accounts, the release helper has none, as the assistant's proposal would leave it. The
+//! window never changes them: what a bot may use is chosen in the settings section Access (task
+//! S.34), whose demo is `torro_settings_ui::demo`.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -146,15 +146,7 @@ impl Demo {
             Request::ListClients => {
                 Response::Clients { clients: state.client().into_iter().chain(state.clients.iter().cloned()).collect() }
             }
-            // A bot's rights (task B.5), as the core keeps them: never more than its kind may hold.
-            Request::UpdateClient { id, rights } => match state.clients.iter_mut().find(|client| client.id == id) {
-                Some(client) => {
-                    client.rights = rights.for_kind(&client.kind);
-                    Response::Ok
-                }
-                None => refused("not-found", &format!("no client {id:?}")),
-            },
-            // What exists, for the bot editor's section "Access".
+            // What exists: the accounts tell whether there is an AI account (task S.26).
             Request::CalendarCollections => Response::Collections { collections: calendars() },
             Request::TaskCollections => Response::Collections { collections: task_lists() },
             Request::ListSources => Response::Sources { sources: sources() },

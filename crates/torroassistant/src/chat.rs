@@ -338,7 +338,8 @@ pub fn area_of(name: &str) -> Option<Area> {
     CATALOGUE.iter().find(|command| command.name == name).map(|command| command.area)
 }
 
-/// The name of an area as the control centre writes it ("Calendar", "Mail").
+/// The name of an area as the control centre writes it ("Calendar", "Mail"); the clients' area by
+/// where they are managed since issue #231 ("API and MCP").
 pub fn area_name(area: Area) -> &'static str {
     match area {
         Area::System => tr("System"),
@@ -354,7 +355,7 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Bots => tr("Bots"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
-        Area::Clients => tr("Agents & API"),
+        Area::Clients => tr("API and MCP"),
         Area::Approvals => tr("Approvals"),
     }
 }

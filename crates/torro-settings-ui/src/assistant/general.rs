@@ -1,11 +1,10 @@
 //! Assistant › General (task S.17): whether the assistant is on, and what a new chat starts with.
 //!
-//! **Switching it on and off is the control centre's** (`docs/api.md`, "Was nie nach außen geht"):
-//! `clients.create_client` gives out a key, and no app process may ask for one. So the status is
-//! shown here and the row points at the control centre with [`Action::ControlCentre`] –
-//! "Turn on in Torro Workplace ↗" while it is off, "Change in Torro Workplace ↗" while it is on,
-//! both leading to [`super::CONTROL_CENTRE`]. The group "Engines" is gone with the page it stood
-//! on: the engines are AI accounts, and accounts belong to the whole suite.
+//! **Switching it on and off is Access's** (task S.34): the section with the rights, the only one
+//! that sends `clients.*` ([`super::access`]). So the status is shown here and the row leads there
+//! with [`Action::Open`] – "Turn it on under Access" while it is off, "Change under Access" while it
+//! is on. The group "Engines" is gone with the page it stood on: the engines are AI accounts, and
+//! accounts belong to the whole suite.
 //!
 //! **New chats** (issue #131): the engine, model and effort a new chat starts with
 //! (`settings.set_setting assistant_default`), or "The one used last" (`null`). The engines come
@@ -34,15 +33,14 @@ use torro_gui::widgets::{self, Status};
 use torro_ipc::assistant::EngineKind;
 use torro_ipc::{Request, SettingKey};
 
-use super::{AI_SECTION, Action, CONTROL_CENTRE};
+use super::{AI_SECTION, Action, access};
 use crate::Data;
-use crate::parts::{choice, pressable, setting_row};
+use crate::parts::{chevron, choice, pressable, setting_row};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
-    /// "Turn on in Torro Workplace ↗" or "Change in Torro Workplace ↗": the control centre, where
-    /// the assistant is switched and what it may use is chosen.
-    ControlCentre,
+    /// The row of "Status": Access, where the assistant is switched and what it may use is chosen.
+    Access,
     /// A row of "New chats", "Model" or "Effort": the whole default as it is to be stored, so two
     /// windows never leave half of it behind; `None` for the one used last.
     Default(Option<AssistantDefault>),
@@ -53,7 +51,7 @@ pub enum Message {
 
 pub fn update(message: Message, _data: &Data) -> Action {
     match message {
-        Message::ControlCentre => Action::ControlCentre(CONTROL_CENTRE.to_string()),
+        Message::Access => Action::Open(access::ID),
         Message::Default(default) => Action::send(Request::SetSetting {
             key: SettingKey::AssistantDefault,
             value: AssistantDefault::to_value(default.as_ref()),
@@ -73,20 +71,19 @@ pub fn view(data: &Data) -> Element<'_, Message> {
     page.into()
 }
 
-/// "Status": the assistant on or off, and the one way on from here – the whole row leads to the
-/// control centre, which switches it. A row, not a button in a row, so the words fit in every size
-/// class (design skill, section 6).
+/// "Status": the assistant on or off, and the one way on from here – the whole row opens Access,
+/// which switches it. A row, not a button in a row, so the words fit in every size class (design
+/// skill, section 6); a chevron, not the arrow of another window: Access is in this one.
 fn status_group(data: &Data) -> Element<'_, Message> {
     let on = super::is_on(data);
     let (dot, label, word) = if on {
-        (Status::Ok, tr("The assistant is on"), tr("Change in Torro Workplace"))
+        (Status::Ok, tr("The assistant is on"), tr("Change under Access"))
     } else {
-        (Status::Inactive, tr("The assistant is off"), tr("Turn on in Torro Workplace"))
+        (Status::Inactive, tr("The assistant is off"), tr("Turn it on under Access"))
     };
-    let row = setting_row(Some(widgets::status_dot(dot)), label, Some(word.to_string()), arrow());
-    let footer =
-        tr("Turning the assistant on or off, and what it may use, stay in Torro Workplace: its key is kept there.");
-    widgets::group(tr("Status"), vec![pressable(row, Some(Message::ControlCentre))], Some(footer.to_string()))
+    let row = setting_row(Some(widgets::status_dot(dot)), label, Some(word.to_string()), chevron());
+    let footer = tr("Turning the assistant on or off and what it may use are set under Access.");
+    widgets::group(tr("Status"), vec![pressable(row, Some(Message::Access))], Some(footer.to_string()))
 }
 
 /// "New chats", and for a default engine its "Model" and, where the model takes one, its "Effort"
@@ -246,14 +243,13 @@ mod tests {
         }
     }
 
-    /// The status points at the control centre, both ways round, and sends nothing itself.
+    /// Task S.34: the status opens Access in this window, both ways round, and sends nothing itself.
     #[tokio::test]
-    async fn the_status_only_points_at_the_control_centre() {
+    async fn the_status_only_points_at_access() {
         let on = data().await;
         let off = turned_off(&on);
         for data in [&on, &off] {
-            let action = update(Message::ControlCentre, data);
-            assert!(matches!(action, Act::ControlCentre(ref section) if section == "assistant"), "{action:?}");
+            assert_eq!(update(Message::Access, data), Act::Open("access"));
             let _ = view(data);
         }
         assert!(super::super::is_on(&on) && !super::super::is_on(&off));

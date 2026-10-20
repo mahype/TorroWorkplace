@@ -3,25 +3,25 @@
 //! opens in its content area, and what the control centre's one long Assistant page becomes.
 //!
 //! ```text
-//! General   the assistant on or off (shown, switched in the control centre), what a new chat
-//!           starts with: engine, model, effort
+//! General   whether the assistant is on (switched under Access), what a new chat starts with:
+//!           engine, model, effort
+//! Access    what the assistant and each bot may use; the assistant on and off (task S.34)
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
-//! Bots      the bots, each with "Edit" in the assistant and "Access ↗" in the control centre
+//! Bots      the bots, each with "Edit" in the assistant and "Access" here
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
 //! History   how long conversations are kept
 //! ```
 //!
-//! **What is not here** (task S.17): what the assistant may use ("What the assistant may use",
-//! approval, the chosen collections), the data rule for mail, and the group "Engines". Those stay
-//! in the control centre, where the keys and rights live (`docs/api.md`, "Was nie nach außen
-//! geht"): switching the assistant on or off is `clients.create_client` and
-//! `clients.remove_client`, which only the control centre sends, so the key of a new client never
-//! reaches an app process. No section here sends any `clients.*` request (a test watches over
-//! that); General shows the status and points at the control centre with
-//! [`crate::Action::ControlCentre`].
+//! **Access is the one section with rights** (task S.34, `docs/settings.md` › "Assistent und
+//! Bots"): since issue #231 what the assistant and its bots may use is chosen in their own window,
+//! with the rights editor of [`crate::rights`]. Only [`access`] sends `clients.*` beyond reading the
+//! list – `clients.update_client`, and `clients.create_client` / `clients.remove_client` for the
+//! kind `assistant` –, never `clients.new_key`; no other section shows rights or the data rule for
+//! mail, which lives under the control centre's Accounts. Tests watch over both
+//! (`no_section_touches_clients_rights_or_the_data_rule`, `access::tests`).
 //!
-//! While the assistant is off, every section but General says in one sentence that it stands ready
-//! once it is on ([`off_group`]).
+//! While the assistant is off, every section but General and Access says in one sentence that it
+//! stands ready once it is on ([`off_group`]).
 //!
 //! # What the app does (task S.18)
 //!
@@ -30,7 +30,10 @@
 //! // view: the open section's page, as the host takes it.
 //! let page = assistant::page(&self.sections, host.data(), host.current().id, class);
 //! let frame = host.view(class, page, Message::Settings);
-//! // update: what a section returned goes through the host; its app part is this app's work.
+//! // update: the host's own messages go past the sections first (Access follows its sends).
+//! assistant::received(&mut self.sections, &message);
+//! let outcome = host.update(message);
+//! // What a section returned goes through the host; its app part is this app's work.
 //! match host.act(assistant::update(&mut self.sections, message, host.data())) {
 //!     Outcome::App(AppAction::EditBot(id)) => self.edit_bot(id),
 //!     // The answer to an `Ask` ("Say something") belongs to the section that asked.
@@ -39,11 +42,14 @@
 //! }
 //! ```
 //!
-//! Escape goes to [`escape`] first (it closes a dialog of the Profile section) and only then to the
+//! Escape goes to [`escape`] first (it closes a dialog of Profile or Access) and only then to the
 //! host, which closes the settings – but every way out of the settings passes [`closing`] first, so
-//! a profile that is typed and not saved is never dropped without "Discard changes?". The window's own subscription batches [`subscription`], the
-//! clock the open sections need (Voice asks how the listener stands after it was switched).
+//! a profile that is typed and not saved is never dropped without "Discard changes?", and
+//! [`save_now`] then, so a change of rights made a moment ago goes out before the sections go. The
+//! window's own subscription batches [`subscription`], the clocks the open sections need (Voice
+//! asks how the listener stands after it was switched, Access saves its draft).
 
+pub mod access;
 pub mod bots;
 pub mod general;
 pub mod history;
@@ -67,10 +73,13 @@ use crate::parts::setting_row;
 use crate::{Data, Page, Section};
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <section>` takes.
-pub const SECTIONS: [Section; 5] = [
+pub const SECTIONS: [Section; 6] = [
     // General is first, so the gear lands on the status: what is on, and what a new chat starts
     // with.
     Section { id: "general", icon: Icon::SlidersHorizontal, label: "General" },
+    // Next to General, which points here to turn the assistant on (task S.34); the icon of
+    // "Access…" in a bot's menu.
+    Section { id: access::ID, icon: Icon::UserCheck, label: "Access" },
     Section { id: "profile", icon: Icon::User, label: "Profile" },
     // The suite has no robot icon; the sparkles stand for AI (design skill, section 5).
     Section { id: "bots", icon: Icon::Sparkles, label: "Bots" },
@@ -78,11 +87,6 @@ pub const SECTIONS: [Section; 5] = [
     Section { id: "voice", icon: Icon::MessageCircle, label: "Voice" },
     Section { id: "history", icon: Icon::History, label: "History" },
 ];
-
-/// The section of the control centre that switches the assistant on and off and holds what it may
-/// use (`torroworkplace ui --section assistant`). Task S.21 makes it the assistant under Agents &
-/// API; the word stays the same.
-pub const CONTROL_CENTRE: &str = "assistant";
 
 /// Where an AI account is added and its models are turned on and off
 /// (`torroworkplace ui --section accounts`): where General points when there is no engine at all
@@ -103,10 +107,13 @@ pub type Action = crate::Action<AppAction>;
 /// What one load of these sections asks for, in this order; the host sends it again after every
 /// change ([`crate::Host::new`]).
 ///
-/// `clients.list_clients` is read only, to tell whether the assistant is on; nothing here writes a
-/// client. `accounts.list_accounts` tells, while no AI account is an engine, whether there are AI
-/// accounts with no model on (task S.26). The models of an AI account follow in a second round,
-/// because only the loaded settings name the account ([`models_request`], [`Data::follow_up`]).
+/// `clients.list_clients` tells whether the assistant is on and holds the rights Access edits
+/// (the assistant's and the bots' clients). `accounts.list_accounts` tells, while no AI account is
+/// an engine, whether there are AI accounts with no model on (task S.26), and names the mail
+/// accounts Access offers; the calendars, task lists and inbox sources are the other things it
+/// offers to choose from (task S.34, [`crate::rights::Known`]). The models of an AI account follow
+/// in a second round, because only the loaded settings name the account ([`models_request`],
+/// [`Data::follow_up`]).
 pub fn wanted() -> Vec<Request> {
     vec![
         Request::Settings,
@@ -117,6 +124,9 @@ pub fn wanted() -> Vec<Request> {
         Request::ListEngines,
         Request::VoiceStatus,
         Request::Accounts,
+        Request::CalendarCollections,
+        Request::TaskCollections,
+        Request::ListSources,
     ]
 }
 
@@ -148,12 +158,15 @@ pub struct State {
     /// Voice: what "Say something" is doing and what it heard. General, Bots and History read
     /// everything from [`Data`] and keep nothing.
     pub voice: voice::State,
+    /// Access: whose rights are open, the first start's choice, the editor's draft.
+    pub access: access::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
 #[derive(Debug, Clone)]
 pub enum Message {
     General(general::Message),
+    Access(access::Message),
     Profile(profile::Message),
     Bots(bots::Message),
     Voice(voice::Message),
@@ -164,7 +177,13 @@ pub enum Message {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::General(message) => general::update(message, data),
+        Message::Access(message) => access::update(&mut state.access, message, data),
         Message::Profile(message) => profile::update(&mut state.profile, message, data),
+        // "Access" at a bot opens this section at that very bot.
+        Message::Bots(bots::Message::Access(id)) => {
+            show_access(state, Some(id));
+            Action::Open(access::ID)
+        }
         Message::Bots(message) => bots::update(message, data),
         Message::Voice(message) => voice::update(&mut state.voice, message, data),
         Message::History(message) => history::update(message, data),
@@ -178,6 +197,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 /// one of [`SECTIONS`].
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClass) -> Page<'a, Message> {
     match section {
+        access::ID => wrap(access::page(&state.access, data, class), Message::Access),
         "profile" => wrap(profile::page(&state.profile, data, class), Message::Profile),
         "bots" => wrap(Page::new(bots::view(data, class)), Message::Bots),
         "voice" => wrap(Page::new(voice::view(&state.voice, data)), Message::Voice),
@@ -188,10 +208,42 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
 
 /// What the open sections need a clock for, as the app batches it into the window's own
 /// subscription (`Subscription::batch([…, settings::subscription(&pane.sections).map(…)])`); none
-/// while nothing waits. Today one section needs one – Voice asks how the listener stands again
-/// after it was switched ([`voice::subscription`]).
+/// while nothing waits. Voice asks how the listener stands again after it was switched
+/// ([`voice::subscription`]), Access saves a changed right [`crate::rights::SAVE_DELAY`] later
+/// ([`access::subscription`]).
 pub fn subscription(state: &State) -> iced::Subscription<Message> {
-    voice::subscription(&state.voice).map(Message::Voice)
+    iced::Subscription::batch([
+        voice::subscription(&state.voice).map(Message::Voice),
+        access::subscription(&state.access).map(Message::Access),
+    ])
+}
+
+/// Opens Access at the assistant (`None`) or at the bot with this id ([`access::show`]); the app
+/// shows the section itself (`Host::open(access::ID)`). For "Change access" under a refused tool,
+/// the bot editor's "What the bot may use" and `--settings access [--bot <id>]`.
+pub fn show_access(state: &mut State, bot: Option<String>) {
+    access::show(&mut state.access, bot);
+}
+
+/// What the sections still have to send before the settings close: a change of rights made a
+/// moment ago and not yet saved ([`access::save_now`]). The window hands it to the host as any
+/// other action on every way out of the settings, so it is not lost with them;
+/// [`crate::Action::None`] while nothing waits.
+pub fn save_now(state: &mut State) -> Action {
+    access::save_now(&mut state.access)
+}
+
+/// One of the host's own messages, as the app hands it on **before** the host takes it
+/// (`assistant::received(&mut sections, &message); host.update(message)`): a send that came back
+/// and a load. The host gives a section neither the answers of its requests nor the fresh data;
+/// Access needs both to settle the editor's draft and to see its client appear ([`access::sent`],
+/// [`access::loaded`]). Every other message is left alone.
+pub fn received(state: &mut State, message: &crate::host::Message) {
+    match message {
+        crate::host::Message::Sent { changed, result } => access::sent(&mut state.access, *changed, result),
+        crate::host::Message::Loaded(data) => access::loaded(&mut state.access, data),
+        _ => {}
+    }
 }
 
 /// The answer to a section's [`crate::Action::Ask`], as the host handed it to the app
@@ -203,13 +255,15 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
 
 /// The dialog of the open section over the whole window, while one is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    profile::overlay(&state.profile, data).map(|dialog| dialog.map(Message::Profile))
+    profile::overlay(&state.profile, data)
+        .map(|dialog| dialog.map(Message::Profile))
+        .or_else(|| access::overlay(&state.access, data).map(|dialog| dialog.map(Message::Access)))
 }
 
 /// What Escape means in these sections: close the question, stop typing a note. `None` leaves it
 /// to the host, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    profile::escape(&state.profile).map(Message::Profile)
+    profile::escape(&state.profile).map(Message::Profile).or_else(|| access::escape(&state.access).map(Message::Access))
 }
 
 /// What stands between the window and closing these settings: the question a section must ask
@@ -238,7 +292,7 @@ pub fn client(data: &Data) -> Option<&ClientInfo> {
     data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT)
 }
 
-/// Whether the assistant is on: it has its client. Switched in the control centre only.
+/// Whether the assistant is on: it has its client. Switched under Access ([`access`]).
 pub fn is_on(data: &Data) -> bool {
     client(data).is_some()
 }
@@ -246,7 +300,7 @@ pub fn is_on(data: &Data) -> bool {
 /// What a section shows while the assistant is off: its group with one row, which says in one
 /// sentence that the section stands ready once the assistant is on (task S.17).
 pub fn off_group<'a, M: 'a>(title: &'a str) -> Element<'a, M> {
-    let detail = tr("These settings are ready once you turn it on under General.");
+    let detail = tr("These settings are ready once you turn it on under Access.");
     let row = setting_row(
         Some(widgets::status_dot(widgets::Status::Inactive)),
         tr("The assistant is off"),
@@ -375,9 +429,12 @@ mod tests {
         let _ = unknown.body;
     }
 
-    /// Task S.17: no section switches the assistant on or off, hands out a key, or shows what it
-    /// may use or the data rule – that stays in the control centre, with the keys and the rights.
-    /// Every `clients.*` request but the reading `ListClients` is named here.
+    /// Task S.17, narrowed by task S.34: no section but Access switches the assistant on or off,
+    /// changes what a client may use or shows the data rule, and none ever hands out a key. Every
+    /// `clients.*` request but the reading `ListClients` is named here, and the rights editor
+    /// (`rights::`, which holds `UpdateClient` and `api::Rights`); Access is watched by its own
+    /// test (`access::tests::access_sends_only_what_it_may`), which allows it what the boundary
+    /// does and never a new key.
     #[test]
     fn no_section_touches_clients_rights_or_the_data_rule() {
         // Spelled in pieces: this test's own words are not what it looks for.
@@ -390,6 +447,7 @@ mod tests {
             ["Mail", "ToCloud"].concat(),
             ["mail_to", "_cloud"].concat(),
             ["api::", "Rights"].concat(),
+            ["rights", "::"].concat(),
         ];
         let mut found = Vec::new();
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/assistant");
@@ -401,6 +459,10 @@ mod tests {
                 continue;
             }
             files += 1;
+            // The one section with rights, under a test of its own.
+            if path.file_stem().is_some_and(|stem| stem == access::ID) {
+                continue;
+            }
             let text = std::fs::read_to_string(&path).expect("a section reads");
             for line in text.lines().take_while(|line| line.trim() != "#[cfg(test)]") {
                 if line.trim_start().starts_with("//") {
@@ -414,13 +476,16 @@ mod tests {
             }
         }
         assert_eq!(files, SECTIONS.len() + 1, "one file per section and this one");
-        assert!(found.is_empty(), "a section reaches into the control centre's own: {found:?}");
+        assert!(found.is_empty(), "a section reaches into the rights: {found:?}");
     }
 
     /// What one load asks for, and the second round for an AI account's models.
     #[tokio::test]
     async fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted().len(), 8, "one request per thing the sections read");
+        assert_eq!(wanted().len(), 11, "one request per thing the sections read");
+        for offered in [Request::CalendarCollections, Request::TaskCollections, Request::ListSources] {
+            assert!(wanted().contains(&offered), "what Access offers to choose from (task S.34)");
+        }
         assert!(wanted().contains(&Request::ListClients), "to tell whether the assistant is on");
         assert!(wanted().contains(&Request::Accounts), "to tell no model on from no AI account (task S.26)");
         let data = data().await;
@@ -442,7 +507,7 @@ mod tests {
         assert!(models_request(&on_agent).is_none());
     }
 
-    /// While the assistant is off, every section but General says so in one sentence.
+    /// While the assistant is off, every section but General and Access says so in one sentence.
     #[tokio::test]
     async fn the_other_sections_wait_while_the_assistant_is_off() {
         let off = turned_off(&data().await);
@@ -468,6 +533,35 @@ mod tests {
         assert_eq!(voice::heard_text(&state.voice), trf("Heard: “{text}”", &[("text", &"What is on today?")]));
     }
 
+    /// Task S.34: "Access" at a bot opens the section at that bot; the host's sends and loads reach
+    /// Access, every other message passes by.
+    #[tokio::test]
+    async fn access_opens_at_a_bot_and_follows_the_host() {
+        let data = data().await;
+        let bot = data.bots.first().expect("the demo has a bot").id.clone();
+        let mut state = State::default();
+        let action = update(&mut state, Message::Bots(bots::Message::Access(bot.clone())), &data);
+        assert_eq!(action, Action::Open(access::ID));
+        assert_eq!(access::open_bot(&state.access, &data).map(|open| open.id.clone()), Some(bot));
+        let below = page(&state, &data, access::ID, SizeClass::Wide).sub_page.is_some();
+        assert!(below, "the bot's name follows Access in the path");
+        show_access(&mut state, None);
+        assert!(access::open_bot(&state.access, &data).is_none());
+
+        // A change of rights waits for the clock; leaving the settings sends it now.
+        let level = access::Message::Rights(crate::rights::Message::Level(
+            torro_ipc::api::Area::Mail,
+            torro_ipc::api::Level::Read,
+        ));
+        let _ = update(&mut state, Message::Access(level), &data);
+        let Action::Send(sent) = save_now(&mut state) else { panic!("a draft waits") };
+        assert!(matches!(&sent[..], [Request::UpdateClient { .. }]), "{sent:?}");
+        assert_eq!(save_now(&mut state), Action::None, "once");
+        received(&mut state, &host::Message::Sent { changed: true, result: Box::new(Ok(data.clone())) });
+        received(&mut state, &host::Message::Menu);
+        assert!(overlay(&state, &data).is_none() && escape(&state).is_none());
+    }
+
     /// Every picture has a symbol or shows the letter of the name.
     #[test]
     fn every_picture_is_a_symbol_or_the_letter() {
@@ -483,7 +577,7 @@ mod tests {
     #[tokio::test]
     async fn the_sections_are_named_and_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["general", "profile", "bots", "voice", "history"]);
+        assert_eq!(ids, ["general", "access", "profile", "bots", "voice", "history"]);
         assert_eq!(SECTIONS[0].name(), tr("General"));
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
         for id in ids {

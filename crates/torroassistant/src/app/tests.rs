@@ -523,8 +523,9 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     assert!(app.switchable().is_empty(), "without a client there is nothing to switch off");
     sent(&mut app);
     let _ = app.update(Message::SetUp);
-    // "Set up access" opens the control centre's page "Assistant" itself, no request.
-    assert_eq!(app.sections, [ASSISTANT_PAGE]);
+    // "Set up access" opens Access in this window (task S.34), no request of the window.
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    assert!(app.sections.is_empty(), "not the control centre");
     assert!(sent(&mut app).is_empty());
 
     let mut none = started(&["--open", "no-engines"]);
@@ -535,14 +536,25 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     assert!(none.settings.is_none(), "the control centre, not the settings in the window");
 }
 
+/// Task S.34: "Change access" under a refused tool opens Access in this window, at the assistant –
+/// or at the bot whose conversation is open.
 #[test]
-fn change_access_under_a_refused_tool_opens_the_assistant_page() {
+fn change_access_under_a_refused_tool_opens_access() {
     let mut app = started(&["--open", "forbidden"]);
     let _ = app.view();
     let _ = app.update(Message::SetUp);
-    assert_eq!(app.sections, ["assistant"]);
-    assert_eq!(ASSISTANT_PAGE, "assistant", "the section `torroworkplace ui` takes");
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    settings_loaded(&mut app);
+    assert!(settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data()).is_none());
+    assert!(app.sections.is_empty(), "not the control centre");
     assert_eq!(ACCOUNTS_PAGE, "accounts");
+
+    let mut bot = started(&["--open", "bot"]);
+    assert_eq!(bot.chat_bot(), Some(TRAVEL));
+    let _ = bot.update(Message::SetUp);
+    settings_loaded(&mut bot);
+    let open = settings::access::open_bot(&pane(&bot).sections.access, pane(&bot).host.data());
+    assert_eq!(open.map(|summary| summary.id.as_str()), Some(TRAVEL), "the bot's own rights");
 }
 
 #[test]
@@ -877,13 +889,25 @@ fn deleting_a_bot_asks_first_and_the_main_window_goes_back_to_the_assistant() {
     assert!(lisbon.bot_deleted);
 }
 
+/// Task S.34: "Access…" and the bot editor's "What the bot may use" open Access at the bot, in this
+/// window, the settings open or not.
 #[test]
 fn access_opens_the_bots_rights_and_a_window_is_asked_of_the_core() {
+    for open in [false, true] {
+        let mut app = started(&["--open", "bot-editor"]);
+        if open {
+            let _ = app.update(Message::ToggleSettings);
+        }
+        sent(&mut app);
+        let _ = app.update(Message::BotAccess(TRAVEL.into()));
+        settings_loaded(&mut app);
+        assert_eq!(pane(&app).host.current().id, settings::access::ID);
+        let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
+        assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
+        assert!(app.sections.is_empty() && sent(&mut app).is_empty(), "no request, no control centre");
+    }
     let mut app = started(&[]);
     sent(&mut app);
-    let _ = app.update(Message::BotAccess(TRAVEL.into()));
-    assert_eq!(app.sections, ["bot:b0000001"], "torroworkplace ui --section bot:<id>");
-    assert!(sent(&mut app).is_empty(), "no request: the control centre opens");
     let _ = app.update(Message::OpenBotWindow(TRAVEL.into()));
     assert_eq!(sent(&mut app), [Request::OpenChatWindow { window: ChatWindow::Bot(TRAVEL.into()) }]);
 }
@@ -1126,10 +1150,10 @@ fn settings_voice_starts_at_the_voice_section() {
     assert!(!pane(&app).host.loaded(), "its data is on its way");
 }
 
-/// What the sections ask of the app: "Edit" at a bot is the bot editor, "Access ↗" the control
-/// centre at this very bot. Neither is a request of this window.
+/// What the sections ask of the app: "Edit" at a bot is the bot editor, "Access" the section
+/// Access at this very bot (task S.34). Neither is a request of this window.
 #[test]
-fn the_sections_reach_the_editor_and_the_control_centre() {
+fn the_sections_reach_the_editor_and_access() {
     use torro_settings_ui::assistant::bots as section;
 
     let mut app = started(&[]);
@@ -1137,11 +1161,108 @@ fn the_sections_reach_the_editor_and_the_control_centre() {
     settings_loaded(&mut app);
     sent(&mut app);
     let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Access(TRAVEL.into()))));
-    assert_eq!(app.sections, ["bot:b0000001"], "torroworkplace ui --section bot:<id>");
-    assert!(app.settings.is_some(), "the control centre is another window");
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
+    assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
+    assert!(app.sections.is_empty(), "not the control centre");
     let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Edit(TRAVEL.into()))));
     assert!(app.settings.is_none(), "the editor takes the content area");
     assert_eq!(sent(&mut app), [Request::GetBot { id: TRAVEL.into() }]);
+}
+
+/// `--bot <id> --settings access` opens Access at that bot in the bot's window (task S.34).
+#[test]
+fn settings_access_with_a_bot_starts_at_the_bot() {
+    let mut app = started(&["--bot", TRAVEL, "--settings", "access"]);
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    settings_loaded(&mut app);
+    let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
+    assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
+    let main = started(&["--settings", "access"]);
+    assert!(settings::access::open_bot(&pane(&main).sections.access, pane(&main).host.data()).is_none());
+}
+
+/// A right changed a moment ago is not lost when the settings close before its clock (task
+/// S.34): every way out sends it first, and the settings still close.
+#[test]
+fn leaving_the_settings_saves_a_waiting_right() {
+    use torro_ipc::api::{Area, Level};
+    use torro_settings_ui::rights;
+
+    let level = || {
+        Message::SettingsPage(settings::Message::Access(settings::access::Message::Rights(rights::Message::Level(
+            Area::Mail,
+            Level::Read,
+        ))))
+    };
+    for way in [
+        Message::ToggleSettings,
+        Message::Escape,
+        Message::Select(TOOLS.into()),
+        Message::SettingsHost(torro_settings_ui::host::Message::Back),
+    ] {
+        let mut app = started(&["--settings", "access"]);
+        settings_loaded(&mut app);
+        let _ = app.update(level());
+        let task = app.update(way.clone());
+        assert!(app.settings.is_none(), "{way:?}: the settings close");
+        assert!(task.units() > 0, "{way:?}: the change is on its way");
+    }
+    // Nothing waits: nothing extra goes.
+    let mut app = started(&["--settings", "access"]);
+    settings_loaded(&mut app);
+    assert!(app.save_before_leaving(&Message::ToggleSettings).is_none());
+}
+
+/// Task S.34, the boundary in this process: the window's own code sends no `clients.*` but reading
+/// the list – no client made, removed or changed, no key, no activity, no rights editor. Those are
+/// the settings section Access's alone (`torro_settings_ui::assistant::access`), under its own test.
+#[test]
+fn the_window_itself_never_touches_clients() {
+    // Spelled in pieces: this test's own words are not what it looks for.
+    let forbidden = [
+        ["Create", "Client"].concat(),
+        ["Remove", "Client"].concat(),
+        ["Update", "Client"].concat(),
+        ["NewClient", "Key"].concat(),
+        ["Client", "Activity"].concat(),
+        ["rights", "::"].concat(),
+        ["rights", " as"].concat(),
+        ["Mail", "ToCloud"].concat(),
+        // The window hands Access no message of its own: what changes rights comes from a person's
+        // click in the section, never from the window's code.
+        ["access::", "Message"].concat(),
+    ];
+    // This file names what it checks; every other file of the window is read whole.
+    let this = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/tests.rs");
+    let mut found = Vec::new();
+    let mut files = 0;
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { panic!("cannot read {}", dir.display()) };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") || path == this {
+                continue;
+            }
+            files += 1;
+            let text = std::fs::read_to_string(&path).expect("a source file reads");
+            let code = text.lines().take_while(|line| line.trim() != "#[cfg(test)]");
+            for line in code.filter(|line| !line.trim_start().starts_with("//")) {
+                found.extend(
+                    forbidden
+                        .iter()
+                        .filter(|word| line.contains(word.as_str()))
+                        .map(|word| format!("{}: {word}", path.display())),
+                );
+            }
+        }
+    }
+    assert!(files > 10, "the window's sources were read");
+    assert!(found.is_empty(), "the window reaches into the rights: {found:?}");
 }
 
 /// Task S.18, not negotiable: only a person opens the settings. A link of an answer opens a web

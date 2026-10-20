@@ -80,7 +80,10 @@ use torro_gui::{style, typo};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, BOT_CLIENT, HOOK_CLIENT, Level, Rights, RightsTemplate};
 use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
-use torro_settings_ui::rights::{self, Naming, control_column, in_column, rights_summary, template_label};
+// The starting points of the assistant's first start live with Access in the assistant window
+// since task S.34; this page uses them until task S.35 takes it away.
+use torro_settings_ui::assistant::access::Preset;
+use torro_settings_ui::rights::{self, Naming, control_column, in_column, rights_summary};
 // The assistant's tool lines name areas the way the rights editor does (issue #133).
 pub(crate) use torro_settings_ui::rights::area_label;
 #[cfg(test)]
@@ -150,45 +153,6 @@ impl Default for State {
             removing: None,
             problem: None,
             orphans: Vec::new(),
-        }
-    }
-}
-
-/// A starting point of the assistant's first start (task C.6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Preset {
-    /// [`Rights::assistant`]: read calendars, tasks and the Notification Hub.
-    Suggested,
-    Template(RightsTemplate),
-}
-
-impl Preset {
-    const ALL: [Preset; 4] = [
-        Preset::Suggested,
-        Preset::Template(RightsTemplate::ReadOnly),
-        Preset::Template(RightsTemplate::ReadAndWrite),
-        Preset::Template(RightsTemplate::FullAccess),
-    ];
-
-    /// The rights it stands for. No template opens the area `assistant` (`Area::in_templates`).
-    pub fn rights(self) -> Rights {
-        match self {
-            Preset::Suggested => Rights::assistant(),
-            Preset::Template(template) => template.rights(),
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Preset::Suggested => tr("Suggested"),
-            Preset::Template(template) => template_label(template),
-        }
-    }
-
-    fn detail(self) -> &'static str {
-        match self {
-            Preset::Suggested => tr("Reads calendars, tasks and the Notification Hub"),
-            Preset::Template(template) => agent_wizard::template_detail(template),
         }
     }
 }

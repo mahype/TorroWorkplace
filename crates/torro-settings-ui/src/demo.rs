@@ -18,7 +18,7 @@ use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Setti
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Rights};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::{
@@ -77,19 +77,33 @@ impl Demo {
     }
 
     /// The assistant's client, so the sections show the assistant as on, with one command switched
-    /// off, so the rights editor shows what that looks like (task S.33). Switching it is the
-    /// control centre's; the demo only pretends it was.
+    /// off, so the rights editor shows what that looks like (task S.33); and the client of the
+    /// sample bot ([`Demo::bots`]), which reads two calendars, so Access has a bot to open (task
+    /// S.34). The demo only pretends to switch or change them.
     fn clients(&self) -> Vec<ClientInfo> {
         let created = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap_or_else(Utc::now);
-        vec![ClientInfo {
-            id: "a51c3e88".into(),
-            name: "Assistant".into(),
-            kind: ASSISTANT_CLIENT.into(),
+        let client = |id: &str, name: &str, kind: &str, rights: Rights| ClientInfo {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
             created,
             last_used: None,
-            rights: Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
+            rights,
             agent: None,
-        }]
+        };
+        let mut travel = Rights::none();
+        travel.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
+        travel.calendars =
+            Selection::Only(vec![WORK_CALENDAR.into(), "nextcloud:anna@cloud.example.org/family".into()]);
+        vec![
+            client(
+                "a51c3e88",
+                "Assistant",
+                ASSISTANT_CLIENT,
+                Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
+            ),
+            client("c0000001", "Travel planner", BOT_CLIENT, travel),
+        ]
     }
 
     /// Two accounts with calendars and task lists, for "Calendars" (task S.19) and "Lists" to

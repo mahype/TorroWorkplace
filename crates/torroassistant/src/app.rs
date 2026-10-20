@@ -40,10 +40,10 @@
 //! only while it is scrolled to the bottom ([`App::follow_bottom`]); scrolled up, nothing moves.
 //!
 //! First start: without the client "Assistant" (`clients.list_clients`) a new chat asks the person
-//! to choose what the assistant may use, with a button that opens the control centre on its page
-//! "Assistant" (`torroworkplace ui --section assistant`, task C.6); "Change access" under a refused
-//! tool opens the same page. Without an AI account it says so and opens the accounts page
-//! (`--section accounts`).
+//! to choose what the assistant may use, with a button that opens the settings at Access in this
+//! window (task S.34, [`App::open_access`]); "Change access" under a refused tool opens Access too,
+//! at the bot when a bot's conversation is open. Without an AI account it says so and opens the
+//! control centre's accounts page (`--section accounts`).
 //!
 //! Settings (task S.18, `docs/settings.md`): the gear in the title band – and "Settings" in the
 //! sidebar where there is no band – turns the content area into the assistant's settings and back
@@ -62,13 +62,10 @@
 //! opens a bot's chat – its newest conversation or a new one – in which messages go to the bot
 //! (`assistant.send_message { bot }`) and the picker starts at the bot's engine and model. The bot
 //! editor (profile, personality, instructions, skills, engine) takes the chat's place and saves with
-//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" opens the control centre at
-//! the bot's rights (`--section bot:<id>`). The editor's section "Access" (task B.5) sets a level per
-//! area and "Ask first" for the bot's own client: it reads `clients.list_clients` and what exists
-//! (`calendar.list_calendars`, `tasks.list_lists`, `inbox.list_sources`, `accounts.list_accounts`)
-//! each time it opens, and a save sends `bots.save_bot`, then – only when a row changed –
-//! `clients.list_clients` again and `clients.update_client` with the changed rows laid onto what
-//! the core holds then. `--bot <id>` is a chat window with one bot
+//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" and the editor's "What the
+//! bot may use" open the settings at Access at this bot (task S.34): the bot's rights are chosen
+//! there, with the rights editor of `torro-settings-ui`; the editor itself never sends `clients.*`.
+//! `--bot <id>` is a chat window with one bot
 //! ([`Window::Bot`]), titled "{bot} · {title}"; "Open in new window" of a bot starts it through
 //! `assistant.open_window`. Its methods live in `app/bots.rs`.
 //!
@@ -160,9 +157,6 @@ pub const BOT_NAME: &str = "assistant-bot-name";
 pub const BOT_FORM: &str = "assistant-bot-form";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
-/// The control centre's page "Assistant" (task C.6): what the assistant may use. The same word the
-/// settings sections point at, so the two never drift apart.
-pub const ASSISTANT_PAGE: &str = settings::CONTROL_CENTRE;
 /// The control centre's page where AI accounts are added and their models turned on (task S.26;
 /// there is no page `ai`, issue #231).
 pub const ACCOUNTS_PAGE: &str = settings::AI_SECTION;
@@ -316,7 +310,7 @@ pub enum Message {
     AskDeleteBot(String),
     ConfirmDeleteBot,
     BotDeleted(String, Result<(), Refusal>),
-    /// "Access…": the control centre at the bot's rights (`--section bot:<id>`).
+    /// "Access…", "What the bot may use": the settings at Access at this bot (task S.34).
     BotAccess(String),
     /// "Open in new window" of a bot: `assistant.open_window { bot }`.
     OpenBotWindow(String),
@@ -396,8 +390,8 @@ pub enum Message {
     /// Start or raise another app of the suite.
     OpenApp(String),
     AppOpened(Result<(), String>),
-    /// "Set up access", "Change access": the control centre's page "Assistant" (task C.6), where
-    /// the person chooses what the assistant may use.
+    /// "Set up access", "Change access": the settings at Access (task S.34), where the person
+    /// chooses what the assistant – or the bot of the open conversation – may use.
     SetUp,
     /// "Add an AI account": the control centre's accounts, where AI accounts are added.
     AddAiAccount,
@@ -656,9 +650,15 @@ impl App {
         if app.current.is_none() {
             tasks.push(operation::focus(EDITOR));
         }
-        // `--settings <section>`: the window opens with the settings in its content area.
+        // `--settings <section>`: the window opens with the settings in its content area; Access in
+        // a bot's window (`--bot <id> --settings access`) at that bot.
         if let Some(section) = app.launch.settings.clone() {
             tasks.push(app.open_settings(Some(&section)));
+            if let (Some(pane), Window::Bot(bot)) = (app.settings.as_mut(), &app.launch.window)
+                && section == settings::access::ID
+            {
+                settings::show_access(&mut pane.sections, Some(bot.clone()));
+            }
         }
         (app, Task::batch(tasks))
     }
@@ -756,6 +756,10 @@ impl App {
         if let Some(question) = self.settings_question(&message) {
             return question;
         }
+        // A change of rights made a moment ago goes out before the settings go (task S.34).
+        if let Some(save) = self.save_before_leaving(&message) {
+            return Task::batch([save, self.update(message)]);
+        }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
@@ -821,7 +825,7 @@ impl App {
             Message::AskDeleteBot(id) => self.ask_delete_bot(id),
             Message::ConfirmDeleteBot => return self.delete_bot(),
             Message::BotDeleted(id, result) => return self.bot_deleted(id, result),
-            Message::BotAccess(id) => self.open_section(&crate::bots::access_section(&id)),
+            Message::BotAccess(id) => return self.open_access(Some(id)),
             Message::OpenBotWindow(id) => {
                 self.close_menus();
                 let request = Request::OpenChatWindow { window: ChatWindow::Bot(id) };
@@ -949,11 +953,14 @@ impl App {
             }
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => self.note(format!("{} {err}", tr("Couldn't open the app."))),
-            Message::SetUp => self.open_section(ASSISTANT_PAGE),
+            Message::SetUp => return self.open_access(self.chat_bot().map(str::to_owned)),
             Message::AddAiAccount => self.open_section(ACCOUNTS_PAGE),
             Message::ToggleSettings => return self.toggle_settings(),
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                // The sections see the host's sends and loads first: Access settles its draft by
+                // them (task S.34).
+                settings::received(&mut pane.sections, &message);
                 let outcome = pane.host.update(message);
                 return self.settings_outcome(outcome);
             }
@@ -1693,6 +1700,47 @@ impl App {
         load.map(Message::SettingsHost)
     }
 
+    /// The settings at Access, at the bot with this id or at the assistant (`None`), task S.34: what
+    /// "Set up access", "Change access", "Access…" and "What the bot may use" open. Open settings
+    /// switch to it; closed ones open there, with their first load.
+    fn open_access(&mut self, bot: Option<String>) -> Task<Message> {
+        self.close_menus();
+        let load = match self.settings.is_some() {
+            true => Task::none(),
+            false => self.open_settings(None),
+        };
+        if let Some(pane) = self.settings.as_mut() {
+            settings::show_access(&mut pane.sections, bot);
+            pane.host.open(settings::access::ID);
+        }
+        load
+    }
+
+    /// What has to go out before `message` takes the settings away: a change of rights in Access
+    /// that waits for its clock ([`settings::save_now`]). The host sends it as any other change; its
+    /// answer may come after the settings are gone, which loses nothing – the core has it. `None`
+    /// while nothing waits or `message` keeps the settings.
+    fn save_before_leaving(&mut self, message: &Message) -> Option<Task<Message>> {
+        let leaving = self.leaves_settings(message)
+            || matches!(message, Message::SettingsHost(torro_settings_ui::host::Message::Back));
+        if !leaving {
+            return None;
+        }
+        self.save_settings()
+    }
+
+    /// Sends what the open sections still have to save ([`settings::save_now`]) through the host;
+    /// `None` while nothing waits or no settings are open. For every way the settings close:
+    /// [`App::save_before_leaving`] for the window's own, [`App::settings_outcome`] for a section
+    /// that closes them ("Discard", "Edit" at a bot).
+    fn save_settings(&mut self) -> Option<Task<Message>> {
+        let pane = self.settings.as_mut()?;
+        match pane.host.act(settings::save_now(&mut pane.sections)) {
+            Outcome::Work(task) => Some(task.map(Message::SettingsHost)),
+            _ => None,
+        }
+    }
+
     /// The content area shows the chat or the bot editor again: the settings step aside. A click in
     /// the sidebar – a chat, a bot, "New chat", "New bot" – comes through here, once
     /// [`App::settings_question`] has let the message through.
@@ -1751,8 +1799,9 @@ impl App {
             // so a changed default or a new bot is in the chat at once.
             Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all()]),
             Outcome::Close => {
+                let save = self.save_settings().unwrap_or_else(Task::none);
                 self.settings = None;
-                Task::none()
+                save
             }
             Outcome::OpenUrl(url) => open_link(url),
             Outcome::Answer(result) => {
@@ -1767,7 +1816,10 @@ impl App {
                 Task::none()
             }
             // "Edit" at a bot: its editor takes the content area, so the settings close.
-            Outcome::App(AppAction::EditBot(id)) => self.edit_bot(id),
+            Outcome::App(AppAction::EditBot(id)) => {
+                let save = self.save_settings().unwrap_or_else(Task::none);
+                Task::batch([save, self.edit_bot(id)])
+            }
         }
     }
 
@@ -1871,8 +1923,8 @@ impl App {
         self.effort.filter(|_| self.effort_offered())
     }
 
-    /// Opens the control centre on `section` (`torroworkplace ui --section …`, `bot:<id>` for a
-    /// bot's rights); nothing starts in the demo or in tests.
+    /// Opens the control centre on `section` (`torroworkplace ui --section …`: the accounts, or
+    /// what a settings section points at); nothing starts in the demo or in tests.
     fn open_section(&mut self, section: &str) {
         self.close_menus();
         #[cfg(test)]
