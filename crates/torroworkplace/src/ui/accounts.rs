@@ -1357,7 +1357,13 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
         Some(Message::Add(group.provider())),
     );
     let import = import.then(|| {
-        widgets::text_button(None, tr("Import from TorroMail…"), style::button::ghost, Some(Message::ImportTorroMail))
+        // The suite has no download icon; the envelope says where the accounts come from.
+        widgets::text_button(
+            Some(Icon::Mail),
+            tr("Import from TorroMail…"),
+            style::button::ghost,
+            Some(Message::ImportTorroMail),
+        )
     });
     let buttons = row![add].push(import).spacing(space::s()).align_y(Alignment::Center);
     row_frame(on_axis(buttons.into()), false)
@@ -1902,9 +1908,13 @@ fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, M
     }
 }
 
-/// The search field and "Show closed models" over OpenRouter's models, in one row.
+/// The search field and "Show closed models" over OpenRouter's models, in one row. The field is as
+/// high as the chip (28, `size::control_sm()`): 4 above and below its line of text, as a filter
+/// beside chips, not a form field.
 fn model_filters(page: &ModelsPage) -> Element<'_, Message> {
-    let search = wizard::field(tr("Search models"), &page.search).on_input(Message::ModelSearch);
+    let search = wizard::field(tr("Search models"), &page.search)
+        .padding([space::xs(), space::s()])
+        .on_input(Message::ModelSearch);
     let closed = widgets::choice_chip(
         tr("Show closed models"),
         None,
