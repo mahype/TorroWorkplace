@@ -5761,8 +5761,9 @@ impl Core {
 
     /// The first start after the switches of the models came (task S.24,
     /// [`AiAccounts::keep_used_models_on`]): the models the suite already uses stay on – the
-    /// assistant's default for new chats, the models assigned to functions (`ai.set_assignment`,
-    /// #231) and the models of the bots. Where one of them names no model ("Automatic", #231), the
+    /// assistant's default for new chats, the models assigned to functions that are switched on
+    /// (`ai.set_assignment`, #231; one switched off asks no model, so it keeps none on, PR review
+    /// #242) and the models of the bots. Where one of them names no model ("Automatic", #231), the
     /// model "Automatic" took there stays on, once its server listed its models
     /// ([`crate::account::ai::Automatic`]): for chats and bots the one it took before the switches,
     /// for a function that needs a decision model the one sorting mail took. This is the person's
@@ -5779,7 +5780,7 @@ impl Core {
                 None => automatic.push((default.engine, chat)),
             }
         }
-        for assigned in settings.ai_assignments.into_values() {
+        for assigned in settings.ai_assignments.into_values().filter(torro_core::ai::AiAssignment::is_ready) {
             let Some(engine) = assigned.engine else { continue };
             match assigned.model {
                 Some(model) => used.push((engine, model)),
@@ -16686,6 +16687,36 @@ mod tests {
         let mut on_cloud = on(switched(&core, &cloud.id).await);
         on_cloud.sort();
         assert_eq!(on_cloud, ["openai/gpt-4o", "qwen/qwen3-14b"]);
+    }
+
+    /// PR review #242, the first start after the update: an assignment that is switched off is not in
+    /// use, so its model – here one in the cloud – stays off.
+    #[tokio::test]
+    async fn an_assignment_switched_off_keeps_no_model_on_after_the_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let cloud = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let function = torro_core::ai::AiFunction::InboxCategorize;
+        let assigned = torro_core::ai::AiAssignment {
+            function,
+            engine: Some(cloud.id.clone()),
+            model: Some("openai/gpt-4o".into()),
+            effort: None,
+            enabled: false,
+        };
+        core.settings.set_ai_assignment(function, Some(assigned)).expect("assigned");
+
+        core.keep_used_models_on().await;
+        assert!(switched(&core, &cloud.id).await.iter().all(|(_, on)| !on), "nothing turned on");
+        let stored = std::fs::read_to_string(dir.path().join("config").join(torro_core::ai::MODELS_FILE));
+        let stored = stored.expect("written, with the mark gone");
+        assert!(!stored.contains(&cloud.id), "{stored}");
     }
 
     /// #231, the first start after the update: an assistant default and a bot with "Automatic" at
