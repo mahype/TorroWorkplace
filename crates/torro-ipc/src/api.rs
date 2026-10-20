@@ -3061,8 +3061,8 @@ static SAVE_DRAFT: Command = Command {
                   the id of your own saved draft replaces it, which needs delete access; drafts of others are \
                   `not-found`. Attach parts of messages with `{\"kind\": \"mail_part\"}`, files with \
                   `{\"kind\": \"file\"}`: from Torro Workplace's attachment folder, or a PDF you made yourself \
-                  with tools_create_pdf (the `path` from its answer) while that tool is switched on, you may read \
-                  `tools` and `pdf` is among your tools; any other file is `forbidden`. Nothing is sent: use \
+                  with tools_create_pdf (the `path` from its answer), unchanged since, while that tool is switched \
+                  on, you may read `tools` and `pdf` is among your tools; any other file is `forbidden`. Nothing is sent: use \
                   send_draft.",
 };
 
@@ -5619,6 +5619,7 @@ mod tests {
     fn a_draft_may_attach_the_agents_own_pdfs() {
         let description = SAVE_DRAFT.description;
         assert!(description.contains("tools_create_pdf") && description.contains("`path`"), "{description}");
+        assert!(description.contains("unchanged since"), "only as the core wrote it: {description}");
         for condition in ["switched on", "read `tools`", "`pdf`", "attachment folder"] {
             assert!(description.contains(condition), "{condition}: {description}");
         }
