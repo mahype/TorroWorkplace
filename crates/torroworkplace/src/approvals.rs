@@ -2097,10 +2097,15 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                     ("category", &category_name(facts, *category)),
                 ],
             );
-            let mut sentence = with_rule_extras(becomes, exceptions.as_ref(), *enabled);
+            // Left out, exceptions and switch stay as stored – and the sentence says what stays
+            // (second correctness review of #255), not only what the request sends.
+            let stored = facts.sort_rule.as_deref();
+            let exceptions = exceptions.as_ref().or(stored.map(|rule| &rule.exceptions));
+            let enabled = enabled.or(stored.map(|rule| rule.enabled));
+            let mut sentence = with_rule_extras(becomes, exceptions, enabled);
             // Exceptions taken away are worth saying: the rule then holds for more mail.
             let had = facts.sort_rule.as_ref().is_some_and(|rule| !rule.exceptions.is_empty());
-            if had && exceptions.as_ref().is_some_and(Vec::is_empty) {
+            if had && exceptions.is_some_and(Vec::is_empty) {
                 sentence.push_str(tr(", without its exceptions"));
             }
             sentence

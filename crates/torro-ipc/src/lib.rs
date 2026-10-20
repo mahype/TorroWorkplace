@@ -1769,8 +1769,9 @@ pub enum Request {
     /// Removes a mail category the person made ([`Response::CategoryRemoved`], task E15.1). Mail,
     /// entries and sorting rules that name it move to `replacement`, keeping where their category
     /// came from; without mail, entries or rules none is needed. `conflict` when some name it and
-    /// no `replacement` is given, `unsupported` for a category of the suite, `not-found` for one
-    /// that is not in the catalogue, `error` for a replacement that is not.
+    /// no `replacement` is given, `busy` while the mail accounts are still read or another removal
+    /// hands this category its mail, `unsupported` for a category of the suite, `not-found` for
+    /// one that is not in the catalogue, `error` for a replacement that is not.
     #[serde(rename = "inbox.remove_category")]
     RemoveCategory {
         /// The key of a category the person made, `custom_<n>`.

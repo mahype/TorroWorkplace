@@ -1941,7 +1941,9 @@ fn answer(
         Request::ListSortRules => Ok(Response::SortRules { rules: sort_rules_for(db, client)? }),
         Request::CreateSortRule { category, conditions, exceptions, position, enabled } => {
             let words = catalogue::RuleWords { category, conditions, exceptions, enabled };
-            let (rule, position) = catalogue::create_rule(db, words, position, now)?;
+            let position = full_position(db, client, position)?;
+            let (rule, _) = catalogue::create_rule(db, words, position, now)?;
+            let position = visible_position(db, client, &rule.id)?;
             Ok(Response::SortRule { rule, position })
         }
         Request::UpdateSortRule { id, category, conditions, exceptions, enabled } => {
@@ -1950,7 +1952,8 @@ fn answer(
             let exceptions = exceptions.unwrap_or(stored.exceptions);
             let words =
                 catalogue::RuleWords { category, conditions, exceptions, enabled: enabled.unwrap_or(stored.enabled) };
-            let (rule, position) = catalogue::update_rule(db, &id, words)?;
+            let (rule, _) = catalogue::update_rule(db, &id, words)?;
+            let position = visible_position(db, client, &rule.id)?;
             Ok(Response::SortRule { rule, position })
         }
         Request::RemoveSortRule { id } => {
@@ -1960,6 +1963,8 @@ fn answer(
         }
         Request::MoveSortRule { id, position } => {
             visible_sort_rule(db, &id, client)?;
+            // A place in the list the client sees, as the full order knows it.
+            let position = full_position(db, client, Some(position))?.unwrap_or(u32::MAX);
             catalogue::move_rule(db, &id, position)?;
             Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
         }
@@ -4121,6 +4126,23 @@ fn sort_rules_for(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<to
         }
     }
     Ok(shown)
+}
+
+/// The place in the full order of the rule that stands at `position` in the list `client` sees
+/// ([`sort_rules_for`]); `None` (last) for a place past its end and for none given. A key that
+/// may not read every mail account sees fewer rules, and its places count in what it sees –
+/// never telling how many it does not.
+fn full_position(db: &Connection, client: Option<&ClientInfo>, position: Option<u32>) -> Result<Option<u32>, Failure> {
+    let Some(position) = position else { return Ok(None) };
+    let seen = sort_rules_for(db, client)?;
+    let Some(there) = seen.get(position as usize) else { return Ok(None) };
+    let all = catalogue::list_rules(db)?;
+    Ok(all.iter().position(|rule| rule.id == there.id).map(|at| at as u32))
+}
+
+/// Where the rule `id` stands in the list `client` sees.
+fn visible_position(db: &Connection, client: Option<&ClientInfo>, id: &str) -> Result<u32, Failure> {
+    Ok(sort_rules_for(db, client)?.iter().position(|rule| rule.id == id).unwrap_or_default() as u32)
 }
 
 /// The sorting rule `id` if `client` sees it ([`sort_rules_for`]), else `not-found` – also when
@@ -6802,6 +6824,20 @@ pub(crate) mod tests {
         };
         let Response::SortRule { rule, .. } = inbox.handle(renamed, None, at(9, 5)) else { panic!("changed") };
         assert_eq!((rule.enabled, rule.exceptions.len()), (false, 1), "left out, kept");
+        // Places count in the list the key sees: Anna's new rule and the editor's, Bob's hidden.
+        let Response::SortRules { rules: seen } = inbox.handle(Request::ListSortRules, Some(&anna_only), at(9, 6))
+        else {
+            panic!("rules")
+        };
+        assert_eq!(seen.len(), 2);
+        let first = Request::MoveSortRule { id: seen[1].id.clone(), position: 0 };
+        let Response::SortRules { rules: moved } = inbox.handle(first, Some(&anna_only), at(9, 7)) else {
+            panic!("moved")
+        };
+        assert_eq!(
+            moved.iter().map(|rule| rule.id.clone()).collect::<Vec<_>>(),
+            [seen[1].id.clone(), seen[0].id.clone()]
+        );
     }
 
     /// Task E15.3: what files new mail first – a sorting rule before the headers, an exception

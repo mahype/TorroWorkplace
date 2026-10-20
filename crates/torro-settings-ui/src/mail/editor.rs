@@ -382,7 +382,10 @@ impl Form {
                 Some(_) => form.request(data).is_some(),
             },
             Form::Rule(form) => match &form.id {
-                None => form.category.is_some() || form.conditions.iter().any(|(_, value)| !value.trim().is_empty()),
+                None => {
+                    form.category.is_some()
+                        || form.conditions.iter().chain(&form.exceptions).any(|(_, value)| !value.trim().is_empty())
+                }
                 Some(id) => {
                     data.sort_rules.iter().find(|rule| &rule.id == id).is_some_and(|stored| !form.same_as(stored))
                 }

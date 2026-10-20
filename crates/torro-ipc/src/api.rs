@@ -3109,9 +3109,9 @@ static REMOVE_CATEGORY: Command = Command {
     mcp: Mcp::Tool,
     description: "Removes a mail category the person made. Mail, inbox entries and sorting rules that name it move \
                   to `replacement`, keeping where their category came from; nothing is moved, hidden or deleted \
-                  besides. `conflict` when something names it and no replacement is given (the message says how \
-                  much), `unsupported` for a category of the suite, `not-found` for one not in the catalogue. \
-                  Needs the person's approval.",
+                  besides. `conflict` when something names it and no replacement is given, `busy` while the mail \
+                  accounts are still read or another removal hands this category its mail, `unsupported` for a \
+                  category of the suite, `not-found` for one not in the catalogue. Needs the person's approval.",
 };
 
 static LIST_SORT_RULES: Command = Command {
@@ -3156,7 +3156,7 @@ static REMOVE_SORT_RULE: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Removes a sorting rule and returns the rules left, in order. Mail it filed keeps its category. \
-                  `not-found` for a rule that is not there. Needs the person's approval.",
+                  `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
 };
 
 static MOVE_SORT_RULE: Command = Command {
@@ -3166,8 +3166,8 @@ static MOVE_SORT_RULE: Command = Command {
     mcp: Mcp::Tool,
     description: "Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order \
                   around it. Returns all rules in their new order. The first rule that holds decides, so the order \
-                  is what makes a narrow rule win over a broad one. `not-found` for a rule that is not there. \
-                  Needs the person's approval.",
+                  is what makes a narrow rule win over a broad one. Places count in the list this key sees. \
+                  `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
 };
 
 static HIDE_SENDER: Command = Command {

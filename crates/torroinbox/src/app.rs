@@ -1963,11 +1963,18 @@ fn settings_update(
 /// What Escape means in the open section before it closes the settings (task E15.5): `None`
 /// lets the settings close.
 fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
+    // Only where the editor shows: a page left open behind another section must not take Escape.
+    if pane.host.current().id != CATEGORIZATION_SECTION {
+        return None;
+    }
     match &pane.sections {
         SettingsState::Mail(state) => settings_mail::escape(state).map(SettingsMessage::Mail),
         SettingsState::Inbox(_) => None,
     }
 }
+
+/// The mail window's section with the categories' editor (task E15.5).
+const CATEGORIZATION_SECTION: &str = "categorization";
 
 /// The page of the open section, as the host takes it.
 fn settings_page<'a>(

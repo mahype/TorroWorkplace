@@ -3703,6 +3703,9 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   `inbox.remove_rule` und die Freigabe dazu erreichen solche Regeln weiter (nur solange sie genau
   ein Absender oder eine Domain ohne Ausnahme sind und an). Neue Mail fragt die Sortierregeln vor
   Einladung, Abwesenheit und Junk-Ordner; „Text“ ist beim Eintreffen der Anfang der Mail.
+  Nach den Reviews: Regeln, die „Always for this sender?“ in einem Konto anlegte, sieht und ändert
+  nur ein Schlüssel, der das Konto lesen darf; Plätze zählen in der Liste, die ein Schlüssel sieht;
+  `inbox.update_sort_rule` lässt weggelassene Ausnahmen und Schalter stehen.
 - **Modell:** Opus · **Braucht:** E15.2 · **Dateien:** `crates/torro-inbox/src/rules.rs`,
   `crates/torroworkplace/src/{core,inbox,approvals}.rs`, `crates/torroworkplace/src/mail/inbox_feed.rs`,
   `crates/torro-settings-ui/src/inbox.rs`
@@ -3771,8 +3774,13 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   nach „Save“; „Sort again“ neben „Catch up now“ mit eigenem Fortschritt. Der alte Verweis „Rules“
   in den Notification Hub entfällt: die gemerkten Absender stehen jetzt unter den Sortierregeln.
   `Data::sort_rules`, `--demo` mit einer umbenannten, einer eigenen Kategorie und drei Regeln.
-  Sichtprüfung auf macOS: Liste in Breit (dunkel) selbst angesehen, die übrigen Ansichten mit
-  `torro-design-review`.
+  Nach der Design-Prüfung umgebaut: Regelzeilen öffnen nur ihre Seite (an/aus, „Move up“/„Move
+  down“ und „Delete rule“ stehen dort), Kategorien je Gruppe mit dem Schalter für die Seitenleiste
+  auf ihrer Seite (keine zweite Liste), „File as“ als Auswahlfeld, „Save“ in der Kopfleiste,
+  Fehler am Feld mit Sprung zum ersten, Rückfragen auf der Seite vor „Delete rule“, „Reset“ und
+  dem Verlassen mit Änderungen, Escape geht eine Seite zurück, „Sort everything again“ als eigene
+  Zeile. Sichtprüfung: nur die Liste in Mittel (dunkel) vor dem Umbau angesehen; danach war der
+  Bildschirm gesperrt.
 - **Modell:** Opus · **Braucht:** E15.4 · **Dateien:** `crates/torro-settings-ui/src/{mail,demo}.rs`,
   `crates/torro-settings-ui/src/mail/` (neu, falls die Seite eigene Module braucht),
   `crates/torro-core/src/i18n/de.rs`

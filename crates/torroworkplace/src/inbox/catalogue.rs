@@ -30,8 +30,9 @@ use super::{Failure, Scope, StoreError, read_items, stamp, text, write_item};
 use chrono::{DateTime, Utc};
 use torro_core::i18n::{tr, trf};
 
-/// Every category of the catalogue, the suite's first in their order, then the person's own in
-/// the order they were made. A category being removed is left out.
+/// Every category of the catalogue, by group in the order of [`CategoryGroup::ALL`]; within a
+/// group the suite's first in their order, then the person's own in the order they were made. A
+/// category being removed is left out.
 pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure> {
     let mut defs = CategoryDef::defaults();
     let mut edits = db.prepare("SELECT category, grp, name, description, model FROM category_edits")?;
@@ -125,7 +126,7 @@ pub(super) fn create(
         description: Some(description.clone()),
         model,
     });
-    check(&catalogue, unborn)?;
+    check(&catalogue, unborn, true)?;
     db.execute(
         "INSERT INTO custom_categories (grp, name, description, model, created) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![group.key(), name, description, model, stamp(now)],
@@ -173,10 +174,11 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
             (Some(description), _) => Some(description),
         };
     }
+    let renamed = def.name != find(&catalogue, category)?.name && def.name.is_some();
     if let Some(held) = catalogue.iter_mut().find(|held| held.category == category) {
         *held = def.clone();
     }
-    check(&catalogue, category)?;
+    check(&catalogue, category, renamed)?;
     if category.is_built_in() {
         // Only what differs from the suite is kept, so a category put back reads as new.
         let suite = CategoryDef::built_in(category);
@@ -209,13 +211,17 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
 /// Only `changed` is weighed (correctness review of #255): the suite's words follow the core's
 /// language, so a name of the person's own may read like one of the suite's after the language
 /// changed – that must not block every other change of the catalogue.
-pub(super) fn check(catalogue: &[CategoryDef], changed: Category) -> Result<(), Failure> {
+///
+/// The name is weighed only when `named` – the person gave it now. Changing only the group or the
+/// model switch of a category whose name came to read like the suite's must still work.
+pub(super) fn check(catalogue: &[CategoryDef], changed: Category, named: bool) -> Result<(), Failure> {
     let Some(def) = catalogue.iter().find(|def| def.category == changed) else { return Ok(()) };
     let name = torro_core::category::name_of(def);
-    let taken = catalogue
-        .iter()
-        .filter(|other| other.category != changed)
-        .any(|other| torro_core::category::name_of(other).to_lowercase() == name.to_lowercase());
+    let taken = named
+        && catalogue
+            .iter()
+            .filter(|other| other.category != changed)
+            .any(|other| torro_core::category::name_of(other).to_lowercase() == name.to_lowercase());
     if taken {
         return Err(Failure::Invalid(trf("There is a category called “{name}” already.", &[("name", &name)])));
     }
@@ -302,6 +308,26 @@ pub(super) fn begin_removal(db: &mut Connection, category: Category, replacement
         return Err(Failure::Unsupported(tr("The categories of the suite can be changed, not removed.").into()));
     };
     let tx = db.transaction()?;
+    // Checked in the same transaction that notes the removal, so two removals at once cannot
+    // chain (second correctness review of #255): no category hands its mail to this one, and the
+    // replacement is not being removed itself.
+    let taking: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM custom_categories WHERE replaced_by = ?1)",
+        [category.key()],
+        |row| row.get(0),
+    )?;
+    let going = match replacement {
+        Category::Custom(other) => tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM custom_categories WHERE id = ?1 AND replaced_by IS NOT NULL)",
+            [i64::from(other.number())],
+            |row| row.get::<_, bool>(0),
+        )?,
+        _ => false,
+    };
+    if taking || going {
+        let message = tr("This category is still taking the mail of a category removed. Try again in a moment.");
+        return Err(Failure::Busy(message.into()));
+    }
     tx.execute(
         "UPDATE custom_categories SET replaced_by = ?2 WHERE id = ?1",
         params![i64::from(custom.number()), replacement.key()],

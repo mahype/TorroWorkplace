@@ -778,7 +778,7 @@ Changes a mail category, one of the suite's or the person's own, and returns it:
 
 Zugriff `admin` · MCP-Tool `inbox_remove_category`
 
-Removes a mail category the person made. Mail, inbox entries and sorting rules that name it move to `replacement`, keeping where their category came from; nothing is moved, hidden or deleted besides. `conflict` when something names it and no replacement is given (the message says how much), `unsupported` for a category of the suite, `not-found` for one not in the catalogue. Needs the person's approval.
+Removes a mail category the person made. Mail, inbox entries and sorting rules that name it move to `replacement`, keeping where their category came from; nothing is moved, hidden or deleted besides. `conflict` when something names it and no replacement is given, `busy` while the mail accounts are still read or another removal hands this category its mail, `unsupported` for a category of the suite, `not-found` for one not in the catalogue. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -833,7 +833,7 @@ Changes a sorting rule and returns it: `category` and `conditions` always, `exce
 
 Zugriff `admin` · MCP-Tool `inbox_remove_sort_rule`
 
-Removes a sorting rule and returns the rules left, in order. Mail it filed keeps its category. `not-found` for a rule that is not there. Needs the person's approval.
+Removes a sorting rule and returns the rules left, in order. Mail it filed keeps its category. `not-found` for a rule that is not there or out of reach. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -843,7 +843,7 @@ Removes a sorting rule and returns the rules left, in order. Mail it filed keeps
 
 Zugriff `admin` · MCP-Tool `inbox_move_sort_rule`
 
-Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order around it. Returns all rules in their new order. The first rule that holds decides, so the order is what makes a narrow rule win over a broad one. `not-found` for a rule that is not there. Needs the person's approval.
+Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order around it. Returns all rules in their new order. The first rule that holds decides, so the order is what makes a narrow rule win over a broad one. Places count in the list this key sees. `not-found` for a rule that is not there or out of reach. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
