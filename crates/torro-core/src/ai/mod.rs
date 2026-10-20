@@ -3,10 +3,11 @@
 //! ([`AiModel`]), a conversation with tools ([`ChatRequest`], [`ChatReply`]) – and the
 //! [`Provider`] trait a server's protocol implements.
 //!
-//! Two protocols: the OpenAI-compatible one that Ollama, LM Studio, vLLM, llama.cpp, OpenRouter and
-//! most providers speak ([`openai`]), and Anthropic's own, which the Claude models answer
-//! ([`anthropic`], task KI.1b). Each module holds its wire format (request bodies, answers, the
-//! server-sent events of a streamed answer, model lists), pure and without a network; the core
+//! Three wire formats: OpenAI-compatible Chat Completions for Ollama, LM Studio, vLLM,
+//! llama.cpp, OpenRouter and most providers ([`openai`]); OpenAI's Responses API
+//! ([`responses`]); and Anthropic's Messages API ([`anthropic`]). Each module holds its wire
+//! format (request bodies, answers, the server-sent events of a streamed answer, model lists),
+//! pure and without a network; the core
 //! sends them (`torroworkplace::account::ai`), one implementation of [`Provider`] per protocol. A
 //! further protocol is another module beside these, never a change of the types here.
 //!
@@ -20,6 +21,7 @@
 
 pub mod anthropic;
 pub mod openai;
+pub mod responses;
 pub mod systemone;
 
 use std::fmt;
@@ -56,7 +58,7 @@ pub enum AiProvider {
     /// your own. Its address is always given. Written `openai_compatible`.
     #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
-    /// OpenAI's API (task W.3). Written `openai`.
+    /// OpenAI's Responses API (task W.3). Written `openai`.
     #[serde(rename = "openai")]
     OpenAi,
     /// Google Gemini through its OpenAI-compatible endpoint.
@@ -568,12 +570,8 @@ pub struct ChatMessage {
     /// The call a [`Role::Tool`] message answers ([`ToolCall::id`]); `None` for the other roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    /// What a protocol must get back **unchanged** with this assistant message, as it sent it
-    /// (task KI.1e): Anthropic's thinking blocks. Anthropic's models think by default, and it
-    /// refuses an assistant message of a tool round whose blocks were dropped or rebuilt, so the
-    /// answer's [`ChatReply::thinking`] travels back here. Opaque: nothing reads into it, nobody
-    /// edits it, and whoever continues a conversation carries it along. Empty for every other
-    /// protocol and for every other role.
+    /// Opaque items that a provider needs back during a tool round: Anthropic's thinking
+    /// blocks or OpenAI Responses' output items. Keep them unchanged.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<serde_json::Value>,
 }
@@ -649,7 +647,7 @@ pub struct ChatRequest {
     #[serde(default)]
     pub max_tokens: Option<u32>,
     /// How hard the model thinks (issue #131); `None` leaves it to the model. Written per
-    /// provider by [`openai::chat_body_for`].
+    /// provider by [`openai::chat_body_for`] or [`responses::body`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<Effort>,
 }
@@ -687,11 +685,7 @@ pub struct ChatReply {
     pub finish: Finish,
     /// `None` when the server does not count.
     pub usage: Option<Usage>,
-    /// The blocks the protocol must get back unchanged with this answer (task KI.1e): Anthropic's
-    /// thinking blocks, in the order they arrived. Whoever continues the conversation puts them
-    /// into the assistant message it writes ([`ChatMessage::with_thinking`]) and changes nothing in
-    /// them – dropping or rebuilding them breaks the next turn of a tool round. Empty for a
-    /// protocol that has none.
+    /// Opaque protocol items to replay during a tool round, in their original order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub thinking: Vec<serde_json::Value>,
 }

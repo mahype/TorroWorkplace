@@ -3,8 +3,8 @@
 //! (`accounts.connect_ai`), its models (`ai.list_models`), finding local servers
 //! (`ai.find_local_servers`), removing it (`accounts.remove_account`).
 //!
-//! The wire formats are `torro_core::ai::{openai, anthropic}`; here they are sent, one
-//! implementation of [`Provider`] per protocol ([`OpenAiCompatible`] and [`Anthropic`]), both over
+//! The wire formats are `torro_core::ai::{openai, responses, anthropic}`; here they are sent, one
+//! implementation of [`Provider`] per account family ([`OpenAiCompatible`] and [`Anthropic`]), both over
 //! the same [`Wire`], which holds the rules that must not differ between them. Where a model runs
 //! (task S.23): Ollama's cloud models
 //! run on `ollama.com` through the local Ollama, so its model list says so per model
@@ -39,7 +39,7 @@ use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
     self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, ModelSwitches, Provider, anthropic, openai,
-    systemone,
+    responses, systemone,
 };
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
@@ -186,8 +186,17 @@ fn streamed(response: &reqwest::Response) -> bool {
         .is_some_and(|value| value.contains("text/event-stream"))
 }
 
-/// One AI server with the OpenAI-compatible protocol: Ollama, LM Studio, vLLM, llama.cpp,
-/// OpenRouter. `Debug` never shows the key ([`Secret`]).
+/// Some OpenAI models accept Responses tools but no configurable reasoning effort. A 400 before
+/// streaming is safe to retry without that optional setting; other errors must remain visible.
+fn refuses_reasoning(error: &AiError) -> bool {
+    let AiError::Server { status: 400, message } = error else { return false };
+    let message = message.to_ascii_lowercase();
+    message.contains("reasoning")
+        && ["not support", "unsupported", "unknown parameter", "invalid"].iter().any(|word| message.contains(word))
+}
+
+/// An OpenAI-compatible account: Chat Completions for most providers, Responses for OpenAI.
+/// `Debug` never shows the key ([`Secret`]).
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatible {
     wire: Wire,
@@ -267,6 +276,27 @@ impl OpenAiCompatible {
             .await?;
         decoder.finish(on_text).map_err(|err| self.wire.scrubbed(err))
     }
+
+    /// OpenAI's Responses API uses a different body and stream format from Chat Completions.
+    async fn stream_responses(
+        &self,
+        response: reqwest::Response,
+        on_text: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ChatReply, AiError> {
+        if !streamed(&response) {
+            let reply =
+                responses::parse_reply(&self.wire.body(response).await?).map_err(|err| self.wire.scrubbed(err))?;
+            if !reply.text.is_empty() {
+                on_text(&reply.text);
+            }
+            return Ok(reply);
+        }
+        let mut decoder = responses::StreamDecoder::new();
+        self.wire
+            .chunks(response, &mut |bytes| decoder.push(bytes, on_text).map_err(|err| self.wire.scrubbed(err)))
+            .await?;
+        decoder.finish(on_text).map_err(|err| self.wire.scrubbed(err))
+    }
 }
 
 impl Provider for OpenAiCompatible {
@@ -288,15 +318,27 @@ impl Provider for OpenAiCompatible {
         })
     }
 
-    /// `POST <base>/chat/completions` with `stream: true` and the effort as this provider reads it
-    /// ([`openai::chat_body_for`]); read as server-sent events, or whole when the server answers
-    /// with plain JSON.
+    /// OpenAI uses `POST <base>/responses`; other providers use `POST <base>/chat/completions`.
+    /// Both stream when supported and accept a whole JSON answer from a compatible server.
     fn chat<'a>(
         &'a self,
         request: &'a ChatRequest,
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
         Box::pin(async move {
+            if self.provider == AiProvider::OpenAi {
+                let mut body = responses::body(request, true);
+                let response =
+                    match self.wire.send(self.wire.request(reqwest::Method::POST, "responses").json(&body)).await {
+                        Ok(response) => response,
+                        Err(error) if body.get("reasoning").is_some() && refuses_reasoning(&error) => {
+                            body.as_object_mut().expect("Responses body is an object").remove("reasoning");
+                            self.wire.send(self.wire.request(reqwest::Method::POST, "responses").json(&body)).await?
+                        }
+                        Err(error) => return Err(error),
+                    };
+                return self.stream_responses(response, on_text).await;
+            }
             let body = openai::chat_body_for(self.provider, request, true);
             let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(&body);
             let response = self.wire.send(builder).await?;
@@ -1750,6 +1792,88 @@ pub(crate) mod tests {
             OpenAiCompatible::new(http(), AiProvider::OpenRouter, &server.url("/api/v1"), Some(Secret::new(KEY)));
         remote.chat(&high, &mut |_| {}).await.expect("openrouter answers");
         assert_eq!((ollama.calls_async().await, openrouter.calls_async().await), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn openai_uses_responses_for_tool_rounds_with_reasoning() {
+        let server = MockServer::start_async().await;
+        let first = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/responses")
+                    .header("authorization", format!("Bearer {KEY}"))
+                    .json_body_includes(r#"{"model":"gpt-6.1-sol","reasoning":{"effort":"high"},"store":false}"#)
+                    .body_includes("\"tasks_list\"");
+                then.status(200).header("content-type", "text/event-stream").body(format!(
+                    "data: {}\n\ndata: [DONE]\n\n",
+                    json!({
+                        "type":"response.completed",
+                        "response":{
+                            "status":"completed",
+                            "output":[
+                                {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"},
+                                {"type":"function_call","id":"fc_1","call_id":"call_1","name":"tasks_list","arguments":"{}"}
+                            ]
+                        }
+                    })
+                ));
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        let mut request = ChatRequest { model: "gpt-6.1-sol".into(), effort: Some(Effort::High), ..ask_calendar() };
+        request.tools[0].name = "tasks_list".into();
+        let reply = openai.chat(&request, &mut |_| {}).await.expect("first tool call");
+        assert_eq!(first.calls_async().await, 1);
+        first.delete_async().await;
+        let next = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/responses")
+                    .body_includes("\"function_call_output\"")
+                    .body_includes("\"encrypted_content\"");
+                then.status(200).json_body(json!({
+                    "status":"completed",
+                    "output":[{"type":"message","role":"assistant","content":[
+                        {"type":"output_text","text":"Moved 13 tasks."}
+                    ]}]
+                }));
+            })
+            .await;
+        request
+            .messages
+            .push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking));
+        request.messages.push(ChatMessage::tool(reply.tool_calls[0].id.clone(), "13 tasks"));
+        let mut pieces = Vec::new();
+        let reply = openai.chat(&request, &mut |text| pieces.push(text.to_string())).await.expect("final answer");
+        assert_eq!((reply.text.as_str(), pieces), ("Moved 13 tasks.", vec!["Moved 13 tasks.".to_string()]));
+        assert_eq!(next.calls_async().await, 1);
+    }
+
+    #[tokio::test]
+    async fn openai_retries_without_effort_when_a_model_refuses_it() {
+        let server = MockServer::start_async().await;
+        let refused = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/responses").body_includes("\"reasoning\"");
+                then.status(400).json_body(json!({"error":{"message":"This model does not support reasoning.effort"}}));
+            })
+            .await;
+        let accepted = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/responses").body_excludes("\"reasoning\"").body_includes("\"tools\"");
+                then.status(200).json_body(json!({
+                    "status":"completed",
+                    "output":[{"type":"message","role":"assistant","content":[
+                        {"type":"output_text","text":"Done."}
+                    ]}]
+                }));
+            })
+            .await;
+        let openai = OpenAiCompatible::new(http(), AiProvider::OpenAi, &server.url("/v1"), Some(Secret::new(KEY)));
+        let request = ChatRequest { model: "gpt-4o".into(), effort: Some(Effort::High), ..ask_calendar() };
+        let reply = openai.chat(&request, &mut |_| {}).await.expect("retry answers");
+        assert_eq!(reply.text, "Done.");
+        assert_eq!((refused.calls_async().await, accepted.calls_async().await), (1, 1));
     }
 
     #[tokio::test]

@@ -58,10 +58,11 @@ W.10 Sichtprüfung und API-Prüfung am Ende
 - **Modell:** Opus · **Braucht:** – (Entscheidung 2: Varianten je Anbieter) · **Dateien:** `crates/torro-core/src/ai/{mod,openai}.rs`,
   `crates/torroworkplace/src/account/ai.rs`, `crates/torroworkplace/src/assistant/data_rule.rs`,
   `crates/torroworkplace/src/ui/wizard.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-core/src/i18n/de.rs`
-- `AiProvider` mit OpenAI, Gemini, Mistral, DeepSeek, Qwen, Kimi, GLM, MiniMax (alle OpenAI-kompatibel; Anthropic kommt
-  mit **KI.1**). Je Anbieter: Adresse (international, geprüft am 2026-10-15), China-Adresse wo vorhanden, Schlüsselseite,
-  Sitz (`Seat`: dieser Rechner, eigener Server, Cloud USA/EU/China), offene Gewichte. Den Denkaufwand bekommen nur
-  OpenAI und Gemini (`reasoning_effort`); die anderen Cloud-Anbieter bekommen kein unbekanntes Feld.
+- `AiProvider` mit OpenAI, Gemini, Mistral, DeepSeek, Qwen, Kimi, GLM, MiniMax (OpenAI über Responses, die übrigen
+  außer Anthropic über Chat Completions; Anthropic kommt mit **KI.1**). Je Anbieter: Adresse (international, geprüft am 2026-10-15), China-Adresse wo vorhanden, Schlüsselseite,
+  Sitz (`Seat`: dieser Rechner, eigener Server, Cloud USA/EU/China), offene Gewichte. OpenAI-Anfragen laufen über
+  `/v1/responses` mit `reasoning.effort`, damit Werkzeuge und Denkaufwand zusammen funktionieren; Gemini bekommt
+  `reasoning_effort` über Chat Completions. Die anderen Cloud-Anbieter bekommen kein unbekanntes Feld.
 - Dialog „Add account“ › AI: alle Cloud-Anbieter mit Sitz; ein Schlüssel-Schritt für jeden, mit „Use the platform for
   mainland China“ wo es eine gibt. Datenregel: jeder Cloud-Anbieter zählt als entfernt.
 - **Oberfläche:** Accounts › Add › AI (die Einrichtung folgt in W.8) · **API:** `ConnectAi` mit neuen Anbietern · Admin,
