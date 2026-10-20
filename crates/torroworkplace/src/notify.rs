@@ -54,8 +54,10 @@ pub fn message(what: &str, response: &Response) -> Option<(String, String)> {
             )),
         },
         Response::Error { code, message } => {
+            // Named as the tray's entries (and the page's "Load") are, which load in the modes `add`
+            // and `replace`; only the mode `empty` (`ctl`, the API) refuses a workspace with windows.
             let body = if code == "workspace-not-empty" {
-                tr("The workspace is not empty. Choose “Add” or “Replace”.").to_string()
+                tr("The workspace is not empty. Choose “Load” or “Replace windows”.").to_string()
             } else {
                 message.clone()
             };
@@ -491,7 +493,7 @@ mod tests {
         let response = Response::Error { code: "workspace-not-empty".into(), message: "3 windows".into() };
         assert_eq!(
             message("load dev", &response),
-            text(tr("Failed"), tr("The workspace is not empty. Choose “Add” or “Replace”."))
+            text(tr("Failed"), tr("The workspace is not empty. Choose “Load” or “Replace windows”."))
         );
     }
 

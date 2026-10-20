@@ -419,8 +419,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Template partly loaded", "Vorlage teilweise geladen"),
     ("Template saved", "Vorlage gespeichert"),
     (
-        "The workspace is not empty. Choose “Add” or “Replace”.",
-        "Der Workspace ist nicht leer. Wähle „Hinzufügen“ oder „Ersetzen“.",
+        "The workspace is not empty. Choose “Load” or “Replace windows”.",
+        "Der Workspace ist nicht leer. Wähle „Laden“ oder „Fenster ersetzen“.",
     ),
     (
         "Your Nextcloud account {account} was removed from this device at the server's request.",
