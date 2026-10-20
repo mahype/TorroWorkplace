@@ -3895,7 +3895,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     .map(|focused| Message::SelectAllVisibleChecked(focused.contains(&true)));
             }
             Message::SelectAllVisibleChecked(typing) => {
-                if !typing && self.view.is_mail() && matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview) {
+                if !typing
+                    && self.view.is_mail()
+                    && matches!(self.focus(), Focus::List | Focus::MailDetail | Focus::Overview)
+                {
                     self.selected_mail = self.messages.iter().map(|message| message.id.clone()).collect();
                     self.mail_anchor = self.selected_mail.first().cloned();
                 }
