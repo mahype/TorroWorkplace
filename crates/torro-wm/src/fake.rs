@@ -3,14 +3,16 @@
 //! [`FakeWm`] keeps a list of windows, records every command it gets as a [`Call`] and
 //! sends events to subscribers like a real backend. Tests set it up with
 //! [`FakeWm::add_window`], simulate an application showing up with
-//! [`FakeWm::open_window`] and check [`FakeWm::calls`] afterwards.
+//! [`FakeWm::open_window`] and check [`FakeWm::calls`] afterwards. Key binds and window rules are
+//! only recorded; [`FakeWm::reload_config`] sends [`WmEvent::ConfigReloaded`] like Hyprland does.
 
 use std::sync::{Mutex, MutexGuard};
 
 use tokio::sync::mpsc;
 
 use crate::{
-    Events, Monitor, Rect, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WmEvent, WorkspaceId,
+    Events, KeyBind, Monitor, Rect, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WmEvent,
+    WorkspaceId,
 };
 
 /// A command the fake received.
@@ -20,7 +22,17 @@ pub enum Call {
     Move(WindowId, WorkspaceId),
     Close(WindowId),
     PrepareInsert(WindowId, SplitDirection),
-    Place { window: WindowId, sibling: WindowId, split: Split },
+    Place {
+        window: WindowId,
+        sibling: WindowId,
+        split: Split,
+    },
+    /// [`WindowManager::focus_monitor`] with the monitor's name, also when no monitor has it.
+    FocusMonitor(String),
+    BindKeys(Vec<KeyBind>),
+    UnbindKeys(Vec<String>),
+    /// [`WindowManager::float_dialogs`] with the class.
+    FloatDialogs(String),
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +115,11 @@ impl FakeWm {
         let workspace = WorkspaceId(workspace.to_string());
         state.active = Some(workspace.clone());
         send(&mut state, WmEvent::WorkspaceFocused { workspace });
+    }
+
+    /// Simulates the window manager reloading its configuration: sends [`WmEvent::ConfigReloaded`].
+    pub fn reload_config(&self) {
+        send(&mut self.lock(), WmEvent::ConfigReloaded);
     }
 
     /// Every command received so far, in order.
@@ -188,6 +205,37 @@ impl WindowManager for FakeWm {
         self.lock().subscribers.push(tx);
         Ok(rx)
     }
+
+    /// The workspace the monitor shows becomes the active one, with [`WmEvent::WorkspaceFocused`] when it
+    /// changes. `NotFound` for a name no monitor has, and for a monitor that shows no workspace.
+    async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
+        let mut state = self.lock();
+        state.calls.push(Call::FocusMonitor(monitor.to_string()));
+        let shown = state.monitors.iter().find(|m| m.name == monitor).map(|m| m.active_workspace.clone());
+        let Some(Some(workspace)) = shown else {
+            return Err(WmError::NotFound(format!("no monitor named {monitor:?} with a workspace")));
+        };
+        if state.active.as_ref() != Some(&workspace) {
+            state.active = Some(workspace.clone());
+            send(&mut state, WmEvent::WorkspaceFocused { workspace });
+        }
+        Ok(())
+    }
+
+    async fn bind_keys(&self, binds: &[KeyBind]) -> Result<(), WmError> {
+        self.lock().calls.push(Call::BindKeys(binds.to_vec()));
+        Ok(())
+    }
+
+    async fn unbind_keys(&self, keys: &[String]) -> Result<(), WmError> {
+        self.lock().calls.push(Call::UnbindKeys(keys.to_vec()));
+        Ok(())
+    }
+
+    async fn float_dialogs(&self, class: &str) -> Result<(), WmError> {
+        self.lock().calls.push(Call::FloatDialogs(class.to_string()));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -209,5 +257,58 @@ mod tests {
         assert_eq!(wm.calls(), vec![Call::Move(WindowId("0xb".into()), WorkspaceId("3".into()))]);
         assert!(matches!(events.recv().await, Some(WmEvent::WindowMoved { .. })));
         assert!(matches!(events.recv().await, Some(WmEvent::WindowOpened { window, .. }) if window == opened));
+    }
+
+    fn monitor(name: &str, x: i32, workspace: &str) -> Monitor {
+        Monitor {
+            name: name.into(),
+            rect: Rect { x, y: 0, width: 1920, height: 1080 },
+            scale: 1.0,
+            active_workspace: Some(WorkspaceId(workspace.into())),
+        }
+    }
+
+    #[tokio::test]
+    async fn focus_monitor_makes_its_workspace_active() {
+        let wm = FakeWm::new("1");
+        wm.set_monitors(vec![monitor("DP-1", 0, "1"), monitor("HDMI-A-1", 1920, "7")]);
+        let mut events = wm.events().await.unwrap();
+
+        wm.focus_monitor("HDMI-A-1").await.unwrap();
+        assert_eq!(wm.active_workspace().await, Ok(WorkspaceId("7".into())));
+        assert_eq!(events.recv().await, Some(WmEvent::WorkspaceFocused { workspace: WorkspaceId("7".into()) }));
+
+        // Focusing it again changes nothing and sends nothing.
+        wm.focus_monitor("HDMI-A-1").await.unwrap();
+        assert!(matches!(wm.focus_monitor("DP-9").await, Err(WmError::NotFound(_))));
+        assert_eq!(wm.active_workspace().await, Ok(WorkspaceId("7".into())));
+        wm.reload_config();
+        assert_eq!(events.recv().await, Some(WmEvent::ConfigReloaded), "no second WorkspaceFocused before it");
+        assert_eq!(
+            wm.calls(),
+            vec![
+                Call::FocusMonitor("HDMI-A-1".into()),
+                Call::FocusMonitor("HDMI-A-1".into()),
+                Call::FocusMonitor("DP-9".into())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn binds_and_rules_are_recorded() {
+        let wm = FakeWm::new("1");
+        let bind = KeyBind { keys: "SUPER + ALT + 1".into(), command: vec!["torroworkplace".into()] };
+        wm.bind_keys(std::slice::from_ref(&bind)).await.unwrap();
+        wm.unbind_keys(std::slice::from_ref(&bind.keys)).await.unwrap();
+        wm.float_dialogs("torro-dialog").await.unwrap();
+        assert_eq!(
+            wm.calls(),
+            vec![
+                Call::BindKeys(vec![bind.clone()]),
+                Call::UnbindKeys(vec![bind.keys]),
+                Call::FloatDialogs("torro-dialog".into())
+            ]
+        );
+        assert_eq!(wm.version().await, None);
     }
 }

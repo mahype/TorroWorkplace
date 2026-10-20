@@ -36,7 +36,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
 ```
 
 ### WS.1 Fenstermanager: Bildschirm fokussieren, Tasten, schwebender Dialog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-wm/src/{lib,types,fake}.rs`,
   `crates/torro-wm/src/hyprland/{mod,dispatch,events,json}.rs`, `crates/torro-wm/src/aerospace/{mod,cli}.rs`,
   `crates/torro-wm/src/glazewm/mod.rs`

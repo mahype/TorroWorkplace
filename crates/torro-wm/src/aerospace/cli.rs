@@ -108,6 +108,16 @@ pub fn window_arg(window: &WindowId) -> Result<String, WmError> {
         .map_err(|_| WmError::NotFound(format!("{id:?} is not an AeroSpace window id")))
 }
 
+/// A monitor pattern for `focus-monitor` that matches the monitor named `name` and no other (task WS.1).
+///
+/// AeroSpace reads a pattern as `main`, `secondary`, a sequence number or a case-insensitive regex
+/// that may match anywhere in the name; `^…$` around the escaped name makes it the whole name, and
+/// keeps names like `main` or `2` from being read as the other forms. Two monitors of the same
+/// model share a name; AeroSpace then takes the first.
+pub fn monitor_pattern(name: &str) -> String {
+    format!("^{}$", crate::hyprland::dispatch::regex_escape(name))
+}
+
 fn spawn_error(program: &Path, err: &std::io::Error) -> WmError {
     match err.kind() {
         std::io::ErrorKind::NotFound => WmError::NotRunning(format!("{} not found", program.display())),
@@ -149,6 +159,14 @@ mod tests {
         assert_eq!(window_arg(&WindowId(" 432 ".into())), Ok("432".into()));
         assert!(matches!(window_arg(&WindowId("0xabc".into())), Err(WmError::NotFound(_))));
         assert!(matches!(window_arg(&WindowId("432; close".into())), Err(WmError::NotFound(_))));
+    }
+
+    #[test]
+    fn a_monitor_pattern_is_the_whole_escaped_name() {
+        assert_eq!(monitor_pattern("DELL U2723QE"), "^DELL U2723QE$");
+        assert_eq!(monitor_pattern("Built-in Retina Display (1)"), r"^Built-in Retina Display \(1\)$");
+        assert_eq!(monitor_pattern("main"), "^main$");
+        assert_eq!(monitor_pattern("2"), "^2$");
     }
 
     #[test]

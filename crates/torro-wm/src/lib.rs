@@ -18,7 +18,7 @@ use std::future::Future;
 
 pub use detect::detect;
 pub use types::{
-    Cover, Monitor, NoWindow, Rect, Split, SplitDirection, Window, WindowId, WmError, WmEvent, WorkspaceId,
+    Cover, KeyBind, Monitor, NoWindow, Rect, Split, SplitDirection, Window, WindowId, WmError, WmEvent, WorkspaceId,
 };
 
 /// Receiving end of a backend's event stream.
@@ -82,6 +82,53 @@ pub trait WindowManager: Send + Sync {
     /// do nothing, and the window covers its screen by itself.
     fn cover_monitors(&self, covers: &[Cover]) -> impl Future<Output = Result<(), WmError>> + Send {
         let _ = covers;
+        async { Ok(()) }
+    }
+
+    /// Gives the keyboard focus to the monitor `monitor` ([`Monitor::name`], as [`monitors`](Self::monitors)
+    /// lists it) without moving any window: afterwards [`active_workspace`](Self::active_workspace) is the
+    /// workspace that monitor shows (task WS.1, loading a template onto a chosen monitor).
+    ///
+    /// Errors: `NotFound` when no monitor has that name (GlazeWM, the fake; Hyprland and AeroSpace report a
+    /// refused command as `Protocol`), `Unsupported` without a window manager.
+    fn focus_monitor(&self, monitor: &str) -> impl Future<Output = Result<(), WmError>> + Send;
+
+    /// The window manager's version for people and for feature checks, e.g. `0.56.0`; `None` when the
+    /// backend cannot tell or the window manager does not answer. Only Hyprland tells (task WS.1).
+    fn version(&self) -> impl Future<Output = Option<String>> + Send {
+        async { None }
+    }
+
+    /// Registers global key binds, each running its [`KeyBind::command`] when pressed (task WS.1).
+    ///
+    /// Binds live until [`unbind_keys`](Self::unbind_keys), the end of the session or – on Hyprland – the
+    /// next reload of its configuration ([`WmEvent::ConfigReloaded`]); callers register them again then.
+    /// Binding keys that are already bound adds a second bind (Hyprland runs both), so callers unbind
+    /// old keys first. Stops at the first refused bind; the binds before it stay.
+    ///
+    /// Errors: `Unsupported` where the window manager has no run-time binds (every backend but
+    /// Hyprland; macOS and Windows bind keys in the tray instead, task WS.4), `Protocol` for a refused
+    /// bind or a command that cannot be put on a shell line (empty, or with a NUL character).
+    fn bind_keys(&self, binds: &[KeyBind]) -> impl Future<Output = Result<(), WmError>> + Send {
+        let _ = binds;
+        async { Err(WmError::Unsupported("key binds through the window manager".into())) }
+    }
+
+    /// Removes binds made with [`bind_keys`](Self::bind_keys), by their [`KeyBind::keys`] exactly as they
+    /// were bound (Hyprland compares case-sensitively). Stops at the first refused unbind.
+    ///
+    /// Errors: as [`bind_keys`](Self::bind_keys).
+    fn unbind_keys(&self, keys: &[String]) -> impl Future<Output = Result<(), WmError>> + Send {
+        let _ = keys;
+        async { Err(WmError::Unsupported("key binds through the window manager".into())) }
+    }
+
+    /// Before a small dialog window of the class `class` (app id) opens: it should float, centred on its
+    /// monitor, instead of being tiled (task WS.1, the dialog after "Save workspace…"). Hyprland registers
+    /// one named rule per class, so registering again replaces it; like every run-time rule it goes with a
+    /// reload of the configuration. Window managers without such rules do nothing.
+    fn float_dialogs(&self, class: &str) -> impl Future<Output = Result<(), WmError>> + Send {
+        let _ = class;
         async { Ok(()) }
     }
 }
@@ -194,6 +241,51 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.cover_monitors(covers).await,
             Backend::GlazeWm(_) | Backend::AeroSpace(_) | Backend::Unsupported { .. } => Ok(()),
+        }
+    }
+
+    async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.focus_monitor(monitor).await,
+            Backend::GlazeWm(wm) => wm.focus_monitor(monitor).await,
+            Backend::AeroSpace(wm) => wm.focus_monitor(monitor).await,
+            Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
+        }
+    }
+
+    async fn version(&self) -> Option<String> {
+        match self {
+            Backend::Hyprland(wm) => wm.version().await,
+            Backend::GlazeWm(wm) => wm.version().await,
+            Backend::AeroSpace(wm) => wm.version().await,
+            Backend::Unsupported { .. } => None,
+        }
+    }
+
+    async fn bind_keys(&self, binds: &[KeyBind]) -> Result<(), WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.bind_keys(binds).await,
+            Backend::GlazeWm(wm) => wm.bind_keys(binds).await,
+            Backend::AeroSpace(wm) => wm.bind_keys(binds).await,
+            Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
+        }
+    }
+
+    async fn unbind_keys(&self, keys: &[String]) -> Result<(), WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.unbind_keys(keys).await,
+            Backend::GlazeWm(wm) => wm.unbind_keys(keys).await,
+            Backend::AeroSpace(wm) => wm.unbind_keys(keys).await,
+            Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
+        }
+    }
+
+    async fn float_dialogs(&self, class: &str) -> Result<(), WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.float_dialogs(class).await,
+            Backend::GlazeWm(wm) => wm.float_dialogs(class).await,
+            Backend::AeroSpace(wm) => wm.float_dialogs(class).await,
+            Backend::Unsupported { .. } => Ok(()),
         }
     }
 }

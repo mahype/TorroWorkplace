@@ -3,9 +3,14 @@
 //! Tasks 1.6 and 1.8 in `docs/tasks/phase-1.md`. Hyprland 0.56 under Omarchy 4 reads
 //! dispatchers as Lua: `hl.dsp.focus({ window = "address:0x55d0…" })`. Every string that
 //! goes into an expression passes through [`lua_string`]. The builders only return the
-//! expression; the backend sends it as `dispatch <expression>`.
+//! expression; the backend sends it as `dispatch <expression>` (dispatchers) or `eval <expression>`
+//! (binds and window rules, task WS.1).
+//!
+//! The Lua forms follow the Hyprland wiki for 0.56 (`Configuring/Basics/Dispatchers`, `…/Binds`,
+//! `…/Window-Rules`): `hl.dsp.focus({ monitor = … })`, `hl.bind(keys, hl.dsp.exec_cmd(cmd))`,
+//! `hl.unbind(keys)` and `hl.window_rule({ name = …, match = { class = … }, … })`.
 
-use crate::{SplitDirection, WindowId, WmError, WorkspaceId};
+use crate::{KeyBind, SplitDirection, WindowId, WmError, WorkspaceId};
 
 /// `address:0x…` for a window id; rejects anything that is not a hex address.
 ///
@@ -66,6 +71,52 @@ pub fn close_window(window: &WindowId) -> Result<String, WmError> {
     Ok(format!("hl.dsp.window.close({{ window = {} }})", lua_string(&selector)))
 }
 
+/// `hl.dsp.focus({ monitor = "DP-1" })`: the monitor of that name gets the focus, no window moves.
+pub fn focus_monitor(monitor: &str) -> String {
+    format!("hl.dsp.focus({{ monitor = {} }})", lua_string(monitor))
+}
+
+/// `hl.bind("SUPER + ALT + 1", hl.dsp.exec_cmd("'/path/torroworkplace' 'load' …"))` for `bind`.
+///
+/// `exec_cmd` hands its text to `sh -c`, so the command becomes one shell line ([`shell_line`]) and that
+/// line one Lua string: neither the shell nor Lua can read an argument as code. Errors as [`shell_line`].
+pub fn bind_key(bind: &KeyBind) -> Result<String, WmError> {
+    let line = shell_line(&bind.command)?;
+    Ok(format!("hl.bind({}, hl.dsp.exec_cmd({}))", lua_string(&bind.keys), lua_string(&line)))
+}
+
+/// `hl.unbind("SUPER + ALT + 1")`. `keys` must be spelled exactly as it was bound: Hyprland compares
+/// case-sensitively (`SUPER + Tab` does not remove `SUPER + TAB`).
+pub fn unbind_key(keys: &str) -> String {
+    format!("hl.unbind({})", lua_string(keys))
+}
+
+/// `hl.window_rule({ … })` that floats and centres every window of the class `class` (task WS.1, the
+/// dialog after "Save workspace…"). Named after the class, so a second registration replaces the
+/// first; the class is matched as a whole regex with its characters escaped.
+pub fn float_rule(class: &str) -> String {
+    format!(
+        "hl.window_rule({{ name = {}, match = {{ class = {} }}, float = true, center = true }})",
+        lua_string(&format!("torro-float-{class}")),
+        lua_string(&format!("^{}$", regex_escape(class))),
+    )
+}
+
+/// `command` as one line for `sh -c`: every element in single quotes, a `'` inside as `'\''`, joined by
+/// spaces. Single quotes keep everything literal (spaces, `$`, `"`, backslashes, newlines).
+///
+/// Errors: `Protocol` for an empty command and for a NUL character, which no shell line can carry.
+pub fn shell_line(command: &[String]) -> Result<String, WmError> {
+    if command.is_empty() {
+        return Err(WmError::Protocol("a key bind needs a command".into()));
+    }
+    if command.iter().any(|argument| argument.contains('\0')) {
+        return Err(WmError::Protocol("a command argument holds a NUL character".into()));
+    }
+    let quoted: Vec<String> = command.iter().map(|argument| format!("'{}'", argument.replace('\'', r"'\''"))).collect();
+    Ok(quoted.join(" "))
+}
+
 /// Reads Hyprland's answer to `dispatch <expression>`: `ok` on success, anything else is an
 /// error carrying the trimmed answer text.
 pub(super) fn check_answer(answer: &str) -> Result<(), WmError> {
@@ -95,7 +146,8 @@ pub fn cover_rule(cover: &crate::Cover) -> String {
 }
 
 /// `text` with every regex metacharacter escaped, so a monitor name like `DP-1.2` matches itself.
-fn regex_escape(text: &str) -> String {
+/// Also used for AeroSpace's monitor patterns ([`crate::aerospace::cli::monitor_pattern`]).
+pub(crate) fn regex_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
         if "\\.+*?()|[]{}^$".contains(character) {
@@ -264,5 +316,65 @@ mod tests {
         assert!(cover_rule(&main).ends_with("no_initial_focus = false })"));
         let sneaky = crate::Cover { title: "x\" }) os.exit()".into(), ..main };
         assert!(!cover_rule(&sneaky).contains("\" })"), "a title cannot end the Lua string");
+    }
+
+    fn command(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|part| (*part).to_owned()).collect()
+    }
+
+    #[test]
+    fn focus_monitor_names_the_monitor() {
+        assert_eq!(focus_monitor("DP-1"), r#"hl.dsp.focus({ monitor = "DP-1" })"#);
+        assert_eq!(focus_monitor("a\"b"), r#"hl.dsp.focus({ monitor = "a\"b" })"#);
+    }
+
+    #[test]
+    fn shell_line_quotes_every_argument() {
+        let line = shell_line(&command(&["/opt/my apps/torroworkplace", "load", "it's $HOME"])).expect("valid");
+        assert_eq!(line, r#"'/opt/my apps/torroworkplace' 'load' 'it'\''s $HOME'"#);
+        assert_eq!(shell_line(&command(&[""])).expect("valid"), "''");
+        assert!(matches!(shell_line(&[]), Err(WmError::Protocol(_))));
+        assert!(matches!(shell_line(&command(&["a\0b"])), Err(WmError::Protocol(_))));
+    }
+
+    #[test]
+    fn a_bind_runs_the_quoted_command() {
+        let bind = KeyBind {
+            keys: "SUPER + ALT + 1".into(),
+            command: command(&["/home/anna/my apps/torroworkplace", "load", "template:a'b\"c]]d"]),
+        };
+        // Shell line: '/home/anna/my apps/torroworkplace' 'load' 'template:a'\''b"c]]d'
+        // In Lua, the backslash and the double quote of that line are escaped once more.
+        assert_eq!(
+            bind_key(&bind).expect("valid"),
+            r#"hl.bind("SUPER + ALT + 1", hl.dsp.exec_cmd("'/home/anna/my apps/torroworkplace' 'load' 'template:a'\\''b\"c]]d'"))"#
+        );
+    }
+
+    #[test]
+    fn a_bind_cannot_end_its_lua_strings() {
+        let bind = KeyBind { keys: "SUPER + 1\"), os.exit(".into(), command: command(&["x\")) os.exit() --"]) };
+        let expression = bind_key(&bind).expect("valid");
+        assert!(expression.starts_with(r#"hl.bind("SUPER + 1\"), os.exit(", "#), "{expression}");
+        assert!(expression.ends_with(r#"hl.dsp.exec_cmd("'x\")) os.exit() --'"))"#), "{expression}");
+        assert!(bind_key(&KeyBind { keys: "SUPER + 1".into(), command: Vec::new() }).is_err());
+    }
+
+    #[test]
+    fn unbind_keeps_the_spelling() {
+        assert_eq!(unbind_key("SUPER + ALT + 1"), r#"hl.unbind("SUPER + ALT + 1")"#);
+        assert_eq!(unbind_key("SUPER + Tab"), r#"hl.unbind("SUPER + Tab")"#);
+    }
+
+    #[test]
+    fn a_float_rule_matches_the_exact_class() {
+        assert_eq!(
+            float_rule("torro.dialog"),
+            r#"hl.window_rule({ name = "torro-float-torro.dialog", match = { class = "^torro\\.dialog$" }, float = true, center = true })"#
+        );
+        // The quote stays inside both strings: escaped for Lua in the name, and for Lua in the regex.
+        let sneaky = float_rule("x\" }) os.exit(");
+        assert!(sneaky.starts_with(r#"hl.window_rule({ name = "torro-float-x\" }) os.exit(", match"#), "{sneaky}");
+        assert!(sneaky.contains(r#"class = "^x\" \\}\\) os\\.exit\\($" }"#), "{sneaky}");
     }
 }
