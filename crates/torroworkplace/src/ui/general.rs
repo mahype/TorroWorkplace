@@ -262,7 +262,7 @@ pub enum Message {
     /// "Reload": list designs, fonts and colour schemes again, after one was added to or changed
     /// in a folder.
     Reload,
-    /// "Open designs folder", "Open fonts folder" or "Open colour schemes folder".
+    /// "Open designs folder", "Open fonts folder" or "Open color schemes folder".
     OpenFolder(Part),
     /// "Run setup again" (task W.9).
     RunSetup,
@@ -547,11 +547,11 @@ fn fonts<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Sugges
     block(tr("Font"), vec![open_folder(Part::Font)], body, footer)
 }
 
-/// The block "Colour scheme": the heading with "Open colour schemes folder", the grid, the reasons
+/// The block "Colour scheme": the heading with "Open color schemes folder", the grid, the reasons
 /// of the one opened, and its sentence; the colour scheme the drawn design suggests says so.
 fn schemes<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Suggestion<'a>>) -> Element<'a, Message> {
     let (mark, design) = suggested.map_or((None, ""), |s| (s.scheme, s.design));
-    let failed = tr("The colour schemes can't be listed.");
+    let failed = tr("The color schemes can't be listed.");
     let body = listing(&state.schemes, failed, Part::ColorScheme, state, |entries, open| {
         let drawn = drawn(entries, &settings.color_scheme);
         let one = |entry: &'a SchemeEntry| {
@@ -563,8 +563,8 @@ fn schemes<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Sugg
         entries.iter().map(one).collect()
     });
     let footer =
-        tr("The colours of all Torro apps, light and dark. More colour schemes go into the colour schemes folder.");
-    block(tr("Colour scheme"), vec![open_folder(Part::ColorScheme)], body, footer)
+        tr("The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder.");
+    block(tr("Color scheme"), vec![open_folder(Part::ColorScheme)], body, footer)
 }
 
 /// One block of the page: the heading with its quiet `actions`, `body` and the sentence `footer`.
@@ -851,13 +851,13 @@ pub fn folder(part: Part) -> Option<PathBuf> {
     }
 }
 
-/// "Open designs folder", "Open fonts folder" or "Open colour schemes folder", a quiet action of a
+/// "Open designs folder", "Open fonts folder" or "Open color schemes folder", a quiet action of a
 /// heading that names the folder (from home, as `~/…`) in its tooltip.
 fn open_folder<'a>(part: Part) -> Element<'a, Message> {
     let label = match part {
         Part::Design => tr("Open designs folder"),
         Part::Font => tr("Open fonts folder"),
-        Part::ColorScheme => tr("Open colour schemes folder"),
+        Part::ColorScheme => tr("Open color schemes folder"),
     };
     let open = widgets::text_button(Some(Icon::Folder), label, style::button::ghost, Some(Message::OpenFolder(part)));
     match folder(part) {

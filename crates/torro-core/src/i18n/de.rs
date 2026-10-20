@@ -2545,13 +2545,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{file} is larger than {limit}.", "{file} ist größer als {limit}."),
     ("{file} is not a file.", "{file} ist keine Datei."),
     // Design packs (torro-core, L.1)
-    ("Fonts need their license in fonts/LICENSE.txt.", "Schriften brauchen ihre Lizenz in fonts/LICENSE.txt."),
     (
         "Format {found} isn't supported. This version reads format 1.",
         "Format {found} wird nicht unterstützt. Diese Version liest Format 1.",
     ),
     ("Inter, quiet surfaces, Torro red", "Inter, ruhige Flächen, Torro-Rot"),
-    ("The design is larger than {limit} in total.", "Das Design ist insgesamt größer als {limit}."),
     (
         "The line height of “{key}” is {line}; it must be between {size} and twice that.",
         "Die Zeilenhöhe von „{key}“ ist {line}; sie muss zwischen {size} und dem Doppelten liegen.",
@@ -2570,11 +2568,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "colors.{mode}.on_accent on accent has a contrast of {ratio}:1; text on the primary button needs at least 4.5:1.",
         "colors.{mode}.on_accent auf accent hat einen Kontrast von {ratio}:1; Text auf dem Hauptknopf braucht mindestens 4,5:1.",
     ),
-    (
-        "design.toml can't be read (line {line}): {reason}",
-        "design.toml lässt sich nicht lesen (Zeile {line}): {reason}",
-    ),
-    ("design.toml can't be read: {reason}", "design.toml lässt sich nicht lesen: {reason}"),
     ("not a PNG image", "kein PNG-Bild"),
     (
         "preview.png is {width} × {height}; at most 1200 × 800 is allowed.",
@@ -2608,14 +2601,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{file} verweist auf {reference}. SVG-Dateien dürfen nur auf #… und data: verweisen.",
     ),
     ("{path} from “{key}” doesn't exist.", "{path} aus „{key}“ gibt es nicht."),
-    ("{path} from “{key}” lies outside the design folder.", "{path} aus „{key}“ liegt außerhalb des Design-Ordners."),
     (
         "{path} in “{key}” has the wrong type. Use {expected}.",
         "{path} in „{key}“ hat den falschen Typ. Nimm {expected}.",
-    ),
-    (
-        "“{id}” can't be a design folder. Use up to 32 characters a–z, 0–9 and -; “torro” is the standard design.",
-        "„{id}“ kann kein Design-Ordner sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -; „torro“ ist das Standard-Design.",
     ),
     ("“{key}” is missing.", "„{key}“ fehlt."),
     ("“{key}” is {value}; allowed are {min} to {max}.", "„{key}“ ist {value}; erlaubt sind {min} bis {max}."),
@@ -2623,19 +2611,47 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{key}” isn't a color: {value}. Write #RRGGBB or #RRGGBBAA.",
         "„{key}“ ist keine Farbe: {value}. Schreibe #RRGGBB oder #RRGGBBAA.",
     ),
-    (
-        "“{key}” uses {weight} of the {font} font, but there is no file for it.",
-        "„{key}“ nutzt {weight} der Schrift {font}, dafür gibt es aber keine Datei.",
-    ),
     // Choosing a design in the control centre (L.4)
     ("Can't be used:", "Nicht nutzbar:"),
-    (
-        "Colors, fonts and spacing of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
-        "Farben, Schriften und Abstände aller Torro-Apps. Weitere Designs kommen in den Design-Ordner; eins, das gegen eine Regel verstößt, ist nicht nutzbar.",
-    ),
     ("Design", "Design"),
-    ("Designs folder", "Design-Ordner"),
     ("Open designs folder", "Design-Ordner öffnen"),
+    ("Color scheme", "Farbschema"),
+    ("Font", "Schrift"),
+    ("Open color schemes folder", "Farbschema-Ordner öffnen"),
+    ("Open fonts folder", "Schriften-Ordner öffnen"),
+    (
+        "Spacing, sizes and corner radii of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
+        "Abstände, Größen und Eckenradien aller Torro-Apps. Weitere Designs kommen in den Design-Ordner; eines, das eine Regel verletzt, lässt sich nicht verwenden.",
+    ),
+    ("Suggested for {design}", "Empfohlen für {design}"),
+    ("The color schemes can't be listed.", "Die Farbschemata können nicht aufgelistet werden."),
+    (
+        "The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder.",
+        "Die Farben aller Torro-Apps, hell und dunkel. Weitere Farbschemata kommen in den Farbschema-Ordner.",
+    ),
+    ("The fonts can't be listed.", "Die Schriften können nicht aufgelistet werden."),
+    (
+        "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder.",
+        "Die Schrift aller Torro-Apps, so bemessen, dass Text in jeder Schrift gleich groß wirkt. Weitere Schriften kommen in den Schriften-Ordner.",
+    ),
+    ("Fonts need their license in LICENSE.txt.", "Schriften brauchen ihre Lizenz in LICENSE.txt."),
+    (
+        "The figures of “{family}” are {width} em wide after the size adjustment; the time axis fits at most {max} em.",
+        "Die Ziffern von „{family}“ sind nach dem Größenausgleich {width} em breit; in die Zeitachse passen höchstens {max} em.",
+    ),
+    ("The folder is larger than {limit} in total.", "Der Ordner ist insgesamt größer als {limit}."),
+    ("There is no color scheme “{id}”.", "Es gibt kein Farbschema „{id}“."),
+    ("There is no font “{id}”.", "Es gibt keine Schrift „{id}“."),
+    ("{file} can't be read (line {line}): {reason}", "{file} lässt sich nicht lesen (Zeile {line}): {reason}"),
+    ("{path} from “{key}” lies outside its folder.", "{path} aus „{key}“ liegt außerhalb seines Ordners."),
+    (
+        "“{id}” can't be a folder name here. Use up to 32 characters a–z, 0–9 and -; “torro” is built in.",
+        "„{id}“ kann hier kein Ordnername sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -; „torro“ ist eingebaut.",
+    ),
+    (
+        "“{key}” suggests “{id}”, which can't be an id. Use up to 32 characters a–z, 0–9 and -.",
+        "„{key}“ schlägt „{id}“ vor, das kann keine Kennung sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -.",
+    ),
     ("Reload", "Neu laden"),
     ("The designs can't be listed.", "Die Designs lassen sich nicht auflisten."),
     // Inbox overview in two columns (E3.9)

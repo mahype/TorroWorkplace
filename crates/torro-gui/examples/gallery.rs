@@ -2142,9 +2142,12 @@ impl Gallery {
                     );
                 }
                 let state = if i == self.tile { widgets::PreviewState::Chosen } else { widgets::PreviewState::Plain };
-                widgets::preview_tile(
+                // Plex wears the note a chosen design puts on the font or colour scheme it suggests (task L.23).
+                let note = (*name == "Plex").then_some("Suggested");
+                widgets::preview_tile_noted(
                     Some(swatch(colour)),
                     name,
+                    note,
                     Some("1.0 · Torro samples".into()),
                     state,
                     Some(Msg::Tile(i)),

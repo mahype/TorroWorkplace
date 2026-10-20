@@ -88,7 +88,7 @@ impl fmt::Display for DesignError {
             DesignError::NotFound { part: Part::Design, id } => trf("There is no design “{id}”.", &[("id", id)]),
             DesignError::NotFound { part: Part::Font, id } => trf("There is no font “{id}”.", &[("id", id)]),
             DesignError::NotFound { part: Part::ColorScheme, id } => {
-                trf("There is no colour scheme “{id}”.", &[("id", id)])
+                trf("There is no color scheme “{id}”.", &[("id", id)])
             }
             DesignError::BadSuggestion { key, id } => trf(
                 "“{key}” suggests “{id}”, which can't be an id. Use up to 32 characters a–z, 0–9 and -.",
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn a_missing_part_is_named_by_its_kind() {
         let missing = DesignError::NotFound { part: Part::ColorScheme, id: "nord".into() }.to_string();
-        assert_eq!(missing, trf("There is no colour scheme “{id}”.", &[("id", &"nord")]));
+        assert_eq!(missing, trf("There is no color scheme “{id}”.", &[("id", &"nord")]));
         let wide = DesignError::DigitsTooWide { family: "Wide".into(), width: 0.7812, max: 0.72 }.to_string();
         assert!(wide.contains("0.78") && wide.contains("0.72"), "{wide}");
     }
