@@ -23,9 +23,7 @@ use std::slice;
 use torro_core::i18n::trf;
 use torro_core::settings::ShortcutModifiers;
 use torro_ipc::{Request, SettingKey};
-#[cfg(any(target_os = "macos", windows))]
-use torro_setups::TemplateSummary;
-use torro_setups::{MAX_SHORTCUT, Template};
+use torro_setups::{MAX_SHORTCUT, Template, TemplateSummary};
 use torro_wm::{Events, KeyBind, WindowManager, WmEvent};
 
 /// One template key: the digit `key` (`0` to `9`, `0` is the key "0") loads the template `template`.
@@ -62,6 +60,19 @@ fn slots_of<'a>(templates: impl Iterator<Item = (&'a str, Option<u8>)>) -> Vec<S
     }
     slots.sort_by_key(|slot| keyboard_order(slot.key));
     slots
+}
+
+/// `templates` in the order people look for them (task WS.7): by key in the order of the keyboard
+/// (1 … 9, then 0), then those without a key by name, ignoring case. The tray lists them so, and the
+/// workspaces page sorts the same way. A key above [`MAX_SHORTCUT`] counts as none.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub fn in_key_order(templates: &[TemplateSummary]) -> Vec<&TemplateSummary> {
+    let mut sorted: Vec<&TemplateSummary> = templates.iter().collect();
+    sorted.sort_by_cached_key(|template| {
+        let place = template.shortcut.filter(|key| *key <= MAX_SHORTCUT).map_or(u8::MAX, keyboard_order);
+        (place, template.name.to_lowercase())
+    });
+    sorted
 }
 
 /// Where `key` stands on the keyboard's row of digits: 1 first, 0 last.
@@ -509,6 +520,25 @@ mod tests {
         let templates = [template("zero", Some(0)), template("one", Some(1)), template("also-one", Some(1))];
         let summaries: Vec<TemplateSummary> = templates.iter().map(TemplateSummary::from).collect();
         assert_eq!(summary_slots(&summaries), slots(&templates));
+    }
+
+    /// Task WS.7: the tray's order is the page's (task WS.6): by key, 0 after 9, then by name.
+    #[test]
+    fn templates_go_by_key_then_by_name() {
+        let named = |id: &str, name: &str, key| TemplateSummary {
+            name: name.into(),
+            ..TemplateSummary::from(&template(id, key))
+        };
+        let templates = [
+            named("z", "zebra", None),
+            named("zero", "Zero", Some(0)),
+            named("a", "Alpha", None),
+            named("nine", "Nine", Some(9)),
+            named("one", "One", Some(1)),
+            named("odd", "Beta", Some(MAX_SHORTCUT + 1)),
+        ];
+        let ids: Vec<&str> = in_key_order(&templates).iter().map(|template| template.id.as_str()).collect();
+        assert_eq!(ids, ["one", "nine", "zero", "a", "odd", "z"], "no key above 9");
     }
 
     /// The bind runs the command line `ctl` understands: load in the mode `add`.

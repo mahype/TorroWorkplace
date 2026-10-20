@@ -203,10 +203,11 @@ mod tests {
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
                 "-".to_string(),
-                sub(tr("Load template")),
-                tr("Save workspace").to_string(),
-                sub(tr("Update")),
-                sub(tr("Delete")),
+                format!("({})", trf("Workspaces · {manager}", &[("manager", &"Hyprland")])),
+                sub("Entwicklung"),
+                "-".to_string(),
+                tr("Save workspace…").to_string(),
+                tr("Manage workspaces…").to_string(),
                 "-".to_string(),
                 tr("Settings…").to_string(),
                 tr("Quit").to_string(),
@@ -218,14 +219,18 @@ mod tests {
     fn load_here_only_on_an_empty_workspace() {
         let load_items = |snapshot: &Snapshot| {
             let menu = build_menu(snapshot);
-            let MenuItem::SubMenu(load) = &menu[TEMPLATES] else { panic!("load submenu") };
-            let MenuItem::SubMenu(template) = &load.submenu[0] else { panic!("template submenu") };
+            // The templates follow the line that names the window manager (task WS.7).
+            let MenuItem::SubMenu(template) = &menu[TEMPLATES + 1] else { panic!("template submenu") };
             labels(&template.submenu)
         };
         let (here, add, replace) = (tr("Load here"), tr("Add").to_string(), tr("Replace").to_string());
-        assert_eq!(load_items(&snapshot()), [format!("({here})"), add.clone(), replace.clone()]);
+        let edit = tr("Edit…").to_string();
+        assert_eq!(
+            load_items(&snapshot()),
+            [format!("({here})"), add.clone(), replace.clone(), "-".into(), edit.clone()]
+        );
         let empty = Snapshot { workspace_windows: 0, ..snapshot() };
-        assert_eq!(load_items(&empty), [here.to_string(), add, replace]);
+        assert_eq!(load_items(&empty), [here.to_string(), add, replace, "-".into(), edit]);
     }
 
     #[test]

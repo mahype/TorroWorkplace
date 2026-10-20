@@ -183,7 +183,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   `Launch::parse` für die neuen Parameter, Sichtprüfung aller Größen mit `torro-design-review`.
 
 ### WS.7 Tray-Menü
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WS.6 · **Dateien:** `crates/torroworkplace/src/tray/{menu,desktop,linux}.rs`,
   `crates/torroworkplace/src/{daemon,core}.rs`
 - `templates_section`: Info-Zeile „Workspaces · Hyprland“, je Vorlage ein Untermenü in der ersten Ebene, Name mit

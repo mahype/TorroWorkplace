@@ -47,7 +47,8 @@ pub struct Daemon {
 
 impl Daemon {
     /// Runs `request` in the background and refreshes the menu before (to show "busy") and
-    /// after.
+    /// after. How it went comes as a notification, except an app or a dialog that opened: the
+    /// window is the answer ([`shows_itself`]).
     pub fn run(&self, request: Request) {
         let core = Arc::clone(&self.core);
         let refresh = self.refresh.clone();
@@ -55,13 +56,47 @@ impl Daemon {
         self.runtime.spawn(async move {
             let what = describe(&request);
             let ends = matches!(request, Request::Quit);
+            let quiet = shows_itself(&request);
             let _ = refresh.send(());
             let response = core.handle(request).await;
-            report(&what, &response);
+            match quiet && !matches!(response, Response::Error { .. }) {
+                true => log(&what, &response),
+                false => report(&what, &response),
+            }
             if ends && matches!(response, Response::Ok) {
                 end_after_answer(quit);
             }
             let _ = refresh.send(());
+        });
+    }
+
+    /// "Save workspace…" in the tray (task WS.7): saves the active workspace now and opens the dialog
+    /// for the new template ([`Core::save_workspace`]), refreshing the menu before and after like
+    /// [`Daemon::run`]. The dialog shows the result; only a failed save, or a save whose dialog could
+    /// not start, comes as a notification.
+    pub fn save_workspace(&self) {
+        let core = Arc::clone(&self.core);
+        let refresh = self.refresh.clone();
+        self.runtime.spawn(async move {
+            let what = describe(&Request::SaveTemplate { name: None });
+            let _ = refresh.send(());
+            let saved = core.save_workspace(&torro_setups::launch::SystemLauncher).await;
+            match saved.dialog {
+                true => log(&what, &saved.response),
+                false => report(&what, &saved.response),
+            }
+            let _ = refresh.send(());
+        });
+    }
+
+    /// "Manage workspaces…" in the tray (task WS.7): the control centre on its page Workspaces
+    /// ([`Core::show_section`]). A failure is only logged, as for [`Daemon::open_app`].
+    pub fn manage_workspaces(&self) {
+        let core = Arc::clone(&self.core);
+        self.runtime.spawn(async move {
+            if let Err(err) = core.show_section(crate::ui::Section::Workspaces).await {
+                eprintln!("torroworkplace: cannot open the workspaces page: {err}");
+            }
         });
     }
 
@@ -694,8 +729,22 @@ fn describe(request: &Request) -> String {
     }
 }
 
-/// Tells the user how a tray command went: on stderr, and as a desktop notification.
+/// Requests of the tray whose window is the answer (task WS.7): an app, or the template dialog
+/// ("Edit…"), that opened. A notification "Done" on top would only repeat it; a failure still comes.
+fn shows_itself(request: &Request) -> bool {
+    matches!(request, Request::OpenApp { .. })
+}
+
+/// Tells the user how a tray command went: on stderr ([`log`]), and as a desktop notification.
 fn report(what: &str, response: &Response) {
+    log(what, response);
+    if let Some((summary, body)) = crate::notify::message(what, response) {
+        crate::notify::show(summary, body);
+    }
+}
+
+/// How a tray command went, on stderr only.
+fn log(what: &str, response: &Response) {
     match response {
         Response::Error { message, .. } => eprintln!("torroworkplace: {what} failed: {message}"),
         Response::Loaded { restored, failed } => {
@@ -707,9 +756,6 @@ fn report(what: &str, response: &Response) {
         Response::Saved { template } => eprintln!("torroworkplace: saved {:?} ({})", template.name, template.id),
         Response::Pending { approval } => eprintln!("torroworkplace: {what}: waits for approval {}", approval.id),
         _ => eprintln!("torroworkplace: {what}: ok"),
-    }
-    if let Some((summary, body)) = crate::notify::message(what, response) {
-        crate::notify::show(summary, body);
     }
 }
 
@@ -731,6 +777,17 @@ mod tests {
         assert_eq!(describe(&Request::SetTemplateShortcut { id: "dev".into(), key: None }), "no key for dev");
         assert_eq!(describe(&startup), "load dev not at login");
         assert_eq!(describe(&Request::ListScreens), "screens");
+    }
+
+    /// Task WS.7: an app or the template dialog that opened is its own answer; other tray commands
+    /// still come as a notification.
+    #[test]
+    fn an_opened_window_needs_no_notification() {
+        let edit = Request::OpenApp { app: AppId::WORKPLACE.binary.into(), target: Some("template:dev".into()) };
+        assert!(shows_itself(&edit));
+        assert!(shows_itself(&Request::OpenApp { app: AppId::WORKPLACE.binary.into(), target: None }));
+        assert!(!shows_itself(&Request::LoadTemplate { id: "dev".into(), mode: torro_setups::LoadMode::Add }));
+        assert!(!shows_itself(&Request::SaveTemplate { name: None }));
     }
 
     /// Task E8.7a: messages about these requests name the list and the app, never the mail

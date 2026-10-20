@@ -97,6 +97,41 @@ fn start_control_centre(section: Section) -> Result<(), String> {
     SystemLauncher.spawn(&control_centre_command(program, section)).map(|_| ()).map_err(|err| err.to_string())
 }
 
+/// The command line of the template dialog in its mode "Save" for `id`, the template saved just now
+/// (task WS.7): `torroworkplace ui --template=<id> --saved`, the line of the mode "Edit"
+/// ([`crate::apps::target_command`]) with `--saved`. Only "Save workspace…" in the tray builds it
+/// ([`Core::save_workspace`]): the dialog's Cancel deletes the template again, so `apps.open_app`
+/// never opens this mode.
+fn save_dialog_command(program: String, id: &str) -> Vec<String> {
+    let mut command = crate::apps::target_command(program, &crate::apps::Opened::Template { id: id.to_string() });
+    command.push("--saved".to_string());
+    command
+}
+
+/// Starts the template dialog in its mode "Save" for `id` through `launcher` ([`save_dialog_command`],
+/// the core's own binary as [`sibling`] finds it), without waiting for it: the dialog loads what it
+/// shows itself and ends after Save or Cancel. `false`, with a line on stderr, when it cannot start.
+fn start_save_dialog(launcher: &impl Launcher, id: &str) -> bool {
+    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+    match launcher.spawn(&save_dialog_command(program, id)) {
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!("torroworkplace: cannot open the dialog of template {id}: {err}");
+            false
+        }
+    }
+}
+
+/// What "Save workspace…" in the tray did (task WS.7, [`Core::save_workspace`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedWorkspace {
+    /// The answer of `workspaces.save_template`: `Saved` with the new template, or why not.
+    pub response: Response,
+    /// Whether the dialog for the new template started. It then shows the result itself, so the
+    /// tray tells nothing more; without it the tray reports the save as after any other.
+    pub dialog: bool,
+}
+
 /// Shows the person the control centre: an open one comes to the front, else one starts on
 /// `section` through `start`. An open one is never closed and restarted, because that would throw
 /// away whatever the person is typing there (a half-pasted token, say).
@@ -1610,6 +1645,9 @@ impl Core {
         self.follow_voice();
         // The template keys on Hyprland (task WS.3).
         self.follow_template_keys();
+        // The template dialog floats instead of being tiled (task WS.7).
+        let core = Arc::clone(self);
+        tokio::spawn(async move { core.float_dialog().await });
         // The templates that load at login, once per session (task WS.5).
         self.load_templates_at_login();
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
@@ -4750,6 +4788,9 @@ impl Core {
             },
             Some(target) => match self.open_target(app, target, reach, maker).await {
                 Ok((opened, _)) => {
+                    if matches!(opened, crate::apps::Opened::Template { .. }) {
+                        self.float_dialog().await;
+                    }
                     let program = sibling(opened.app().binary).to_string_lossy().into_owned();
                     let command = crate::apps::target_command(program, &opened);
                     SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
@@ -6094,6 +6135,40 @@ impl Core {
             Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
             Ok(other) => voice_failure(&unexpected_kind(&other)),
             Err(message) => voice_failure(&message),
+        }
+    }
+
+    /// "Save workspace…" in the tray (task WS.7): `workspaces.save_template` without a name, through
+    /// [`Core::handle`], so the windows are captured at the click, before any dialog is there to be
+    /// captured with them; then, once it answered `Saved`, the dialog for the new template in its mode
+    /// "Save" through `launcher` ([`start_save_dialog`]), floating ([`Core::float_dialog`]). Waits for
+    /// the save, not for the dialog. A save that fails starts no dialog.
+    pub async fn save_workspace(&self, launcher: &impl Launcher) -> SavedWorkspace {
+        let response = self.handle(Request::SaveTemplate { name: None }).await;
+        let dialog = match &response {
+            Response::Saved { template } => {
+                self.float_dialog().await;
+                start_save_dialog(launcher, &template.id)
+            }
+            _ => false,
+        };
+        SavedWorkspace { response, dialog }
+    }
+
+    /// Shows the person the control centre on `section` (task WS.7, "Manage workspaces…" in the tray):
+    /// an open one comes to the front and stays on its page, else one starts there
+    /// ([`show_control_centre`]).
+    pub async fn show_section(&self, section: Section) -> Result<(), String> {
+        show_control_centre(&self.backend, section, self.start_control_centre).await
+    }
+
+    /// Asks the window manager to float the template dialog ([`torro_core::app::WORKPLACE_DIALOG_CLASS`],
+    /// [`WindowManager::float_dialogs`]): at the core's start and again before each dialog opens,
+    /// because a reload of Hyprland's configuration drops the rule. A failure is only logged; the
+    /// dialog then opens tiled.
+    async fn float_dialog(&self) {
+        if let Err(err) = self.backend.float_dialogs(torro_core::app::WORKPLACE_DIALOG_CLASS).await {
+            eprintln!("torroworkplace: the template dialog will not float: {err}");
         }
     }
 
@@ -9247,6 +9322,60 @@ mod tests {
         assert_eq!(show_control_centre(&wm, Section::Approvals, record_start).await, Ok(()));
         assert_eq!(wm.calls(), vec![Call::Focus(open)]);
         assert_eq!(started(Section::Approvals), before + 1);
+    }
+
+    /// A launcher that records the command lines instead of starting them, or fails each start.
+    #[derive(Default)]
+    struct Recorder {
+        started: std::sync::Mutex<Vec<Vec<String>>>,
+        fails: bool,
+    }
+
+    impl Launcher for Recorder {
+        fn spawn(&self, command: &[String]) -> Result<u32, SetupsError> {
+            if self.fails {
+                return Err(SetupsError::Launch("no such program".into()));
+            }
+            let mut started = self.started.lock().expect("lock");
+            started.push(command.to_vec());
+            Ok(u32::try_from(started.len()).unwrap_or(u32::MAX))
+        }
+    }
+
+    /// Task WS.7: after "Save workspace…" the dialog opens for the new template in its mode "Save":
+    /// the line of the mode "Edit" (`template:<id>` of `apps.open_app`) with `--saved`.
+    #[test]
+    fn the_save_dialog_starts_for_the_new_template_in_the_mode_save() {
+        assert_eq!(
+            save_dialog_command("/bin/torroworkplace".into(), "deep-work"),
+            ["/bin/torroworkplace", "ui", "--template=deep-work", "--saved"]
+        );
+        let launcher = Recorder::default();
+        assert!(start_save_dialog(&launcher, "deep-work"));
+        let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+        assert_eq!(*launcher.started.lock().expect("lock"), [save_dialog_command(program, "deep-work")]);
+        assert!(!start_save_dialog(&Recorder { fails: true, ..Recorder::default() }, "deep-work"), "it says so");
+    }
+
+    /// Task WS.7: a save that fails (here: no window manager) opens no dialog, and the tray reports why.
+    #[tokio::test]
+    async fn a_failed_save_opens_no_dialog() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let launcher = Recorder::default();
+        let saved = core(dir.path()).save_workspace(&launcher).await;
+        assert!(matches!(saved.response, Response::Error { .. }), "{:?}", saved.response);
+        assert!(!saved.dialog);
+        assert!(launcher.started.lock().expect("lock").is_empty());
+    }
+
+    /// Task WS.7: "Manage workspaces…" starts the control centre on its page Workspaces.
+    #[tokio::test]
+    async fn manage_workspaces_opens_the_workspaces_page() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { start_control_centre: record_start, ..core(dir.path()) };
+        let before = started(Section::Workspaces);
+        assert_eq!(core.show_section(Section::Workspaces).await, Ok(()));
+        assert_eq!(started(Section::Workspaces), before + 1);
     }
 
     #[tokio::test]
