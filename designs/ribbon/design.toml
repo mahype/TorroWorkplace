@@ -1,82 +1,56 @@
-# Ribbon – inspired by Microsoft Office and its Fluent 2 design (task L.9, issue #80): Fluent's
-# greys, Office blue, small radii, emphasis in SemiBold. Not Microsoft's name or logo. Everything
-# left out here comes from the standard design "Torro".
+# Ribbon – inspired by Microsoft Office and its Fluent 2 design (task L.9, issue #80): small radii,
+# emphasis in SemiBold, made for the font and colour scheme of the same name. Not Microsoft's name
+# or logo. Everything left out here comes from the standard design "Torro".
 format = 1
 
 [about]
 name = "Ribbon"
 version = "1.0.0"
 author = "Torro"
-description = "Inspired by Microsoft Office: Fluent greys, Office blue, square corners"
-font_license = "OFL-1.1"
+description = "Inspired by Microsoft Office: square corners, SemiBold emphasis"
+font = "ribbon"
+color_scheme = "ribbon"
 
-# Selawik 1.01 (microsoft/Selawik, SIL OFL 1.1), Microsoft's open stand-in for Segoe UI, which may
-# not be shipped. Its figures are tabular already, so numbers stay with the text font. It has no
-# Medium: the levels that use it take SemiBold, as Fluent emphasises.
-[fonts.text]
-family = "Selawik"
-regular = "fonts/Selawik-Regular.ttf"
-semibold = "fonts/Selawik-SemiBold.ttf"
-bold = "fonts/Selawik-Bold.ttf"
-
+# Torro's sizes in Selawik; emphasis in SemiBold.
+# Sizes here are meant for Inter (task L.20): the sizes the pack had in Selawik, divided by the
+# font's size adjustment 1.092, so they look as before in their own font. Every level is set,
+# because a level left out would be the standard's, meant for Inter too.
+[type.micro]
+size = 11
+line = 14
 [type.caption]
+size = 11
+line = 16
 weight = "semibold"
+[type.meta]
+size = 11
+line = 16
+[type.body]
+size = 12
+line = 20
 [type.body_strong]
+size = 12
+line = 20
 weight = "semibold"
+[type.read]
+size = 13
+line = 22
+[type.title]
+size = 14.5
+line = 22
+[type.headline]
+size = 20
+line = 28
+[type.display]
+size = 25.5
+line = 29
+[type.hero]
+size = 44
+line = 51.5
+[type.countdown]
+size = 25.5
+line = 29
 
 # Fluent's corners: 2, 4, 6, 8.
 [radius]
 scale = [2, 4, 6, 8]
-
-# No coloured sidebar: on Office blue the blue accent (today, logo) would not stand out. Office's
-# own navigation panes are light grey too. The dark error red is lighter than Fluent's for contrast.
-[colors.light]
-bg = "#F5F5F5"
-panel = "#FFFFFF"
-raised = "#FAFAFA"
-hover = "#F0F0F0"
-selected = "#EBEBEB"
-menu = "#FFFFFF"
-text = "#242424"
-text_2 = "#424242"
-text_3 = "#616161"
-line = "#0000001A"
-line_strong = "#0000002E"
-line_selected = "#00000073"
-focus_ring = "#000000"
-accent = "#0F6CBD"
-on_accent = "#FFFFFF"
-ok = "#107C10"
-attention = "#F7630C"
-error = "#C50F1F"
-merged = "#5C2E91"
-calendar = ["#0F6CBD", "#107C10", "#CA5010", "#C239B3", "#8764B8"]
-night = "#EEF3F9"
-
-[colors.dark]
-bg = "#1F1F1F"
-panel = "#292929"
-raised = "#2E2E2E"
-hover = "#333333"
-selected = "#383838"
-menu = "#2E2E2E"
-text = "#FFFFFF"
-text_2 = "#D6D6D6"
-text_3 = "#ADADAD"
-line = "#FFFFFF14"
-line_strong = "#FFFFFF26"
-line_selected = "#FFFFFF6B"
-focus_ring = "#FFFFFF"
-accent = "#1F74C7"
-on_accent = "#FFFFFF"
-ok = "#54B054"
-attention = "#FAA06B"
-error = "#F4898E"
-merged = "#A083CF"
-calendar = ["#479EF5", "#54B054", "#E9835E", "#EF85C8", "#A083CF"]
-night = "#232A33"
-
-# A window with a light-blue ribbon, on Office blue.
-[logo]
-mark = "logo.svg"
-tray = "tray.svg"

@@ -1149,8 +1149,9 @@ mod tests {
 
         let designs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../designs");
         let lato = PdfFonts::of_design(Some(&designs), "channelr");
-        let regular = std::fs::read(designs.join("channelr/fonts/Lato-Regular.ttf")).expect("Lato");
-        let bold = std::fs::read(designs.join("channelr/fonts/Lato-Bold.ttf")).expect("Lato Bold");
+        let fonts = designs.join("../fonts/channelr");
+        let regular = std::fs::read(fonts.join("Lato-Regular.ttf")).expect("Lato");
+        let bold = std::fs::read(fonts.join("Lato-Bold.ttf")).expect("Lato Bold");
         assert_eq!(lato.text.as_ref(), regular.as_slice());
         assert_eq!(lato.strong.as_ref(), bold.as_slice());
         assert_eq!(lato.heading.as_ref(), bold.as_slice(), "no SemiBold: the next heavier one");

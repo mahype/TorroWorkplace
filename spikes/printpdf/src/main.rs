@@ -250,8 +250,8 @@ mod pdf {
     const INTER_REGULAR: &[u8] = include_bytes!("../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf");
     const INTER_MEDIUM: &[u8] = include_bytes!("../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf");
     const INTER_SEMIBOLD: &[u8] = include_bytes!("../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf");
-    const LATO_REGULAR: &[u8] = include_bytes!("../../../designs/channelr/fonts/Lato-Regular.ttf");
-    const LATO_BOLD: &[u8] = include_bytes!("../../../designs/channelr/fonts/Lato-Bold.ttf");
+    const LATO_REGULAR: &[u8] = include_bytes!("../../../fonts/channelr/Lato-Regular.ttf");
+    const LATO_BOLD: &[u8] = include_bytes!("../../../fonts/channelr/Lato-Bold.ttf");
     const LOGO: &[u8] = include_bytes!("../../../crates/torro-htmlview/tests/fixtures/cid/logo@torro.example.png");
 
     pub fn run(_root: &Path, out: &Path, body: &str, links: &[String]) {

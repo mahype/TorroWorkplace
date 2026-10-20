@@ -1,0 +1,20 @@
+# The font of Plex (task L.5, docs/design-pakete.md, "Ein Paket bauen"): IBM Plex Sans.
+# Its size adjustment comes from its x-height, so the sizes of any design look as large as in Inter.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Plex"
+version = "1.0.0"
+author = "Torro"
+description = "IBM Plex Sans: a calm grotesque, drawn a little smaller than Inter"
+
+# IBM Plex Sans 1.1.0 from github.com/IBM/plex (release @ibm/plex-sans@1.1.0), SIL OFL 1.1.
+# No [fonts.numbers]: Plex's default figures are already tabular (every digit 600 units wide
+# in all four weights), so the time axis and counters keep their place without a second family.
+[fonts.text]
+family = "IBM Plex Sans"
+regular = "IBMPlexSans-Regular.ttf"
+medium = "IBMPlexSans-Medium.ttf"
+semibold = "IBMPlexSans-SemiBold.ttf"
+bold = "IBMPlexSans-Bold.ttf"

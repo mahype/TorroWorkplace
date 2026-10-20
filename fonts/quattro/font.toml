@@ -1,0 +1,19 @@
+# The font of Quattro (task L.14, issue #80): Roboto Flex, as Material 3. Its size adjustment comes
+# from its x-height.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Quattro"
+version = "1.0.0"
+author = "Torro"
+description = "Roboto Flex"
+
+# Roboto Flex (google/fonts, SIL OFL 1.1): static cuts of the variable font. Its figures are
+# tabular already.
+[fonts.text]
+family = "Roboto Flex"
+regular = "RobotoFlex-Regular.ttf"
+medium = "RobotoFlex-Medium.ttf"
+semibold = "RobotoFlex-SemiBold.ttf"
+bold = "RobotoFlex-Bold.ttf"

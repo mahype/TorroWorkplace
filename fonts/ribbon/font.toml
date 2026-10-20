@@ -1,0 +1,19 @@
+# The font of Ribbon (task L.9, issue #80): Selawik, Microsoft's open stand-in for Segoe UI. Its
+# size adjustment comes from its x-height.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Ribbon"
+version = "1.0.0"
+author = "Torro"
+description = "Selawik, an open stand-in for Segoe UI"
+
+# Selawik 1.01 (microsoft/Selawik, SIL OFL 1.1), Microsoft's open stand-in for Segoe UI, which may
+# not be shipped. Its figures are tabular already, so numbers stay with the text font. It has no
+# Medium: levels in Medium are drawn in SemiBold, as Fluent emphasises.
+[fonts.text]
+family = "Selawik"
+regular = "Selawik-Regular.ttf"
+semibold = "Selawik-SemiBold.ttf"
+bold = "Selawik-Bold.ttf"

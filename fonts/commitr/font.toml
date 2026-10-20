@@ -1,0 +1,25 @@
+# The font of Commitr (task L.7, issue #80): Mona Sans, GitHub's open typeface, with figures of one
+# width. Its size adjustment comes from its x-height.
+format = 1
+license = "OFL-1.1"
+
+[about]
+name = "Commitr"
+version = "1.0.0"
+author = "Torro"
+description = "Mona Sans with tabular figures"
+
+# Mona Sans 2.0.27 (github/mona-sans, SIL OFL 1.1). Its default figures are proportional, so numbers
+# take "Commitr Figures": Mona Sans with its tabular figures frozen in and made exactly one width
+# (task L.11; renamed, because "Mona" is a Reserved Font Name). Clocks and counters keep their place.
+[fonts.text]
+family = "Mona Sans"
+regular = "MonaSans-Regular.ttf"
+medium = "MonaSans-Medium.ttf"
+semibold = "MonaSans-SemiBold.ttf"
+bold = "MonaSans-Bold.ttf"
+
+[fonts.numbers]
+family = "Commitr Figures"
+regular = "CommitrFigures-Regular.ttf"
+medium = "CommitrFigures-Medium.ttf"

@@ -1,0 +1,59 @@
+# Nord – after the open Nord colour scheme (Arctic Ice Studio and Sven Greb, MIT) (task L.15, issue #80). Dark is Polar Night, light is built from Snow Storm; Frost for the accent.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Nord"
+version = "1.0.0"
+author = "Torro, after Nord by Arctic Ice Studio and Sven Greb (MIT)"
+description = "The Nord colour scheme: Polar Night, Snow Storm, Frost accent"
+
+# The scheme's colours wherever they pass the rules; moved for contrast: the third text colour (the comment grey is too faint), the error red in both modes, and the Aurora colours in light mode.
+[colors.dark]
+bg = "#2E3440"
+panel = "#3B4252"
+raised = "#3F4758"
+hover = "#424A5B"
+selected = "#434C5E"
+menu = "#434C5E"
+text = "#ECEFF4"
+text_2 = "#D8DEE9"
+text_3 = "#B4BDCC"
+line = "#ECEFF414"
+line_strong = "#ECEFF424"
+line_selected = "#ECEFF461"
+focus_ring = "#88C0D0"
+accent = "#88C0D0"
+on_accent = "#2E3440"
+ok = "#A3BE8C"
+attention = "#EBCB8B"
+error = "#E9ACB2"
+merged = "#B48EAD"
+calendar = ["#81A1C1", "#A3BE8C", "#D08770", "#B48EAD", "#8FBCBB"]
+night = "#353B48"
+
+[colors.light]
+bg = "#E5E9F0"
+panel = "#ECEFF4"
+raised = "#E8ECF2"
+hover = "#E2E7EF"
+selected = "#D8DEE9"
+menu = "#ECEFF4"
+text = "#2E3440"
+text_2 = "#3B4252"
+text_3 = "#4C566A"
+line = "#2E344017"
+line_strong = "#2E344029"
+line_selected = "#2E344070"
+focus_ring = "#5E81AC"
+accent = "#4A6B94"
+on_accent = "#FFFFFF"
+ok = "#5F7C47"
+attention = "#B0862D"
+error = "#A9505A"
+merged = "#8E6787"
+calendar = ["#5E81AC", "#5F7C47", "#B0603F", "#8E6787", "#4F8A89"]
+night = "#DEE3EC"
+
+[logo]
+mark = "logo.svg"

@@ -393,7 +393,8 @@ eine neue Schrift vorschlagen, warten auf L.24.
   gültige wirksame Stufen (≥ 11, Zeile ≥ Größe). fmt/clippy/test, auch `TORRO_LANG=de`.
 
 ### L.20 Beispiele aufteilen, alte Pakete übernehmen
-- [ ] erledigt
+- [x] erledigt (2026-10-20: ohne Übernahme alter Pakete (entfällt, Entscheidung 2026-10-20); `micro` in Channelr, Guildr
+  und Ribbon 12 statt 11, weil ein Design nicht unter 11 darf)
 - **Modell:** Opus · **Braucht:** L.19 · **Dateien:** `designs/**`, neu `fonts/**` und `color-schemes/**` in der
   Wurzel des Repositorys, `crates/torroworkplace/src/{designs,daemon}.rs`, `docs/design-pakete.md` (Abschnitt „Ein Paket
   bauen“: drei Ordner, welche Datei was trägt, Größen meinen Inter)
