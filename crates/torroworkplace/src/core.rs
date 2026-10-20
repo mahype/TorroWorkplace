@@ -1329,8 +1329,11 @@ impl Core {
     /// Releases the template keys bound on Hyprland when the service ends (review fix of issue #243):
     /// binds made at run time outlive the core, and a key left bound would still load its template, or
     /// run twice once the next core binds it. What cannot be released stays written down, and the next
-    /// core of this Hyprland releases it first ([`crate::workspace_keys::BoundKeys::release`]). Elsewhere
-    /// nothing. The daemon calls it once, after the service stopped taking requests.
+    /// core of this Hyprland releases it first ([`crate::workspace_keys::BoundKeys::release`]), also
+    /// when the caller stops waiting before every key is released. From then on this core binds no key
+    /// again: neither [`Core::bind_template_keys`] after a request still being answered nor the rebind
+    /// after a reload of Hyprland ([`Core::follow_template_keys`]). Elsewhere nothing. The daemon calls
+    /// it once at the end, after it stopped the socket server.
     pub async fn release_template_keys(&self) {
         if matches!(self.backend, Backend::Hyprland(_)) {
             self.keys.release(&self.backend).await;

@@ -14,8 +14,9 @@
 //!
 //! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
 //! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
-//! state directory before the core starts ([`claim_service`]), and when it ends it releases the
-//! template keys it bound on Hyprland ([`Core::release_template_keys`]).
+//! state directory before the core starts ([`claim_service`]), and when it ends it stops the socket
+//! server and releases the template keys it bound on Hyprland ([`Core::release_template_keys`]), after
+//! which nothing binds them again.
 //!
 //! Where the main thread goes depends on the system. On Linux it waits for the service
 //! (`block_on`); ksni runs its D-Bus task on the same runtime. On macOS and Windows the tray
@@ -269,7 +270,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
 
-    let ipc = {
+    let mut ipc = {
         let core = Arc::clone(&core);
         let refresh = refresh_tx.clone();
         let quit = quit_tx.clone();
@@ -352,13 +353,18 @@ async fn serve(shows: Shows) -> Result<(), String> {
     let result = tokio::select! {
         _ = quit_rx.recv() => Ok(()),
         _ = tokio::signal::ctrl_c() => Ok(()),
-        ended = ipc => match ended {
+        ended = &mut ipc => match ended {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err.to_string()),
             Err(err) => Err(format!("socket task: {err}")),
         },
     };
-    // Bounded: a window manager that does not answer must not keep the service from ending.
+    // The socket takes no more requests before the keys go: a change that came in now would bind its
+    // key again. A request already being answered may still finish; after the release it binds nothing
+    // (`BoundKeys::release`), and neither does a reload of Hyprland.
+    ipc.abort();
+    // Bounded: a window manager that does not answer must not keep the service from ending; what
+    // was not released by then stays written down for the next core.
     if tokio::time::timeout(RELEASE_WAIT, core.release_template_keys()).await.is_err() {
         eprintln!("torroworkplace: the template keys were not released in time; the next start releases them");
     }

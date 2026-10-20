@@ -291,6 +291,9 @@ struct Bound {
     /// instance left ([`Ledger`]), and after a reload every key remembered before it
     /// ([`BoundKeys::rebind_after_reload`]). Released before the next bind.
     left_over: Vec<String>,
+    /// [`BoundKeys::release`] ran: the core ends, and nothing binds a key any more – not a request
+    /// still on its way, not a reload of Hyprland – so no key outlives the core.
+    released: bool,
 }
 
 impl BoundKeys {
@@ -298,7 +301,7 @@ impl BoundKeys {
     /// instance counts as still bound: the first [`BoundKeys::sync`] releases it before it binds.
     pub fn remembered(ledger: Ledger) -> BoundKeys {
         let left_over = ledger.left_over();
-        BoundKeys { bound: tokio::sync::Mutex::new(Bound { binds: Vec::new(), left_over }), ledger: Some(ledger) }
+        BoundKeys { bound: tokio::sync::Mutex::new(Bound { left_over, ..Bound::default() }), ledger: Some(ledger) }
     }
 
     /// The binds of this process: [`BoundKeys::remembered`] with [`Ledger::system`], or none written
@@ -322,7 +325,8 @@ impl BoundKeys {
     /// holds what is bound.
     ///
     /// `wanted` gives `Err` with the reason when the templates could not be read: the binds stay as
-    /// they are (left-overs too) and the report says why.
+    /// they are (left-overs too) and the report says why. After [`BoundKeys::release`] nothing is
+    /// bound or released any more, and the report says the keys are not active.
     pub async fn sync(&self, wm: &impl WindowManager, wanted: impl FnOnce() -> Result<Vec<KeyBind>, String>) -> Report {
         let mut bound = self.bound.lock().await;
         self.sync_held(&mut bound, wm, wanted()).await
@@ -350,20 +354,33 @@ impl BoundKeys {
         self.sync_held(&mut bound, wm, wanted()).await
     }
 
-    /// Releases every bind, the left-overs too, when the core ends, so the keys do not outlive it. A
-    /// key that cannot be released stays written down, and the next core of this instance releases it.
+    /// Releases every bind, the left-overs too, when the core ends, so the keys do not outlive it, and
+    /// from then on binds nothing (`Bound::released`): a [`BoundKeys::sync`] or
+    /// [`BoundKeys::rebind_after_reload`] that comes later does nothing.
+    ///
+    /// Each key leaves what is remembered, and the ledger, only once the window manager released it,
+    /// so a key that cannot be released stays written down for the next core of this instance, and so
+    /// does every key not reached yet when the caller gives up waiting (the future is dropped).
     pub async fn release(&self, wm: &impl WindowManager) {
         let mut bound = self.bound.lock().await;
-        let binds = std::mem::take(&mut bound.binds).into_iter().map(|bind| bind.keys);
-        let keys: Vec<String> = std::mem::take(&mut bound.left_over).into_iter().chain(binds).collect();
-        for keys in keys {
-            if let Err(err) = wm.unbind_keys(slice::from_ref(&keys)).await {
-                eprintln!("torroworkplace: cannot release the key {keys} at the end: {err}");
-                // Still bound, but no longer this core's: left over for the next one.
-                bound.left_over.push(keys);
+        bound.released = true;
+        let mut keys: Vec<String> = bound.left_over.clone();
+        for bind in &bound.binds {
+            if !keys.contains(&bind.keys) {
+                keys.push(bind.keys.clone());
             }
         }
-        self.write_down(&bound);
+        for keys in keys {
+            match wm.unbind_keys(slice::from_ref(&keys)).await {
+                Ok(()) => {
+                    bound.left_over.retain(|left| *left != keys);
+                    bound.binds.retain(|bind| bind.keys != keys);
+                    self.write_down(&bound);
+                }
+                // Still bound and still written down: the next core releases it.
+                Err(err) => eprintln!("torroworkplace: cannot release the key {keys} at the end: {err}"),
+            }
+        }
     }
 
     /// [`BoundKeys::sync`] with the lock held.
@@ -373,6 +390,9 @@ impl BoundKeys {
         wm: &impl WindowManager,
         wanted: Result<Vec<KeyBind>, String>,
     ) -> Report {
+        if bound.released {
+            return Report { active: false, problem: None };
+        }
         let wanted = match wanted {
             Ok(wanted) => wanted,
             Err(error) => {
@@ -918,17 +938,50 @@ mod tests {
         assert_eq!(ledger(folder.path(), "hypr-a").left_over(), ["SUPER + ALT + 1"]);
     }
 
+    /// Second review fix: once the keys are released at the end, nothing binds one again – not a
+    /// request still on its way, not a reload of Hyprland.
+    #[tokio::test]
+    async fn after_the_release_nothing_is_bound_again() {
+        let wm = FakeWm::new("1");
+        let keys = BoundKeys::default();
+        let wanted = || Ok(binds(&[template("dev", Some(1))], ShortcutModifiers::SuperAlt));
+        keys.sync(&wm, wanted).await;
+        keys.release(&wm).await;
+        let calls = wm.calls().len();
+        assert_eq!(keys.sync(&wm, wanted).await, Report { active: false, problem: None });
+        assert_eq!(keys.rebind_after_reload(&wm, wanted).await, Report { active: false, problem: None });
+        assert_eq!(wm.calls().len(), calls, "nothing bound or released");
+        assert!(keys.bound.lock().await.binds.is_empty());
+    }
+
+    /// Second review fix: a release cut short (the service waits only so long) keeps the keys it did not
+    /// release yet in the ledger, so the next core releases them; a later sync writes nothing over it.
+    #[tokio::test]
+    async fn a_release_cut_short_keeps_the_keys_not_released_written_down() {
+        let folder = tempfile::tempdir().expect("temp dir");
+        let wm = Refusing { hangs: vec!["SUPER + ALT + 2".into()], ..Refusing::default() };
+        let keys = BoundKeys::remembered(ledger(folder.path(), "hypr-a"));
+        let templates = [template("dev", Some(1)), template("mail", Some(2)), template("chat", Some(3))];
+        keys.sync(&wm, || Ok(binds(&templates, ShortcutModifiers::SuperAlt))).await;
+        let cut = tokio::time::timeout(std::time::Duration::from_millis(50), keys.release(&wm)).await;
+        assert!(cut.is_err(), "the window manager does not answer for key 2");
+        assert_eq!(ledger(folder.path(), "hypr-a").left_over(), ["SUPER + ALT + 2", "SUPER + ALT + 3"]);
+        keys.sync(&wm, || Ok(Vec::new())).await;
+        assert_eq!(ledger(folder.path(), "hypr-a").left_over(), ["SUPER + ALT + 2", "SUPER + ALT + 3"]);
+    }
+
     fn absent() -> WmError {
         WmError::Unsupported("not in this test".into())
     }
 
-    /// A window manager that refuses the keys `refused` and every unbind of `stuck`, and records the
-    /// rest in its fake.
+    /// A window manager that refuses the keys `refused` and every unbind of `stuck`, never answers an
+    /// unbind of `hangs`, and records the rest in its fake.
     #[derive(Default)]
     struct Refusing {
         fake: FakeWm,
         refused: Vec<String>,
         stuck: Vec<String>,
+        hangs: Vec<String>,
     }
 
     /// Only the key binds matter here; everything else is not there.
@@ -973,6 +1026,9 @@ mod tests {
             }
         }
         async fn unbind_keys(&self, keys: &[String]) -> Result<(), WmError> {
+            if keys.iter().any(|keys| self.hangs.contains(keys)) {
+                std::future::pending::<()>().await;
+            }
             match keys.iter().any(|keys| self.stuck.contains(keys)) {
                 true => Err(WmError::Protocol("no".into())),
                 false => self.fake.unbind_keys(keys).await,
