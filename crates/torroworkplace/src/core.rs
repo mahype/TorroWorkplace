@@ -1240,7 +1240,8 @@ pub struct Core {
     /// nothing binds them; `system.status` then names no `shortcuts`.
     shortcuts: std::sync::Mutex<Option<(bool, Option<String>)>>,
     /// The template keys bound on Hyprland (task WS.3), so a change binds only the difference
-    /// ([`Core::bind_template_keys`]).
+    /// ([`Core::bind_template_keys`]). Written down for the next core of the same Hyprland instance
+    /// ([`crate::workspace_keys::Ledger`]); none in tests.
     keys: crate::workspace_keys::BoundKeys,
 }
 
@@ -1285,7 +1286,12 @@ impl Core {
             reminders: Arc::new(Reminders::system()),
             tools: Arc::new(crate::tools::Tools::system()),
             shortcuts: std::sync::Mutex::new(None),
-            keys: crate::workspace_keys::BoundKeys::default(),
+            // Tests never read or write the user's ledger of bound keys.
+            keys: if cfg!(test) {
+                crate::workspace_keys::BoundKeys::default()
+            } else {
+                crate::workspace_keys::BoundKeys::system()
+            },
         }
     }
 
@@ -1316,8 +1322,19 @@ impl Core {
         if !matches!(self.backend, Backend::Hyprland(_)) {
             return;
         }
-        let report = self.keys.sync(&self.backend, self.wanted_keys()).await;
+        let report = self.keys.sync(&self.backend, || self.wanted_keys()).await;
         self.report_shortcuts(report.active, report.problem);
+    }
+
+    /// Releases the template keys bound on Hyprland when the service ends (review fix of issue #243):
+    /// binds made at run time outlive the core, and a key left bound would still load its template, or
+    /// run twice once the next core binds it. What cannot be released stays written down, and the next
+    /// core of this Hyprland releases it first ([`crate::workspace_keys::BoundKeys::release`]). Elsewhere
+    /// nothing. The daemon calls it once, after the service stopped taking requests.
+    pub async fn release_template_keys(&self) {
+        if matches!(self.backend, Backend::Hyprland(_)) {
+            self.keys.release(&self.backend).await;
+        }
     }
 
     /// Hyprland (task WS.3): binds the template keys now and again after every reload of its

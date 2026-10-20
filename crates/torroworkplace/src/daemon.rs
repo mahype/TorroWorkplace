@@ -13,7 +13,9 @@
 //!   ([`tend_inbox`]),
 //!
 //! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
-//! tray or the socket, goes through [`Core::handle`].
+//! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
+//! state directory before the core starts ([`claim_service`]), and when it ends it releases the
+//! template keys it bound on Hyprland ([`Core::release_template_keys`]).
 //!
 //! Where the main thread goes depends on the system. On Linux it waits for the service
 //! (`block_on`); ksni runs its D-Bus task on the same runtime. On macOS and Windows the tray
@@ -221,6 +223,9 @@ enum Shows {
 }
 
 async fn serve(shows: Shows) -> Result<(), String> {
+    // Before anything starts: two services started at once would both start the core (bind the
+    // template keys, load the templates of the login) before one of them failed on the socket.
+    let _service = claim_service()?;
     let socket = socket_path().ok_or("no home directory")?;
     // Bounded: a program that holds the socket or pipe name but never answers must not stall
     // the start; the server then fails on the taken name with a clear error instead.
@@ -353,8 +358,47 @@ async fn serve(shows: Shows) -> Result<(), String> {
             Err(err) => Err(format!("socket task: {err}")),
         },
     };
+    // Bounded: a window manager that does not answer must not keep the service from ending.
+    if tokio::time::timeout(RELEASE_WAIT, core.release_template_keys()).await.is_err() {
+        eprintln!("torroworkplace: the template keys were not released in time; the next start releases them");
+    }
     let _ = std::fs::remove_file(&socket);
     result
+}
+
+/// The file in the core's state directory that the running service holds locked ([`claim_service`]).
+const SERVICE_LOCK: &str = "service.lock";
+
+/// How long the end of the service waits for the template keys to be released.
+const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// Makes this process the one service of the user: locks [`SERVICE_LOCK`] for as long as the
+/// returned file lives (the system drops the lock when the process ends, also when it is killed).
+/// "already running" while another service holds it.
+///
+/// The socket alone cannot tell: it is bound only after the core started (the server binds it when
+/// it starts serving), and a second service started at the same time would get that far as well. A
+/// file system without locks is only logged; then the socket's check is all there is, as before.
+fn claim_service() -> Result<Option<std::fs::File>, String> {
+    let state = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state;
+    let path = state.join(SERVICE_LOCK);
+    let opened = std::fs::create_dir_all(&state)
+        .and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
+    let file = match opened {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("torroworkplace: cannot open {}: {err}; not checking for a second service", path.display());
+            return Ok(None);
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err("already running".into()),
+        Err(std::fs::TryLockError::Error(err)) => {
+            eprintln!("torroworkplace: cannot lock {}: {err}; not checking for a second service", path.display());
+            Ok(None)
+        }
+    }
 }
 
 /// What shows the state to the user: the tray icon, or nothing when headless or without a
