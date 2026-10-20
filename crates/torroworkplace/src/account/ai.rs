@@ -24,7 +24,7 @@
 //!
 //! Which models are on for the suite (task S.24, `docs/settings.md` › KI) is kept here as well, apart
 //! from the lists the servers give: `<config>/ai-models.json` (0600, written whole and atomically,
-//! [`torro_core::ai::ModelSwitches`]). Listing a server's models never sets [`AiModel::enabled`];
+//! [`torro_core::ai::ModelSwitches`]; never written over while it does not read, `Switches::damaged`). Listing a server's models never sets [`AiModel::enabled`];
 //! the core marks a list it answers with ([`AiAccounts::mark_enabled`]). Where a model computes,
 //! which the rule at the start needs, is the data rule's word ([`crate::assistant::place_of`]).
 
@@ -576,6 +576,30 @@ struct Switches {
     /// ([`AiAccounts::offers_a_model`]). A person who switches at the account drops it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     automatic: std::collections::BTreeMap<String, Automatic>,
+    /// The file that is there but did not read when the core first looked (PR review #242), so the
+    /// switches above are empty and only the rule decides. Never written then
+    /// ([`Switches::writable`]): writing would lose every switch the person made. Only in memory.
+    #[serde(skip)]
+    damaged: Option<PathBuf>,
+}
+
+impl Switches {
+    /// The switches as they were read from `file`, when it is there but does not read.
+    fn damaged(file: &std::path::Path) -> Switches {
+        Switches { damaged: Some(file.to_path_buf()), ..Switches::default() }
+    }
+
+    /// `Ok` when these switches may be written; the sentence that names the file when it did not
+    /// read ([`Switches::damaged`]): the person repairs or removes it, the core never does.
+    fn writable(&self) -> Result<(), String> {
+        match &self.damaged {
+            None => Ok(()),
+            Some(file) => Err(trf(
+                "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
+                &[("file", &file.display())],
+            )),
+        }
+    }
 }
 
 /// What a module used "Automatic" at an AI account for before the switches came (#231), so the
@@ -653,21 +677,26 @@ fn may_compute_here(server: Option<&(AiProvider, String)>) -> bool {
 }
 
 /// The switches in `file`: none, with the models in use still to be kept on, when it is not there;
-/// empty without a home directory or when it does not read, which the core's log then says.
+/// empty without a home directory. Empty and marked damaged ([`Switches::damaged`]) when it is there
+/// but does not read, which the core's log then says: only the rule decides then (nothing elsewhere
+/// is on), and the file is left as it is.
 fn read_switches(file: Option<&std::path::Path>) -> Switches {
     let Some(file) = file else { return Switches::default() };
     match std::fs::read(file) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Switches { keep_used: true, ..Switches::default() },
         Err(err) => {
-            eprintln!("torroworkplace: cannot read {}: {err}", file.display());
-            Switches::default()
+            eprintln!(
+                "torroworkplace: cannot read {}, so only the rule decides which models are on: {err}",
+                file.display()
+            );
+            Switches::damaged(file)
         }
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
             eprintln!(
                 "torroworkplace: {} does not read, so only the rule decides which models are on: {err}",
                 file.display()
             );
-            Switches::default()
+            Switches::damaged(file)
         }),
     }
 }
@@ -1038,8 +1067,10 @@ impl AiAccounts {
         }
     }
 
-    /// Writes `switches` to `ai-models.json` on a blocking thread.
+    /// Writes `switches` to `ai-models.json` on a blocking thread; never while the file did not read
+    /// ([`Switches::writable`]).
     async fn store_switches(&self, switches: &Switches) -> Result<(), String> {
+        switches.writable()?;
         let file = self.models_file().ok_or("No home directory, so the models turned on cannot be stored.")?;
         let switches = switches.clone();
         tokio::task::spawn_blocking(move || write_switches(&file, &switches)).await.map_err(|err| err.to_string())?
@@ -1146,7 +1177,8 @@ impl AiAccounts {
     /// off at an account whose models could compute here, the models the rule has on are kept on
     /// ([`ModelSwitches::turn_off`]), so the list is needed then ([`AiAccounts::known_models`]).
     /// [`AiError::NotFound`] for an id that is no AI account, [`AiError::Format`] when the file
-    /// cannot be written (nothing changes then). An account still to take over from "Automatic"
+    /// cannot be written (nothing changes then) or is there but did not read (PR review #242: it is
+    /// never written over, [`Switches::writable`]). An account still to take over from "Automatic"
     /// ([`Switches::automatic`], #231) is not any more once the switch is stored: the person's
     /// switch wins; a switch that fails is none, and a list it loaded takes over as any first list.
     pub async fn set_enabled(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
@@ -1173,6 +1205,10 @@ impl AiAccounts {
     /// [`AiAccounts::set_enabled`] apart from what "Automatic" used.
     async fn switch(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
         let server = self.server(id).await.ok_or_else(|| no_account(id))?;
+        // Before any server is asked: a file that did not read refuses every switch alike.
+        if let Some(held) = self.switches().await.as_ref() {
+            held.writable().map_err(AiError::Format)?;
+        }
         let on_by_rule: Vec<String> = if enabled {
             let models = self.models(id, true).await?;
             if !models.iter().any(|known| known.id == model) {
@@ -2214,6 +2250,41 @@ pub(crate) mod tests {
             .await
             .expect("nothing to do");
         assert!(on(&ai, &cloud.id).await.is_empty());
+    }
+
+    /// PR review #242: an `ai-models.json` that does not read is never written over. Reading falls
+    /// back on the rule (no model elsewhere is on), every switch is refused with `error` and a
+    /// sentence naming the file, and the file stays as it was, with every switch the person made.
+    #[tokio::test]
+    async fn a_file_of_switches_that_does_not_read_is_never_written_over() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let local = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        let damaged = br#"{"accounts": {"#.to_vec();
+        std::fs::write(&file, &damaged).expect("a damaged file");
+
+        let ai = service(dir.path(), &keys, Vec::new());
+        ai.load().await.expect("loaded");
+        assert!(on(&ai, &cloud.id).await.is_empty(), "nothing elsewhere is on");
+        assert!(on(&ai, &local.id).await.contains(&"qwen3:8b".to_string()), "the rule decides");
+        let refused = trf(
+            "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
+            &[("file", &file.display())],
+        );
+        for (account, model, enabled) in [(&cloud.id, "openai/gpt-4o", true), (&local.id, "qwen3:8b", false)] {
+            let err = ai.set_enabled(account, model, enabled).await.expect_err("refused");
+            assert_eq!((err.code(), err.to_string()), ("error", refused.clone()));
+        }
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "openai/gpt-4o".into())], Vec::new()).await.expect("nothing");
+        ai.remove(&cloud.id).await.expect("removed");
+        assert_eq!(std::fs::read(&file).expect("still there"), damaged, "never written over");
     }
 
     /// #231: while the core keeps the models in use on, the readers of the switches wait for it, so

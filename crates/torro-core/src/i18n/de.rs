@@ -4228,4 +4228,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("You turned this off for {bot} in {area}.", "Du hast das für {bot} in {area} abgeschaltet."),
     ("You turned this off in {area}.", "Du hast das in {area} abgeschaltet."),
+    // PR review #242
+    (
+        "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
+        "{file} lässt sich nicht lesen, darum kann kein Modell an- oder abgeschaltet werden. Repariere oder entferne die Datei und starte Torro Workplace dann neu.",
+    ),
 ];

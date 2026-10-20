@@ -2368,7 +2368,9 @@ static SET_MODEL_ENABLED: Command = Command {
                   from accounts_list_accounts, `model` an id from ai_list_models. Needs the person's approval. A \
                   module set to a model turned off answers with another model of the same account that is on. \
                   `not-found` for an unknown account or for turning on a model the account does not offer; \
-                  `offline` (or the server's other error) when turning on and the server cannot list its models.",
+                  `offline` (or the server's other error) when turning on and the server cannot list its models; \
+                  `error` while the file of the switches does not read: it is never written over, the message \
+                  names it for the person to repair.",
 };
 
 static LIST_ASSIGNMENTS: Command = Command {
