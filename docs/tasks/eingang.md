@@ -3764,7 +3764,15 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   meldet Fortschritt; Abbruch hält an.
 
 ### E15.5 Editor und Sichtprüfung
-- [ ] offen
+- [x] erledigt (2026-10-21): neues Modul `torro-settings-ui/src/mail/editor.rs` mit den Gruppen
+  „Sorting rules“ (Reihenfolge, ↑ ↓, Schalter, Bearbeiten, „New sorting rule“) und „Categories“ (je
+  Gruppe, Seite mit Name, Gruppe, Beschreibung, „Let the AI choose it“ mit Zähler „n of 20“,
+  „Use the suite's words“, „Remove…“ mit Ersatzkategorie) als Unterseiten mit „‹ Back“; Fehler erst
+  nach „Save“; „Sort again“ neben „Catch up now“ mit eigenem Fortschritt. Der alte Verweis „Rules“
+  in den Notification Hub entfällt: die gemerkten Absender stehen jetzt unter den Sortierregeln.
+  `Data::sort_rules`, `--demo` mit einer umbenannten, einer eigenen Kategorie und drei Regeln.
+  Sichtprüfung auf macOS: Liste in Breit (dunkel) selbst angesehen, die übrigen Ansichten mit
+  `torro-design-review`.
 - **Modell:** Opus · **Braucht:** E15.4 · **Dateien:** `crates/torro-settings-ui/src/{mail,demo}.rs`,
   `crates/torro-settings-ui/src/mail/` (neu, falls die Seite eigene Module braucht),
   `crates/torro-core/src/i18n/de.rs`

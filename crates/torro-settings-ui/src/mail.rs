@@ -26,6 +26,8 @@ use torro_gui::icon::Icon;
 
 use crate::{Action, Data, Page, Section};
 
+mod editor;
+
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
 pub const SECTIONS: [Section; 3] = [
     // Accounts is first: the gear lands on who the mail comes from.
@@ -46,6 +48,8 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::GetCategorization,
         // The catalogue (task E15.2): what the categories are called and where they stand now.
         torro_ipc::Request::ListCategories { account: None },
+        // The sorting rules (task E15.5), listed and edited under Categorization.
+        torro_ipc::Request::ListSortRules,
     ]
 }
 
@@ -54,6 +58,8 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
 pub struct State {
     /// Accounts: which account's page is open and what is typed into it. Reading keeps nothing.
     pub accounts: accounts::State,
+    /// Categorization: the page of a category or a sorting rule that is open (task E15.5).
+    pub categorization: categorization::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -69,7 +75,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
     match message {
         Message::Accounts(message) => accounts::update(&mut state.accounts, message, data),
         Message::Reading(message) => reading::update(message),
-        Message::Categorization(message) => categorization::update(message, data),
+        Message::Categorization(message) => categorization::update(&mut state.categorization, message, data),
     }
 }
 
@@ -78,7 +84,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
 pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Message> {
     match section {
         "reading" => wrap(Page::new(reading::view(data)), Message::Reading),
-        "categorization" => wrap(Page::new(categorization::view(data)), Message::Categorization),
+        "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
         _ => wrap(accounts::page(&state.accounts, data), Message::Accounts),
     }
 }
@@ -750,6 +756,7 @@ mod tests {
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,
                 torro_ipc::Request::ListCategories { account: None },
+                torro_ipc::Request::ListSortRules,
             ]
         );
     }
@@ -761,14 +768,22 @@ mod tests {
         use torro_mail::Category;
 
         let mut data = Data::default();
-        let hide = categorization::update::<()>(categorization::Message::Shown(Category::Spam, false), &data);
+        let hide = categorization::update::<()>(
+            &mut Default::default(),
+            categorization::Message::Shown(Category::Spam, false),
+            &data,
+        );
         let Action::Send(requests) = hide else { panic!("a request") };
         let [torro_ipc::Request::SetSetting { key, value }] = requests.as_slice() else { panic!("one setting") };
         assert_eq!(*key, torro_ipc::SettingKey::HiddenCategories);
         assert_eq!(value, &serde_json::json!(["spam"]));
 
         data.settings.hidden_categories = vec![Category::Spam, Category::Promotion];
-        let show = categorization::update::<()>(categorization::Message::Shown(Category::Spam, true), &data);
+        let show = categorization::update::<()>(
+            &mut Default::default(),
+            categorization::Message::Shown(Category::Spam, true),
+            &data,
+        );
         let Action::Send(requests) = show else { panic!("a request") };
         let [torro_ipc::Request::SetSetting { value, .. }] = requests.as_slice() else { panic!("one setting") };
         assert_eq!(value, &serde_json::json!(["promotion"]), "only the ones still hidden");
@@ -792,7 +807,7 @@ mod tests {
             needs_decision: true,
         }];
         let data = Data { assignments, ..Data::default() };
-        let on = categorization::update::<()>(categorization::Message::Enabled(true), &data);
+        let on = categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &data);
         let Action::Send(requests) = on else { panic!("a request") };
         let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = requests.as_slice() else {
             panic!("one assignment")
@@ -801,7 +816,11 @@ mod tests {
         assert_eq!(model.as_deref(), Some("nimble"));
         assert!(enabled);
 
-        let pick = categorization::update::<()>(categorization::Message::Model("ai:x".into(), "tev1".into()), &data);
+        let pick = categorization::update::<()>(
+            &mut Default::default(),
+            categorization::Message::Model("ai:x".into(), "tev1".into()),
+            &data,
+        );
         let Action::Send(requests) = pick else { panic!("a request") };
         let [torro_ipc::Request::SetAiAssignment { engine, model, enabled, .. }] = requests.as_slice() else {
             panic!("one assignment")
@@ -819,14 +838,15 @@ mod tests {
             ("ai:ollama@localhost:11434".to_string(), AiModel { decision: Some(true), enabled, ..AiModel::named(id) })
         };
         let data = Data { decider_models: vec![decider("off", false), decider("on", true)], ..Data::default() };
-        let on = categorization::update::<()>(categorization::Message::Enabled(true), &data);
+        let on = categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &data);
         let Action::Send(requests) = on else { panic!("a request") };
         let [torro_ipc::Request::SetAiAssignment { model, .. }] = requests.as_slice() else { panic!("one assignment") };
         assert_eq!(model.as_deref(), Some("on"), "the model that is off is not offered");
         let _ = categorization::view(&data);
 
         let none = Data { decider_models: vec![decider("off", false)], ..Data::default() };
-        let nothing = categorization::update::<()>(categorization::Message::Enabled(true), &none);
+        let nothing =
+            categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &none);
         assert!(matches!(nothing, Action::None), "nothing on, nothing to switch on");
         let _ = categorization::view(&none);
     }
@@ -863,7 +883,8 @@ mod tests {
         };
         assert_eq!(categorization::assigned_off(&off), Some((engine.to_string(), "nimble (decides)".to_string())));
         let _ = categorization::view(&off);
-        let Action::ControlCentre(section) = categorization::update::<()>(categorization::Message::ManageModels, &off)
+        let Action::ControlCentre(section) =
+            categorization::update::<()>(&mut Default::default(), categorization::Message::ManageModels, &off)
         else {
             panic!("the control centre")
         };
@@ -887,9 +908,36 @@ mod tests {
         for (message, cancel) in
             [(categorization::Message::CatchUp(false), false), (categorization::Message::CatchUp(true), true)]
         {
-            let Action::Send(requests) = categorization::update::<()>(message, &data) else { panic!("a request") };
+            let Action::Send(requests) = categorization::update::<()>(&mut Default::default(), message, &data) else {
+                panic!("a request")
+            };
             assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel, again: false }]);
         }
+        // Task E15.5: "Sort again" goes through the whole window anew.
+        let message = categorization::Message::SortAgain;
+        let Action::Send(requests) = categorization::update::<()>(&mut Default::default(), message, &data) else {
+            panic!("a request")
+        };
+        assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel: false, again: true }]);
+    }
+
+    /// Task E15.5: the editor's page replaces the list, and "‹ Back" brings the list back.
+    #[test]
+    fn a_category_page_opens_over_the_list() {
+        let categories = torro_mail::CategoryDef::defaults()
+            .iter()
+            .map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0))
+            .collect();
+        let data = Data { categories, ..Data::default() };
+        let mut state = State::default();
+        let first = data.categories.first().map(|info| info.category).expect("a category");
+        let open =
+            Message::Categorization(categorization::Message::Editor(super::editor::Message::EditCategory(first)));
+        let _ = update::<()>(&mut state, open, &data);
+        assert!(page(&state, &data, "categorization").sub_page.is_some());
+        let back = Message::Categorization(categorization::Message::Editor(super::editor::Message::Back));
+        let _ = update::<()>(&mut state, back, &data);
+        assert!(page(&state, &data, "categorization").sub_page.is_none());
     }
 }
 
@@ -927,10 +975,13 @@ pub mod categorization {
     use torro_mail::{Category, CategoryGroup};
 
     use super::*;
-    use crate::parts::{choice, pressable, row_frame, setting_row, switch};
+    use crate::parts::{choice, pressable, setting_row, switch};
+
+    /// The section's state: the editor's open page (task E15.5).
+    pub type State = super::editor::State;
 
     /// What a row of this section reports.
-    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[derive(Debug, Clone)]
     pub enum Message {
         /// The switch: sorting mail on or off.
         Enabled(bool),
@@ -938,17 +989,21 @@ pub mod categorization {
         Model(String, String),
         /// "Catch up now" (`false`) or "Cancel" (`true`).
         CatchUp(bool),
+        /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
+        SortAgain,
+        /// The editor of the categories and the sorting rules (task E15.5).
+        Editor(super::editor::Message),
         /// One category shown in the sidebar or not.
         Shown(Category, bool),
-        /// "Rules ↗": the kept senders live in the Notification Hub.
-        Rules,
         /// "Manage models…": which models are on is set in the control centre's accounts.
         ManageModels,
     }
 
-    pub fn update<A>(message: Message, data: &Data) -> Action<A> {
+    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         let held = assignment(data);
         match message {
+            Message::Editor(message) => super::editor::update(state, message, data),
+            Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
             // Switching on without a model named would store an assignment the core throws away
             // (no account, nothing to ask): the first model that can decide is taken, which is
             // what the switch means. Nothing offered, nothing to switch on.
@@ -987,9 +1042,6 @@ pub mod categorization {
                 let value = serde_json::to_value(&hidden).unwrap_or_default();
                 Action::send(Request::SetSetting { key: SettingKey::HiddenCategories, value })
             }
-            // The rules live in the Notification Hub, which owns them (task S.20); this library
-            // opens no window of its own, so the row only points there.
-            Message::Rules => Action::None,
             Message::ManageModels => Action::ControlCentre(crate::assistant::AI_SECTION.to_string()),
         }
     }
@@ -1001,6 +1053,18 @@ pub mod categorization {
             .find(|info| info.assignment.function == AiFunction::InboxCategorize)
             .map(|info| info.assignment.clone())
             .unwrap_or_else(|| AiAssignment::none(AiFunction::InboxCategorize))
+    }
+
+    /// The section's page: the list, or the open page of a category or a sorting rule with
+    /// "‹ Back" (task E15.5).
+    pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
+        match super::editor::page(state, data) {
+            Some((name, body)) => {
+                let back = Message::Editor(super::editor::Message::Back);
+                Page::new(body.map(Message::Editor)).sub_page(name, back)
+            }
+            None => Page::new(view(data)),
+        }
     }
 
     pub fn view(data: &Data) -> Element<'_, Message> {
@@ -1017,23 +1081,11 @@ pub mod categorization {
         );
         let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
         let shown = widgets::group(tr("Show in the sidebar"), category_rows(data), None);
-        let rules = widgets::group(
-            tr("Rules"),
-            vec![pressable(
-                row_frame(
-                    iced::widget::row![
-                        typo::text(typo::body(), tr("Senders you filed by hand")),
-                        crate::parts::chevron(),
-                    ]
-                    .spacing(theme::space::s())
-                    .align_y(iced::Alignment::Center),
-                    false,
-                ),
-                Some(Message::Rules),
-            )],
-            Some(tr("What you kept with “Always for this sender?” is listed in the Notification Hub.").to_string()),
-        );
-        column![sorting, models, shown, rules].spacing(layout::section_gap()).into()
+        let categories = super::editor::categories_group(data).map(Message::Editor);
+        let sorting_rules = super::editor::rules_group(data).map(Message::Editor);
+        // The rules before the long list of categories: they change more often. "Always for this
+        // sender?" keeps its senders among them (task E15.3), so no link to the Notification Hub.
+        column![sorting, models, sorting_rules, categories, shown].spacing(layout::section_gap()).into()
     }
 
     /// The models that may sort mail: every AI account's models that decide and are turned on for
@@ -1152,21 +1204,43 @@ pub mod categorization {
             .fold((0u64, 0u64), |(done, total), held| (done + held.done, total + held.messages));
         let running =
             data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
+        // Sorting again (task E15.5) counts what it went through, the backlog what has a category.
+        let again = data.categorization.again;
         let words = if total == 0 {
             tr("Not started").to_owned()
+        } else if done >= total && again {
+            tr("Sorted again").to_owned()
         } else if done >= total {
             tr("Done").to_owned()
         } else {
             trf("{done} of {total}", &[("done", &done), ("total", &done.max(total))])
         };
-        let button = if running {
-            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CatchUp(true)))
-        } else {
-            widgets::text_button(None, tr("Catch up now"), style::button::secondary, Some(Message::CatchUp(false)))
-        };
-        let value = iced::widget::row![typo::text(typo::body(), words), button]
+        let mut value = iced::widget::row![typo::text(typo::body(), words)]
             .spacing(theme::space::m())
             .align_y(iced::Alignment::Center);
+        if running {
+            value = value.push(widgets::text_button(
+                None,
+                tr("Cancel"),
+                style::button::ghost,
+                Some(Message::CatchUp(true)),
+            ));
+        } else {
+            // After new rules or descriptions: everything of the window anew, but what was filed
+            // by hand. It works with the rules alone, so it is there without a model too.
+            value = value.push(widgets::text_button(
+                None,
+                tr("Sort again"),
+                style::button::ghost,
+                Some(Message::SortAgain),
+            ));
+            value = value.push(widgets::text_button(
+                None,
+                tr("Catch up now"),
+                style::button::secondary,
+                Some(Message::CatchUp(false)),
+            ));
+        }
         setting_row(
             None,
             tr("Catch up"),

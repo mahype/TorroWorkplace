@@ -141,6 +141,8 @@ pub struct Data {
     /// The catalogue of mail categories (`inbox.list_categories`, task E15.2): what each one is
     /// called and which group it stands in now. Empty from a load that did not ask for it.
     pub categories: Vec<torro_ipc::inbox::CategoryInfo>,
+    /// The sorting rules for mail in their order (`inbox.list_sort_rules`, task E15.5).
+    pub sort_rules: Vec<torro_inbox::SortRule>,
     /// The models of every AI account, each with the account it came from (`ai.list_models`,
     /// task E12.10): the mail window's "Categorization" offers the deciding ones of all of them,
     /// so a model can be picked before anything is assigned. Only filled where the load asked
@@ -188,6 +190,7 @@ impl Data {
             Response::AiAssignments { assignments } => self.assignments = assignments,
             Response::Categorization { categorization } => self.categorization = categorization,
             Response::Categories { categories } => self.categories = categories,
+            Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
             // Both `calendar.list_calendars` and `tasks.list_lists` answer with collections, and
