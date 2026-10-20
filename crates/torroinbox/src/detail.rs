@@ -41,8 +41,8 @@
 //! and takes a second row (task E9.4, [`Footer::view`]): "Move to …", the bell and the mail's
 //! switches "HTML | Text", "Light | Dark" and "Copy text", in the order of the reader's former Torro
 //! bar (until task E11.3). So in the hub and the App Feed; the mail window's panel of a mail entry
-//! is `mail::entry_panel` with the reader's bars (task E11.4), with this panel's [`path`] and
-//! [`heading`].
+//! is `mail::entry_panel` with the reader's head and the mail's action rail (tasks E11.4, E14.3),
+//! with this panel's [`path`] and [`heading`].
 //!
 //! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
 //! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
@@ -94,19 +94,40 @@ pub struct Anchors {
     /// "…" / "Hide": the menu "Hide from Notification Hub" opens here (task E3.10); in the notifications window
     /// and for mail the bell, where the bell's menu opens (task E8.6b, issue #123).
     pub hide: Anchor,
-    /// The chevron of Reply in the mail reader's command bar (task E11.3): its menu "Reply all"
-    /// opens here, under the whole cell.
+    /// "Category…" of a mail entry (task E12.8): the list of categories and its question open here.
+    pub category: Anchor,
+    /// The icons of the groups of the mail's action rail (task E14.3, `mail::action_groups`): an
+    /// open group hangs at its icon, and – through [`Anchors::with_rail`] – so do the menus and
+    /// dialogs of its items while their row is not on screen.
+    pub rail: RailAnchors,
+}
+
+/// The icons of the groups of the mail's action rail (task E14.3, decision 2 of E14 in
+/// `docs/tasks/eingang.md`), one anchor per group, registered by `widgets::action_rail` (`RailGroup::at`)
+/// and passed to `widgets::rail_flyout` for the group's open card. The rail lists the groups in this
+/// order; a group without items is left out, its anchor then stays empty.
+#[derive(Debug, Clone, Default)]
+pub struct RailAnchors {
+    /// Reply · Reply all · Forward.
     pub reply: Anchor,
-    /// "…" at the end of the mail reader's command bar (task E11.3): its menu opens here, and so does
-    /// the lane question of its "Move to …", as the reader has no button of that name.
+    /// Done or Reopen · Later… · Move to … · Archive · Delete: the snooze menu and the lane
+    /// question fall back to it.
+    pub file: Anchor,
+    /// Task · Event · Category… · Re-categorize: the dialogs of Task and Event and the list of
+    /// categories fall back to it.
+    pub torro: Anchor,
+    /// Flag · Mark read.
+    pub mark: Anchor,
+    /// Mute…: the bell's menu falls back to it.
+    pub mute: Anchor,
+    /// Show as text or HTML · Light or Dark colours · Copy text · Close.
     pub more: Anchor,
 }
 
 impl Anchors {
     /// The anchor of a button that sends `message`, when that opens a menu or dialog: `Act` with
     /// the command of a key (`s`, `l`, `t`, `c`, `m`) from rows and cards, the `Ask…` messages of
-    /// the panel and the reader – the reader's Reply ▾ and "…" included (task E11.3). `None` for
-    /// every other message.
+    /// the panel and of the mail's action rail (task E14.3). `None` for every other message.
     pub fn of(&self, message: &Message) -> Option<&Anchor> {
         match message {
             Message::Act(_, Command::Snooze) | Message::AskSnooze(_) => Some(&self.snooze),
@@ -114,9 +135,28 @@ impl Anchors {
             Message::Act(_, Command::MakeTask) | Message::AskTask(_) | Message::AskMailTask(_) => Some(&self.task),
             Message::Act(_, Command::MakeEvent) | Message::AskEvent(_) => Some(&self.event),
             Message::Act(_, Command::Hide) | Message::AskHide(_) | Message::AskMuteMail(_) => Some(&self.hide),
-            Message::AskReplyMenu(_) => Some(&self.reply),
-            Message::AskMore(_) => Some(&self.more),
+            Message::AskCategory(_) => Some(&self.category),
             _ => None,
+        }
+    }
+
+    /// The same anchors with the items' anchors falling back to the icon of their group in the mail's
+    /// action rail (task E14.3, [`RailAnchors`]): Later and "Move to …" to File, Task, Event and
+    /// "Category…" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor and
+    /// its menu hangs there; collapsed – or once the open group closed on the click – the row is not
+    /// on screen and the menu hangs at the group's icon. The rail is fixed beside the mail, so that
+    /// icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks stay
+    /// empty and change nothing. Make the window's set with it once per `view`.
+    pub fn with_rail(self) -> Anchors {
+        let rail = self.rail.clone();
+        Anchors {
+            snooze: self.snooze.or(&rail.file),
+            lane: self.lane.or(&rail.file),
+            task: self.task.or(&rail.torro),
+            event: self.event.or(&rail.torro),
+            category: self.category.or(&rail.torro),
+            hide: self.hide.or(&rail.mute),
+            ..self
         }
     }
 
@@ -556,9 +596,8 @@ mod tests {
         assert!(at(Message::Act(id(), Command::Hide), &anchors.hide));
         assert!(at(Message::AskHide(id()), &anchors.hide));
         assert!(at(Message::AskMuteMail(id()), &anchors.hide));
-        // Task E11.3: the reader's Reply ▾ and "…".
-        assert!(at(Message::AskReplyMenu(id()), &anchors.reply));
-        assert!(at(Message::AskMore(id()), &anchors.more));
+        // Task E14.3: "Category…" in the mail's action rail.
+        assert!(at(Message::AskCategory(id()), &anchors.category));
         assert!(anchors.of(&Message::Act(id(), Command::Done)).is_none(), "Done opens no menu");
         let actions = vec![
             RowAction::new(Icon::Check, "Done", "E", Message::Act(id(), Command::Done)),

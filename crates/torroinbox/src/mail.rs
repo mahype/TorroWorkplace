@@ -26,17 +26,16 @@
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3), the text in
 //!   the reading level (`typo::read()`); [`empty_reader`] keeps its column while no mail is open
-//!   (task E8.11). The panel splits the buttons (task E9.4): the mail standards at the top – Reply ·
-//!   Reply all · Forward | Archive · Delete, Flag, read –, what Torro adds in its fixed footer. The
-//!   reader has none of the red (task E11.3): a command bar at the top ([`commands`]: Reply ▾ ·
-//!   Forward · Archive · Delete · Later · "…", the rest in [`reply_menu`] and [`more_menu`]), Torro's
-//!   functions as pills under the sender ([`pills`]: Task · Event · Mute…), the
-//!   attachments as chips ([`attachment_line`]) and the view's switches in a foot ([`foot`]). Which
-//!   bars a mail in the panel has, [`Bars`] says (task E11.4): the hub and the App Feed keep the
-//!   split of E9.4, the mail window's panel in medium and narrow takes the reader's parts – the
-//!   command bar, the head without the subject (the panel's title says it), the pills, and the
-//!   chips and switches in its fixed footer ([`panel_foot`]); [`entry_panel`] is that panel for a
-//!   mail entry.
+//!   (task E8.11). The panel of the hub and the App Feed splits the buttons (task E9.4): the mail
+//!   standards at the top – Reply · Reply all · Forward | Archive · Delete, Flag, read –, what Torro
+//!   adds in its fixed footer. The mail window has none of them (task E14.3): every action on the
+//!   mail stands in its action rail at the right edge ([`action_groups`]: Reply · File · Torro ·
+//!   Mark, at the foot Mute · More, drawn by `widgets::action_rail`), its head has no buttons and
+//!   the attachments stand as chips at the reader's bottom ([`attachment_line`]). Which bars a mail
+//!   in the panel has, [`Bars`] says (task E11.4): the hub and the App Feed keep the split of E9.4,
+//!   the mail window's panel in medium and narrow takes the reader's head without the subject (the
+//!   panel's title says it), the chips in its fixed footer ([`panel_foot`]) and the collapsed rail
+//!   beside it; [`entry_panel`] is that panel for a mail entry.
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
@@ -64,7 +63,7 @@ use torro_gui::panel;
 use torro_gui::selectable::{self, Selectable};
 use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Mark, MenuItem, MenuSection, RowAction, Trail};
+use torro_gui::widgets::{self, Mark, RailGroup, RailItem, RowAction};
 use torro_gui::{datetime, style, typo};
 use torro_htmlview::{CidSource, Content, HtmlView, MAX_PICTURE_BYTES, Scheme};
 use torro_inbox::InboxError;
@@ -1079,18 +1078,40 @@ pub fn filing_actions<'a>(
     id: &str,
     archive_key: &'static str,
 ) -> Vec<RowAction<'a, Message>> {
-    let role_of = |folder: &str| folders.iter().find(|f| f.id == folder).and_then(|f| f.role);
-    let lies_in = folder.map_or(Some(Role::Inbox), role_of);
-    let has = |role: Role| folders.iter().any(|f| f.account == account && f.role == Some(role));
+    let filing = Filing::of(folders, account, folder);
     let mut actions = Vec::new();
-    if has(Role::Archive) && lies_in != Some(Role::Archive) {
+    if filing.archive {
         let archive = Message::Mail(MailAction::Archive, id.to_owned());
         actions.push(RowAction::new(Icon::Archive, trc("action", "Archive"), archive_key, archive));
     }
-    if has(Role::Trash) && lies_in != Some(Role::Trash) {
+    if filing.delete {
         actions.push(RowAction::new(Icon::Trash2, tr("Delete"), "#", Message::Mail(MailAction::Delete, id.to_owned())));
     }
     actions
+}
+
+/// Where a message can be filed, by the rule of [`filing_actions`]: its rows and cards and the mail's
+/// action rail (task E14.3, [`action_groups`]) offer the same.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Filing {
+    /// The account has a folder of the role Archive and the message lies outside it.
+    archive: bool,
+    /// The account has a Trash and the message lies outside it.
+    delete: bool,
+}
+
+impl Filing {
+    /// For the message of `account` (`mail:<address>`) in the folder `folder` (`None`: its account's
+    /// inbox), among every account's `folders`.
+    fn of(folders: &[Folder], account: &str, folder: Option<&str>) -> Filing {
+        let role_of = |folder: &str| folders.iter().find(|f| f.id == folder).and_then(|f| f.role);
+        let lies_in = folder.map_or(Some(Role::Inbox), role_of);
+        let has = |role: Role| folders.iter().any(|f| f.account == account && f.role == Some(role));
+        Filing {
+            archive: has(Role::Archive) && lies_in != Some(Role::Archive),
+            delete: has(Role::Trash) && lies_in != Some(Role::Trash),
+        }
+    }
 }
 
 /// The hint after archiving (`delete: false`) or deleting.
@@ -1882,7 +1903,7 @@ impl<'a> Reading<'a> {
         self.summary().map_or_else(String::new, subject)
     }
 
-    /// What the panel's footer (task E9.4) and the reader's foot (task E11.3, [`foot`]) show: for a loaded
+    /// What the panel's footer (task E9.4) and the rail's group "More" (task E14.3) show: for a loaded
     /// mail its switches – "HTML | Text" for a mail with HTML, "Light | Dark" while the HTML shows –
     /// and "Copy text" when it has a text; nothing while it loads or after an error.
     pub fn view_tools(&self) -> ViewTools {
@@ -1905,17 +1926,18 @@ pub enum Bars<'a> {
     /// ([`panel_standards`]), Torro's functions and the view's switches in the panel's footer
     /// ([`folder_footer`], `detail::Footer`).
     Split,
-    /// Task E11, for the mail window in medium and narrow: the reader's parts in the panel – the
-    /// command bar ([`commands`], without Close: the ✕ stands in the panel's head), the sender and
-    /// the pills ([`head`] without the subject, which the panel's title says), a line, the mail; the
-    /// attachments as chips and the view's switches in the panel's footer ([`panel_foot`]).
+    /// Task E14.3, for the mail window in medium and narrow: the reader's head in the panel – the
+    /// sender without the subject, which the panel's title says ([`head`]) –, a line, the mail; the
+    /// attachments as chips in the panel's footer ([`panel_foot`]). Every action stands in the mail's
+    /// action rail, which the window puts at the panel's right (`Panel::side`, collapsed and without
+    /// its button, [`action_groups`]).
     Command {
-        /// The mail entry the mail belongs to (Later, the entry's pills, Done and "Move to …" in
-        /// "…"); `None` for a folder's message.
+        /// The mail entry the mail belongs to (its properties under the sender, why a rule put it in
+        /// its lane); `None` for a folder's message.
         entry: Option<ReaderEntry<'a>>,
         /// How wide the panel is: [`size::panel()`] over the medium window, the whole window in a
-        /// narrow one. The command bar's words ([`widgets::command_words`]) and what ends in "…"
-        /// reckon with it.
+        /// narrow one. The body has this less the collapsed rail ([`widgets::RailMode::width`]); the
+        /// footer the whole of it.
         width: f32,
     },
 }
@@ -1924,8 +1946,9 @@ pub enum Bars<'a> {
 /// mail as body ([`body`]) with the `bars` it says. With [`Bars::Split`] the mail standards stand
 /// over the mail and the Torro functions in the panel's fixed footer (task E9.4, [`folder_footer`]):
 /// Task, then the bell "Mute…" and the view's switches and "Copy text"; with [`Bars::Command`] the
-/// reader's bars (task E11.4, [`panel_foot`] the footer). `anchors` are where the menus of its
-/// buttons open (the app's window, issue #122).
+/// attachments in the footer ([`panel_foot`]) and the window adds the action rail (task E14.3,
+/// `Panel::side`). `anchors` are where the menus of the footer's buttons open (the app's window,
+/// issue #122).
 pub fn panel<'a>(
     reading: &Reading<'a>,
     folder: Option<&'a FolderView>,
@@ -1938,65 +1961,36 @@ pub fn panel<'a>(
         Bars::Split => folder_footer(reading, anchors),
         Bars::Command { width, .. } => panel_foot(reading, width),
     };
-    let body = body(reading, bars, anchors);
-    let panel = panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail);
-    match bars {
-        Bars::Split => panel.footer(footer),
-        Bars::Command { entry, width } => panel.bar(panel_bar(reading, entry, anchors, width)).footer(footer),
-    }
+    let body = body(reading, bars);
+    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail).footer(footer)
 }
 
 /// The panel of a mail entry in the mail window's medium and narrow layouts (task E11.4): the
 /// entry's head as `detail::panel` draws it – source and `view_name` as path, the entry's title, ✕
-/// – and its whole mail with the reader's bars ([`Bars::Command`] with `entry`, the panel `width`
-/// wide) – the command bar fixed under the head ([`panel_bar`]) –, the entry's properties under the
-/// sender ([`command_body`]), the attachments and the view's switches in the fixed footer
-/// ([`panel_foot`]). The hub and the App Feed keep `detail::panel` with [`Bars::Split`].
+/// – and its whole mail ([`Bars::Command`] with `entry`, the panel `width` wide): the entry's
+/// properties under the sender ([`command_body`]), the attachments in the fixed footer
+/// ([`panel_foot`]). The window adds the action rail at its right (task E14.3, `Panel::side`). The
+/// hub and the App Feed keep `detail::panel` with [`Bars::Split`].
 pub fn entry_panel<'a>(
     reading: &Reading<'a>,
     entry: ReaderEntry<'a>,
     view_name: String,
-    anchors: &detail::Anchors,
     width: f32,
 ) -> panel::Panel<'a, Message> {
-    let body = body(reading, Bars::Command { entry: Some(entry), width }, anchors);
+    let body = body(reading, Bars::Command { entry: Some(entry), width });
     let (path, title) = (detail::path(entry.item, view_name), detail::heading(entry.item));
-    panel::panel(path, title, body, Message::CloseDetail)
-        .bar(panel_bar(reading, Some(entry), anchors, width))
-        .footer(panel_foot(reading, width))
+    panel::panel(path, title, body, Message::CloseDetail).footer(panel_foot(reading, width))
 }
 
-/// The command bar of the mail window's panel (task E11.4, [`commands`], whose "…" has no Close in
-/// the panel), fixed under the panel's head from edge to edge (`Panel::bar`): it does not scroll
-/// away with the mail. A line above it parts it from the head; the bar draws the one below.
-fn panel_bar<'a>(
-    reading: &Reading<'a>,
-    entry: Option<ReaderEntry<'a>>,
-    anchors: &detail::Anchors,
-    width: f32,
-) -> Element<'a, Message> {
-    let line = rule::horizontal(size::HAIRLINE).style(style::rule);
-    column![line, commands(reading, entry.map(|entry| entry.item), anchors, width)].into()
-}
-
-/// The fixed footer of a mail's panel with the reader's bars (task E11.4, [`Bars::Command`]): the
-/// mail's attachments as chips (as [`attachment_line`] has them over the reader's foot), under them
-/// the view's switches and "Copy text" (as the reader's [`foot`] has them), each part only where the
-/// mail has it, in the panel's padding – the panel draws the line above it. Empty – no footer –
-/// while the mail loads and after an error. `width` is the panel's.
+/// The fixed footer of a mail's panel in the mail window (task E11.4, [`Bars::Command`]): the mail's
+/// attachments as chips (as [`attachment_line`] has them at the reader's bottom), in the panel's
+/// padding – the panel draws the line above it. The view's switches and "Copy text" stand in the
+/// rail's group "More" (task E14.3). Empty – no footer – while the mail loads, after an error and for
+/// a mail without attachments. `width` is the panel's.
 pub fn panel_foot<'a>(reading: &Reading<'_>, width: f32) -> Vec<Element<'a, Message>> {
     // The panel's footer pads its content by `space::l()` at each side.
     let room = (width - 2.0 * space::l()).max(0.0);
-    let mut parts: Vec<Element<'a, Message>> = Vec::new();
-    parts.extend(attachment_chips(reading, room));
-    let controls = foot_controls(reading.view_tools());
-    if !controls.is_empty() {
-        parts.push(row(controls).spacing(space::s()).align_y(Alignment::Center).into());
-    }
-    if parts.is_empty() {
-        return Vec::new();
-    }
-    vec![column(parts).spacing(space::s()).width(Fill).into()]
+    attachment_chips(reading, room).into_iter().collect()
 }
 
 /// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
@@ -2017,7 +2011,7 @@ fn folder_footer<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Vec<El
     vec![bar.wrap().vertical_spacing(space::s()).into()]
 }
 
-/// What the view group of the panel's footer (task E9.4) and the reader's foot (task E11.3) shows
+/// What the view group of the panel's footer (task E9.4) and the rail's group "More" (task E14.3) shows
 /// for a mail: the switches of a mail with HTML and "Copy text". Got from [`Reading::view_tools`];
 /// while the mail loads or could not be loaded there is nothing to switch or copy, and every field is
 /// empty.
@@ -2066,40 +2060,33 @@ fn schemes() -> [(String, Message); 2] {
     ]
 }
 
-/// The mail in the panel with the `bars` the window chose ([`Bars`]); `anchors` are where the menus
-/// of its buttons open (with [`Bars::Command`]: Reply ▾ `reply`, Later `snooze`, "…" `more`, the
-/// pills `task`, `event`, `hide`).
+/// The mail in the panel with the `bars` the window chose ([`Bars`]).
 ///
 /// - [`Bars::Split`] (task E9.4): who wrote it to whom and when, the mail standards
 ///   ([`panel_standards`]: reply, reply all, forward, archive, delete, flag, read), the attachments,
 ///   the HTML or the text with its links, and the note that the mail comes from outside. The Torro
 ///   functions, the switches "HTML | Text" and "Light | Dark" (task M9.7) and "Copy text" stand in
 ///   the panel's footer: an entry's (`detail::Footer`) or a folder's message's ([`panel()`]).
-/// - [`Bars::Command`] (task E11.4, [`command_body`]): the sender, the pills, invitation and task,
-///   an entry's properties, a line, the mail. The command bar stands fixed above it (`Panel::bar`,
-///   [`panel_bar`]); attachments and the view's switches in the footer ([`panel_foot`]).
-pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
+/// - [`Bars::Command`] (task E11.4, [`command_body`]): the sender, invitation and task, an entry's
+///   properties, a line, the mail; the attachments in the footer ([`panel_foot`]), every action in
+///   the rail beside it (task E14.3).
+pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>) -> Element<'a, Message> {
     match bars {
         Bars::Split => split_body(reading),
-        Bars::Command { entry, width } => command_body(reading, entry, anchors, width),
+        Bars::Command { entry, width } => command_body(reading, entry, width),
     }
 }
 
-/// The body of the mail window's panel (task E11.4, [`Bars::Command`]), `width` wide, in the order
-/// of the reader (task E11.3) under the command bar, which stands fixed above it ([`panel_bar`]):
-/// the head without the subject – the panel's title says it – ([`head_with`]: sender, why a rule put
-/// the entry in its lane, the pills, invitation and task) lined up with the title, an entry's
-/// properties, a line from edge to edge and the mail ([`panel_letter`]).
-fn command_body<'a>(
-    reading: &Reading<'a>,
-    entry: Option<ReaderEntry<'a>>,
-    anchors: &detail::Anchors,
-    width: f32,
-) -> Element<'a, Message> {
+/// The body of the mail window's panel (task E11.4, [`Bars::Command`]) in a panel `width` wide, in
+/// the order of the reader (task E11.3): the head without the subject – the panel's title says it –
+/// ([`head_with`]: sender, why a rule put the entry in its lane, invitation and task) lined up with
+/// the title, an entry's properties, a line from edge to edge and the mail ([`panel_letter`]). The
+/// collapsed rail beside it (task E14.3) takes its width from the body.
+fn command_body<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, width: f32) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    // The head lines up with the title: 16 from the panel's edges (`panel::inset`).
-    let room = (width - 2.0 * space::l()).max(0.0);
-    let head = head_with(reading, entry, anchors, room, false);
+    // The head lines up with the title: 16 from the panel's edges (`panel::inset`), the rail beside.
+    let room = (width - widgets::RailMode::Collapsed.width() - 2.0 * space::l()).max(0.0);
+    let head = head_with(reading, entry, room, false);
     let mut body = column![panel::inset(head)];
     // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
     if let Some(entry) = entry {
@@ -2167,52 +2154,46 @@ fn text_level(read: bool) -> typo::Level {
     if read { typo::read() } else { typo::body() }
 }
 
-/// The entry a mail in the reader belongs to (task E8.3): Later in the command bar, the pills Task,
-/// Event and Mute…, and Done and "Move to …" in "…" act on it, as `s`, `t`, `c`,
-/// `m`, `e` and `l` do (task E11.3).
+/// The entry a mail in the reader belongs to (task E8.3): the rail's Done or Reopen, Later…, "Move
+/// to …", Task, Event, Category… and Mute… act on it (task E14.3, [`action_groups`]), as `e`, `s`,
+/// `l`, `t`, `c` and `m` do.
 #[derive(Debug, Clone, Copy)]
 pub struct ReaderEntry<'a> {
     pub item: &'a Item,
-    /// The entry can be muted (`App::hidable`): the reader shows its pill "Mute…" (issue #123).
+    /// The entry can be muted (`App::hidable`): the rail shows its group "Mute" (issue #123).
     pub hide: bool,
 }
 
-/// The reader of the wide mail window (task E8.3) beside the list, in four parts from top to bottom
-/// (task E11.3, design D of `docs/prototypes/inbox/mail-buttons.html`):
+/// The reader of the wide mail window (task E8.3) beside the list (task E14.3, design D of
+/// `docs/prototypes/inbox/mail-aktionsleiste.html`): at its right the mail's action `rail` over its
+/// whole height (`widgets::action_rail` of [`action_groups`], as the window draws it in the mode it
+/// remembers), at its left from top to bottom:
 ///
-/// 1. fixed, the **command bar** ([`commands`]): Reply with its menu "Reply all", Forward, Archive,
-///    Delete, for an entry Later, and "…" ([`more_menu`]);
-/// 2. scrolling, the **head** ([`head`]: subject, sender, why a rule put the entry in its lane, the
-///    pills, invitation and task), a line over the reader's whole width and the **mail**
+/// 1. scrolling, the **head** ([`head`]: subject, sender, why a rule put the entry in its lane,
+///    invitation and task), a line over the reader's whole width and the **mail**
 ///    ([`reader_mail`]): a text in the page's padding, HTML from edge to edge ([`reader_widths`]);
-/// 3. fixed, the mail's **attachments** as chips ([`attachment_line`]);
-/// 4. fixed, the **foot** with the view's switches and "Copy text" ([`foot`]).
+/// 2. fixed, the mail's **attachments** as chips ([`attachment_line`]).
 ///
-/// The window has no red button any more: Reply is the bar's strong cell, Torro's own buttons are
-/// pills. `entry` is the mail entry the mail belongs to, `None` for a folder's message; `anchors`
-/// are where the menus of its buttons open (the app's window). Close stands in "…" (Escape does
-/// the same).
+/// No bar over the mail and no buttons in its head: every action stands in the rail, with its key.
+/// `entry` is the mail entry the mail belongs to, `None` for a folder's message.
 pub fn reader<'a>(
     reading: Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
-    anchors: detail::Anchors,
+    rail: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    responsive(move |bounds| {
+    let page = responsive(move |bounds| {
         let widths = reader_widths(bounds.width, html_edge(&reading).is_some());
         let side = layout::page_padding().left;
-        let head = container(head(&reading, entry, &anchors, widths.head)).width(Fill).padding(head_padding());
+        let head = container(head(&reading, entry, widths.head)).width(Fill).padding(head_padding());
         let page = column![head, rule::horizontal(size::HAIRLINE).style(style::rule), reader_mail(&reading, widths)];
         let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        column![commands(&reading, entry.map(|entry| entry.item), &anchors, bounds.width), page]
-            .push(attachment_line(&reading, widths.head, side))
-            .push(foot(reading.view_tools(), side))
-            .into()
-    })
-    .into()
+        column![page].push(attachment_line(&reading, widths.head, side)).into()
+    });
+    row![page, rail].height(Fill).into()
 }
 
 /// The padding around the reader's head: the page's, a little less below, where the line under the
@@ -2224,7 +2205,7 @@ fn head_padding() -> Padding {
 /// How wide the parts of the reader are ([`reader_widths`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ReaderWidths {
-    /// The head – subject, sender, pills – and what stands under the mail (the note, the
+    /// The head – subject, sender, invitation, task – and what stands under the mail (the note, the
     /// attachments): inside the page's padding.
     head: f32,
     /// The mail's content: a text as wide as the head; HTML from edge to edge of the reader.
@@ -2281,18 +2262,13 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 }
 
 /// The head of a mail in the reader (task E11.3), `room` wide: the subject (`typo::headline()`), the
-/// sender ([`sender_block`]), for an entry why a rule put it in its lane (issue #128), the pills
-/// ([`pill_row`] of [`pills`]) and under them the invitation's card (task E8.3b) and the task's
-/// (task E8.7b). Everything stands left-aligned, one under the other; while only the mail's id is
-/// known, just the pills. The panel of the mail window takes the same head without the subject
-/// (task E11.4, [`head_with`]).
-pub fn head<'a>(
-    reading: &Reading<'a>,
-    entry: Option<ReaderEntry<'a>>,
-    anchors: &detail::Anchors,
-    room: f32,
-) -> Element<'a, Message> {
-    head_with(reading, entry, anchors, room, true)
+/// sender ([`sender_block`]), for an entry why a rule put it in its lane (issue #128), what the mail
+/// is (task E12.8) and under it the invitation's card (task E8.3b) and the task's (task E8.7b).
+/// Everything stands left-aligned, one under the other; no buttons – they stand in the rail (task
+/// E14.3). The panel of the mail window takes the same head without the subject (task E11.4,
+/// [`head_with`]).
+pub fn head<'a>(reading: &Reading<'a>, entry: Option<ReaderEntry<'a>>, room: f32) -> Element<'a, Message> {
+    head_with(reading, entry, room, true)
 }
 
 /// The [`head`], with the subject on top only with `subject`: the panel of the mail window (task
@@ -2300,7 +2276,6 @@ pub fn head<'a>(
 fn head_with<'a>(
     reading: &Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
-    anchors: &detail::Anchors,
     room: f32,
     subject: bool,
 ) -> Element<'a, Message> {
@@ -2336,7 +2311,6 @@ fn head_with<'a>(
             }
         }
     }
-    head = head.push(pill_row(pills(reading, entry), anchors));
     // What the mail invites to, with its answers (task E8.3b), and the task made of it (task E8.7b).
     if let Some(summary) = summary
         && let Some(invite) = &summary.invite
@@ -2394,188 +2368,200 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     row![face, words].spacing(space::m()).align_y(Alignment::Center).into()
 }
 
-/// A pill of the reader's head ([`pills`], drawn by `widgets::pill_button` in [`pill_row`]).
-#[derive(Debug, Clone)]
-pub struct Pill {
-    pub icon: Icon,
-    pub label: String,
-    /// What a click sends; `None` shows the pill off.
-    pub message: Option<Message>,
-    /// Why it is off, as its tooltip; `None` while it is on.
-    pub tip: Option<String>,
+/// The groups of the mail's action rail (task E14.3, decision 2 of E14 in `docs/tasks/eingang.md`,
+/// design D of `docs/prototypes/inbox/mail-aktionsleiste.html`) for the mail in `reading`, in this
+/// order – each item with its icon, word and key and the message its button or key sent before
+/// (tasks E9.4, E11.3), so requests and keys stay the same:
+///
+/// 1. **Reply** (in the accent): Reply (`r`), Reply all (`a`), Forward (`f`) – [`Message::Mail`].
+/// 2. **File**: for an `entry` Done (`e`, [`Message::SetDone`]) or Reopen once done, Later… (`s`,
+///    `AskSnooze`, not for a done entry) and "Move to Info" or "Move to For me" (`l`, `AskLane`);
+///    then Archive and Delete (`#`) where the account has the folder and the mail does not lie in
+///    it already, as in rows ([`filing_actions`]; Archive's key `e` only for a folder's message,
+///    where `e` archives).
+/// 3. **Torro**: Task (`t`; `AskTask` for an entry, `AskMailTask` for a folder's message), for an
+///    entry Event (`c`, `AskEvent`) and – for a mail entry – Category… (`AskCategory`) and, with a
+///    decision model set up ([`Reading::deciding`]), Re-categorize (`Reclassify`, sparkles in the
+///    accent).
+/// 4. **Mark**, once the mail's flags are known: Flag or Unflag, Mark read or Mark unread.
+/// 5. **Mute** (at the foot): Mute… (`m`; `AskHide` for an entry that can be muted, `AskMuteMail`
+///    for a folder's message).
+/// 6. **More** (at the foot), what [`Reading::view_tools`] offers: Show as text or Show as HTML
+///    (`v`, `ShowMailAs`), Light or Dark colours (`MailColors`, while the HTML shows), Copy text
+///    (`CopyText`), and with `close` (the reader; the panel has its ✕) Close (Escape, `CloseDetail`).
+///
+/// A group without items is left out (Mark and More while the mail loads, Mute for an entry that
+/// cannot be muted). A group's icon is its first item's, Mute's the bell and More's "…"; a click on
+/// it sends its first item. Each group registers its icon in `anchors.rail`, each item that opens a
+/// menu or dialog its row in the matching anchor of `anchors` (Later `snooze`, "Move to …" `lane`,
+/// Task `task`, Event `event`, Category… `category`, Mute… `hide`); pass the window's anchors made
+/// with [`detail::Anchors::with_rail`], so those menus hang at the group's icon while the row is not
+/// on screen. `folders` are every account's folders, for Archive and Delete.
+pub fn action_groups<'a>(
+    reading: &Reading<'_>,
+    entry: Option<ReaderEntry<'_>>,
+    folders: &[Folder],
+    close: bool,
+    anchors: &detail::Anchors,
+) -> Vec<RailGroup<'a, Message>> {
+    let rail = &anchors.rail;
+    let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
+    let reply = vec![
+        RailItem::new(Icon::Reply, tr("Reply"), "R", mail(MailAction::Reply)).accent(),
+        RailItem::new(Icon::ReplyAll, tr("Reply all"), "A", mail(MailAction::ReplyAll)),
+        RailItem::new(Icon::Forward, tr("Forward"), "F", mail(MailAction::Forward)),
+    ];
+    let groups = [
+        RailGroup::new(Icon::Reply, tr("Reply"), reply).accent().at(&rail.reply),
+        rail_group(tr("File"), file_items(reading, entry, folders, anchors)).at(&rail.file),
+        rail_group(tr("Torro"), torro_items(reading, entry, anchors)).at(&rail.torro),
+        rail_group(tr("Mark"), mark_items(reading)).at(&rail.mark),
+        RailGroup::new(Icon::BellOff, tr("Mute"), mute_items(reading, entry, anchors)).foot().at(&rail.mute),
+        RailGroup::new(Icon::Ellipsis, tr("More"), more_items(reading.view_tools(), close)).foot().at(&rail.more),
+    ];
+    groups.into_iter().filter(|group| !group.items.is_empty()).collect()
 }
 
-/// What Torro adds to the mail in `reading` (task E11.3), as pills in this order: for an `entry`
-/// Task (`AskTask`), Event (`AskEvent`) – their dialogs fill themselves in with the AI on request
-/// (`App::suggest_task`) – and – where it can be muted ([`ReaderEntry::hide`]) – Mute…
-/// (`AskHide`); for a folder's message Task (`AskMailTask`, task E8.7b) and Mute… (`AskMuteMail`,
-/// issue #123) – the core suggests and makes events from entries only. Each sends what its button
-/// sent before (task E9.4), so requests and keys stay the same.
-pub fn pills(reading: &Reading<'_>, entry: Option<ReaderEntry<'_>>) -> Vec<Pill> {
-    let deciding = reading.deciding;
-    let pill = |icon, label: &str, message| Pill { icon, label: label.to_owned(), message: Some(message), tip: None };
-    let Some(ReaderEntry { item, hide }) = entry else {
-        let id = || reading.id.to_owned();
-        return vec![
-            pill(Icon::ListTodo, tr("Task"), Message::AskMailTask(id())),
-            pill(Icon::BellOff, tr("Mute…"), Message::AskMuteMail(id())),
-        ];
+/// A group of the rail titled `label` whose icon is its first item's ([`action_groups`]), so a click
+/// on it does what the icon shows.
+fn rail_group<'a>(label: &'static str, items: Vec<RailItem<'a, Message>>) -> RailGroup<'a, Message> {
+    let icon = items.first().map_or(Icon::Ellipsis, |item| item.icon);
+    RailGroup::new(icon, label, items)
+}
+
+/// The items of the rail's group "File" ([`action_groups`]).
+fn file_items<'a>(
+    reading: &Reading<'_>,
+    entry: Option<ReaderEntry<'_>>,
+    folders: &[Folder],
+    anchors: &detail::Anchors,
+) -> Vec<RailItem<'a, Message>> {
+    let mut items = Vec::new();
+    if let Some(ReaderEntry { item, .. }) = entry {
+        let done = matches!(item.state, State::Done { .. });
+        items.push(match done {
+            true => RailItem::new(Icon::Inbox, tr("Reopen"), "E", Some(Message::SetDone(item.id.clone(), false))),
+            false => RailItem::new(Icon::Check, tr("Done"), "E", Some(Message::SetDone(item.id.clone(), true))),
+        });
+        if !done {
+            let later = RailItem::new(Icon::Clock, tr("Later…"), "S", Some(Message::AskSnooze(item.id.clone())));
+            items.push(later.at(&anchors.snooze));
+        }
+        let lane = crate::app::other_lane(item.lane);
+        let move_to = Some(Message::AskLane(item.id.clone()));
+        items.push(RailItem::new(crate::app::lane_icon(lane), lane_word(lane), "L", move_to).at(&anchors.lane));
+    }
+    if let Some(summary) = reading.summary() {
+        let filing = Filing::of(folders, &summary.account, Some(&summary.folder));
+        let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
+        if filing.archive {
+            // `e` archives only in a folder; at an entry it is Done.
+            let key = if entry.is_some() { "" } else { "E" };
+            items.push(RailItem::new(Icon::Archive, trc("action", "Archive"), key, mail(MailAction::Archive)));
+        }
+        if filing.delete {
+            items.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", mail(MailAction::Delete)));
+        }
+    }
+    items
+}
+
+/// The items of the rail's group "Torro" ([`action_groups`]): what Torro adds to the mail, as the
+/// reader's pills had it (task E11.3).
+fn torro_items<'a>(
+    reading: &Reading<'_>,
+    entry: Option<ReaderEntry<'_>>,
+    anchors: &detail::Anchors,
+) -> Vec<RailItem<'a, Message>> {
+    let Some(ReaderEntry { item, .. }) = entry else {
+        let task = Some(Message::AskMailTask(reading.id.to_owned()));
+        return vec![RailItem::new(Icon::ListTodo, tr("Task"), "T", task).at(&anchors.task)];
     };
     let id = || item.id.clone();
-    let mut pills = vec![
-        pill(Icon::ListTodo, tr("Task"), Message::AskTask(id())),
-        pill(Icon::CalendarPlus, tr("Event"), Message::AskEvent(id())),
+    let mut items = vec![
+        RailItem::new(Icon::ListTodo, tr("Task"), "T", Some(Message::AskTask(id()))).at(&anchors.task),
+        RailItem::new(Icon::CalendarPlus, tr("Event"), "C", Some(Message::AskEvent(id()))).at(&anchors.event),
     ];
-    // What the mail is (task E12.8): change it by hand, or let the model look again. Only mail
-    // has a category, and only there do the two make sense.
+    // What the mail is (task E12.8): only mail has a category. "Re-categorize" only with a decision
+    // model set up – without an AI the function is simply not there (`docs/ki.md`, principle 1).
     if item.source.kind == torro_inbox::SourceKind::Mail {
-        pills.push(pill(Icon::Tag, tr("Category…"), Message::AskCategory(id())));
-        // Only with a decision model set up: without one the button could do nothing but show an
-        // error, and a function without an AI simply is not there (`docs/ki.md`, principle 1).
-        if deciding {
-            pills.push(Pill {
-                icon: Icon::Sparkles,
-                label: tr("Re-categorize").to_owned(),
-                message: Some(Message::Reclassify(id())),
-                tip: None,
-            });
+        let category = RailItem::new(Icon::Tag, tr("Category…"), "", Some(Message::AskCategory(id())));
+        items.push(category.at(&anchors.category));
+        if reading.deciding {
+            items
+                .push(RailItem::new(Icon::Sparkles, tr("Re-categorize"), "", Some(Message::Reclassify(id()))).accent());
         }
     }
-    if hide {
-        pills.push(pill(Icon::BellOff, tr("Mute…"), Message::AskHide(id())));
-    }
-    pills
+    items
 }
 
-/// `pills` in a row that wraps, [`space::s()`] apart (`widgets::pill_button`), each that opens a
-/// menu or dialog registering its anchor in `anchors` (`detail::Anchors::of`: Task `task`, Event
-/// `event`, Mute… `hide`); an AI pill's dialog opens at Task, as before.
-pub fn pill_row<'a>(pills: Vec<Pill>, anchors: &detail::Anchors) -> Element<'a, Message> {
-    let pills = pills.into_iter().map(|Pill { icon, label, message, tip }| {
-        let anchor = message.as_ref().and_then(|message| anchors.of(message)).cloned();
-        let pill = widgets::pill_button(icon, label, message);
-        let pill = match tip {
-            Some(tip) => widgets::with_tooltip(pill, tip),
-            None => pill,
-        };
-        widgets::anchored_if(anchor.as_ref(), pill)
-    });
-    row(pills).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+/// The items of the rail's group "Mark" ([`action_groups`]): Flag or Unflag, Mark read or Mark
+/// unread – nothing until the mail's flags are known.
+fn mark_items<'a>(reading: &Reading<'_>) -> Vec<RailItem<'a, Message>> {
+    let Some(summary) = reading.summary() else { return Vec::new() };
+    let mail = |action: MailAction| Some(Message::Mail(action, reading.id.to_owned()));
+    let flagged = summary.flags.contains(&Flag::Flagged);
+    let flag = if flagged { tr("Unflag") } else { tr("Flag") };
+    let seen = match summary.flags.contains(&Flag::Seen) {
+        true => RailItem::new(Icon::Mail, tr("Mark unread"), "", mail(MailAction::Read(false))),
+        false => RailItem::new(Icon::MailOpen, tr("Mark read"), "", mail(MailAction::Read(true))),
+    };
+    vec![RailItem::new(Icon::Flag, flag, "", mail(MailAction::Flag(!flagged))), seen]
 }
 
-/// One cell of the reader's command bar ([`command_cells`]).
-#[derive(Debug, Clone)]
-pub struct CommandCell {
-    pub icon: Icon,
-    pub label: String,
-    /// What a click sends; `None` shows the cell off (Delete in the trash).
-    pub message: Option<Message>,
-}
-
-/// The cells of the command bar for the mail in `reading` (task E11.3), from the left: Reply (drawn
-/// as the split with its menu, [`reply_menu`]), Forward, Archive, Delete – off in the trash – and,
-/// for an `entry` that is not done, Later (`AskSnooze`). "…" ([`more_menu`]) closes the bar and is
-/// no cell of this list. Each sends what its key sends ([`MailAction`]).
-pub fn command_cells(reading: &Reading<'_>, entry: Option<&Item>) -> Vec<CommandCell> {
-    let id = reading.id;
-    let mail = |action: MailAction| Some(Message::Mail(action, id.to_owned()));
-    let cell = |icon, label: &str, message| CommandCell { icon, label: label.to_owned(), message };
-    let delete = (!reading.in_trash).then(|| Message::Mail(MailAction::Delete, id.to_owned()));
-    let mut cells = vec![
-        cell(Icon::Reply, tr("Reply"), mail(MailAction::Reply)),
-        cell(Icon::Forward, tr("Forward"), mail(MailAction::Forward)),
-        cell(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)),
-        cell(Icon::Trash2, tr("Delete"), delete),
-    ];
-    if let Some(item) = entry.filter(|item| !matches!(item.state, State::Done { .. })) {
-        cells.push(cell(Icon::Clock, tr("Later"), Some(Message::AskSnooze(item.id.clone()))));
-    }
-    cells
-}
-
-/// The command bar of the mail in `reading` (task E11.3, `widgets::command_bar`), `room` wide – the
-/// reader's whole width: the [`command_cells`] – Reply as the strong split whose chevron opens
-/// [`reply_menu`] (`AskReplyMenu`) – and "…" at the end (`AskMore`, [`more_menu`]). All cells show
-/// their words or none ([`widgets::command_words`]). Each cell that opens a menu registers its
-/// anchor in `anchors`: Reply `reply`, Later `snooze`, "…" `more`. The panel of the mail window
-/// takes the same bar, as wide as the panel (task E11.4, [`Bars::Command`]).
-pub fn commands<'a>(
+/// The item of the rail's group "Mute" ([`action_groups`]): the bell of the entry where it can be
+/// muted, else nothing; the bell of a folder's message on its own traits (issue #123).
+fn mute_items<'a>(
     reading: &Reading<'_>,
-    entry: Option<&Item>,
+    entry: Option<ReaderEntry<'_>>,
     anchors: &detail::Anchors,
-    room: f32,
-) -> Element<'a, Message> {
-    let id = reading.id.to_owned();
-    let cells = command_cells(reading, entry);
-    let labels: Vec<&str> = cells.iter().map(|cell| cell.label.as_str()).collect();
-    let words = widgets::command_words(&labels, room);
-    let mut bar = Vec::with_capacity(cells.len() + 1);
-    for (i, CommandCell { icon, label, message }) in cells.into_iter().enumerate() {
-        bar.push(if i == 0 {
-            let menu = Some(Message::AskReplyMenu(id.clone()));
-            widgets::anchored(&anchors.reply, widgets::command_split(icon, label, words, message, menu))
-        } else {
-            let anchor = message.as_ref().and_then(|message| anchors.of(message)).cloned();
-            widgets::anchored_if(anchor.as_ref(), widgets::command_cell(icon, label, words, false, message))
-        });
-    }
-    bar.push(widgets::anchored(&anchors.more, widgets::command_more(Some(Message::AskMore(id)))));
-    widgets::command_bar(bar)
+) -> Vec<RailItem<'a, Message>> {
+    let bell = match entry {
+        Some(ReaderEntry { item, hide: true }) => Message::AskHide(item.id.clone()),
+        Some(ReaderEntry { hide: false, .. }) => return Vec::new(),
+        None => Message::AskMuteMail(reading.id.to_owned()),
+    };
+    vec![RailItem::new(Icon::BellOff, tr("Mute…"), "M", Some(bell)).at(&anchors.hide)]
 }
 
-/// The menu of Reply's chevron in the command bar (task E11.3): "Reply all", with its key `a`; it
-/// sends what `a` sends for the message `id`.
-pub fn reply_menu<'a>(id: &str) -> Vec<MenuSection<'a, Message>> {
-    let all = Message::Mail(MailAction::ReplyAll, id.to_owned());
-    vec![MenuSection::new(vec![MenuItem::new(Icon::ReplyAll, tr("Reply all"), all).trail(Trail::Kbd("A"))])]
-}
-
-/// The menu of "…" at the end of the command bar (task E11.3): what a mail app keeps out of its bar,
-/// in up to three sections – Flag or Unflag and Mark read or Mark unread for the mail in `reading`
-/// (once its flags are known); for an `entry` Done or Reopen (`SetDone`, `e`) and Move to Info or
-/// Move to For me (`AskLane`, `l`: its question opens at "…", which has its anchor); with `close`
-/// (the reader) Close (`CloseDetail`, Escape) – the panel of task E11.4 has its ✕ in its head. Each
-/// entry shows its key where it has one and sends what it sent before.
-pub fn more_menu<'a>(reading: &Reading<'_>, entry: Option<&Item>, close: bool) -> Vec<MenuSection<'a, Message>> {
-    let id = reading.id;
-    let mail = |action: MailAction| Message::Mail(action, id.to_owned());
-    let mut sections = Vec::new();
-    if let Some(summary) = reading.summary() {
-        let flagged = summary.flags.contains(&Flag::Flagged);
-        let flag = if flagged { tr("Unflag") } else { tr("Flag") };
-        let flag = MenuItem::new(Icon::Flag, flag, mail(MailAction::Flag(!flagged)));
-        let seen = if summary.flags.contains(&Flag::Seen) {
-            MenuItem::new(Icon::Mail, tr("Mark unread"), mail(MailAction::Read(false)))
-        } else {
-            MenuItem::new(Icon::MailOpen, tr("Mark read"), mail(MailAction::Read(true)))
-        };
-        sections.push(MenuSection::new(vec![flag, seen]));
-    }
-    if let Some(item) = entry {
-        let finish = if matches!(item.state, State::Done { .. }) {
-            MenuItem::new(Icon::Inbox, tr("Reopen"), Message::SetDone(item.id.clone(), false))
-        } else {
-            MenuItem::new(Icon::Check, tr("Done"), Message::SetDone(item.id.clone(), true))
-        };
-        let lane = crate::app::other_lane(item.lane);
-        let move_to = MenuItem::new(crate::app::lane_icon(lane), lane_word(lane), Message::AskLane(item.id.clone()));
-        let mut entries = vec![finish.trail(Trail::Kbd("E")), move_to.trail(Trail::Kbd("L"))];
-        // What the mail is, also reachable without the reader (task E12.8): in Compact and in the
-        // narrow window the pills are not there.
-        if item.source.kind == torro_inbox::SourceKind::Mail {
-            entries.push(MenuItem::new(Icon::Tag, tr("Category…"), Message::AskCategory(item.id.clone())));
+/// The items of the rail's group "More" ([`action_groups`]) for `tools`: the other view of a mail
+/// with HTML, the other colours while its HTML shows, "Copy text", and with `close` Close.
+fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
+    let mut items = Vec::new();
+    match tools.format {
+        Some(MailFormat::Html) => {
+            items.push(RailItem::new(
+                Icon::AlignLeft,
+                tr("Show as text"),
+                "V",
+                Some(Message::ShowMailAs(MailFormat::Text)),
+            ));
         }
-        sections.push(MenuSection::new(entries));
+        Some(MailFormat::Text) => {
+            items.push(RailItem::new(Icon::Code, tr("Show as HTML"), "V", Some(Message::ShowMailAs(MailFormat::Html))));
+        }
+        None => {}
+    }
+    match tools.scheme {
+        Some(Scheme::Light) => {
+            items.push(RailItem::new(Icon::Moon, tr("Dark colours"), "", Some(Message::MailColors(Scheme::Dark))));
+        }
+        Some(Scheme::Dark) => {
+            items.push(RailItem::new(Icon::Sun, tr("Light colours"), "", Some(Message::MailColors(Scheme::Light))));
+        }
+        None => {}
+    }
+    if tools.copy {
+        items.push(RailItem::new(Icon::Copy, tr("Copy text"), "", Some(Message::CopyText)));
     }
     if close {
-        let close = MenuItem::new(Icon::X, tr("Close"), Message::CloseDetail).trail(Trail::Kbd("Esc"));
-        sections.push(MenuSection::new(vec![close]));
+        items.push(RailItem::new(Icon::X, tr("Close"), "Esc", Some(Message::CloseDetail)));
     }
-    sections
+    items
 }
 
 /// The mail's attachments as one wrapping line of chips (task E11.3, `widgets::file_chip`), fixed
-/// over the reader's foot: a `line` above, [`space::s()`] above and below the chips and `side` at
+/// at the reader's bottom: a `line` above, [`space::s()`] above and below the chips and `side` at
 /// the sides, the chips `room` wide in all ([`attachment_chips`]; the panel of task E11.4 has them
 /// in its footer, [`panel_foot`]). A click opens one as before ([`Message::OpenAttachment`]).
 /// `None` while the mail loads, after an error and for a mail without attachments (inline pictures
@@ -2619,47 +2605,6 @@ fn chip_name_room(weight: &str, room: f32) -> f32 {
     (room / 2.0 - frame).max(0.0)
 }
 
-/// The reader's foot (task E11.3), fixed at its bottom: a `line` above, the window's surface `bg`
-/// under it, [`space::s()`] above and below and `side` at the sides; left-aligned "HTML | Text" and
-/// "Light | Dark" as sunken switches (`widgets::view_switch`) and "Copy text" as a quiet icon
-/// ([`foot_controls`]). `None` with nothing to show: while the mail loads, after an error, and for a
-/// mail without text or HTML. The panel of the mail window has the same controls in its footer
-/// (task E11.4, [`panel_foot`]), where the panel draws the line and the padding.
-pub fn foot<'a>(tools: ViewTools, side: f32) -> Option<Element<'a, Message>> {
-    let controls = foot_controls(tools);
-    if controls.is_empty() {
-        return None;
-    }
-    let controls = row(controls).spacing(space::s()).align_y(Alignment::Center);
-    let line = container(controls).width(Fill).padding([space::s(), side]).style(style::container::window);
-    Some(column![rule::horizontal(size::HAIRLINE).style(style::rule), line].into())
-}
-
-/// What the foot ([`foot`]) holds of [`ViewTools`], each only where `tools` has it: "HTML | Text"
-/// ([`Icon::Code`], [`Icon::AlignLeft`]), "Light | Dark" ([`Icon::Sun`], [`Icon::Moon`], only while
-/// the HTML shows) – icons with their word as tooltip – and "Copy text" ([`copy_button`]).
-fn foot_controls<'a>(tools: ViewTools) -> Vec<Element<'a, Message>> {
-    let mut controls = Vec::new();
-    if let Some(format) = tools.format {
-        let options = [
-            (Icon::Code, tr("HTML"), Message::ShowMailAs(MailFormat::Html)),
-            (Icon::AlignLeft, tr("Text"), Message::ShowMailAs(MailFormat::Text)),
-        ];
-        controls.push(widgets::view_switch(options, usize::from(format == MailFormat::Text)));
-    }
-    if let Some(scheme) = tools.scheme {
-        let options = [
-            (Icon::Sun, tr("Light"), Message::MailColors(Scheme::Light)),
-            (Icon::Moon, tr("Dark"), Message::MailColors(Scheme::Dark)),
-        ];
-        controls.push(widgets::view_switch(options, usize::from(scheme == Scheme::Dark)));
-    }
-    if tools.copy {
-        controls.push(copy_button());
-    }
-    controls
-}
-
 /// One button of the panel's mail standards ([`panel_standards`]).
 #[derive(Clone)]
 struct ReaderButton {
@@ -2681,7 +2626,8 @@ impl ReaderButton {
 }
 
 /// The mail standards of a mail in the panel (task E9.4, [`panel_standards`]): what every mail app
-/// has, and nothing of Torro's. The reader has its command bar instead (task E11.3, [`commands`]).
+/// has, and nothing of Torro's. The mail window has its action rail instead (task E14.3,
+/// [`action_groups`]).
 struct Standards {
     /// Reply, Reply all, Forward (the first [`WRITE`]), then Archive and Delete – Delete off in the
     /// trash.
@@ -2831,13 +2777,13 @@ fn html_view<'a>(html: HtmlReading<'a>) -> HtmlView<'a, Message> {
 }
 
 /// The note under a mail shown as HTML: it comes from outside, no scripts run. "Copy text" stands in
-/// the reader's foot (task E11.3) and the panel's footer (task E9.4), not beside it.
+/// the rail's "More" (task E14.3) and the panel's footer (task E9.4), not beside it.
 fn html_note<'a>() -> Element<'a, Message> {
     note(tr("Mail from outside the suite: no scripts run, pictures from the web are loaded."))
 }
 
 /// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
-/// note on foreign text. "Copy text" stands in the reader's foot (task E11.3) and the panel's footer (task E9.4). The
+/// note on foreign text. "Copy text" stands in the rail's "More" (task E14.3) and the panel's footer (task E9.4). The
 /// web addresses in the text follow as "Links" ([`text_links`]), which the caller places.
 fn text_block<'a>(text: &'a Selectable, level: typo::Level) -> Element<'a, Message> {
     let mut block = column![].spacing(space::s());
@@ -3099,7 +3045,7 @@ mod tests {
         check(&reading)
     }
 
-    /// A mail entry of the demo, new and for the user, for the reader's command bar, pills and menus.
+    /// A mail entry of the demo, new and for the user, for the rail's groups and the panels.
     fn mail_entry() -> Item {
         let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
             &DemoSource::new(now()),
@@ -3112,152 +3058,285 @@ mod tests {
         item
     }
 
-    /// The words of the cells of the reader's command bar.
-    fn cell_words(cells: &[CommandCell]) -> Vec<String> {
-        cells.iter().map(|cell| cell.label.clone()).collect()
+    /// The groups of the rail as words: each group's title with its items' words.
+    fn rail_words(groups: &[RailGroup<'_, Message>]) -> Vec<(String, Vec<String>)> {
+        let words = |group: &RailGroup<'_, Message>| group.items.iter().map(|item| item.label.to_string()).collect();
+        groups.iter().map(|group| (group.label.to_string(), words(group))).collect()
     }
 
-    /// The words of a menu's entries, section by section.
-    fn menu_words(sections: &[MenuSection<'_, Message>]) -> Vec<Vec<String>> {
-        sections.iter().map(|section| section.items.iter().map(|item| item.label.to_string()).collect()).collect()
+    /// The group titled `label` (in the user's language).
+    fn group<'g, 'a>(groups: &'g [RailGroup<'a, Message>], label: &str) -> &'g RailGroup<'a, Message> {
+        groups.iter().find(|group| group.label == label).expect("the group")
     }
 
-    /// Task E11.3: the command bar holds exactly Reply, Forward, Archive, Delete and – for an entry
-    /// that is not done – Later, then "…"; each sends what its key sends, Delete is off in the trash.
+    /// What the item `word` of the group `label` sends, `None` when it is off.
+    fn sends(groups: &[RailGroup<'_, Message>], label: &str, word: &str) -> Option<Message> {
+        let item = group(groups, label).items.iter().find(|item| item.label == word).expect("the item");
+        item.press()
+    }
+
+    /// The flags' words of the mail in `reading`: Flag or Unflag, Mark read or Mark unread.
+    fn mark_words(reading: &Reading<'_>) -> Vec<String> {
+        let flags = &reading.summary().expect("headers").flags;
+        let flag = if flags.contains(&Flag::Flagged) { tr("Unflag") } else { tr("Flag") };
+        let read = if flags.contains(&Flag::Seen) { tr("Mark unread") } else { tr("Mark read") };
+        vec![flag.to_owned(), read.to_owned()]
+    }
+
+    fn strings(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    /// Task E14.3: for a mail entry the rail holds Reply, File, Torro, Mark, Mute and More in this
+    /// order, Mute and More at the foot, Reply in the accent; every item sends what its button or key
+    /// sent before and shows its key; a click on a group's icon sends its first item.
     #[test]
-    fn the_command_bar_holds_reply_forward_archive_delete_later_and_more() {
+    fn an_entrys_rail_holds_every_group_with_the_messages_of_before() {
         let item = mail_entry();
+        let folders = folders();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            let standard = [tr("Reply"), tr("Forward"), trc("action", "Archive"), tr("Delete")];
-            assert_eq!(cell_words(&command_cells(reading, None)), standard, "a folder's message");
-            let cells = command_cells(reading, Some(&item));
-            assert_eq!(cell_words(&cells), [standard.as_slice(), &[tr("Later")]].concat(), "an entry");
-            let mail = |n: usize, action: MailAction| {
-                let sent = cells[n].message.as_ref();
-                matches!(sent, Some(Message::Mail(sent, id)) if *sent == action && id == "m:w1")
+            let anchors = detail::Anchors::default().with_rail();
+            let groups =
+                action_groups(reading, Some(ReaderEntry { item: &item, hide: true }), &folders, true, &anchors);
+            let move_to = lane_word(Lane::Info);
+            assert_eq!(
+                rail_words(&groups),
+                [
+                    (tr("Reply").to_owned(), strings(&[tr("Reply"), tr("Reply all"), tr("Forward")])),
+                    (
+                        tr("File").to_owned(),
+                        vec![
+                            tr("Done").to_owned(),
+                            tr("Later…").to_owned(),
+                            move_to.clone(),
+                            trc("action", "Archive").to_owned(),
+                            tr("Delete").to_owned()
+                        ]
+                    ),
+                    (tr("Torro").to_owned(), strings(&[tr("Task"), tr("Event"), tr("Category…")])),
+                    (tr("Mark").to_owned(), mark_words(reading)),
+                    (tr("Mute").to_owned(), strings(&[tr("Mute…")])),
+                    (tr("More").to_owned(), strings(&[tr("Copy text"), tr("Close")])),
+                ]
+            );
+            let feet: Vec<bool> = groups.iter().map(|group| group.foot).collect();
+            assert_eq!(feet, [false, false, false, false, true, true], "Mute and More at the foot");
+            assert!(groups[0].accent && groups[0].items[0].accent, "Reply in the accent");
+            assert!(groups[1..].iter().all(|group| !group.accent));
+            let mail = |sent: Option<Message>, action: MailAction| matches!(sent, Some(Message::Mail(sent, id)) if sent == action && id == "m:w1");
+            let (reply, file, torro) = (tr("Reply"), tr("File"), tr("Torro"));
+            assert!(mail(sends(&groups, reply, tr("Reply")), MailAction::Reply));
+            assert!(mail(sends(&groups, reply, tr("Reply all")), MailAction::ReplyAll));
+            assert!(mail(sends(&groups, reply, tr("Forward")), MailAction::Forward));
+            let entry = |sent: Option<Message>| match sent {
+                Some(Message::SetDone(id, true) | Message::AskSnooze(id) | Message::AskLane(id)) => id == item.id,
+                Some(Message::AskTask(id) | Message::AskEvent(id) | Message::AskCategory(id)) => id == item.id,
+                Some(Message::AskHide(id)) => id == item.id,
+                _ => false,
             };
-            assert!(mail(0, MailAction::Reply) && mail(1, MailAction::Forward));
-            assert!(mail(2, MailAction::Archive) && mail(3, MailAction::Delete));
-            assert!(matches!(&cells[4].message, Some(Message::AskSnooze(id)) if *id == item.id));
-            let trash = Reading { in_trash: true, ..*reading };
-            assert!(command_cells(&trash, None)[3].message.is_none(), "Delete off in the trash");
-            let done = Item { state: State::Done { at: now() }, ..item.clone() };
-            assert_eq!(cell_words(&command_cells(reading, Some(&done))), standard, "a done entry is not put off");
-            // Words for all cells or none, across the reader's whole width.
-            let labels = [standard.as_slice(), &[tr("Later")]].concat();
-            assert!(widgets::command_words(&labels, 1200.0), "the wide reader speaks");
-            assert!(!widgets::command_words(&labels, 400.0), "a narrow one shows icons");
-            for room in [400.0, 900.0, 1400.0] {
-                let _ = commands(reading, Some(&item), &detail::Anchors::default(), room);
+            assert!(entry(sends(&groups, file, tr("Done"))));
+            assert!(matches!(sends(&groups, file, tr("Later…")), Some(Message::AskSnooze(_))));
+            assert!(entry(sends(&groups, file, tr("Later…"))));
+            assert!(
+                matches!(sends(&groups, file, &move_to), Some(Message::AskLane(_)))
+                    && entry(sends(&groups, file, &move_to))
+            );
+            assert!(mail(sends(&groups, file, trc("action", "Archive")), MailAction::Archive));
+            assert!(mail(sends(&groups, file, tr("Delete")), MailAction::Delete));
+            assert!(matches!(sends(&groups, torro, tr("Task")), Some(Message::AskTask(_))));
+            assert!(matches!(sends(&groups, torro, tr("Event")), Some(Message::AskEvent(_))));
+            assert!(matches!(sends(&groups, torro, tr("Category…")), Some(Message::AskCategory(_))));
+            for word in [tr("Task"), tr("Event"), tr("Category…")] {
+                assert!(entry(sends(&groups, torro, word)), "{word}");
+            }
+            assert!(matches!(sends(&groups, tr("Mute"), tr("Mute…")), Some(Message::AskHide(id)) if id == item.id));
+            assert!(matches!(sends(&groups, tr("More"), tr("Copy text")), Some(Message::CopyText)));
+            assert!(matches!(sends(&groups, tr("More"), tr("Close")), Some(Message::CloseDetail)));
+            let marks = &group(&groups, tr("Mark")).items;
+            let flagged = reading.summary().expect("headers").flags.contains(&Flag::Flagged);
+            assert!(mail(marks[0].press(), MailAction::Flag(!flagged)));
+            assert!(matches!(marks[1].press(), Some(Message::Mail(MailAction::Read(_), id)) if id == "m:w1"));
+            // The keys, as the window has them: `e` is Done at an entry, so Archive shows none.
+            let keys: Vec<Vec<&str>> = groups.iter().map(|g| g.items.iter().map(|i| i.key).collect()).collect();
+            assert_eq!(
+                keys,
+                [
+                    vec!["R", "A", "F"],
+                    vec!["E", "S", "L", "", "#"],
+                    vec!["T", "C", ""],
+                    vec!["", ""],
+                    vec!["M"],
+                    vec!["", "Esc"]
+                ]
+            );
+            // A click on a group's icon does its first item; its icon is that item's.
+            for group in &groups {
+                assert_eq!(format!("{:?}", group.first_press()), format!("{:?}", group.items[0].press()));
+                assert!(group.anchor.is_some(), "{}: the open group hangs at its icon", group.label);
+            }
+            for group in &groups[1..4] {
+                assert_eq!(group.icon, group.items[0].icon, "{}", group.label);
+            }
+            assert_eq!((groups[4].icon, groups[5].icon), (Icon::BellOff, Icon::Ellipsis));
+            // The items that open a menu or dialog hang it at their row; the others need no anchor.
+            let anchored: Vec<String> = groups
+                .iter()
+                .flat_map(|group| {
+                    group.items.iter().filter(|item| item.anchor.is_some()).map(|item| item.label.to_string())
+                })
+                .collect();
+            assert_eq!(
+                anchored,
+                [
+                    tr("Later…").to_owned(),
+                    move_to,
+                    tr("Task").to_owned(),
+                    tr("Event").to_owned(),
+                    tr("Category…").to_owned(),
+                    tr("Mute…").to_owned()
+                ]
+            );
+            // Expanded and collapsed, with and without its button, a group open or none.
+            for mode in [widgets::RailMode::Collapsed, widgets::RailMode::Expanded] {
+                for open in [None, Some(1), Some(5)] {
+                    let _ = widgets::action_rail(
+                        groups.clone(),
+                        mode,
+                        open,
+                        Message::RailOpen,
+                        Some(Message::ToggleActions),
+                    );
+                }
             }
         });
     }
 
-    /// Task E11.3: Reply's menu holds exactly "Reply all" (`a`); "…" holds Flag, read, for an entry
-    /// Done or Reopen (`e`) and "Move to …" (`l`), and in the reader Close (Escape) – each sending
-    /// what the buttons sent before.
+    /// Task E14.3: a done entry is opened again and not put off; "Re-categorize" only with a decision
+    /// model; an entry that cannot be muted has no group "Mute".
     #[test]
-    fn the_menus_hold_what_the_bar_leaves_out() {
-        let reply = reply_menu("m:w1");
-        assert_eq!(menu_words(&reply), [[tr("Reply all")]]);
-        let all = &reply[0].items[0];
-        assert!(matches!(&all.on_press, Message::Mail(MailAction::ReplyAll, id) if id == "m:w1"));
-        assert_eq!(all.trail, Trail::Kbd("A"));
-        let item = mail_entry();
+    fn a_done_entry_reopens_and_the_model_adds_recategorize() {
+        let item = Item { state: State::Done { at: now() }, ..mail_entry() };
+        let folders = folders();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            let summary = reading.summary().expect("headers");
-            let flagged = summary.flags.contains(&Flag::Flagged);
-            let flag = if flagged { tr("Unflag") } else { tr("Flag") };
-            let read = if summary.flags.contains(&Flag::Seen) { tr("Mark unread") } else { tr("Mark read") };
-            let more = more_menu(reading, Some(&item), true);
-            let move_to = lane_word(Lane::Info);
-            assert_eq!(
-                menu_words(&more),
-                [
-                    vec![flag.to_owned(), read.to_owned()],
-                    vec![tr("Done").to_owned(), move_to.clone(), tr("Category…").to_owned()],
-                    vec![tr("Close").to_owned()]
-                ]
-            );
-            let sent: Vec<&Message> =
-                more.iter().flat_map(|section| section.items.iter().map(|i| &i.on_press)).collect();
-            assert!(matches!(sent[0], Message::Mail(MailAction::Flag(on), id) if *on != flagged && id == "m:w1"));
-            assert!(matches!(sent[1], Message::Mail(MailAction::Read(_), id) if id == "m:w1"));
-            assert!(matches!(sent[2], Message::SetDone(id, true) if *id == item.id));
-            assert!(matches!(sent[3], Message::AskLane(id) if *id == item.id));
-            assert!(matches!(sent[4], Message::AskCategory(id) if *id == item.id), "task E12.8");
-            assert!(matches!(sent[5], Message::CloseDetail));
-            let keys: Vec<Trail> = more.iter().flat_map(|section| section.items.iter().map(|i| i.trail)).collect();
-            assert_eq!(
-                keys,
-                [Trail::None, Trail::None, Trail::Kbd("E"), Trail::Kbd("L"), Trail::None, Trail::Kbd("Esc")]
-            );
-            // A folder's message: the mail's own entries and Close; the panel (task E11.4) has its ✕.
-            let folder = more_menu(reading, None, true);
-            assert_eq!(menu_words(&folder), [vec![flag.to_owned(), read.to_owned()], vec![tr("Close").to_owned()]]);
-            assert_eq!(more_menu(reading, None, false).len(), 1, "no Close in the panel");
-            let done = Item { state: State::Done { at: now() }, ..item.clone() };
-            let reopen = more_menu(reading, Some(&done), true);
-            assert!(matches!(&reopen[1].items[0].on_press, Message::SetDone(_, false)), "a done entry reopens");
-        });
-    }
-
-    /// Task E11.3: the pills are exactly Task, Event, Mute… for an entry – no AI pills of their own:
-    /// the dialogs fill themselves in –, no Mute… where it cannot be muted – and Task, Mute… for a
-    /// folder's message; each sends what its button sent before.
-    #[test]
-    fn the_pills_are_what_torro_adds() {
-        let item = mail_entry();
-        let words = |pills: &[Pill]| pills.iter().map(|pill| pill.label.clone()).collect::<Vec<_>>();
-        reading_of("m:w1", MailFormat::Html, true, |reading| {
-            let all = pills(reading, Some(ReaderEntry { item: &item, hide: true }));
-            // Task E12.8 adds "Category…" before "Mute…"; "Re-categorize" only with a model
-            // set up (`docs/ki.md`, principle 1), and this reading has none.
-            assert_eq!(words(&all), [tr("Task"), tr("Event"), tr("Category…"), tr("Mute…")]);
-            let last = all.len() - 1;
-            assert!(matches!(all[last - 1].message.as_ref(), Some(Message::AskCategory(id)) if *id == item.id));
-            let sent = |n: usize| all[n].message.as_ref();
-            assert!(matches!(sent(0), Some(Message::AskTask(id)) if *id == item.id));
-            assert!(matches!(sent(1), Some(Message::AskEvent(id)) if *id == item.id));
-            assert!(matches!(sent(3), Some(Message::AskHide(id)) if *id == item.id));
-            assert!(all.iter().all(|pill| pill.tip.is_none()), "on, no tooltip of their own");
             let anchors = detail::Anchors::default();
-            let _ = pill_row(all.clone(), &anchors);
-            let quiet = pills(reading, Some(ReaderEntry { item: &item, hide: false }));
-            assert_eq!(words(&quiet), [tr("Task"), tr("Event"), tr("Category…")], "no bell");
-            let folder = pills(reading, None);
-            assert_eq!(words(&folder), [tr("Task"), tr("Mute…")]);
-            assert!(matches!(folder[0].message.as_ref(), Some(Message::AskMailTask(id)) if id == "m:w1"));
-            assert!(matches!(folder[1].message.as_ref(), Some(Message::AskMuteMail(id)) if id == "m:w1"));
-            let _ = head(reading, None, &anchors, 800.0);
+            let entry = Some(ReaderEntry { item: &item, hide: false });
+            let groups = action_groups(reading, entry, &folders, false, &anchors);
+            let file = &group(&groups, tr("File")).items;
+            assert_eq!(file[0].label, tr("Reopen"));
+            assert!(
+                matches!(file[0].press(), Some(Message::SetDone(id, false)) if id == item.id),
+                "a done entry reopens"
+            );
+            assert!(file.iter().all(|i| i.label != tr("Later…")), "a done entry is not put off");
+            assert!(groups.iter().all(|g| g.label != tr("Mute")), "nothing to mute: no group");
+            let more = &group(&groups, tr("More")).items;
+            assert!(more.iter().all(|i| i.label != tr("Close")), "the panel has its ✕");
+            assert!(group(&groups, tr("Torro")).items.iter().all(|i| i.label != tr("Re-categorize")), "no model");
+            let deciding = Reading { deciding: true, ..*reading };
+            let groups = action_groups(&deciding, entry, &folders, false, &anchors);
+            let torro = &group(&groups, tr("Torro")).items;
+            let last = torro.last().expect("an item");
+            assert_eq!(last.label, tr("Re-categorize"));
+            assert!(last.accent && matches!(last.press(), Some(Message::Reclassify(id)) if id == item.id));
         });
     }
 
-    /// Task E11.3: the foot holds "HTML | Text", "Light | Dark" (only while the HTML shows) and "Copy
-    /// text", each where the mail has it, and nothing – no foot at all – while the mail loads.
+    /// Task E14.3: a folder's message has no Done, Later, "Move to …", Event or Category – Task makes
+    /// a task of the message, the bell mutes its own traits, `e` archives it; in the trash it has no
+    /// Delete, in an account without an archive folder no Archive.
     #[test]
-    fn the_foot_holds_the_view_once_the_mail_is_in() {
-        let side = layout::page_padding().left;
+    fn a_folders_message_files_as_its_account_allows() {
+        let folders = folders();
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
+            let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
+            assert_eq!(titles, strings(&[tr("Reply"), tr("File"), tr("Torro"), tr("Mark"), tr("Mute"), tr("More")]));
+            let file = &group(&groups, tr("File")).items;
+            assert_eq!(
+                file.iter().map(|i| i.label.to_string()).collect::<Vec<_>>(),
+                strings(&[trc("action", "Archive"), tr("Delete")])
+            );
+            assert_eq!((file[0].key, file[1].key), ("E", "#"), "`e` archives in a folder");
+            assert_eq!(group(&groups, tr("File")).icon, Icon::Archive, "the icon does what a click does");
+            let torro = &group(&groups, tr("Torro")).items;
+            assert_eq!(torro.len(), 1);
+            assert!(matches!(torro[0].press(), Some(Message::AskMailTask(id)) if id == "m:w1"));
+            let mute = sends(&groups, tr("Mute"), tr("Mute…"));
+            assert!(matches!(mute, Some(Message::AskMuteMail(id)) if id == "m:w1"), "the message's own traits");
+            // An account without an archive folder: no Archive.
+            let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
+            let groups = action_groups(reading, None, &no_archive, true, &detail::Anchors::default());
+            let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
+            assert_eq!(file, strings(&[tr("Delete")]));
+        });
+        // The trash's message (`m:w12`) is not deleted again.
+        reading_of("m:w12", MailFormat::Html, true, |reading| {
+            let groups = action_groups(reading, None, &folders, true, &detail::Anchors::default());
+            let file: Vec<String> = group(&groups, tr("File")).items.iter().map(|i| i.label.to_string()).collect();
+            assert_eq!(file, strings(&[trc("action", "Archive")]));
+        });
+    }
+
+    /// Task E14.3: "More" offers the other view of a mail with HTML (`v`), the other colours while the
+    /// HTML shows, "Copy text" and – in the reader – Close; a mail without HTML only the last two.
+    /// While the mail loads Mark and More wait for it.
+    #[test]
+    fn more_offers_the_view_of_the_mail_as_it_stands() {
+        let folders = folders();
+        let more = |reading: &Reading<'_>, close| {
+            let groups = action_groups(reading, None, &folders, close, &detail::Anchors::default());
+            groups.iter().find(|group| group.label == tr("More")).map(|group| {
+                group
+                    .items
+                    .iter()
+                    .map(|item| (item.label.to_string(), item.key, format!("{:?}", item.press())))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let item = |word: &str, key, message: Message| (word.to_owned(), key, format!("{:?}", Some(message)));
         reading_of("m:p2", MailFormat::Html, true, |reading| {
-            assert_eq!(foot_controls(reading.view_tools()).len(), 3, "HTML | Text, Light | Dark, Copy text");
-            assert!(foot(reading.view_tools(), side).is_some());
+            assert_eq!(
+                more(reading, true),
+                Some(vec![
+                    item(tr("Show as text"), "V", Message::ShowMailAs(MailFormat::Text)),
+                    item(tr("Dark colours"), "", Message::MailColors(Scheme::Dark)),
+                    item(tr("Copy text"), "", Message::CopyText),
+                    item(tr("Close"), "Esc", Message::CloseDetail),
+                ])
+            );
+            let dark = HtmlReading { scheme: Scheme::Dark, ..reading.html.expect("its HTML") };
+            let dark = Reading { html: Some(dark), ..*reading };
+            let light = more(&dark, false).expect("More");
+            assert_eq!(light[1], item(tr("Light colours"), "", Message::MailColors(Scheme::Light)));
         });
         reading_of("m:p2", MailFormat::Text, true, |reading| {
-            assert_eq!(foot_controls(reading.view_tools()).len(), 2, "no Light | Dark for the text");
+            assert_eq!(
+                more(reading, false),
+                Some(vec![
+                    item(tr("Show as HTML"), "V", Message::ShowMailAs(MailFormat::Html)),
+                    item(tr("Copy text"), "", Message::CopyText),
+                ]),
+                "no colours for the text"
+            );
         });
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert_eq!(foot_controls(reading.view_tools()).len(), 1, "a text mail: Copy text");
+            assert_eq!(more(reading, false), Some(vec![item(tr("Copy text"), "", Message::CopyText)]), "a text mail");
         });
-        reading_of("m:p2", MailFormat::Html, false, |reading| {
-            assert!(foot_controls(reading.view_tools()).is_empty(), "no switch while it loads");
-            assert!(foot(reading.view_tools(), side).is_none(), "and no foot");
+        reading_of("m:w1", MailFormat::Html, false, |reading| {
+            assert_eq!(more(reading, false), None, "nothing to show while it loads");
+            assert_eq!(more(reading, true).map(|items| items.len()), Some(1), "but Close");
+            let loading = Reading { summary: None, ..*reading };
+            let groups = action_groups(&loading, None, &folders, false, &detail::Anchors::default());
+            let titles: Vec<String> = rail_words(&groups).into_iter().map(|(title, _)| title).collect();
+            assert_eq!(titles, strings(&[tr("Reply"), tr("Torro"), tr("Mute")]), "only what needs no headers");
         });
     }
 
-    /// Task E11.3: the attachments stand as chips over the foot once the mail is in – none while it
-    /// loads, none for inline pictures –, and a long name ends in "…" before it takes half the line.
+    /// Task E11.3: the attachments stand as chips at the reader's bottom once the mail is in – none
+    /// while it loads, none for inline pictures –, and a long name ends in "…" before it takes half
+    /// the line.
     #[test]
-    fn attachments_are_chips_over_the_foot() {
+    fn attachments_are_chips_at_the_bottom() {
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             assert!(attachment_line(reading, 800.0, 24.0).is_some(), "the budget's sheet");
         });
@@ -3287,7 +3366,7 @@ mod tests {
     }
 
     /// Task E11.3: the reader has no red button – no part of it draws `style::button::primary`; Reply
-    /// is the command bar's strong cell, Torro's buttons are pills.
+    /// stands in the rail in the accent (task E14.3).
     #[test]
     fn the_reader_has_no_red_button() {
         let source = include_str!("mail.rs");
@@ -3296,12 +3375,9 @@ mod tests {
             "reader_mail",
             "head",
             "sender_block",
-            "pill_row",
-            "commands",
             "attachment_line",
             "attachment_chip",
-            "foot",
-            "foot_controls",
+            "action_groups",
             // The mail window's panel (task E11.4).
             "entry_panel",
             "command_body",
@@ -3317,52 +3393,47 @@ mod tests {
         assert!(function_source(source, "panel_standards").contains(concat!("button::", "primary")));
     }
 
-    /// Task E11.4: the mail window's panel is built from the reader's parts – command bar, the head
-    /// without the subject (the panel's title has it), the pills, the mail – and none of the split of
-    /// task E9.4, which the hub and the App Feed keep; its footer holds the attachments' chips and the
-    /// foot's switches, nothing while the mail loads.
+    /// Task E14.3: the reader and the mail window's panel have no bar over the mail and no buttons in
+    /// the head – the rail beside the reader, the window's `Panel::side` beside the panel –, and the
+    /// panel's footer holds only the attachments; the split of task E9.4 stays for the hub and the
+    /// App Feed.
     #[test]
-    fn the_mail_windows_panel_takes_the_readers_parts() {
+    fn the_mail_windows_reader_and_panel_leave_the_actions_to_the_rail() {
         let source = include_str!("mail.rs");
+        let reader = function_source(source, "reader");
+        assert!(reader.contains("row![page, rail]"), "the rail at the reader's right, over its whole height");
+        for name in ["reader", "head_with", "command_body", "panel", "entry_panel", "panel_foot"] {
+            let body = function_source(source, name);
+            for part in [".bar(", "_button(", "segmented(", "view_controls("] {
+                assert!(!body.contains(part), "{name}: {part}");
+            }
+        }
         let command = function_source(source, "command_body");
-        for part in ["head_with(", "detail::properties(", "panel_letter("] {
+        for part in ["head_with(", "detail::properties(", "panel_letter(", "RailMode::Collapsed.width()"] {
             assert!(command.contains(part), "{part}");
         }
-        // The command bar stands fixed above the body (`Panel::bar`), not in what scrolls.
-        assert!(!command.contains("commands("), "the bar does not scroll with the mail");
-        assert!(function_source(source, "panel_bar").contains("commands("));
         assert!(command.contains("room, false)"), "the head without the subject");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
         let split = function_source(source, "split_body");
         assert!(split.contains("panel_standards(") && split.contains("header("), "the hub's panel as in E9.4");
-        let foot = function_source(source, "panel_foot");
-        assert!(foot.contains("attachment_chips(") && foot.contains("foot_controls("), "the reader's foot");
-        for name in ["panel", "entry_panel"] {
-            assert!(function_source(source, name).contains("panel_foot("), "{name}: the reader's foot");
-            assert!(function_source(source, name).contains(".bar(panel_bar("), "{name}: the fixed bar");
-        }
         let width = size::panel();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            assert_eq!(panel_foot(reading, width).len(), 1, "the sheet's chip over Copy text, in one column");
+            assert_eq!(panel_foot(reading, width).len(), 1, "the sheet's chip");
         });
         reading_of("m:p2", MailFormat::Html, true, |reading| {
-            assert_eq!(panel_foot(reading, width).len(), 1, "the switches of an HTML mail");
+            assert!(panel_foot(reading, width).is_empty(), "no attachments, no footer: the switches are in More");
         });
         reading_of("m:w1", MailFormat::Html, false, |reading| {
             assert!(panel_foot(reading, width).is_empty(), "no footer while the mail loads");
-            assert!(foot_controls(reading.view_tools()).is_empty());
         });
         let item = mail_entry();
         let entry = ReaderEntry { item: &item, hide: true };
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             for width in [width, 480.0, 0.0] {
-                let _ = entry_panel(reading, entry, tr("For me").to_owned(), &anchors, width);
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), width);
                 let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width });
             }
-            // The panel's "…" leaves Close out: the ✕ stands in its head.
-            let more = more_menu(reading, Some(&item), false);
-            assert!(more.iter().all(|section| section.items.iter().all(|i| i.label != tr("Close"))));
         });
     }
 
@@ -3494,21 +3565,21 @@ mod tests {
                         // narrow one.
                         for width in [size::panel(), 480.0] {
                             let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width });
-                            let _ = body(&reading, Bars::Command { entry, width }, &anchors);
+                            let _ = body(&reading, Bars::Command { entry, width });
                             if let Some(entry) = entry {
-                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), &anchors, width);
+                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), width);
                             }
                         }
-                        let _ = body(&reading, Bars::Split, &anchors);
-                        let _ = reader(reading, entry, anchors.clone());
-                        // The reader's parts, which it lays out only once it knows its width.
-                        let _ = commands(&reading, entry.map(|entry| entry.item), &anchors, 900.0);
-                        let _ = head(&reading, entry, &anchors, 900.0);
-                        let _ = more_menu(&reading, entry.map(|entry| entry.item), true);
+                        let _ = body(&reading, Bars::Split);
+                        let groups = action_groups(&reading, entry, &folders, true, &anchors);
+                        let rail =
+                            widgets::action_rail(groups, widgets::RailMode::Collapsed, None, Message::RailOpen, None);
+                        let _ = reader(reading, entry, rail);
+                        // The reader's head, which it lays out only once it knows its width.
+                        let _ = head(&reading, entry, 900.0);
                     }
                     let _ = reader_mail(&reading, reader_widths(900.0, html_edge(&reading).is_some()));
                     let _ = attachment_line(&reading, 900.0, layout::page_padding().left);
-                    let _ = foot(reading.view_tools(), layout::page_padding().left);
                 }
             }
         }

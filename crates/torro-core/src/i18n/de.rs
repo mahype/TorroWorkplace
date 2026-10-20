@@ -1239,8 +1239,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{source}: no popups", "{source}: keine Popups"),
     ("Newest first", "Neueste zuerst"),
     ("Oldest first", "Älteste zuerst"),
-    // The mail window's large buttons (E11.1)
-    ("More replies", "Weitere Antworten"),
+    // The mail's action rail (E14.1, E14.3)
+    ("Collapse actions", "Aktionen einklappen"),
+    ("Dark colours", "Dunkle Farben"),
+    ("Expand actions", "Aktionen ausklappen"),
+    ("File", "Ablegen"),
+    ("Later…", "Später…"),
+    ("Light colours", "Helle Farben"),
+    ("Mark", "Kennzeichnen"),
+    ("Show as HTML", "Als HTML zeigen"),
+    ("Show as text", "Als Text zeigen"),
     // Window kinds of torroinbox (E8.1)
     ("Mail · {view}", "E-Mail · {view}"),
     ("App Feed · {view}", "App-Feed · {view}"),

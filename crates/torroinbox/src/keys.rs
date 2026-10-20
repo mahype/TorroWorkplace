@@ -13,7 +13,7 @@
 //!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
 //!    reader between HTML and text (task M9.7; the app decides whether it has HTML); in a menu of choices the digits pick
-//!    its entries; in the date picker the arrows change
+//!    its entries; `[` collapses the sidebar and `]` the mail's action rail (task E14.3); in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
 //!    is not here: `widgets::escape` closes whatever is in front.
@@ -118,6 +118,8 @@ pub enum Key {
     Digit(u8),
     /// `[` ([`shell::is_sidebar_key`]).
     Sidebar,
+    /// `]` ([`shell::is_actions_key`], task E14.3).
+    Actions,
 }
 
 /// Where the keys go: what is in front of the list.
@@ -226,6 +228,9 @@ pub enum Command {
     Confirm,
     /// Collapse or expand the sidebar, open or close the drawer.
     Sidebar,
+    /// Expand or collapse the mail's action rail (task E14.3); the app does it only in the wide mail
+    /// window.
+    Actions,
 }
 
 /// The key of a key press, for `iced::event::listen_with`: `None` for keys a widget took, keys
@@ -334,6 +339,10 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
     if shell::is_sidebar_key(key, modifiers) {
         return Some(Key::Sidebar);
     }
+    // `]` is typed with AltGr or Option on some layouts, so it is checked before the modifiers too.
+    if shell::is_actions_key(key, modifiers) {
+        return Some(Key::Actions);
+    }
     if modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
     }
@@ -382,6 +391,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Overview, Key::Right | Key::L) => Some(Command::ColumnRight),
         (Focus::Overview, key) => command(Focus::List, key),
         (Focus::List | Focus::Elsewhere, Key::Sidebar) => Some(Command::Sidebar),
+        (Focus::List | Focus::Elsewhere, Key::Actions) => Some(Command::Actions),
         (Focus::List, Key::Down) => Some(Command::Next),
         (Focus::List, Key::Up) => Some(Command::Previous),
         (Focus::List, Key::Enter) => Some(Command::Open),
@@ -480,6 +490,24 @@ mod tests {
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
             assert_eq!(command(Focus::List, key), Some(wanted), "{key:?}");
+        }
+    }
+
+    /// Task E14.3: `]` expands or collapses the mail's action rail – also typed with AltGr (Ctrl +
+    /// Alt) or Option, never with the logo key, never when a text field took it – and works where `[`
+    /// works: in the list, the overview and behind the navigation menu, not in an open menu or dialog.
+    #[test]
+    fn the_bracket_switches_the_action_rail() {
+        for modifiers in [Modifiers::empty(), Modifiers::CTRL | Modifiers::ALT, Modifiers::ALT] {
+            assert_eq!(heard(char("]"), modifiers, Status::Ignored), Some(Key::Actions), "{modifiers:?}");
+        }
+        assert_eq!(heard(char("]"), Modifiers::LOGO, Status::Ignored), None, "the logo key");
+        assert_eq!(heard(char("]"), Modifiers::empty(), Status::Captured), None, "a text field types it");
+        for focus in [Focus::List, Focus::Overview, Focus::Elsewhere] {
+            assert_eq!(command(focus, Key::Actions), Some(Command::Actions), "{focus:?}");
+        }
+        for focus in [Focus::Choices, Focus::Mute, Focus::Picker, Focus::Task, Focus::Question] {
+            assert_eq!(command(focus, Key::Actions), None, "{focus:?}");
         }
     }
 

@@ -9,10 +9,9 @@
 //! inbox's comfortable density (task E8.2: cards, card heads, chips, source tiles, avatars and
 //! reading text), `-- --mailbar` the mail's action rail (task E14.1: collapsed, with an open group
 //! at the top and one at the foot, without its button as in the panel, expanded; an item off) and
-//! the mail window's large buttons (task
-//! E11.1: the styles `cell`, `pill`, the track and the flat input in every state, the command bar in
-//! three widths, the strip under a row with and without words, the pills, the attachment chips and
-//! the reader's foot), `-- --window` the example "Tasks" window (sample data from
+//! the mail window's parts (task
+//! E11.1: the styles `cell`, `pill` and the flat input in every state, the attachment chips),
+//! `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
@@ -2244,45 +2243,7 @@ fn mailbar() -> Element<'static, Msg> {
             cell(state, input)
         })
         .collect();
-    let switches = row![
-        cell("HTML chosen", widgets::view_switch(views(), 0)),
-        cell("Text chosen", widgets::view_switch(views(), 1)),
-        cell("Dark chosen", widgets::view_switch(looks(), 1)),
-    ]
-    .spacing(space::xl());
-    let styles = column![
-        line("cell", cells),
-        line("pill", pills),
-        line("text_input_flat", flat),
-        line("track (view_switch)", vec![switches.into()]),
-    ]
-    .spacing(space::l());
-
-    let labels = ["Reply", "Forward", "Archive", "Delete", "Later"];
-    let bars = [360.0, 560.0, 900.0].map(|width| {
-        let words = widgets::command_words(&labels, width);
-        let bar = widgets::command_bar(vec![
-            widgets::command_split(Icon::Reply, labels[0], words, Some(Msg::Noop), Some(Msg::Noop)),
-            widgets::command_cell(Icon::Forward, labels[1], words, false, Some(Msg::Noop)),
-            widgets::command_cell(Icon::Archive, labels[2], words, false, Some(Msg::Noop)),
-            widgets::command_cell(Icon::Trash2, labels[3], words, false, (width < 800.0).then_some(Msg::Noop)),
-            widgets::command_cell(Icon::Clock, labels[4], words, false, Some(Msg::Noop)),
-            widgets::command_more(Some(Msg::Noop)),
-        ]);
-        let note = if words { "words" } else { "icons, words as tooltip" };
-        labelled_owned(format!("{width} wide · {note} · Delete off at 900"), container(bar).width(width).into())
-    });
-
-    let pill_row = row![
-        widgets::pill_button(Icon::ListTodo, "Task", Some(Msg::Noop)),
-        widgets::with_tooltip(widgets::pill_button(Icon::Sparkles, "AI task", None), "AI task · Set up an AI first"),
-        widgets::pill_button(Icon::CalendarPlus, "Event", Some(Msg::Noop)),
-        widgets::pill_button(Icon::Sparkles, "AI event", Some(Msg::Noop)),
-        widgets::pill_button(Icon::BellOff, "Mute…", Some(Msg::Noop)),
-    ]
-    .spacing(space::s())
-    .wrap()
-    .vertical_spacing(space::s());
+    let styles = column![line("cell", cells), line("pill", pills), line("text_input_flat", flat),].spacing(space::l());
 
     let chips = row![
         widgets::file_chip("budget-q4.csv", "3 KB", Some(Msg::Noop)),
@@ -2292,27 +2253,14 @@ fn mailbar() -> Element<'static, Msg> {
     .spacing(space::s())
     .wrap()
     .vertical_spacing(space::s());
-    let foot = row![
-        widgets::view_switch(views(), 0),
-        widgets::view_switch(looks(), 1),
-        widgets::icon_button(Icon::Copy, "Copy text", Some(Msg::Noop)),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    let reader_end = column![
-        rule::horizontal(1).style(style::rule),
-        container(chips).padding([space::s(), space::xl()]),
-        rule::horizontal(1).style(style::rule),
-        container(foot).width(Fill).padding([space::s(), space::xl()]).style(style::container::window),
-    ]
-    .width(720);
+    let reader_end =
+        column![rule::horizontal(1).style(style::rule), container(chips).padding([space::s(), space::xl()]),]
+            .width(720);
 
     column![
         section("Action rail of a mail (E14.1)", action_rails()),
         section("Styles in every state", styles.into()),
-        section("Command bar (reader) in three widths", column(bars).spacing(space::l()).into()),
-        section("Torro pills", pill_row.into()),
-        section("Attachments and the reader's foot", reader_end.into()),
+        section("Attachments at the reader's bottom", reader_end.into()),
     ]
     .spacing(space::xxl())
     .padding(space::xl())
@@ -2446,21 +2394,6 @@ fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
         .foot(),
     ];
     groups.into_iter().zip(anchors).map(|(group, anchor)| group.at(anchor)).collect()
-}
-
-/// The view switch HTML | Text of the reader's foot.
-fn views() -> [(Icon, &'static str, Msg); 2] {
-    [(Icon::Code, "HTML", Msg::Noop), (Icon::AlignLeft, "Text", Msg::Noop)]
-}
-
-/// The view switch Light | Dark of the reader's foot.
-fn looks() -> [(Icon, &'static str, Msg); 2] {
-    [(Icon::Sun, "Light", Msg::Noop), (Icon::Moon, "Dark", Msg::Noop)]
-}
-
-/// [`labelled`] with a title made at run time.
-fn labelled_owned(title: String, body: Element<'static, Msg>) -> Element<'static, Msg> {
-    column![typo::text(typo::caption(), title).style(theme::text_3), body].spacing(space::xs()).into()
 }
 
 /// `body` under a small `CAPTION` title in `text_3`, as the fields of a dialog.

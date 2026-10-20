@@ -2229,7 +2229,7 @@ Nicht parallel: E14.2 und E14.3 ändern beide `crates/torroinbox/src/{list,mail,
   schmal, hell und dunkel. Übersetzungen im Bericht (voraussichtlich keine).
 
 ### E14.3 Leser und Paneel mit der Aktionsleiste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E14.2 · **Dateien:** `crates/torroinbox/src/{mail,app,detail,keys}.rs`,
   `crates/torro-gui/src/widgets.rs` und `crates/torro-gui/examples/gallery.rs` (nur Entfernen),
   `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`

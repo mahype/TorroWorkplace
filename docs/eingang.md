@@ -392,7 +392,7 @@ Design „Torro“ zeigt **kompakt**.
 
 | Eintrag | Sichtbar | Im Menü |
 |---|---|---|
-| Mail (Mail-Fenster) | Reply · Task · Done · Later | Forward, Event, Hide from Notification Hub |
+| Mail (Mail-Fenster) | Aktionsleiste rechts an der Mail (siehe unten); die Liste hat keine Knöpfe | – |
 | Einladung | Accept · Maybe · Decline · Later · Task | – |
 | Chat (Slack, WhatsApp, Talk) | ✕ · Reply · Task · Later · Glocke | Open in app |
 | GitHub, Nextcloud, ntfy, Skripte | ✕ · Open · Task · Later · Glocke | – |
@@ -407,6 +407,34 @@ Design „Torro“ zeigt **kompakt**.
 - **Freigaben** haben weder ✕ noch Later: Sie warten auf Ja oder Nein, das darf nicht versehentlich verschwinden.
 - **Go to window / Open** holt das Fenster nach vorn und aktiviert es: bei Agenten das Terminal der Sitzung (E2.4,
   am Mac E8.9), bei App-Quellen das Fenster der App.
+
+### Aktionsleiste der Mail (E14, Issue #241)
+
+Im Mail-Fenster stehen alle Aktionen einer Mail in **einer Leiste am rechten Rand** der Mail, über ihre ganze Höhe
+(Entwurf D in [`prototypes/inbox/mail-aktionsleiste.html`](prototypes/inbox/mail-aktionsleiste.html#d)). Der Leser hat
+keine Befehlsleiste, keine Pillen im Kopf und keinen Fuß mehr; die Liste zeigt keine Knöpfe (E14.2), es bleiben die
+Tasten. Unten im Leser stehen nur die Anhänge als Chips. Zentrale und App Feed behalten ihre Zeilenleiste und das Paneel
+aus E9.4.
+
+- **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht; leere Gruppen fallen weg:
+  **Reply** (Reply, Reply all, Forward; Icon in der Akzentfarbe), **File** (Done bzw. Reopen, Later…, Move to Info
+  bzw. For me, Archive, Delete), **Torro** (Task, Event, Category…, Re-categorize nur mit Entscheidungsmodell),
+  **Mark** (Flag, Mark read bzw. unread), unten abgesetzt **Mute** (Mute…) und **More** (Show as text bzw. HTML,
+  Light bzw. Dark colours, Copy text, im Leser Close). Archive und Delete nur, wo das Konto den Ordner hat und die
+  Mail nicht schon darin liegt; eine Ordnermail ohne Eintrag hat kein Done, Later, Move to, Event, Category.
+- **Eingeklappt** (Breite der eingeklappten Seitenleiste): ein Icon je Gruppe, ein Klick tut die erste Aktion der
+  Gruppe, Hover öffnet links daneben das Klappfeld der Gruppe mit Icon, Wort und Taste je Zeile, für alle Gruppen
+  gleich breit. **Ausgeklappt** (Breite der Seitenleiste): alle Gruppen offen mit Namen, als Spalte im Layout; die Mail
+  rückt nach innen, nichts liegt über ihr.
+- **Umschalten** nur im breiten Fenster: Knopf `panel-right` oben in der Leiste („Expand actions“ / „Collapse
+  actions“) oder Taste `]`, wie `[` für die Seitenleiste. Gemerkt je Fensterart und Ausschnitt in `ui.json`, nicht über
+  die API. In Mittel und Schmal steht die Mail im Paneel, die Leiste dort bleibt eingeklappt und hat keinen Knopf.
+- **Menüs und Dialoge** einer Aktion (Later, Move to, Task, Event, Category, Mute) öffnen links neben ihrer Zeile,
+  eingeklappt neben dem Icon ihrer Gruppe; auch über die Taste geöffnet hängen sie an der Leiste.
+- **Einladungen:** Accept, Maybe, Decline bleiben als Karte im Kopf der Mail.
+- **Nur Oberfläche:** Jede Aktion schickt dieselbe Nachricht wie zuvor Befehlsleiste, Pillen und Fuß und damit
+  denselben Befehl. Iced-Knöpfe lassen sich nicht per Tab erreichen; jede Aktion hat ihre Taste, im Klappfeld als
+  Tastenhinweis.
 
 ### Stummschalten nach Merkmalen
 
@@ -444,7 +472,8 @@ Quelle. „Hide“ und „Only Info“ für die Unterhaltung ohne Ablauf legen k
 verschieben nur diesen Eintrag. Befehle: [api.md](api.md), Fußnote 11.
 
 **Mail-Fenster (Issue #123, E8.25):** Mail hat **ein** Menü, die Glocke „Mute…“ – „Hide from inbox“ ist darin
-aufgegangen. Die Glocke steht in Zeilen und Karten (statt „…“), im Leser und im Paneel, `m` öffnet sie; für Mail-Einträge
+aufgegangen. Die Glocke steht in Zeilen und Karten (statt „…“), im Leser und im Paneel (im Mail-Fenster in der Gruppe
+„Mute“ der Aktionsleiste), `m` öffnet sie; für Mail-Einträge
 in jedem Fenster. Dauer: 1 Stunde, bis morgen, 1 Woche, immer. Was „Hide from inbox“ bot, steht so darin: „This
 conversation“ mit „Hide“ und „Always“ erledigt den Eintrag (die Mail bleibt ungelesen), Absender und Domain sind
 Merkmale, „Always to Info“ ist Absender mit „Only Info“; „Move to junk“ bleibt als letzter Punkt. Auch Nachrichten
