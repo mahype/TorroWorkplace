@@ -1,15 +1,15 @@
 # Einstellungen: die Steuerzentrale
 
-Stand: 2026-10-19. **Konzept zur Freigabe**; die Einstellungen in den Apps sind am 2026-10-14
+Stand: 2026-10-20. **Konzept zur Freigabe**; die Einstellungen in den Apps sind am 2026-10-14
 entschieden, ihre Ordnung am 2026-10-16 (#210, Entwurf B „Schlanke Zentrale“). Gebaut ist sie mit
 S.16–S.21: Jede App hat ihre Einstellungen hinter dem Zahnrad im eigenen Fenster, die Steuerzentrale
 hat nur noch die Abschnitte der Suite. Der Abschnitt [Bestand](#bestand-stand-2026-10-16) beschreibt
 den Stand davor.
 
-**Neu geordnet mit #231 (2026-10-19):** Accounts, API und MCP sind getrennt; „Agents & API“ und der geplante
-Abschnitt „AI“ entfallen. Die Entscheidungen stehen in [Accounts, API und MCP](#accounts-api-und-mcp-231),
+**Neu geordnet mit #231 (2026-10-19):** Accounts, API und MCP sind getrennt; „Agents & API“ entfällt.
+Am 2026-10-20 ist AI als ständiger Abschnitt direkt nach Accounts hinzugekommen. Die Entscheidungen stehen in [Accounts, API und MCP](#accounts-api-und-mcp-231),
 die Aufgaben in [tasks/steuerzentrale.md](tasks/steuerzentrale.md), Stufe 5. Nennt ein älterer Absatz (vor allem
-im [Bestand](#bestand-stand-2026-10-16)) noch „Agents & API“ oder „Settings › AI“, gilt dieser Abschnitt.
+im [Bestand](#bestand-stand-2026-10-16)) noch „Agents & API“ oder „Accounts › AI“, gilt die aktuelle Navigation oben.
 
 ### Die Regel
 
@@ -60,7 +60,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | Abschnitt | Inhalt | |
 |---|---|---|
 | **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
-| **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, AI, ntfy): die Anbieter links, rechts die Konten des gewählten mit seinem Satz darüber und „Add“ (#244); Detailseite je Konto: Status, Verbindung, Dienste, bei KI-Konten die Modelle mit Schaltern, Entfernen. Siehe [Accounts, API und MCP](#accounts-api-und-mcp-231) | v1, neu geordnet mit #231 (S.30, S.31) |
+| **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, ntfy): Anbieter links, Konten rechts; Status, Verbindung und Dienste je Konto. | v1 |
+| **AI** | Ständiger Abschnitt für KI-Anbieter, ihre Konten und Modelle sowie die Datenregel „Mail to cloud models“. | seit 2026-10-20 |
 | **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
 | **MCP** | Ob Agenten Torro über MCP nutzen dürfen; die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub | #231 (S.35) |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
@@ -71,11 +72,11 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
-Die Seitenleiste hat **eine** Liste: Overview, Accounts, API, MCP, Approvals, Workspaces, Appearance; General
+Die Seitenleiste hat **eine** Liste: Overview, Accounts, AI, API, MCP, Approvals, Workspaces, Appearance; General
 am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
-Mit #231 ziehen auch die Rechte von Assistent und Bots in das Fenster des Assistenten, die Datenregel unter
-Accounts › AI; „Agents & API“ und der geplante Abschnitt „AI“ entfallen.
+Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel steht
+seit 2026-10-20 unter AI; „Agents & API“ entfällt.
 
 ## Einstellungen in den Apps
 
@@ -236,18 +237,17 @@ agent“ verstand niemand als den Weg zu einem Modell. Aufgaben: S.23–S.26.
    Der eigene Assistent und seine Bots: im Fenster des Assistenten, Abschnitt Access. Alle nutzen denselben
    Rechte-Editor. Bindet die Suite später **externe MCP-Server** ein, steuert man den Zugriff darauf unter MCP.
 
-**KI-Konten stehen unter Accounts** (geändert mit #231; vorher als eigener Abschnitt „AI“ geplant, S.25
-entfällt). Sie sind die Gruppe „AI“ der Seite Accounts, mit „+ Add“ wie jede Gruppe; intern Konten wie bisher
-(`accounts.json`, Schlüssel im Schlüsselbund). Unter der Gruppe steht die Zeile der Datenregel „Mail to cloud
-models“ (vorher in den Rechten des Assistenten).
+**KI-Konten stehen im eigenen Abschnitt AI** (seit 2026-10-20 direkt nach Accounts). Dort gibt es
+„+ Add“; intern sind es Konten wie bisher (`accounts.json`, Schlüssel im Schlüsselbund). Unter den
+Konten steht die Datenregel „Mail to cloud models“ (vorher in den Rechten des Assistenten).
 
-- **Die Gruppe „AI“:** eine Zeile je Anbieter mit Name, Adresse bzw. „Found on this computer“, Status
+- **Der Abschnitt „AI“:** eine Zeile je Anbieter mit Name, Adresse bzw. „Found on this computer“, Status
   (verbunden, Server aus, Schlüssel abgelehnt) und der Zahl angeschalteter Modelle. Reihenfolge Open
   First: zuerst, was auf diesem Rechner installiert ist (Ollama, LM Studio), dann
   OpenRouter, dann andere OpenAI-kompatible Server, dann geschlossene Anbieter (Anthropic, OpenAI,
   Google). „Installiert“ ist nicht „rechnet hier“: Die `:cloud`-Modelle von Ollama laufen über das
   lokale Ollama, rechnen aber auf `ollama.com`. Der Ort jedes Modells steht an seiner Zeile.
-- **„+ Add“ der Gruppe** öffnet den bekannten Dialog direkt bei den KI-Anbietern: „On this computer“
+- **„+ Add“ des Abschnitts** öffnet den bekannten Dialog direkt bei den KI-Anbietern: „On this computer“
   (gefundene Server mit „Connect“), OpenRouter (API-Schlüssel), „Other OpenAI-compatible server“
   (Adresse, optional Schlüssel). Erst nach erfolgreicher Prüfung ist der Anbieter da.
 - **Claude ist ein Anbieter wie jeder andere:** ein KI-Konto über das Anthropic-Protokoll mit eigenem
@@ -256,7 +256,7 @@ models“ (vorher in den Rechten des Assistenten).
   angeboten: Er war nie eingerichtet, nur gefunden, also gab es nichts anzuzeigen und nichts
   abzuschalten. Codex bleibt ebenfalls außen vor (kein Weg, nur die Werkzeuge der Suite zu erlauben).
   Claude Code unter „MCP“ ist etwas anderes: Dort ruft der Agent die Suite über MCP.
-- **Die Kontoseite eines KI-Kontos** („‹ Accounts › Ollama“): Status und Verbindung, darunter
+- **Die Kontoseite eines KI-Kontos** („‹ AI › Ollama“): Status und Verbindung, darunter
   **„Models“**: eine Zeile je Modell mit Name, Merkmalen (Tools, Thinking, Context), dem Ort, an dem es
   rechnet („On this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle, die
   weder Werkzeuge nutzen noch entscheiden, stehen blass mit „Can't use tools or decide“ und ohne Schalter, weil
@@ -265,7 +265,7 @@ models“ (vorher in den Rechten des Assistenten).
   OpenRouter: Suche und „Show closed models“, weil es Hunderte sind. Ganz unten „Remove account…“.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
-  Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › Accounts“.
+  Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
 - **Am Anfang an:** alle nutzbaren Modelle (mit Werkzeugen oder entscheidend, #231), die **auf diesem Rechner rechnen** (Ollama ohne
   `:cloud`, LM Studio, OpenAI-kompatible Server an einer Adresse dieses Rechners). Modelle, die anderswo
   rechnen (Ollama Cloud, OpenRouter, Anthropic, Server im Netz), sind aus, bis man sie anschaltet:
@@ -276,11 +276,11 @@ models“ (vorher in den Rechten des Assistenten).
 - **Ein Modell anschalten, das anderswo rechnet, kann nur ein Mensch** (wie der Schalter
   `mail_to_cloud`, [api.md](api.md) Punkt 6). Abschalten dürfen auch Agenten, mit Freigabe.
 - **Ein abgeschaltetes Modell, das ein Modul noch nutzt** (Standard neuer Chats, ein Bot, die Wahl in
-  einer Unterhaltung): Das Modul zeigt es weiter mit dem Hinweis „Turned off in Settings › Accounts“ und
+  einer Unterhaltung): Das Modul zeigt es weiter mit dem Hinweis „Turned off in Settings › AI“ und
   nimmt für neue Antworten „Automatic“ unter den angeschalteten Modellen **desselben Anbieters**, bis
   jemand ein anderes wählt; erst danach bestimmt der Kern den Ort und wendet die Datenregel an.
   Laufende Antworten laufen zu Ende. Ist bei diesem Anbieter gar nichts mehr an, antwortet das Modul
-  nicht mit einem anderen Anbieter, sondern sagt es: „Turn on a model of {provider} in Settings › Accounts.“
+  nicht mit einem anderen Anbieter, sondern sagt es: „Turn on a model of {provider} in Settings › AI.“
 - **Ollama Cloud:** Modelle mit dem Zusatz `:cloud` laufen über das lokale Ollama auf `ollama.com` und
   gelten für die Datenregel als **entfernt** ([ki.md](ki.md), Grundsatz 4; umgesetzt mit S.23). Ein
   eigener Anbieter „Ollama Cloud“ (direkt mit API-Schlüssel) kommt erst, wenn jemand ihn ohne lokales
@@ -305,18 +305,19 @@ aus TorroMail; unter „Agents & API“ standen Assistent, Bots, Coding-Agenten,
 Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24, S.26, S.30–S.35 in
 [tasks/steuerzentrale.md](tasks/steuerzentrale.md).
 
-**Die Ordnung:** Drei Orte, je einer pro Richtung.
+**Die Ordnung:** Accounts und AI für Dienste, API und MCP für Zugriffe auf die Suite.
 
 | Abschnitt | Richtung | Was man dort tut |
 |---|---|---|
-| **Accounts** | Torro nutzt etwas von außen | Externe Konten hinzufügen, prüfen, entfernen; bei KI-Konten Modelle an/aus |
+| **Accounts** | Torro nutzt Dienste von außen | Nicht-KI-Konten hinzufügen, prüfen und entfernen |
+| **AI** | Die Suite ruft KI-Modelle | KI-Anbieter hinzufügen, Modelle an/aus, Datenregel ändern |
 | **API** | Programme nutzen Torro mit Key | API an/aus, Keys anlegen, je Key die Rechte bis auf einzelne Endpunkte |
 | **MCP** | Agenten nutzen Torro über MCP | MCP an/aus, Clients verbinden, je Client die Rechte bis auf einzelne Tools, Hooks |
 
 ### Accounts
 
 - **Feste Gruppen**, immer sichtbar, in dieser Reihenfolge: **Nextcloud**, **Mail** (mit den CalDAV-Konten
-  eines Mail-Anbieters, Art `caldav`), **GitHub**, **AI**, **ntfy**. Jeder Anbieter sagt in einem Satz unter seinem
+  eines Mail-Anbieters, Art `caldav`), **GitHub**, **ntfy**. Jeder Anbieter sagt in einem Satz unter seinem
   Namen, was hierher gehört; ohne Konto steht „No account yet.“ über seinem „Add“, statt dass er verschwindet.
 - **Anbieter links, Konten rechts** (#244, S.37): Die Gruppen stehen als Anbieter in einer Spalte am linken
   Rand des Inhalts (Breit mit Namen und Zahl, Mittel nur mit Symbolen, Schmal als Chips über der Liste); das
@@ -334,7 +335,7 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
   nur, wenn TorroMail Konten hat, die die Suite übernehmen kann und noch nicht hat. Der Knopf öffnet denselben
   Dialog bei einem eigenen Schritt „TorroMail“, der nur die Liste zum Übernehmen zeigt (wie bisher oben im
   Katalog). Die Einrichtung beim ersten Start („Take over from TorroMail“) öffnet denselben Schritt.
-- **KI-Konten:** Gruppe „AI“ und Kontoseite mit „Models“, siehe [KI](#ki). Bei AI unter den Konten die Datenregel.
+- **KI-Konten:** eigener Abschnitt „AI“ und Kontoseite mit „Models“, siehe [KI](#ki). Unter den KI-Konten steht die Datenregel.
 
 ### API
 
@@ -435,8 +436,8 @@ Assistent-Fenster denselben nutzen.
    genau das war das Durcheinander.
 2. **„Add“ je Gruppe statt Katalog.** Spart einen Klick und jede Verwechslung. Verworfen: Katalog mit
    vorgewählter Gruppe.
-3. **KI-Konten bleiben unter Accounts**, die Modelle stehen auf der Kontoseite. Verworfen: eigener Abschnitt
-   „AI“ (S.25) – ein KI-Konto ist ein Konto wie die anderen, und die Modelle gehören zu ihm.
+3. **Überholt am 2026-10-20:** KI-Konten und ihre Modelle haben den eigenen Abschnitt AI direkt nach Accounts.
+   Die Entscheidung vom 2026-10-19 sah sie noch unter Accounts vor.
 4. **Rechte je Befehl als Sperrliste unter der Stufe.** Verworfen: nur Schalter je Befehl (über 100 Befehle,
    unbedienbar) und nur Stufen (zu grob).
 5. **Rechte von Assistent und Bots im Assistent-Fenster.** Hebt „Rechte stehen zentral“ (#210) für diese beiden

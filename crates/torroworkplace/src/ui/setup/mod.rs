@@ -616,7 +616,7 @@ fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
 }
 
 /// Opens the add-account dialog at the AI provider `provider`: its key, or the address of another
-/// server. The dialog looks for local servers as it opens, like the "Add" of Accounts › AI.
+/// server. The dialog looks for local servers as it opens, like the "Add" of AI.
 fn open_ai_dialog(state: &mut State, provider: AiProvider, data: &Data) -> Action {
     let search = open_dialog(state, Some(wizard::Provider::Ai), data);
     if let Some(dialog) = state.dialog.as_mut() {

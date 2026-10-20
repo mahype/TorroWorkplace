@@ -93,6 +93,7 @@ pub use launch::{ClientTarget, Launch, Open};
 pub enum Section {
     Overview,
     Accounts,
+    Ai,
     /// Programs that use Torro Workplace with a key: "Allow API keys" and the keys with their
     /// rights (task S.35).
     Api,
@@ -109,9 +110,10 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::Overview,
         Section::Accounts,
+        Section::Ai,
         Section::Api,
         Section::Mcp,
         Section::Approvals,
@@ -130,6 +132,7 @@ impl Section {
         match self {
             Section::Overview => tr("Overview"),
             Section::Accounts => tr("Accounts"),
+            Section::Ai => tr("AI"),
             Section::Api => tr("API"),
             Section::Mcp => tr("MCP"),
             Section::Approvals => tr("Approvals"),
@@ -144,6 +147,7 @@ impl Section {
         match self {
             Section::Overview => Icon::LayoutGrid,
             Section::Accounts => Icon::Cloud,
+            Section::Ai => Icon::Sparkles,
             // Code: programs that call Torro Workplace.
             Section::Api => Icon::Code,
             // A link: clients connected to Torro Workplace. Not the sparkles, which stand for AI in
@@ -163,6 +167,7 @@ impl Section {
         match self {
             Section::Overview => "overview",
             Section::Accounts => "accounts",
+            Section::Ai => "ai",
             Section::Api => "api",
             Section::Mcp => "mcp",
             Section::Approvals => "approvals",
@@ -577,10 +582,7 @@ impl Ui {
                 vec![Message::Select(Section::Accounts)]
             }
             Open::AccountsAi => {
-                vec![
-                    Message::Select(Section::Accounts),
-                    Message::Accounts(accounts::Message::ShowProvider("ai".into())),
-                ]
+                vec![Message::Select(Section::Ai)]
             }
             Open::WizardNextcloud => vec![
                 Message::Select(Section::Accounts),
@@ -603,7 +605,8 @@ impl Ui {
                     wizard::Start::At(provider) => accounts::Message::Add(provider),
                     wizard::Start::TorroMail => accounts::Message::ImportTorroMail,
                 };
-                let mut messages = vec![Message::Select(Section::Accounts), Message::Accounts(start)];
+                let section = if matches!(open, Open::WizardAi(_)) { Section::Ai } else { Section::Accounts };
+                let mut messages = vec![Message::Select(section), Message::Accounts(start)];
                 messages.extend(
                     wizard::demo_messages(demo)
                         .into_iter()
@@ -622,7 +625,7 @@ impl Ui {
             }
             Open::AiDetail => {
                 let ai = accounts::listed(&self.data.accounts).find(|account| account.kind == "ai");
-                let mut messages = vec![Message::Select(Section::Accounts)];
+                let mut messages = vec![Message::Select(Section::Ai)];
                 messages.extend(ai.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
             }
@@ -1088,7 +1091,7 @@ impl Ui {
                     };
                 }
                 let page = match self.section {
-                    Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
+                    Section::Accounts | Section::Ai => accounts::escape(&self.accounts).map(Message::Accounts),
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
                     Section::Api => api::escape(&self.api).map(Message::Api),
                     Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
@@ -1117,11 +1120,11 @@ impl Ui {
                     }
                 }
             }
-            // Accounts shows one provider (task S.37): "Open accounts" opens the row's account's.
+            // Open an attention row in its account's section.
             Message::Overview(overview::Message::OpenAccounts(id)) => {
+                let ai = self.data.accounts.iter().any(|account| account.id == id && account.kind == "ai");
                 accounts::show_provider_of(&mut self.accounts, &self.data, &id);
-                let m = overview::Message::OpenAccounts(id);
-                overview::update(&mut self.overview, m, &self.data)
+                if ai { Action::Select(Section::Ai) } else { Action::Select(Section::Accounts) }
             }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
@@ -1136,6 +1139,9 @@ impl Ui {
 
     /// Shows `section`; a choice from the menu or the drawer also closes them.
     fn select(&mut self, section: Section) {
+        if matches!(self.section, Section::Accounts | Section::Ai) {
+            accounts::leave(&mut self.accounts);
+        }
         self.section = section;
         self.close_menus();
     }
@@ -1394,7 +1400,8 @@ impl Ui {
     /// approvals that wait for the person.
     fn trail(&self, section: Section) -> Trail {
         let count = match section {
-            Section::Accounts => accounts::listed(&self.data.accounts).count(),
+            Section::Accounts => accounts::listed(&self.data.accounts).filter(|account| account.kind != "ai").count(),
+            Section::Ai => accounts::listed(&self.data.accounts).filter(|account| account.kind == "ai").count(),
             Section::Workspaces => self.data.templates.len(),
             Section::Api => api::listed(&self.data, api::Home::Api).count(),
             Section::Mcp => api::listed(&self.data, api::Home::Mcp).count(),
@@ -1454,7 +1461,9 @@ impl Ui {
     /// What the current page adds to the header bar.
     fn page_header(&self, class: SizeClass) -> Header<'_, Message> {
         match self.section {
-            Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
+            Section::Accounts | Section::Ai => {
+                accounts::header(&self.accounts, &self.data, class).map(Message::Accounts)
+            }
             Section::Api => api::header(&self.api, &self.data, class).map(Message::Api),
             Section::Mcp => mcp::header(&self.mcp, &self.data, class).map(Message::Mcp),
             Section::Workspaces => workspaces::header(&self.workspaces, &self.data, class).map(Message::Workspaces),
@@ -1465,7 +1474,9 @@ impl Ui {
     /// The dialog the current page has open, laid over the whole window.
     fn page_overlay(&self) -> Option<Element<'_, Message>> {
         match self.section {
-            Section::Accounts => accounts::overlay(&self.accounts, &self.data).map(|e| e.map(Message::Accounts)),
+            Section::Accounts | Section::Ai => {
+                accounts::overlay(&self.accounts, &self.data).map(|e| e.map(Message::Accounts))
+            }
             Section::Workspaces => workspaces::overlay(&self.workspaces, &self.data, layout::of(self.size))
                 .map(|e| e.map(Message::Workspaces)),
             Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
@@ -1519,6 +1530,7 @@ impl Ui {
         let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
+            Section::Ai => accounts::ai_view(&self.accounts, &self.data, &palette).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data, class).map(Message::Workspaces),
             Section::Api => api::view(&self.api, &self.data).map(Message::Api),
             Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
@@ -2494,14 +2506,17 @@ mod tests {
         assert_eq!(Section::from_arg("mail"), None);
     }
 
-    /// Tasks S.21 and S.35: the sidebar is the suite's own list – Overview, Accounts, API, MCP,
+    /// The sidebar is the suite's own list – Overview, Accounts, AI, API, MCP,
     /// Approvals, Workspaces, Appearance, with General at its foot. Apps, Assistant, the
     /// Notification Hub and the old section of agents and scripts are gone from it; their words lead to the sections that
     /// took them over.
     #[test]
     fn the_sidebar_keeps_only_the_sections_of_the_suite() {
         let words: Vec<&str> = Section::ALL.iter().map(|section| section.arg()).collect();
-        assert_eq!(words, ["overview", "accounts", "api", "mcp", "approvals", "workspaces", "appearance", "general"]);
+        assert_eq!(
+            words,
+            ["overview", "accounts", "ai", "api", "mcp", "approvals", "workspaces", "appearance", "general"]
+        );
         let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
         assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP")));
         let nav: Vec<Section> = Section::nav().collect();
@@ -2509,6 +2524,7 @@ mod tests {
         assert_eq!(nav.len(), Section::ALL.len() - 1);
         assert_eq!(Section::from_arg("apps"), Some(Section::General));
         assert_eq!(Section::from_arg("inbox"), Some(Section::General));
+        assert_eq!(Section::from_arg("ai"), Some(Section::Ai));
 
         // Every section draws, with the sidebar, the rail and the section menu.
         let mut demo = started(&["--demo"]);
@@ -2545,7 +2561,12 @@ mod tests {
         assert_eq!((empty.section, empty.data.accounts.len()), (Section::Accounts, 0));
         assert!(empty.page_overlay().is_none());
         let ai = started(&["--demo", "--open", "accounts-ai"]);
-        assert_eq!((ai.section, ai.accounts.provider.as_deref()), (Section::Accounts, Some("ai")));
+        assert_eq!(ai.section, Section::Ai);
+        assert_eq!(ai.trail(Section::Ai), Trail::Count(1));
+        let mut wizard_ai = started(&["--demo", "--open", "wizard-ai"]);
+        assert!(wizard_ai.accounts.wizard.is_some());
+        let _ = wizard_ai.update(Message::Select(Section::Accounts));
+        assert!(wizard_ai.accounts.wizard.is_none(), "the AI dialog does not follow into Accounts");
         // "Open accounts" of an attention row opens the list at that account's provider (#244).
         let mut overview = started(&["--demo", "--open", "account-detail"]);
         let ntfy = accounts::listed(&overview.data.accounts).find(|account| account.kind == "ntfy").expect("ntfy");
@@ -2553,6 +2574,13 @@ mod tests {
         let _ = overview.update(Message::Overview(overview::Message::OpenAccounts(id)));
         assert_eq!(overview.section, Section::Accounts);
         assert_eq!((overview.accounts.provider.as_deref(), overview.accounts.selected.as_ref()), (Some("ntfy"), None));
+        let ai_id = accounts::listed(&overview.data.accounts)
+            .find(|account| account.kind == "ai")
+            .expect("AI account")
+            .id
+            .clone();
+        let _ = overview.update(Message::Overview(overview::Message::OpenAccounts(ai_id)));
+        assert_eq!(overview.section, Section::Ai);
         let start = started(&["--demo", "--section", "accounts"]);
         assert!(start.accounts.torromail.is_some(), "a start on Accounts asks too");
         for state in ["wizard-torromail", "wizard-torromail-failed", "wizard-torromail-done"] {
@@ -2585,7 +2613,8 @@ mod tests {
             "wizard-ai-done",
         ] {
             let mail = started(&["--demo", "--open", state]);
-            assert_eq!(mail.section, Section::Accounts, "{state}");
+            let expected = if state.starts_with("wizard-ai") { Section::Ai } else { Section::Accounts };
+            assert_eq!(mail.section, expected, "{state}");
             assert!(mail.accounts.wizard.is_some() && mail.page_overlay().is_some(), "{state}: the dialog is open");
         }
         let password = started(&["--demo", "--open", "change-password"]);
@@ -2593,6 +2622,7 @@ mod tests {
         assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
         // Its models come with the page (task S.31), from the demo's own answer.
         let ai = started(&["--demo", "--open", "account-detail-ai"]);
+        assert_eq!(ai.section, Section::Ai);
         assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
         assert!(ai.accounts.models.contains_key("ai:openrouter@openrouter.ai") && !ai.accounts.models_page.loading);
         let github = started(&["--demo", "--open", "scopes-detail"]);

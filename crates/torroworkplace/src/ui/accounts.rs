@@ -1,7 +1,8 @@
 //! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2, fixed groups
 //! since S.30, providers beside their accounts since S.37): the providers in this order and also
-//! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub, AI,
-//! ntfy ([`Group`]); an account of a kind none of them holds gets a provider of its own at the end.
+//! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub,
+//! ntfy. AI has its own permanent section and reuses this module ([`Group`]); an account of an
+//! otherwise unknown kind gets a provider of its own at the end.
 //! They stand in a column at the left edge of the content ([`provider_column`]: wide with names and
 //! counts, medium only icons) or as chips above the list (narrow), the icon in a status colour
 //! where an account needs the person. The list shows one provider ([`chosen`]): its name and the
@@ -451,6 +452,14 @@ pub fn opened(state: &mut State) -> Action {
 /// before the core answered asks with its first good load.
 pub fn unlisted(state: &State) -> bool {
     state.torromail.is_none() && !state.asking_torromail
+}
+
+/// A section change leaves no account detail or add dialog behind for the other section.
+pub fn leave(state: &mut State) {
+    state.wizard = None;
+    state.selected = None;
+    state.models_page = ModelsPage::default();
+    close_dialogs(state);
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -1030,7 +1039,16 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass, palette: &Pa
     let now = Utc::now();
     match selected(state, data) {
         Some(account) => detail(state, account, data, now),
-        None => list(state, data, now, !beside(class), palette),
+        None => list(state, data, now, !beside(class), palette, false),
+    }
+}
+
+/// The dedicated AI section uses the same account details, model switches and add dialog.
+pub fn ai_view<'a>(state: &'a State, data: &'a Data, palette: &Palette) -> Element<'a, Message> {
+    let now = Utc::now();
+    match selected(state, data) {
+        Some(account) => detail(state, account, data, now),
+        None => list(state, data, now, false, palette, true),
     }
 }
 
@@ -1053,7 +1071,7 @@ pub fn provider_column<'a>(
         SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => return None,
     };
     let entries = entries(data);
-    let groups = providers(&entries);
+    let groups = account_providers(&entries);
     let shown = chosen(state.provider.as_deref(), &groups, &entries);
     let items = groups.iter().map(|&group| {
         let count = accounts_in(group, &entries);
@@ -1426,6 +1444,11 @@ fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<Listed<'a>> {
     groups
 }
 
+/// AI has its own section; the Accounts provider picker contains the other kinds only.
+fn account_providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<Listed<'a>> {
+    providers(accounts).into_iter().filter(|group| *group != Listed::Fixed(Group::Ai)).collect()
+}
+
 /// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago". A time in the future
 /// (clock skew) counts as just now.
 pub fn relative_time(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -1478,10 +1501,11 @@ fn list<'a>(
     now: DateTime<Utc>,
     chips: bool,
     palette: &Palette,
+    ai: bool,
 ) -> Element<'a, Message> {
     let entries = entries(data);
-    let groups = providers(&entries);
-    let shown = chosen(state.provider.as_deref(), &groups, &entries);
+    let groups = account_providers(&entries);
+    let shown = if ai { Listed::Fixed(Group::Ai) } else { chosen(state.provider.as_deref(), &groups, &entries) };
     let mut page = column![].spacing(layout::section_gap());
     if chips {
         page = page.push(provider_chips(&groups, shown, &entries, palette));
@@ -1566,7 +1590,7 @@ fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
     row_frame(on_axis(buttons.into()), false)
 }
 
-/// "Mail to cloud models" under the group AI (task C.17, here since S.30): off, only AI accounts
+/// "Mail to cloud models" in the AI section (task C.17, here since S.30): off, only AI accounts
 /// on the person's own computers read mail; on, models elsewhere too. The sentence under it says
 /// that it holds for the assistant and every bot.
 fn data_rule_group<'a>(mail_to_cloud: bool) -> Element<'a, Message> {
@@ -2708,11 +2732,16 @@ mod tests {
         let groups = providers(&[&slack, &github, &a, &b, &more]);
         assert_eq!(groups[..5], fixed[..], "the order does not follow the accounts");
         assert_eq!(groups[5..], [Listed::Other("slack")], "the unknown kind once, at the end");
+        assert!(
+            !account_providers(&[&slack, &github, &a, &b, &more]).contains(&Listed::Fixed(Group::Ai)),
+            "AI has its own section"
+        );
         let titles: Vec<String> = Group::ALL.into_iter().map(Group::title).collect();
         assert_eq!(titles, [tr("Nextcloud"), tr("Mail"), tr("GitHub"), tr("AI"), "ntfy"]);
         // Every page builds: no accounts, accounts, an unknown kind.
         draw(&State::default(), &Data::default());
         draw(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() });
+        drop(ai_view(&State::default(), &Data::default(), &Palette::dark()));
     }
 
     /// Task S.30: a mail provider's CalDAV account stands in the group Mail and says "CalDAV".

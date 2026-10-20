@@ -2,8 +2,8 @@
 //! daemon running, window manager detected (`data.status.backend`), accounts and their
 //! state, last sync, number of templates – and a "Needs your attention" card listing
 //! accounts whose state is `Connected { problem: Some(..) }` or that need a new sign-in,
-//! each with a button that jumps to Accounts (`Action::Select(Section::Accounts)`); the shell
-//! opens the list at that account's provider there (task S.37, #244).
+//! each with a button that jumps to Accounts or AI; the shell opens the list at that account's
+//! provider there (task S.37, #244).
 //!
 //! The tiles have the surface of a settings group; a status is a dot and a word, the colour only
 //! in the dot. The tiles share the width of the page evenly, at least [`TILE_MIN_WIDTH`] each, and
@@ -30,8 +30,8 @@ pub struct State {}
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The "Open accounts" button of an attention row, with the row's account id: Accounts shows
-    /// one provider at a time (task S.37), so the shell opens it at this account's.
+    /// The "Open accounts" button of an attention row, with the row's account id: the shell opens
+    /// Accounts or AI at the matching provider.
     OpenAccounts(String),
     /// "Continue setup" or "Open setup" (task W.9).
     OpenSetup,
@@ -144,9 +144,10 @@ impl Reason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Attention {
-    /// The account's id, for "Open accounts" to open its provider.
+    /// The account's id, for the button to open its provider.
     pub(super) id: String,
     pub(super) label: String,
+    pub(super) is_ai: bool,
     pub(super) reason: Reason,
 }
 
@@ -161,7 +162,12 @@ pub(super) fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
                 AccountState::Connected { problem: Some(problem), .. } => Reason::Problem(problem.clone()),
                 AccountState::Connected { problem: None, .. } | AccountState::SigningIn { .. } => return None,
             };
-            Some(Attention { id: account.id.clone(), label: account.label.clone(), reason })
+            Some(Attention {
+                id: account.id.clone(),
+                label: account.label.clone(),
+                is_ai: account.kind == "ai",
+                reason,
+            })
         })
         .collect()
 }
@@ -310,12 +316,12 @@ fn needs_attention<'a>(items: &[Attention], core_running: bool) -> Element<'a, M
     widgets::group(tr("Needs your attention"), items.iter().map(attention_row).collect(), None)
 }
 
-/// An account that needs the user: dot, name, the reason below, and the way to Accounts.
+/// An account that needs the user: dot, name, the reason below, and the matching section.
 fn attention_row<'a>(item: &Attention) -> Element<'a, Message> {
     let line = item.reason.line();
     let open = widgets::text_button(
         None,
-        tr("Open accounts"),
+        if item.is_ai { tr("Open AI") } else { tr("Open accounts") },
         style::button::secondary,
         Some(Message::OpenAccounts(item.id.clone())),
     );
@@ -408,6 +414,11 @@ mod tests {
             account("ben@cloud.example.test", AccountState::NotConnected),
             account("carla@cloud.example.test", connected(Some("Server unreachable"))),
             account("dora@cloud.example.test", signing_in),
+            AccountInfo {
+                id: "ai:ollama@localhost".into(),
+                kind: "ai".into(),
+                ..account("Ollama", AccountState::NotConnected)
+            },
         ];
         assert_eq!(
             attention(&accounts),
@@ -415,12 +426,20 @@ mod tests {
                 Attention {
                     id: "nextcloud:ben@cloud.example.test".into(),
                     label: "ben@cloud.example.test".into(),
+                    is_ai: false,
                     reason: Reason::SignIn,
                 },
                 Attention {
                     id: "nextcloud:carla@cloud.example.test".into(),
                     label: "carla@cloud.example.test".into(),
+                    is_ai: false,
                     reason: Reason::Problem("Server unreachable".into()),
+                },
+                Attention {
+                    id: "ai:ollama@localhost".into(),
+                    label: "Ollama".into(),
+                    is_ai: true,
+                    reason: Reason::SignIn,
                 },
             ]
         );

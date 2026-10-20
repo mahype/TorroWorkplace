@@ -76,6 +76,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not supported yet", "Noch nicht unterstützt"),
     ("Not synced yet", "Noch nicht synchronisiert"),
     ("Open accounts", "Konten öffnen"),
+    ("Open AI", "KI öffnen"),
     ("Open the page again", "Seite erneut öffnen"),
     ("Overview", "Übersicht"),
     ("Problem: {problem}", "Problem: {problem}"),
@@ -2886,8 +2887,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ein Ausgangspunkt: Jede Zeile darunter lässt sich ändern. Keiner davon verschickt Mail, ohne zu fragen.",
     ),
     (
-        "Add Ollama on this computer or OpenRouter under Accounts",
-        "Füge unter Konten Ollama auf diesem Rechner oder OpenRouter hinzu",
+        "Add Ollama on this computer or OpenRouter under AI",
+        "Füge unter KI Ollama auf diesem Rechner oder OpenRouter hinzu",
     ),
     ("Choose what it may use below, then turn it on.", "Wähle unten, was er nutzen darf, und schalte ihn dann ein."),
     (
@@ -3859,8 +3860,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("No model that can sort mail", "Kein Modell, das E-Mails einordnen kann"),
     (
-        "Add a local AI such as Ollama under Accounts and load a model that decides.",
-        "Füge unter Konten eine KI auf diesem Rechner hinzu, etwa Ollama, und lade ein Modell, das entscheidet.",
+        "Add a local AI such as Ollama under AI and load a model that decides.",
+        "Füge unter KI eine KI auf diesem Rechner hinzu, etwa Ollama, und lade ein Modell, das entscheidet.",
     ),
     (
         "Mail may go to an AI elsewhere; every model that decides is offered.",
@@ -4079,17 +4080,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Turn off an unknown model of {account}", "Ein unbekanntes Modell von {account} abschalten"),
     ("Turn off “{model}” of {account}", "„{model}“ von {account} abschalten"),
     (
-        "Turn on a model of {provider} in Settings › Accounts.",
-        "Schalte unter Einstellungen › Konten ein Modell von {provider} an.",
+        "Turn on a model of {provider} in Settings › AI.",
+        "Schalte unter Einstellungen › KI ein Modell von {provider} an.",
     ),
     ("Turn on an unknown model of {account}", "Ein unbekanntes Modell von {account} anschalten"),
-    ("Turn on models in Settings › Accounts.", "Schalte Modelle unter Einstellungen › Konten an."),
+    ("Turn on models in Settings › AI.", "Schalte Modelle unter Einstellungen › KI an."),
     ("Turn on “{model}” of {account} (runs elsewhere)", "„{model}“ von {account} anschalten (rechnet anderswo)"),
     (
         "Turn on “{model}” of {account} (runs on this computer)",
         "„{model}“ von {account} anschalten (rechnet auf diesem Rechner)",
     ),
-    ("Turned off in Settings › Accounts", "Abgeschaltet unter Einstellungen › Konten"),
+    ("Turned off in Settings › AI", "Abgeschaltet unter Einstellungen › KI"),
     ("Turned off in {area}", "Abgeschaltet in {area}"),
     (
         "Turning the assistant on or off and what it may use are set under Access.",
@@ -4240,15 +4241,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // ai.set_assignment and the switches of the models (S.24, review of #231)
     (
-        "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
-        "„{model}“ von {provider} ist abgeschaltet. Schalte es unter Einstellungen › Konten an.",
+        "“{model}” of {provider} is turned off. Turn it on in Settings › AI.",
+        "„{model}“ von {provider} ist abgeschaltet. Schalte es unter Einstellungen › KI an.",
     ),
     // Code review #231
     ("Decides", "Entscheidet"),
     ("Can't use tools or decide", "Kann weder Werkzeuge nutzen noch entscheiden"),
     (
-        "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
-        "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › Konten an.",
+        "No model of {provider} that decides is on. Turn one on in Settings › AI.",
+        "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › KI an.",
     ),
     ("You turned this off for {bot} in {area}.", "Du hast das für {bot} in {area} abgeschaltet."),
     ("You turned this off in {area}.", "Du hast das in {area} abgeschaltet."),

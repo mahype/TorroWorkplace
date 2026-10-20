@@ -19,7 +19,7 @@
 //! with the rights editor of [`crate::rights`]. Only [`access`] sends `clients.*` beyond reading the
 //! list – `clients.update_client`, and `clients.create_client` / `clients.remove_client` for the
 //! kind `assistant` –, never `clients.new_key`; no other section shows rights or the data rule for
-//! mail, which lives under the control centre's Accounts. Tests watch over both
+//! mail, which lives under the control centre's AI section. Tests watch over both
 //! (`no_section_touches_clients_rights_or_the_data_rule`, `access::tests`).
 //!
 //! While the assistant is off, every section but General and Access says in one sentence that it
@@ -96,9 +96,9 @@ pub const SECTIONS: [Section; 7] = [
 ];
 
 /// Where an AI account is added and its models are turned on and off
-/// (`torroworkplace ui --section accounts`): where General points when there is no engine at all
-/// and for "Manage models…" (task S.26). There is no section `ai` (issue #231).
-pub const AI_SECTION: &str = "accounts";
+/// (`torroworkplace ui --section ai`): where General points when there is no engine at all
+/// and for "Manage models…" (task S.26). The control centre exposes it as `--section ai`.
+pub const AI_SECTION: &str = "ai";
 
 /// What only the assistant app can do with these sections ([`crate::Action::App`]).
 #[derive(Debug, Clone, PartialEq, Eq)]

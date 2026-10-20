@@ -19,10 +19,10 @@
 //!
 //! Models turned on (task S.26): the picker – the composer's and the bot editor's – offers only the
 //! models turned on for the suite (`AiModel::enabled`, switched in the control centre under
-//! Accounts, task S.24), asks every AI account for them again each time it opens, and ends with
-//! "Manage models…", which opens the control centre's accounts. A model the choice names that is
+//! AI, task S.24), asks every AI account for them again each time it opens, and ends with
+//! "Manage models…", which opens the control centre's AI section. A model the choice names that is
 //! turned off – a bot's, the default of new chats, a conversation's – stands on top of its engine
-//! with "Turned off in Settings › Accounts", since the core answers with "Automatic" then
+//! with "Turned off in Settings › AI", since the core answers with "Automatic" then
 //! ([`App::turned_off`]). With AI accounts but no model on anywhere the welcome says so
 //! ([`App::no_model_on`]): the core lists no engine then, so the window asks
 //! `accounts.list_accounts` whether there is an AI account at all.
@@ -43,7 +43,7 @@
 //! to choose what the assistant may use, with a button that opens the settings at Access in this
 //! window (task S.34, [`App::open_access`]); "Change access" under a refused tool opens Access too,
 //! at the bot when a bot's conversation is open. Without an AI account it says so and opens the
-//! control centre's accounts page (`--section accounts`).
+//! control centre's AI section (`--section ai`).
 //!
 //! Settings (task S.18, `docs/settings.md`): the gear in the title band – and "Settings" in the
 //! sidebar where there is no band – turns the content area into the assistant's settings and back
@@ -171,9 +171,8 @@ pub const BOT_NAME: &str = "assistant-bot-name";
 pub const BOT_FORM: &str = "assistant-bot-form";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
-/// The control centre's page where AI accounts are added and their models turned on (task S.26;
-/// there is no page `ai`, issue #231).
-pub const ACCOUNTS_PAGE: &str = settings::AI_SECTION;
+/// The control centre's AI page where accounts are added and their models turned on.
+pub const AI_PAGE: &str = settings::AI_SECTION;
 
 /// The id of the scrolling entries of the open conversation.
 pub const HISTORY: &str = "assistant-history";
@@ -382,7 +381,7 @@ pub enum Message {
     /// From the permission mode's menu (issue #132).
     PickMode(PermissionMode),
     /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
-    /// control centre's accounts, where the models of each AI account are turned on and off.
+    /// control centre's AI section, where the models of each AI account are turned on and off.
     ManageModels,
     /// Whether there is an AI account at all (`accounts.list_accounts`), asked while no AI account
     /// is an engine (task S.26): then no model is on, or there is no AI account.
@@ -425,7 +424,7 @@ pub enum Message {
     /// "Set up access", "Change access": the settings at Access (task S.34), where the person
     /// chooses what the assistant – or the bot of the open conversation – may use.
     SetUp,
-    /// "Add an AI account": the control centre's accounts, where AI accounts are added.
+    /// "Add an AI account": the control centre's AI section, where AI accounts are added.
     AddAiAccount,
     /// The gear in the title band, "Settings" in the sidebar: the settings in the content area, or
     /// back to the chat (task S.18).
@@ -944,7 +943,7 @@ impl App {
                 self.mode = mode;
                 self.menu = None;
             }
-            Message::ManageModels => self.open_section(ACCOUNTS_PAGE),
+            Message::ManageModels => self.open_section(AI_PAGE),
             Message::AiAccounts(Ok(any)) => self.ai_accounts = any,
             // An old core or none: the window keeps what it said.
             Message::AiAccounts(Err(_)) => {}
@@ -1034,7 +1033,7 @@ impl App {
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => self.note(format!("{} {err}", tr("Couldn't open the app."))),
             Message::SetUp => return self.open_access(self.chat_bot().map(str::to_owned)),
-            Message::AddAiAccount => self.open_section(ACCOUNTS_PAGE),
+            Message::AddAiAccount => self.open_section(AI_PAGE),
             Message::ToggleSettings => return self.toggle_settings(),
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
@@ -2038,7 +2037,7 @@ impl App {
 
     /// Whether `choice` names a model of an AI account that is not turned on (task S.26): its
     /// account's list is in and has the model off, or not at all. The core answers with
-    /// "Automatic" then, so the picker and the bot editor say "Turned off in Settings › Accounts".
+    /// "Automatic" then, so the picker and the bot editor say "Turned off in Settings › AI".
     /// `false` for "Automatic", for an agent's model and while the list is not in or failed.
     pub(crate) fn turned_off(&self, choice: &Choice) -> bool {
         let Some(model) = &choice.model else { return false };

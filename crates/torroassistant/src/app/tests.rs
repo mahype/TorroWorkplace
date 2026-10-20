@@ -313,7 +313,7 @@ fn the_picker_offers_only_models_that_can_call_tools() {
 }
 
 /// Issue #131: Claude Code's own models and an effort only where the model takes one. Task S.26:
-/// "Manage models…" opens the control centre's accounts, and a picker that opens asks every AI
+/// "Manage models…" opens the control centre's AI section, and a picker that opens asks every AI
 /// account again for its models, closed ones too.
 #[test]
 fn the_effort_goes_with_the_message_where_the_model_thinks() {
@@ -342,8 +342,8 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
     ));
 
     let _ = app.update(Message::ManageModels);
-    assert_eq!(app.sections, [ACCOUNTS_PAGE], "where the models are turned on");
-    assert_eq!(ACCOUNTS_PAGE, "accounts");
+    assert_eq!(app.sections, [AI_PAGE], "where the models are turned on");
+    assert_eq!(AI_PAGE, "ai");
     let _ = app.update(Message::CloseMenu);
     let _ = app.update(Message::ToggleMenu(Menu::Picker));
     let asked: Vec<bool> = sent(&mut app)
@@ -395,7 +395,7 @@ fn without_a_model_on_the_welcome_says_where_to_turn_one_on() {
     assert!(app.no_model_on());
     let _ = app.view();
     let _ = app.update(Message::ManageModels);
-    assert_eq!(app.sections, [ACCOUNTS_PAGE]);
+    assert_eq!(app.sections, [AI_PAGE]);
 
     // Once an AI account is an engine again, models are on.
     let mut on = started(&[]);
@@ -637,7 +637,7 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     assert!(none.engines_loaded && none.engines.is_empty());
     assert_eq!(none.choice, None, "nothing can answer");
     let _ = none.update(Message::AddAiAccount);
-    assert_eq!(none.sections, [ACCOUNTS_PAGE], "\"Add an AI account\" opens the accounts");
+    assert_eq!(none.sections, [AI_PAGE], "\"Add an AI account\" opens AI");
     assert!(none.settings.is_none(), "the control centre, not the settings in the window");
 }
 
@@ -652,7 +652,7 @@ fn change_access_under_a_refused_tool_opens_access() {
     settings_loaded(&mut app);
     assert!(settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data()).is_none());
     assert!(app.sections.is_empty(), "not the control centre");
-    assert_eq!(ACCOUNTS_PAGE, "accounts");
+    assert_eq!(AI_PAGE, "ai");
 
     let mut bot = started(&["--open", "bot"]);
     assert_eq!(bot.chat_bot(), Some(TRAVEL));
