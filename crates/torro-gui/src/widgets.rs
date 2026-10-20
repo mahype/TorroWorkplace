@@ -4230,7 +4230,8 @@ pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: O
 }
 
 /// The widget behind [`badged`]: Iced has no layer that may reach past its parent's bounds, so the
-/// dot is drawn as a quad over the corner after the content, outside the layout.
+/// dot is drawn as a quad over the corner after the content, outside the layout. Only for content
+/// that takes no input (an icon): events and operations are not passed on.
 mod badge {
     use iced::advanced::layout::{self, Layout};
     use iced::advanced::renderer::{self, Quad, Renderer as _};
@@ -4290,12 +4291,11 @@ mod badge {
             if let Some(child) = layout.children().next() {
                 self.content.as_widget().draw(tree, renderer, theme, style, child, cursor, viewport);
             }
-            let quad = Quad {
-                bounds: dot_bounds(layout.bounds(), self.edge),
-                border: border::rounded(self.edge / 2.0),
-                ..Quad::default()
-            };
-            renderer.fill_quad(quad, Background::Color(self.colour));
+            let bounds = dot_bounds(layout.bounds(), self.edge);
+            let quad = Quad { bounds, border: border::rounded(self.edge / 2.0), ..Quad::default() };
+            // A layer of its own: wgpu draws a layer's quads before its images, so in the icon's layer
+            // the icon would cover the dot.
+            renderer.with_layer(bounds, |renderer| renderer.fill_quad(quad, Background::Color(self.colour)));
         }
     }
 }
