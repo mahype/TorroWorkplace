@@ -22,7 +22,9 @@
 //! **Drafts** (security rules 1 and 2 of task M2.1): the core remembers who wrote each draft
 //! ([`DraftAuthor`]); a client key replaces only its own (others are `not-found`), and attaches
 //! files only from the managed attachment folder ([`AttachmentCache::contains`], else
-//! `forbidden`). No file is read through a symbolic link, none over 25 MiB. A draft is built
+//! `forbidden`) and, with the PDF tool open to it (issue #225, decision 19), the files of the tools'
+//! register it made itself, while they are what the core wrote ([`crate::tools::Register`]). No
+//! file is read through a symbolic link, none over 25 MiB. A draft is built
 //! with `mime::build` (the core's `Message-ID`, no signature: that is added when it is sent) and
 //! its Bcc recipients are kept in a `Bcc:` header of the stored draft, as mail programs do, since
 //! the built message carries them in the envelope only. Replacing appends the new draft first and
@@ -43,7 +45,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use torro_core::i18n::{tr, trf};
@@ -60,6 +62,7 @@ use super::store::{Body, DraftAuthor, FolderRef, MailStore, MessageRef, NewMessa
 use super::{AttachmentCache, MailStoreError, random_hex, safe_file_name};
 use crate::approvals::{DraftFacts, MailFacts};
 use crate::pim::Reach;
+use crate::tools::{Maker, Register};
 use torro_ipc::api::{Access, Area};
 
 const NO_MESSAGE: &str = "No such message.";
@@ -240,12 +243,15 @@ fn place_of(store: &MailStore, id: &str) -> Result<Option<Place>, MailStoreError
 ///   `not-found` for the whole call, before anything is read;
 /// - `mail.save_draft` with an id replaces only a draft of this client, in the drafts folder of
 ///   the draft's account: else `not-found` (security rule 2); files only from the managed
-///   attachment folder: else `forbidden` (security rule 1).
+///   attachment folder, or from `tools` (the tools' register, issue #225, `Some` only when the core
+///   lets this client attach its own files of it) a file this client made: else `forbidden`
+///   (security rule 1).
 pub(crate) async fn client_refusal(
     mail: &MailService,
     client: &str,
     reach: Reach<'_>,
     request: &Request,
+    tools: Option<&Register>,
 ) -> Option<Response> {
     if !changes_mail(request) {
         return None;
@@ -260,9 +266,8 @@ pub(crate) async fn client_refusal(
             Err(err) => Err(err),
         },
         Request::SaveDraft { draft } => {
-            check_draft(mail, &DraftAuthor::Client(client.to_string()), draft, mail.attachment_cache().as_ref())
-                .await
-                .map(drop)
+            let author = DraftAuthor::Client(client.to_string());
+            check_draft(mail, &author, draft, mail.attachment_cache().as_ref(), tools).await.map(drop)
         }
         _ => Ok(()),
     };
@@ -294,13 +299,14 @@ pub(crate) async fn with_trash_role(mail: &MailService, reach: Reach<'_>, reques
 /// The draft `draft.id` replaces, after the rules for `author`: `draft.account` is a mail account
 /// with mail on (else `not-found`), the draft is in its drafts folder, and a client replaces only
 /// its own (else `not-found`, security rule 2). A
-/// client's files must be in the managed folder `cache` (else `forbidden`, security rule 1).
-/// `None` for a new draft.
+/// client's files must be in the managed folder `cache` or be its own in the tools' register
+/// `tools` (else `forbidden`, security rule 1). `None` for a new draft.
 async fn check_draft(
     mail: &MailService,
     author: &DraftAuthor,
     draft: &Draft,
     cache: Option<&AttachmentCache>,
+    tools: Option<&Register>,
 ) -> Result<Option<MessageRef>, WriteError> {
     // An account without mail (or none at all) is `not-found` before anyone is asked.
     let store = mail.store(&draft.account).await.map_err(|_| WriteError::NotFound(NO_ACCOUNT))?;
@@ -323,13 +329,26 @@ async fn check_draft(
             Some(found.ok_or(WriteError::NotFound(NO_DRAFT))?)
         }
     };
-    if matches!(author, DraftAuthor::Client(_)) {
-        for attachment in &draft.attachments {
-            if let DraftAttachment::File { path } = attachment
-                && !cache.is_some_and(|cache| cache.contains(Path::new(path)))
-            {
-                return Err(WriteError::Forbidden(FILE_OUTSIDE));
-            }
+    if let DraftAuthor::Client(client) = author {
+        let outside: Vec<PathBuf> = draft
+            .attachments
+            .iter()
+            .filter_map(|attachment| match attachment {
+                DraftAttachment::File { path } => Some(PathBuf::from(path)),
+                _ => None,
+            })
+            .filter(|path| !cache.is_some_and(|cache| cache.contains(path)))
+            .collect();
+        // The register reads its list and hashes each file: off the async threads.
+        let (register, client) = (tools.cloned(), client.clone());
+        let ours = outside.is_empty()
+            || tokio::task::spawn_blocking(move || {
+                outside.iter().all(|path| tool_file(register.as_ref(), path, &client).is_some())
+            })
+            .await
+            .unwrap_or(false);
+        if !ours {
+            return Err(WriteError::Forbidden(FILE_OUTSIDE));
         }
     }
     Ok(old)
@@ -648,6 +667,12 @@ async fn remove_for_good(mail: &MailService, store: &SharedStore, messages: &[Me
 
 // ----- mail.save_draft -----
 
+/// [`save_draft_with`] without the tools' register, as the tests call it.
+#[cfg(test)]
+pub(crate) async fn save_draft(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftAuthor) -> Response {
+    save_draft_with(mail, reach, draft, author, None).await
+}
+
 /// `mail.save_draft`: builds `draft` and files it in the drafts folder of its account, written by
 /// `author` (the app key: [`DraftAuthor::App`]; a client: its id). With an id it replaces that
 /// draft ([`check_draft`] decides whose) and keeps the id; else the core gives a new id and
@@ -657,24 +682,41 @@ async fn remove_for_good(mail: &MailService, store: &SharedStore, messages: &[Me
 /// for an account without mail or drafts folder, a foreign draft or a message, part or file that
 /// is not there; `forbidden` for files outside the managed folder (clients) or behind a link;
 /// `error` for an attachment over 25 MiB or an address that is no address.
-pub(crate) async fn save_draft(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftAuthor) -> Response {
-    answer(save(mail, reach, draft, author).await.map(|draft| Response::MailDraft { draft }))
+///
+/// A client may also attach its own files of the tools' register `tools` (issue #225, decision 19):
+/// `Some` only when the core lets it (the PDF tool switched on, read access to `tools`, `pdf` in
+/// its selection). Such a file goes in only while it is what the core wrote, checked on the bytes
+/// read; else `forbidden` as for any other file outside.
+pub(crate) async fn save_draft_with(
+    mail: &MailService,
+    reach: Reach<'_>,
+    draft: Draft,
+    author: DraftAuthor,
+    tools: Option<&Register>,
+) -> Response {
+    answer(save(mail, reach, draft, author, tools).await.map(|draft| Response::MailDraft { draft }))
 }
 
-async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftAuthor) -> Result<Draft, WriteError> {
+async fn save(
+    mail: &MailService,
+    reach: Reach<'_>,
+    draft: Draft,
+    author: DraftAuthor,
+    tools: Option<&Register>,
+) -> Result<Draft, WriteError> {
     let draft = cleaned(draft);
     let config = mail.config(&draft.account).await?;
     let store = mail.store(&draft.account).await?;
     let drafts = folder_with_role(&store, Role::Drafts).await?.ok_or(WriteError::NotFound(NO_ROLE_FOLDER))?;
     let cache = mail.attachment_cache();
-    let old = check_draft(mail, &author, &draft, cache.as_ref()).await?;
+    let old = check_draft(mail, &author, &draft, cache.as_ref(), tools).await?;
     let reply = match &draft.in_reply_to {
         Some(id) => reply_to(mail, reach, id).await?,
         None => None,
     };
     let mut attachments = Vec::with_capacity(draft.attachments.len());
     for attachment in &draft.attachments {
-        attachments.push(attachment_of(mail, reach, attachment, &author, cache.as_ref()).await?);
+        attachments.push(attachment_of(mail, reach, attachment, &author, cache.as_ref(), tools).await?);
     }
     let domain = config.address.rsplit_once('@').map_or("localhost", |(_, domain)| domain);
     let outgoing = Outgoing {
@@ -863,11 +905,17 @@ async fn attachment_of(
     attachment: &DraftAttachment,
     author: &DraftAuthor,
     cache: Option<&AttachmentCache>,
+    tools: Option<&Register>,
 ) -> Result<OutgoingAttachment, WriteError> {
     match attachment {
         DraftAttachment::File { path } => {
-            let (path, client, cache) = (path.clone(), matches!(author, DraftAuthor::Client(_)), cache.cloned());
-            tokio::task::spawn_blocking(move || read_file(&path, client, cache.as_ref())).await.map_err(|err| {
+            let client = match author {
+                DraftAuthor::Client(id) => Some(id.clone()),
+                DraftAuthor::App => None,
+            };
+            let (path, cache, tools) = (path.clone(), cache.cloned(), tools.cloned());
+            let read = move || read_file(&path, client.as_deref(), cache.as_ref(), tools.as_ref());
+            tokio::task::spawn_blocking(read).await.map_err(|err| {
                 WriteError::Mail(MailError::Store(MailStoreError::Io(std::io::Error::other(err.to_string()))))
             })?
         }
@@ -891,14 +939,24 @@ async fn attachment_of(
     }
 }
 
-/// The file at `path` to attach (security rule 1): for a `client` only inside the managed folder
-/// `cache` (else `forbidden`, also for a file that is not there, so nothing about other files
-/// shows); for everyone an absolute path, a regular file reached without a symbolic link at the
-/// end, at most 25 MiB. Blocks: call it on a blocking thread.
-fn read_file(path: &str, client: bool, cache: Option<&AttachmentCache>) -> Result<OutgoingAttachment, WriteError> {
+/// The file at `path` to attach (security rule 1): for the client `client` only inside the managed
+/// folder `cache` or its own file of the tools' register `tools` (issue #225) whose bytes are still
+/// what the core wrote (else `forbidden`, also for a file that is not there, so nothing about other
+/// files shows); for everyone an absolute path, a regular file reached without a symbolic link at
+/// the end, at most 25 MiB. Blocks: call it on a blocking thread.
+fn read_file(
+    path: &str,
+    client: Option<&str>,
+    cache: Option<&AttachmentCache>,
+    tools: Option<&Register>,
+) -> Result<OutgoingAttachment, WriteError> {
     let path = Path::new(path);
-    if client && !cache.is_some_and(|cache| cache.contains(path)) {
-        return Err(WriteError::Forbidden(FILE_OUTSIDE));
+    // A client's file of the register, to compare with what is read below.
+    let mut registered = None;
+    if let Some(client) = client
+        && !cache.is_some_and(|cache| cache.contains(path))
+    {
+        registered = Some(tool_file(tools, path, client).ok_or(WriteError::Forbidden(FILE_OUTSIDE))?);
     }
     if !path.is_absolute() {
         return Err(WriteError::Invalid(NOT_ABSOLUTE));
@@ -920,8 +978,19 @@ fn read_file(path: &str, client: bool, cache: Option<&AttachmentCache>) -> Resul
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(WriteError::Invalid(TOO_BIG));
     }
+    // Exchanged since the register's check: not the file the core made.
+    if registered.is_some_and(|entry| !entry.holds(&bytes)) {
+        return Err(WriteError::Forbidden(FILE_OUTSIDE));
+    }
     let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(OutgoingAttachment { content_type: content_type_of(path).to_string(), filename: safe_file_name(&name), bytes })
+}
+
+/// The file at `path` in the tools' register `tools` when the client `client` made it and it is
+/// still what the core wrote (issue #225); `None` without a register or such a file. Blocks: reads
+/// the register and the file.
+fn tool_file(tools: Option<&Register>, path: &Path, client: &str) -> Option<crate::tools::FileEntry> {
+    tools?.contains(path, Maker::Client(client))
 }
 
 /// The MIME type of a file by its extension, for the types mail usually carries; else
@@ -1581,6 +1650,50 @@ pub(crate) mod tests {
         let missing = room.dir.path().join("missing.txt");
         let missing = save_draft(&room.mail, Reach::Suite, with_file(&missing), DraftAuthor::App).await;
         assert_eq!(code(&missing), "not-found");
+    }
+
+    /// Issue #225, decision 19: with the PDF tool open to it (the core hands over the register), a
+    /// client attaches the PDFs of the register it made itself, checked before and on the bytes
+    /// read; another client's PDF, an exchanged file and any PDF without the register stay out.
+    #[tokio::test]
+    async fn a_client_attaches_only_its_own_pdfs_of_the_register() {
+        use crate::tools::files::tests::registered;
+        let room = mailroom().await;
+        let register = Register::in_dir(Some(room.dir.path().join("tools")));
+        let mine = registered(&register, room.dir.path(), "Offer.pdf", b"%PDF-1.7 offer", Maker::Client("c1"));
+        let theirs = registered(&register, room.dir.path(), "Theirs.pdf", b"%PDF-1.7 theirs", Maker::Client("c2"));
+        let agent = DraftAuthor::Client("c1".into());
+        let with_file = |path: &Path| Draft {
+            attachments: vec![DraftAttachment::File { path: path.display().to_string() }],
+            ..draft("With a PDF")
+        };
+        /// The code the core's check gives client `c1`'s draft before anyone is asked; `None` to go on.
+        async fn refused(mail: &MailService, draft: Draft, tools: Option<&Register>) -> Option<String> {
+            let request = Request::SaveDraft { draft };
+            client_refusal(mail, "c1", Reach::Suite, &request, tools).await.map(|refused| code(&refused).to_string())
+        }
+        let refusal = |draft: Draft, tools| refused(&room.mail, draft, tools);
+
+        // Without the register (tool off, not readable or not selected): outside, as any file.
+        let without = save_draft_with(&room.mail, Reach::Suite, with_file(&mine.path), agent.clone(), None).await;
+        assert_eq!(code(&without), "forbidden");
+        assert_eq!(refusal(with_file(&mine.path), None).await.as_deref(), Some("forbidden"));
+        // Its own: before anyone is asked and when it is saved.
+        assert_eq!(refusal(with_file(&mine.path), Some(&register)).await, None);
+        saved(save_draft_with(&room.mail, Reach::Suite, with_file(&mine.path), agent.clone(), Some(&register)).await);
+        let filed = &drafts_on_server(&room.server)[0].1;
+        assert!(filed.contains("Offer.pdf") && filed.contains("application/pdf"), "{filed}");
+        // Another client's PDF stays out.
+        assert_eq!(refusal(with_file(&theirs.path), Some(&register)).await.as_deref(), Some("forbidden"));
+        let foreign =
+            save_draft_with(&room.mail, Reach::Suite, with_file(&theirs.path), agent.clone(), Some(&register));
+        assert_eq!(code(&foreign.await), "forbidden");
+        // Exchanged behind the core's back, even at the same size: not the register's file.
+        fs::write(&mine.path, b"%PDF-1.7 OFFER").expect("exchanged");
+        assert_eq!(refusal(with_file(&mine.path), Some(&register)).await.as_deref(), Some("forbidden"));
+        let exchanged = save_draft_with(&room.mail, Reach::Suite, with_file(&mine.path), agent, Some(&register));
+        assert_eq!(code(&exchanged.await), "forbidden");
+        assert_eq!(drafts_on_server(&room.server).len(), 1, "only the first one");
     }
 
     #[tokio::test]

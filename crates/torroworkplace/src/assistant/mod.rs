@@ -48,8 +48,13 @@
 //!   it or confirmed it (`assistant.confirm_bot`); the bot then runs in its own conversation with
 //!   what both clients may ([`Actor::Delegated`]), and the assistant reads its answer.
 //!
+//! - **Cards** (issue #225, [`cards`]): after a command that made an item (a PDF of `tools.create_pdf`) the
+//!   answer adds a card entry that points at it, with either engine; `assistant.get_cards` shows what it points
+//!   at now, resolved by the core with the rights of the conversation's client.
+//!
 //! What goes to a client never names a path; the core's log does.
 
+pub(crate) mod cards;
 mod data_rule;
 mod delegate;
 mod engines;
@@ -1194,6 +1199,7 @@ pub(crate) mod tests {
                 EntryContent::Approval { .. } => "approval",
                 EntryContent::Error { .. } => "error",
                 EntryContent::Stopped => "stopped",
+                EntryContent::Card { .. } => "card",
             })
             .collect()
     }

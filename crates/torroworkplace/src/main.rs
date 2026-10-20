@@ -49,6 +49,8 @@ mod reminders;
 mod settings_service;
 mod sources;
 mod suggest;
+// The assistant's own tools (issue #225): the PDF tool, its register and its commands.
+mod tools;
 mod tray;
 mod ui;
 

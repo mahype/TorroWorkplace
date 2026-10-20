@@ -788,3 +788,215 @@ B.1 ──┬── B.2
   an; ein vom Hauptbot vorgeschlagener Bot zeigt beim Öffnen überall „None“. `--demo`-Zustand mit Abschnitt,
   `scripts/design-check.sh`, `torro-design-review` (schmal bis breit), `TORRO_LANG=de cargo test --workspace`;
   Übersetzungen im Bericht.
+
+## Eigene Werkzeuge (WZ.1–WZ.8)
+
+Konzept: Abschnitt „Eigene Werkzeuge“ in [assistent.md](../assistent.md), Punkt 9 in „Was nie nach außen geht“
+([api.md](../api.md)). Issue #225, geplant am 2026-10-19.
+
+```
+WZ.1 (Spike printpdf) ──┐
+WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (Befehle) ── WZ.5 (Karten-Grundlage) ── WZ.8 (Datei-Karte)
+                        ├── WZ.6 (Einstellungen › Tools)      (WZ.6 und WZ.7 brauchen nur WZ.2)
+                        └── WZ.7 (Steuerzentrale: Auswahl der Werkzeuge)
+```
+
+**Festlegungen für alle WZ-Aufgaben:**
+- Ein Werkzeug hat eine Kennung (`pdf`) in `torro_ipc::tools::ToolId`; `ToolId::of_command` ordnet ihm seine
+  Befehle zu (`tools.create_pdf`, `tools.open_file`, `tools.save_file_as` → `pdf`; `tools.list_tools` → keines).
+- **Schalter** = Einstellung `tools.enabled` (Menge der Kennungen), gilt für jeden Client und den App-Schlüssel.
+  **Rechte** = `Area::Tools` mit Stufe und `Rights::tools: Selection` (Standard `Only([])`). Ein Befehl eines
+  Werkzeugs läuft nur mit Schalter **und** Recht **und** Auswahl.
+- Register der erzeugten Dateien: `<data>/tools/files.json` (Ordner 0700, Datei 0600), je Datei Kennung (8
+  Hex-Zeichen wie bei Bots), Pfad, Titel, Vorlage, Zeitpunkt, erzeugender Client, Größe, SHA-256; höchstens 500
+  Einträge, der älteste fällt weg. Eine Datei gilt nur, solange sie eine echte Datei (kein Symlink) mit Endung
+  `.pdf` ist und Größe und Prüfsumme stimmen. **Ein Client erreicht nur Dateien, die er selbst erzeugt hat**, und
+  nur mit Schalter, Leserecht in `tools` und `pdf` in der Auswahl; sonst `not-found`. Der App-Schlüssel erreicht alle.
+- Protokoll und Log nennen nie Titel, Pfad oder Inhalt, nur Kennung und Fehlerart.
+- Tests setzen alle Wurzeln (Daten, Schreibtisch, Home) als Parameter, nie über die Umgebung.
+
+### WZ.1 Spike: printpdf setzt Markdown nach Vorlage
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `spikes/printpdf/**` (neu, eigenes Cargo-Projekt wie
+  `spikes/blitz-iced`, außerhalb des Workspace)
+- printpdf 0.12.8 mit Standard-Feature `html` plus `png`/`jpeg`, `pulldown-cmark` 0.12; Eingabe eine Markdown-Datei
+  unter `fixtures/` mit allem aus dem Umfang im Konzept, Ausgabe nach `out/` (gitignored).
+- Prüfen und im `README.md` des Spikes mit Ergebnis festhalten: Kopf- und Fußzeile mit Seitenzahl über
+  `GeneratePdfOptions` (`header_text`, `footer_text`, `show_page_numbers`) – ist „Page X of Y“ fest englisch, und
+  lässt sich die Seitenzahl selbst in die Fußzeile setzen?; Tabellen über Seitengrenzen; Umlaute und `ß` mit
+  eingebetteter TTF (Inter aus `crates/torro-gui/assets/fonts/` und eine Schrift aus `designs/*/fonts/`);
+  fett und kursiv, obwohl Inter dort keine Bold- und Italic-Datei hat; `page-break-before: always` für
+  `\pagebreak`; verschachtelte Listen, Codeblöcke, Zitate, klickbare Links; Logo (PNG) in der Kopfzeile;
+  Papier A4, A5, US Letter mit Rändern; Bauzeit und Größe des Release-Binaries mit und ohne printpdf.
+- Bauen auf macOS; Linux und Windows mit `cargo check --target x86_64-unknown-linux-gnu` und
+  `--target x86_64-pc-windows-msvc`, soweit die Ziele installiert sind, sonst im Bericht als offen nennen.
+- **Ergebnis:** Weg A (HTML-Weg von printpdf) oder Weg B (Textschicht von printpdf, der Kern bricht selbst um).
+  WZ.3 folgt dem Ergebnis; geht keiner der Wege, hält die Umsetzung an und fragt.
+- **Abnahme:** `README.md` mit je Punkt ja/nein und Beleg (Seite der erzeugten PDF), Empfehlung A oder B.
+
+### WZ.2 Gerüst: Bereich `tools`, Requests, Katalog, Rechte, Einstellungen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-ipc/src/tools.rs` (neu), `crates/torro-core/src/settings.rs`,
+  `crates/torroworkplace/src/{core,settings_service,audit,daemon,pim,mcp,clients}.rs`,
+  `crates/torroworkplace/src/assistant/{tools,prompt}.rs`, `crates/torroworkplace/src/ui/{agents,launch}.rs`
+  (nur `match`-Zweige und Testdaten), `crates/torroassistant/src/chat.rs` (`area_name`),
+  `crates/torro-ipc/src/assistant.rs` (`close`), `docs/api-reference.md`
+- `Area::Tools` (Name `tools`, nach `Bots`), `Area::ALL` auf 16. `torro_ipc::tools`: `ToolId` (`pdf`, `Copy`, weil
+  `Lack` `Copy` ist),
+  `ToolInfo { id, name, description, enabled, allowed }`, `PdfTemplateId` (`letter`, `report`, `note`),
+  `FileInfo { id, name, path, title, template, size, created }`.
+- Requests und Katalog: `tools.list_tools` (Read, `Response::Tools`), `tools.create_pdf { title, markdown,
+  template? }` (Write, `Response::File`; ohne Vorlage `report`), `tools.open_file { file }` (Write),
+  `tools.save_file_as { file, path }` (Write, `Mcp::Never`, Punkt 9). Beschreibungen nennen Ablage, dass der Pfad
+  in der Antwort steht, den Markdown-Umfang mit `\pagebreak` und dass kein Pfad und kein HTML angenommen wird.
+  Grenzen im Doc-Kommentar: Titel 200 Zeichen, Markdown 200.000 Bytes.
+- `Rights::tools: Selection` (`#[serde(default = "nothing_selected")]`) mit `reaches_tool(ToolId)`; Arme in
+  `common`, `hook`, `assistant`, `none`, `selection`, `set_level`, `RightsTemplate::rights`; `Lack::ToolOff { tool }`
+  und `Lack::Tool { tool }` mit Text.
+- Einstellungen in `Settings`: `tools: Tools { enabled, pdf: PdfSettings { folder, letter, report, note } }`,
+  `PdfTemplate { paper (a4, a5, letter), margins_mm (oben, rechts, unten, links; 5–50), font_size_pt (8–16), header,
+  footer (je 200 Zeichen, Platzhalter `{title}` und `{date}`), page_numbers, logo }`. Standard: Letter A4, Ränder
+  25, 11 pt, ohne Seitenzahl; Report A4, Ränder 20, 11 pt, Kopf `{title}`, mit Seitenzahl; Note A4, Ränder 15,
+  10 pt, ohne Kopf und Seitenzahl. `SettingKey::ToolEnabled` (`{tool, enabled}`), `PdfFolder` (absoluter Pfad
+  oder `null`), `PdfTemplate` (`{template, …}`, ersetzt eine Vorlage ganz; Logo absolut, `.png`/`.jpg`/`.jpeg`);
+  `Change` in `settings_service.rs`; `GET_SETTINGS`/`SET_SETTING`-Texte.
+- Nur Menschen schalten ein und setzen Pfade (Punkt 9): `Request::kept_for_people` für `ToolEnabled` mit `enabled`
+  ungleich `false`; `Core::switches_on_for_people` für `SetSetting` `PdfFolder` mit einem Pfad, der vom
+  gespeicherten abweicht, für `PdfTemplate`, dessen `logo` gesetzt ist und vom gespeicherten abweicht, und für
+  `UpdateSettings`, das `tools.enabled` wachsen lässt oder Ordner bzw. ein Logo neu setzt. `null` darf jeder mit
+  Admin. `SettingsStore::update_keeping_hidden` schreibt `tools.enabled` als Schnittmenge aus gespeichertem und
+  neuem Stand und behält Ordner und Logos aus dem gespeicherten Stand (Wettrennen wie beim Mikrofon).
+- Handler in `handle_within` vorerst `unsupported`, bis WZ.4; alle `match`-Arme mechanisch (`audit::ids`,
+  `daemon::describe`, `pim::out_of_reach`, `area_label`, `area_detail`, `area_name`, `area_access`, `close`).
+  `mcp.rs`: `Area::Tools` in die Liste von `annotations()` und deren Test, `INSTRUCTIONS` nennt eigene Werkzeuge.
+- **Abnahme:** `samples()` deckt die vier Requests; `names_follow_the_rules` mit `tools.save_file_as` in
+  `kept_back`; Test: `tool_enabled: true` für jeden Client `forbidden`, `false` erlaubt, auch über
+  `update_settings`; ebenso Ordner und Logo setzen `forbidden`, entfernen und die übrigen Felder der Vorlage
+  erlaubt; Test für `update_keeping_hidden` (Schalter und Pfade bleiben); Test: neuer Bereich ist für vorhandene Clients und den Assistenten geschlossen;
+  Vertragstest Tool ↔ Katalog (`tools_list_tools`, `tools_create_pdf`, `tools_open_file` da,
+  `tools_save_file_as` unbekannt); Einstellungen lesen und prüfen (Grenzen, falsche Vorlage, relativer Pfad);
+  `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md`.
+
+### WZ.3 Kern: Satz einer PDF aus Markdown und Vorlage
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WZ.1, WZ.2 · **Dateien:** `crates/torroworkplace/src/tools/pdf.rs` (neu),
+  `crates/torroworkplace/src/main.rs` (`mod tools`), `crates/torroworkplace/src/tools/mod.rs` (neu, nur
+  Moduldoku und `pub mod pdf`), `crates/torro-gui/src/design.rs` (`font_file`), `Cargo.toml` (Wurzel: `printpdf`,
+  `pulldown-cmark`), `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/tests/fixtures/tools/**`
+- Reine Funktion `render(title, markdown, template: &PdfTemplate, fonts, logo: Option<&[u8]>, date) ->
+  Result<Vec<u8>, PdfError>` nach dem Weg aus WZ.1. Markdown über `pulldown-cmark` mit Tabellen und
+  Durchstreichen; rohes HTML, Bilder und Links außer `http`/`https`/`mailto` fallen weg (Text bleibt); jeder Text
+  wird für HTML maskiert; eine Zeile nur `\pagebreak` wird Seitenumbruch.
+- Schriften: Text- und Überschrift-Schrift des aktiven Design-Pakets (`torro_core::design::load` mit
+  `settings.design`, sonst Standard); neue Hilfe `torro_gui::design::font_file(&Design, FontRole, Weight) ->
+  Option<Cow<'static, [u8]>>` neben `font_files` (gleiche Auflösung `Builtin`/`File`). Fehlt eine Stärke, nach
+  dem Ergebnis aus WZ.1.
+- Kopf/Fuß mit `{title}` und `{date}` (Datum in der Sprache der Suite), Seitenzahl übersetzt (`trf("Page {n} of
+  {m}", …)` oder wie WZ.1 es erlaubt). Logo: höchstens 2 MB, nur PNG/JPEG, sonst ohne Logo und Warnung im Log.
+- **Abnahme:** Tests über Fixtures: jede Markdown-Art erzeugt eine gültige PDF (mit `lopdf` aus printpdf
+  wieder gelesen, Text enthält Umlaute, Titel, Kopf und Seitenzahl); rohes HTML und `javascript:`-Links
+  erscheinen nicht; `\pagebreak` gibt zwei Seiten; jede Vorlage und jedes Papierformat.
+
+### WZ.4 Kern: Befehle des Werkzeugs PDF, Ablage, Register, Angebot ans Modell
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WZ.3 · **Dateien:** `crates/torroworkplace/src/tools/{mod,place,files}.rs`,
+  `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torroworkplace/src/mail/write.rs`,
+  `crates/torro-ipc/src/assistant.rs` (`MyAccess`), `docs/api-reference.md`,
+  `crates/torroworkplace/src/assistant/{tools,model,prompt}.rs`, `crates/torroworkplace/src/assistant/engines/{mod,
+  claude}.rs`, `crates/torroworkplace/assets/assistant/skill.md`, `Cargo.toml` (Wurzel: `dirs` 7),
+  `crates/torroworkplace/Cargo.toml`
+- `place.rs`: `folder(setting: Option<&Path>, desktop: Option<PathBuf>, home: &Path) -> PathBuf` (gesetzter Ordner,
+  wenn er existiert; sonst Schreibtisch aus `dirs::desktop_dir`, wenn er existiert; sonst Home);
+  `file_name(title)` (Steuer- und Pfadzeichen raus, Länge 80, leer → `Document`, Endung `.pdf`); Schreiben mit
+  `create_new`, bei Konflikt `-2`, `-3` … bis 999.
+- `files.rs`: Register (siehe Festlegungen) mit `add`, `get`, `contains(path)`.
+- Handler: `tools.list_tools` (Schalter und `allowed` für den fragenden Client); `tools.create_pdf` (Schalter aus
+  → `forbidden` mit `Lack::ToolOff` für jeden; Satz in `spawn_blocking`; Antwort `FileInfo`); `tools.open_file`
+  (nur Register, Programm des Systems wie `open_designs_folder`, ohne zu warten); `tools.save_file_as` (nur
+  Register; Ziel absolut, Ordner existiert, kein Ordner und kein Symlink als Ziel, `.pdf` ergänzt; überschreibt,
+  weil der Dialog des Systems gefragt hat). Schalter (`Lack::ToolOff`) und Auswahl (`Lack::Tool`) in
+  `handle_client` wie `mail_out_of_reach`, **vor** der Freigabe, und in `run_approved` noch einmal (mit der
+  Schnittmenge für Bots); Dateien eines anderen Clients `not-found`.
+- Freigabe-Texte in `approvals::summary`: `tools.create_pdf` mit Titel und Vorlage, `tools.open_file` mit dem Titel
+  aus dem Register über `Facts`.
+- `MyAccess` bekommt das optionale Feld `tools_on` (eingeschaltete Werkzeuge), damit ein Agent `ToolOff` und `Tool`
+  unterscheiden kann.
+- Mail: `read_file` und die zweite Stelle mit `FILE_OUTSIDE` lassen für Clients zusätzlich Dateien aus dem Register
+  zu, die der Client selbst erzeugt hat, mit Schalter, `tools` lesbar und `pdf` gewählt.
+- Angebot: `assistant::tools::allowed_for` nimmt nur Befehle, deren Werkzeug `reaches_tool` und Schalter erlauben
+  (Rechte vorher mit den eingeschalteten Werkzeugen schneiden, in `Answering::rights`); Antrieb B:
+  `claude::denied` sperrt die Befehle ausgeschalteter oder nicht gewählter Werkzeuge. Prompt: erzeugter Teil
+  nennt die erlaubten Werkzeuge; `skill.md` Abschnitt „Your own tools“: Pfad immer nennen, Inhalt nicht
+  wiederholen, `\pagebreak`, kein HTML.
+- **Abnahme:** Handler-Tests mit Temp-Wurzeln: Ablage in gesetztem Ordner, Schreibtisch, Home; nie überschreiben
+  (`-2`); Name bereinigt; Schalter aus → `forbidden` auch für den App-Schlüssel, ohne Freigabe-Antrag; nicht gewählt
+  → `forbidden` (`Lack::Tool`); Auswahl nach dem Freigabe-Antrag entzogen → `forbidden` beim Ausführen;
+  `save_file_as` mit Client-Schlüssel `forbidden`, unbekannte Kennung `not-found`; Client hängt eigene
+  Register-PDF an einen Entwurf, die PDF eines anderen Clients und eine ausgetauschte Datei bleiben draußen; Mock-Modell bekommt `tools_create_pdf`
+  nur mit Schalter und Auswahl; `denied` enthält die gesperrten; Prompt nennt das Werkzeug.
+
+### WZ.5 Karten-Grundlage und Datei-Karte im Kern
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WZ.4 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
+  `crates/torroworkplace/src/assistant/{mod,model,cards}.rs` (`cards.rs` neu),
+  `crates/torroworkplace/src/assistant/engines/mod.rs`, `crates/torroworkplace/src/{core,audit,daemon,pim}.rs`,
+  `crates/torroassistant/src/{view,chat}.rs` (nur `match`-Zweige), `docs/api-reference.md`
+- `EntryContent::Card { card: CardRef }`, `CardRef` mit `kind`: vorerst nur `File { id }`. `assistant.get_cards
+  { conversation }` (Read, Bereich `assistant`, `Mcp::Tool`) → `Response::Cards`, je Karten-Eintrag seine Stelle
+  im Verlauf und `Card::File(FileInfo)` oder `Card::Unavailable`. Aufgelöst mit den Rechten des Clients der
+  Unterhaltung (Assistent oder Bot), geschnitten mit den Rechten des Fragenden (die App: keine Schnittmenge):
+  Register, Datei gültig, `tools` lesbar und `pdf` gewählt.
+- `cards::after(name, &Response) -> Option<EntryContent>`: nach erfolgreichem `tools.create_pdf` eine Karte;
+  aufgerufen in `model.rs` nach der Werkzeugzeile und in `engines/mod.rs` nach `tool_line`. Bei Antrieb B kommt
+  die Kennung aus dem Ergebnistext; sie wird nur übernommen, wenn das Register sie kennt.
+- Nicht hier: `assistant.show_items` und Karten für Termin, Aufgabe, Entwurf; `ASSISTANT_OWN` bleibt.
+- **Abnahme:** Test mit Mock-Modell: nach `tools_create_pdf` folgt eine Karte; nach Fehler keine; `get_cards` zeigt
+  `File`, nach Löschen der Datei `Unavailable`, nach Entzug der Auswahl `Unavailable`; Test für Antrieb B mit
+  einer Werkzeugzeile; Vertragstest; `TORRO_BLESS=1 cargo test -p torro-ipc`.
+
+### WZ.6 Assistent › Einstellungen › Tools
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WZ.2 · **Dateien:** `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`
+  (`tools.rs` neu), `crates/torro-settings-ui/src/{lib,demo}.rs`, `crates/torroassistant/src/app.rs`,
+  `crates/torroassistant/Cargo.toml` (`rfd`), `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`
+- Abschnitt `tools` (nach Bots, vor Voice) in `SECTIONS`, `Message`, `update`, `page`; `wanted()` lädt
+  `tools.list_tools` in ein neues Feld von `Data`. Je Werkzeug eine Gruppe: Schalter (`tool_enabled`),
+  Kurzbeschreibung, ob der Assistent es darf (sonst „Allow it in the control centre“ mit `ControlCentre`).
+  PDF: Ablage-Ordner mit „Choose…“ und „Use desktop“; je Vorlage Papier, Ränder, Schriftgröße, Kopf, Fuß,
+  Seitenzahlen, Logo mit „Choose…“ und „Remove“. Dialoge über `AppAction::PickFolder` und
+  `AppAction::PickLogo(PdfTemplateId)`, die App öffnet `rfd` und schickt `set_setting`.
+- `docs/settings.md`: die neuen Einstellungen in Bestand und „Was wohin gehört“.
+- **Abnahme:** Tests: Schalter schickt genau einen `set_setting`; Felder schicken `pdf_template` mit der ganzen
+  Vorlage; kein `clients.*`; die Abschnitts-Tests mit sechs Abschnitten; `--demo`-Zustand; `scripts/design-check.sh`,
+  `torro-design-review` (schmal bis breit), Übersetzungen in `de.rs`.
+
+### WZ.7 Steuerzentrale: Auswahl der Werkzeuge
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WZ.2 · **Dateien:** `crates/torroworkplace/src/ui/{agents,mod}.rs`,
+  `crates/torroassistant/src/view/editor.rs` (Fußtext), `crates/torro-core/src/i18n/de.rs`
+- `Pick::Tools` mit allen Methoden, Kandidaten aus `tools.list_tools` (neues Feld in `Data`, geladen wie die
+  Quellen); `area_detail` „{n} of {m} tools“; Anschalten gibt die vorhandenen Werkzeuge (Regel aus B.5).
+- Vorhandene Clients, deren Rechte einer Vorlage entsprachen, zeigen danach „eigene Rechte“, weil die Vorlagen
+  `tools` enthalten; das ist gewollt und wird nicht umgeschrieben.
+- **Abnahme:** Tests in `agents.rs`: Anschalten setzt `Only(["pdf"])`, Haken ändern schickt `update_client`;
+  Sichtprüfung der Seite des Assistenten; Übersetzungen in `de.rs`.
+
+### WZ.8 Datei-Karte in der App, „Send by mail“
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** WZ.5 · **Dateien:** `crates/torroassistant/src/{app,chat,view,backend}.rs`,
+  `crates/torroassistant/src/view/**`, `crates/torroworkplace/src/{apps,core}.rs`, `crates/torroinbox/src/compose.rs`,
+  `crates/torro-ipc/src/api.rs` (Beschreibung `OPEN_APP`), `docs/api-reference.md`, `crates/torro-core/src/i18n/de.rs`
+- App holt `assistant.get_cards` mit dem Verlauf und zeigt je Karte Name, Vorlage, Größe, Pfad (kürzbar, ganz im
+  Tooltip) nach `docs/prototypes/assistant/cards.html`; Kurzform einzeilig für die Mini-Kachel; „No longer
+  available“. Knöpfe: Open → `tools.open_file`; Save as… → `rfd` Speichern-Dialog mit dem Dateinamen, dann
+  `tools.save_file_as`; Send by mail → `apps.open_app { app: "torroinbox", target: "file:<id>" }`.
+- `apps.rs`: `Target::File { id }` nur für die Mail-App, der Kern löst die Kennung über das Register auf und startet
+  `torroinbox --compose --attach <pfad>`; `compose.rs` nimmt `--attach` und hängt die Datei beim Start an. In
+  `Core::open_target` erreicht ein Client nur eigene Dateien mit Schalter, `tools` lesbar und `pdf` gewählt (sonst
+  `not-found`, schon vor der Freigabe), `facts.item` trägt den Titel aus dem Register; Beschreibung von `OPEN_APP`
+  in `crates/torro-ipc/src/api.rs` und Text `FORMS` in `apps.rs` nennen `file:<id>`.
+- `chat.rs` `tool_title`: „Created PDF“, „Listed tools“, „Opened file“; `view.rs` `area_icon` für `Tools`.
+- **Abnahme:** App-Tests mit Test-Backend: Karte aus `get_cards`, jeder Knopf schickt seinen Request; `Target`
+  parst `file:<id>`, fremde Kennung und Datei eines anderen Clients `not-found`; `compose` parst `--attach`; `--demo` mit Datei-Karte,
+  `scripts/design-check.sh`, `torro-design-review`, `TORRO_LANG=de cargo test --workspace`; Übersetzungen in `de.rs`.

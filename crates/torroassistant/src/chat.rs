@@ -14,16 +14,20 @@
 //!   of a tool line ([`tool_title`], [`tool_outcome`]), and under a refused one why, with "Change
 //!   access" only where that helps ([`refusal_hint`], issue #133).
 //! - The sidebar's two groups, pinned and recent, filtered by the search ([`sidebar_groups`]).
+//! - The file card (task WZ.8): what it says of a file ([`file_meta`]) and the request of each of
+//!   its buttons ([`open_file_request`], [`save_file_request`], [`mail_file_request`]).
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use torro_core::AppId;
 use torro_core::ai::{AiModel, Effort, is_this_computer};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::AssistantDefault;
 use torro_ipc::Request;
 use torro_ipc::api::{Access, Area, CATALOGUE, Lack, Level, Rights};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent, Mode, MyAccess};
+use torro_ipc::tools::{FileInfo, PdfTemplateId};
 
 /// The entries of one conversation as the window has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -99,6 +103,22 @@ impl Transcript {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The numbers of the card entries (task WZ.8), in order: what `assistant.get_cards` resolves.
+    pub fn cards(&self) -> Vec<u64> {
+        self.entries
+            .iter()
+            .filter(|entry| matches!(entry.content, EntryContent::Card { .. }))
+            .map(|entry| entry.seq)
+            .collect()
+    }
+
+    /// The number of the card that comes right after the entry `seq` (a tool that made a file, task
+    /// WZ.8); `None` when the next entry is no card or there is none.
+    pub fn card_after(&self, seq: u64) -> Option<u64> {
+        let next = self.entries.iter().find(|entry| entry.seq > seq)?;
+        matches!(next.content, EntryContent::Card { .. }).then_some(next.seq)
     }
 
     /// The newest answer, the one still being written included: what the mini tile shows.
@@ -352,6 +372,7 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
+        Area::Tools => tr("Tools"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("Agents & API"),
@@ -403,6 +424,9 @@ pub fn tool_title(name: &str) -> String {
         "bots.list_bots" => tr("Looked up bots"),
         "assistant.my_access" => tr("Looked up its access"),
         "bots.save_bot" => tr("Suggested a bot"),
+        "tools.create_pdf" => tr("Created PDF"),
+        "tools.list_tools" => tr("Listed tools"),
+        "tools.open_file" => tr("Opened file"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
     };
@@ -458,6 +482,10 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
             "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
             &[("area", &name(area))],
         ),
+        Lack::ToolOff { tool } => {
+            trf("The tool {tool} is switched off in the assistant's settings.", &[("tool", &tool.title())])
+        }
+        Lack::Tool { tool } => trf("The assistant may not use the tool {tool}.", &[("tool", &tool.title())]),
     };
     (text, lack.in_rights())
 }
@@ -470,6 +498,79 @@ pub fn tool_line(name: &str, summary: &str, error: Option<&str>) -> String {
     } else {
         trf("{tool} · {outcome}", &[("tool", &tool_title(name)), ("outcome", &outcome)])
     }
+}
+
+/// An answer as one plain line, for a mini tile with room for no more: its lines joined, the marks
+/// of Markdown left out (`**`, `` ` ``, `#`, list and quote marks, a link's address), so the caller
+/// can cut it with "…" (`typo::ellipsize`).
+pub fn answer_line(markdown: &str) -> String {
+    let lines = markdown.lines().map(|line| {
+        let line = line.trim_start().trim_start_matches(['#', '>']).trim_start();
+        let line = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")).unwrap_or(line);
+        line.trim()
+    });
+    let joined = lines.filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
+    let mut plain = String::with_capacity(joined.len());
+    let mut rest = joined.as_str();
+    // "[text](address)" keeps its text.
+    while let Some(open) = rest.find("](") {
+        let close = rest[open..].find(')').map(|at| open + at);
+        let start = rest[..open].rfind('[');
+        match (start, close) {
+            (Some(start), Some(close)) => {
+                plain.push_str(&rest[..start]);
+                plain.push_str(&rest[start + 1..open]);
+                rest = &rest[close + 1..];
+            }
+            _ => break,
+        }
+    }
+    plain.push_str(rest);
+    plain.chars().filter(|c| !matches!(c, '*' | '`')).collect()
+}
+
+/// The name of a PDF template as the assistant's settings write it ("Report").
+pub fn template_name(template: PdfTemplateId) -> &'static str {
+    match template {
+        PdfTemplateId::Letter => trc("template", "Letter"),
+        PdfTemplateId::Report => trc("template", "Report"),
+        PdfTemplateId::Note => trc("template", "Note"),
+    }
+}
+
+/// A size in bytes as people read it: "860 B", "3 KB", "12 MB" (as the mail window writes it).
+pub fn size_text(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    if bytes < KB {
+        trf("{n} B", &[("n", &bytes)])
+    } else if bytes < KB * KB {
+        trf("{n} KB", &[("n", &bytes.div_ceil(KB))])
+    } else {
+        trf("{n} MB", &[("n", &bytes.div_ceil(KB * KB))])
+    }
+}
+
+/// The quiet line under a file card's name: its template and size ("Report · 84 KB").
+pub fn file_meta(file: &FileInfo) -> String {
+    format!("{} · {}", template_name(file.template), size_text(file.size))
+}
+
+/// "Open" on a file card: `tools.open_file`, the system's program for it on the person's screen.
+pub fn open_file_request(file: &str) -> Request {
+    Request::OpenFile { file: file.to_owned() }
+}
+
+/// "Save as…" on a file card, once the person chose `path` in the system's save dialog:
+/// `tools.save_file_as`. `None` for a path that is not text, which the core could not take.
+pub fn save_file_request(file: &str, path: &Path) -> Option<Request> {
+    let path = path.to_str()?;
+    Some(Request::SaveFileAs { file: file.to_owned(), path: path.to_owned() })
+}
+
+/// "Send by mail" on a file card: `apps.open_app` with `file:<id>`, a new mail in the inbox's
+/// compose window with the file attached – the person sees what goes out before it goes.
+pub fn mail_file_request(file: &str) -> Request {
+    Request::OpenApp { app: AppId::INBOX.binary.to_owned(), target: Some(format!("file:{file}")) }
 }
 
 /// The sidebar's conversations: pinned ones, then the rest, each newest first, both narrowed to
@@ -847,6 +948,46 @@ mod tests {
         let (never, change) = hint(Lack::NeverToAgents { area: Area::Mail });
         assert!(!change && never.contains("Claude Code"), "{never}");
         assert!(!hint(Lack::ForPeople).1);
+        // Issue #225: a tool switched off is the assistant's settings, a tool not granted its rights.
+        let pdf = torro_ipc::tools::ToolId::Pdf;
+        let tool = |text: &'static str| trf(text, &[("tool", &"PDF")]);
+        let off = hint(Lack::ToolOff { tool: pdf });
+        assert_eq!(off, (tool("The tool {tool} is switched off in the assistant's settings."), false));
+        let not_granted = hint(Lack::Tool { tool: pdf });
+        assert_eq!(not_granted, (tool("The assistant may not use the tool {tool}."), true));
+        assert_eq!(area_name(Area::Tools), tr("Tools"));
+    }
+
+    /// Task WZ.8: the tool lines of the PDF tool say what was done; a file card says its template
+    /// and size, and each of its buttons builds its request.
+    #[test]
+    fn the_file_card_says_what_the_file_is_and_each_button_its_request() {
+        assert_eq!(tool_title("tools.create_pdf"), tr("Created PDF"));
+        assert_eq!(tool_title("tools.list_tools"), tr("Listed tools"));
+        assert_eq!(tool_title("tools.open_file"), tr("Opened file"));
+        let file = FileInfo {
+            id: "1a2b3c4d".into(),
+            name: "Offer.pdf".into(),
+            path: "/home/anna/Desktop/Offer.pdf".into(),
+            title: "Offer".into(),
+            template: PdfTemplateId::Report,
+            size: 86_000,
+            created: Utc::now(),
+        };
+        let size = trf("{n} KB", &[("n", &84)]);
+        assert_eq!(file_meta(&file), format!("{} · {size}", trc("template", "Report")));
+        assert_eq!(size_text(860), trf("{n} B", &[("n", &860)]));
+        assert_eq!(size_text(3 * 1024 * 1024), trf("{n} MB", &[("n", &3)]));
+        assert_eq!(open_file_request("1a2b3c4d"), Request::OpenFile { file: "1a2b3c4d".into() });
+        let path = Path::new("/home/anna/Offer copy.pdf");
+        assert_eq!(
+            save_file_request("1a2b3c4d", path),
+            Some(Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/home/anna/Offer copy.pdf".into() })
+        );
+        assert_eq!(
+            mail_file_request("1a2b3c4d"),
+            Request::OpenApp { app: "torroinbox".into(), target: Some("file:1a2b3c4d".into()) }
+        );
     }
 
     #[test]
@@ -869,5 +1010,28 @@ mod tests {
         );
         let (pinned, recent) = sidebar_groups(&list, "  LISBON ");
         assert_eq!((titles(pinned).len(), titles(recent)), (0, vec!["Trip to Lisbon".to_owned()]));
+    }
+
+    /// Fixes of the design review of WZ.8: the card right after a tool is found (its line then
+    /// leaves the file's name to the card), and an answer becomes one plain line for the mini tile.
+    #[test]
+    fn a_card_after_a_tool_and_an_answer_on_one_line() {
+        let card = |seq| Entry {
+            seq,
+            time: at(2),
+            content: EntryContent::Card { card: torro_ipc::assistant::CardRef::File { id: "5eedf11e".into() } },
+        };
+        let transcript = Transcript::new(
+            summary("c1", 5, false),
+            vec![message(1, "Make a PDF"), tool(2), card(3), tool(4), answer(5, "Done")],
+        );
+        assert_eq!(transcript.card_after(2), Some(3));
+        assert_eq!(transcript.card_after(4), None, "an answer follows");
+        assert_eq!(transcript.card_after(5), None, "nothing follows");
+
+        let markdown =
+            "## Done\n\n- **Release checklist-2.pdf** is on your [desktop](file:///home/anna/Desktop).\n> `84 KB`";
+        assert_eq!(answer_line(markdown), "Done Release checklist-2.pdf is on your desktop. 84 KB");
+        assert_eq!(answer_line("A [half link and (more)"), "A [half link and (more)");
     }
 }

@@ -16,6 +16,10 @@
 //! mail accounts, the release helper has none, as the assistant's proposal would leave it; the
 //! demo lists calendars, task lists, inbox sources and accounts for the editor's section "Access"
 //! and takes `clients.update_client`.
+//!
+//! Cards (task WZ.8): "Release checklist" ([`CARDS`]) made two PDFs; the first is gone ("No longer
+//! available"), the second ([`PDF`]) shows with its buttons, which the demo answers without doing
+//! anything (`torroassistant --demo --chat d000000000000006`).
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -25,7 +29,8 @@ use torro_core::i18n::{tr, trf};
 use torro_inbox::{SourceInfo, SourceRef};
 use torro_ipc::api::{Access, Area, AreaRights, BOT_CLIENT, Lack, Level, Rights, Selection};
 use torro_ipc::assistant::{
-    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR, Profile,
+    Card, CardEntry, CardRef, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR,
+    Profile,
 };
 use torro_ipc::bots::{Bot, Skill};
 use torro_ipc::{AccountInfo, ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
@@ -39,6 +44,13 @@ pub const APPROVAL: &str = "d000000000000002";
 pub const STREAMING: &str = "d000000000000003";
 /// "Tasks from Anna's mails": a tool the assistant may not use.
 pub const FORBIDDEN: &str = "d000000000000004";
+
+/// "Release checklist": two PDFs, the first gone, the second ([`PDF`]) with its card (task WZ.8).
+pub const CARDS: &str = "d000000000000006";
+/// The PDF of "Release checklist" that is still there.
+pub const PDF: &str = "5eedf11e";
+/// The PDF of "Release checklist" that was deleted.
+const GONE_PDF: &str = "dead0001";
 
 /// "Train to Lisbon": the conversation of the bot "Travel planner".
 pub const BOT_CHAT: &str = "d000000000000007";
@@ -181,6 +193,16 @@ impl Demo {
             },
             Request::DecideApproval { id, allow } => state.decide(&id, allow),
             Request::OpenApp { .. } => Response::Ok,
+            // The cards (task WZ.8): the one PDF that is still there; its buttons change nothing here.
+            Request::GetCards { conversation } => {
+                let now = state.now;
+                match state.find(&conversation) {
+                    Some(found) => Response::Cards { cards: cards(&found.entries, now) },
+                    None => unknown(&conversation),
+                }
+            }
+            Request::OpenFile { file } | Request::SaveFileAs { file, .. } if file == PDF => Response::Ok,
+            Request::OpenFile { .. } | Request::SaveFileAs { .. } => refused("not-found", "No such file."),
             // The assistant's profile (task C.10): a name and a symbol of its own.
             Request::GetProfile => Response::Profile { profile: profile() },
             // Bots (task B.3), in memory.
@@ -604,7 +626,7 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
     );
 
     let mut release = sample(
-        "d000000000000006",
+        CARDS,
         tr("Release checklist"),
         now,
         Duration::days(3),
@@ -612,6 +634,19 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
             message(tr("What is still open for the release?")),
             tool("tasks.list_todos", serde_json::json!({"list": "release"}), tr("6 tasks"), None),
             answer(tr("Six tasks are open; two are due this week.")),
+            message(tr("Put them in a PDF for the team.")),
+            tool("tools.create_pdf", serde_json::json!({"title": "Release checklist"}), "Release checklist.pdf", None),
+            EntryContent::Card { card: CardRef::File { id: GONE_PDF.into() } },
+            answer(tr("Done: the PDF is on your desktop, Release checklist.pdf.")),
+            message(tr("Add the due dates and make a new one.")),
+            tool(
+                "tools.create_pdf",
+                serde_json::json!({"title": "Release checklist", "template": "report"}),
+                "Release checklist-2.pdf",
+                None,
+            ),
+            EntryContent::Card { card: CardRef::File { id: PDF.into() } },
+            answer(tr("The new one with the due dates is on your desktop: Release checklist-2.pdf.")),
         ],
     );
     release.summary.pinned = true;
@@ -666,6 +701,34 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
     vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna]
+}
+
+/// The cards of `entries` as the core resolves them (task WZ.8): [`PDF`] as a file on the desktop,
+/// every other file gone.
+fn cards(entries: &[Entry], now: DateTime<Utc>) -> Vec<CardEntry> {
+    entries
+        .iter()
+        .filter_map(|entry| match &entry.content {
+            EntryContent::Card { card: CardRef::File { id } } => Some(CardEntry {
+                seq: entry.seq,
+                card: if id == PDF { Card::File(pdf(now)) } else { Card::Unavailable },
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The PDF of "Release checklist" as the register keeps it.
+fn pdf(now: DateTime<Utc>) -> torro_ipc::tools::FileInfo {
+    torro_ipc::tools::FileInfo {
+        id: PDF.into(),
+        name: "Release checklist-2.pdf".into(),
+        path: "/Users/anna/Desktop/Release checklist-2.pdf".into(),
+        title: "Release checklist".into(),
+        template: torro_ipc::tools::PdfTemplateId::Report,
+        size: 48_213,
+        created: now - Duration::days(3),
+    }
 }
 
 /// The travel planner's answer in "Train to Lisbon".

@@ -344,6 +344,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
         Request::GetConversation { id: conversation, .. }
+        | Request::GetCards { conversation }
         | Request::CancelAnswer { conversation }
         | Request::RenameConversation { id: conversation, .. }
         | Request::DeleteConversation { id: conversation }
@@ -371,6 +372,10 @@ pub fn ids(request: &Request) -> Vec<String> {
                 .flatten()
                 .collect()
         }
+        // The assistant's own tools (issue #225): a file by the id the core made, never a title, the
+        // Markdown, the template or a path.
+        Request::ListTools | Request::CreatePdf { .. } => Vec::new(),
+        Request::OpenFile { file } | Request::SaveFileAs { file, .. } => vec![random("file", file)],
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }
         | Request::MailIndexStatus { .. }
@@ -761,6 +766,13 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&done), vec!["inbox:3d29c13547a49e39".to_string()]);
         let github = Request::MuteSource { source: torro_inbox::SourceRef::github("anna-berg"), muted: true };
         assert_eq!(super::ids(&github), vec!["source:github:anna-berg".to_string()]);
+        // The assistant's own tools (issue #225): a file by its id, never a title, content or path.
+        let pdf = Request::CreatePdf { title: "Salary talk".into(), markdown: "# Salary".into(), template: None };
+        assert!(super::ids(&pdf).is_empty());
+        let save = Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/Users/anna/Salary.pdf".into() };
+        assert_eq!(super::ids(&save), vec!["file:1a2b3c4d".to_string()]);
+        let open = super::ids(&Request::OpenFile { file: "/Users/anna/Salary.pdf".into() }).join(" ");
+        assert!(open.starts_with("file:hash:") && !open.contains("Salary"), "{open}");
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they

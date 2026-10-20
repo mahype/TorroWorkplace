@@ -21,7 +21,8 @@
 //!   [`Rights::outbound`]), with a warning under it while it says "Always" ([`sends_freely`]), since
 //!   mail can hold instructions to the agent; "Ask first"
 //!   (never, on delete, on every change); the selections of calendars, task lists, GitHub
-//!   repositories, inbox sources and mail accounts ("All" or the switched-on ones, a calendar's
+//!   repositories, inbox sources, mail accounts and the assistant's own tools (task WZ.7) ("All"
+//!   or the switched-on ones, a calendar's
 //!   colour as a dot as on the Accounts page; the suite's own entries are never offered, since the
 //!   core shows them only to the person, task E1.2c) for each area the client can reach; its latest requests from
 //!   the audit
@@ -70,8 +71,9 @@
 //! `assistant.open_window` ("Open chat" on a bot's page). The clients
 //! come from
 //! `clients.list_clients`, the candidates of the selections from `calendar.list_calendars`,
-//! `tasks.list_lists` (whose GitHub filter lists also name repositories), `inbox.list_sources` and
-//! `accounts.list_accounts` (the accounts of the kind `mail`), all loaded by the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
+//! `tasks.list_lists` (whose GitHub filter lists also name repositories), `inbox.list_sources`,
+//! `accounts.list_accounts` (the accounts of the kind `mail`) and `tools.list_tools`, all loaded by
+//! the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
 //! has it.
 
 use std::time::Duration;
@@ -253,7 +255,7 @@ struct Issued {
     copied: bool,
 }
 
-/// One of the five selections of a client's rights.
+/// One of the six selections of a client's rights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Calendars,
@@ -261,11 +263,13 @@ pub enum Pick {
     GithubRepos,
     InboxSources,
     MailAccounts,
+    /// The assistant's own tools ([`Rights::tools`], task WZ.7), by their id (`pdf`).
+    Tools,
 }
 
 impl Pick {
-    pub const ALL: [Pick; 5] =
-        [Pick::Calendars, Pick::TaskLists, Pick::GithubRepos, Pick::InboxSources, Pick::MailAccounts];
+    pub const ALL: [Pick; 6] =
+        [Pick::Calendars, Pick::TaskLists, Pick::GithubRepos, Pick::InboxSources, Pick::MailAccounts, Pick::Tools];
 
     /// The area whose level decides whether the selection matters at all.
     pub fn area(self) -> Area {
@@ -275,6 +279,7 @@ impl Pick {
             Pick::GithubRepos => Area::Github,
             Pick::InboxSources => Area::Inbox,
             Pick::MailAccounts => Area::Mail,
+            Pick::Tools => Area::Tools,
         }
     }
 
@@ -285,6 +290,7 @@ impl Pick {
             Pick::GithubRepos => &rights.github_repos,
             Pick::InboxSources => &rights.inbox_sources,
             Pick::MailAccounts => &rights.mail_accounts,
+            Pick::Tools => &rights.tools,
         }
     }
 
@@ -295,6 +301,7 @@ impl Pick {
             Pick::GithubRepos => &mut rights.github_repos,
             Pick::InboxSources => &mut rights.inbox_sources,
             Pick::MailAccounts => &mut rights.mail_accounts,
+            Pick::Tools => &mut rights.tools,
         }
     }
 
@@ -305,6 +312,7 @@ impl Pick {
             Pick::GithubRepos => tr("GitHub repositories"),
             Pick::InboxSources => tr("Notification Hub sources"),
             Pick::MailAccounts => tr("Mail accounts"),
+            Pick::Tools => tr("Tools"),
         }
     }
 
@@ -327,6 +335,14 @@ impl Pick {
             ),
             (Pick::MailAccounts, true) => tr("Includes mail accounts added later."),
             (Pick::MailAccounts, false) => tr("Mail accounts left off don't exist for this agent."),
+            // The switch is the person's, in the assistant's settings: the rights alone never make a
+            // tool work (`docs/assistent.md`, "Schalter und Rechte sind zwei Dinge").
+            (Pick::Tools, true) => {
+                tr("Includes tools added later. Each works only while it is on in the assistant's settings.")
+            }
+            (Pick::Tools, false) => {
+                tr("This agent can't use tools left off. Each works only while it is on in the assistant's settings.")
+            }
         }
     }
 }
@@ -631,7 +647,8 @@ fn edit(state: &mut State, data: &Data, message: Message) -> Action {
 /// reaches until the person unticks something. A level goes through [`Rights::set_level`], the rule
 /// the bot editor shares (task B.5): switching an area on while nothing of it is ticked ticks
 /// everything of it there is now – calendars, task lists, inbox sources, signed-in mail accounts
-/// (issue #133, widened) –, GitHub stays empty; what is added later stays off until ticked.
+/// (issue #133, widened), the tools `tools.list_tools` lists (task WZ.7), switched on or not –,
+/// GitHub stays empty; what is added later stays off until ticked.
 pub(super) fn change_rights(
     rights: &mut Rights,
     kind: &str,
@@ -995,6 +1012,7 @@ pub(crate) fn area_label(area: Area) -> &'static str {
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
+        Area::Tools => tr("Tools"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("Agents & API"),
@@ -1015,6 +1033,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Ai => tr("Models of your AI accounts"),
         Area::Assistant => tr("Chats with the assistant, which acts with its own rights"),
         Area::Bots => tr("Bots and asking them, which act with their own rights"),
+        Area::Tools => tr("The assistant's own tools, such as making PDFs"),
         Area::Settings => tr("Settings of the suite"),
         Area::Apps => tr("Opening the suite's apps"),
         Area::System | Area::Clients | Area::Approvals => "",
@@ -1276,6 +1295,7 @@ pub fn candidates(pick: Pick, data: &Data, selection: &Selection) -> Vec<Candida
         Pick::GithubRepos => repo_candidates(data, selection),
         Pick::InboxSources => source_candidates(data, selection),
         Pick::MailAccounts => mail_candidates(data),
+        Pick::Tools => tool_candidates(data),
     };
     // Repositories need no such pass: their candidates are made from the selection.
     if let (Selection::Only(ids), false) = (selection, pick == Pick::GithubRepos) {
@@ -1404,6 +1424,29 @@ fn mail_candidates(data: &Data) -> Vec<Candidate> {
     api::signed_in_mail(&data.accounts)
         .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
         .collect()
+}
+
+/// The assistant's own tools (`tools.list_tools`, task WZ.7): the id is what the core checks a
+/// command against ([`Rights::reaches_tool`]), the name what people call it ("PDF"). Below it what
+/// the tool does, or, while it is off in the assistant's settings, that it is: granted, it still
+/// does nothing until the person switches it on there.
+fn tool_candidates(data: &Data) -> Vec<Candidate> {
+    data.tools
+        .iter()
+        .map(|tool| {
+            let detail = match tool.enabled {
+                true => tool.description.clone(),
+                false => tr("Off in the assistant's settings").to_string(),
+            };
+            Candidate::plain(tool.id.name().to_string(), tool.name.clone(), Some(detail))
+        })
+        .collect()
+}
+
+/// Whether the tool `id` is known and switched off in the assistant's settings
+/// (`tools.list_tools`): granted, it still does nothing.
+fn tool_off(data: &Data, id: &str) -> bool {
+    data.tools.iter().any(|tool| tool.id.name() == id && !tool.enabled)
 }
 
 /// When a request was: "14:05" today, "yesterday 14:05", else "2026-10-09 14:05" (no month names,
@@ -1638,7 +1681,7 @@ pub(super) fn on_axis<'a, M: 'a>(button: Element<'a, M>) -> Element<'a, M> {
 
 /// The rights view of a client of `kind` (task A.6, shared with the Assistant page of task C.6): the
 /// access group titled `title` ([`access_group`]), "Ask first", and the selection of each area the
-/// rights reach (calendars, task lists, repositories, inbox sources, mail accounts).
+/// rights reach (calendars, task lists, repositories, inbox sources, mail accounts, tools).
 /// `repo_input` is the text in "Add repository". Every control sends a message that
 /// [`change_rights`] applies; the caller keeps the rights and saves them.
 pub(super) fn rights_groups<'a>(
@@ -1774,9 +1817,13 @@ fn selection_group<'a>(
                 false,
             ));
         }
+        // A tool switched off in the assistant's settings gets a mark in the attention colour; the
+        // other tools keep its room, so the names line up.
+        let any_off = pick == Pick::Tools && offered.iter().any(|candidate| tool_off(data, &candidate.id));
         rows.extend(offered.into_iter().map(|candidate| {
             let ticked = selection.contains(&candidate.id);
-            candidate_row(pick, candidate, ticked, column)
+            let off = any_off.then(|| tool_off(data, &candidate.id));
+            candidate_row(pick, candidate, ticked, off, column)
         }));
         if pick == Pick::GithubRepos {
             rows.push(add_repo_row(repo_input));
@@ -1787,8 +1834,16 @@ fn selection_group<'a>(
 
 /// A candidate as on the Accounts page: a calendar's or list's colour only as a dot before the
 /// name (a calendar the core no longer knows keeps the dot's room, so the names line up), a
-/// neutral switch at the right; the whole row toggles it.
-fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Option<f32>) -> Element<'a, Message> {
+/// neutral switch at the right; the whole row toggles it. `off` marks a tool that is off in the
+/// assistant's settings (`Some(true)`, an alert in the attention colour) or keeps that mark's room
+/// (`Some(false)`); `None` has no such mark.
+fn candidate_row<'a>(
+    pick: Pick,
+    candidate: Candidate,
+    ticked: bool,
+    off: Option<bool>,
+    column: Option<f32>,
+) -> Element<'a, Message> {
     let Candidate { id, label, detail, color } = candidate;
     let switch_id = id.clone();
     let switch = toggler(ticked)
@@ -1797,8 +1852,14 @@ fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Opt
         .on_toggle(move |on| Message::Tick(pick, switch_id.clone(), on));
     let dot = match (pick, color) {
         (_, Some(color)) => Some(color_dot(color, space::s())),
+        (Pick::Tools, None) if off == Some(true) => Some(
+            icon::icon(Icon::CircleAlert, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
+                .into(),
+        ),
+        (Pick::Tools, None) if off == Some(false) => Some(Space::new().width(icon::SIZE).into()),
         (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::s()).into()),
-        (Pick::GithubRepos | Pick::InboxSources | Pick::MailAccounts, None) => None,
+        (Pick::GithubRepos | Pick::InboxSources | Pick::MailAccounts | Pick::Tools, None) => None,
     };
     let row = setting_row(dot, label, detail, in_column(switch, column));
     pressable(row, Some(Message::Tick(pick, id, !ticked)))
@@ -1927,6 +1988,7 @@ mod tests {
 
     use chrono::Duration as Age;
     use torro_inbox::SourceInfo;
+    use torro_ipc::tools::{ToolId, ToolInfo};
     use torro_ipc::{AccountInfo, Key};
     use torro_pim::model::GitHubFilter;
     use torro_pim::{AccountState, CollectionKind};
@@ -1997,8 +2059,14 @@ mod tests {
                 account("", "mail", "signing-in@example.org"),
                 account("mail:anna@work.example.net", "mail", "anna@work.example.net"),
             ],
+            tools: vec![pdf(false)],
             ..Data::default()
         }
+    }
+
+    /// The tool PDF as `tools.list_tools` lists it for the app key, switched on or not.
+    fn pdf(enabled: bool) -> ToolInfo {
+        ToolInfo { id: ToolId::Pdf, name: "PDF".into(), description: "Makes PDFs.".into(), enabled, allowed: true }
     }
 
     /// The state with the detail page of `id` open.
@@ -2119,6 +2187,11 @@ mod tests {
                         && !keys.contains(&"suite".to_string())
                 },
             ),
+            // Task WZ.7: the tools are a selection like the others.
+            (vec![Message::All(Pick::Tools, false)], |r| r.tools == Selection::Only(vec!["pdf".into()])),
+            (vec![Message::All(Pick::Tools, false), Message::Tick(Pick::Tools, "pdf".into(), false)], |r| {
+                r.tools == Selection::Only(Vec::new())
+            }),
         ];
         for (messages, check) in cases {
             let mut state = opened("c1", &data);
@@ -2143,9 +2216,10 @@ mod tests {
         let mut level = |rights: &mut Rights, area: Area, level: Level| {
             change_rights(rights, BOT_CLIENT, Message::Level(area, level), &data, &mut repo_input)
         };
-        for area in [Area::Calendar, Area::Tasks, Area::Github, Area::Inbox, Area::Mail] {
+        for area in [Area::Calendar, Area::Tasks, Area::Github, Area::Inbox, Area::Mail, Area::Tools] {
             assert!(level(&mut rights, area, Level::Read), "{area:?}");
         }
+        assert_eq!(rights.tools, Selection::Only(vec!["pdf".into()]), "a tool that is off is ticked too");
         assert_eq!(rights.calendars, Selection::Only(vec!["acc/work".into(), "acc/home".into()]));
         assert_eq!(rights.task_lists, Selection::Only(vec!["acc/todo".into(), "github:anna/1".into()]));
         assert_eq!(rights.github_repos, Selection::Only(Vec::new()), "no list of every repository");
@@ -2184,6 +2258,62 @@ mod tests {
         for on in [false, true] {
             let _ = access_group(&rights, None, ASSISTANT_CLIENT, "Access", on);
         }
+    }
+
+    /// Task WZ.7: a client without tools that gets the area on the page has every tool there is
+    /// ticked (`Only(["pdf"])`, never "All"), and unticking it again goes out as
+    /// `clients.update_client` with the whole rights.
+    #[test]
+    fn switching_tools_on_ticks_the_tools_and_unticking_saves_the_rights() {
+        let mut data = data();
+        let rights = &mut data.clients[0].rights;
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::NoAccess, admin: false });
+        rights.tools = Selection::Only(Vec::new());
+        let mut state = opened("c1", &data);
+        assert!(matches!(update(&mut state, Message::Level(Area::Tools, Level::Write), &data), Action::None));
+        let (id, rights) = saved(&mut state, &data);
+        assert_eq!(id, "c1");
+        assert_eq!(rights.area(Area::Tools).level, Level::Write);
+        assert_eq!(rights.tools, Selection::Only(vec!["pdf".into()]));
+
+        // The core took it and the reload shows it: unticking PDF is the next request.
+        data.clients[0].rights = rights;
+        let mut state = opened("c1", &data);
+        assert!(matches!(update(&mut state, Message::Tick(Pick::Tools, "pdf".into(), false), &data), Action::None));
+        let (id, rights) = saved(&mut state, &data);
+        assert_eq!(id, "c1");
+        assert_eq!(rights.tools, Selection::Only(Vec::new()));
+        assert_eq!(rights.area(Area::Tools).level, Level::Write, "the level stays");
+
+        // On the assistant's first start the choice gets the same, nothing is sent.
+        let mut state = State::default();
+        assert!(matches!(update(&mut state, Message::ShowAssistant, &data), Action::None));
+        assert!(matches!(update(&mut state, Message::Level(Area::Tools, Level::Write), &data), Action::None));
+        assert_eq!(state.choice.tools, Selection::Only(vec!["pdf".into()]));
+    }
+
+    /// Task WZ.7: a tool is offered by its id and name; below it what it does, or that it is off in
+    /// the assistant's settings, since granted it still does nothing there.
+    #[test]
+    fn tools_are_offered_with_what_they_do_or_that_they_are_off() {
+        let mut data = data();
+        let offered = candidates(Pick::Tools, &data, &Selection::All);
+        assert_eq!(offered.iter().map(|c| (c.id.as_str(), c.label.as_str())).collect::<Vec<_>>(), [("pdf", "PDF")]);
+        assert_eq!(offered[0].detail.as_deref(), Some(tr("Off in the assistant's settings")));
+        assert!(offered[0].color.is_none());
+        assert!(tool_off(&data, "pdf"), "so its row gets the attention mark");
+        assert!(!tool_off(&data, "chart"), "a tool the core does not know is not off, it is gone");
+        data.tools = vec![pdf(true)];
+        assert_eq!(candidates(Pick::Tools, &data, &Selection::All)[0].detail.as_deref(), Some("Makes PDFs."));
+        assert!(!tool_off(&data, "pdf"));
+        // A tool the core no longer knows stays in the list to be unticked.
+        let stale = Selection::Only(vec!["pdf".into(), "chart".into()]);
+        let all = candidates(Pick::Tools, &data, &stale);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[1].detail.as_deref(), Some(tr("No longer available")));
+        assert_eq!(Pick::Tools.area(), Area::Tools);
+        // Without an answer of `tools.list_tools` there is nothing to choose from.
+        assert!(candidates(Pick::Tools, &Data::default(), &Selection::All).is_empty());
     }
 
     #[test]
@@ -2433,8 +2563,8 @@ mod tests {
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
         let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
-        // GitHub, Inbox, Mail, Accounts, AI, Settings, Apps follow.
-        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &7)]));
+        // GitHub, Inbox, Mail, Accounts, AI, Tools, Settings, Apps follow.
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &8)]));
     }
 
     #[test]

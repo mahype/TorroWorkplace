@@ -62,6 +62,7 @@ use torro_core::settings::Settings;
 use torro_inbox::{Rule, SourceInfo};
 use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
+use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 
 pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
@@ -102,6 +103,10 @@ pub struct Data {
     pub memories: Vec<Note>,
     /// The bots (`bots.list_bots`); none from a daemon that has none.
     pub bots: Vec<BotSummary>,
+    /// The assistant's own tools (`tools.list_tools`, task WZ.6), each with whether a person
+    /// switched it on. Asked with the app key, so `allowed` is always `true` here; whether the
+    /// assistant may use a tool comes from its client's rights ([`assistant::tools`]).
+    pub tools: Vec<ToolInfo>,
     /// What the assistant can answer with (`assistant.list_engines`): an AI account, a coding
     /// agent with its own models.
     pub engines: Vec<Engine>,
@@ -150,6 +155,7 @@ impl Data {
             Response::Profile { profile } => self.profile = Some(profile),
             Response::Memories { notes } => self.memories = notes,
             Response::Bots { bots } => self.bots = bots,
+            Response::Tools { tools } => self.tools = tools,
             Response::Engines { engines } => self.engines = engines,
             Response::AiModels { account, models } => {
                 // Several accounts answer the same command in one load (task E12.10); each
