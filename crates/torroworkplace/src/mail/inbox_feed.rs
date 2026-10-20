@@ -558,11 +558,24 @@ impl Feed {
                 return;
             }
         };
+        // Mail that already has a category is left as it is (task E12.6): this path runs again
+        // after a gap in the change stream and on the way back from "Later", and sorting it
+        // anew would write a rule's answer over what the person filed by hand. The backlog run
+        // leaves it alone for the same reason (`uncategorised`).
+        let ids: Vec<String> = mails.iter().map(|mail| mail.message.clone()).collect();
+        let held: Vec<String> = match store.run(move |store| store.categorised(&ids)).await {
+            Ok(held) => held,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the categories of {account}: {err}");
+                Vec::new()
+            }
+        };
         // What the fixed rules make of each mail (task E12.2): kept with the mail, so the list,
         // the search and the sidebar show it, and put on the entry by `file_mail` as well. Mail
         // nothing can be said about yet stays without one until a model is asked (task E12.6).
         let decided: Vec<(String, MailCategory)> = mails
             .iter()
+            .filter(|mail| !held.contains(&mail.message))
             .filter_map(|mail| match self.inbox.mail_category_of(mail) {
                 Ok(Some(category)) => Some((mail.message.clone(), category)),
                 Ok(None) => None,
@@ -595,8 +608,11 @@ impl Feed {
         // task of its own (task E12.6). New mail must stand in the list at once; a local model
         // takes seconds per mail, and waiting here would hold up every entry of this round.
         if let Some(decide) = &self.decide {
-            let undecided: Vec<String> =
-                mails.iter().filter(|mail| !sorted.contains(&mail.message)).map(|mail| mail.message.clone()).collect();
+            let undecided: Vec<String> = mails
+                .iter()
+                .filter(|mail| !sorted.contains(&mail.message) && !held.contains(&mail.message))
+                .map(|mail| mail.message.clone())
+                .collect();
             if !undecided.is_empty() {
                 let (decide, inbox, owner) = (Arc::clone(decide), Arc::clone(&self.inbox), account.to_string());
                 tokio::spawn(decide_later(decide, inbox, owner, undecided));

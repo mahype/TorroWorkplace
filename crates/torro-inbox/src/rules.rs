@@ -18,7 +18,7 @@ use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
-use torro_mail::{Category, MailCategory, Order};
+use torro_mail::{Category, CategorySource, MailCategory, Order};
 
 use crate::item::{
     AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
@@ -766,13 +766,16 @@ fn is_web(url: &str) -> bool {
 /// Keeps id, source, thread key and `received`; takes everything the report says (kind, lane,
 /// urgency, texts, agent, link, actions, `untrusted`) and its `updated`; counts one more report.
 /// A done or seen entry is new again, so a matter that comes back is not missed; a snoozed one
-/// stays snoozed, the user put it off on purpose.
+/// stays snoozed, the user put it off on purpose. What the entry is stays what it is unless the
+/// report knows better ([`kept_category`]).
 pub fn merge(existing: Item, incoming: Item) -> Item {
     let state = match existing.state {
         State::Snoozed { until } => State::Snoozed { until },
         State::New | State::Seen | State::Done { .. } => State::New,
     };
+    let category = stronger_category(existing.category, incoming.category);
     Item {
+        category,
         id: existing.id,
         source: existing.source,
         thread_key: existing.thread_key,
@@ -780,6 +783,25 @@ pub fn merge(existing: Item, incoming: Item) -> Item {
         count: existing.count.saturating_add(1),
         state,
         ..incoming
+    }
+}
+
+/// Which category a merged entry keeps (task E12.4, `docs/kategorien.md`): what the person set
+/// by hand is the strongest – a new mail of the conversation brings only what its headers and
+/// the kept rules say, and that must not wipe a choice. Otherwise the newer answer wins, and a
+/// report without one leaves the entry as it is.
+///
+/// Only `inbox.set_item_category` and `inbox.classify_item` replace a person's category; both
+/// write it straight to the entry and never come through here.
+fn stronger_category(held: Option<MailCategory>, incoming: Option<MailCategory>) -> Option<MailCategory> {
+    match (held, incoming) {
+        (Some(held), Some(incoming))
+            if held.source == CategorySource::Person && incoming.source != CategorySource::Person =>
+        {
+            Some(held)
+        }
+        (held, None) => held,
+        (_, incoming) => incoming,
     }
 }
 
@@ -1616,6 +1638,29 @@ mod tests {
         assert_eq!((merged.state, merged.count), (State::New, 2));
         let done = Item { state: State::Done { at: at(9) }, ..item("1", Kind::Message) };
         assert_eq!(merge_mail(done.clone(), item("2", Kind::Message)), merge(done, item("2", Kind::Message)));
+    }
+
+    /// Task E12.4: a new mail of the conversation brings only what its headers and the kept
+    /// rules say – a category the person set by hand survives it, and the entry keeps what it
+    /// has when the new mail says nothing.
+    #[test]
+    fn merging_keeps_what_the_person_filed_the_conversation_as() {
+        let of = |category| Item { category: Some(category), ..item("1", Kind::Message) };
+        let brings = |category| Item { category, ..item("2", Kind::Message) };
+        let by_hand = MailCategory::by_person(Category::Invoice);
+        let by_rule = MailCategory::by_rule(Category::Promotion);
+        let by_model = MailCategory::by_model(Category::Shipping, 0.9);
+
+        assert_eq!(merge_mail(of(by_hand), brings(Some(by_rule))).category, Some(by_hand), "the choice stands");
+        assert_eq!(merge_mail(of(by_hand), brings(Some(by_model))).category, Some(by_hand));
+        assert_eq!(merge_mail(of(by_hand), brings(None)).category, Some(by_hand));
+        // Among the automatic ones the newer answer wins, and an entry without one takes it.
+        assert_eq!(merge_mail(of(by_rule), brings(Some(by_model))).category, Some(by_model));
+        assert_eq!(merge_mail(item("1", Kind::Message), brings(Some(by_rule))).category, Some(by_rule));
+        assert_eq!(merge_mail(of(by_rule), brings(None)).category, Some(by_rule), "nothing said, nothing lost");
+        // Only an explicit choice replaces an explicit choice.
+        let other_hand = MailCategory::by_person(Category::Shipping);
+        assert_eq!(merge_mail(of(by_hand), brings(Some(other_hand))).category, Some(other_hand));
     }
 
     #[test]

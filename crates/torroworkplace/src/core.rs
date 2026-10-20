@@ -868,23 +868,17 @@ impl DecideError {
 }
 
 /// How long the backlog run waits between two model calls (task E12.6): a local model must not
-/// take the machine over while the person works.
+/// take the machine over while the person works. And how long one mail may keep it busy: a model
+/// that hangs must not hold the run for ever, as the feed's own limit does for new mail
+/// ([`crate::mail::inbox_feed`]).
 const CATEGORY_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+const CATEGORY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// The backlog run (task E12.6): for every account, the mail of the inbox that has no category
 /// yet, newest first, within the window – asked one at a time, with a pause between, and stopped
 /// at once when somebody cancels. What it sorted stays sorted.
-async fn catch_up_run(
-    mail: Arc<MailService>,
-    inbox: Arc<Inbox>,
-    ai: Arc<AiAccounts>,
-    state: Arc<CatchUp>,
-    accounts: Vec<String>,
-    engine: String,
-    model: String,
-) {
-    use std::sync::atomic::Ordering;
-
+async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
+    let CatchUpRun { mail, inbox, ai, state, generation, engine, model } = run;
     let since = Utc::now() - chrono::Duration::days(CATEGORY_BACKLOG_DAYS);
     for account in accounts {
         let waiting = match mail.uncategorised(&account, since, CATEGORY_BACKLOG_MAX).await {
@@ -895,7 +889,7 @@ async fn catch_up_run(
             }
         };
         for message in waiting {
-            if state.cancelled.load(Ordering::Acquire) {
+            if state.stopped(generation) {
                 return;
             }
             let content = match mail.content_for_category(&account, &message).await {
@@ -906,11 +900,16 @@ async fn catch_up_run(
                     continue;
                 }
             };
-            let reply = match ai.decide(&engine, &categorize::request(&model, &content)).await {
-                Ok(reply) => reply,
+            let request = categorize::request(&model, &content);
+            let reply = match tokio::time::timeout(CATEGORY_TIMEOUT, ai.decide(&engine, &request)).await {
+                Ok(Ok(reply)) => reply,
                 // The server is gone or busy: stop, rather than hammer it for 500 messages.
-                Err(err) => {
+                Ok(Err(err)) => {
                     eprintln!("torroworkplace: inbox: the decision model stopped answering: {err}");
+                    return;
+                }
+                Err(_) => {
+                    eprintln!("torroworkplace: inbox: the decision model took too long for a mail of {account}");
                     return;
                 }
             };
@@ -928,6 +927,18 @@ async fn catch_up_run(
             tokio::time::sleep(CATEGORY_PAUSE).await;
         }
     }
+}
+
+/// What one backlog run holds together (task E12.6): the services it reads and writes, the
+/// state that can stop it, its own number ([`CatchUp`]) and the model it asks.
+struct CatchUpRun {
+    mail: Arc<MailService>,
+    inbox: Arc<Inbox>,
+    ai: Arc<AiAccounts>,
+    state: Arc<CatchUp>,
+    generation: u64,
+    engine: String,
+    model: String,
 }
 
 /// Why no model was asked (task E12.6), as the answer a person reads.
@@ -1054,18 +1065,40 @@ pub struct InboxLine {
     pub source: String,
 }
 
-/// The core's state: window manager, template store, settings, the keys that may talk to it,
-/// the approvals they wait for, the GitHub accounts, and a lock so only one save or load runs at
-/// a time.
 /// The state of the backlog run that sorts mail into categories (task E12.6). One at a time:
 /// starting again while it runs changes nothing, and stopping it lets the mail it already sorted
 /// stand.
+///
+/// Runs are numbered so that a stop cannot be swallowed by a start: with a plain flag, a stop
+/// that lands between claiming [`CatchUp::running`] and clearing the flag would be cleared with
+/// it, and the run would carry on with nobody able to say stop.
 #[derive(Debug, Default)]
 struct CatchUp {
     running: std::sync::atomic::AtomicBool,
-    cancelled: std::sync::atomic::AtomicBool,
+    /// How many runs have been started; the newest run's own number.
+    started: std::sync::atomic::AtomicU64,
+    /// The newest run that was told to stop, by its number. A run stops as soon as this reaches
+    /// its own; 0 means none was.
+    cancelled: std::sync::atomic::AtomicU64,
 }
 
+impl CatchUp {
+    /// The run `generation` is to stop.
+    fn stopped(&self, generation: u64) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::Acquire) >= generation
+    }
+
+    /// Somebody stopped the newest run and no later one has started.
+    fn was_cancelled(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let started = self.started.load(Ordering::Acquire);
+        started > 0 && self.cancelled.load(Ordering::Acquire) >= started
+    }
+}
+
+/// The core's state: window manager, template store, settings, the keys that may talk to it,
+/// the approvals they wait for, the GitHub accounts, and a lock so only one save or load runs at
+/// a time.
 pub struct Core {
     backend: Backend,
     store: Store,
@@ -3115,17 +3148,6 @@ impl Core {
         }
     }
 
-    /// Answers an `inbox.*` request of `client` (`None` for the app key) after the checks of
-    /// [`Core::handle_from`]. The inbox answers all but `inbox.open_item`, which needs the window
-    /// manager, the browser or the apps ([`Core::open_item`]), `inbox.create_task_from_item` and
-    /// `inbox.create_event_from_item`, which write a task or an event
-    /// ([`Core::create_task_from_item`], [`Core::create_event_from_item`]), and `inbox.get_quiet`,
-    /// which reads the settings and the calendars ([`Core::get_quiet`]).
-    ///
-    /// `pin` comes with an approved command (task E1.2c): its entry must still be as the person
-    /// was shown it ([`EntryPin::holds`]), else the answer is `conflict` and nothing runs. Opening
-    /// and making a task check it on what they read from the entry; the other commands before
-    /// they run, which suffices since they do not read its texts or link.
     /// What the mail feed uses to sort new mail the fixed rules could not (task E12.6): asks the
     /// assigned model once per mail and keeps the answer. Reads the assignment afresh every time,
     /// so switching the model off stops it at the next mail.
@@ -3295,7 +3317,7 @@ impl Core {
         let assignment =
             self.settings.current().ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize).cloned();
         let running = self.catch_up.running.load(std::sync::atomic::Ordering::Acquire);
-        let cancelled = self.catch_up.cancelled.load(std::sync::atomic::Ordering::Acquire);
+        let cancelled = self.catch_up.was_cancelled();
         let accounts: Vec<torro_ipc::inbox::CategoryProgress> = accounts
             .into_iter()
             .map(|mut progress| {
@@ -3394,7 +3416,9 @@ impl Core {
         use std::sync::atomic::Ordering;
 
         if cancel {
-            self.catch_up.cancelled.store(true, Ordering::Release);
+            // Stops the newest run; one that starts later has a higher number and runs on.
+            let newest = self.catch_up.started.load(Ordering::Acquire);
+            self.catch_up.cancelled.fetch_max(newest, Ordering::AcqRel);
             return self.get_categorization(reach).await;
         }
         let (engine, model) = match decider_of(&self.settings, &self.ai).await {
@@ -3405,17 +3429,31 @@ impl Core {
         if self.catch_up.running.swap(true, Ordering::AcqRel) {
             return self.get_categorization(reach).await;
         }
-        self.catch_up.cancelled.store(false, Ordering::Release);
+        // This run's own number, claimed after the run itself: a stop asked for before now
+        // belongs to the run before it, and one asked for from here on reaches this one.
+        let generation = self.catch_up.started.fetch_add(1, Ordering::AcqRel) + 1;
         let accounts: Vec<String> = self.mail.accounts_in(reach).await;
         let (mail, inbox, state) = (Arc::clone(&self.mail), Arc::clone(&self.inbox), Arc::clone(&self.catch_up));
         let ai = Arc::clone(&self.ai);
         tokio::spawn(async move {
-            catch_up_run(mail, inbox, ai, state.clone(), accounts, engine, model).await;
+            let run = CatchUpRun { mail, inbox, ai, state: Arc::clone(&state), generation, engine, model };
+            catch_up_run(run, accounts).await;
             state.running.store(false, Ordering::Release);
         });
         self.get_categorization(reach).await
     }
 
+    /// Answers an `inbox.*` request of `client` (`None` for the app key) after the checks of
+    /// [`Core::handle_from`]. The inbox answers all but `inbox.open_item`, which needs the window
+    /// manager, the browser or the apps ([`Core::open_item`]), `inbox.create_task_from_item` and
+    /// `inbox.create_event_from_item`, which write a task or an event
+    /// ([`Core::create_task_from_item`], [`Core::create_event_from_item`]), and `inbox.get_quiet`,
+    /// which reads the settings and the calendars ([`Core::get_quiet`]).
+    ///
+    /// `pin` comes with an approved command (task E1.2c): its entry must still be as the person
+    /// was shown it ([`EntryPin::holds`]), else the answer is `conflict` and nothing runs. Opening
+    /// and making a task check it on what they read from the entry; the other commands before
+    /// they run, which suffices since they do not read its texts or link.
     async fn inbox_request(
         &self,
         request: Request,
@@ -9214,6 +9252,29 @@ mod tests {
             assert_eq!(code(&ask(&core, Some(&blind), request).await), "forbidden");
         }
 
+        // The inbox without mail: the commands run, but no number about any mailbox comes back
+        // (task E12.4). They sit in the area `inbox`, so nothing else weighs `mail` for them.
+        let mut no_mail = RightsTemplate::ReadOnly.rights();
+        no_mail.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
+        no_mail.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        no_mail.mail_accounts = Selection::All;
+        let (_, inbox_only) = client(&core, no_mail).await;
+        let Response::Categories { categories } =
+            ask(&core, Some(&inbox_only), Request::ListCategories { account: None }).await
+        else {
+            panic!("the catalogue answers with Categories");
+        };
+        assert!(
+            categories.iter().all(|held| held.unread == 0 && held.messages == 0),
+            "a key without mail sees 0 everywhere, never a number about a mailbox it cannot see"
+        );
+        let Response::Categorization { categorization } =
+            ask(&core, Some(&inbox_only), Request::GetCategorization).await
+        else {
+            panic!("the state answers with Categorization");
+        };
+        assert!(categorization.accounts.is_empty(), "no mailbox is named to a key without mail");
+
         // Read access reads the two readers, and the backlog run takes the admin switch: it
         // starts up to 500 model calls, so a person decides.
         let mut reading = RightsTemplate::ReadOnly.rights();
@@ -11751,9 +11812,97 @@ mod tests {
         nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &listed]);
     }
 
+    /// Task E12.4: the counts of `inbox.list_categories` and `inbox.get_categorization` cover
+    /// only mailboxes the key may **read mail** from. Both commands sit in the area `inbox`, so
+    /// nothing else weighs `mail` for them – a key with the whole inbox and no mail must see
+    /// zeros, even with every mail account in its selection.
+    #[tokio::test]
+    async fn the_category_counts_need_read_access_to_mail_itself() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let raw = format!(
+            "From: Shop <billing@shop.example>\r\nTo: anna@example.org\r\nSubject: Invoice 7\r\nDate: {date}\r\n\
+             Message-ID: <bill-7@shop.example>\r\nContent-Type: text/plain\r\n\r\nYou owe us 40 EUR\r\n"
+        );
+        server.add("INBOX", &raw, &[]);
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        // One mail, filed as an invoice by hand.
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+        };
+        let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
+            panic!("a page")
+        };
+        let id = messages.first().map(|message| message.id.clone()).expect("the invoice");
+        let filed = Request::SetItemCategory { id, category: torro_mail::Category::Invoice, remember: false };
+        assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
+
+        let counted = |answer: Response| -> (u32, u32) {
+            let Response::Categories { categories } = answer else { panic!("the catalogue") };
+            categories
+                .iter()
+                .find(|held| held.category == torro_mail::Category::Invoice)
+                .map(|held| (held.unread, held.messages))
+                .expect("invoice is in the catalogue")
+        };
+        assert_eq!(
+            counted(ask(&core, Some(&app_key), Request::ListCategories { account: None }).await),
+            (1, 1),
+            "the app key counts the invoice"
+        );
+
+        // The inbox without mail: every account in the selection, and still no number.
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+        rights.mail_accounts = Selection::All;
+        let (_, blind) = client(&core, rights).await;
+        assert_eq!(
+            counted(ask(&core, Some(&blind), Request::ListCategories { account: None }).await),
+            (0, 0),
+            "never a number about a mailbox this key may not read"
+        );
+        let named = Request::ListCategories { account: Some(anna.id.clone()) };
+        assert_eq!(code(&ask(&core, Some(&blind), named).await), "not-found", "as if the mailbox were not there");
+        let Response::Categorization { categorization } = ask(&core, Some(&blind), Request::GetCategorization).await
+        else {
+            panic!("the state answers with Categorization");
+        };
+        assert!(categorization.accounts.is_empty(), "no mailbox is named either");
+
+        // With read access to mail it counts again.
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
+        reading.mail_accounts = Selection::Only(vec![anna.id.clone()]);
+        let (_, key) = client(&core, reading).await;
+        assert_eq!(counted(ask(&core, Some(&key), Request::ListCategories { account: None }).await), (1, 1));
+    }
+
     /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from
     /// the mail store; a client needs the account, the admin switch and the person, who sees the
-    /// sender as the store holds it.
+    /// sender as the store holds it.""
     #[tokio::test]
     async fn a_message_without_an_entry_is_muted_by_its_id() {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
@@ -14097,6 +14246,122 @@ mod tests {
     }
 
     use torro_core::ai::AiProvider;
+
+    /// Task E12.6: the backlog run asks the model about the mail no rule could sort, keeps what
+    /// it says with the mail **and** its entry, and leaves alone what already has a category –
+    /// a run must never write over what the person filed by hand.
+    #[tokio::test]
+    async fn the_backlog_run_sorts_the_mail_the_rules_could_not() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_core::ai::AiFunction;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let imap = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        for (n, subject) in [(1, "Invoice 7"), (2, "Our offer")] {
+            let raw = format!(
+                "From: Bernd <bernd@example.org>\r\nTo: anna@example.org\r\nSubject: {subject}\r\n\
+                 Date: {date}\r\nMessage-ID: <m{n}@example.org>\r\nContent-Type: text/plain\r\n\r\nText\r\n"
+            );
+            imap.add("INBOX", &raw, &[]);
+        }
+        let anna = mail_account("anna@example.org", &imap.endpoint);
+        store_accounts(dir.path(), &keys, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &keys);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+
+        let ollama = crate::account::ai::tests::fake_deciding_ollama().await;
+        let core = Core {
+            ai: Arc::new(crate::account::ai::tests::service(dir.path(), &keys, Vec::new())),
+            ..audited(dir.path())
+        }
+        .with_mail(mail);
+        let connect = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let assign = Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(account.id.clone()),
+            model: Some("nimble".into()),
+            effort: None,
+            enabled: true,
+        };
+        assert!(matches!(core.handle(assign).await, Response::AiAssignments { .. }));
+
+        // One of the two is filed by hand first: the run must not touch it.
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories: Vec::new(),
+        };
+        let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
+        let ids: Vec<String> = messages.iter().map(|message| message.id.clone()).collect();
+        assert_eq!(ids.len(), 2, "two mails are there");
+        let by_hand =
+            Request::SetItemCategory { id: ids[0].clone(), category: torro_mail::Category::Promotion, remember: false };
+        assert!(matches!(core.handle(by_hand).await, Response::ItemCategory { .. }));
+
+        // The run: it asks the model for the other one, and says so while it goes.
+        assert!(matches!(
+            core.handle(Request::CatchUpCategories { cancel: false }).await,
+            Response::Categorization { .. }
+        ));
+        let mut sorted = None;
+        for _ in 0..100 {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let Response::MailMessages { messages, .. } = core.handle(search.clone()).await else { panic!("a page") };
+            if messages.iter().all(|message| message.category.is_some()) {
+                sorted = Some(messages);
+                break;
+            }
+        }
+        let sorted = sorted.expect("the run sorts the mail the rules could not");
+        let held = |id: &str| sorted.iter().find(|message| message.id == id).and_then(|m| m.category).expect("one");
+        assert_eq!(
+            (held(&ids[0]).category, held(&ids[0]).source),
+            (torro_mail::Category::Promotion, torro_mail::CategorySource::Person),
+            "what the person filed stays untouched"
+        );
+        assert_eq!(
+            (held(&ids[1]).category, held(&ids[1]).source, held(&ids[1]).confidence),
+            (torro_mail::Category::Invoice, torro_mail::CategorySource::Model, Some(91)),
+            "the model's answer, with its confidence in percent"
+        );
+    }
+
+    /// Task E12.6: runs are numbered, so a stop asked for while one starts is never swallowed.
+    #[test]
+    fn a_backlog_run_that_was_told_to_stop_stays_stopped() {
+        use std::sync::atomic::Ordering;
+
+        let state = CatchUp::default();
+        assert!(!state.was_cancelled(), "nothing has run yet");
+        // The first run claims its number and nobody has stopped it.
+        let first = state.started.fetch_add(1, Ordering::AcqRel) + 1;
+        assert!(!state.stopped(first));
+        // A stop reaches it, and keeps it stopped.
+        state.cancelled.fetch_max(state.started.load(Ordering::Acquire), Ordering::AcqRel);
+        assert!(state.stopped(first) && state.was_cancelled());
+        // The next run is its own: the old stop does not reach it.
+        let second = state.started.fetch_add(1, Ordering::AcqRel) + 1;
+        assert!(!state.stopped(second), "a later run is not stopped by an earlier stop");
+        assert!(!state.was_cancelled(), "and the state reads as running again");
+    }
 
     /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
     /// while `mail_to_cloud` is off no model that runs elsewhere is taken – so no agent can route
