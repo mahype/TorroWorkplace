@@ -828,6 +828,55 @@ mod tests {
         let _ = categorization::view(&none);
     }
 
+    /// PR review #242: a model assigned for sorting mail that is turned off in Accounts is not shown
+    /// as sorting – the core sorts nothing then: its row says so, and "Manage models…" leads to the
+    /// accounts. Not while the sorting is off, the model on, or the account's models not in yet.
+    #[test]
+    fn a_sorting_model_turned_off_says_so() {
+        use torro_core::ai::{AiAssignment, AiFunction, AiModel};
+
+        let engine = "ai:ollama@localhost:11434";
+        let assigned = |enabled: bool| {
+            vec![torro_ipc::AiAssignmentInfo {
+                assignment: AiAssignment {
+                    function: AiFunction::InboxCategorize,
+                    engine: Some(engine.into()),
+                    model: Some("nimble".into()),
+                    effort: None,
+                    enabled,
+                },
+                label: "Sort mail into categories".into(),
+                needs_decision: true,
+            }]
+        };
+        let decider = |id: &str, enabled: bool| {
+            let name = format!("{id} (decides)");
+            (engine.to_string(), AiModel { decision: Some(true), enabled, name, ..AiModel::named(id) })
+        };
+        let off = Data {
+            assignments: assigned(true),
+            decider_models: vec![decider("nimble", false), decider("other", true)],
+            ..Data::default()
+        };
+        assert_eq!(categorization::assigned_off(&off), Some((engine.to_string(), "nimble (decides)".to_string())));
+        let _ = categorization::view(&off);
+        let Action::ControlCentre(section) = categorization::update::<()>(categorization::Message::ManageModels, &off)
+        else {
+            panic!("the control centre")
+        };
+        assert_eq!(section, crate::assistant::AI_SECTION);
+
+        let gone = Data { decider_models: vec![decider("other", true)], ..off.clone() };
+        assert_eq!(categorization::assigned_off(&gone), Some((engine.to_string(), "nimble".to_string())), "gone");
+        let _ = categorization::view(&gone);
+        let on = Data { decider_models: vec![decider("nimble", true)], ..off.clone() };
+        assert_eq!(categorization::assigned_off(&on), None);
+        let unloaded = Data { decider_models: Vec::new(), ..off.clone() };
+        assert_eq!(categorization::assigned_off(&unloaded), None, "not known yet");
+        let switched_off = Data { assignments: assigned(false), ..off };
+        assert_eq!(categorization::assigned_off(&switched_off), None, "sorting is off anyway");
+    }
+
     /// Task E12.10: "Catch up now" starts the run, "Cancel" stops it.
     #[test]
     fn catching_up_starts_and_stops() {
@@ -858,10 +907,18 @@ mod tests {
 /// Models that do not run on this computer are **not offered** while mail may not leave it
 /// (`docs/ki.md`, principle 4); a quiet line says so. The core refuses such a model as well
 /// (task E12.5), so the rule holds even if this list were wrong.
+///
+/// **A model turned off** (PR review #242): only models turned on in the control centre's
+/// accounts are offered (task S.26). The assigned one turned off since stands on top of "Model"
+/// with "Turned off in Settings › Accounts" and an alert in the attention colour – the core sorts
+/// nothing then ([`assigned_off`]) –, and "Manage models…" ends the group, the way to turn it on.
 pub mod categorization {
-    use iced::widget::column;
+    use iced::Theme;
+    use iced::widget::{column, svg};
     use torro_core::ai::{AiAssignment, AiFunction, AiModel};
     use torro_core::i18n::trf;
+    use torro_gui::icon;
+    use torro_gui::theme::palette;
     use torro_gui::{layout, style, theme, typo, widgets};
     use torro_ipc::{Request, SettingKey};
     use torro_mail::{Category, CategoryGroup};
@@ -882,6 +939,8 @@ pub mod categorization {
         Shown(Category, bool),
         /// "Rules ↗": the kept senders live in the Notification Hub.
         Rules,
+        /// "Manage models…": which models are on is set in the control centre's accounts.
+        ManageModels,
     }
 
     pub fn update<A>(message: Message, data: &Data) -> Action<A> {
@@ -928,6 +987,7 @@ pub mod categorization {
             // The rules live in the Notification Hub, which owns them (task S.20); this library
             // opens no window of its own, so the row only points there.
             Message::Rules => Action::None,
+            Message::ManageModels => Action::ControlCentre(crate::assistant::AI_SECTION.to_string()),
         }
     }
 
@@ -992,34 +1052,71 @@ pub mod categorization {
             .collect()
     }
 
+    /// The model assigned for sorting mail when the sorting is on and that model of its AI account
+    /// is turned off (PR review #242): the account's models are in and have it off, or lack it. The
+    /// core sorts nothing then (task S.24). Its account and name as listed – the id where the list
+    /// lacks it. `None` while the sorting is off, the model is on, "Automatic" is assigned, or the
+    /// account's models are not in yet.
+    pub fn assigned_off(data: &Data) -> Option<(String, String)> {
+        let held = assignment(data);
+        let (engine, model) = (held.engine.filter(|_| held.enabled)?, held.model?);
+        let mut listed = data.decider_models.iter().filter(|(account, _)| *account == engine).peekable();
+        listed.peek()?;
+        match listed.find(|(_, known)| known.id == model) {
+            Some((_, known)) if known.enabled => None,
+            Some((_, known)) => Some((engine, known.name.clone())),
+            None => Some((engine, model)),
+        }
+    }
+
     /// One row per model that may sort mail, the assigned one checked; picking one switches the
     /// sorting on. Without any, one row says so instead: where to turn one on when there are
-    /// models that decide but none is on (task S.26), else where to add one.
+    /// models that decide but none is on (task S.26), else where to add one. The assigned model
+    /// turned off since comes first ([`assigned_off`]), "Manage models…" last.
     fn model_rows<'a>(data: &'a Data, held: &AiAssignment) -> Vec<Element<'a, Message>> {
         let offered = offered(data);
-        if offered.is_empty() {
+        let off = assigned_off(data);
+        // Which account a model is from matters only where more than one offers models.
+        let mut engines: std::collections::BTreeSet<&str> = offered.iter().map(|(engine, _)| engine.as_str()).collect();
+        engines.extend(off.as_ref().map(|(engine, _)| engine.as_str()));
+        let several = engines.len() > 1;
+        let label = |engine: &str, name: &str| match several {
+            true => format!("{} · {}", account_label(data, engine), name),
+            false => name.to_string(),
+        };
+        let mut rows: Vec<Element<'a, Message>> =
+            off.iter().map(|(engine, name)| off_row(label(engine, name))).collect();
+        if offered.is_empty() && off.is_none() {
             let detail = match deciders(data).is_empty() {
                 true => tr("Add a local AI such as Ollama under Accounts and load a model that decides."),
                 false => tr("Turn on models in Settings › Accounts."),
             };
             let none = iced::widget::space().width(0);
-            return vec![setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none)];
+            rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
         }
-        // Which account a model is from matters only where more than one offers models.
-        let several = offered.iter().map(|(engine, _)| engine).collect::<std::collections::BTreeSet<_>>().len() > 1;
-        offered
-            .into_iter()
-            .map(|(engine, model)| {
-                let chosen = held.is_ready()
-                    && held.engine.as_deref() == Some(engine.as_str())
-                    && held.model.as_deref() == Some(model.id.as_str());
-                let label = match several {
-                    true => format!("{} · {}", account_label(data, &engine), model.name),
-                    false => model.name.clone(),
-                };
-                choice(label, chosen, Message::Model(engine, model.id))
-            })
-            .collect()
+        rows.extend(offered.into_iter().map(|(engine, model)| {
+            let chosen = held.is_ready()
+                && held.engine.as_deref() == Some(engine.as_str())
+                && held.model.as_deref() == Some(model.id.as_str());
+            choice(label(&engine, &model.name), chosen, Message::Model(engine, model.id))
+        }));
+        // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
+        let arrow = icon::icon(Icon::ArrowUpRight, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+        rows.push(pressable(setting_row(None, tr("Manage models…"), None, arrow), Some(Message::ManageModels)));
+        rows
+    }
+
+    /// The assigned model turned off (PR review #242), as a row of "Model": an alert in the attention
+    /// colour before its name – the mail goes unsorted, which is worth noticing, not only reading –,
+    /// why, and the check of the stored choice. No button: it is turned on under "Manage models…".
+    fn off_row<'a>(label: String) -> Element<'a, Message> {
+        let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
+        let check =
+            icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) });
+        let detail = tr("Turned off in Settings › Accounts").to_string();
+        setting_row(Some(alert.into()), label, Some(detail), check)
     }
 
     /// What the account `id` is called, as the control centre calls it; the id itself when it is
