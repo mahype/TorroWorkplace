@@ -590,13 +590,15 @@ impl Switches {
     }
 
     /// `Ok` when these switches may be written; the sentence that names the file when it did not
-    /// read ([`Switches::damaged`]): the person repairs or removes it, the core never does.
+    /// read ([`Switches::damaged`]): the person repairs or removes it, the core never does. By its
+    /// name only: clients read the sentence too (`ai.set_model_enabled` is an MCP tool), the whole
+    /// path is in the core's log from the first read ([`read_switches`]), as for `approvals.json`.
     fn writable(&self) -> Result<(), String> {
         match &self.damaged {
             None => Ok(()),
-            Some(file) => Err(trf(
+            Some(_) => Err(trf(
                 "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
-                &[("file", &file.display())],
+                &[("file", &ai::MODELS_FILE)],
             )),
         }
     }
@@ -1202,13 +1204,19 @@ impl AiAccounts {
         switched
     }
 
+    /// `Ok` while the switches may be written; [`AiError::Format`] with the sentence that names
+    /// `ai-models.json` while it is there but did not read (PR review #242): then every switch is
+    /// refused. The core asks it before anything else of `ai.set_model_enabled` – before a server
+    /// is asked and before an approval –, so a client and the person get the same answer.
+    pub async fn switches_writable(&self) -> Result<(), AiError> {
+        self.switches().await.as_ref().map_or(Ok(()), Switches::writable).map_err(AiError::Format)
+    }
+
     /// [`AiAccounts::set_enabled`] apart from what "Automatic" used.
     async fn switch(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
         let server = self.server(id).await.ok_or_else(|| no_account(id))?;
         // Before any server is asked: a file that did not read refuses every switch alike.
-        if let Some(held) = self.switches().await.as_ref() {
-            held.writable().map_err(AiError::Format)?;
-        }
+        self.switches_writable().await?;
         let on_by_rule: Vec<String> = if enabled {
             let models = self.models(id, true).await?;
             if !models.iter().any(|known| known.id == model) {
@@ -2276,8 +2284,10 @@ pub(crate) mod tests {
         assert!(on(&ai, &local.id).await.contains(&"qwen3:8b".to_string()), "the rule decides");
         let refused = trf(
             "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
-            &[("file", &file.display())],
+            &[("file", &ai::MODELS_FILE)],
         );
+        // Clients read it too (the MCP tool): the file's name only, the path is the log's.
+        assert!(!refused.contains(&dir.path().display().to_string()), "{refused}");
         for (account, model, enabled) in [(&cloud.id, "openai/gpt-4o", true), (&local.id, "qwen3:8b", false)] {
             let err = ai.set_enabled(account, model, enabled).await.expect_err("refused");
             assert_eq!((err.code(), err.to_string()), ("error", refused.clone()));

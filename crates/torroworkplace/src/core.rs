@@ -5640,11 +5640,15 @@ impl Core {
     /// list in the core ([`AiAccounts::runs_elsewhere`], in doubt elsewhere). Turning a model off, and
     /// turning on one that computes here, are ordinary admin commands. The list's error when the core
     /// holds none and the server cannot give one (#231): the caller answers with it, not with a
-    /// refusal the client did not earn.
+    /// refusal the client did not earn. First, for every switch, the error of an `ai-models.json`
+    /// that does not read ([`AiAccounts::switches_writable`], PR review #242): before any server is
+    /// asked and before any approval, so nobody approves a switch that must fail.
     async fn turns_on_elsewhere(&self, request: &Request) -> Result<bool, torro_core::ai::AiError> {
-        match request {
-            Request::SetModelEnabled { account, model, enabled: true } => self.ai.runs_elsewhere(account, model).await,
-            _ => Ok(false),
+        let Request::SetModelEnabled { account, model, enabled } = request else { return Ok(false) };
+        self.ai.switches_writable().await?;
+        match enabled {
+            true => self.ai.runs_elsewhere(account, model).await,
+            false => Ok(false),
         }
     }
 
@@ -5653,6 +5657,10 @@ impl Core {
     /// the check before ([`Core::turns_on_elsewhere`]) read the list the core held, and the server
     /// may say otherwise since.
     async fn set_model_enabled(&self, account: &str, model: &str, enabled: bool, client: bool) -> Response {
+        // Before the server below: a file of switches that does not read refuses every switch alike.
+        if let Err(err) = self.ai.switches_writable().await {
+            return ai_error(&err);
+        }
         if client && enabled {
             if let Err(err) = self.ai.models(account, true).await {
                 return ai_error(&err);
@@ -16786,6 +16794,40 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&app_key), turn_on(&account.id, "qwen3:8b")).await), "offline");
         let stored = dir.path().join("config").join(torro_core::ai::MODELS_FILE);
         assert!(!stored.exists(), "nothing turned on");
+    }
+
+    /// API review of PR #242: while `ai-models.json` does not read, a client with the rights gets the
+    /// same `error` as the person – before any server is asked and before any approval, so nobody
+    /// approves a switch that must fail. The message names the file, never its path.
+    #[tokio::test]
+    async fn a_client_hears_of_a_file_of_switches_that_does_not_read_before_any_approval() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        // An Ollama on this computer that does not run now: asking it would answer `offline`.
+        let account = torro_core::Account::ai(AiProvider::Ollama, NOBODY);
+        let file = crate::account::github::tests::accounts_file(dir.path());
+        torro_core::account::save_to(&file, std::slice::from_ref(&account)).expect("stored");
+        let switches = dir.path().join("config").join(torro_core::ai::MODELS_FILE);
+        std::fs::write(&switches, b"{\"accounts\": {").expect("a damaged file");
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Ai, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+
+        let off = Request::SetModelEnabled { account: account.id.clone(), model: "qwen3:8b".into(), enabled: false };
+        for request in [turn_on(&account.id, "qwen3:8b"), off] {
+            let by_client = ask(&core, Some(&key), request.clone()).await;
+            let by_person = ask(&core, Some(&app_key), request).await;
+            assert_eq!(by_client, by_person, "the same answer");
+            let Response::Error { code, message } = by_client else { panic!("refused: {by_client:?}") };
+            assert_eq!(code, "error");
+            assert!(message.contains(torro_core::ai::MODELS_FILE), "{message}");
+            assert!(!message.contains(&dir.path().display().to_string()), "no path: {message}");
+        }
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(std::fs::read(&switches).expect("there"), b"{\"accounts\": {", "never written over");
     }
 
     /// Task S.24: no client turns on a model that computes elsewhere, whatever its rights, and
