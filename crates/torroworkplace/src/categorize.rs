@@ -13,6 +13,10 @@
 //! a model that computes on this computer. Guarded twice – `ai.set_assignment` refuses to assign
 //! one elsewhere (task E12.5), and [`chosen`] refuses to ask one.
 //!
+//! **The switches of the models** (task S.24, #231): only a model that is on is asked. Guarded
+//! twice as well – `ai.set_assignment` refuses a model that is off, and [`chosen`] treats one
+//! turned off since as no assignment, never quietly asking another model in its place.
+//!
 //! **The mail is data from outside** (security rule 5): its text goes into the state between
 //! `<message>` and `</message>`, a closing tag inside it is broken up, and nothing that comes
 //! back is read as anything but one of the options offered.
@@ -86,19 +90,22 @@ pub struct Decided {
 /// Why nothing was decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
-    /// No decision model is assigned, the assignment is switched off, or the account it names is
-    /// gone – removed or signed out since it was chosen.
+    /// No decision model is assigned, the assignment is switched off, the account it names is
+    /// gone – removed or signed out since it was chosen –, or the model it names is turned off
+    /// (task S.24).
     NoModel,
     /// Mail may only go to a model on this computer, and the one assigned is not.
     NotLocal,
 }
 
 /// The account and the **concrete model** to ask, from the person's assignment and the models
-/// the account offers now. `here` says of one model whether it stays on this computer.
+/// the account offers now, each with [`AiModel::enabled`] set from the switches (task S.24; the
+/// core marks the list, `AiAccounts::mark_enabled`). `here` says of one model whether it stays on
+/// this computer.
 ///
 /// Refuses, rather than asking the wrong model, when nothing is assigned, the assignment is off,
-/// the model it names is gone, the account offers no deciding model, or the data rule leaves the
-/// model out. The caller then leaves the mail without a category – never `other`, so a later run
+/// the model it names is gone or turned off, the account offers no deciding model that is on, or
+/// the data rule leaves the model out. The caller then leaves the mail without a category – never `other`, so a later run
 /// can still catch it.
 ///
 /// **The rule is weighed on the model, not on the account** (`docs/ki.md`, principle 4): a local
@@ -114,9 +121,10 @@ pub fn chosen(
     let assignment = assignment.filter(|held| held.is_ready()).ok_or(Refusal::NoModel)?;
     let engine = assignment.engine.clone().ok_or(Refusal::NoModel)?;
     let chosen = match &assignment.model {
-        // Named by the person: taken as it is, and weighed by the rule below.
-        Some(id) => models.iter().find(|model| &model.id == id).ok_or(Refusal::NoModel)?,
-        None => pick_model(models, |model| !local_only || here(model)).ok_or(Refusal::NoModel)?,
+        // Named by the person: taken as it is, and weighed by the rule below. Turned off since,
+        // it counts as no assignment: never another model in its place.
+        Some(id) => models.iter().find(|model| &model.id == id && model.enabled).ok_or(Refusal::NoModel)?,
+        None => pick_model(models, |model| model.enabled && (!local_only || here(model))).ok_or(Refusal::NoModel)?,
     };
     if local_only && !here(chosen) {
         return Err(Refusal::NotLocal);
@@ -368,7 +376,7 @@ mod tests {
             reasoning: None,
             remote: None,
             decision,
-            enabled: false,
+            enabled: true,
         }
     }
 
@@ -402,6 +410,30 @@ mod tests {
             Ok(("ai:ollama@localhost:11434".into(), "nimble".into()))
         );
         assert_eq!(chosen(Some(&assign(None, true)), &models[..1], here, true), Err(Refusal::NoModel));
+    }
+
+    /// Task S.24 (#231): a model turned off after it was assigned is not asked, and no other model
+    /// is asked in its place; with no model named, only one that is on is picked.
+    #[test]
+    fn a_model_turned_off_is_not_asked_nor_replaced() {
+        let assign = |model: Option<&str>| AiAssignment {
+            function: Function::InboxCategorize,
+            engine: Some("ai:ollama@localhost:11434".to_string()),
+            model: model.map(str::to_string),
+            effort: None,
+            enabled: true,
+        };
+        let mut off = model("nimble", Some(true));
+        off.enabled = false;
+        let models = vec![off, model("tev1", Some(true))];
+        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, true), Err(Refusal::NoModel));
+        assert_eq!(chosen(Some(&assign(Some("nimble"))), &models, here, false), Err(Refusal::NoModel));
+        assert_eq!(
+            chosen(Some(&assign(None)), &models, here, true),
+            Ok(("ai:ollama@localhost:11434".into(), "tev1".into())),
+            "picked among the models that are on"
+        );
+        assert_eq!(chosen(Some(&assign(None)), &models[..1], here, true), Err(Refusal::NoModel));
     }
 
     #[test]

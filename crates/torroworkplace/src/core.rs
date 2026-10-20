@@ -797,6 +797,9 @@ const CATEGORY_BACKLOG_MAX: u32 = 500;
 /// on the concrete model, not on the account (`docs/ki.md`, principle 4): a local Ollama serves
 /// cloud models too (`:cloud`), and one of those would send the mail to ollama.com.
 ///
+/// The models carry their switches (task S.24, [`AiAccounts::mark_enabled`]): a model turned off
+/// since it was assigned is not asked, and none is asked in its place.
+///
 /// A free function, not a method: the mail feed's closure needs it too and holds only the pieces.
 async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String, String), categorize::Refusal> {
     let settings = settings.current();
@@ -809,6 +812,7 @@ async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String
     // The account can be gone since it was chosen: then nothing is asked, and nothing fails.
     let (provider, server) = ai.server(&engine).await.ok_or(categorize::Refusal::NoModel)?;
     let models = ai.models(&engine, true).await.map_err(|_| categorize::Refusal::NoModel)?;
+    let models = ai.mark_enabled(&engine, models).await;
     let here = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model) == Place::Local;
     categorize::chosen(assignment.as_ref(), &models, here, !settings.mail_to_cloud)
 }
@@ -3259,7 +3263,10 @@ impl Core {
     /// `ai.set_assignment` (task E12.5). Checked before anything is stored: the account exists,
     /// it offers the model, the model decides where the function needs one, and – while
     /// `mail_to_cloud` is off – it runs on this computer for a function that reads mail
-    /// (`docs/ki.md`, principle 4). So no agent can route mail past the data rule.
+    /// (`docs/ki.md`, principle 4). So no agent can route mail past the data rule. An assignment
+    /// that is on also names a model that is on, or – naming none – an account with a model on
+    /// (task S.24, #231, [`Core::model_off_refusal`]): no agent can route mail to a model nobody
+    /// turned on.
     async fn set_ai_assignment(&self, wanted: torro_core::ai::AiAssignment) -> Response {
         let function = wanted.function;
         if let Some(engine) = &wanted.engine {
@@ -3270,7 +3277,7 @@ impl Core {
                 };
             };
             let models = match self.ai.models(engine, true).await {
-                Ok(models) => models,
+                Ok(models) => self.ai.mark_enabled(engine, models).await,
                 Err(err) => return ai_error(&err),
             };
             let chosen = match &wanted.model {
@@ -3303,6 +3310,13 @@ impl Core {
                     );
                     return Response::Error { code: "error".into(), message: message.to_string() };
                 }
+            }
+            // The switches (task S.24, #231): a model that is off is not assigned, as no module
+            // offers it. Only while the assignment is on, so a person can still switch it off.
+            if wanted.enabled
+                && let Some(refused) = self.model_off_refusal(engine, wanted.model.as_deref(), &models).await
+            {
+                return refused;
             }
         }
         let kept = wanted.engine.is_some().then_some(wanted);
@@ -3790,6 +3804,10 @@ impl Core {
     /// account would answer with, [`Core::suggestion_model`]), then one question to it
     /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
     /// says; the protocol names no text.
+    ///
+    /// Only models that are on are asked (task S.24, #231): a default whose model is off counts as
+    /// a default without a model ("Automatic" among the models on), and an account with no model
+    /// on is passed over, as `assistant.list_engines` passes it over.
     async fn suggest_from_item(&self, id: &str, wanted: Wanted, client: Option<&torro_ipc::ClientInfo>) -> Response {
         let now = Utc::now();
         let entry = match self.inbox.handle(Request::GetItem { id: id.to_string() }, client, now) {
@@ -3807,12 +3825,20 @@ impl Core {
             received: entry.received,
             text: self.text_for_ai(&entry, reach).await,
         };
-        let default = self.settings.current().assistant_default;
+        let mut default = self.settings.current().assistant_default;
+        if let Some(held) = default.as_mut()
+            && let Some(model) = held.model.as_deref()
+        {
+            let listed = self.ai.known_models(&held.engine, Some(model)).await.ok();
+            if !self.ai.is_on(&held.engine, model, listed.as_deref()).await {
+                held.model = None;
+            }
+        }
         let local_only = crate::assistant::held_back(&entry);
         let mut candidates = Vec::new();
         let mut models = HashMap::new();
         for account in self.ai.infos().await {
-            if self.ai.server(&account.id).await.is_none() {
+            if self.ai.server(&account.id).await.is_none() || !self.ai.offers_a_model(&account.id).await {
                 continue;
             }
             let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
@@ -3843,7 +3869,8 @@ impl Core {
     /// the entry (it runs locally, or the entry is not `local_only`); else of its models the first
     /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, and for an
     /// entry that may leave it among the others then. Elsewhere and no model when none fits or the
-    /// models cannot be listed: such an account never gets an entry that stays home.
+    /// models cannot be listed: such an account never gets an entry that stays home. `wanted` is
+    /// on (the caller checks); the others are picked among the models that are on (task S.24).
     async fn suggestion_model(
         &self,
         id: &str,
@@ -3861,7 +3888,8 @@ impl Core {
             return (at, Some(model));
         }
         let Ok(models) = models else { return (Place::Remote, None) };
-        let (local, elsewhere): (Vec<_>, Vec<_>) = models.into_iter().partition(|model| place(model) == Place::Local);
+        let on = self.ai.mark_enabled(id, models).await.into_iter().filter(|model| model.enabled);
+        let (local, elsewhere): (Vec<_>, Vec<_>) = on.partition(|model| place(model) == Place::Local);
         if let Ok(model) = crate::suggest::pick_model(local) {
             return (Place::Local, Some(model));
         }
@@ -5536,6 +5564,34 @@ impl Core {
         trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)])
     }
 
+    /// `unsupported` for `ai.set_assignment` (task S.24, #231) when the model `model` of the AI
+    /// account `engine` is off in `models` (the account's list, marked with
+    /// [`AiAccounts::mark_enabled`]), or – `model` being `None` – when no model of it is on. A model
+    /// the list lacks is left to the caller (`error`, "offers no model"). `None` otherwise.
+    async fn model_off_refusal(
+        &self,
+        engine: &str,
+        model: Option<&str>,
+        models: &[torro_core::ai::AiModel],
+    ) -> Option<Response> {
+        let message = match model {
+            Some(id) => {
+                let listed = models.iter().find(|listed| listed.id == id)?;
+                if listed.enabled {
+                    return None;
+                }
+                let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+                trf(
+                    "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+                    &[("model", &listed.name), ("provider", &provider)],
+                )
+            }
+            None if models.iter().any(|listed| listed.enabled) => return None,
+            None => self.models_off_message(engine).await,
+        };
+        Some(Response::Error { code: "unsupported".into(), message })
+    }
+
     /// `unsupported` for `assistant.send_message` and `bots.ask_bot` (by the bot's engine) with an AI
     /// account that has no model on (task S.24): the module never answers with another account
     /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
@@ -5576,13 +5632,21 @@ impl Core {
 
     /// The first start after the switches of the models came (task S.24,
     /// [`AiAccounts::keep_used_models_on`]): the models the suite already uses stay on – the
-    /// assistant's default for new chats and the models of the bots. Afterwards it does nothing.
+    /// assistant's default for new chats, the models assigned to functions (`ai.set_assignment`,
+    /// #231: a deciding model has no tools, so the rule alone would turn it off) and the models of
+    /// the bots. Afterwards it does nothing.
     pub(crate) async fn keep_used_models_on(&self) {
         let mut used = Vec::new();
-        if let Some(default) = self.settings.current().assistant_default
+        let settings = self.settings.current();
+        if let Some(default) = settings.assistant_default
             && let Some(model) = default.model
         {
             used.push((default.engine, model));
+        }
+        for assigned in settings.ai_assignments.into_values() {
+            if let (Some(engine), Some(model)) = (assigned.engine, assigned.model) {
+                used.push((engine, model));
+            }
         }
         for bot in self.assistant.bots().list().await {
             if let Some(model) = bot.model {
@@ -14598,7 +14662,9 @@ mod tests {
         };
         assert_eq!(code(&core.handle(unknown).await), "not-found");
 
-        // The decision model is taken, and the list says so.
+        // The decision model is taken once it is on (#231), and the list says so.
+        assert_eq!(code(&core.handle(set(Some("nimble"))).await), "unsupported", "off by the rule");
+        assert_eq!(core.handle(turn_on(&engine, "nimble")).await, Response::Ok);
         let Response::AiAssignments { assignments } = core.handle(set(Some("nimble"))).await else {
             panic!("assignments")
         };
@@ -14620,6 +14686,82 @@ mod tests {
         let Response::AiAssignments { assignments } = core.handle(back).await else { panic!("assignments") };
         assert!(!assignments[0].assignment.is_ready());
         assert_eq!(assignments[0].assignment.engine, None);
+    }
+
+    /// #231 (task S.24): `ai.set_assignment` takes no model that is off – not even from an agent
+    /// with admin rights in `ai`, and not with `mail_to_cloud` on – and an account with no model on
+    /// is refused too. A model turned off after it was assigned is not asked: mail stays without a
+    /// category rather than going to it or to another model.
+    #[tokio::test]
+    async fn a_function_takes_no_model_that_is_off_and_one_turned_off_is_not_asked() {
+        use torro_core::ai::AiFunction;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = crate::account::ai::tests::fake_deciding_ollama().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let connect = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let engine = account.id;
+        // The person lets mail go to cloud models: the switches alone must still hold.
+        let cloud = Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(true) };
+        assert_eq!(ask(&core, Some(&app_key), cloud).await, Response::Ok);
+
+        let set = |model: Option<&str>, enabled: bool| Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(engine.clone()),
+            model: model.map(str::to_string),
+            effort: None,
+            enabled,
+        };
+        // A deciding model has no tools, so the rule leaves it off; this server does not say that
+        // qwen3 runs here, so it counts as elsewhere and is off too.
+        assert_eq!(switched(&core, &engine).await, [("nimble".to_string(), false), ("qwen3:8b".to_string(), false)]);
+        let provider = core.ai.label_of(&engine).await.expect("label");
+        let off = Response::Error {
+            code: "unsupported".into(),
+            message: trf(
+                "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+                &[("model", &"nimble"), ("provider", &provider)],
+            ),
+        };
+        assert_eq!(core.handle(set(Some("nimble"), true)).await, off);
+
+        // The scenario of the review: an agent with admin rights in `ai` asks, the person
+        // approves – and still nothing is stored.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Ai, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        let asked = waits(ask(&core, Some(&key), set(Some("nimble"), true)).await);
+        let done = approval(core.handle(decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
+        assert_eq!(*response, off);
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel), "nothing assigned");
+
+        // Switched off, the assignment can be stored whatever its model, so a person can always stop it.
+        assert!(matches!(core.handle(set(Some("nimble"), false)).await, Response::AiAssignments { .. }));
+
+        // Turned on, it is taken and asked.
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "nimble")).await, Response::Ok);
+        assert!(matches!(core.handle(set(Some("nimble"), true)).await, Response::AiAssignments { .. }));
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
+
+        // Turned off afterwards: nothing is asked, and no other model stands in for it.
+        let turn_off = Request::SetModelEnabled { account: engine.clone(), model: "nimble".into(), enabled: false };
+        assert_eq!(ask(&core, Some(&app_key), turn_off).await, Response::Ok);
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel));
+
+        // No model named and none on at the account: refused with the sentence of task S.24.
+        let none_on = Response::Error {
+            code: "unsupported".into(),
+            message: trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)]),
+        };
+        assert_eq!(core.handle(set(None, true)).await, none_on);
     }
 
     #[tokio::test]
@@ -16057,8 +16199,8 @@ mod tests {
         assert!(stored.expect("its own file").contains("glm-5.3:cloud"));
     }
 
-    /// Task S.24, the first start after the update: the assistant's default for new chats and a
-    /// bot's model stay on, also where they compute elsewhere.
+    /// Task S.24, the first start after the update: the assistant's default for new chats, a
+    /// function's model (#231) and a bot's model stay on, also where they compute elsewhere.
     #[tokio::test]
     async fn the_models_the_suite_uses_stay_on_after_the_update() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -16081,12 +16223,24 @@ mod tests {
             (*engine, *model) = (cloud.id.clone(), Some("openai/gpt-4o".into()));
         }
         bot_of(core.handle(save).await);
+        // Assigned before the switches came, so no check of today stood in the way.
+        let function = torro_core::ai::AiFunction::InboxCategorize;
+        let assigned = torro_core::ai::AiAssignment {
+            function,
+            engine: Some(cloud.id.clone()),
+            model: Some("qwen/qwen3-14b".into()),
+            effort: None,
+            enabled: true,
+        };
+        core.settings.set_ai_assignment(function, Some(assigned)).expect("assigned");
 
         core.keep_used_models_on().await;
         let on =
             |list: Vec<(String, bool)>| list.into_iter().filter(|(_, on)| *on).map(|(id, _)| id).collect::<Vec<_>>();
         assert_eq!(on(switched(&core, &local.id).await), ["glm-5.3:cloud", "qwen3:8b"]);
-        assert_eq!(on(switched(&core, &cloud.id).await), ["openai/gpt-4o"]);
+        let mut on_cloud = on(switched(&core, &cloud.id).await);
+        on_cloud.sort();
+        assert_eq!(on_cloud, ["openai/gpt-4o", "qwen/qwen3-14b"]);
     }
 
     /// Task S.24: no client turns on a model that computes elsewhere, whatever its rights, and
@@ -16951,13 +17105,22 @@ mod tests {
         let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
         assert_eq!(ask(&core, Some(&app_key), set).await, Response::Ok);
 
+        // The default's model computes elsewhere, so it is off until someone turns it on (task
+        // S.24, #231): OpenRouter has no model on and is passed over, never asked.
+        let Response::TaskSuggestion { suggestion } = ask(&core, Some(&app_key), suggest(&entry)).await else {
+            panic!("a suggestion")
+        };
+        assert_eq!(suggestion.title, "Read it", "the local AI");
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (0, 1));
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "qwen/qwen3-14b")).await, Response::Ok);
+
         let Response::TaskSuggestion { suggestion } = ask(&core, Some(&app_key), suggest(&entry)).await else {
             panic!("a suggestion")
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).map(torro_pim::EventTime::Date);
         assert_eq!((suggestion.title.as_str(), suggestion.due), ("Fix the deploy", due));
         assert_eq!(suggestion.model, "qwen/qwen3-14b", "the default's model");
-        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 0));
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 1));
 
         // A mail entry: the local AI, whatever the default says.
         let mail = crate::inbox::NewMail {
@@ -16981,7 +17144,7 @@ mod tests {
         let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).expect("valid date");
         assert_eq!((suggestion.start, suggestion.end), (Some(torro_pim::EventTime::Date(day)), None));
         assert!(suggestion.engine.starts_with("ai:ollama@"), "{}", suggestion.engine);
-        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 1), "mail never went out");
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 2), "mail never went out");
 
         // Without the local AI, mail has none to go to.
         let gone = Request::RemoveAccount { id: suggestion.engine.clone() };
@@ -17035,6 +17198,10 @@ mod tests {
                 }
             }
         };
+        assert_eq!(suggested(filed.clone()).await, "qwen3:8b", "mail stays on this computer");
+        // The cloud model is off until someone turns it on (task S.24, #231): "Automatic" then.
+        assert_eq!(suggested(posted_entry(&core).await).await, "qwen3:8b", "the default's model is off");
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&account.id, "glm-5.3:cloud")).await, Response::Ok);
         assert_eq!(suggested(filed).await, "qwen3:8b", "mail stays on this computer");
         assert_eq!(suggested(posted_entry(&core).await).await, "glm-5.3:cloud", "the default's model");
     }

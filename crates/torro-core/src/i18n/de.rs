@@ -4207,4 +4207,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "I found five mails from Anna, but I may not create tasks. You can allow it in Settings › Access.",
         "Ich habe fünf Mails von Anna gefunden, darf aber keine Aufgaben anlegen. Du kannst es unter Einstellungen › Zugriff erlauben.",
     ),
+    // ai.set_assignment and the switches of the models (S.24, review of #231)
+    (
+        "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+        "„{model}“ von {provider} ist abgeschaltet. Schalte es unter Einstellungen › Konten an.",
+    ),
 ];

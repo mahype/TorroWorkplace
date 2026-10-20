@@ -1184,7 +1184,7 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `ai_set_assignment`
 
-Sets which AI account and model a function uses, or takes it back with `engine: null`; returns the whole list. Needs the person's approval. `not-found` for a function this version does not know or an account that does not exist; `error` for a model the account does not offer, for a function that needs a decision model and a model that does not decide, and – while mail may only go to models on this computer – for a model that runs elsewhere. That last rule is the person's to lift, in the control centre, never an agent's.
+Sets which AI account and model a function uses, or takes it back with `engine: null`; returns the whole list. Needs the person's approval. `not-found` for a function this version does not know or an account that does not exist; `error` for a model the account does not offer, for a function that needs a decision model and a model that does not decide, and – while mail may only go to models on this computer – for a model that runs elsewhere. That last rule is the person's to lift, in the control centre, never an agent's. `unsupported` while the assignment is on for a model that is turned off (`ai.set_model_enabled`), or, with no model named, for an account with no model on; a model turned off later is not used.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
