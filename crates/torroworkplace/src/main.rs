@@ -6,7 +6,8 @@
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
 //! - `hook claude-code|codex|gemini`: run by the hooks of coding agents; reports waiting and
 //!   finished sessions to the inbox, silently and always with exit code 0 (see `hook`).
-//! - `workspace_keys`: the template keys (modifiers + digit), bound by the daemon on Hyprland.
+//! - `workspace_keys`: the template keys (modifiers + digit), bound by the daemon on Hyprland
+//!   and by the tray on macOS and Windows.
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.

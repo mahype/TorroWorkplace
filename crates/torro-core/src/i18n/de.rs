@@ -4262,7 +4262,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Workspaces: keys, startup, the page, the dialog and the tray (WS.2 to WS.8, issue #243)
     ("1 screen", "1 Bildschirm"),
     (
-        "Arrange the windows of a workspace, then choose Save workspace….",
+        "Arrange the windows of a workspace, then choose \"Save workspace…\".",
         "Ordne die Fenster eines Workspaces an und wähle dann „Workspace speichern…“.",
     ),
     ("At startup · {screen}", "Beim Start · {screen}"),

@@ -197,7 +197,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
     let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
     let manager = window_manager(data);
     let templates: Element<'a, Message> = if data.templates.is_empty() {
-        empty_state(tr("No templates yet"), tr("Arrange the windows of a workspace, then choose Save workspace…."))
+        empty_state(tr("No templates yet"), tr("Arrange the windows of a workspace, then choose \"Save workspace…\"."))
     } else {
         let now = Utc::now();
         let supported = supported(data);
@@ -215,14 +215,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 
 /// The templates in the order of their keys on the keyboard (1 … 9, 0), then those without a key
 /// by name.
+/// Same order as the tray menu.
 pub fn sorted(templates: &[TemplateSummary]) -> Vec<&TemplateSummary> {
-    let mut sorted: Vec<&TemplateSummary> = templates.iter().collect();
-    sorted.sort_by_cached_key(|template| {
-        // 1 … 9 first, 0 after 9, no key last.
-        let place = template.shortcut.map_or(u8::MAX, |key| if key == 0 { 10 } else { key });
-        (place, template.name.to_lowercase())
-    });
-    sorted
+    crate::workspace_keys::in_key_order(templates)
 }
 
 /// The group "Window manager": the window manager with its version and screens, and the row
