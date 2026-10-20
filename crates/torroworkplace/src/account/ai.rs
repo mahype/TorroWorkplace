@@ -878,7 +878,8 @@ impl AiAccounts {
     /// `all` only those not known to have closed weights ([`ai::open_weights_only`]). Reading
     /// changes no data, only how the account is shown: an answer renews when it last answered, a
     /// refused key becomes its problem until it answers again. The whole list is kept for
-    /// [`AiAccounts::known_models`].
+    /// [`AiAccounts::known_models`]. The one exception (#231): the first list after the update keeps
+    /// on what "Automatic" used at the account ([`AiAccounts::take_over`]), once.
     pub async fn models(&self, id: &str, all: bool) -> Result<Vec<AiModel>, AiError> {
         let result = self.provider(id).await?.models().await;
         if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
@@ -1142,14 +1143,32 @@ impl AiAccounts {
     /// ([`ModelSwitches::turn_off`]), so the list is needed then ([`AiAccounts::known_models`]).
     /// [`AiError::NotFound`] for an id that is no AI account, [`AiError::Format`] when the file
     /// cannot be written (nothing changes then). An account still to take over from "Automatic"
-    /// ([`Switches::automatic`], #231) is not any more: the person's switch wins.
+    /// ([`Switches::automatic`], #231) is not any more once the switch is stored: the person's
+    /// switch wins; a switch that fails is none, and a list it loaded takes over as any first list.
     pub async fn set_enabled(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
-        let server = self.server(id).await.ok_or_else(|| no_account(id))?;
-        // Whoever switches at the account decides there (#231): what "Automatic" used before the
-        // switches is not taken over, also not by the list asked for below. Stored with the switch.
-        if let Some(held) = self.switches().await.as_mut() {
-            held.automatic.remove(id);
+        // Taken out while switching, so the list asked for below takes nothing over; the switch
+        // stores the account without it.
+        let noted = self.switches().await.as_mut().and_then(|held| held.automatic.remove(id));
+        let switched = self.switch(id, model, enabled).await;
+        if switched.is_err()
+            && let Some(noted) = noted
+        {
+            if let Some(held) = self.switches().await.as_mut() {
+                held.automatic.entry(id.to_string()).or_insert(noted);
+            }
+            // A list loaded on the way: taken over now, as at any first list.
+            let listed =
+                self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
+            if let Some(models) = listed {
+                self.take_over(id, &models).await;
+            }
         }
+        switched
+    }
+
+    /// [`AiAccounts::set_enabled`] apart from what "Automatic" used.
+    async fn switch(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
+        let server = self.server(id).await.ok_or_else(|| no_account(id))?;
         let on_by_rule: Vec<String> = if enabled {
             let models = self.models(id, true).await?;
             if !models.iter().any(|known| known.id == model) {
@@ -2330,6 +2349,17 @@ pub(crate) mod tests {
         ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
         ai.set_enabled(&cloud.id, "openai/gpt-4o", true).await.expect("the person's switch");
         assert_eq!(on(&ai, &cloud.id).await, ["openai/gpt-4o"], "their switch wins");
+
+        // A switch that fails is none: the list it loaded takes over all the same.
+        let third = tempfile::tempdir().expect("temp dir");
+        let ai = service(third.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
+        assert!(ai.set_enabled(&cloud.id, "nope/none", true).await.is_err(), "not offered");
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
     }
 
     /// Task S.24: a model turned on that the server no longer offers counts once the core holds the

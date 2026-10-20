@@ -1892,7 +1892,11 @@ impl Core {
         let for_people = self.switches_on_for_people(&request);
         // Turning on a model that computes elsewhere is the person's too (task S.24): the core's
         // list says where it computes, so it is checked here and not with the request alone.
-        let elsewhere = self.turns_on_elsewhere(&request).await;
+        // Asked only of a client that may otherwise: a refused one makes the core ask no server.
+        let elsewhere = match allowed && !for_people {
+            true => self.turns_on_elsewhere(&request).await,
+            false => Ok(false),
+        };
         if !allowed || for_people || matches!(elsewhere, Ok(true)) {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
@@ -5566,9 +5570,15 @@ impl Core {
             if let Err(err) = self.ai.models(account, true).await {
                 return ai_error(&err);
             }
-            if matches!(self.ai.runs_elsewhere(account, model).await, Ok(true)) {
-                return Refused::Lacks { command: "ai.set_model_enabled", lack: torro_ipc::api::Lack::ForPeople }
-                    .response();
+            // The last guard of "kept for people" (an approval runs on to here): a list that fails
+            // now refuses with its error, never counts as "here".
+            match self.ai.runs_elsewhere(account, model).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    let lack = torro_ipc::api::Lack::ForPeople;
+                    return Refused::Lacks { command: "ai.set_model_enabled", lack }.response();
+                }
+                Err(err) => return ai_error(&err),
             }
         }
         match self.ai.set_enabled(account, model, enabled).await {

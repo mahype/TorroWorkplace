@@ -2337,7 +2337,8 @@ static REMOVE_ACCOUNT: Command = Command {
 };
 
 // Read access: it asks the account's server for its model list (and Ollama for each model's
-// capabilities) and changes nothing. The key stays in the core.
+// capabilities) and changes nothing – but once (#231): the first list after the update keeps on what
+// "Automatic" used at the account, the person's own choice kept, never more. The key stays in the core.
 static LIST_MODELS: Command = Command {
     name: "ai.list_models",
     area: Area::Ai,
@@ -3244,9 +3245,10 @@ static LIST_ENGINES: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the engines the assistant of Torro Workplace can answer with: each AI account with at \
-                  least one model turned on (id `ai:…`, its name, and a problem when it cannot answer now). Pass \
-                  an id as `engine` to send_message; the models of an AI account come from ai_list_models, and \
-                  only those with `enabled: true` answer.",
+                  least one model turned on (id `ai:…`, its name, and a problem when it cannot answer now); \
+                  right after an update also one used with \"Automatic\" whose server has not listed its models \
+                  yet. Pass an id as `engine` to send_message; the models of an AI account come from \
+                  ai_list_models, and only those with `enabled: true` answer.",
 };
 
 static LIST_CONVERSATIONS: Command = Command {

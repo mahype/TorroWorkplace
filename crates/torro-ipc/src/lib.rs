@@ -623,7 +623,9 @@ pub enum Request {
     /// its weights are open, where the server tells. Without `all` only models known to have open
     /// weights and those the server says nothing about are listed (Open First: on OpenRouter only
     /// open models, on a local server all of them). Each says whether it is turned on for the
-    /// suite (`enabled`, task S.24, [`Request::SetModelEnabled`]), from the core's switches.
+    /// suite (`enabled`, task S.24, [`Request::SetModelEnabled`]), from the core's switches. The
+    /// first list after the update that brought them keeps on, once, the model "Automatic" used at
+    /// the account before (#231).
     ///
     /// Error codes: `not-found` for an id that is no AI account, `not-connected` when the account
     /// needs a key and none is stored on this device, `auth` when the server refuses the key,
