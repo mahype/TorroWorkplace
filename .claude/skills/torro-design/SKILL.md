@@ -394,6 +394,9 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
 - **Seitenleiste:** Zeilen 28 mit Icon 16, Text `typo::body()` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
   Zahl rechts `typo::meta()` tabellarisch in `TEXT_3`, Tasten-Hinweis als `kbd`. Gruppen „Lists ▾“ als
   `typo::caption()` in `TEXT_3` mit 12 Abstand darüber. Listen mit Ring (Aufgaben) bzw. Punkt (Kalender).
+  Ein Zustand an einem Eintrag (ein Anbieter, dessen Konto Aufmerksamkeit braucht oder einen Fehler hat) ist
+  ein `Mark::Badged(icon, farbe)`: das eigene Icon im Ton der Zeile mit einem Punkt 6 in der Statusfarbe auf
+  der Ecke oben rechts, gleich in Spalte, Leiste und Chip – nie nur ein getöntes Icon (#248).
 - **Aufgabenzeile:** 40 hoch, Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
   Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch

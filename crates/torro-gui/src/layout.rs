@@ -24,6 +24,7 @@ use iced::Padding;
 use torro_core::design::{Density, Pad};
 
 use crate::design;
+use crate::theme::size;
 
 /// Window width below which a window is [`SizeClass::Mini`] (and, with the height rule, a tile
 /// too narrow for a sidebar or a second column).
@@ -132,6 +133,17 @@ pub fn item_gap() -> f32 {
     design::with(|t| t.design.layout.item_gap)
 }
 
+/// The content width (beside the sidebar or rail, as [`crate::shell::content_width`]) from which a
+/// column as wide as the sidebar fits at the left edge of a page and still leaves the page its whole
+/// reading width ([`size::content_max`]): the column and its line, the page's padding at both sides,
+/// the reading width and the two edges of the content panel – 1003 in the standard design. Below it
+/// such a column shows as a rail. Switching here, and not at a size class, keeps the page from getting
+/// narrower as the window grows (issue #248). A function, as the measures come from the design.
+pub fn wide_column_from() -> f32 {
+    let page = page_padding();
+    size::sidebar() + size::HAIRLINE + page.left + page.right + size::content_max() + 2.0 * size::HAIRLINE
+}
+
 /// How close the inbox's entries stand: [`Density::Compact`] in the standard design, one row per
 /// entry. This is the density of the *design*, not of a window – every window of the suite shows
 /// the same one, and only a pack with `layout.density = "comfortable"` asks for cards (task E13.2,
@@ -156,6 +168,7 @@ mod tests {
         assert_eq!(row_padding(), Padding::new(0.0).left(16.0).right(16.0));
         assert_eq!(control_padding(), Padding::new(0.0).left(10.0).right(10.0));
         assert_eq!((section_gap(), item_gap()), (24.0, 8.0));
+        assert_eq!(wide_column_from(), 1003.0, "232 + 1 + 24 + 24 + 720 + 2");
     }
 
     fn class(width: f32, height: f32) -> SizeClass {

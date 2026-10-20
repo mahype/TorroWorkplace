@@ -3,9 +3,9 @@
 //! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub,
 //! ntfy. AI has its own permanent section and reuses this module ([`Group`]); an account of an
 //! otherwise unknown kind gets a provider of its own at the end.
-//! They stand in a column at the left edge of the content ([`provider_column`]: wide with names and
-//! counts, medium only icons) or as chips above the list (narrow), the icon in a status colour
-//! where an account needs the person. The list shows one provider ([`chosen`]): its name and the
+//! They stand in a column at the left edge of the content ([`provider_column`]: with names and
+//! counts where the list keeps its reading width beside them, else only icons) or as chips above the
+//! list (narrow), the icon with a dot in a status colour where an account needs the person. The list shows one provider ([`chosen`]): its name and the
 //! sentence of what belongs there, then its accounts as rows (status dot, label on one line, status
 //! and last sync below, chevron) and its "Add" ([`Message::Add`]), which opens the add-account
 //! dialog (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of
@@ -1053,23 +1053,22 @@ pub fn ai_view<'a>(state: &'a State, data: &'a Data, palette: &Palette) -> Eleme
 }
 
 /// The providers as a column at the left edge of the content (task S.37), for the shell to set
-/// beside the scrolling page: in the wide class with names and counts, in the medium one only their
-/// icons, names and counts as tooltips (the accounts keep their width). `None` on a detail page and
-/// in the narrow class, where the list has chips instead.
+/// beside the scrolling page: with names and counts where the content beside the sidebar (`content`,
+/// [`shell::content_width`]) leaves the list its reading width beside them, else only their icons,
+/// names and counts as tooltips ([`column_mode`], issue #248). `None` on a detail page and in the
+/// narrow class, where the list has chips instead.
 pub fn provider_column<'a>(
     state: &'a State,
     data: &'a Data,
     class: SizeClass,
+    content: f32,
     palette: &Palette,
 ) -> Option<Element<'a, Message>> {
     if selected(state, data).is_some() {
         return None;
     }
-    let (mode, width) = match class {
-        SizeClass::Wide => (SidebarMode::Expanded, size::sidebar()),
-        SizeClass::Medium => (SidebarMode::Rail, shell::rail()),
-        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => return None,
-    };
+    let mode = column_mode(class, content)?;
+    let width = column_width(mode);
     let entries = entries(data);
     let groups = account_providers(&entries);
     let shown = chosen(state.provider.as_deref(), &groups, &entries);
@@ -1089,6 +1088,26 @@ pub fn provider_column<'a>(
     let items =
         scrollable(items).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable);
     Some(container(items).width(width).height(Fill).into())
+}
+
+/// How the providers' column is drawn beside a content `content` wide in `class`: with names from
+/// [`layout::wide_column_from`] on, as a rail below it, none in the narrow class and in tiles. The
+/// content width decides and not the class, so the list does not get narrower when the window grows
+/// past the medium class (issue #248).
+fn column_mode(class: SizeClass, content: f32) -> Option<SidebarMode> {
+    match class {
+        SizeClass::Wide | SizeClass::Medium if content >= layout::wide_column_from() => Some(SidebarMode::Expanded),
+        SizeClass::Wide | SizeClass::Medium => Some(SidebarMode::Rail),
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => None,
+    }
+}
+
+/// The width of the providers' column in `mode`: the sidebar's or the rail's.
+fn column_width(mode: SidebarMode) -> f32 {
+    match mode {
+        SidebarMode::Expanded => size::sidebar(),
+        SidebarMode::Rail => shell::rail(),
+    }
 }
 
 /// Whether the providers stand in a column beside the list ([`provider_column`]): wide and medium.
@@ -1408,14 +1427,15 @@ fn group_tone(group: Listed<'_>, entries: &[&AccountInfo]) -> Option<Tone> {
     entries.iter().filter(|entry| group.holds(&entry.kind)).map(|entry| status_line(&entry.state).tone).max()
 }
 
-/// The provider's icon, in the colour of a status where one of its accounts needs the person or
-/// fails – the provider stays recognisable by its icon in the medium column, the words stand on
-/// the account's row. The text colours (`attention_text`, `error_text`): the status colours are
-/// too light for a small icon on light surfaces.
+/// The provider's icon, with a dot in the colour of a status where one of its accounts needs the
+/// person or fails (issue #248): the dot is a shape, so the state shows without colour too, and the
+/// icon stays the provider's own, so two providers in need stay apart in the rail. The words stand on
+/// the account's row. The text colours (`attention_text`, `error_text`): the status colours are too
+/// light for a small dot on light surfaces.
 fn provider_mark(group: Listed<'_>, entries: &[&AccountInfo], palette: &Palette) -> Mark {
     match group_tone(group, entries) {
-        Some(Tone::Attention) => Mark::Tinted(group.icon(), palette.attention_text),
-        Some(Tone::Error) => Mark::Tinted(group.icon(), palette.error_text),
+        Some(Tone::Attention) => Mark::Badged(group.icon(), palette.attention_text),
+        Some(Tone::Error) => Mark::Badged(group.icon(), palette.error_text),
         Some(Tone::Ok) | None => Mark::Icon(group.icon()),
     }
 }
@@ -2613,7 +2633,9 @@ mod tests {
         let palette = Palette::dark();
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
             drop(view(state, data, class, &palette));
-            drop(provider_column(state, data, class, &palette));
+            for content in [600.0, layout::wide_column_from()] {
+                drop(provider_column(state, data, class, content, &palette));
+            }
         }
     }
 
@@ -2655,11 +2677,60 @@ mod tests {
         assert_eq!(group_tone(nextcloud, &[&waiting, &broken, &ok]), Some(Tone::Error));
         let palette = Palette::dark();
         assert_eq!(provider_mark(nextcloud, &[&ok], &palette), Mark::Icon(Icon::Cloud));
-        let alert = |colour| Mark::Tinted(Icon::Cloud, colour);
+        let alert = |colour| Mark::Badged(Icon::Cloud, colour);
         assert_eq!(provider_mark(nextcloud, &[&waiting], &palette), alert(palette.attention_text));
         assert_eq!(provider_mark(nextcloud, &[&broken], &palette), alert(palette.error_text));
         let light = Palette::light();
         assert_eq!(provider_mark(nextcloud, &[&broken], &light), alert(light.error_text), "readable on light");
+    }
+
+    /// The width the list gets beside the providers' column in a content `content` wide (as
+    /// `Ui::body` lays it out): the content less the panel's two edges, the column and its line and the
+    /// page's padding, at most the reading width.
+    fn page_width(class: SizeClass, content: f32) -> f32 {
+        let column = column_mode(class, content).map_or(0.0, |mode| column_width(mode) + size::HAIRLINE);
+        let page = layout::page_padding();
+        (content - 2.0 * size::HAIRLINE - column - page.left - page.right).min(size::content_max())
+    }
+
+    /// Issue #248: the column gets its names only where the list keeps its reading width beside it,
+    /// so growing the content or the window never makes the list narrower – except for the shell's
+    /// own sidebar opening at 1024, by at most its difference to the rail.
+    #[test]
+    fn the_provider_column_never_makes_the_list_narrower() {
+        let from = layout::wide_column_from();
+        assert_eq!(column_mode(SizeClass::Wide, from), Some(SidebarMode::Expanded));
+        assert_eq!(column_mode(SizeClass::Wide, from - 1.0), Some(SidebarMode::Rail));
+        assert_eq!(column_mode(SizeClass::Medium, from), Some(SidebarMode::Expanded), "the width decides");
+        assert_eq!(column_mode(SizeClass::Narrow, from), None, "chips there");
+        assert_eq!(page_width(SizeClass::Wide, from), size::content_max(), "the whole reading width");
+        // (a) by the content width.
+        let mut before = page_width(SizeClass::Wide, 600.0);
+        for content in 601..=2000 {
+            let width = page_width(SizeClass::Wide, content as f32);
+            assert!(width >= before, "content {content}: {width} < {before}");
+            before = width;
+        }
+        // (b) and (c) by the window width, with the sidebar collapsed and expanded.
+        let jump = size::sidebar() - shell::rail();
+        for choice in [SidebarMode::Rail, SidebarMode::Expanded] {
+            let at = |width: f32| {
+                let class = layout::of(iced::Size::new(width, 900.0));
+                page_width(class, shell::content_width(class, choice, width))
+            };
+            let mut before = at(600.0);
+            for window in 601..=2000 {
+                let width = at(window as f32);
+                if choice == SidebarMode::Expanded && window == 1024 {
+                    assert!(before - width <= jump, "the sidebar's jump only: {before} → {width}");
+                } else {
+                    assert!(width >= before, "{choice:?}, window {window}: {width} < {before}");
+                }
+                before = width;
+            }
+        }
+        let content = shell::content_width(SizeClass::Wide, SidebarMode::Expanded, 1024.0);
+        assert_eq!(column_mode(SizeClass::Wide, content), Some(SidebarMode::Rail), "no wide column at 1024");
     }
 
     /// Task S.37: the overview's "Open accounts" of a row shows that row's account's provider, also
@@ -2702,11 +2773,11 @@ mod tests {
         update(&mut state, Message::Open("caldav:anna".into()), &data);
         update(&mut state, Message::Back, &data);
         assert_eq!(state.provider.as_deref(), Some("mail"));
-        assert!(provider_column(&state, &data, SizeClass::Wide, &Palette::dark()).is_some());
-        assert!(provider_column(&state, &data, SizeClass::Narrow, &Palette::dark()).is_none(), "chips there");
+        assert!(provider_column(&state, &data, SizeClass::Wide, 1200.0, &Palette::dark()).is_some());
+        assert!(provider_column(&state, &data, SizeClass::Narrow, 480.0, &Palette::dark()).is_none(), "chips there");
         update(&mut state, Message::Open("github:anna".into()), &data);
         assert!(
-            provider_column(&state, &data, SizeClass::Wide, &Palette::dark()).is_none(),
+            provider_column(&state, &data, SizeClass::Wide, 1200.0, &Palette::dark()).is_none(),
             "not beside a detail page"
         );
     }

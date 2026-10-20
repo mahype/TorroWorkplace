@@ -307,6 +307,7 @@ fn path_mark<'a, M: 'a>(mark: Mark) -> Element<'a, M> {
         Mark::Tinted(which, colour) => tinted(which, colour),
         Mark::Ring(colour) => framed(colour, PATH_RING / 2.0, RING_LINE, blank().into()),
         Mark::Dot(colour) => widgets::color_dot(colour, PATH_DOT),
+        Mark::Badged(which, colour) => widgets::badged(widgets::toned(which, icon::SIZE_SM, Tone::Text3), colour),
         Mark::Check(colour, checked) => {
             let inner = if checked { tinted(Icon::Check, colour) } else { blank().into() };
             framed(colour, radius::xs(), style::CHECK_BORDER, inner)
