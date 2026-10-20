@@ -24,6 +24,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{Access, Area, Confirm, Level, Operation, Outbound, Rights, Selection};
+use crate::tools::ToolId;
 use crate::{Request, Response};
 
 /// At most this many characters in a message to the assistant (`assistant.send_message`).
@@ -276,6 +277,46 @@ pub enum EntryContent {
     Error { code: String, message: String },
     /// The answer was stopped (`assistant.cancel`); what it did until then stays above.
     Stopped,
+    /// A card in the conversation (issue #225, "Karten im Chat" in `docs/assistent.md`): it points at
+    /// an item, it never copies it. The core adds one after a command that made the item (the first:
+    /// `tools.create_pdf`); what it shows, `assistant.get_cards` fetches fresh from the core, with the
+    /// rights of the conversation's client, so nothing a model wrote ever appears on it.
+    Card { card: CardRef },
+}
+
+/// What a card ([`EntryContent::Card`]) points at, told apart by `kind`. Clients must accept kinds
+/// they do not know (show nothing, or "No longer available").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CardRef {
+    /// A file of the register of the assistant's own tools (`tools.create_pdf`'s answer):
+    /// `{"kind": "file", "id": "1a2b3c4d"}`.
+    File {
+        /// The file's id in the register ([`crate::tools::FileInfo::id`]).
+        id: String,
+    },
+}
+
+/// A card as the core resolves it now (`assistant.get_cards`), told apart by `kind`. Clients must
+/// accept kinds they do not know.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Card {
+    /// The file as the register keeps it, its fields next to `kind`: name, template, size, path.
+    /// Its title is the client's text: data, never instructions.
+    File(crate::tools::FileInfo),
+    /// Gone or out of reach: deleted, changed, moved, made by another client, or no longer within
+    /// the rights (the tool switched off, the area or the tool taken away). Shown as "No longer
+    /// available"; why is not told.
+    Unavailable,
+}
+
+/// One card of a conversation with its place in it (`assistant.get_cards`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CardEntry {
+    /// The number of the card's entry ([`Entry::seq`]).
+    pub seq: u64,
+    pub card: Card,
 }
 
 /// Who the assistant is (`assistant.get_profile`, `assistant.update_profile`, task C.10): written by
@@ -345,12 +386,26 @@ pub struct MyAccess {
     /// it already. Left out for [`Mode::Default`].
     #[serde(default, skip_serializing_if = "Mode::is_default")]
     pub mode: Mode,
+    /// The assistant's own tools a person switched on (issue #225, setting `tool_enabled`), whatever
+    /// the rights say. A tool's command runs only when it is here **and** in
+    /// [`Rights::tools`](crate::api::Rights::tools): a tool missing here is switched off
+    /// ([`crate::api::Lack::ToolOff`], only the person switches it on), one missing there is not
+    /// granted ([`crate::api::Lack::Tool`]). Left out by older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools_on: Option<Vec<ToolId>>,
 }
 
 impl MyAccess {
-    /// `rights` as they are for a client's own key: nothing withheld or switched off.
+    /// `rights` as they are for a client's own key: nothing withheld or switched off, no word on the
+    /// tools' switches ([`MyAccess::with_tools_on`]).
     pub fn of(rights: Rights, engine: Option<String>) -> MyAccess {
-        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new(), mode: Mode::Default }
+        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new(), mode: Mode::Default, tools_on: None }
+    }
+
+    /// `self` naming `tools` as the tools switched on now ([`MyAccess::tools_on`]).
+    pub fn with_tools_on(mut self, tools: Vec<ToolId>) -> MyAccess {
+        self.tools_on = Some(tools);
+        self
     }
 
     /// `self` in the permission mode `mode` (issue #132): the rights narrowed ([`Mode::narrow`]) and
@@ -389,8 +444,8 @@ impl MyAccess {
 }
 
 /// Takes `area` out of `rights` with what it selects: an area the client does not get here names
-/// none of its calendars, lists, repositories or mail accounts either (a mail account's id is its
-/// address, which the data rule keeps from an agent), and without mail no mail account's inbox
+/// none of its calendars, lists, repositories, mail accounts or tools either (a mail account's id is
+/// its address, which the data rule keeps from an agent), and without mail no mail account's inbox
 /// source.
 fn close(rights: &mut Rights, area: Area) {
     rights.areas.remove(&area);
@@ -400,6 +455,7 @@ fn close(rights: &mut Rights, area: Area) {
         Area::Tasks => rights.task_lists = nothing(),
         Area::Github => rights.github_repos = nothing(),
         Area::Inbox => rights.inbox_sources = nothing(),
+        Area::Tools => rights.tools = nothing(),
         Area::Mail => {
             rights.mail_accounts = nothing();
             if let Selection::Only(keys) = &mut rights.inbox_sources {
@@ -498,11 +554,13 @@ pub fn profile_refusal(
 
 impl Request {
     /// The conversation an `assistant.*` request or `bots.ask_bot` names, for the core's checks and
-    /// its audit log: `id`, `conversation` (also of `confirm_bot`), or the conversation of `open_window`. `None` for every
+    /// its audit log: `id`, `conversation` (also of `confirm_bot` and `get_cards`), or the conversation
+    /// of `open_window`. `None` for every
     /// other request and for `send_message` and `ask_bot` that start a new one.
     pub fn conversation(&self) -> Option<&str> {
         match self {
             Request::GetConversation { id, .. }
+            | Request::GetCards { conversation: id }
             | Request::RenameConversation { id, .. }
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
@@ -609,6 +667,20 @@ mod tests {
         assert_eq!(access.rights.task_lists, Selection::Only(Vec::new()));
         assert_eq!(access.rights.inbox_sources, Selection::Only(vec!["agent:claude-code".into()]));
         assert_eq!(access.rights.calendars, Selection::All, "the rest stays");
+    }
+
+    /// Issue #225: the switched-on tools travel apart from the rights, left out when the core says
+    /// nothing of them, so an agent tells a switched-off tool from one it was not granted.
+    #[test]
+    fn the_switched_on_tools_are_named_apart_from_the_rights() {
+        let quiet = MyAccess::of(Rights::assistant(), None);
+        assert!(serde_json::to_value(&quiet).expect("json").get("tools_on").is_none(), "left out");
+        let on = quiet.clone().with_tools_on(vec![ToolId::Pdf]);
+        let json = serde_json::to_value(&on).expect("json");
+        assert_eq!(json["tools_on"], serde_json::json!(["pdf"]));
+        assert_eq!(serde_json::from_value::<MyAccess>(json).expect("reads"), on);
+        let none = quiet.with_tools_on(Vec::new()).withholding(&[Area::Tools]);
+        assert_eq!(none.tools_on, Some(Vec::new()), "none switched on is said too");
     }
 
     #[test]
@@ -774,5 +846,41 @@ mod tests {
         assert_eq!(serde_json::to_value(ChatWindow::New).expect("serializes"), serde_json::json!("new"));
         let window: ChatWindow = serde_json::from_value(serde_json::json!({"conversation": "c1"})).expect("reads");
         assert_eq!(window, ChatWindow::Conversation("c1".into()));
+    }
+
+    /// The wire format of cards (issue #225): the entry names what it points at, never its content;
+    /// a resolved file carries its fields next to `kind`.
+    #[test]
+    fn cards_read_as_documented() {
+        let entry: Entry = serde_json::from_value(serde_json::json!({
+            "seq": 5, "time": "2026-10-19T09:00:00Z", "kind": "card", "card": {"kind": "file", "id": "1a2b3c4d"}
+        }))
+        .expect("a card entry");
+        assert_eq!(entry.content, EntryContent::Card { card: CardRef::File { id: "1a2b3c4d".into() } });
+
+        let file = crate::tools::FileInfo {
+            id: "1a2b3c4d".into(),
+            name: "Report.pdf".into(),
+            path: "/Users/anna/Desktop/Report.pdf".into(),
+            title: "Report".into(),
+            template: crate::tools::PdfTemplateId::Report,
+            size: 23_456,
+            created: entry.time,
+        };
+        let shown = CardEntry { seq: 5, card: Card::File(file.clone()) };
+        let json = serde_json::to_value(&shown).expect("serializes");
+        assert_eq!(
+            (&json["seq"], &json["card"]["kind"], &json["card"]["name"]),
+            (&5.into(), &"file".into(), &"Report.pdf".into())
+        );
+        assert_eq!(serde_json::from_value::<CardEntry>(json).expect("reads back"), shown);
+        let gone = CardEntry { seq: 7, card: Card::Unavailable };
+        assert_eq!(
+            serde_json::to_value(&gone).expect("serializes"),
+            serde_json::json!({"seq": 7, "card": {"kind": "unavailable"}})
+        );
+        assert_eq!(Request::GetCards { conversation: "c1".into() }.conversation(), Some("c1"));
+        let long = Request::GetCards { conversation: "x".repeat(MAX_ID_BYTES + 1) };
+        assert!(limit_refusal(&long).is_some(), "the id's limit holds");
     }
 }

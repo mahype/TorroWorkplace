@@ -12,7 +12,8 @@ use torro_ipc::assistant::TEST_ENGINE;
 
 use super::*;
 use crate::demo::{
-    APPROVAL, APPROVAL_ID, ASKED, BOT_CHAT, FORBIDDEN, GONE, OLLAMA, PROPOSAL, RELEASE, STREAMING, TOOLS, TRAVEL,
+    APPROVAL, APPROVAL_ID, ASKED, BOT_CHAT, CARDS, FORBIDDEN, GONE, OLLAMA, PDF, PROPOSAL, RELEASE, STREAMING, TOOLS,
+    TRAVEL,
 };
 
 const WIDE: Size = Size::new(1600.0, 1000.0);
@@ -115,6 +116,16 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
         Request::GetBot { .. } => Message::BotLoaded(result.and_then(bots::bot_of)),
         Request::SaveBot { .. } => Message::BotSaved(result.and_then(bots::bot_of)),
         Request::DeleteBot { id } => Message::BotDeleted(id.clone(), result.map(|_| ())),
+        Request::GetCards { conversation } => Message::Cards(
+            conversation.clone(),
+            result.and_then(|response| match response {
+                Response::Cards { cards } => Ok(cards),
+                other => Err(Refusal::unexpected(&other)),
+            }),
+        ),
+        Request::OpenFile { .. } | Request::SaveFileAs { .. } | Request::OpenApp { .. } => {
+            Message::FileDone(result.map(|_| None), "failed")
+        }
         Request::ConfirmBot { conversation, bot } => Message::BotConfirmed(
             crate::bots::Proposal { conversation: conversation.clone(), bot: bot.clone() },
             result.map(|_| ()),
@@ -162,7 +173,7 @@ fn every_demo_state_builds_in_every_size() {
 
 #[test]
 fn every_kind_of_entry_builds_unfolded_too() {
-    for id in [TOOLS, APPROVAL, STREAMING, FORBIDDEN, "d000000000000005"] {
+    for id in [TOOLS, APPROVAL, STREAMING, FORBIDDEN, "d000000000000005", CARDS] {
         let mut app = started(&["--chat", id]);
         let seqs: Vec<u64> = app.transcript.entries.iter().map(|entry| entry.seq).collect();
         for seq in seqs {
@@ -173,6 +184,100 @@ fn every_kind_of_entry_builds_unfolded_too() {
             let _ = app.view();
         }
     }
+}
+
+/// Task WZ.8: a conversation with cards asks the core what they show (`assistant.get_cards`) and
+/// draws a card only once it is resolved; the file card's buttons each send their request – "Save
+/// as…" only after the person chose a place in the system's dialog.
+#[test]
+fn file_cards_come_from_the_core_and_each_button_sends_its_request() {
+    // Before the core resolved them, no card is drawn and none takes room.
+    let mut app = start(&["--chat", CARDS]);
+    let requests = sent(&mut app);
+    let opened = requests.iter().find(|r| matches!(r, Request::GetConversation { .. })).expect("the conversation");
+    let _ = app.update(answer_of(opened, block_on(app.backend.ask(opened.clone()))));
+    let asked: Vec<Request> = sent(&mut app).into_iter().filter(|r| matches!(r, Request::GetCards { .. })).collect();
+    assert_eq!(asked, [Request::GetCards { conversation: CARDS.into() }]);
+    assert!(app.cards.is_empty());
+    let _ = app.view();
+
+    let mut app = started(&["--chat", CARDS]);
+    let seqs = app.transcript.cards();
+    assert_eq!(seqs.len(), 2, "two PDFs were made");
+    let resolved: Vec<&Card> = seqs.iter().filter_map(|seq| app.cards.get(seq)).collect();
+    assert!(matches!(resolved.as_slice(), [Card::Unavailable, Card::File(file)] if file.id == PDF), "{resolved:?}");
+    sent(&mut app);
+
+    let _ = app.update(Message::OpenFile(PDF.into()));
+    assert_eq!(sent(&mut app), [Request::OpenFile { file: PDF.into() }]);
+    let _ = app.update(Message::MailFile(PDF.into()));
+    assert_eq!(sent(&mut app), [Request::OpenApp { app: "torroinbox".into(), target: Some(format!("file:{PDF}")) }]);
+    // "Save as…" opens the system's dialog first: nothing goes to the core until a place is chosen.
+    let _ = app.update(Message::SaveFileAs { id: PDF.into(), name: "Release checklist-2.pdf".into() });
+    assert!(sent(&mut app).is_empty());
+    let _ = app.update(Message::SavePicked(PDF.into(), None));
+    assert!(sent(&mut app).is_empty(), "cancelled");
+    let place = PathBuf::from("/Users/anna/Documents/Release checklist.pdf");
+    let _ = app.update(Message::SavePicked(PDF.into(), Some(place)));
+    let saved = sent(&mut app);
+    assert_eq!(
+        saved,
+        [Request::SaveFileAs { file: PDF.into(), path: "/Users/anna/Documents/Release checklist.pdf".into() }]
+    );
+    let _ = app.update(Message::FileDone(Ok(Some(tr("Copy saved"))), "failed"));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Copy saved")));
+    // A button that failed says so and asks for the cards again: the file may have gone.
+    let _ =
+        app.update(Message::FileDone(Err(Refusal::new("not-found", "No such file.")), tr("Couldn't open the file.")));
+    assert_eq!(app.notice.as_ref().map(|notice| notice.text.as_str()), Some(tr("Couldn't open the file.")));
+    assert_eq!(sent(&mut app), [Request::GetCards { conversation: CARDS.into() }]);
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+    // Another conversation leaves its cards behind.
+    let _ = app.update(Message::Select(TOOLS.into()));
+    assert!(app.cards.is_empty());
+}
+
+/// Design review of WZ.8: a tool line right above a file card leaves the file's name to the card;
+/// above a card of a file that is gone it keeps the name, the card no longer shows it.
+#[test]
+fn a_tool_line_leaves_the_name_to_its_file_card() {
+    let app = started(&["--chat", CARDS]);
+    let made: Vec<u64> = app
+        .transcript
+        .entries
+        .iter()
+        .filter(|entry| matches!(&entry.content, EntryContent::Tool { name, .. } if name == "tools.create_pdf"))
+        .map(|entry| entry.seq)
+        .collect();
+    assert_eq!(made.len(), 2, "two PDFs were made");
+    assert!(!app.file_card_after(made[0]), "its file is gone");
+    assert!(app.file_card_after(made[1]));
+    let asked = app.transcript.entries.iter().find(|entry| matches!(entry.content, EntryContent::Tool { .. }));
+    assert!(!app.file_card_after(asked.map_or(0, |entry| entry.seq)), "an answer follows the first tool");
+}
+
+/// Task WZ.8: a card that comes while the window follows the answer is resolved at once; the cards
+/// of a conversation no longer open are not taken.
+#[test]
+fn a_new_card_is_resolved_at_once_and_only_for_the_open_conversation() {
+    let mut app = started(&["--chat", CARDS]);
+    let known = app.cards.clone();
+    let _ = app.update(Message::Cards(TOOLS.into(), Ok(Vec::new())));
+    assert_eq!(app.cards, known, "not the open conversation");
+    let mut summary = app.transcript.summary.clone().expect("loaded");
+    let seq = summary.last + 1;
+    summary.last = seq;
+    let card = Entry {
+        seq,
+        time: chrono::Utc::now(),
+        content: EntryContent::Card { card: torro_ipc::assistant::CardRef::File { id: PDF.into() } },
+    };
+    sent(&mut app);
+    let _ = app.update(Message::Followed(CARDS.into(), Ok((summary, vec![card]))));
+    assert!(sent(&mut app).contains(&Request::GetCards { conversation: CARDS.into() }));
 }
 
 #[test]

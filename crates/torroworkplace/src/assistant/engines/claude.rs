@@ -14,6 +14,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 use torro_core::ai::{AiModel, Effort};
+use torro_core::settings::ToolId;
 use torro_ipc::api::{Access, Area, CATALOGUE, Mcp};
 use torro_ipc::assistant::Mode;
 
@@ -105,7 +106,8 @@ pub fn mcp_config(program: &Path) -> Value {
 /// like a model's name (`sonnet`, `claude-sonnet-4-5`; another is left out, so nothing from a
 /// client can become a flag of its own), and the effort (`--effort=high`, issue #131). In a
 /// read-only answer (`mode`, issue #132) the suite's tools that change something are denied as
-/// well. Never the key.
+/// well, and the commands of every one of the assistant's own tools but `tools` (issue #225: those
+/// switched on and in the client's selection). Never the key.
 pub fn arguments(
     config: &Path,
     prompt: &str,
@@ -113,10 +115,11 @@ pub fn arguments(
     effort: Option<Effort>,
     without: &[Area],
     mode: Mode,
+    tools: &[ToolId],
 ) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = FLAGS.iter().map(OsString::from).collect();
     arguments.push("--disallowedTools".into());
-    arguments.push(denied(without, mode).into());
+    arguments.push(denied(without, mode, tools).into());
     arguments.push("--mcp-config".into());
     arguments.push(config.as_os_str().to_owned());
     if let Some(model) = model.filter(|model| is_model_name(model)) {
@@ -132,19 +135,23 @@ pub fn arguments(
 
 /// [`DENIED_TOOLS`] and, as Claude Code names them, the suite's tools of the areas `without` (issue
 /// #133): the areas the agent never gets and those switched off in the conversation; in a read-only
-/// answer every tool that changes something (issue #132). Claude Code leaves denied tools out of
-/// what its model sees, so the model does not try mail and run into `forbidden`; the core refuses
-/// them anyway.
-fn denied(without: &[Area], mode: Mode) -> String {
+/// answer every tool that changes something (issue #132); the commands of the assistant's own tools
+/// not in `tools`, the ones switched on and selected (issue #225). Claude Code leaves denied tools
+/// out of what its model sees, so the model does not try mail and run into `forbidden`; the core
+/// refuses them anyway.
+fn denied(without: &[Area], mode: Mode, tools: &[ToolId]) -> String {
     let read_only = mode == Mode::ReadOnly;
-    let tools = CATALOGUE
+    let unusable = |name: &str| ToolId::of_command(name).is_some_and(|tool| !tools.contains(&tool));
+    let commands = CATALOGUE
         .iter()
         .filter(|command| {
             command.mcp == Mcp::Tool
-                && (without.contains(&command.area) || (read_only && command.access != Access::Read))
+                && (without.contains(&command.area)
+                    || (read_only && command.access != Access::Read)
+                    || unusable(command.name))
         })
         .map(|command| format!("{TOOL_PREFIX}{}", command.tool_name()));
-    std::iter::once(DENIED_TOOLS.to_string()).chain(tools).collect::<Vec<_>>().join(",")
+    std::iter::once(DENIED_TOOLS.to_string()).chain(commands).collect::<Vec<_>>().join(",")
 }
 
 /// A model's name as Claude Code takes it: letters, digits and `.-_:[]/@`, at most 100.
@@ -260,6 +267,7 @@ pub(crate) mod tests {
             Some(Effort::High),
             &[Area::Mail],
             Mode::Default,
+            &[],
         );
         let arguments: Vec<String> = arguments.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         let after = |flag: &str| {
@@ -285,8 +293,15 @@ pub(crate) mod tests {
         assert!(arguments.contains(&"--effort=high".to_string()), "issue #131");
         assert_eq!(arguments.last().map(String::as_str), Some("--append-system-prompt=## Prompt"));
 
-        let odd =
-            super::arguments(Path::new("c"), "p", Some("--dangerously-skip-permissions"), None, &[], Mode::Default);
+        let odd = super::arguments(
+            Path::new("c"),
+            "p",
+            Some("--dangerously-skip-permissions"),
+            None,
+            &[],
+            Mode::Default,
+            &[],
+        );
         assert!(odd.iter().all(|a| !a.to_string_lossy().contains("dangerously")), "no flag from a client");
         assert!(odd.iter().all(|a| !a.to_string_lossy().starts_with("--effort")), "no effort unless asked");
     }
@@ -294,16 +309,34 @@ pub(crate) mod tests {
     /// Issue #132: a read-only answer denies every tool of the suite that changes something.
     #[test]
     fn a_read_only_run_denies_the_tools_that_change_something() {
-        let arguments = arguments(Path::new("c"), "p", None, None, &[], Mode::ReadOnly);
+        let arguments = arguments(Path::new("c"), "p", None, None, &[], Mode::ReadOnly, &[]);
         let at = arguments.iter().position(|a| a == "--disallowedTools").expect("the list");
         let denied = arguments[at + 1].to_string_lossy().into_owned();
         let denied: Vec<&str> = denied.split(',').collect();
         assert!(denied.contains(&"mcp__torroworkplace__calendar_save_event"));
         assert!(denied.contains(&"mcp__torroworkplace__tasks_delete_todo"));
         assert!(!denied.contains(&"mcp__torroworkplace__calendar_list_events"), "reading stays");
-        let default = super::arguments(Path::new("c"), "p", None, None, &[], Mode::Default);
+        let default = super::arguments(Path::new("c"), "p", None, None, &[], Mode::Default, &[]);
         let at = default.iter().position(|a| a == "--disallowedTools").expect("the list");
         assert!(!default[at + 1].to_string_lossy().contains("calendar_save_event"));
+    }
+
+    /// Issue #225: the commands of an own tool that is switched off or not selected are denied, those
+    /// of a usable one and listing the tools are not.
+    #[test]
+    fn a_run_denies_the_tools_it_may_not_use() {
+        let denied_with = |tools: &[ToolId]| {
+            let arguments = arguments(Path::new("c"), "p", None, None, &[], Mode::Default, tools);
+            let at = arguments.iter().position(|a| a == "--disallowedTools").expect("the list");
+            arguments[at + 1].to_string_lossy().split(',').map(str::to_string).collect::<Vec<_>>()
+        };
+        let none = denied_with(&[]);
+        for command in ["tools_create_pdf", "tools_open_file"] {
+            assert!(none.contains(&format!("{TOOL_PREFIX}{command}")), "{command}");
+        }
+        assert!(!none.contains(&format!("{TOOL_PREFIX}tools_list_tools")), "listing stays");
+        let pdf = denied_with(&[ToolId::Pdf]);
+        assert!(!pdf.iter().any(|tool| tool.starts_with(&format!("{TOOL_PREFIX}tools_"))), "{pdf:?}");
     }
 
     /// Issue #131: every offered model is one `--model` takes, and only Haiku takes no effort.

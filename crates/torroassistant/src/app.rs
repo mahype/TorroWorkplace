@@ -69,9 +69,20 @@
 //! ([`Window::Bot`]), titled "{bot} · {title}"; "Open in new window" of a bot starts it through
 //! `assistant.open_window`. Its methods live in `app/bots.rs`.
 //!
-//! Mini and strip tiles show the newest answer and a one-line composer, nothing else.
+//! Cards (task WZ.8, `docs/assistent.md` "Datei-Karte"): a card entry points at an item and never
+//! copies it, so the window asks `assistant.get_cards` for what each card shows now – when the
+//! conversation opens, when a new card comes and on every [`REFRESH`] – and draws a card only once
+//! the core resolved it. A file card has three buttons, each a person's click and a request of the
+//! window: "Open" (`tools.open_file`), "Save as…" (the system's save dialog, then
+//! `tools.save_file_as`, which only the app key may send) and "Send by mail" (`apps.open_app` with
+//! `file:<id>`: the mail's compose window with the file attached). A file that went is "No longer
+//! available", without buttons.
+//!
+//! Mini and strip tiles show the newest answer and a one-line composer, nothing else; a card after
+//! the newest message shows there as one line.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use iced::theme::Mode;
@@ -94,8 +105,11 @@ use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
-use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
+use torro_ipc::assistant::{
+    Card, CardEntry, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile,
+};
 use torro_ipc::bots::{Bot, BotSummary};
+use torro_ipc::tools::PdfTemplateId;
 use torro_ipc::{ApprovalInfo, Request, Response};
 use torro_settings_ui::assistant::{self as settings, AppAction};
 use torro_settings_ui::{Host, Outcome};
@@ -326,6 +340,23 @@ pub enum Message {
     Approval(String, Result<ApprovalInfo, Refusal>),
     /// "Allow" (`true`) or "Deny" on the approval card: a person's click.
     Decide(String, bool),
+    /// The cards of the conversation with this id as the core resolved them (task WZ.8).
+    Cards(String, Result<Vec<CardEntry>, Refusal>),
+    /// "Open" on the card of the file with this id: a person's click.
+    OpenFile(String),
+    /// "Save as…" on the card of the file `id`: the system's save dialog, suggesting `name`.
+    SaveFileAs {
+        id: String,
+        name: String,
+    },
+    /// The save dialog for the file with this id closed: where the copy goes, `None` when it was
+    /// cancelled.
+    SavePicked(String, Option<PathBuf>),
+    /// "Send by mail" on the card of the file with this id: a new mail with it attached.
+    MailFile(String),
+    /// The core's answer to a button of a file card; `Ok` with what to say then, the text says what
+    /// failed.
+    FileDone(Result<Option<&'static str>, Refusal>, &'static str),
     /// The core's answer to the decision.
     Decided(String, Result<ApprovalInfo, Refusal>),
     /// From the sidebar: show the conversation with this id.
@@ -402,6 +433,12 @@ pub enum Message {
     SettingsHost(torro_settings_ui::host::Message),
     /// What a widget of the open settings section reported.
     SettingsPage(settings::Message),
+    /// The system's folder chooser of Tools closed (task WZ.6): the folder chosen, `None` when
+    /// it was cancelled.
+    FolderPicked(Option<PathBuf>),
+    /// The system's logo chooser of Tools closed for this template: the picture chosen, `None`
+    /// when it was cancelled.
+    LogoPicked(PdfTemplateId, Option<PathBuf>),
     /// A link in an answer.
     OpenLink(String),
     /// "Retry" in the error state.
@@ -490,6 +527,9 @@ pub struct App {
     pub(crate) approvals: HashMap<String, ApprovalInfo>,
     /// The approval whose decision is on its way: its buttons are disabled until the core answered.
     pub(crate) deciding: Option<String>,
+    /// The cards of the open conversation as the core resolved them last (`assistant.get_cards`,
+    /// task WZ.8), by the number of their entry; a card not resolved yet is not drawn.
+    pub(crate) cards: HashMap<u64, Card>,
     /// The tool lines unfolded, by number.
     pub(crate) expanded: HashSet<u64>,
     /// The answers as Markdown blocks, by number, with the text they were made from: for the
@@ -590,6 +630,7 @@ impl App {
             following: false,
             approvals: HashMap::new(),
             deciding: None,
+            cards: HashMap::new(),
             expanded: HashSet::new(),
             answers: HashMap::new(),
             stream: None,
@@ -771,6 +812,8 @@ impl App {
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
                 tasks.push(self.follow());
+                // A file may have gone or come out of reach meanwhile.
+                tasks.push(self.fetch_cards());
                 return Task::batch(tasks);
             }
             Message::Follow => return self.follow(),
@@ -840,6 +883,42 @@ impl App {
             }
             Message::Approval(id, Err(refusal)) => eprintln!("cannot read the approval {id}: {}", refusal.message),
             Message::Decide(id, allow) => return self.decide(id, allow),
+            Message::Cards(id, result) => self.take_cards(&id, result),
+            Message::OpenFile(id) => {
+                let failed = tr("Couldn't open the file.");
+                let request = chat::open_file_request(&id);
+                return self.ask(request, move |result| Message::FileDone(result.map(|_| None), failed));
+            }
+            // Only the person picks where a copy goes, in the system's dialog (point 9 of "Was nie
+            // nach außen geht"); the name ends in `.pdf`, which the core then adds to no other file.
+            Message::SaveFileAs { id, name } => {
+                return Task::perform(pick_save_path(name), move |path| Message::SavePicked(id.clone(), path));
+            }
+            Message::SavePicked(_, None) => {}
+            Message::SavePicked(id, Some(path)) => {
+                let Some(request) = chat::save_file_request(&id, &path) else {
+                    self.note(tr("This path cannot be used.").to_owned());
+                    return Task::none();
+                };
+                let failed = tr("Couldn't save the copy.");
+                let saved = tr("Copy saved");
+                return self.ask(request, move |result| Message::FileDone(result.map(|_| Some(saved)), failed));
+            }
+            Message::MailFile(id) => {
+                let failed = tr("Couldn't open a new mail with the file.");
+                let request = chat::mail_file_request(&id);
+                return self.ask(request, move |result| Message::FileDone(result.map(|_| None), failed));
+            }
+            Message::FileDone(Ok(said), _) => {
+                if let Some(text) = said {
+                    self.note(text.to_owned());
+                }
+            }
+            // The file may have gone meanwhile: the cards are asked for again.
+            Message::FileDone(Err(refusal), failed) => {
+                self.note_failure(failed, &refusal);
+                return self.fetch_cards();
+            }
             Message::Decided(id, result) => return self.decided(id, result),
             Message::Select(id) => return self.select(id),
             Message::NewChat => return self.new_chat(),
@@ -971,6 +1050,15 @@ impl App {
                     pane.host.act(action)
                 };
                 return self.settings_outcome(outcome);
+            }
+            Message::FolderPicked(folder) => {
+                let request = folder.map(|folder| settings::tools::folder_request(&folder));
+                return self.settings_send(request);
+            }
+            Message::LogoPicked(template, logo) => {
+                let data = self.settings.as_ref().map(|pane| pane.host.data());
+                let request = data.zip(logo).map(|(data, logo)| settings::tools::logo_request(data, template, &logo));
+                return self.settings_send(request);
             }
             Message::OpenLink(url) => return open_link(url),
             Message::Retry => {
@@ -1300,7 +1388,7 @@ impl App {
                     self.expanded.extend(first.map(|entry| entry.seq));
                 }
                 self.choose_default();
-                Task::batch([self.fetch_approvals(), self.scroll_to_newest()])
+                Task::batch([self.fetch_approvals(), self.fetch_cards(), self.scroll_to_newest()])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -1318,9 +1406,12 @@ impl App {
         match loaded {
             Ok((summary, entries)) => {
                 let known: HashSet<String> = self.transcript.approvals().into_iter().map(str::to_owned).collect();
+                let cards = self.transcript.cards();
                 if self.transcript.merge(summary, entries) {
                     self.after_change(true);
                 }
+                // A new card (after `tools.create_pdf`) is resolved at once, not on the next tick.
+                let cards = if self.transcript.cards() == cards { Task::none() } else { self.fetch_cards() };
                 let new: Vec<String> = self
                     .transcript
                     .approvals()
@@ -1329,7 +1420,7 @@ impl App {
                     .map(str::to_owned)
                     .collect();
                 let tasks: Vec<Task<Message>> = new.into_iter().map(|id| self.fetch_approval(id)).collect();
-                Task::batch(tasks)
+                Task::batch(tasks.into_iter().chain([cards]))
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             // The next tick asks again.
@@ -1486,6 +1577,36 @@ impl App {
         Task::batch(tasks)
     }
 
+    /// The cards of the open conversation as they are now (`assistant.get_cards`, task WZ.8); nothing
+    /// for a conversation without cards.
+    fn fetch_cards(&mut self) -> Task<Message> {
+        let Some(id) = self.current.clone().filter(|_| !self.transcript.cards().is_empty()) else {
+            return Task::none();
+        };
+        let request = Request::GetCards { conversation: id.clone() };
+        self.ask(request, move |result| {
+            Message::Cards(
+                id.clone(),
+                result.and_then(|response| match response {
+                    Response::Cards { cards } => Ok(cards),
+                    other => Err(Refusal::unexpected(&other)),
+                }),
+            )
+        })
+    }
+
+    /// The cards of the conversation `id`, when it is still the open one. A refusal (an old core, a
+    /// core that is restarting) leaves the cards as they were.
+    fn take_cards(&mut self, id: &str, result: Result<Vec<CardEntry>, Refusal>) {
+        if self.current.as_deref() != Some(id) {
+            return;
+        }
+        match result {
+            Ok(cards) => self.cards = cards.into_iter().map(|entry| (entry.seq, entry.card)).collect(),
+            Err(refusal) => eprintln!("{}: cannot read the cards ({}: {})", MAIN.binary, refusal.code, refusal.message),
+        }
+    }
+
     // -- Actions --------------------------------------------------------------------------------
 
     fn select(&mut self, id: String) -> Task<Message> {
@@ -1528,6 +1649,7 @@ impl App {
         self.following = false;
         self.approvals.clear();
         self.deciding = None;
+        self.cards.clear();
         self.expanded.clear();
         self.answers.clear();
         self.stream = None;
@@ -1820,7 +1942,29 @@ impl App {
                 let save = self.save_settings().unwrap_or_else(Task::none);
                 Task::batch([save, self.edit_bot(id)])
             }
+            // Tools (task WZ.6): only the app opens the system's choosers; a path chosen there by
+            // the person goes out as a setting ([`Message::FolderPicked`], [`Message::LogoPicked`]).
+            Outcome::App(AppAction::PickFolder) => Task::perform(pick_folder(), Message::FolderPicked),
+            Outcome::App(AppAction::PickLogo(template)) => {
+                Task::perform(pick_logo(), move |logo| Message::LogoPicked(template, logo))
+            }
         }
+    }
+
+    /// Sends a request a chooser of the settings ended in through their host, which loads them
+    /// again afterwards: `None` when the chooser was cancelled, `Some(None)` for a path that is
+    /// not plain text, which cannot be stored; nothing while the settings are closed meanwhile.
+    fn settings_send(&mut self, request: Option<Option<Request>>) -> Task<Message> {
+        let Some(request) = request else { return Task::none() };
+        let Some(request) = request else {
+            self.note(tr("This path cannot be used.").to_string());
+            return Task::none();
+        };
+        let outcome = {
+            let Some(pane) = self.settings.as_mut() else { return Task::none() };
+            pane.host.act(settings::Action::send(request))
+        };
+        self.settings_outcome(outcome)
     }
 
     fn toggle_sidebar(&mut self) -> Task<Message> {
@@ -1997,6 +2141,36 @@ fn open_link(url: String) -> Task<Message> {
         }
     })
     .discard()
+}
+
+/// Asks for the folder new PDFs go to, with the system's chooser (Tools, task WZ.6); `None` when
+/// it is cancelled.
+async fn pick_folder() -> Option<PathBuf> {
+    let chosen = rfd::AsyncFileDialog::new().set_title(tr("Choose a folder for PDFs")).pick_folder().await;
+    chosen.map(|folder| folder.path().to_path_buf())
+}
+
+/// Asks for a template's logo, with the system's chooser offering only the pictures a template
+/// takes (`.png`, `.jpg`, `.jpeg`); `None` when it is cancelled.
+async fn pick_logo() -> Option<PathBuf> {
+    let chosen = rfd::AsyncFileDialog::new()
+        .set_title(tr("Choose a logo"))
+        .add_filter(tr("Pictures"), &settings::tools::LOGO_EXTENSIONS)
+        .pick_file()
+        .await;
+    chosen.map(|logo| logo.path().to_path_buf())
+}
+
+/// Asks where a copy of a file card's PDF goes, with the system's save dialog suggesting `name` and
+/// offering PDFs only; `None` when it is cancelled. The dialog asks before replacing a file.
+async fn pick_save_path(name: String) -> Option<PathBuf> {
+    let chosen = rfd::AsyncFileDialog::new()
+        .set_title(tr("Save a copy of the PDF"))
+        .set_file_name(name)
+        .add_filter(torro_ipc::tools::ToolId::Pdf.title(), &["pdf"])
+        .save_file()
+        .await;
+    chosen.map(|file| file.path().to_path_buf())
 }
 
 /// The main window's keys: `[` for the sidebar when no text field took it, and Ctrl + N (⌘ N) for

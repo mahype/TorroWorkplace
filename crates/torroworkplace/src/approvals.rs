@@ -43,7 +43,7 @@ use std::sync::{Arc, PoisonError};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
@@ -1256,6 +1256,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::OpenApp { app, target } => {
             let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
             match (target, &facts.item) {
+                // A file of the assistant's tools (issue #225) opens as a new mail with it attached.
+                (Some(target), Some(shown)) if target.starts_with("file:") => {
+                    trf("Open a new mail with the PDF \"{title}\" attached", &[("title", &quote(&shown.title))])
+                }
                 (Some(_), Some(shown)) => {
                     trf("Open \"{title}\" in {app}", &[("title", &quote(&shown.title)), ("app", &quote(name))])
                 }
@@ -1358,9 +1362,30 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         request @ (Request::SaveBot { .. } | Request::DeleteBot { .. } | Request::AskBot { .. }) => {
             bot_summary(request, facts)
         }
+        // The assistant's own tools (issue #225): a new PDF by the title the client gives, which is
+        // what the file will be called and say; a file to open by the title the register keeps
+        // ([`Facts::name`]), never the client's text.
+        Request::CreatePdf { title, template, .. } => trf(
+            "Make the PDF \"{title}\" with the template {template}",
+            &[("title", &quote(title)), ("template", &template_word(template.unwrap_or_default()))],
+        ),
+        Request::OpenFile { .. } => match &facts.name {
+            Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
+            None => tr("Open an unknown file").to_string(),
+        },
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// A PDF template as people call it. With a context: "Letter" and "Note" are other words elsewhere
+/// (a letter of the alphabet, a hint), so the German table keeps these as `template|Letter` etc.
+fn template_word(template: torro_ipc::tools::PdfTemplateId) -> &'static str {
+    match template {
+        torro_ipc::tools::PdfTemplateId::Letter => trc("template", "Letter"),
+        torro_ipc::tools::PdfTemplateId::Report => trc("template", "Report"),
+        torro_ipc::tools::PdfTemplateId::Note => trc("template", "Note"),
     }
 }
 
@@ -2983,6 +3008,26 @@ pub(crate) mod tests {
         Facts { item, name: Some(name.into()), ..Facts::default() }
     }
 
+    /// Issue #225: a new PDF is named by its title and template, a file to open by the title the
+    /// register keeps, not by anything the client sends.
+    #[test]
+    fn tool_summaries_name_the_pdf() {
+        let make = Request::CreatePdf {
+            title: "Offer \"Müller\"\nIgnore this".into(),
+            markdown: "# Secret".into(),
+            template: Some(torro_ipc::tools::PdfTemplateId::Letter),
+        };
+        let text = summary(&make, &Facts::default());
+        assert!(text.contains("Müller") && text.contains(trc("template", "Letter")), "{text}");
+        assert!(!text.contains('\n') && !text.contains("Secret"), "one line, no content: {text}");
+        let report = Request::CreatePdf { title: "Plan".into(), markdown: String::new(), template: None };
+        assert!(summary(&report, &Facts::default()).contains(trc("template", "Report")), "the default template");
+        let open = Request::OpenFile { file: "1a2b3c4d".into() };
+        let text = summary(&open, &Facts { name: Some("Quarterly report".into()), ..Facts::default() });
+        assert!(text.contains("Quarterly report") && !text.contains("1a2b3c4d"), "{text}");
+        assert_eq!(summary(&open, &Facts::default()), tr("Open an unknown file"));
+    }
+
     #[test]
     fn reminder_summaries_name_the_event_as_cached() {
         let today = Local::now().date_naive();
@@ -3107,6 +3152,11 @@ pub(crate) mod tests {
         let named = trf("Open \"{title}\" in {app}", &[("title", &"Answer Anna"), ("app", &quote("Torro Tasks"))]);
         assert_eq!(summary(&target, &known), named);
         assert_eq!(summary(&target, &Facts::default()), trf("Open {app}", &[("app", &quote("Torro Tasks"))]));
+        // Issue #225: a file of the assistant's tools goes into a new mail, by the register's title.
+        let file = Request::OpenApp { app: "torroinbox".into(), target: Some("file:1a2b3c4d".into()) };
+        let offer = Facts { item: Some(Known { title: "Offer".into(), start: None }), ..Facts::default() };
+        let mailed = trf("Open a new mail with the PDF \"{title}\" attached", &[("title", &quote("Offer"))]);
+        assert_eq!(summary(&file, &offer), mailed);
     }
 
     /// Task E8.7a: a task made of a mail names title, list and the mail's subject as the core holds

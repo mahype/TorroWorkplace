@@ -437,6 +437,18 @@ pub fn font_files(design: &Design) -> Vec<Cow<'static, [u8]>> {
     files
 }
 
+/// The file of one face of `design`: the font of `role` at exactly `weight`, resolved like
+/// [`font_files`] (built-in faces from `torro_gui`, a pack's from its folder). `None` when the
+/// family has no file for that weight, or a pack's file cannot be read any more. Picking another
+/// weight instead is the caller's choice (the PDF tool takes the next heavier one for bold).
+pub fn font_file(design: &Design, role: FontRole, weight: Weight) -> Option<Cow<'static, [u8]>> {
+    let font = design.fonts.get(role);
+    match font.face(weight)? {
+        Face::Builtin => builtin(&font.family, weight).map(Cow::Borrowed),
+        Face::File(path) => std::fs::read(path).ok().map(Cow::Owned),
+    }
+}
+
 /// The weights a family can have, lightest first.
 const WEIGHTS: [Weight; 4] = [Weight::Regular, Weight::Medium, Weight::Semibold, Weight::Bold];
 
@@ -726,6 +738,25 @@ mod tests {
             tokio::time::timeout(POLL + Duration::from_millis(500), stream.next()).await
         });
         assert!(first.is_err(), "no item after a poll");
+    }
+
+    #[test]
+    fn one_font_file_is_the_face_of_that_weight_or_none() {
+        let standard = Design::standard();
+        let [regular, _, semibold, _, _] = crate::fonts();
+        assert_eq!(font_file(&standard, FontRole::Text, Weight::Regular).as_deref(), Some(regular));
+        assert_eq!(font_file(&standard, FontRole::Text, Weight::Semibold).as_deref(), Some(semibold));
+        assert_eq!(font_file(&standard, FontRole::Text, Weight::Bold), None, "Inter ships no bold file");
+
+        let dir = std::env::temp_dir().join(format!("torro-gui-font-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let file = dir.join("Sample-Bold.ttf");
+        std::fs::write(&file, b"bold bytes").expect("font file");
+        let mut pack = Design::standard();
+        pack.fonts.heading.bold = Some(Face::File(file.clone()));
+        assert_eq!(font_file(&pack, FontRole::Heading, Weight::Bold).as_deref(), Some(&b"bold bytes"[..]));
+        std::fs::remove_file(&file).expect("remove");
+        assert_eq!(font_file(&pack, FontRole::Heading, Weight::Bold), None, "a file gone since is none");
     }
 
     #[test]

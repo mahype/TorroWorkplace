@@ -125,7 +125,7 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 
 | App | Abschnitte | kommt heute von |
 |---|---|---|
-| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
+| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (eigene Werkzeuge, #225: je Werkzeug Schalter, ob der Assistent es darf mit Verweis auf Access; PDF: Ablage-Ordner, Vorlagen Letter, Report, Note) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
@@ -365,8 +365,9 @@ Assistent-Fenster denselben nutzen.
   (`Rights::denied`, Namen aus dem Katalog). Die Sperrliste schränkt nur ein: Was die Stufe nicht erlaubt,
   erscheint gar nicht, und kein Eintrag erlaubt mehr als die Stufe. Ein Bereich mit gesperrten Befehlen zeigt
   das in seiner Zeile („Write · 2 off“).
-- Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen und Mail-Konten, „Ask first“, „Send on
-  my behalf“. Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).
+- Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen, Mail-Konten und eigenen Werkzeuge des
+  Assistenten (#225; ein Werkzeug, das in den Einstellungen des Assistenten aus ist, trägt ein Warnzeichen),
+  „Ask first“, „Send on my behalf“. Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).
 
 ### Assistent und Bots
 
@@ -582,6 +583,10 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | – (Sprachmodell, Stimme) | whisper- und Piper-Datei | keine Oberfläche, erste im Ordner | `voice.sttModel`, `voice.voice` | `set_setting stt_model`, `set_setting voice` | Assistent | bleibt ohne Oberfläche, bis es mehr als eine Datei gibt |
 | Test the microphone, Check again | Prüfen (Aktion) | Assistant › Voice, Programs | – | `settings.test_voice` (nie), `settings.voice_status` | – | bleibt als Aktion |
 | Keep conversations (30, 90 Tage, 1 Jahr, Forever) | wie lange Unterhaltungen bleiben | Assistant › Keep conversations | `assistantRetention` | `set_setting assistant_retention` | Assistent | bleibt, Assistent |
+| Make PDFs (Schalter je Werkzeug) | ob es ein eigenes Werkzeug auf diesem Rechner gibt, für jeden Client (#225) | neu: Assistent › Tools (WZ.6) | `tools.enabled` | `set_setting tool_enabled` (an nur Menschen, Punkt 9); Liste `tools.list_tools` | Assistent | Assistent |
+| Folder (Choose…, Use desktop) | wohin neue PDFs gehen, sonst Schreibtisch | neu: Assistent › Tools | `tools.pdf.folder` | `set_setting pdf_folder` (setzen nur Menschen, `null` jeder mit Admin) | Assistent | Assistent; Dialog des Systems in der App |
+| Vorlagen Letter, Report, Note: Paper, Margins, Font size, Header, Footer, Page numbers, Logo | wie eine PDF gesetzt wird | neu: Assistent › Tools | `tools.pdf.letter`, `.report`, `.note` | `set_setting pdf_template` (ganze Vorlage; Logo setzen nur Menschen) | Assistent | Assistent; jede Änderung schickt die ganze Vorlage |
+| Welche Werkzeuge ein Client darf | Rechte, Bereich `tools` mit Auswahl | Agents & API (WZ.7) | `clients.json` | `clients.update_client`, MCP bewusst nie | alle Clients | Rechte-Editor (seit #231: Assistent › Access, API, MCP); Tools zeigt es nur an |
 
 ### Notification Hub (Seite)
 

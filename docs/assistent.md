@@ -307,6 +307,88 @@ Freebusy-Befehl), gefundene Mail, Inbox-Eintrag, Workspace-Vorlage mit Skizze de
 GitHub-Issue/PR, Konto-Status, Bot-Vorschlag, „Gemerkt“, Änderung mit Rückgängig, Rückfrage mit
 Auswahl, Briefing, Person.
 
+## Eigene Werkzeuge
+
+Stand: 2026-10-19, Issue #225. Bisher kann der Assistent nur, was die Suite kann. Dazu kommen **eigene
+Werkzeuge**: Fähigkeiten, die nur dem Assistenten (und den Bots) gehören, je eine mit Schalter und eigenen
+Einstellungen. Das erste macht **PDFs**. Weitere Werkzeuge kommen als eigene Issues auf diesen Rahmen.
+
+### Schalter und Rechte sind zwei Dinge
+
+- **Schalter** (Assistent › Einstellungen › Tools, Einstellung `tool_enabled`): ob es das Werkzeug auf diesem
+  Rechner gibt. Standard aus. Ist es aus, lehnt der Kern seine Befehle für **jeden** Client ab (`forbidden`,
+  Grund „switched off in the assistant's settings“), und kein Modell bekommt es angeboten. Einschalten nur der
+  Mensch (Punkt 9 in „Was nie nach außen geht“, [api.md](api.md)), wie das Mikrofon.
+- **Rechte** (Rechte-Editor: Assistent › Einstellungen › Access für Assistent und Bots, Steuerzentrale › API
+  bzw. MCP für Schlüssel und MCP-Clients): neuer Bereich `tools` mit Stufe und einer **Auswahl der
+  Werkzeuge** (`Rights::tools`, wie Mail-Konten und Quellen des Eingangs). Neue Bereiche starten geschlossen:
+  vorhandene Clients, der Assistent beim ersten Start und neue Bots haben keinen Zugriff. In den Vorlagen
+  *Read only* (nur auflisten), *Read and write* und *Full access* ist der Bereich wie jeder andere.
+- Angeboten wird ein Werkzeug nur, wenn **beides** stimmt. Das gilt für Antrieb A (Liste der Werkzeuge), für
+  Antrieb B (`--disallowedTools`) und für jeden Client über API und MCP. Bots arbeiten mit ihrem eigenen Client,
+  im Auftrag des Hauptbots mit der Schnittmenge.
+- `tools.create_pdf` ist `Write` ohne eigene Freigabe-Regel (entschieden): Es fragt nur, wenn die Person beim
+  Client „Ask first: every change“ gewählt hat oder die Unterhaltung im Modus „Ask“ läuft.
+
+### Werkzeug PDF
+
+- **Eingabe:** Titel, Markdown, Vorlage (`letter`, `report`, `note`). Das Modell liefert nur Inhalt: keinen Pfad,
+  kein Layout, kein HTML. Der Kern setzt die Seite nach der Vorlage und schreibt die Datei.
+- **Markdown:** Überschriften 1–3, Absätze, fett, kursiv, durchgestrichen, Code und Codeblöcke, Aufzählungen und
+  Nummerierungen (verschachtelt), Tabellen, Zitate, Trennlinien, Links (nur `http`, `https`, `mailto`) und
+  Seitenumbruch als eigene Zeile `\pagebreak` (entschieden). Rohes HTML im Markdown verwirft der Kern, Bilder
+  ebenso; Bilder kommen nur aus der Vorlage (Logo).
+- **Inhalt ist frei:** Eine PDF darf jeden Text enthalten, auch aus Mail. Sie bleibt auf dem Rechner.
+- **Ablage:** der Ordner aus den Einstellungen, wenn gesetzt; sonst der Schreibtisch des Systems (XDG
+  `user-dirs.dirs` auf Linux, Known Folder auf Windows, `~/Desktop` auf macOS); gibt es keinen, das
+  Home-Verzeichnis. Dateiname aus dem Titel, vom Kern bereinigt; eine vorhandene Datei wird nie überschrieben
+  (`Report-2.pdf`).
+- **Pfad nennen:** Das Ergebnis des Werkzeugs enthält den Pfad, die Datei-Karte zeigt ihn, und der feste Teil
+  des Skills verlangt, dass die Antwort ihn nennt.
+- **Register:** Der Kern merkt sich jede PDF, die er erzeugt hat (`<data>/tools/files.json`, 0600: Kennung,
+  Pfad, Titel, Vorlage, Zeitpunkt, erzeugender Client, Größe, SHA-256). Nur diese Dateien lassen sich öffnen,
+  sichern und an Entwürfe hängen, und nur solange Größe und Prüfsumme stimmen. Ein Client erreicht nur Dateien,
+  die er selbst erzeugt hat; die App alle.
+
+### Vorlagen (entschieden)
+
+Drei feste Vorlagen, **Letter**, **Report** und **Note**, in `settings.json` (Einstellung `pdf_template`), in den
+Einstellungen änderbar: Papier (A4, A5, US Letter), Ränder, Schriftgröße, Kopfzeile, Fußzeile, Seitenzahlen,
+Logo (PNG oder JPEG). Ablage-Ordner und Logo sind Pfade und setzt deshalb nur ein Mensch (Punkt 9 in
+[api.md](api.md)); entfernen darf jeder mit Admin in `settings`. Schrift ist die des aktiven Design-Pakets (Text- und Überschrift-Schrift), damit eine PDF
+aussieht wie die Suite; Systemschriften gibt es nicht (verworfen: Suche je Plattform, kein gleiches Ergebnis).
+Eigene weitere Vorlagen und einen Editor mit Vorschau gibt es nicht.
+
+### Datei-Karte
+
+Die erste Karte im Chat (Grundlage nach „Karten im Chat“): `EntryContent::Card` verweist auf die Datei im
+Register, `assistant.get_cards` holt Name, Vorlage, Größe und Pfad frisch vom Kern; fehlt die Datei, zeigt die
+Karte „No longer available“. Der Kern hängt sie nach jedem erfolgreichen `tools.create_pdf` an, bei beiden
+Antrieben. Aufgelöst wird mit den Rechten des Clients der Unterhaltung, geschnitten mit denen des Fragenden: Ein
+anderer Agent mit Lesezugriff auf `assistant` und `pdf` in seiner Auswahl sieht so Name, Titel und Pfad einer PDF
+des Assistenten (der Titel steht ohnehin in der Werkzeugzeile), öffnen, sichern und anhängen kann er sie nicht. Knöpfe (Klicks des Menschen, Requests der App):
+
+- **Open:** `tools.open_file`, öffnet die Datei mit dem Programm des Systems.
+- **Save as…:** Dialog des Systems in der App, dann `tools.save_file_as` (nur App-Schlüssel, Punkt 9).
+- **Send by mail:** öffnet das Schreibfenster der Mail mit der PDF als Anhang (`apps.open_app` mit Ziel
+  `file:<id>`); man sieht, was rausgeht, bevor es rausgeht.
+
+### Drei Wege
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Werkzeuge auflisten (Schalter, erlaubt) | Assistent › Einstellungen › Tools; Auswahl im Rechte-Editor (Access, API, MCP) | `tools.list_tools` · Read | `tools_list_tools` |
+| Werkzeug an-/abschalten | Assistent › Einstellungen › Tools | `settings.set_setting tool_enabled` · Admin | **Never** fürs Einschalten (Punkt 9), ausschalten über `settings_set_setting` |
+| Ablage-Ordner, Vorlagen | ebenda | `settings.set_setting pdf_folder`, `pdf_template` · Admin | `settings_set_setting`; Ordner und Logo setzen nur Menschen (Punkt 9), alle übrigen Felder auch Agenten |
+| Welche Werkzeuge ein Client darf | Assistent › Einstellungen › Access; Steuerzentrale › API, MCP | `clients.update_client` · Admin | **Never** (Punkt 2) |
+| PDF erstellen | Chat: Werkzeugzeile und Datei-Karte | `tools.create_pdf` · Write | `tools_create_pdf` |
+| PDF öffnen | „Open“ auf der Karte | `tools.open_file` · Write | `tools_open_file` |
+| PDF an einen Ort sichern | „Save as…“ auf der Karte | `tools.save_file_as` · Write, nur App-Schlüssel | **Never** (Punkt 9) |
+| PDF mailen | „Send by mail“ auf der Karte | `apps.open_app` mit `file:<id>`; Entwurf mit Anhang `mail.save_draft` · Write | `apps_open_app`, `mail_save_draft` |
+| Karten einer Unterhaltung | Karten im Verlauf | `assistant.get_cards` · Read | `assistant_get_cards` |
+
+Aufgaben: [tasks/assistent.md](tasks/assistent.md), WZ.1–WZ.8.
+
 ## Sprache: per Weckwort mit dem Assistenten reden
 
 Ziel: Man sagt ein **Weckwort** (zum Start fest „Hey Torro“, später frei wählbar) und spricht einfach los: „Was steht heute
@@ -428,3 +510,13 @@ Getroffen am 2026-10-14 (Abschnitt „Karten im Chat“).
     der Klick direkt. Gilt nur für den angezeigten Stand des Entwurfs; vorerst kein „Undo send“.
 14. **Löschen auf der Karte:** Offene Lösch-Freigaben erscheinen als „Delete“/„Keep“ auf der Karte des
     Termins oder der Aufgabe.
+
+Getroffen am 2026-10-19 (Abschnitt „Eigene Werkzeuge“, Issue #225).
+
+15. **Eigene Werkzeuge** haben einen Schalter (Einstellung, nur der Mensch schaltet ein) und einen Bereich `tools`
+    in den Rechten mit Auswahl der Werkzeuge; angeboten wird nur, was beides erlaubt.
+16. **PDF:** Markdown vom Modell, Satz nach drei festen Vorlagen des Kerns in `settings.json`, Bibliothek printpdf;
+    Ablage im gesetzten Ordner, sonst Schreibtisch, sonst Home-Verzeichnis; nie überschreiben; der Pfad wird genannt.
+17. **Karten-Grundlage** kommt mit der Datei-Karte: `EntryContent::Card` und `assistant.get_cards`.
+18. **„Save as…“** nur durch Menschen (`tools.save_file_as`, Punkt 9 in [api.md](api.md)).
+19. **Clients dürfen PDFs aus dem Register** an Entwürfe hängen; Senden braucht wie immer die Freigabe.

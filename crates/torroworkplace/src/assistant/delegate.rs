@@ -274,7 +274,7 @@ impl Asked {
                     asked.message = Some(message.clone());
                 }
                 EntryContent::Stopped => asked.error = Some("stopped".into()),
-                EntryContent::Message { .. } | EntryContent::Approval { .. } => {}
+                EntryContent::Message { .. } | EntryContent::Approval { .. } | EntryContent::Card { .. } => {}
             }
         }
         asked.answer = (!answers.is_empty()).then(|| answers.join("\n\n"));

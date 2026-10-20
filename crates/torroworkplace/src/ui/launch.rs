@@ -717,6 +717,7 @@ pub fn demo_data() -> Data {
         calendars,
         task_lists,
         sources,
+        tools: demo_tools(&torro_core::settings::Tools::default()),
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -741,6 +742,15 @@ pub fn demo_data() -> Data {
         approvals: demo_approvals(now),
         engines: demo_engines(),
         error: None,
+    }
+}
+
+/// The assistant's own tools as the core lists them for the app key (task WZ.7), switched on as
+/// `settings` says; the demo's settings leave PDF off, so the rights editor shows that state too.
+fn demo_tools(settings: &torro_core::settings::Tools) -> Vec<torro_ipc::tools::ToolInfo> {
+    match crate::tools::list(settings, crate::pim::Reach::Suite) {
+        torro_ipc::Response::Tools { tools } => tools,
+        _ => Vec::new(),
     }
 }
 
@@ -895,6 +905,7 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         github_repos: Selection::Only(Vec::new()),
         inbox_sources: Selection::Only(vec!["script:backup".into()]),
         mail_accounts: Selection::Only(Vec::new()),
+        tools: Selection::Only(Vec::new()),
         outbound: Outbound::Never,
         confirm: Confirm::Never,
         denied: Default::default(),
@@ -905,6 +916,9 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     set(&mut assistant, Area::Mail, Level::Read, false);
     set(&mut assistant, Area::Workspaces, Level::Read, false);
     assistant.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
+    // Its own tools (task WZ.7), so its page shows the selection of tools.
+    set(&mut assistant, Area::Tools, Level::Write, false);
+    assistant.tools = Selection::Only(vec!["pdf".into()]);
     // The travel planner (task B.3): reads calendars, writes tasks, nothing else.
     let mut travel = Rights::none();
     set(&mut travel, Area::Calendar, Level::Read, false);

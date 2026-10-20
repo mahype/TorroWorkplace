@@ -85,6 +85,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
+| `tools` ²² | `list_tools` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten) | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
@@ -393,7 +394,10 @@ neues Mail-Fenster mit der Mail (`torroinbox --view mail --message=m:…`), `tas
 mit der Aufgabe (`torrotasks --task=<uid>`). Der Dienst schlägt das Ziel nach und baut die Argumente
 selbst (Argumentliste, keine Shell); ein Client braucht Leserecht auf Konto bzw. Liste (sonst
 `not-found`), `app` muss zur Art des Ziels passen (sonst `error`). Die Freigabe nennt Betreff bzw.
-Titel aus dem Cache, das Protokoll nur die App.
+Titel aus dem Cache, das Protokoll nur die App. `file:<id>` (Issue #225) öffnet das Schreibfenster der Mail
+mit einer PDF aus dem Register der eigenen Werkzeuge als Anhang (`torroinbox --compose --attach <pfad>`); ein
+Client braucht dafür dasselbe wie für `tools.open_file` (Schalter, Leserecht in `tools`, `pdf` gewählt, die
+Datei hat er selbst erzeugt), sonst `not-found`. Die Freigabe nennt den Titel aus dem Register.
 
 ¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
 | month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
@@ -567,6 +571,13 @@ Accounts.“), und `assistant.list_engines` nennt das Konto nicht. Ein entfernte
 (Punkt 6 unten). Freigaben nennen Konto, Modell und Ort aus der Liste des Kerns; das Protokoll nur Konto und
 `enabled`, nie den Modellnamen.
 
+²² **Eigene Werkzeuge des Assistenten** (Issue #225, [assistent.md](assistent.md) „Eigene Werkzeuge“):
+Jedes Werkzeug hat einen Schalter (Einstellung `tool_enabled`, einschalten nur Menschen, Punkt 9) und eine
+Auswahl in den Rechten (`Rights::tools`). Ein Befehl eines Werkzeugs läuft nur, wenn beides stimmt, sonst
+`forbidden` (`Lack::ToolOff` bzw. `Lack::Tool`), geprüft vor der Freigabe und bei ihrer Ausführung noch einmal.
+`open_file`, `save_file_as`, `apps.open_app` mit `file:` und Anhänge in `mail.save_draft` nehmen nur Dateien
+aus dem Register des Kerns; ein Client nur solche, die er selbst erzeugt hat.
+
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
 Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
@@ -706,6 +717,18 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    und `Rights::allows_request` geben einem Client `forbidden`, auch mit Admin-Rechten (Skript-Schlüssel
    können Admin haben). Ohne `logs` ist der Befehl gewöhnliches Lesen im Bereich `system` (Version,
    System; Konten nur mit Leserecht in `accounts`).
+9. **Eine Datei an einen frei gewählten Ort sichern und ein eigenes Werkzeug des Assistenten einschalten**
+   ([assistent.md](assistent.md) „Eigene Werkzeuge“): `tools.save_file_as` („Save as…“ auf der Datei-Karte im
+   Chat) nur mit dem App-Schlüssel, also nur durch einen Menschen, der das Ziel im Dialog des Systems wählt
+   (`Mcp::Never`). Sonst gäbe ein Agent dem Kern einen Pfad, und „Dateien und Shell bleiben immer aus“
+   (Entscheidung 6 in [assistent.md](assistent.md)) wäre umgangen. Ein Werkzeug schaltet wie das Mikrofon nur
+   ein Mensch ein: `settings.set_setting` mit `tool_enabled` und `enabled: true` und ein
+   `settings.update_settings`, das ein Werkzeug einschalten würde, bekommen von jedem Client `forbidden`, auch
+   mit Admin-Rechten (`Request::kept_for_people`); ausschalten ist eine gewöhnliche Admin-Änderung. Aus demselben
+   Grund wie bei „Save as…“ setzen nur Menschen den **Ablage-Ordner** (`pdf_folder`) und das **Logo** einer
+   Vorlage (`pdf_template`): Beides sind Pfade, das Logo liest eine Datei in eine PDF, und ein Ordner in einem
+   synchronisierten Verzeichnis brächte Inhalte ohne Sende-Freigabe vom Rechner. Der Dienst vergleicht mit dem
+   gespeicherten Stand (wie beim Mikrofon über `settings.update_settings`); entfernen darf jeder mit Admin.
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

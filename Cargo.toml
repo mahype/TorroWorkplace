@@ -55,6 +55,9 @@ torro-appkit = { path = "crates/torro-appkit" }
 torro-htmlview = { path = "crates/torro-htmlview" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
+# The desktop folder of each system for the PDF tool's files (torroworkplace, WZ.4): XDG `user-dirs.dirs` on Linux,
+# the Known Folder on Windows, `~/Desktop` on macOS.
+dirs = "7.0.0"
 getrandom = "0.4.3"
 # DNS SRV and TXT lookups for finding a mail provider's CalDAV service (torro-pim-caldav, M7.1).
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
@@ -146,6 +149,13 @@ winit = { version = "0.30.13", default-features = false }
 # Letters as people see them (torroassistant, issue #135): an answer appears grapheme by grapheme. The version Iced's
 # text stack already brings.
 unicode-segmentation = "1.13.3"
+# The PDF tool of the assistant (torroworkplace, WZ.3, spike in spikes/printpdf): pulldown-cmark reads the model's
+# Markdown, the core writes clean HTML from its events, printpdf's HTML layout (azul-layout) sets the pages, PNG and
+# JPEG only for the template's logo. Pinned exactly: the core works around gaps of this layout version (lists,
+# tables, bold, links, header and footer). Brings azul-simplecss (MPL-2.0, like Stylo above) and hyphenation
+# dictionaries of every language (about 14 MB in the release binary).
+printpdf = { version = "=0.12.8", features = ["html", "png", "jpeg"] }
+pulldown-cmark = { version = "0.12.2", default-features = false, features = ["html"] }
 tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 # Win32_System_Pipes: the owner check of the pipe client in torro-ipc (X.1b).
 # Win32_UI_WindowsAndMessaging: GetWindowThreadProcessId, the process of a window handle (torro-wm, X.8).

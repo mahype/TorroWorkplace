@@ -90,7 +90,7 @@ pub struct Settings {
     /// The components a person turned off (task W.1); every other one is on. Only the ones turned
     /// off are stored, so a component added later starts on, and so do installations from before.
     /// A name this version does not know is dropped when the file is read.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_components")]
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_names")]
     pub components_off: BTreeSet<Component>,
     /// How a mail that has HTML first shows in the reader (task M9.5, decision 9 in
     /// `docs/mail.md`): formatted ([`MailFormat::Html`], the default) or as plain text. The reader
@@ -138,6 +138,11 @@ pub struct Settings {
     /// [`Settings::allow_api_keys`].
     #[serde(default = "on")]
     pub allow_mcp: bool,
+    /// The assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"): which ones a
+    /// person switched on and how the PDF tool sets its pages ([`Tools`]). Read leniently: a value
+    /// that does not read gives the defaults (every tool off), never a settings file that fails.
+    #[serde(default, deserialize_with = "lenient")]
+    pub tools: Tools,
 }
 
 /// How a mail that has HTML first shows in the reader (`settings.set_setting mail_view`, task
@@ -384,9 +389,11 @@ fn known_categories<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<to
     Ok(keys.iter().filter_map(|key| serde_json::from_value(key.clone()).ok()).collect())
 }
 
-/// The components in a list as written, without the names this version does not know (a file
-/// written by a newer one) and without anything that is not a name.
-fn known_components<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeSet<Component>, D::Error> {
+/// The components or tools in a list as written, without the names this version does not know (a
+/// file written by a newer one) and without anything that is not a name.
+fn known_names<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Ord>(
+    deserializer: D,
+) -> Result<BTreeSet<T>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     let names = value.as_array().map(Vec::as_slice).unwrap_or_default();
     Ok(names.iter().filter_map(|name| serde_json::from_value(name.clone()).ok()).collect())
@@ -427,6 +434,7 @@ impl Default for Settings {
             hidden_categories: Vec::new(),
             allow_api_keys: on(),
             allow_mcp: on(),
+            tools: Tools::default(),
         }
     }
 }
@@ -873,6 +881,391 @@ impl Voice {
             && Path::new(path).extension().is_some_and(|found| found.eq_ignore_ascii_case(extension));
         fits.then(|| Some(path.to_string())).ok_or_else(refused)
     }
+}
+
+/// One of the assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"): a skill
+/// that only the assistant and its bots have, with a switch of its own ([`Tools::enabled`]) and a
+/// place in the rights (`torro_ipc::api::Rights::tools`). `torro_ipc::tools` passes it on as the
+/// API's type; it lives here because the settings name it.
+///
+/// A command of a tool runs only when the tool is switched on, the client's rights in the area
+/// `tools` cover it and the tool is in the client's selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolId {
+    /// `pdf`: sets a PDF from Markdown after one of three templates and saves it
+    /// (`tools.create_pdf`); its files are opened and saved elsewhere with `tools.open_file` and
+    /// `tools.save_file_as`.
+    Pdf,
+}
+
+impl ToolId {
+    /// Every tool, in the order the settings and the control centre show them.
+    pub const ALL: [ToolId; 1] = [ToolId::Pdf];
+
+    /// The id on the wire and in a selection of the rights: `pdf`.
+    pub fn name(self) -> &'static str {
+        match self {
+            ToolId::Pdf => "pdf",
+        }
+    }
+
+    /// What people call it, the same in every language: `PDF`.
+    pub fn title(self) -> &'static str {
+        match self {
+            ToolId::Pdf => "PDF",
+        }
+    }
+
+    /// The tool the catalogue command `name` belongs to: `tools.create_pdf`, `tools.open_file` and
+    /// `tools.save_file_as` to [`ToolId::Pdf`] (every file a tool makes is a PDF for now). `None`
+    /// for `tools.list_tools`, which belongs to no tool, and for every other name. The core checks
+    /// the switch and the selection of exactly this tool before such a command runs.
+    pub fn of_command(name: &str) -> Option<ToolId> {
+        match name {
+            "tools.create_pdf" | "tools.open_file" | "tools.save_file_as" => Some(ToolId::Pdf),
+            _ => None,
+        }
+    }
+}
+
+/// The value of the setting `tool_enabled` (`settings.set_setting`): one tool and whether it is
+/// on. Only a person switches a tool on (point 9 of "Was nie nach außen geht" in `docs/api.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSwitch {
+    /// The tool: `pdf`.
+    pub tool: ToolId,
+    /// `true` switches it on, `false` off.
+    pub enabled: bool,
+}
+
+/// One of the three fixed page templates of the PDF tool (decision 16 in `docs/assistent.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PdfTemplateId {
+    /// `letter`: a letter, wide margins, no page numbers.
+    Letter,
+    /// `report`: a report with the title in the header and page numbers; what `tools.create_pdf`
+    /// uses when it names no template.
+    #[default]
+    Report,
+    /// `note`: a short note, narrow margins, small type, nothing in header or footer.
+    Note,
+}
+
+impl PdfTemplateId {
+    /// Every template, in the order the settings show them.
+    pub const ALL: [PdfTemplateId; 3] = [PdfTemplateId::Letter, PdfTemplateId::Report, PdfTemplateId::Note];
+
+    /// The id on the wire: `letter`, `report`, `note`.
+    pub fn name(self) -> &'static str {
+        match self {
+            PdfTemplateId::Letter => "letter",
+            PdfTemplateId::Report => "report",
+            PdfTemplateId::Note => "note",
+        }
+    }
+}
+
+/// The paper a PDF template sets its pages on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Paper {
+    /// `a4`: 210 × 297 mm.
+    #[default]
+    A4,
+    /// `a5`: 148 × 210 mm.
+    A5,
+    /// `letter`: US Letter, 8.5 × 11 in.
+    Letter,
+}
+
+/// How one PDF template sets its pages (setting `pdf_template`). The font is always the text and
+/// heading font of the active design pack, so a PDF looks like the suite.
+///
+/// Checked by [`PdfTemplate::check`] whenever it comes from outside; a hand-edited file is read as
+/// it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PdfTemplate {
+    /// The paper: `a4`, `a5` or `letter`.
+    pub paper: Paper,
+    /// The margins in millimetres, top, right, bottom, left (as in CSS), each from
+    /// [`PdfTemplate::MIN_MARGIN_MM`] to [`PdfTemplate::MAX_MARGIN_MM`].
+    pub margins_mm: [u8; 4],
+    /// The size of the body text in points, from [`PdfTemplate::MIN_FONT_PT`] to
+    /// [`PdfTemplate::MAX_FONT_PT`]; headings scale with it.
+    pub font_size_pt: u8,
+    /// The line at the top of every page, at most [`PdfTemplate::MAX_LINE_CHARS`] characters on
+    /// one line; `{title}` becomes the document's title and `{date}` the day it was made. Empty for
+    /// none.
+    #[serde(default)]
+    pub header: String,
+    /// The line at the bottom of every page, like [`PdfTemplate::header`]. Empty for none.
+    #[serde(default)]
+    pub footer: String,
+    /// "Page 1 of 3" at the bottom of every page.
+    #[serde(default)]
+    pub page_numbers: bool,
+    /// A picture in the header: an absolute path to a `.png`, `.jpg` or `.jpeg` file; `None` for
+    /// none. Only a person sets one (point 9 of "Was nie nach außen geht": it reads a file into the
+    /// PDF); anyone allowed to change settings may remove it. Whether the file exists is checked
+    /// when a PDF is made: it may be on a drive that is not mounted yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
+}
+
+impl PdfTemplate {
+    /// The narrowest margin, in millimetres.
+    pub const MIN_MARGIN_MM: u8 = 5;
+    /// The widest margin, in millimetres.
+    pub const MAX_MARGIN_MM: u8 = 50;
+    /// The smallest body text, in points.
+    pub const MIN_FONT_PT: u8 = 8;
+    /// The largest body text, in points.
+    pub const MAX_FONT_PT: u8 = 16;
+    /// The longest header or footer, in characters.
+    pub const MAX_LINE_CHARS: usize = 200;
+
+    /// The template `id` as it comes: Letter A4, margins 25, 11 pt, nothing in header and footer;
+    /// Report A4, margins 20, 11 pt, the title in the header, page numbers; Note A4, margins 15,
+    /// 10 pt, nothing in header and footer. No logo.
+    pub fn standard(id: PdfTemplateId) -> PdfTemplate {
+        let (margin, font_size_pt, header, page_numbers) = match id {
+            PdfTemplateId::Letter => (25, 11, "", false),
+            PdfTemplateId::Report => (20, 11, "{title}", true),
+            PdfTemplateId::Note => (15, 10, "", false),
+        };
+        PdfTemplate {
+            paper: Paper::A4,
+            margins_mm: [margin; 4],
+            font_size_pt,
+            header: header.to_string(),
+            footer: String::new(),
+            page_numbers,
+            logo: None,
+        }
+    }
+
+    /// Whether the template fits, else why not: every margin within 5 and 50 mm, a body text of 8
+    /// to 16 pt, header and footer one line of at most 200 characters, a logo an absolute path to a
+    /// `.png`, `.jpg` or `.jpeg` file.
+    pub fn check(&self) -> Result<(), String> {
+        let margins = Self::MIN_MARGIN_MM..=Self::MAX_MARGIN_MM;
+        if !self.margins_mm.iter().all(|margin| margins.contains(margin)) {
+            return Err(format!(
+                "margins are {} to {} mm each (top, right, bottom, left)",
+                Self::MIN_MARGIN_MM,
+                Self::MAX_MARGIN_MM
+            ));
+        }
+        if !(Self::MIN_FONT_PT..=Self::MAX_FONT_PT).contains(&self.font_size_pt) {
+            return Err(format!("the font size is {} to {} pt", Self::MIN_FONT_PT, Self::MAX_FONT_PT));
+        }
+        for (name, line) in [("header", &self.header), ("footer", &self.footer)] {
+            if line.chars().count() > Self::MAX_LINE_CHARS || line.chars().any(char::is_control) {
+                return Err(format!("the {name} is one line of at most {} characters", Self::MAX_LINE_CHARS));
+            }
+        }
+        let picture = |path: &str| {
+            Path::new(path)
+                .extension()
+                .and_then(|found| found.to_str())
+                .is_some_and(|found| ["png", "jpg", "jpeg"].iter().any(|known| found.eq_ignore_ascii_case(known)))
+        };
+        match self.logo.as_deref() {
+            Some(logo) if !absolute_path(logo) || !picture(logo) => {
+                Err(format!("{logo:?} is not a logo: send an absolute path to a .png, .jpg or .jpeg file, or null"))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The template in `value`, or why it does not fit: `{"template": "letter" | "report" | "note",
+    /// "paper": …, "marginsMm": […], "fontSizePt": …, "header": …, "footer": …, "pageNumbers": …,
+    /// "logo": …}`; header, footer, page numbers and logo may be left out (empty, off, none), and a
+    /// logo of `""` is none. It replaces the template whole. Checked by [`PdfTemplate::check`]. For
+    /// `settings.set_setting pdf_template`.
+    pub fn from_value(value: &serde_json::Value) -> Result<(PdfTemplateId, PdfTemplate), String> {
+        let refused = |err: String| format!("{value} is not a PDF template: {err}");
+        let serde_json::Value::Object(fields) = value else {
+            return Err(refused("send an object with `template` and the template's fields".into()));
+        };
+        let mut fields = fields.clone();
+        let id = fields.remove("template").ok_or_else(|| refused("`template` is missing".into()))?;
+        let id: PdfTemplateId = serde_json::from_value(id).map_err(|err| refused(err.to_string()))?;
+        let mut template: PdfTemplate =
+            serde_json::from_value(serde_json::Value::Object(fields)).map_err(|err| refused(err.to_string()))?;
+        if template.logo.as_deref().is_some_and(|logo| logo.trim().is_empty()) {
+            template.logo = None;
+        }
+        template.check().map_err(refused)?;
+        Ok((id, template))
+    }
+
+    /// The template `id` as `settings.set_setting pdf_template` takes it.
+    pub fn to_value(&self, id: PdfTemplateId) -> serde_json::Value {
+        let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if let serde_json::Value::Object(fields) = &mut value {
+            fields.insert("template".into(), serde_json::Value::String(id.name().into()));
+        }
+        value
+    }
+}
+
+/// The settings of the PDF tool: where its files go and the three templates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PdfSettings {
+    /// The folder new PDFs are saved in, an absolute path; `None` for the desktop (or the home
+    /// folder when there is none). Only a person sets one (point 9 of "Was nie nach außen geht":
+    /// a folder in a synchronised directory would carry content off the computer); anyone allowed
+    /// to change settings may remove it. A folder that does not exist when a PDF is made is passed
+    /// over.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// The template `letter`.
+    pub letter: PdfTemplate,
+    /// The template `report`.
+    pub report: PdfTemplate,
+    /// The template `note`.
+    pub note: PdfTemplate,
+}
+
+impl Default for PdfSettings {
+    fn default() -> PdfSettings {
+        PdfSettings {
+            folder: None,
+            letter: PdfTemplate::standard(PdfTemplateId::Letter),
+            report: PdfTemplate::standard(PdfTemplateId::Report),
+            note: PdfTemplate::standard(PdfTemplateId::Note),
+        }
+    }
+}
+
+impl PdfSettings {
+    /// The template `id`.
+    pub fn template(&self, id: PdfTemplateId) -> &PdfTemplate {
+        match id {
+            PdfTemplateId::Letter => &self.letter,
+            PdfTemplateId::Report => &self.report,
+            PdfTemplateId::Note => &self.note,
+        }
+    }
+
+    /// The template `id`, to change it.
+    pub fn template_mut(&mut self, id: PdfTemplateId) -> &mut PdfTemplate {
+        match id {
+            PdfTemplateId::Letter => &mut self.letter,
+            PdfTemplateId::Report => &mut self.report,
+            PdfTemplateId::Note => &mut self.note,
+        }
+    }
+
+    /// The folder in `value`: an absolute path, or `null` or `""` for the desktop. Whether it
+    /// exists is checked when a PDF is made. For `settings.set_setting pdf_folder`.
+    pub fn folder_from(value: &serde_json::Value) -> Result<Option<String>, String> {
+        let refused = || format!("{value} is not a folder: send an absolute path or null");
+        let path = match value {
+            serde_json::Value::Null => return Ok(None),
+            serde_json::Value::String(path) => path.trim(),
+            _ => return Err(refused()),
+        };
+        match path.is_empty() {
+            true => Ok(None),
+            false => absolute_path(path).then(|| Some(path.to_string())).ok_or_else(refused),
+        }
+    }
+
+    /// Whether the folder and the templates that differ from `stored` fit, else why not: a folder
+    /// an absolute path, each template as [`PdfTemplate::check`] wants it. What equals `stored` is
+    /// not checked again: a hand-edited file is read as it is and must not block changing anything
+    /// else. For `settings.update_settings`, which carries these settings whole.
+    pub fn check_changes(&self, stored: &PdfSettings) -> Result<(), String> {
+        if self.folder != stored.folder
+            && let Some(folder) = &self.folder
+            && !absolute_path(folder)
+        {
+            return Err(format!("{folder:?} is not a folder: send an absolute path or null"));
+        }
+        for id in PdfTemplateId::ALL {
+            let template = self.template(id);
+            if template != stored.template(id) {
+                template.check().map_err(|err| format!("the PDF template {:?} does not fit: {err}", id.name()))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The assistant's own tools (issue #225): which are switched on, and the settings of each.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Tools {
+    /// The tools a person switched on; every other one is off, also one added later. A name this
+    /// version does not know is dropped when the file is read.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_names")]
+    pub enabled: BTreeSet<ToolId>,
+    /// The PDF tool. Boxed: three templates would make [`Settings`], which requests carry whole
+    /// (`settings.update_settings`), much larger than every other request.
+    pub pdf: Box<PdfSettings>,
+}
+
+impl Tools {
+    /// Whether `tool` is switched on.
+    pub fn is_on(&self, tool: ToolId) -> bool {
+        self.enabled.contains(&tool)
+    }
+
+    /// Switches `tool` on or off.
+    pub fn set_on(&mut self, tool: ToolId, on: bool) {
+        if on {
+            self.enabled.insert(tool);
+        } else {
+            self.enabled.remove(&tool);
+        }
+    }
+
+    /// Whether going from these tools (as stored) to `new` does what only a person may (point 9 of
+    /// "Was nie nach außen geht"): switch a tool on, set a folder other than the stored one, or set
+    /// a logo other than the stored one. Removing a folder or a logo is no such change. The core
+    /// refuses a client's `settings.update_settings` with it.
+    pub fn needs_a_person(&self, new: &Tools) -> bool {
+        let switches_on = !new.enabled.is_subset(&self.enabled);
+        let set_anew = |stored: &Option<String>, new: &Option<String>| new.is_some() && new != stored;
+        let folder = set_anew(&self.pdf.folder, &new.pdf.folder);
+        let logo =
+            PdfTemplateId::ALL.into_iter().any(|id| set_anew(&self.pdf.template(id).logo, &new.pdf.template(id).logo));
+        switches_on || folder || logo
+    }
+
+    /// `sent` as a client may store it over these tools (as stored), for `settings.update_settings`:
+    /// a tool stays on only when it is on in both; the folder and each logo are removed when `sent`
+    /// removes them and otherwise stay as stored; the other fields of the templates are taken from
+    /// `sent`. So a client removes a path like any admin change, and a person who switched a tool
+    /// off or removed a path between the core's check and the write is not undone.
+    pub fn from_client(&self, sent: &Tools) -> Tools {
+        let mut tools = sent.clone();
+        tools.enabled = self.enabled.intersection(&sent.enabled).copied().collect();
+        tools.pdf.folder = kept_or_removed(&self.pdf.folder, &sent.pdf.folder);
+        for id in PdfTemplateId::ALL {
+            tools.pdf.template_mut(id).logo = kept_or_removed(&self.pdf.template(id).logo, &sent.pdf.template(id).logo);
+        }
+        tools
+    }
+}
+
+/// A path as a client may store it: `None` when it sends none (removing is an admin change), else
+/// the stored one (setting a path is a person's, point 9).
+pub fn kept_or_removed(stored: &Option<String>, sent: &Option<String>) -> Option<String> {
+    sent.as_ref().and(stored.clone())
+}
+
+/// Whether `path` can be a path from outside: one line of at most [`MAX_PATH_BYTES`], absolute on
+/// this system.
+fn absolute_path(path: &str) -> bool {
+    path.len() <= MAX_PATH_BYTES && !path.chars().any(char::is_control) && Path::new(path).is_absolute()
 }
 
 impl Settings {
@@ -1328,6 +1721,7 @@ mod tests {
             hidden_categories: Vec::new(),
             allow_api_keys: true,
             allow_mcp: true,
+            tools: Tools::default(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -1494,6 +1888,10 @@ mod tests {
             hidden_categories: Vec::new(),
             allow_api_keys: false,
             allow_mcp: false,
+            tools: Tools {
+                enabled: BTreeSet::from([ToolId::Pdf]),
+                pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),
+            },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -1774,5 +2172,223 @@ mod tests {
         let loaded = load_from(&path);
         assert_eq!(loaded.language, Language::German, "the other settings stay");
         assert_eq!(loaded.reminders, Reminders::default());
+    }
+
+    /// An absolute path on this system, for the tests of folders and logos.
+    fn absolute(path: &str) -> String {
+        match cfg!(windows) {
+            true => format!(r"C:\{}", path.trim_start_matches('/').replace('/', r"\")),
+            false => path.to_string(),
+        }
+    }
+
+    /// Issue #225: every tool is off, the PDF folder unset and the three templates as planned
+    /// until a person changes them; a file from before the tools reads so too.
+    #[test]
+    fn tools_start_off_with_the_three_standard_templates() {
+        let tools = Settings::default().tools;
+        assert!(tools.enabled.is_empty() && !tools.is_on(ToolId::Pdf));
+        assert_eq!(tools.pdf.folder, None);
+        let letter = tools.pdf.template(PdfTemplateId::Letter);
+        assert_eq!((letter.paper, letter.margins_mm, letter.font_size_pt), (Paper::A4, [25; 4], 11));
+        assert!(letter.header.is_empty() && !letter.page_numbers && letter.logo.is_none());
+        let report = tools.pdf.template(PdfTemplateId::Report);
+        assert_eq!((report.paper, report.margins_mm, report.font_size_pt), (Paper::A4, [20; 4], 11));
+        assert_eq!((report.header.as_str(), report.page_numbers), ("{title}", true));
+        let note = tools.pdf.template(PdfTemplateId::Note);
+        assert_eq!((note.paper, note.margins_mm, note.font_size_pt), (Paper::A4, [15; 4], 10));
+        assert!(note.header.is_empty() && note.footer.is_empty() && !note.page_numbers);
+        assert_eq!(PdfTemplateId::default(), PdfTemplateId::Report, "the template without a name");
+        for id in PdfTemplateId::ALL {
+            assert_eq!(tools.pdf.template(id).check(), Ok(()), "{id:?}");
+        }
+        let old: Settings = serde_json::from_str("{}").expect("a file from before the tools");
+        assert_eq!(old.tools, Tools::default());
+        assert_eq!(serde_json::to_value(ToolId::Pdf).expect("json"), "pdf");
+        assert_eq!(ToolId::Pdf.name(), "pdf");
+        assert_eq!(serde_json::to_value(PdfTemplateId::Note).expect("json"), PdfTemplateId::Note.name());
+    }
+
+    /// The tool of a command: the three file commands are the PDF tool's, listing belongs to none.
+    #[test]
+    fn commands_belong_to_their_tool() {
+        for name in ["tools.create_pdf", "tools.open_file", "tools.save_file_as"] {
+            assert_eq!(ToolId::of_command(name), Some(ToolId::Pdf), "{name}");
+        }
+        for name in ["tools.list_tools", "settings.set_setting", "pdf", ""] {
+            assert_eq!(ToolId::of_command(name), None, "{name}");
+        }
+    }
+
+    /// A damaged tools entry costs the defaults (every tool off), never the other settings; a tool
+    /// this version does not know is dropped.
+    #[test]
+    fn tools_are_read_leniently() {
+        let dir = TempDir::new("tools");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","tools":{"enabled":["pdf","whiteboard"]}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.tools.enabled, BTreeSet::from([ToolId::Pdf]), "the unknown one is dropped");
+        assert_eq!(*loaded.tools.pdf, PdfSettings::default(), "left out, so the defaults");
+        fs::write(&path, r#"{"language":"german","tools":{"enabled":["pdf"],"pdf":{"letter":7}}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.language, Language::German, "the other settings stay");
+        assert_eq!(loaded.tools, Tools::default(), "a damaged entry is the defaults: every tool off");
+        let mut tools = Tools::default();
+        tools.set_on(ToolId::Pdf, true);
+        tools.pdf.folder = Some(absolute("/docs"));
+        let settings = Settings { tools: tools.clone(), ..Settings::default() };
+        let written = serde_json::to_string(&settings).expect("json");
+        assert_eq!(serde_json::from_str::<Settings>(&written).expect("reads back").tools, tools);
+    }
+
+    /// `pdf_template`: a whole template, checked against its limits; a wrong template, a relative
+    /// or wrong logo is refused with the reason.
+    #[test]
+    fn a_pdf_template_is_read_and_checked() {
+        let logo = absolute("/pictures/logo.PNG");
+        let value = serde_json::json!({
+            "template": "letter",
+            "paper": "letter",
+            "marginsMm": [5, 50, 20, 20],
+            "fontSizePt": 16,
+            "header": "{title} · {date}",
+            "footer": "ACME",
+            "pageNumbers": true,
+            "logo": logo,
+        });
+        let (id, template) = PdfTemplate::from_value(&value).expect("a valid template");
+        assert_eq!(id, PdfTemplateId::Letter);
+        assert_eq!(
+            template,
+            PdfTemplate {
+                paper: Paper::Letter,
+                margins_mm: [5, 50, 20, 20],
+                font_size_pt: 16,
+                header: "{title} · {date}".into(),
+                footer: "ACME".into(),
+                page_numbers: true,
+                logo: Some(logo.clone()),
+            }
+        );
+        assert_eq!(PdfTemplate::from_value(&template.to_value(id)), Ok((id, template.clone())));
+        let short = serde_json::json!({"template": "note", "paper": "a5", "marginsMm": [10, 10, 10, 10], "fontSizePt": 9, "logo": ""});
+        let (id, note) = PdfTemplate::from_value(&short).expect("header, footer, numbers and logo may be left out");
+        assert_eq!(
+            (id, note.paper, note.header.as_str(), note.page_numbers, note.logo),
+            (PdfTemplateId::Note, Paper::A5, "", false, None)
+        );
+
+        let with = |field: &str, wrong: serde_json::Value| {
+            let mut value = value.clone();
+            value[field] = wrong;
+            PdfTemplate::from_value(&value)
+        };
+        for (field, wrong) in [
+            ("template", serde_json::json!("invoice")),
+            ("paper", serde_json::json!("a3")),
+            ("marginsMm", serde_json::json!([4, 20, 20, 20])),
+            ("marginsMm", serde_json::json!([20, 51, 20, 20])),
+            ("marginsMm", serde_json::json!([20, 20, 20])),
+            ("fontSizePt", serde_json::json!(7)),
+            ("fontSizePt", serde_json::json!(17)),
+            ("header", serde_json::json!("a".repeat(PdfTemplate::MAX_LINE_CHARS + 1))),
+            ("footer", serde_json::json!("two\nlines")),
+            ("logo", serde_json::json!("pictures/logo.png")),
+            ("logo", serde_json::json!(absolute("/pictures/logo.gif"))),
+        ] {
+            assert!(with(field, wrong.clone()).is_err(), "{field}: {wrong}");
+        }
+        assert!(with("header", serde_json::json!("a".repeat(PdfTemplate::MAX_LINE_CHARS))).is_ok(), "200 fit");
+        let mut missing = value.clone();
+        missing.as_object_mut().expect("object").remove("template");
+        assert!(PdfTemplate::from_value(&missing).is_err(), "the template is named");
+        assert!(PdfTemplate::from_value(&serde_json::json!("report")).is_err(), "an object");
+        let relative = with("logo", serde_json::json!("logo.png")).expect_err("relative");
+        assert!(relative.contains("absolute path"), "{relative}");
+    }
+
+    /// `pdf_folder`: an absolute path, or null or "" for the desktop.
+    #[test]
+    fn a_pdf_folder_is_an_absolute_path_or_none() {
+        let folder = absolute("/Users/anna/Documents/PDFs");
+        assert_eq!(PdfSettings::folder_from(&serde_json::json!(folder)), Ok(Some(folder.clone())));
+        assert_eq!(PdfSettings::folder_from(&serde_json::json!(null)), Ok(None));
+        assert_eq!(PdfSettings::folder_from(&serde_json::json!(" ")), Ok(None));
+        for wrong in
+            [serde_json::json!("Documents"), serde_json::json!(7), serde_json::json!(format!("{folder}\nmore"))]
+        {
+            let refused = PdfSettings::folder_from(&wrong);
+            assert!(refused.as_ref().is_err_and(|reason| reason.contains("absolute path")), "{wrong}: {refused:?}");
+        }
+        assert!(PdfSettings::folder_from(&serde_json::json!(format!("/{}", "a".repeat(MAX_PATH_BYTES)))).is_err());
+    }
+
+    /// Whole PDF settings are checked where they differ from the stored ones, nowhere else.
+    #[test]
+    fn only_the_changed_pdf_settings_are_checked() {
+        let stored = PdfSettings::default();
+        assert_eq!(stored.check_changes(&stored), Ok(()));
+        let mut sent = stored.clone();
+        sent.folder = Some("PDFs".into());
+        assert!(sent.check_changes(&stored).is_err_and(|reason| reason.contains("absolute path")));
+        sent.folder = Some(absolute("/Users/anna/PDFs"));
+        sent.note.font_size_pt = 12;
+        assert_eq!(sent.check_changes(&stored), Ok(()));
+        sent.report.header = "a".repeat(PdfTemplate::MAX_LINE_CHARS + 1);
+        assert!(sent.check_changes(&stored).is_err_and(|reason| reason.contains("\"report\"")));
+
+        // Stored out of bounds (a file edited by hand): not checked again while it stays.
+        let mut by_hand = stored.clone();
+        (by_hand.folder, by_hand.letter.margins_mm) = (Some("PDFs".into()), [99; 4]);
+        let mut sent = by_hand.clone();
+        sent.note.font_size_pt = 12;
+        assert_eq!(sent.check_changes(&by_hand), Ok(()));
+    }
+
+    /// Point 9: switching a tool on and setting a folder or a logo other than the stored ones is a
+    /// person's; switching off, removing and every other field are not. A client's whole settings
+    /// keep the switches it could not turn on and the stored paths.
+    #[test]
+    fn only_people_switch_tools_on_and_set_their_paths() {
+        let stored = Tools::default();
+        let mut on = stored.clone();
+        on.set_on(ToolId::Pdf, true);
+        assert!(stored.needs_a_person(&on) && !on.needs_a_person(&stored), "on, but off is anyone's");
+        let mut folder = stored.clone();
+        folder.pdf.folder = Some(absolute("/sync/Out"));
+        assert!(stored.needs_a_person(&folder) && !folder.needs_a_person(&folder), "a new folder, not the same");
+        assert!(!folder.needs_a_person(&stored), "removing it");
+        let mut logo = stored.clone();
+        logo.pdf.template_mut(PdfTemplateId::Note).logo = Some(absolute("/pictures/logo.png"));
+        assert!(stored.needs_a_person(&logo) && !logo.needs_a_person(&stored));
+        let mut fields = stored.clone();
+        let report = fields.pdf.template_mut(PdfTemplateId::Report);
+        (report.paper, report.font_size_pt, report.footer) = (Paper::A5, 9, "ACME".into());
+        assert!(!stored.needs_a_person(&fields), "the other fields are anyone's with admin rights");
+
+        // What a client's whole settings leave of it.
+        let mut person = stored.clone();
+        person.set_on(ToolId::Pdf, true);
+        person.pdf.folder = Some(absolute("/Users/anna/PDFs"));
+        person.pdf.template_mut(PdfTemplateId::Letter).logo = Some(absolute("/pictures/letter.png"));
+        let mut sent = fields.clone();
+        sent.set_on(ToolId::Pdf, true);
+        sent.pdf.folder = Some(absolute("/sync/Out"));
+        sent.pdf.template_mut(PdfTemplateId::Note).logo = Some(absolute("/pictures/other.png"));
+        let kept = stored.from_client(&sent);
+        assert!(!kept.is_on(ToolId::Pdf), "off stays off");
+        assert_eq!((kept.pdf.folder.as_deref(), kept.pdf.template(PdfTemplateId::Note).logo.as_deref()), (None, None));
+        assert_eq!(kept.pdf.template(PdfTemplateId::Report), fields.pdf.template(PdfTemplateId::Report), "the fields");
+        let kept = person.from_client(&sent);
+        assert_eq!(kept.pdf.folder, person.pdf.folder, "the folder stays, not the client's");
+        assert_eq!(kept.pdf.letter.logo, None, "removed, as the client sent none");
+        assert_eq!(kept.pdf.note.logo, None, "and no logo of the client's");
+        let kept = person.from_client(&Tools::default());
+        assert!(!kept.is_on(ToolId::Pdf), "a client may switch it off");
+        assert_eq!((kept.pdf.folder, kept.pdf.letter.logo), (None, None), "and remove the paths");
+        let kept = person.from_client(&person);
+        assert!(kept.is_on(ToolId::Pdf), "on stays on");
+        assert_eq!(kept, person, "the stored paths stay");
     }
 }

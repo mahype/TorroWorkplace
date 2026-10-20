@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use torro_core::ai::{AiError, BoxFuture};
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Lack, Level, Rights};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Lack, Level, Rights, Selection};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
@@ -25,6 +25,8 @@ struct FakeHost {
     lent: Mutex<Vec<Vec<Area>>>,
     /// The person let mail go to cloud models (task C.17).
     mail_to_cloud: std::sync::atomic::AtomicBool,
+    /// The assistant's own tools a person switched on (issue #225).
+    tools_on: Mutex<std::collections::BTreeSet<torro_core::settings::ToolId>>,
 }
 
 impl Host for FakeHost {
@@ -46,6 +48,10 @@ impl Host for FakeHost {
 
     fn data_rule(&self) -> DataRule {
         DataRule { mail_to_cloud: self.mail_to_cloud.load(std::sync::atomic::Ordering::SeqCst) }
+    }
+
+    fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
+        self.tools_on.lock().expect("lock").clone()
     }
 
     fn lend(&self, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
@@ -127,7 +133,12 @@ async fn install(dir: tempfile::TempDir, idle: Duration, client: bool) -> Setup 
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("the assistant's client");
     }
-    let host = Arc::new(FakeHost { clients, lent: Mutex::new(Vec::new()), mail_to_cloud: Default::default() });
+    let host = Arc::new(FakeHost {
+        clients,
+        lent: Mutex::new(Vec::new()),
+        mail_to_cloud: Default::default(),
+        tools_on: Default::default(),
+    });
     let weak = Arc::downgrade(&host);
     let weak: std::sync::Weak<dyn Host> = weak;
     assistant.attach(weak);
@@ -293,6 +304,48 @@ fn send_to_claude() -> Request {
     }
 }
 
+/// Issue #225: a command of one of the assistant's own tools refused with `forbidden` says why on
+/// its tool line, as in engine A: the tool switched off, else not in the client's selection.
+#[tokio::test]
+async fn a_refused_tool_says_whether_it_is_off_or_not_granted() {
+    use torro_core::settings::ToolId;
+    let input = json!({"title": "Offer", "markdown": "# Offer"});
+    let transcript = [
+        init(),
+        calls("t1", "tools_create_pdf", input.clone()),
+        result_of("t1", "forbidden: this client may not use tools.create_pdf", true),
+        done("It did not work."),
+    ];
+    let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
+    let client = setup.host.client().expect("the assistant's client");
+    let with_tools = |tools: Selection| {
+        let mut rights = client.rights.clone();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = tools;
+        rights
+    };
+    let line_of = |lack: Lack| EntryContent::Tool {
+        name: "tools.create_pdf".into(),
+        input: input.clone(),
+        summary: tools::lack_summary(lack, "Claude Code"),
+        error: Some("forbidden".into()),
+        lack: Some(lack),
+    };
+
+    // Granted, but no person switched it on.
+    setup.host.clients.update(&client.id, with_tools(Selection::All)).await.expect("rights");
+    let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
+    let entries = contents(&finished(&setup.assistant, &id).await);
+    assert!(entries.contains(&line_of(Lack::ToolOff { tool: ToolId::Pdf })), "{entries:?}");
+
+    // Switched on, but not in the selection.
+    setup.host.tools_on.lock().expect("lock").insert(ToolId::Pdf);
+    setup.host.clients.update(&client.id, with_tools(Selection::Only(Vec::new()))).await.expect("rights");
+    let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
+    let entries = contents(&finished(&setup.assistant, &id).await);
+    assert!(entries.contains(&line_of(Lack::Tool { tool: ToolId::Pdf })), "{entries:?}");
+}
+
 #[tokio::test]
 async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_environment() {
     let collections = serde_json::to_string(&Response::Collections { collections: Vec::new() }).expect("json");
@@ -385,6 +438,30 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     let text = input["message"]["content"][0]["text"].as_str().expect("text");
     assert!(text.contains("Which calendars do I have?") && text.contains("You have no calendars."), "{text}");
     assert!(text.ends_with("And tomorrow?"), "{text}");
+}
+
+/// Issue #225 (PR review of #232): engine B leaves the PDF tool to the agent only with write access
+/// to `tools`, as engine A offers it; switched on and selected but reading only, it is denied.
+#[tokio::test]
+async fn an_agent_gets_the_pdf_tool_only_with_write_access() {
+    use torro_core::settings::ToolId;
+    use torro_ipc::api::{AreaRights, Level, Selection};
+    let denied = |arguments: &[String]| {
+        let at = arguments.iter().position(|argument| argument == "--disallowedTools").expect("the flag");
+        arguments[at + 1].split(',').any(|tool| tool.ends_with("tools_create_pdf"))
+    };
+    for (level, refused) in [(Level::Write, false), (Level::Read, true)] {
+        let setup = set_up(&[init(), says("Done."), done("Done.")], "", Duration::from_secs(10), true).await;
+        setup.host.tools_on.lock().expect("lock").insert(ToolId::Pdf);
+        let client = setup.host.client().expect("the assistant's client");
+        let mut rights = client.rights.clone();
+        rights.areas.insert(Area::Tools, AreaRights { level, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        setup.host.clients.update(&client.id, rights).await.expect("rights");
+        let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
+        finished(&setup.assistant, &id).await;
+        assert_eq!(denied(&setup.arguments()), refused, "{level:?}");
+    }
 }
 
 /// Task C.17: once the person lets mail go to cloud models, the run's key is lent

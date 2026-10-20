@@ -1,0 +1,38 @@
+# Spike for task WZ.1 (docs/tasks/assistent.md, issue #225): can printpdf set a PDF from Markdown and a template?
+# Its own Cargo project, excluded from the workspace (`exclude = ["spikes"]` in the root), so printpdf and its
+# HTML layout never touch the workspace, its lock file or CI before the decision. Nothing here is product code.
+[package]
+name = "printpdf-spike"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["pdf"]
+# Without it the same binary only turns Markdown into HTML: the build the size "without printpdf" is measured on.
+pdf = ["dep:printpdf"]
+# Only printpdf's text layer (way B), without its HTML layout: the build the size of way B is measured on.
+text = ["dep:printpdf_text"]
+
+[dependencies]
+printpdf = { version = "=0.12.8", optional = true, features = ["html", "png", "jpeg"] }
+printpdf_text = { package = "printpdf", version = "=0.12.8", optional = true, default-features = false, features = ["png", "jpeg"] }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+
+# Own empty workspace: a worktree under `.worktrees/` sits inside the main checkout, whose workspace would
+# otherwise claim this package.
+[workspace]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+# Like the workspace's `dist` profile, so the binary sizes compare with a product build.
+strip = "debuginfo"
+lto = "thin"

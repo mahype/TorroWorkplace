@@ -20,7 +20,9 @@
 //!   of task C.3 appended with the personality and the memory of task C.10, without notes marked
 //!   `local_only`), writes the message to its input and closes it, and turns what it
 //!   writes into entries: text as a growing answer, then answer entries, a tool line per call
-//!   (name, input, result in a few words), an error entry when it fails. The folder is removed
+//!   (name, input, result in a few words), a card after a command that made an item (issue #225,
+//!   only for a file the register keeps as the client's, `super::cards::of_agent`), an error entry
+//!   when it fails. The folder is removed
 //!   when the run ends, however it ends.
 //! - **The key** is lent for the run only ([`crate::clients::Clients::lend`] through
 //!   [`Host::lend`]): a key of the assistant's client made for this run, kept in the core's
@@ -257,6 +259,7 @@ impl Agents {
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job, agent: Agent) {
     let mut run = Running {
         assistant,
+        host: Arc::clone(&host),
         job,
         agent,
         model: None,
@@ -340,6 +343,8 @@ impl Failed {
 /// The state of one run.
 struct Running {
     assistant: Arc<Assistant>,
+    /// The core: whether a file of a tool line is the client's own, before its card is added (issue #225).
+    host: Arc<dyn Host>,
     job: Job,
     agent: Agent,
     /// The model the agent named when it started.
@@ -383,8 +388,12 @@ impl Running {
         let lent = host.lend_in_mode(&actor, &self.job.conversation, &self.job.engine, &without, mode);
         let Some(lent) = lent else { return Err(no_client()) };
         let rights = mode.narrow(&client.rights);
-        let areas = allowed_areas(actor.kind(), &rights, &without, mode);
         self.rights = Some(rights.clone());
+        // The assistant's own tools (issue #225): only those switched on, in the selection and with
+        // write access to `tools` are named in the prompt and left to the agent.
+        let rights = tools::with_tools_on(&rights, &host.tools_on());
+        let areas = allowed_areas(actor.kind(), &rights, &without, mode);
+        let usable = tools::usable_tools(&rights, &areas);
         // The personality and the memory (task C.10); the prompt keeps the notes marked
         // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
         // memory (task B.1).
@@ -416,8 +425,8 @@ impl Running {
         })?;
         // The tools of the areas it does not get are not offered at all (issue #133): the model then
         // never tries them, and the prompt says why.
-        let arguments =
-            claude::arguments(&folder.config(), &system, self.job.model.as_deref(), self.job.effort, &without, mode);
+        let (model, effort) = (self.job.model.as_deref(), self.job.effort);
+        let arguments = claude::arguments(&folder.config(), &system, model, effort, &without, mode, &usable);
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;
@@ -505,7 +514,21 @@ impl Running {
             claude::Event::ToolResult { id, text, error } => {
                 let (name, input) = self.calls.remove(&id).unwrap_or_else(|| (String::new(), Value::Null));
                 let lack = if error { self.lack(&name, &text) } else { None };
-                if !self.add(tool_line(&name, input, &text, error, lack, self.agent.name()), false).await {
+                let line = tool_line(&name, input, &text, error, lack, self.agent.name());
+                // A card after a command that made an item (issue #225), only for a file the register keeps
+                // as this client's: the result is the agent's text.
+                let card = match (&line, error) {
+                    (EntryContent::Tool { name, .. }, false) => {
+                        super::cards::of_agent(self.host.as_ref(), &self.job.actor, name, &text).await
+                    }
+                    _ => None,
+                };
+                if !self.add(line, false).await {
+                    return Some(Ok(Ended::Stopped));
+                }
+                if let Some(card) = card
+                    && !self.add(card, false).await
+                {
                     return Some(Ok(Ended::Stopped));
                 }
             }
@@ -517,15 +540,27 @@ impl Running {
 
     /// Why the tool `tool` (Claude Code's name of it) was refused with the error `text` (issue #133):
     /// for `forbidden`, what the rights, the conversation's switches and the areas the run goes
-    /// without ([`Running::withheld`]) say.
+    /// without ([`Running::withheld`]) say. A command of one of the assistant's own tools the rights
+    /// allow (issue #225), as in engine A: the tool switched off now ([`Lack::ToolOff`]), else not in
+    /// the selection ([`Lack::Tool`]).
+    ///
+    /// [`Lack::ToolOff`]: torro_ipc::api::Lack::ToolOff
+    /// [`Lack::Tool`]: torro_ipc::api::Lack::Tool
     fn lack(&self, tool: &str, text: &str) -> Option<torro_ipc::api::Lack> {
+        use torro_ipc::api::Lack;
         if error_code(text) != "forbidden" {
             return None;
         }
         let tool = tools::callable(tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool))?;
         let operation = torro_ipc::api::Operation { command: tool.command, access: tool.command.access };
         let kind = self.job.actor.kind();
-        tools::lack_in(kind, self.rights.as_ref(), operation, &self.job.without, self.withheld, self.job.mode)
+        let rights = self.rights.as_ref();
+        let lack = tools::lack_in(kind, rights, operation, &self.job.without, self.withheld, self.job.mode);
+        match (lack, torro_core::settings::ToolId::of_command(operation.command.name), rights) {
+            (None, Some(tool), Some(_)) if !self.host.tools_on().contains(&tool) => Some(Lack::ToolOff { tool }),
+            (None, Some(tool), Some(rights)) if !rights.reaches_tool(tool) => Some(Lack::Tool { tool }),
+            (lack, ..) => lack,
+        }
     }
 
     /// Adds `content` while this run is the conversation's running answer; `last` ends it.

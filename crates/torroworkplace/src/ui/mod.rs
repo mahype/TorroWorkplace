@@ -204,6 +204,9 @@ pub struct Data {
     /// The inbox sources with entries or muted (`inbox.list_sources`), for the selections of a
     /// client's rights.
     pub sources: Vec<SourceInfo>,
+    /// The assistant's own tools (`tools.list_tools`, task WZ.7), for the selections of a client's
+    /// rights; none from a core without tools.
+    pub tools: Vec<torro_ipc::tools::ToolInfo>,
     /// The engines the assistant answers with (`assistant.list_engines`), for the AI account a new
     /// chat starts with in the first-run setup (issue #131). What a new chat starts with outside
     /// the setup is set in the assistant's own window (task S.17).
@@ -1545,6 +1548,9 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
+            }
+            if let Ok(Response::Tools { tools }) = client::call(&socket, &Request::ListTools).await {
+                data.tools = tools;
             }
             // The setup's AI step offers them as what a new chat starts with (issue #131).
             if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {

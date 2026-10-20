@@ -1358,7 +1358,8 @@ impl Open {
 /// - `--compose` (with `--reply <id>`, `--reply-all <id>` or `--forward <id>`, and `--account <id>`)
 ///   is the compose window of task E4.3 ([`compose`]), which the panel's Reply, Reply all and
 ///   Forward start ([`mail::compose_command`]) and the "New" button starts without an id. It is a
-///   window of its own and shows no inbox; its `--open` states are [`compose::Open`]'s.
+///   window of its own and shows no inbox; its `--open` states are [`compose::Open`]'s. With
+///   `--attach <path>` it starts with that file attached (task WZ.8, "Send by mail" on a file card).
 ///   `--reply`, `--reply-all`, `--forward` and `--account` without `--compose` are refused
 ///   ([`LaunchError::NeedsCompose`]), so a mistyped command never opens the inbox instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

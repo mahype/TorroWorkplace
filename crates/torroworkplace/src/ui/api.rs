@@ -418,6 +418,7 @@ fn known(data: &Data) -> rights::Known<'_> {
         sources: &data.sources,
         clients: &data.clients,
         accounts: &data.accounts,
+        tools: &data.tools,
     }
 }
 
