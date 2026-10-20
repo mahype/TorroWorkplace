@@ -484,21 +484,23 @@ impl App {
     fn choice_label(&self, choice: &Choice) -> String {
         let engine = self.engines.iter().find(|engine| engine.id == choice.engine);
         let engine_name = engine.map_or(choice.engine.as_str(), |engine| engine.name.as_str());
-        let model_name = choice.model.as_ref().map(|id| {
-            let listed = self.models.get(&choice.engine).and_then(|models| models.as_ref().ok());
-            // An agent's models are its own (issue #131), an AI account's as listed.
-            let fixed = engine.map(|engine| engine.models.as_slice());
-            fixed
-                .into_iter()
-                .chain(listed.map(Vec::as_slice))
-                .flatten()
-                .find(|model| &model.id == id)
-                .map_or(id.clone(), |model| model.name.clone())
-        });
-        match model_name {
+        match choice.model.as_ref().map(|id| self.model_name(&choice.engine, id)) {
             Some(model) => format!("{engine_name} · {model}"),
             None => engine_name.to_owned(),
         }
+    }
+
+    /// What the model `id` of `engine` is called: an agent's own (issue #131), an AI account's as
+    /// listed – turned on or not –, else its id.
+    fn model_name(&self, engine: &str, id: &str) -> String {
+        let fixed = self.engines.iter().find(|known| known.id == engine).map(|known| known.models.as_slice());
+        let listed = self.models.get(engine).and_then(|models| models.as_ref().ok());
+        fixed
+            .into_iter()
+            .chain(listed.map(Vec::as_slice))
+            .flatten()
+            .find(|model| model.id == id)
+            .map_or_else(|| id.to_owned(), |model| model.name.clone())
     }
 
     // -- Body -----------------------------------------------------------------------------------
@@ -565,6 +567,14 @@ impl App {
                     "Until then it answers without your calendar, tasks, Notification Hub or mail. You decide area by area, and you can change it any time.",
                 ),
                 Some((tr("Set up access"), Message::SetUp)),
+            );
+        }
+        // AI accounts, but none with a model on (task S.26): the core lists none of them.
+        if self.no_model_on() {
+            return prompt_state(
+                tr("No model is turned on"),
+                tr("Turn on models in Settings › Accounts."),
+                Some((tr("Manage models…"), Message::ManageModels)),
             );
         }
         if self.engines_loaded && self.engines.is_empty() {
@@ -736,7 +746,11 @@ impl App {
         // A bot the assistant may not ask is the person's to name or confirm (task B.2), not a
         // right to change.
         if error == Some("forbidden") && area != Some(Area::Bots) {
-            let (what, change) = chat::refusal_hint(area, lack);
+            let who = match self.chat_bot() {
+                Some(bot) => chat::Answerer::Bot(self.listed_bot(bot).map(|listed| listed.name.as_str())),
+                None => chat::Answerer::Assistant,
+            };
+            let (what, change) = chat::refusal_hint(area, lack, who);
             let mut hint = row![typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
                 .spacing(space::s())
                 .align_y(Alignment::Center);
@@ -863,6 +877,9 @@ impl App {
                 let label = typo::ellipsize(&self.choice_label(choice), typo::caption(), room);
                 widgets::select_button(&anchors.picker, label, Message::ToggleMenu(Menu::Picker))
             }
+            None if self.no_model_on() => {
+                typo::text(typo::meta(), tr("No model is turned on")).style(theme::text_3).into()
+            }
             None if self.engines_loaded => typo::text(typo::meta(), tr("No AI account")).style(theme::text_3).into(),
             None => typo::text(typo::meta(), tr("Loading …")).style(theme::text_3).into(),
         });
@@ -921,9 +938,11 @@ impl App {
         widgets::menu(vec![MenuSection::titled(tr("What the assistant may do here"), items)])
     }
 
-    /// The picker: each engine with the models that can call tools; an engine whose models did
-    /// not come is offered as it is, and the engine picks its model. `chosen` has the check, a
-    /// pick sends `pick` (the composer's choice, or the bot editor's engine).
+    /// The picker: each engine with the models that can call tools and are turned on (task S.26);
+    /// an engine whose models did not come is offered as it is, and the engine picks its model.
+    /// `chosen` has the check, a pick sends `pick` (the composer's choice, or the bot editor's
+    /// engine). A chosen model that is turned off stands on top of its engine with why "Automatic"
+    /// answers; "Manage models…" at the end opens the control centre's accounts.
     fn picker_menu(&self, chosen: Option<&Choice>, pick_message: fn(Choice) -> Message) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
         let mut sections: Vec<MenuSection<Message>> = self
@@ -936,11 +955,32 @@ impl App {
                     MenuItem::new(Mark::Check(check, on), label, pick_message(choice))
                 };
                 let items = match (engine.kind, self.offered_models(&engine.id)) {
-                    (EngineKind::Ai, Some(Ok(models))) if !models.is_empty() => {
-                        models.into_iter().map(|model| item(model.name.clone(), pick(Some(model.id)))).collect()
-                    }
-                    (EngineKind::Ai, Some(Ok(_))) => {
-                        vec![MenuItem::new(Icon::CircleAlert, tr("No model here can use tools"), Message::CloseMenu)]
+                    (EngineKind::Ai, Some(Ok(models))) => {
+                        // The model a bot, the default or the conversation holds, turned off since.
+                        let off = chosen.filter(|choice| choice.engine == engine.id && self.turned_off(choice));
+                        let mut items: Vec<MenuItem<'_, Message>> = off
+                            .into_iter()
+                            .flat_map(|choice| {
+                                let name = choice.model.as_deref().map(|id| self.model_name(&engine.id, id));
+                                [
+                                    item(name.unwrap_or_default(), choice.clone()),
+                                    MenuItem::new(
+                                        Icon::Info,
+                                        tr("Turned off in Settings › Accounts"),
+                                        Message::CloseMenu,
+                                    ),
+                                ]
+                            })
+                            .collect();
+                        if models.is_empty() {
+                            items.push(MenuItem::new(
+                                Icon::CircleAlert,
+                                self.none_offered(&engine.id),
+                                Message::CloseMenu,
+                            ));
+                        }
+                        items.extend(models.into_iter().map(|model| item(model.name.clone(), pick(Some(model.id)))));
+                        items
                     }
                     (EngineKind::Ai, Some(Err(_))) => vec![item(tr("Automatic").to_owned(), pick(None))],
                     (EngineKind::Ai, None) => vec![item(tr("Automatic").to_owned(), pick(None))],
@@ -964,13 +1004,23 @@ impl App {
                 MenuSection::titled(title, items)
             })
             .collect();
-        // Closed models too (issue #131): AI accounts list open-weights models unless asked.
+        // Which models are offered is set in the control centre (task S.26), not here.
         if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
-            let all =
-                MenuItem::new(Mark::Check(check, self.all_models), tr("Show all models"), Message::ToggleAllModels);
-            sections.push(MenuSection::new(vec![all]));
+            let manage = MenuItem::new(Icon::SlidersHorizontal, tr("Manage models…"), Message::ManageModels)
+                .trail(Trail::Icon(Icon::ArrowUpRight));
+            sections.push(MenuSection::new(vec![manage]));
         }
         widgets::menu(sections)
+    }
+
+    /// Why an AI account offers no model (task S.26): none of its models is turned on, or those that
+    /// are cannot call tools.
+    fn none_offered(&self, engine: &str) -> &'static str {
+        let listed = self.models.get(engine).and_then(|models| models.as_ref().ok());
+        match listed.is_some_and(|models| models.iter().any(|model| model.enabled)) {
+            true => tr("No model here can use tools"),
+            false => tr("No model is turned on"),
+        }
     }
 
     /// The effort's menu (issue #131): "Automatic" and each level, with a check at the chosen one.

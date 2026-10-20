@@ -1,5 +1,6 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
-//! whole **suite**: accounts, agents and their rights, approvals, workspaces, how everything
+//! whole **suite**: accounts, the keys of programs (API), the MCP clients and their rights,
+//! approvals, workspaces, how everything
 //! looks, and the general settings. What one app or window shows is set in that window, behind
 //! its gear (task S.21): the control centre no longer has pages for the apps, the assistant or
 //! the Notification Hub. Concept: `docs/settings.md`, tasks: `docs/tasks/steuerzentrale.md`.
@@ -45,12 +46,13 @@
 
 mod accounts;
 mod agent_wizard;
-pub(crate) mod agents;
+mod api;
 mod approvals;
 mod connect;
 mod general;
 mod glance;
 mod launch;
+mod mcp;
 mod overview;
 mod server_fields;
 mod setup;
@@ -88,10 +90,12 @@ pub use launch::{ClientTarget, Launch, Open};
 pub enum Section {
     Overview,
     Accounts,
-    /// Every program that may use the API, with its rights: the suite's own assistant and its bots,
-    /// coding agents, hooks and scripts (tasks A.6, S.21). `--section assistant` and
-    /// `--section bot:<id>` open one of them here.
-    Agents,
+    /// Programs that use Torro Workplace with a key: "Allow API keys" and the keys with their
+    /// rights (task S.35).
+    Api,
+    /// Agents and apps that use Torro Workplace through MCP: "Allow MCP", the command, the clients
+    /// with their rights and their hooks (task S.35). `--section agents` opens it too.
+    Mcp,
     /// What agents wait for and what was decided (task A.8).
     Approvals,
     Workspaces,
@@ -102,10 +106,11 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Overview,
         Section::Accounts,
-        Section::Agents,
+        Section::Api,
+        Section::Mcp,
         Section::Approvals,
         Section::Workspaces,
         Section::Appearance,
@@ -122,7 +127,8 @@ impl Section {
         match self {
             Section::Overview => tr("Overview"),
             Section::Accounts => tr("Accounts"),
-            Section::Agents => tr("Agents & API"),
+            Section::Api => tr("API"),
+            Section::Mcp => tr("MCP"),
             Section::Approvals => tr("Approvals"),
             Section::Workspaces => tr("Workspaces"),
             Section::Appearance => tr("Appearance"),
@@ -135,8 +141,11 @@ impl Section {
         match self {
             Section::Overview => Icon::LayoutGrid,
             Section::Accounts => Icon::Cloud,
-            // The suite has no robot icon; the sparkles stand for AI agents.
-            Section::Agents => Icon::Sparkles,
+            // Code: programs that call Torro Workplace.
+            Section::Api => Icon::Code,
+            // A link: clients connected to Torro Workplace. Not the sparkles, which stand for AI in
+            // the suite, nor a robot, which it has not.
+            Section::Mcp => Icon::Link,
             // A person who confirms: the agent asks, the person decides.
             Section::Approvals => Icon::UserCheck,
             Section::Workspaces => Icon::Layers,
@@ -151,7 +160,8 @@ impl Section {
         match self {
             Section::Overview => "overview",
             Section::Accounts => "accounts",
-            Section::Agents => "agents",
+            Section::Api => "api",
+            Section::Mcp => "mcp",
             Section::Approvals => "approvals",
             Section::Workspaces => "workspaces",
             Section::Appearance => "appearance",
@@ -159,13 +169,14 @@ impl Section {
         }
     }
 
-    /// `--section accounts` and friends, and the words of the pages that moved into the apps
-    /// (task S.21): `apps` and `inbox` now mean General, where the suite's parts are switched on
-    /// and opened. Programs out there keep working; `assistant` and `bot:<id>` are read apart
-    /// ([`Launch::parse`]), since they open a page below Agents & API.
+    /// `--section accounts` and friends, and the words of the pages that moved: `apps` and `inbox`
+    /// (task S.21) now mean General, where the suite's parts are switched on and opened, `agents`
+    /// (task S.35) MCP. Programs out there keep working; `assistant` and `bot:<id>` are read apart
+    /// ([`Launch::parse`]), since they bring the assistant's window to the front.
     pub fn from_arg(arg: &str) -> Option<Section> {
         match arg {
             "apps" | "inbox" => Some(Section::General),
+            "agents" => Some(Section::Mcp),
             arg => Section::ALL.into_iter().find(|section| section.arg() == arg),
         }
     }
@@ -182,22 +193,21 @@ pub struct Data {
     pub apps: Option<Vec<AppInfo>>,
     /// The approvals of the last day (`approvals.list_approvals`), open and decided, newest first.
     pub approvals: Vec<ApprovalInfo>,
-    /// The agents, hooks and scripts with their rights (`clients.list_clients`), never with keys.
+    /// Every client with its rights (`clients.list_clients`), never with keys: API shows the keys
+    /// of programs, MCP the MCP clients and their hooks.
     pub clients: Vec<ClientInfo>,
     /// Every calendar (`calendar.list_calendars`; the app key sees hidden ones too), for the
-    /// agents' selections.
+    /// selections of a client's rights.
     pub calendars: Vec<Collection>,
-    /// Every task list, GitHub filter lists included (`tasks.list_lists`), for the agents'
-    /// selections.
+    /// Every task list, GitHub filter lists included (`tasks.list_lists`), for the selections of a
+    /// client's rights.
     pub task_lists: Vec<Collection>,
-    /// The inbox sources with entries or muted (`inbox.list_sources`), for the agents' selections.
+    /// The inbox sources with entries or muted (`inbox.list_sources`), for the selections of a
+    /// client's rights.
     pub sources: Vec<SourceInfo>,
-    /// The assistant's own tools (`tools.list_tools`, task WZ.7), for the agents' selections; none
-    /// from a core without tools.
+    /// The assistant's own tools (`tools.list_tools`, task WZ.7), for the selections of a client's
+    /// rights; none from a core without tools.
     pub tools: Vec<torro_ipc::tools::ToolInfo>,
-    /// The bots, by name (`bots.list_bots`, task B.3); none from a core without bots. Their rights
-    /// live on their clients, which Agents & API shows; the bot tells which client is whose.
-    pub bots: Vec<torro_ipc::bots::BotSummary>,
     /// The engines the assistant answers with (`assistant.list_engines`), for the AI account a new
     /// chat starts with in the first-run setup (issue #131). What a new chat starts with outside
     /// the setup is set in the assistant's own window (task S.17).
@@ -229,8 +239,9 @@ pub enum Action {
     Zoom(zoom::Step),
     /// Put this text on the clipboard (a new key, task A.6).
     Copy(String),
-    /// Find, connect or disconnect a coding agent's MCP entry (task A.7) on a blocking thread;
-    /// the outcome goes to the agents page. The demo answers it itself and touches nothing.
+    /// Find, connect or disconnect a coding agent's MCP entry or hooks (task A.7), or read the
+    /// hook notes, on a blocking thread; the outcome goes to MCP. The demo answers it itself and
+    /// touches nothing.
     Setup(crate::client_setup::Job),
     /// List the design packs (`settings.list_designs`) for Appearance › Design, with the look of each
     /// read from its folder ([`general::Pack::new`]). The demo lists its sample packs.
@@ -327,17 +338,16 @@ pub struct Ui {
     overview: overview::State,
     accounts: accounts::State,
     workspaces: workspaces::State,
-    agents: agents::State,
+    api: api::State,
+    mcp: mcp::State,
     approvals: approvals::State,
     general: general::State,
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
     /// sections.
     setup: Option<setup::State>,
-    /// What `--section assistant` or `--section bot:<id>` still waits for ([`Ui::open_target`]):
-    /// a bot is named by its own id, but its page is its client's, which only the core's list of
-    /// bots can name – and without `--demo` that list comes with the first load, long after
-    /// [`Ui::new`]. The target waits here until the data can name it; `None` once it is open or
-    /// when the core does not know the bot.
+    /// What `--section assistant` or `--section bot:<id>` still waits for: the assistant's window
+    /// comes to the front ([`ClientTarget::request`]) once the core answers ([`Message::CoreReady`]),
+    /// which starts it. The demo sends nothing, so it never waits.
     target: Option<ClientTarget>,
 }
 
@@ -390,7 +400,8 @@ pub enum Message {
     Overview(overview::Message),
     Accounts(accounts::Message),
     Workspaces(workspaces::Message),
-    Agents(agents::Message),
+    Api(api::Message),
+    Mcp(mcp::Message),
     Approvals(approvals::Message),
     General(general::Message),
 }
@@ -463,7 +474,8 @@ impl Ui {
             overview: overview::State::default(),
             accounts: accounts::State::default(),
             workspaces: workspaces::State::default(),
-            agents: agents::State::default(),
+            api: api::State::default(),
+            mcp: mcp::State::default(),
             approvals: approvals::State::default(),
             general: general::State::default(),
             setup: None,
@@ -489,15 +501,25 @@ impl Ui {
         if let Some(open) = open {
             ui.open(open);
         }
-        // `--section assistant` and `--section bot:<id>` open a page below Agents & API (task
-        // S.21), the way the assistant app's "Change access" and "Access…" get here. The demo has
-        // its data from the first frame; without it a bot's page waits for the core's list of bots
-        // ([`Ui::target`]).
-        ui.target = ui.launch.client.clone();
-        let target = ui.open_target();
+        // `--section assistant` and `--section bot:<id>` bring the assistant's window to the front
+        // once the core answers (task S.35); the demo starts nothing.
+        ui.target = ui.launch.client.clone().filter(|_| !demo);
         // A start on the Appearance page lists the design packs, as opening it does.
         let designs = match ui.section == Section::Appearance && general::unlisted(&ui.general) {
             true => ui.perform(Action::ListDesigns),
+            false => Task::none(),
+        };
+        // The demo's start on Accounts asks for TorroMail's accounts as opening it does, its start
+        // on MCP reads the hook notes; with a service the first load does (it waits for the core).
+        let import = match demo && ui.section == Section::Accounts && accounts::unlisted(&ui.accounts) {
+            true => {
+                let ask = accounts::opened(&mut ui.accounts);
+                ui.perform(ask)
+            }
+            false => Task::none(),
+        };
+        let hooks = match demo && ui.section == Section::Mcp && ui.mcp.notes.is_none() {
+            true => ui.perform(mcp::opened()),
             false => Task::none(),
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -512,32 +534,10 @@ impl Ui {
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
             size,
             designs,
-            target,
+            import,
+            hooks,
         ]);
         (ui, task)
-    }
-
-    /// Opens what `--section assistant` or `--section bot:<id>` names, as soon as [`Data`] can
-    /// name it ([`ClientTarget::message`]): the assistant at once, a bot's page with the load that
-    /// brings the core's list of bots. Nothing happens without such a target, and a bot the core
-    /// answered without is given up on – the section's own list stays open, which shows every bot
-    /// it has.
-    fn open_target(&mut self) -> Task<Message> {
-        let Some(target) = self.target.clone() else { return Task::none() };
-        match target.message(&self.data) {
-            Some(message) => {
-                self.target = None;
-                self.update(Message::Agents(message))
-            }
-            None => {
-                // The core answered without the bot: no later load will bring it either, so the
-                // target goes. An answer that failed carries no bots at all – that one waits.
-                if self.loaded && self.data.error.is_none() {
-                    self.target = None;
-                }
-                Task::none()
-            }
-        }
     }
 
     /// Goes to the state `--open` asks for, the way a click would: through the pages' messages.
@@ -559,23 +559,32 @@ impl Ui {
                 self.drawer = true;
                 vec![]
             }
-            Open::Wizard => vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)],
+            Open::AccountsEmpty => {
+                self.data.accounts.clear();
+                vec![Message::Select(Section::Accounts)]
+            }
+            Open::WizardNextcloud => vec![
+                Message::Select(Section::Accounts),
+                Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)),
+            ],
             Open::WizardGithub | Open::WizardToken => {
                 let mut messages = vec![
                     Message::Select(Section::Accounts),
-                    Message::Accounts(accounts::Message::AddAccount),
-                    Message::Accounts(accounts::Message::Wizard(wizard::Message::ChooseProvider(
-                        wizard::Provider::GitHub,
-                    ))),
+                    Message::Accounts(accounts::Message::Add(wizard::Provider::GitHub)),
                 ];
                 if open == Open::WizardToken {
                     messages.push(Message::Accounts(accounts::Message::Wizard(wizard::Message::PasteToken)));
                 }
                 messages
             }
+            // The dialog opens where the demo state starts (task S.30): at a group's "Add" or at
+            // "Import from TorroMail…".
             Open::WizardMail(demo) | Open::WizardAi(demo) => {
-                let mut messages =
-                    vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)];
+                let start = match demo.start() {
+                    wizard::Start::At(provider) => accounts::Message::Add(provider),
+                    wizard::Start::TorroMail => accounts::Message::ImportTorroMail,
+                };
+                let mut messages = vec![Message::Select(Section::Accounts), Message::Accounts(start)];
                 messages.extend(
                     wizard::demo_messages(demo)
                         .into_iter()
@@ -656,20 +665,106 @@ impl Ui {
                 self.data.approvals.clear();
                 vec![Message::Select(Section::Approvals)]
             }
-            Open::AgentDetail | Open::ScriptDetail | Open::HookDetail | Open::NewKey | Open::Disconnect => {
-                let kind = match open {
-                    Open::ScriptDetail => "script",
-                    Open::HookDetail => torro_ipc::api::HOOK_CLIENT,
-                    // The agent with its own rights shows the most: levels, admin, selections.
-                    _ => "codex",
-                };
-                let client = self.data.clients.iter().find(|client| client.kind == kind).map(|c| c.id.clone());
-                let mut messages = vec![Message::Select(Section::Agents)];
-                messages.extend(client.map(|id| Message::Agents(agents::Message::Open(id))));
+            Open::ApiEmpty => {
+                self.data.clients.retain(|client| api::Home::of(client) != Some(api::Home::Api));
+                vec![Message::Select(Section::Api)]
+            }
+            Open::ApiOff => {
+                self.data.settings.allow_api_keys = false;
+                vec![Message::Select(Section::Api)]
+            }
+            Open::ApiDetail | Open::ApiNewKey | Open::ApiRevoke => {
+                let script = self.data.clients.iter().find(|client| client.kind == "script").map(|c| c.id.clone());
+                let page = |message| Message::Api(api::Message::Page(message));
+                let mut messages = vec![Message::Select(Section::Api)];
+                messages.extend(script.map(|id| page(api::PageMessage::Open(id))));
                 match open {
-                    Open::NewKey => messages.push(Message::Agents(agents::Message::NewKey)),
-                    Open::Disconnect => messages.push(Message::Agents(agents::Message::AskDisconnect)),
+                    Open::ApiNewKey => messages.push(page(api::PageMessage::NewKey)),
+                    Open::ApiRevoke => messages.push(page(api::PageMessage::AskRemove)),
                     _ => {}
+                }
+                messages
+            }
+            // "Create key" with the name typed, or with the key of the new script shown once.
+            Open::CreateKey | Open::CreateKeyDone => {
+                let wizard = |message| Message::Api(api::Message::Wizard(message));
+                let mut messages = vec![
+                    Message::Select(Section::Api),
+                    Message::Api(api::Message::Create),
+                    wizard(agent_wizard::Message::Name("nightly-backup".into())),
+                ];
+                if open == Open::CreateKeyDone {
+                    messages.push(wizard(agent_wizard::Message::Connect));
+                }
+                messages
+            }
+            Open::McpEmpty => {
+                self.data.clients.retain(|client| api::Home::of(client) != Some(api::Home::Mcp));
+                self.data.clients.retain(|client| client.kind != torro_ipc::api::HOOK_CLIENT);
+                vec![Message::Select(Section::Mcp)]
+            }
+            Open::McpOff => {
+                self.data.settings.allow_mcp = false;
+                vec![Message::Select(Section::Mcp)]
+            }
+            // Without Claude Code its hook client has no agent any more.
+            Open::McpOrphans => {
+                self.data.clients.retain(|client| client.id != launch::DEMO_CLAUDE);
+                vec![Message::Select(Section::Mcp)]
+            }
+            Open::McpDetail | Open::McpHooks | Open::McpNewKey | Open::McpDisconnect | Open::McpBots => {
+                let kind = if open == Open::McpHooks { "claude-code" } else { "codex" };
+                let client = self.data.clients.iter_mut().find(|client| client.kind == kind).map(|client| {
+                    match open {
+                        // The rights editor's commands too (task S.33): one switched off.
+                        Open::McpDetail => {
+                            client.rights.denied.insert("calendar.list_reminders".into());
+                        }
+                        // An agent that may use bots and read the assistant's conversations: both
+                        // warnings.
+                        Open::McpBots => {
+                            let on = |level| torro_ipc::api::AreaRights { level, admin: false };
+                            client.rights.areas.insert(torro_ipc::api::Area::Bots, on(torro_ipc::api::Level::Write));
+                            let read = on(torro_ipc::api::Level::Read);
+                            client.rights.areas.insert(torro_ipc::api::Area::Assistant, read);
+                        }
+                        _ => {}
+                    }
+                    client.id.clone()
+                });
+                let page = |message| Message::Mcp(mcp::Message::Page(message));
+                let mut messages = vec![Message::Select(Section::Mcp)];
+                messages.extend(client.map(|id| page(api::PageMessage::Open(id))));
+                match open {
+                    Open::McpNewKey => messages.push(page(api::PageMessage::NewKey)),
+                    Open::McpDisconnect => messages.push(page(api::PageMessage::AskRemove)),
+                    Open::McpDetail => {
+                        let calendar = torro_settings_ui::rights::Message::Expand(torro_ipc::api::Area::Calendar);
+                        messages.push(page(api::PageMessage::Rights(calendar)));
+                    }
+                    _ => {}
+                }
+                messages
+            }
+            // The steps of "Connect client", with the demo's detection: Claude Code to connect, or
+            // another MCP client named "my-editor" whose key and command are shown.
+            Open::ConnectClient | Open::ConnectClientRights | Open::ConnectClientDone | Open::ConnectClientOther => {
+                use agent_wizard::{Choice, Message as Step};
+                let wizard = |message| Message::Mcp(mcp::Message::Wizard(message));
+                let mut messages = vec![Message::Select(Section::Mcp), Message::Mcp(mcp::Message::Connect)];
+                match open {
+                    Open::ConnectClientRights | Open::ConnectClientDone => {
+                        let claude = Choice::Agent(crate::client_setup::Target::ClaudeCode);
+                        messages.push(wizard(Step::Choose(claude)));
+                    }
+                    Open::ConnectClientOther => {
+                        messages.push(wizard(Step::Choose(Choice::Other)));
+                        messages.push(wizard(Step::Name("my-editor".into())));
+                    }
+                    _ => {}
+                }
+                if matches!(open, Open::ConnectClientDone | Open::ConnectClientOther) {
+                    messages.push(wizard(Step::Connect));
                 }
                 messages
             }
@@ -709,78 +804,8 @@ impl Ui {
                 }
                 messages
             }
-            // The assistant under Agents & API (task S.21): its detail page with rights of its
-            // own (the demo's), its first start before it has a client, the rights that first
-            // start offers (read only), and asking whether to turn it off.
-            Open::Assistant | Open::AssistantFirstStart | Open::AssistantReadOnly | Open::AssistantTurnOff => {
-                if open == Open::AssistantFirstStart {
-                    self.data.clients.retain(|client| client.kind != torro_ipc::api::ASSISTANT_CLIENT);
-                }
-                if open == Open::AssistantReadOnly {
-                    for client in &mut self.data.clients {
-                        if client.kind == torro_ipc::api::ASSISTANT_CLIENT {
-                            client.rights = torro_ipc::api::Rights::assistant();
-                        }
-                    }
-                }
-                let mut messages =
-                    vec![Message::Select(Section::Agents), Message::Agents(agents::Message::ShowAssistant)];
-                if open == Open::AssistantTurnOff {
-                    messages.push(Message::Agents(agents::Message::AskDisconnect));
-                }
-                messages
-            }
-            // A bot's rights (task B.3), now on its client's page like every other program: one
-            // bot with some rights, one that may use nothing yet.
-            Open::AssistantBot | Open::AssistantBotNew => {
-                let id = if open == Open::AssistantBot { launch::DEMO_TRAVEL } else { launch::DEMO_RELEASE };
-                let client = self.data.bots.iter().find(|bot| bot.id == id).map(|bot| bot.client.clone());
-                let mut messages = vec![Message::Select(Section::Agents)];
-                messages.extend(client.map(|id| Message::Agents(agents::Message::Open(id))));
-                messages
-            }
-            // An agent that may use bots and read the assistant's conversations: both warnings.
-            Open::AgentBots => {
-                let codex = self.data.clients.iter_mut().find(|client| client.kind == "codex");
-                let id = codex.map(|client| {
-                    let on = |level| torro_ipc::api::AreaRights { level, admin: false };
-                    client.rights.areas.insert(torro_ipc::api::Area::Bots, on(torro_ipc::api::Level::Write));
-                    client.rights.areas.insert(torro_ipc::api::Area::Assistant, on(torro_ipc::api::Level::Read));
-                    client.id.clone()
-                });
-                let mut messages = vec![Message::Select(Section::Agents)];
-                messages.extend(id.map(|id| Message::Agents(agents::Message::Open(id))));
-                messages
-            }
             // The design packs: the demo's sample packs, one of them broken.
             Open::Design => vec![Message::Select(Section::Appearance)],
-            // No clients, so the page shows its empty state.
-            Open::AgentsEmpty => {
-                self.data.clients.clear();
-                vec![Message::Select(Section::Agents)]
-            }
-            // The steps of "Connect agent", with the demo's detection: Claude Code to connect, or
-            // a script named "nightly-backup" whose key is shown.
-            Open::AgentWizard | Open::AgentWizardRights | Open::AgentWizardDone | Open::AgentWizardKey => {
-                use agent_wizard::{Choice, Message as Step};
-                let wizard = |message| Message::Agents(agents::Message::Wizard(message));
-                let mut messages = vec![Message::Select(Section::Agents), Message::Agents(agents::Message::Connect)];
-                match open {
-                    Open::AgentWizardRights | Open::AgentWizardDone => {
-                        let claude = Choice::Agent(crate::client_setup::Target::ClaudeCode);
-                        messages.push(wizard(Step::Choose(claude)));
-                    }
-                    Open::AgentWizardKey => {
-                        messages.push(wizard(Step::Choose(Choice::Script)));
-                        messages.push(wizard(Step::Name("nightly-backup".into())));
-                    }
-                    _ => {}
-                }
-                if matches!(open, Open::AgentWizardDone | Open::AgentWizardKey) {
-                    messages.push(wizard(Step::Connect));
-                }
-                messages
-            }
         };
         for message in messages {
             let _ = self.update(message);
@@ -819,8 +844,9 @@ impl Ui {
             iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             self.zoom.subscription().map(Message::Zoom),
-            // Ticks only while a change of a program's rights waits to be saved.
-            agents::subscription(&self.agents).map(Message::Agents),
+            // Tick only while a change of a client's rights waits to be saved.
+            api::subscription(&self.api).map(Message::Api),
+            mcp::subscription(&self.mcp).map(Message::Mcp),
         ];
         // The demo has nothing to reload.
         if !self.launch.demo && !self.waiting {
@@ -834,13 +860,22 @@ impl Ui {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::CoreReady => {
                 self.waiting = false;
-                return self.reload();
+                // `--section assistant`: the core starts the assistant's window or brings it up.
+                let open = self.target.take().map_or_else(Task::none, |target| send(target.request()));
+                return Task::batch([self.reload(), open]);
             }
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
-                // The packs may have changed in the folder since the page was last open.
-                if section == Section::Appearance { Action::ListDesigns } else { Action::None }
+                match section {
+                    // The packs may have changed in the folder since the page was last open.
+                    Section::Appearance => Action::ListDesigns,
+                    // Whether TorroMail has an account to import (task S.30).
+                    Section::Accounts => accounts::opened(&mut self.accounts),
+                    // Which agent each hook client reports for (task S.35).
+                    Section::Mcp => mcp::opened(),
+                    _ => Action::None,
+                }
             }
             Message::ToggleMenu(menu) => {
                 self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
@@ -905,10 +940,9 @@ impl Ui {
                     true => self.design.apply(&self.data.settings.design),
                     false => None,
                 };
-                let agents = agents::loaded(&mut self.agents, &self.data);
-                // `--section bot:<id>` waited for this list of bots, which names the bot's client
-                // ([`Ui::open_target`]); with it here, the bot's page opens.
-                let target = self.open_target();
+                api::loaded(&mut self.api);
+                // The hook switch takes the hooks out once the reload no longer lists their client.
+                let unhook = mcp::loaded(&mut self.mcp, &self.data);
                 // The app switcher of this window follows the components (task W.2).
                 if self.data.error.is_none() {
                     torro_gui::components::set_off(&self.data.settings.components_off);
@@ -924,30 +958,45 @@ impl Ui {
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
                 }
+                // A window that starts on Accounts asks for TorroMail's accounts once the core
+                // answers, as choosing the page does (task S.30); one on MCP reads the hook notes.
+                let unlisted = accounts::unlisted(&self.accounts);
+                let ready = self.data.error.is_none();
+                let import = match unlisted && self.section == Section::Accounts && ready {
+                    true => {
+                        let ask = accounts::opened(&mut self.accounts);
+                        self.perform(ask)
+                    }
+                    false => Task::none(),
+                };
+                let hooks = match self.section == Section::Mcp && self.mcp.notes.is_none() && ready {
+                    true => self.perform(mcp::opened()),
+                    false => Task::none(),
+                };
                 // No canvas keeps a cache: the next frame draws with the new design, the task
                 // loads its fonts.
-                if let Some(task) = design {
-                    return Task::batch([target, task.map(Message::Design)]);
-                }
-                // The assistant's page asks for its new client's activity once the list has it.
-                let agents = agents.map_or_else(Task::none, |action| self.perform(action));
-                return Task::batch([target, agents]);
+                let design = design.map_or_else(Task::none, |task| task.map(Message::Design));
+                let unhook = unhook.map_or_else(Task::none, |action| self.perform(action));
+                return Task::batch([import, hooks, design, unhook]);
             }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
                 let in_setup = self.setup.as_mut().is_some_and(|setup| setup::answered(setup, &result));
                 let in_dialog = in_setup || accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
-                // The "Connect program" dialog shows its errors itself, and may go on with a job.
-                let next = agents::answered(&mut self.agents, &result);
+                // "Create key", "Connect client" and the hook switch show their errors themselves,
+                // and may go on with a job. Each section takes only its own answers.
+                let next = [mcp::answered(&mut self.mcp, &result), api::answered(&mut self.api, &result)];
                 // A refused design (the core checks it too) goes back to the stored one with the
                 // next reload; the notice says why.
                 if result.is_err() {
                     self.pending_design = None;
                 }
-                self.notice = if in_dialog || next.is_some() { None } else { result.err() };
-                let next = next.map_or_else(Task::none, |action| self.perform(action));
-                return Task::batch([next, self.reload()]);
+                self.notice = if in_dialog || next.iter().any(Option::is_some) { None } else { result.err() };
+                let mut tasks: Vec<Task<Message>> =
+                    next.into_iter().flatten().map(|action| self.perform(action)).collect();
+                tasks.push(self.reload());
+                return Task::batch(tasks);
             }
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
@@ -985,7 +1034,8 @@ impl Ui {
                 let page = match self.section {
                     Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
-                    Section::Agents => agents::escape(&self.agents).map(Message::Agents),
+                    Section::Api => api::escape(&self.api).map(Message::Api),
+                    Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
                     _ => None,
                 };
                 return match page {
@@ -1014,7 +1064,8 @@ impl Ui {
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
-            Message::Agents(m) => agents::update(&mut self.agents, m, &self.data),
+            Message::Api(m) => api::update(&mut self.api, m, &self.data),
+            Message::Mcp(m) => mcp::update(&mut self.mcp, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
         };
@@ -1048,10 +1099,11 @@ impl Ui {
                 self.close_menus();
                 Action::None
             }
-            // "New" here means a new account, the one thing the control centre creates.
+            // "New" here means a new account, the one thing the control centre creates. Which kind
+            // is chosen by the "Add" of its group (task S.30), so it opens the accounts' list.
             Switcher::New => {
                 self.select(Section::Accounts);
-                accounts::update(&mut self.accounts, accounts::Message::AddAccount, &self.data)
+                accounts::opened(&mut self.accounts)
             }
         }
     }
@@ -1061,15 +1113,21 @@ impl Ui {
             Action::None => Task::none(),
             // The demo is closed off: no request reaches the service, no page opens and nothing
             // reaches the clipboard, so nothing is stored and nothing starts. A few requests get a
-            // sample answer from the process itself (an agent's activity, a new key), so their
-            // states can be shown.
+            // sample answer from the process itself (a client's activity, a new key), so their
+            // states can be shown; so do the jobs, the hook notes from the demo's own.
             Action::Send(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
                 Some(response) => self.update(Message::Sent(Ok(response))),
                 None => Task::none(),
             },
             Action::OpenUrl(_) | Action::Copy(_) if self.launch.demo => Task::none(),
             Action::Setup(job) if self.launch.demo => {
-                self.update(Message::Agents(agents::Message::Setup(crate::client_setup::demo(&job))))
+                let outcome = match job {
+                    crate::client_setup::Job::HookNotes => {
+                        crate::client_setup::Outcome::HookNotes(Ok(launch::demo_hook_notes()))
+                    }
+                    job => crate::client_setup::demo(&job),
+                };
+                self.update(Message::Mcp(mcp::Message::Setup(outcome)))
             }
             Action::Send(request) => send(request),
             Action::SendAll(requests) if self.launch.demo => {
@@ -1110,9 +1168,9 @@ impl Ui {
                 Task::none()
             }
             Action::Copy(text) => iced::clipboard::write(text),
-            Action::Setup(job) => Task::perform(crate::client_setup::perform(job), |outcome| {
-                Message::Agents(agents::Message::Setup(outcome))
-            }),
+            Action::Setup(job) => {
+                Task::perform(crate::client_setup::perform(job), |outcome| Message::Mcp(mcp::Message::Setup(outcome)))
+            }
         }
     }
 
@@ -1251,7 +1309,8 @@ impl Ui {
         let count = match section {
             Section::Accounts => accounts::listed(&self.data.accounts).count(),
             Section::Workspaces => self.data.templates.len(),
-            Section::Agents => self.data.clients.len(),
+            Section::Api => api::listed(&self.data, api::Home::Api).count(),
+            Section::Mcp => api::listed(&self.data, api::Home::Mcp).count(),
             Section::Approvals => approvals::pending(&self.data.approvals).count(),
             _ => 0,
         };
@@ -1309,7 +1368,8 @@ impl Ui {
     fn page_header(&self, class: SizeClass) -> Header<'_, Message> {
         match self.section {
             Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
-            Section::Agents => agents::header(&self.agents, &self.data, class).map(Message::Agents),
+            Section::Api => api::header(&self.api, &self.data, class).map(Message::Api),
+            Section::Mcp => mcp::header(&self.mcp, &self.data, class).map(Message::Mcp),
             _ => Header::default(),
         }
     }
@@ -1321,7 +1381,8 @@ impl Ui {
             Section::Workspaces => {
                 workspaces::overlay(&self.workspaces, &self.data).map(|e| e.map(Message::Workspaces))
             }
-            Section::Agents => agents::overlay(&self.agents, &self.data).map(|e| e.map(Message::Agents)),
+            Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
+            Section::Mcp => mcp::overlay(&self.mcp, &self.data).map(|e| e.map(Message::Mcp)),
             _ => None,
         }
     }
@@ -1369,7 +1430,8 @@ impl Ui {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
             Section::Accounts => accounts::view(&self.accounts, &self.data).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
-            Section::Agents => agents::view(&self.agents, &self.data).map(Message::Agents),
+            Section::Api => api::view(&self.api, &self.data).map(Message::Api),
+            Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::Appearance => general::appearance(&self.general, &self.data).map(Message::General),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
@@ -1490,11 +1552,6 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Tools { tools }) = client::call(&socket, &Request::ListTools).await {
                 data.tools = tools;
-            }
-            // Only which bot a client belongs to: a bot's profile, instructions and skills are
-            // the assistant app's (task S.21), the rights its client's.
-            if let Ok(Response::Bots { bots }) = client::call(&socket, &Request::ListBots).await {
-                data.bots = bots;
             }
             // The setup's AI step offers them as what a new chat starts with (issue #131).
             if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {
@@ -1720,7 +1777,8 @@ mod tests {
         assert!(general::unlisted(&real.general));
         assert!(real.update(Message::Select(Section::Appearance)).units() > 0, "opening the page asks the core");
         assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
-        assert!(real.update(Message::Select(Section::Accounts)).units() == 0, "other pages do not");
+        assert!(real.update(Message::Select(Section::Workspaces)).units() == 0, "other pages do not");
+        assert!(real.update(Message::Select(Section::Accounts)).units() > 0, "Accounts asks for TorroMail's accounts");
     }
 
     /// A design chosen on the Appearance page is drawn in this window at once and saved; a reload that
@@ -1846,6 +1904,8 @@ mod tests {
         let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::Switcher(Switcher::New));
         assert_eq!(ui.section, Section::Accounts, "New in the switcher adds an account");
+        assert!(ui.accounts.wizard.is_none(), "where its group's Add chooses the kind (task S.30)");
+        let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)));
         assert!(ui.accounts.wizard.is_some());
         let _ = ui.update(Message::Switcher(Switcher::Toggle));
         assert_eq!(ui.menu, Some(Menu::Switcher));
@@ -1896,7 +1956,7 @@ mod tests {
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
         }
-        let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
+        let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Mail)));
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
         }
@@ -1906,7 +1966,7 @@ mod tests {
     fn page_dialogs_lie_over_the_whole_window() {
         let mut ui = ui(Section::Accounts);
         assert!(ui.page_overlay().is_none());
-        let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
+        let _ = ui.update(Message::Accounts(accounts::Message::Add(wizard::Provider::Mail)));
         assert!(ui.page_overlay().is_some(), "the add-account dialog is a window layer");
         let _ = ui.update(Message::Select(Section::Overview));
         assert!(ui.page_overlay().is_none(), "another section shows no dialog of the accounts page");
@@ -1937,120 +1997,113 @@ mod tests {
         assert_eq!(empty.trail(Section::Approvals), Trail::None);
     }
 
+    /// Task S.35: API lists the keys of programs, MCP the MCP clients; neither shows the assistant,
+    /// a bot or a hook client. Their demo states open the pages and dialogs a click would.
     #[test]
-    fn the_agents_section_opens_details_and_answers_in_the_demo() {
-        let demo = started(&["--demo", "--section", "agents"]);
-        assert_eq!(demo.section, Section::Agents);
-        assert_eq!(demo.trail(Section::Agents), Trail::Count(demo.data.clients.len()));
+    fn api_and_mcp_list_their_clients_and_open_their_pages() {
+        use torro_ipc::api::{ASSISTANT_CLIENT, BOT_CLIENT, HOOK_CLIENT};
+        let demo = started(&["--demo", "--section", "api"]);
+        assert_eq!(demo.section, Section::Api);
+        let kinds = |home| api::listed(&demo.data, home).map(|client| client.kind.as_str()).collect::<Vec<_>>();
+        assert_eq!(kinds(api::Home::Api), ["script"]);
+        assert_eq!(kinds(api::Home::Mcp), ["claude-code", "codex"]);
+        for kind in [ASSISTANT_CLIENT, BOT_CLIENT, HOOK_CLIENT] {
+            assert!(demo.data.clients.iter().any(|client| client.kind == kind), "the demo has a {kind}");
+        }
+        assert_eq!(demo.trail(Section::Api), Trail::Count(1));
+        assert_eq!(demo.trail(Section::Mcp), Trail::Count(2));
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = demo.window(class);
         }
 
-        let detail = started(&["--demo", "--open", "agent-detail"]);
-        let codex = detail.data.clients.iter().find(|client| client.kind == "codex").map(|client| client.id.clone());
-        assert_eq!(detail.agents.selected, codex);
-        assert!(detail.page_overlay().is_none());
-        for (state, kind) in [("script-detail", "script"), ("hook-detail", torro_ipc::api::HOOK_CLIENT)] {
-            let ui = started(&["--demo", "--open", state]);
-            let selected = ui.data.clients.iter().find(|client| Some(&client.id) == ui.agents.selected.as_ref());
-            assert_eq!(selected.map(|client| client.kind.as_str()), Some(kind), "{state}");
-        }
+        let key = started(&["--demo", "--open", "api-detail"]);
+        assert_eq!((key.section, key.api.page.selected.as_deref()), (Section::Api, Some("e8a07b35")));
+        assert!(key.page_header(SizeClass::Wide).sub_page.is_some() && key.page_overlay().is_none());
+        let codex = started(&["--demo", "--open", "mcp-detail"]);
+        assert_eq!((codex.section, codex.mcp.page.selected.as_deref()), (Section::Mcp, Some("7b2e4f10")));
+        let hooks = started(&["--demo", "--open", "mcp-hooks"]);
+        assert_eq!(hooks.mcp.page.selected.as_deref(), Some(launch::DEMO_CLAUDE));
+        assert!(hooks.mcp.notes.is_some(), "opening MCP read the hook notes");
+        let claude = hooks.data.clients.iter().find(|client| client.id == launch::DEMO_CLAUDE).expect("Claude Code");
+        let hook = mcp::hook_of(claude, &hooks.data, hooks.mcp.notes.as_deref()).map(|hook| hook.id.as_str());
+        assert_eq!(hook, Some(launch::DEMO_HOOKS));
 
-        let mut key = started(&["--demo", "--open", "new-key"]);
-        assert!(key.page_overlay().is_some(), "the demo answers clients.new_key with a made-up key");
-        let _ = key.update(Message::Escape);
-        assert!(key.page_overlay().is_none(), "Escape closes it and the key is gone");
-
-        let mut disconnect = started(&["--demo", "--open", "disconnect"]);
-        assert!(disconnect.page_overlay().is_some());
-        let _ = disconnect.update(Message::Escape);
-        assert!(disconnect.page_overlay().is_none() && disconnect.agents.selected.is_some());
-
-        let empty = started(&["--demo", "--open", "agents-empty"]);
-        assert_eq!((empty.section, empty.data.clients.len()), (Section::Agents, 0));
-        assert_eq!(empty.trail(Section::Agents), Trail::None);
-    }
-
-    /// Tasks C.6 and S.21: `--section assistant` opens the assistant's page under Agents & API
-    /// (the chat's way here), its demo states show it off, on and reading only, and the key of its
-    /// new client never reaches any page.
-    #[test]
-    fn the_assistant_opens_under_agents_and_keeps_its_key_from_every_page() {
-        use torro_ipc::api::{ASSISTANT_CLIENT, Rights, RightsTemplate};
-        let deep = started(&["--section", "assistant"]);
-        assert_eq!(deep.section, Section::Agents);
-        let first = started(&["--demo", "--open", "assistant-first-start"]);
-        assert_eq!(first.section, Section::Agents);
-        assert!(agents::assistant_client(&first.data).is_none());
-        assert!(first.page_header(SizeClass::Wide).sub_page.is_some(), "the first start is a page of its own");
-        assert_eq!(first.page_header(SizeClass::Wide).actions.len(), 1, "Turn on assistant");
-        let on = started(&["--demo", "--open", "assistant"]);
-        let rights = agents::assistant_client(&on.data).map(|client| client.rights.clone());
-        assert!(rights.is_some_and(|rights| rights != Rights::assistant()), "rights of its own");
-        let read_only = started(&["--demo", "--open", "assistant-read-only"]);
-        let rights = agents::assistant_client(&read_only.data).map(|client| client.rights.clone());
-        assert_eq!(rights, Some(Rights::assistant()));
-        let mut off = started(&["--demo", "--open", "assistant-turn-off"]);
-        assert!(off.page_overlay().is_some(), "Turn off the assistant?");
-        let _ = off.update(Message::Escape);
-        assert!(off.page_overlay().is_none());
-        for ui in [&first, &on, &read_only] {
-            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
-                let _ = ui.window(class);
-            }
-        }
-
-        // Its row in the list leads to the same page, whether it is on or off.
-        let mut list = started(&["--demo", "--section", "agents"]);
-        let _ = list.update(Message::Agents(agents::Message::ShowAssistant));
-        assert_eq!(list.section, Section::Agents);
-        assert!(list.page_header(SizeClass::Wide).sub_page.is_some());
-
-        let mut real = ui(Section::Agents);
-        let _ = real.update(Message::Agents(agents::Message::ShowAssistant));
-        assert_eq!(real.update(Message::Agents(agents::Message::TurnOn)).units(), 1, "clients.create_client");
-        let client = ClientInfo {
-            id: "a51c3e88".into(),
-            name: agents::CLIENT_NAME.into(),
-            kind: ASSISTANT_CLIENT.into(),
-            created: chrono::Utc::now(),
-            last_used: None,
-            rights: RightsTemplate::ReadOnly.rights(),
-            agent: None,
-        };
-        let key = torro_ipc::IssuedKey::new(torro_ipc::Key::new("torro_a51c3e88_00ff"));
-        let next = real.update(Message::Sent(Ok(Response::ClientKey { client, key })));
-        assert_eq!(next.units(), 1, "only the reload: the rights came with clients.create_client (task C.11)");
-        assert_eq!(real.notice, None);
-        assert!(real.page_overlay().is_none(), "no page ever shows the assistant's key");
-    }
-
-    #[test]
-    fn connect_agent_runs_through_the_demo_without_touching_anything() {
-        for state in ["agent-wizard", "agent-wizard-rights", "agent-wizard-done", "agent-wizard-key"] {
+        for state in ["api-new-key", "mcp-new-key", "api-revoke", "mcp-disconnect"] {
             let mut ui = started(&["--demo", "--open", state]);
-            assert_eq!(ui.section, Section::Agents, "{state}");
-            assert!(ui.agents.wizard.is_some() && ui.page_overlay().is_some(), "{state}: the dialog is open");
+            assert!(ui.page_overlay().is_some(), "{state}: the dialog is open");
+            let _ = ui.update(Message::Escape);
+            assert!(ui.page_overlay().is_none(), "{state}: Escape closes it");
+        }
+        let orphans = started(&["--demo", "--open", "mcp-orphans"]);
+        assert_eq!(mcp::orphans(&orphans.data, orphans.mcp.notes.as_deref()).count(), 1, "Hooks without an agent");
+        for (state, section) in [("api-empty", Section::Api), ("mcp-empty", Section::Mcp)] {
+            let empty = started(&["--demo", "--open", state]);
+            assert_eq!((empty.section, empty.trail(section)), (section, Trail::None), "{state}");
+        }
+        let off = started(&["--demo", "--open", "api-off"]);
+        assert!(!off.data.settings.allow_api_keys && off.data.settings.allow_mcp);
+        let off = started(&["--demo", "--open", "mcp-off"]);
+        assert!(off.data.settings.allow_api_keys && !off.data.settings.allow_mcp);
+    }
+
+    /// Task S.35: "Create key" and "Connect client" run through the demo without touching
+    /// anything; outside it detection is a job of its own.
+    #[test]
+    fn create_key_and_connect_client_run_through_the_demo() {
+        let states = [
+            ("create-key", Section::Api),
+            ("create-key-done", Section::Api),
+            ("connect-client", Section::Mcp),
+            ("connect-client-rights", Section::Mcp),
+            ("connect-client-done", Section::Mcp),
+            ("connect-client-other", Section::Mcp),
+        ];
+        for (state, section) in states {
+            let mut ui = started(&["--demo", "--open", state]);
+            assert_eq!(ui.section, section, "{state}");
+            assert!(ui.page_overlay().is_some(), "{state}: the dialog is open");
             assert_eq!(ui.data.clients.len(), launch::demo_data().clients.len(), "{state}: the demo changes nothing");
             let _ = ui.update(Message::Escape);
-            assert!(ui.agents.wizard.is_none(), "{state}: Escape closes it");
+            assert!(ui.api.wizard.is_none() && ui.mcp.wizard.is_none(), "{state}: Escape closes it");
         }
-        let mut real = ui(Section::Agents);
-        let detect = real.update(Message::Agents(agents::Message::Connect));
+        let mut real = ui(Section::Mcp);
+        let detect = real.update(Message::Mcp(mcp::Message::Connect));
         assert_eq!(detect.units(), 1, "outside the demo detection is a job of its own");
+        assert_eq!(real.update(Message::Api(api::Message::Create)).units(), 0, "Create key detects nothing");
     }
 
     #[test]
-    fn agents_requests_go_to_the_core_outside_the_demo() {
-        let mut real = ui(Section::Agents);
+    fn client_requests_go_to_the_core_outside_the_demo() {
+        let mut real = ui(Section::Mcp);
         let id = "3fa9c1d2".to_string();
-        assert_eq!(real.update(Message::Agents(agents::Message::Open(id.clone()))).units(), 1, "clients.activity");
+        let open = Message::Mcp(mcp::Message::Page(api::PageMessage::Open(id.clone())));
+        assert_eq!(real.update(open).units(), 1, "clients.activity");
+        assert_eq!(real.update(Message::Api(api::Message::Allow(false))).units(), 1, "settings.set_setting");
+        assert_eq!(real.update(Message::Mcp(mcp::Message::Allow(false))).units(), 1, "settings.set_setting");
+        assert_eq!(real.update(Message::Select(Section::Mcp)).units(), 1, "opening MCP reads the hook notes");
         assert_eq!(real.perform(Action::Copy("torro_x".into())).units(), 1, "the clipboard");
         let mut demo = started(&["--demo"]);
         assert_eq!(demo.perform(Action::Copy("torro_x".into())).units(), 0, "the demo leaves the clipboard alone");
-        let removed = demo.update(Message::Agents(agents::Message::Open(id)));
-        assert_eq!(removed.units(), 0);
+        let opened = demo.update(Message::Mcp(mcp::Message::Page(api::PageMessage::Open(id))));
+        assert_eq!(opened.units(), 0);
         assert_eq!(demo.data.clients.len(), launch::demo_data().clients.len(), "the demo changes nothing");
+    }
+
+    /// Tasks S.34 and S.35: `--section assistant` and `--section bot:<id>` no longer open a page –
+    /// what the assistant and its bots may use is set in its window – but bring that window to the
+    /// front once the core answers; the demo starts nothing.
+    #[test]
+    fn the_assistant_s_words_bring_its_window_to_the_front() {
+        for word in ["assistant", "bot:b0000001"] {
+            let mut ui = started(&["--section", word]);
+            assert_eq!(ui.section, Section::Overview, "{word}");
+            assert!(ui.target.is_some(), "{word}: waits for the core");
+            assert_eq!(ui.update(Message::CoreReady).units(), 2, "{word}: the load and apps.open_app");
+            assert!(ui.target.is_none(), "{word}: once");
+            let demo = started(&["--demo", "--section", word]);
+            assert!(demo.target.is_none(), "{word}: the demo starts nothing");
+        }
+        assert_eq!(Section::from_arg("agents"), Some(Section::Mcp), "the old word leads to MCP");
     }
 
     #[test]
@@ -2061,13 +2114,16 @@ mod tests {
         assert_eq!(Section::from_arg("mail"), None);
     }
 
-    /// Task S.21: the sidebar is the suite's own list – Overview, Accounts, Agents & API,
-    /// Approvals, Workspaces, Appearance, with General at its foot. Apps, Assistant and the
-    /// Notification Hub are gone from it; their words lead to the sections that took them over.
+    /// Tasks S.21 and S.35: the sidebar is the suite's own list – Overview, Accounts, API, MCP,
+    /// Approvals, Workspaces, Appearance, with General at its foot. Apps, Assistant, the
+    /// Notification Hub and the old section of agents and scripts are gone from it; their words lead to the sections that
+    /// took them over.
     #[test]
     fn the_sidebar_keeps_only_the_sections_of_the_suite() {
         let words: Vec<&str> = Section::ALL.iter().map(|section| section.arg()).collect();
-        assert_eq!(words, ["overview", "accounts", "agents", "approvals", "workspaces", "appearance", "general"]);
+        assert_eq!(words, ["overview", "accounts", "api", "mcp", "approvals", "workspaces", "appearance", "general"]);
+        let labels: Vec<&str> = Section::ALL.iter().map(|section| section.label()).collect();
+        assert!(labels.contains(&tr("API")) && labels.contains(&tr("MCP")));
         let nav: Vec<Section> = Section::nav().collect();
         assert!(!nav.contains(&Section::General), "General sits at the foot");
         assert_eq!(nav.len(), Section::ALL.len() - 1);
@@ -2100,9 +2156,20 @@ mod tests {
 
     #[test]
     fn the_open_states_go_where_a_click_would() {
-        let wizard = started(&["--demo", "--open", "wizard"]);
+        let wizard = started(&["--demo", "--open", "wizard-nextcloud"]);
         assert_eq!(wizard.section, Section::Accounts);
         assert!(wizard.accounts.wizard.is_some() && wizard.page_overlay().is_some());
+        // Task S.30: opening Accounts asked the demo's TorroMail, whose Posteo account is new.
+        assert!(wizard.accounts.torromail.as_ref().is_some_and(|accounts| !accounts.is_empty()));
+        let empty = started(&["--demo", "--open", "accounts-empty"]);
+        assert_eq!((empty.section, empty.data.accounts.len()), (Section::Accounts, 0));
+        assert!(empty.page_overlay().is_none());
+        let start = started(&["--demo", "--section", "accounts"]);
+        assert!(start.accounts.torromail.is_some(), "a start on Accounts asks too");
+        for state in ["wizard-torromail", "wizard-torromail-failed", "wizard-torromail-done"] {
+            let import = started(&["--demo", "--open", state]);
+            assert!(import.accounts.wizard.is_some() && import.page_overlay().is_some(), "{state}");
+        }
 
         let first = wizard.data.accounts[0].id.clone();
         let detail = started(&["--demo", "--open", "account-detail", "--section", "general"]);
@@ -2135,8 +2202,10 @@ mod tests {
         let password = started(&["--demo", "--open", "change-password"]);
         assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@posteo.de@posteo.de"));
         assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
-        let ai = started(&["--demo", "--open", "ai-detail"]);
+        // Its models come with the page (task S.31), from the demo's own answer.
+        let ai = started(&["--demo", "--open", "account-detail-ai"]);
         assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
+        assert!(ai.accounts.models.contains_key("ai:openrouter@openrouter.ai") && !ai.accounts.models_page.loading);
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
         for state in ["ntfy-detail", "ntfy-topic", "ntfy-login"] {
@@ -2248,63 +2317,5 @@ mod tests {
         assert_eq!(demo.data.settings.zoom.percent(), 150);
         let _ = demo.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
         assert_eq!((demo.zoom.factor(), layout::of(demo.size)), (1.0, SizeClass::Wide));
-    }
-
-    /// Tasks B.3 and S.21: `--section bot:<id>` opens the page of the bot's client under Agents &
-    /// API, the way the assistant app's "Access…" does; a bot's row in the list goes there too, and
-    /// the page carries the same rights view as any other program's.
-    #[test]
-    fn a_bots_rights_open_by_deep_link_and_from_the_list() {
-        let ui = started(&["--demo", "--section", "bot:b0000001"]);
-        assert_eq!(ui.section, Section::Agents);
-        let travel = ui.data.bots.iter().find(|bot| bot.id == launch::DEMO_TRAVEL).expect("the demo's bot");
-        assert_eq!(ui.agents.selected.as_deref(), Some(travel.client.as_str()));
-        assert!(ui.page_header(SizeClass::Wide).sub_page.is_some(), "a page below the section");
-        for class in [SizeClass::Narrow, SizeClass::Wide] {
-            let _ = ui.window(class);
-        }
-
-        let mut agents = started(&["--demo", "--section", "agents"]);
-        let client = agents.data.bots.iter().find(|bot| bot.id == launch::DEMO_RELEASE).map(|bot| bot.client.clone());
-        let client = client.expect("a bot client");
-        let _ = agents.update(Message::Agents(agents::Message::Open(client.clone())));
-        assert_eq!((agents.section, agents.agents.selected.as_deref()), (Section::Agents, Some(client.as_str())));
-
-        // A bot the core does not list opens nothing but the section's own list.
-        let unknown = started(&["--demo", "--section", "bot:ffffffff"]);
-        assert_eq!((unknown.section, unknown.agents.selected.as_deref()), (Section::Agents, None));
-    }
-
-    /// The way `--section bot:<id>` really runs (found in the review of #210): without `--demo`
-    /// the window starts with no data at all, so the id can name no client yet – the target waits
-    /// for the core's list of bots and opens the bot's page with it, instead of being resolved
-    /// against an empty [`Data`] in [`Ui::new`] and lost.
-    #[test]
-    fn a_bots_page_waits_for_the_core_s_list_of_bots() {
-        let mut ui = started(&["--section", "bot:b0000001"]);
-        assert_eq!(ui.section, Section::Agents);
-        assert!(!ui.loaded && ui.agents.selected.is_none(), "nothing to open the page with yet");
-        assert!(ui.target.is_some(), "the bot's id waits for the data");
-
-        let data = launch::demo_data();
-        let travel = data.bots.iter().find(|bot| bot.id == launch::DEMO_TRAVEL).expect("the demo's bot");
-        let client = travel.client.clone();
-        let _ = ui.update(Message::Loaded(Box::new(data)));
-        assert_eq!(ui.agents.selected.as_deref(), Some(client.as_str()), "the bot's own page, not the list");
-        assert!(ui.target.is_none(), "and the target is spent");
-        assert!(ui.page_header(SizeClass::Wide).sub_page.is_some(), "a page below the section");
-
-        // A bot the core answers without: the section's own list stays open and nothing waits on.
-        let mut unknown = started(&["--section", "bot:ffffffff"]);
-        let _ = unknown.update(Message::Loaded(Box::new(launch::demo_data())));
-        assert_eq!(unknown.agents.selected.as_deref(), None, "the list of bots, which shows every one");
-        assert!(unknown.target.is_none(), "no later load will bring it either");
-
-        // An answer that failed carries no bots at all: that one waits for the next load.
-        let mut offline = started(&["--section", "bot:b0000001"]);
-        let _ = offline.update(loaded(Appearance::System, Some("core is not running")));
-        assert!(offline.target.is_some(), "a core that did not answer keeps the target");
-        let _ = offline.update(Message::Loaded(Box::new(launch::demo_data())));
-        assert_eq!(offline.agents.selected.as_deref(), Some(client.as_str()), "the page opens once the core answers");
     }
 }

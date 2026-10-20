@@ -174,7 +174,7 @@ window_class = "torro-ext-timetracking"
   vergeben.
 - Jeder Aufruf geht durch den Dienst: Schlüssel → Rechte im Bereich `ext:<id>` → Freigabe → an die
   Erweiterung → Protokoll. Oberfläche, API und MCP entstehen so ohne Zutun der Erweiterung.
-- Die Rechte für `ext:<id>` vergibt die Person in „Agents & API“ wie für jeden Bereich, Standard
+- Die Rechte für `ext:<id>` vergibt die Person im Rechte-Editor (API, MCP, Assistent › Access) wie für jeden Bereich, Standard
   „Kein Zugriff“.
 
 ### Nahtlos einbinden: Daten statt fremder Oberfläche
@@ -262,7 +262,7 @@ Sortiert nach Aufwand und Risiko, von „gibt es schon fast“ bis „großer Um
 
 | # | Punkt | Was eine Erweiterung tut | Wie | Stand heute |
 |---|---|---|---|---|
-| 1 | **API/MCP-Clients** | ein fremdes Programm liest und schreibt Daten der Suite | Schlüssel + Rechte, Socket bzw. später HTTP | **gibt es** (Agents & API, Script) |
+| 1 | **API/MCP-Clients** | ein fremdes Programm liest und schreibt Daten der Suite | Schlüssel + Rechte, Socket bzw. später HTTP | **gibt es** (Steuerzentrale › API bzw. MCP) |
 | 2 | **Quellen des Eingangs** | meldet Einträge (Monitoring, CI, Messenger, Home Assistant) | `inbox.post_item` mit eigenem Client | **gibt es** für Skripte; fehlt: Manifest, Symbol, eigene Quelle in der Seitenleiste |
 | 3 | **Design-Pakete** | Farben, Schriften, Logo | nur Daten, geprüft | **gibt es** (L.1–L.5) |
 | 4 | **Werkzeuge für den Assistenten** | zusätzliche Werkzeuge im Chat | über den Katalog (`ext:<id>`), damit Rechte und Freigaben gelten; fremde MCP-Server nie direkt am Antrieb | neu |

@@ -179,7 +179,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 - `--demo --open <zustand>` öffnet direkt: Kalender `editor`, `editor-new`, `day`, `month`,
   `agenda`, `error`, `empty`, `loading`; Aufgaben `detail`, `error`, `empty`, `loading`.
 - Steuerzentrale bekommt `--demo` (Beispielkonten, -vorlagen und -einstellungen im Speicher,
-  kein Dienst) und `--open wizard`, `--open account-detail`.
+  kein Dienst) und `--open wizard-nextcloud`, `--open account-detail`.
 - So kann `torro-design-review` jeden Zustand per Skript fotografieren, ohne zu klicken.
 
 ### Kalender

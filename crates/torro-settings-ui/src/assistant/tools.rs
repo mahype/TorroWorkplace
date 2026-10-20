@@ -10,10 +10,10 @@
 //!
 //! **Switch and rights are two things** (`docs/assistent.md`): the switch (`settings.set_setting
 //! tool_enabled`) says whether the tool exists on this computer, for every client; what the
-//! assistant may use is its rights (`tools` with the tools chosen), which stay in the control
-//! centre with its key. So the row "may use it" only reads the assistant's client
-//! (`clients.list_clients`, as General does) and points at the control centre
-//! ([`crate::Action::ControlCentre`]); nothing here writes a client.
+//! assistant may use is its rights (`tools` with the tools chosen), which Access in this window
+//! edits (task S.34). So the row "may use it" only reads the assistant's client
+//! (`clients.list_clients`, as General does) and opens Access ([`crate::Action::Open`], at the
+//! assistant's own rights); nothing here writes a client.
 //!
 //! **Only a person switches a tool on and sets a path** (point 9 of "Was nie nach außen geht" in
 //! `docs/api.md`): this window runs with the app key, so it may. Folder and logo come from the
@@ -29,23 +29,23 @@ use std::fmt;
 use std::path::Path;
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row, svg};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::widget::{Space, column, container, row};
+use iced::{Alignment, Element, Fill};
 
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{Paper, PdfTemplate, PdfTemplateId, ToolId};
-use torro_gui::icon::{self, Icon};
+use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
 use torro_ipc::api::{Access, Area};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{Request, SettingKey};
 
-use super::{Action, AppAction, CONTROL_CENTRE};
+use super::{Action, AppAction, access};
 use crate::Data;
-use crate::parts::{field, picker, pressable, setting_row, switch};
+use crate::parts::{chevron, field, picker, pressable, setting_row, switch};
 
 /// The file endings the logo chooser offers, as `PdfTemplate::check` takes them.
 pub const LOGO_EXTENSIONS: [&str; 3] = ["png", "jpg", "jpeg"];
@@ -97,8 +97,9 @@ impl Line {
 pub enum Message {
     /// The switch of a tool: on or off for every client (`tool_enabled`).
     Switch(ToolId, bool),
-    /// "Allow it in Torro Workplace": the control centre at the assistant's rights.
-    ControlCentre,
+    /// "Allow it under Access": Access in this window, at the assistant's own rights (the
+    /// sections open it there, [`super::update`]).
+    Access,
     /// "Choose…" at the folder: the system's folder chooser, in the app.
     ChooseFolder,
     /// "Use desktop": no folder of its own any more (`pdf_folder` `null`).
@@ -126,7 +127,7 @@ pub enum Message {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Switch(tool, on) => Action::send(switch_request(tool, on)),
-        Message::ControlCentre => Action::ControlCentre(CONTROL_CENTRE.to_string()),
+        Message::Access => Action::Open(access::ID),
         Message::ChooseFolder => Action::App(AppAction::PickFolder),
         Message::UseDesktop => {
             Action::send(Request::SetSetting { key: SettingKey::PdfFolder, value: serde_json::Value::Null })
@@ -253,7 +254,7 @@ fn tool_group<'a>(info: &'a ToolInfo, data: &'a Data, words: bool) -> Element<'a
         rows.push(folder_row(data, words));
     }
     let footer = tr(
-        "A tool works only while it is on here and allowed in Torro Workplace. Only you can switch it on and choose the folder and the logos.",
+        "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose the folder and the logos.",
     );
     widgets::group(info.name.as_str(), rows, Some(footer.to_string()))
 }
@@ -283,20 +284,20 @@ fn switch_label(id: ToolId) -> &'static str {
 }
 
 /// Whether the assistant may use the tool: a green dot, or an orange one (the tool is on, but the
-/// assistant may not use it: something to do) and a row that leads to the control centre, where its
-/// rights are chosen.
+/// assistant may not use it: something to do) and a row that opens Access, where its rights are
+/// chosen – a chevron, not the arrow of another window: Access is in this one.
 fn access_row<'a>(data: &Data, id: ToolId) -> Element<'a, Message> {
     if assistant_may_use(data, id) {
         return setting_row(Some(widgets::status_dot(Status::Ok)), tr("The assistant may use it"), None, Space::new());
     }
-    let detail = tr("Allow it in Torro Workplace");
+    let detail = tr("Allow it under Access");
     let row = setting_row(
         Some(widgets::status_dot(Status::Attention)),
         tr("The assistant may not use it"),
         Some(detail.to_string()),
-        arrow(),
+        chevron(),
     );
-    pressable(row, Some(Message::ControlCentre))
+    pressable(row, Some(Message::Access))
 }
 
 /// "Folder": where new PDFs go, the desktop without one; "Choose…" and, with one, "Use desktop".
@@ -394,13 +395,6 @@ fn choose_button<'a>(words: bool, message: Message) -> Element<'a, Message> {
         true => widgets::text_button(None, tr("Choose…"), style::button::secondary, Some(message)),
         false => widgets::icon_button(Icon::Folder, tr("Choose…"), Some(message)),
     }
-}
-
-/// The arrow at the end of a row that leads to another window ("Appearance ↗"): 16, `text_3`.
-fn arrow<'a, M: 'a>() -> Element<'a, M> {
-    icon::icon(Icon::ArrowUpRight, icon::SIZE)
-        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
-        .into()
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
@@ -615,7 +609,7 @@ mod tests {
         assert!(LOGO_EXTENSIONS.iter().all(|ext| logo_request(&data, id, &logo.with_extension(ext)).is_some()));
     }
 
-    /// Task WZ.6: nothing here reaches the clients – every action is a setting, the control centre
+    /// Task WZ.6: nothing here reaches the clients – every action is a setting, Access (task S.34)
     /// or the app's chooser. The row "may use it" only reads the client and points away.
     #[tokio::test]
     async fn no_message_sends_a_clients_request() {
@@ -623,7 +617,7 @@ mod tests {
         let mut state = State::default();
         let messages = [
             Message::Switch(ToolId::Pdf, true),
-            Message::ControlCentre,
+            Message::Access,
             Message::ChooseFolder,
             Message::UseDesktop,
             Message::Paper(PdfTemplateId::Letter, Paper::A5),
@@ -644,7 +638,7 @@ mod tests {
                         assert_eq!(request.operation().area(), Area::Settings, "{message:?}");
                     }
                 }
-                Act::ControlCentre(section) => assert_eq!(section, CONTROL_CENTRE),
+                Act::Open(section) => assert_eq!(section, access::ID),
                 Act::App(_) | Act::None => {}
                 other => panic!("{message:?} did {other:?}"),
             }
@@ -669,8 +663,7 @@ mod tests {
         assert!(!assistant_may_use(&data, ToolId::Pdf), "reading only");
         assert!(!assistant_may_use(&turned_off(&data), ToolId::Pdf));
         let mut state = State::default();
-        let action = update(&mut state, Message::ControlCentre, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "assistant"), "{action:?}");
+        assert_eq!(update(&mut state, Message::Access, &data), Act::Open("access"));
     }
 
     /// The pickers' words and the margins set elsewhere.
@@ -695,7 +688,7 @@ mod tests {
         let pdf = data.tools.iter().find(|tool| tool.id == ToolId::Pdf).expect("the demo lists the PDF tool");
         assert!(pdf.enabled && data.settings.tools.is_on(ToolId::Pdf), "switched on in the demo");
         assert!(data.settings.tools.pdf.folder.is_some(), "a folder of its own");
-        assert!(!assistant_may_use(&data, ToolId::Pdf), "so the row leads to the control centre");
+        assert!(!assistant_may_use(&data, ToolId::Pdf), "so the row leads to Access");
         let mut typing = State::default();
         let _ = update(&mut typing, Message::Type(PdfTemplateId::Report, Line::Footer, "Draft".into()), &data);
         let no_tools = Data { tools: Vec::new(), ..data.clone() };

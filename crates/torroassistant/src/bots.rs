@@ -12,9 +12,9 @@
 //! The window reads and writes nothing itself: the bots come from `bots.list_bots` and
 //! `bots.get_bot`, every change is a request. **What a bot may use is not written here** (task
 //! S.18): a bot's rights are its client's, and `clients.*` is the app key's alone (point 2 of "Was
-//! nie nach außen geht" in `docs/api.md`). The editor only points at the bot's page in the control
-//! centre (`torroworkplace ui --section bot:<id>`, [`access_section`]); `bots.save_bot` carries no
-//! rights, so the assistant's proposals never grant anything.
+//! nie nach außen geht" in `docs/api.md`), which only the settings section Access sends (task
+//! S.34, `torro_settings_ui::assistant::access`). The editor only opens it at the bot;
+//! `bots.save_bot` carries no rights, so the assistant's proposals never grant anything.
 
 use iced::widget::text_editor::{Action, Content};
 use torro_core::i18n::{tr, trf};
@@ -29,11 +29,6 @@ use crate::chat::Choice;
 
 /// The catalogue name of asking a bot: the assistant's tool line for it opens the bot's chat.
 pub const ASK_BOT: &str = "bots.ask_bot";
-
-/// The control centre's page of the bot `id` (`torroworkplace ui --section bot:<id>`): its rights.
-pub fn access_section(id: &str) -> String {
-    format!("bot:{id}")
-}
 
 /// A starting point for a bot's personality: the assistant's templates (task C.10), so both read
 /// the same.
@@ -548,7 +543,6 @@ mod tests {
         ];
         assert_eq!(newest_conversation(&list, "b1").map(|c| c.id.as_str()), Some("b"));
         assert_eq!(newest_conversation(&list, "b3"), None, "none yet: a new one");
-        assert_eq!(access_section("b1"), "bot:b1");
     }
 
     fn tool(name: &str, input: serde_json::Value, error: Option<&str>) -> Entry {

@@ -451,6 +451,7 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 remote: None,
                 // Anthropic has no decision models; its provider keeps the default `decide`.
                 decision: Some(false),
+                enabled: false,
             })
         })
         .collect())

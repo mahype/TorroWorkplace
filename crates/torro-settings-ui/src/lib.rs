@@ -13,6 +13,9 @@
 //!   tasks S.17 to S.20), each written in the shape below.
 //! * [`host`] – the [`Host`], which shows an app's sections in its content area: the section list,
 //!   the header bar with the path, the page, and the sending and loading around it.
+//! * [`rights`] – the rights editor (task S.33): what a client may do, area by area and command by
+//!   command. The control centre shows it for keys and MCP clients, the assistant window for the
+//!   assistant and its bots (task S.34).
 //!
 //! # The shape of a section
 //!
@@ -52,6 +55,7 @@ pub mod host;
 pub mod inbox;
 pub mod mail;
 pub mod parts;
+pub mod rights;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -64,6 +68,7 @@ use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
+use torro_pim::Collection;
 
 pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
 
@@ -93,9 +98,10 @@ pub struct Data {
     /// The suite-wide settings (`settings.settings`).
     pub settings: Settings,
     /// The clients the daemon knows (`clients.list_clients`), never with their keys: the sections
-    /// read them to tell whether the assistant is on. No section ever changes one – who may use
-    /// what, and every key, stays in the control centre (`docs/api.md`, "Was nie nach außen
-    /// geht").
+    /// read them to tell whether the assistant is on, and the rights editor ([`rights`]) offers
+    /// their inbox sources. Only the rights editor changes what a client may do
+    /// (`clients.update_client`); no section ever creates a key, and which window may show the
+    /// editor is the window's rule (task S.34, `docs/api.md`, "Was nie nach außen geht").
     pub clients: Vec<ClientInfo>,
     /// Who the assistant is (`assistant.get_profile`); `None` until an answer came.
     pub profile: Option<Profile>,
@@ -120,6 +126,12 @@ pub struct Data {
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
     pub accounts: Vec<AccountInfo>,
+    /// The calendars the suite shows (`calendar.list_calendars`): what the rights editor offers
+    /// under "Calendars" ([`rights::Known`]).
+    pub calendars: Vec<Collection>,
+    /// The task lists the suite shows, GitHub filter lists included (`tasks.list_lists`): what the
+    /// rights editor offers under "Task lists" and, from their searches, "GitHub repositories".
+    pub task_lists: Vec<Collection>,
     /// Which AI account and model each function uses (`ai.list_assignments`, task E12.10): the
     /// mail window's section "Categorization" reads and changes the one for sorting mail.
     pub assignments: Vec<torro_ipc::AiAssignmentInfo>,
@@ -174,6 +186,20 @@ impl Data {
             Response::Categorization { categorization } => self.categorization = categorization,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
+            // Both `calendar.list_calendars` and `tasks.list_lists` answer with collections, and
+            // the answer does not say which was asked. Each load starts empty ([`load`]), so the
+            // answers are merged: a collection with events is a calendar, one with todos a list,
+            // one with both is both – as the core lists it.
+            Response::Collections { collections } => {
+                for collection in collections {
+                    if collection.kind.has_events() && !self.calendars.iter().any(|held| held.id == collection.id) {
+                        self.calendars.push(collection.clone());
+                    }
+                    if collection.kind.has_todos() && !self.task_lists.iter().any(|held| held.id == collection.id) {
+                        self.task_lists.push(collection);
+                    }
+                }
+            }
             Response::Sources { sources } => self.sources = sources,
             Response::Rules { rules, hits } => {
                 self.rules = rules;
@@ -399,6 +425,31 @@ mod tests {
             .expect("the demo answers");
         assert!(data.error.is_none());
         assert_eq!(backend.sent(), vec![request], "the demo remembers what it was asked to change");
+    }
+
+    /// Task S.33: the calendars and the task lists come from two requests with the same answer;
+    /// a collection with both lands in both, each once.
+    #[tokio::test]
+    async fn calendars_and_lists_are_told_apart_by_their_kind() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let data = load(backend, vec![Request::CalendarCollections, Request::TaskCollections]).await;
+        assert!(data.error.is_none(), "{:?}", data.error);
+        assert!(!data.calendars.is_empty() && !data.task_lists.is_empty());
+        assert!(data.calendars.iter().all(|collection| collection.kind.has_events()));
+        assert!(data.task_lists.iter().all(|collection| collection.kind.has_todos()));
+
+        let both = torro_pim::Collection {
+            id: "acc/both".into(),
+            name: "Both".into(),
+            kind: torro_pim::CollectionKind::Both,
+            color: None,
+            writable: true,
+            source: None,
+        };
+        let mut twice = Data::default();
+        twice.take(Response::Collections { collections: vec![both.clone()] });
+        twice.take(Response::Collections { collections: vec![both] });
+        assert_eq!((twice.calendars.len(), twice.task_lists.len()), (1, 1));
     }
 
     /// The app's part of an action can be wrapped, the rest stays as it is.

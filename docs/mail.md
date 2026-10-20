@@ -181,8 +181,8 @@ Ein-Konto-Limit bei Nextcloud.
 
 ## Rechte zentral in der Steuerzentrale
 
-Der Abschnitt „Agents & API“ ([api.md](api.md), A.6–A.8) wird die **eine** Stelle für alle
-MCP-Rechte der Suite. TorroMails eigene Rechteverwaltung entfällt. Der Workplace-Weg ist dabei
+Die Abschnitte API und MCP der Steuerzentrale ([api.md](api.md), A.6–A.8, seit #231 getrennt) sind die
+**eine** Stelle für alle Rechte von Programmen und Agenten der Suite. TorroMails eigene Rechteverwaltung entfällt. Der Workplace-Weg ist dabei
 schon besser: In TorroMail hängen die Rechte am Konto, alle Agenten mit Zugang zu einem Konto
 dürfen dasselbe. Im Workplace hängen sie am Agenten.
 
@@ -231,7 +231,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Entwurf senden | Schreibfenster | `mail.send_draft` · Write + Senden-Schalter | `mail_send_draft` (antwortet ggf. `pending`) |
 | Einladung beantworten (E8.3b) | Leser, Karte, Smart view „Invitations“ | `mail.respond_to_invitation` · Write + Nach außen | `mail_respond_to_invitation` (antwortet ggf. `pending`) |
 | Freigabe entscheiden | Steuerzentrale › Approvals, Benachrichtigung | `approvals.decide` · Admin | **Never** (Liste Punkt 3) |
-| Agenten-Rechte | Steuerzentrale › Agents & API | `clients.*` · Admin | **Never** (Liste Punkt 2) |
+| Agenten-Rechte | Steuerzentrale › MCP (Agenten), › API (Skripte) | `clients.*` · Admin | **Never** (Liste Punkt 2) |
 
 Statt TorroMails Paar `prepare_*` / `confirm_action` gibt es einen Request; ob er sofort läuft
 oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agenten.
@@ -262,7 +262,7 @@ geändert oder gelöscht.
 | **M3 Befehle** | Requests, Katalog (Bereich Mail), MCP-Tools, `Rights` erweitert | M2 |
 | **M4 Freigaben** | A.3 (Dienst) und A.8 (Oberfläche), Senden über Freigabe | M3 |
 | **M5 Mail-App** | Breit/Mittel/Schmal/Mini, Schreibfenster, `--account` | M3 |
-| **M6 Agents & API** | A.6/A.7 mit Mail, TorroMail-Übernahme | M3, M4 |
+| **M6 Rechte von Agenten (API und MCP)** | A.6/A.7 mit Mail, TorroMail-Übernahme | M3, M4 |
 | **M7 Dienste derselben Domain** | CardDAV beim Mail-Konto finden, Einladungen beantworten (CalDAV ist mit M7a vorgezogen) | M2, M7a |
 | später | Sieve (Filter, Abwesenheit), Kontakte-App, OAuth Google/Microsoft (braucht registrierte Client-IDs, bei TorroMail auch noch offen), JMAP | |
 

@@ -6,10 +6,10 @@
 //!
 //! - **"Edit"** opens the bot's editor in the assistant ([`super::AppAction::EditBot`]), where who
 //!   the bot is – name, picture, personality, instructions, skills, engine – is written.
-//! - **"Access ↗"** leads to the control centre at `bot:<id>` ([`crate::Action::ControlCentre`]),
-//!   where what the bot may use is chosen. That stays there: a bot's rights are `clients.*`, the
-//!   app key's alone (point 2 of "Was nie nach außen geht" in `docs/api.md`), and a new bot may use
-//!   nothing until a person allows it.
+//! - **"Access"** opens the section Access at this bot (task S.34, [`super::access`]), where what
+//!   the bot may use is chosen: a bot's rights are `clients.*`, which only Access sends, and a new
+//!   bot may use nothing until a person allows it there. [`super::update`] takes the message, so
+//!   Access opens at the bot; [`update`] alone only opens the section.
 //!
 //! The section reads and writes nothing itself: the bots come with [`Data`] (`bots.list_bots`).
 
@@ -22,7 +22,7 @@ use torro_gui::layout::SizeClass;
 use torro_gui::theme::{size, space};
 use torro_gui::{style, widgets};
 
-use super::{Action, AppAction, avatar};
+use super::{Action, AppAction, access, avatar};
 use crate::Data;
 use crate::parts::setting_row;
 
@@ -30,15 +30,15 @@ use crate::parts::setting_row;
 pub enum Message {
     /// "Edit" at the bot with this id: its editor in the assistant.
     Edit(String),
-    /// "Access ↗" at the bot with this id: the control centre at `bot:<id>`.
+    /// "Access" at the bot with this id: the section Access at this bot.
     Access(String),
 }
 
 pub fn update(message: Message, _data: &Data) -> Action {
     match message {
         Message::Edit(id) => Action::App(AppAction::EditBot(id)),
-        // The word the control centre takes for one bot (`--section bot:<id>`).
-        Message::Access(id) => Action::ControlCentre(format!("bot:{id}")),
+        // Which bot is the sections' state ([`super::show_access`]); here only the way there.
+        Message::Access(_) => Action::Open(access::ID),
     }
 }
 
@@ -58,23 +58,23 @@ pub fn view(data: &Data, class: SizeClass) -> Element<'_, Message> {
         rows.push(setting_row(None, tr("No bots yet"), Some(hint.to_string()), Space::new()));
     }
     let footer = tr(
-        "Bots are assistants for one field, each with rights of its own. A new bot may use nothing until you allow it in Torro Workplace.",
+        "Bots are assistants for one field, each with rights of its own. A new bot may use nothing until you allow it under Access.",
     );
     widgets::group(tr("Bots"), rows, Some(footer.to_string()))
 }
 
-/// One bot: its picture, name and description, "Edit" here and "Access ↗" in the control centre,
-/// with their words or as icons (`words`).
+/// One bot: its picture, name and description, "Edit" in the assistant and "Access" in these
+/// settings, with their words or as icons (`words`).
 fn bot_row(bot: &torro_ipc::bots::BotSummary, words: bool) -> Element<'_, Message> {
     let (edit, access) = (Message::Edit(bot.id.clone()), Message::Access(bot.id.clone()));
     let buttons = match words {
         true => row![
             widgets::text_button(None, tr("Edit"), style::button::secondary, Some(edit)),
-            widgets::text_button(Some(Icon::ArrowUpRight), tr("Access"), style::button::ghost, Some(access)),
+            widgets::text_button(None, tr("Access"), style::button::ghost, Some(access)),
         ],
         false => row![
             widgets::icon_button(Icon::SquarePen, tr("Edit"), Some(edit)),
-            widgets::icon_button(Icon::ArrowUpRight, tr("Access"), Some(access)),
+            widgets::icon_button(Icon::UserCheck, tr("Access"), Some(access)),
         ],
     };
     let buttons = buttons.spacing(space::s()).width(Length::Shrink);
@@ -89,16 +89,14 @@ mod tests {
     use super::*;
     use crate::Action as Act;
 
-    /// "Edit" is the app's work, "Access ↗" the control centre's, at this very bot.
+    /// "Edit" is the app's work, "Access" the section Access in this window (task S.34).
     #[tokio::test]
     async fn each_bot_leads_to_its_editor_and_to_its_access() {
         let data = data().await;
         let bot = data.bots.first().expect("the demo has a bot");
         let edit = update(Message::Edit(bot.id.clone()), &data);
         assert_eq!(edit, Act::App(AppAction::EditBot(bot.id.clone())));
-        let access = update(Message::Access(bot.id.clone()), &data);
-        let expected = format!("bot:{}", bot.id);
-        assert!(matches!(access, Act::ControlCentre(ref section) if *section == expected), "{access:?}");
+        assert_eq!(update(Message::Access(bot.id.clone()), &data), Act::Open("access"));
     }
 
     /// With bots, without bots, and while the assistant is off; with words and as icons.

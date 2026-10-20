@@ -18,7 +18,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
 use torro_ipc::api::{Access, Area, Selection};
 use torro_ipc::assistant::Mode;
-use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
+use torro_ipc::{API_VERSION, AccountInfo, Door, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_mail::MailSettings;
 use torro_mail_imap::discover::{LoginHint, MailDiscoverer, MailDiscovery};
 use torro_pim::AccountState;
@@ -797,6 +797,9 @@ const CATEGORY_BACKLOG_MAX: u32 = 500;
 /// on the concrete model, not on the account (`docs/ki.md`, principle 4): a local Ollama serves
 /// cloud models too (`:cloud`), and one of those would send the mail to ollama.com.
 ///
+/// The models carry their switches (task S.24, [`AiAccounts::mark_enabled`]): a model turned off
+/// since it was assigned is not asked, and none is asked in its place.
+///
 /// A free function, not a method: the mail feed's closure needs it too and holds only the pieces.
 async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String, String), categorize::Refusal> {
     let settings = settings.current();
@@ -809,6 +812,7 @@ async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String
     // The account can be gone since it was chosen: then nothing is asked, and nothing fails.
     let (provider, server) = ai.server(&engine).await.ok_or(categorize::Refusal::NoModel)?;
     let models = ai.models(&engine, true).await.map_err(|_| categorize::Refusal::NoModel)?;
+    let models = ai.mark_enabled(&engine, models).await;
     let here = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model) == Place::Local;
     categorize::chosen(assignment.as_ref(), &models, here, !settings.mail_to_cloud)
 }
@@ -1480,6 +1484,9 @@ impl Core {
     /// with (task C.2, [`Core::attach_assistant`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(self: &Arc<Self>) {
+        // Nothing reads the switches of the models before the models in use are kept on (#231):
+        // the mail feed below would count them off.
+        self.ai.hold_until_kept();
         self.await_stored_accounts();
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
@@ -1500,6 +1507,10 @@ impl Core {
         });
         self.github.start();
         self.ai.start();
+        // The first start after the switches came (task S.24): what the suite uses stays on. The
+        // readers of the switches wait for it (`hold_until_kept` above).
+        let core = Arc::clone(self);
+        tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
@@ -1593,9 +1604,14 @@ impl Core {
         (self.settle_done)(&self.sources(), item);
     }
 
-    /// A request from the socket with the key the client sent. Every request from outside the
-    /// core goes through here, in this order (`docs/api.md`, "Prüfung im Dienst"):
+    /// A request from the socket with the key the client sent, come the way `door` says (`via` in
+    /// the envelope). Every request from outside the core goes through here, in this order
+    /// (`docs/api.md`, "Prüfung im Dienst"):
     ///
+    /// 0. the way in (#231, [`crate::clients::closed_door`]): right after the key names a client,
+    ///    before its rights and before `system.ping`, its kind must come this way with its switch on
+    ///    (`allow_api_keys`, `allow_mcp`), else `unauthorized` with the reason, logged like other
+    ///    refusals and never an approval;
     /// 1. key and rights of the area ([`Clients::admit`]): `unauthorized` or `forbidden`;
     /// 2. for a client key, the collections a write or `set_collection_shown` touches: outside
     ///    its reach the answer is `not-found`, as if they did not exist;
@@ -1621,14 +1637,17 @@ impl Core {
     /// ([`crate::audit`]) once it is answered, refused ones too: its client (none for an unknown
     /// key), command, ids and result. A ping without a valid key is not logged: nothing ran and
     /// nobody is known.
-    pub async fn handle_from(&self, key: Option<&Key>, request: Request) -> Result<Response, Refused> {
-        let (client, admitted) = match self.clients.admit(key, &request) {
-            Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
-            Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
-            Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
-            Err(refused) => match self.admit_by_kind(key, &request) {
-                Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
-                None => (self.client_of(key), Err(refused)),
+    pub async fn handle_from(&self, key: Option<&Key>, door: Door, request: Request) -> Result<Response, Refused> {
+        let (client, admitted) = match self.door_refusal(key, door, &request) {
+            Some((id, refused)) => (Some(id), Err(refused)),
+            None => match self.clients.admit(key, &request) {
+                Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
+                Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
+                Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
+                Err(refused) => match self.admit_by_kind(key, &request) {
+                    Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
+                    None => (self.client_of(key), Err(refused)),
+                },
             },
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
@@ -1656,6 +1675,25 @@ impl Core {
         };
         self.audit.record(&shown);
         answer
+    }
+
+    /// The client of `key` and why it may not come in `door` now (#231,
+    /// [`crate::clients::closed_door`] with the switches as stored), refused as
+    /// [`Refused::Closed`] (`unauthorized`); `None` for the app key, a key the core does not know
+    /// (step 1 refuses it) and a client that may come this way. The assistant and bots are bound to
+    /// no switch only with a key the core lent them ([`Clients::lent_for`]): their own stored key is
+    /// handed out no more (#231), and one from before is checked like an MCP client's (the way it
+    /// was used: an agent with it in `TORRO_TOKEN`), so it cannot pass "Allow MCP".
+    fn door_refusal(&self, key: Option<&Key>, door: Door, request: &Request) -> Option<(String, Refused)> {
+        let id = self.client_of(key)?;
+        let mut kind = self.client_kind(&id)?;
+        let lent = key.is_some_and(|key| self.clients.lent_for(key).is_some());
+        if !lent && [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&kind.as_str()) {
+            kind = "mcp".into();
+        }
+        let settings = self.settings.current();
+        let why = crate::clients::closed_door(&kind, Some(door), settings.allow_api_keys, settings.allow_mcp)?;
+        Some((id, Refused::Closed { command: request.operation().name(), why }))
     }
 
     /// The assistant's own client with `key` and its rights (lent ones narrowed as lent), when its
@@ -1726,7 +1764,10 @@ impl Core {
     async fn assistant_refusal(&self, request: &Request) -> Option<Response> {
         match (request.operation().area(), request) {
             (Area::Assistant, _) | (Area::Bots, Request::AskBot { .. }) => {
-                self.assistant.refusal(&self.ai, request).await
+                match self.assistant.refusal(&self.ai, request).await {
+                    Some(refused) => Some(refused),
+                    None => self.models_off_refusal(request).await,
+                }
             }
             (Area::Bots, _) => self.assistant.bots().refusal(request).await,
             _ => None,
@@ -1877,7 +1918,14 @@ impl Core {
         // whatever its rights in `assistant` say (task C.10).
         let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
         let for_people = self.switches_on_for_people(&request);
-        if !allowed || for_people {
+        // Turning on a model that computes elsewhere is the person's too (task S.24): the core's
+        // list says where it computes, so it is checked here and not with the request alone.
+        // Asked only of a client that may otherwise: a refused one makes the core ask no server.
+        let elsewhere = match allowed && !for_people {
+            true => self.turns_on_elsewhere(&request).await,
+            false => Ok(false),
+        };
+        if !allowed || for_people || matches!(elsewhere, Ok(true)) {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
             // the rights say, and so are a tool's switch and its paths (point 9): more rights would
@@ -1890,6 +1938,17 @@ impl Core {
                 }
             };
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
+        }
+        // Without the account's list nobody can say where the model computes (#231): the server's
+        // problem (`offline`, …), nothing to approve; nothing is turned on without the list anyway.
+        if let Err(err) = elsewhere {
+            return Ok(ai_error(&err));
+        }
+        // An AI account that is not there is nothing to approve (task S.24).
+        if let Request::SetModelEnabled { account, .. } = &request
+            && !self.ai.knows(account).await
+        {
+            return Ok(ai_error(&crate::account::ai::no_account(account)));
         }
         // Its own access (issue #134): the rights it was admitted with, which are already narrowed
         // as for every other command, and what the request came through.
@@ -1920,6 +1979,10 @@ impl Core {
             if asking.without.contains(&Area::Bots) {
                 let message = "the person switched off bots for this conversation".into();
                 return Ok(Response::Error { code: "forbidden".into(), message });
+            }
+            // A bot whose account has no model on does not answer (task S.24).
+            if let Some(refused) = self.models_off_refusal(&request).await {
+                return Ok(refused);
             }
             let from = crate::assistant::Asking {
                 conversation: &asking.conversation,
@@ -2472,6 +2535,16 @@ impl Core {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
             }
+            // The account by its label, the model by its name and where it computes as the account's
+            // list in the core says (task S.24), never by the client's words.
+            Request::SetModelEnabled { account, model, .. } => {
+                let known = self.ai.described(account, model).await;
+                Facts {
+                    name: self.ai.label_of(account).await,
+                    model: known.map(|(name, here)| crate::approvals::KnownModel { name, here }),
+                    ..Facts::default()
+                }
+            }
             // The account by its label (its server), the topic by the label the account keeps for it,
             // never by its name (task E5.12).
             Request::SetNtfyTopic { account, topic, .. } => {
@@ -2576,7 +2649,9 @@ impl Core {
             Err(err) => return err.response(),
         };
         let (command, ids) = (request.operation().name(), decided_ids(&request, &origin));
-        let response = self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin).await;
+        // Boxed: the run goes through `handle_within` again, deep in the stack already, and the
+        // checks of the tools (#225) and of the models' switches (#231) made this frame too big.
+        let response = Box::pin(self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin)).await;
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -2620,11 +2695,25 @@ impl Core {
             return Response::Error { code: "forbidden".into(), message };
         };
         info.rights = effective;
+        // The way in as it is now (#231): an approval asked for while MCP was on does not run once a
+        // person turned it off. The command switched off meanwhile is refused with the rights below.
+        // The assistant and bots pass no switch only where the core ran them or lent their key – the
+        // approval's origin names the engine or the assistant then –, never with their stored key,
+        // which is checked like an MCP client's as at the door ([`Core::door_refusal`]).
+        let settings = self.settings.current();
+        let run_by_core = origin.engine.is_some() || origin.behalf.is_some();
+        let own = [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&info.kind.as_str());
+        let kind = if own && !run_by_core { torro_ipc::api::MCP_CLIENT } else { info.kind.as_str() };
+        if let Some(why) = crate::clients::closed_door(kind, None, settings.allow_api_keys, settings.allow_mcp) {
+            return Refused::Closed { command, why }.response();
+        }
         let rights = &info.rights;
         let allowed =
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
         if !allowed
             || self.switches_on_for_people(&request)
+            // Without a list it runs on: turning on asks the server again and answers its error.
+            || matches!(self.turns_on_elsewhere(&request).await, Ok(true))
             || torro_ipc::api::loops_back(&info.kind, request.operation())
             || self.bots_refusal(client, rights, &request).is_some()
         {
@@ -2938,11 +3027,31 @@ impl Core {
                 code: "error".into(),
                 message: "a bot's access is made with the bot (bots.save_bot)".into(),
             },
+            // The kinds are closed (#231): a kind the core does not know would be checked like a script.
+            Request::CreateClient { kind, .. } if !torro_ipc::api::CLIENT_KINDS.contains(&kind.trim()) => {
+                let kinds = torro_ipc::api::CLIENT_KINDS.join(", ");
+                Response::Error { code: "error".into(), message: format!("no client kind {kind:?}; one of {kinds}") }
+            }
             Request::CreateClient { name, kind, template, agent, rights } => {
                 let rights = rights.unwrap_or_else(|| template.rights());
-                issued(self.clients.add_client(&name, &kind, agent, rights).await)
+                let added = self.clients.add_client(&name, &kind, agent, rights).await;
+                match added {
+                    // The assistant gets no key (decision 12 in `docs/api.md`): the core runs its tools
+                    // itself, and no key may reach an app's process. Its key is dropped here unseen.
+                    Ok((client, _)) if client.kind == torro_ipc::api::ASSISTANT_CLIENT => Response::Client { client },
+                    added => issued(added),
+                }
             }
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
+            Request::NewClientKey { id }
+                if matches!(
+                    self.client_kind(&id).as_deref(),
+                    Some(torro_ipc::api::ASSISTANT_CLIENT | torro_ipc::api::BOT_CLIENT)
+                ) =>
+            {
+                let message = "the assistant and bots get no key: the core runs their tools itself".into();
+                Response::Error { code: "unsupported".into(), message }
+            }
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => self.remove_client(&id).await,
             Request::ClientActivity { id } => self.client_activity(id).await,
@@ -3026,10 +3135,15 @@ impl Core {
             request @ (Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. }) => {
                 Box::pin(self.ntfy_request(request, client)).await
             }
+            // Marked with the switches (task S.24); the server's list says nothing about them.
             Request::AiModels { account, all } => match self.ai.models(&account, all).await {
-                Ok(models) => Response::AiModels { account, models },
+                Ok(models) => Response::AiModels { models: self.ai.mark_enabled(&account, models).await, account },
                 Err(err) => ai_error(&err),
             },
+            // Boxed, as the ntfy commands: it may ask the account's server for its models.
+            Request::SetModelEnabled { account, model, enabled } => {
+                Box::pin(self.set_model_enabled(&account, &model, enabled, client)).await
+            }
             Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
             Request::AiAssignments => self.ai_assignments().await,
             Request::SetAiAssignment { function, engine, model, effort, enabled } => {
@@ -3089,7 +3203,7 @@ impl Core {
             | Request::AskBot { .. }) => {
                 // Only the person's own message can name a bot for the assistant (task B.2).
                 let person = matches!(reach, Reach::Suite);
-                crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await
+                Box::pin(self.assistant_request(request, person)).await
             }
             // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
             // alone.
@@ -3189,7 +3303,10 @@ impl Core {
     /// `ai.set_assignment` (task E12.5). Checked before anything is stored: the account exists,
     /// it offers the model, the model decides where the function needs one, and – while
     /// `mail_to_cloud` is off – it runs on this computer for a function that reads mail
-    /// (`docs/ki.md`, principle 4). So no agent can route mail past the data rule.
+    /// (`docs/ki.md`, principle 4). So no agent can route mail past the data rule. An assignment
+    /// that is on also names a model that is on, or – naming none – an account with a model on
+    /// (task S.24, #231, [`Core::model_off_refusal`]): no agent can route mail to a model nobody
+    /// turned on.
     async fn set_ai_assignment(&self, wanted: torro_core::ai::AiAssignment) -> Response {
         let function = wanted.function;
         if let Some(engine) = &wanted.engine {
@@ -3200,7 +3317,7 @@ impl Core {
                 };
             };
             let models = match self.ai.models(engine, true).await {
-                Ok(models) => models,
+                Ok(models) => self.ai.mark_enabled(engine, models).await,
                 Err(err) => return ai_error(&err),
             };
             let chosen = match &wanted.model {
@@ -3233,6 +3350,26 @@ impl Core {
                     );
                     return Response::Error { code: "error".into(), message: message.to_string() };
                 }
+            }
+            // The switches (task S.24, #231): a model that is off is not assigned, as no module
+            // offers it. Only while the assignment is on, so a person can still switch it off.
+            // Without a model named, while mail stays on this computer only the models here count:
+            // one on elsewhere would never be asked, and nothing would say why.
+            let considered: Vec<_> =
+                match wanted.model.is_none() && function.reads_mail() && !self.settings.current().mail_to_cloud {
+                    true => models
+                        .iter()
+                        .filter(|model| crate::assistant::place_of(provider, &server, model) == Place::Local)
+                        .cloned()
+                        .collect(),
+                    false => models.clone(),
+                };
+            if wanted.enabled
+                && let Some(refused) = self
+                    .model_off_refusal(engine, wanted.model.as_deref(), function.needs_decision(), &considered)
+                    .await
+            {
+                return refused;
             }
         }
         let kept = wanted.engine.is_some().then_some(wanted);
@@ -3740,6 +3877,13 @@ impl Core {
     /// account would answer with, [`Core::suggestion_model`]), then one question to it
     /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
     /// says; the protocol names no text.
+    ///
+    /// Only models that are on are asked (task S.24, #231): a default whose model is off counts as
+    /// a default without a model ("Automatic" among the models on), and an account with no model
+    /// on is passed over, as `assistant.list_engines` passes it over – and so is one whose models on
+    /// fit none (PR review #242: only a model that decides, say). The model asked is always the one
+    /// picked here; an account whose models cannot be listed answers with the list's error when it
+    /// is chosen, it never asks a model unchecked.
     async fn suggest_from_item(
         &self,
         id: &str,
@@ -3764,29 +3908,51 @@ impl Core {
             text: self.text_for_ai(&entry, reach).await,
             lists: crate::suggest::offered_lists(lists),
         };
-        let default = self.settings.current().assistant_default;
+        let mut default = self.settings.current().assistant_default;
+        if let Some(held) = default.as_mut()
+            && let Some(model) = held.model.as_deref()
+        {
+            let listed = self.ai.known_models(&held.engine, Some(model)).await.ok();
+            if !self.ai.is_on(&held.engine, model, listed.as_deref()).await {
+                held.model = None;
+            }
+        }
         let local_only = crate::assistant::held_back(&entry);
         let mut candidates = Vec::new();
         let mut models = HashMap::new();
         for account in self.ai.infos().await {
-            if self.ai.server(&account.id).await.is_none() {
+            if self.ai.server(&account.id).await.is_none() || !self.ai.offers_a_model(&account.id).await {
                 continue;
             }
             let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
             let wanted = default.as_ref().filter(|default| default.engine == account.id);
-            let (place, model) = match problem {
-                true => (crate::assistant::Place::Remote, None),
-                false => self.suggestion_model(&account.id, wanted.and_then(|d| d.model.as_deref()), local_only).await,
+            // An account with a problem is passed over by `choose` anyway; it only counts for which
+            // refusal comes.
+            let place = match problem {
+                true => crate::assistant::Place::Remote,
+                false => {
+                    let wanted = wanted.and_then(|d| d.model.as_deref());
+                    match self.suggestion_model(&account.id, wanted, local_only).await {
+                        Some((place, model)) => {
+                            models.insert(account.id.clone(), model);
+                            place
+                        }
+                        None => continue,
+                    }
+                }
             };
-            if let Some(model) = model {
-                models.insert(account.id.clone(), model);
-            }
             candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
         }
         let chosen = match crate::suggest::choose(&candidates, default.as_ref(), local_only) {
-            // The model its place was judged by is the one asked (task S.23).
-            Ok(chosen) => crate::suggest::Chosen { model: models.remove(&chosen.engine).or(chosen.model), ..chosen },
+            Ok(chosen) => chosen,
             Err(refused) => return refused.response(),
+        };
+        // The model its place was judged by is the one asked (task S.23), and only that one.
+        let chosen = match models.remove(&chosen.engine) {
+            Some(Ok(model)) => crate::suggest::Chosen { model: Some(model), ..chosen },
+            Some(Err(err)) => return crate::suggest::SuggestError::Ai(err).response(),
+            // `choose` takes only accounts without a problem, and each of those has its entry.
+            None => return crate::suggest::SuggestError::NoAi.response(),
         };
         let provider = match self.ai.provider(&chosen.engine).await {
             Ok(provider) => provider,
@@ -3798,34 +3964,46 @@ impl Core {
     /// The model the AI account `id` would suggest with and where it runs (task S.23: a cloud model of
     /// a local Ollama runs elsewhere): `wanted` (the model of the person's default) when it may read
     /// the entry (it runs locally, or the entry is not `local_only`); else of its models the first
-    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, and for an
-    /// entry that may leave it among the others then. Elsewhere and no model when none fits or the
-    /// models cannot be listed: such an account never gets an entry that stays home.
+    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, then among
+    /// the others (elsewhere: `choose` gives an entry that stays home none of those). `wanted` is
+    /// on (the caller checks); the others are picked among the models that are on and may chat
+    /// (task S.24).
+    ///
+    /// `None` when none of those fits, or the account is gone: it is no candidate, so no model that
+    /// is off is ever asked in its place (PR review #242). Elsewhere with the list's error when its
+    /// models cannot be listed: chosen, the answer is that error.
     async fn suggestion_model(
         &self,
         id: &str,
         wanted: Option<&str>,
         local_only: bool,
-    ) -> (crate::assistant::Place, Option<String>) {
+    ) -> Option<(crate::assistant::Place, Result<String, torro_core::ai::AiError>)> {
         use crate::assistant::Place;
-        let Some((provider, server)) = self.ai.server(id).await else { return (Place::Remote, None) };
+        let (provider, server) = self.ai.server(id).await?;
         let place = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model);
         let models = self.ai.known_models(id, wanted).await;
         if let Some(wanted) = wanted
             && let Ok((model, at)) = crate::assistant::ModelAccess::choose(models.clone(), Some(wanted), place)
             && (at == Place::Local || !local_only)
         {
-            return (at, Some(model));
+            return Some((at, Ok(model)));
         }
-        let Ok(models) = models else { return (Place::Remote, None) };
-        let (local, elsewhere): (Vec<_>, Vec<_>) = models.into_iter().partition(|model| place(model) == Place::Local);
+        let models = match models {
+            Ok(models) => models,
+            Err(err) => return Some((Place::Remote, Err(err))),
+        };
+        // A model that only decides (nimble) is on for the mail sorting, never asked to suggest.
+        let on = self
+            .ai
+            .mark_enabled(id, models)
+            .await
+            .into_iter()
+            .filter(|model| model.enabled && model.tools != Some(false));
+        let (local, elsewhere): (Vec<_>, Vec<_>) = on.partition(|model| place(model) == Place::Local);
         if let Ok(model) = crate::suggest::pick_model(local) {
-            return (Place::Local, Some(model));
+            return Some((Place::Local, Ok(model)));
         }
-        match local_only {
-            true => (Place::Remote, None),
-            false => (Place::Remote, crate::suggest::pick_model(elsewhere).ok()),
-        }
+        crate::suggest::pick_model(elsewhere).ok().map(|model| (Place::Remote, Ok(model)))
     }
 
     /// What an AI reads of `entry` (issue #120): for a mail entry the whole text of its newest mail,
@@ -5456,13 +5634,186 @@ impl Core {
         self.voice.changes()
     }
 
+    /// Whether `request` from a client turns on a model that computes elsewhere (task S.24): only a
+    /// person may, like letting mail go to the cloud (`docs/api.md`, "Was nie nach außen geht", 6),
+    /// since every module would then send it what it reads. Where the model computes is the account's
+    /// list in the core ([`AiAccounts::runs_elsewhere`], in doubt elsewhere). Turning a model off, and
+    /// turning on one that computes here, are ordinary admin commands. The list's error when the core
+    /// holds none and the server cannot give one (#231): the caller answers with it, not with a
+    /// refusal the client did not earn. First, for every switch, the error of an `ai-models.json`
+    /// that does not read ([`AiAccounts::switches_writable`], PR review #242): before any server is
+    /// asked and before any approval, so nobody approves a switch that must fail.
+    async fn turns_on_elsewhere(&self, request: &Request) -> Result<bool, torro_core::ai::AiError> {
+        let Request::SetModelEnabled { account, model, enabled } = request else { return Ok(false) };
+        self.ai.switches_writable().await?;
+        match enabled {
+            true => self.ai.runs_elsewhere(account, model).await,
+            false => Ok(false),
+        }
+    }
+
+    /// `ai.set_model_enabled` (task S.24): the switch, stored in `ai-models.json`. For a client
+    /// (`client`) turning a model on, where it computes is judged again by the server's list of now:
+    /// the check before ([`Core::turns_on_elsewhere`]) read the list the core held, and the server
+    /// may say otherwise since.
+    async fn set_model_enabled(&self, account: &str, model: &str, enabled: bool, client: bool) -> Response {
+        // Before the server below: a file of switches that does not read refuses every switch alike.
+        if let Err(err) = self.ai.switches_writable().await {
+            return ai_error(&err);
+        }
+        if client && enabled {
+            if let Err(err) = self.ai.models(account, true).await {
+                return ai_error(&err);
+            }
+            // The last guard of "kept for people" (an approval runs on to here): a list that fails
+            // now refuses with its error, never counts as "here".
+            match self.ai.runs_elsewhere(account, model).await {
+                Ok(false) => {}
+                Ok(true) => {
+                    let lack = torro_ipc::api::Lack::ForPeople;
+                    return Refused::Lacks { command: "ai.set_model_enabled", lack }.response();
+                }
+                Err(err) => return ai_error(&err),
+            }
+        }
+        match self.ai.set_enabled(account, model, enabled).await {
+            Ok(()) => Response::Ok,
+            Err(err) => ai_error(&err),
+        }
+    }
+
+    /// The sentence for an AI account `engine` with no model on (task S.24), naming it as the person
+    /// reads it.
+    async fn models_off_message(&self, engine: &str) -> String {
+        let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+        trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)])
+    }
+
+    /// `unsupported` for `ai.set_assignment` (task S.24, #231) when the model `model` of the AI
+    /// account `engine` is off in `models` (the account's list, marked with
+    /// [`AiAccounts::mark_enabled`]), or – `model` being `None` – when no model of it is on, and for
+    /// a function that needs a decision model (`decides`) when none of those on decides
+    /// ([`torro_core::ai::AiModel::decision`]): "Automatic" would find nothing to ask. A model the
+    /// list lacks is left to the caller (`error`, "offers no model"). `None` otherwise.
+    async fn model_off_refusal(
+        &self,
+        engine: &str,
+        model: Option<&str>,
+        decides: bool,
+        models: &[torro_core::ai::AiModel],
+    ) -> Option<Response> {
+        let message = match model {
+            Some(id) => {
+                let listed = models.iter().find(|listed| listed.id == id)?;
+                if listed.enabled {
+                    return None;
+                }
+                let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+                trf(
+                    "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+                    &[("model", &listed.name), ("provider", &provider)],
+                )
+            }
+            None if models.iter().any(|listed| listed.enabled && (!decides || listed.decision == Some(true))) => {
+                return None;
+            }
+            None if decides && models.iter().any(|listed| listed.enabled) => {
+                let provider = self.ai.label_of(engine).await.unwrap_or_else(|| engine.to_string());
+                trf(
+                    "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+                    &[("provider", &provider)],
+                )
+            }
+            None => self.models_off_message(engine).await,
+        };
+        Some(Response::Error { code: "unsupported".into(), message })
+    }
+
+    /// `unsupported` for `assistant.send_message` and `bots.ask_bot` (by the bot's engine) with an AI
+    /// account that has no model on (task S.24): the module never answers with another account
+    /// instead. `None` for every other request, an engine that is no AI account, and an unknown bot
+    /// (the assistant refuses those itself).
+    async fn models_off_refusal(&self, request: &Request) -> Option<Response> {
+        let engine = match request {
+            Request::SendMessage { engine, .. } => engine.clone(),
+            Request::AskBot { bot, .. } => self.assistant.bots().get(bot).await?.engine,
+            _ => return None,
+        };
+        if !self.ai.knows(&engine).await || self.ai.offers_a_model(&engine).await {
+            return None;
+        }
+        Some(Response::Error { code: "unsupported".into(), message: self.models_off_message(&engine).await })
+    }
+
+    /// The commands of the assistant and `bots.ask_bot` (task C.1), with the switches of the models
+    /// (task S.24): `assistant.list_engines` lists only AI accounts with a model on, a message to one
+    /// without is `unsupported` ([`Core::models_off_refusal`]). `person`: the app key sent it.
+    async fn assistant_request(&self, request: Request, person: bool) -> Response {
+        if let Some(refused) = self.models_off_refusal(&request).await {
+            return refused;
+        }
+        match crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await {
+            Response::Engines { engines } => {
+                let mut offered = Vec::with_capacity(engines.len());
+                for engine in engines {
+                    let ai = engine.kind == torro_ipc::assistant::EngineKind::Ai;
+                    if !ai || self.ai.offers_a_model(&engine.id).await {
+                        offered.push(engine);
+                    }
+                }
+                Response::Engines { engines: offered }
+            }
+            other => other,
+        }
+    }
+
+    /// The first start after the switches of the models came (task S.24,
+    /// [`AiAccounts::keep_used_models_on`]): the models the suite already uses stay on – the
+    /// assistant's default for new chats, the models assigned to functions that are switched on
+    /// (`ai.set_assignment`, #231; one switched off asks no model, so it keeps none on, PR review
+    /// #242) and the models of the bots. Where one of them names no model ("Automatic", #231), the
+    /// model "Automatic" took there stays on, once its server listed its models
+    /// ([`crate::account::ai::Automatic`]): for chats and bots the one it took before the switches,
+    /// for a function that needs a decision model the one sorting mail took. This is the person's
+    /// own choice kept, no agent's command: nothing is asked for approval. Afterwards it does nothing.
+    /// Always lets the readers of the switches go ([`AiAccounts::hold_until_kept`]).
+    pub(crate) async fn keep_used_models_on(&self) {
+        use crate::account::ai::Automatic;
+        let chat = Automatic { chat: true, ..Automatic::default() };
+        let (mut used, mut automatic) = (Vec::new(), Vec::new());
+        let settings = self.settings.current();
+        if let Some(default) = settings.assistant_default {
+            match default.model {
+                Some(model) => used.push((default.engine, model)),
+                None => automatic.push((default.engine, chat)),
+            }
+        }
+        for assigned in settings.ai_assignments.into_values().filter(torro_core::ai::AiAssignment::is_ready) {
+            let Some(engine) = assigned.engine else { continue };
+            match assigned.model {
+                Some(model) => used.push((engine, model)),
+                None => automatic.push((engine, Automatic::for_function(assigned.function, settings.mail_to_cloud))),
+            }
+        }
+        for bot in self.assistant.bots().list().await {
+            match bot.model {
+                Some(model) => used.push((bot.engine, model)),
+                None => automatic.push((bot.engine, chat)),
+            }
+        }
+        if let Err(err) = self.ai.keep_used_models_on(used, automatic).await {
+            eprintln!("torroworkplace: cannot keep the models in use on: {err}");
+        }
+    }
+
     /// Whether `request` from a client does what only a person does, judged against the stored
     /// settings, and is refused like `settings.set_setting` with `true`
     /// ([`torro_ipc::api::Rights::allows_request`], which judges by the value alone):
     ///
     /// - `settings.update_settings` that switches on what is off: the microphone (point 6), mail to cloud
-    ///   models (`mail_to_cloud`, task C.17), a tool of the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path other than the
-    ///   stored one (`torro_core::settings::Tools::needs_a_person`),
+    ///   models (`mail_to_cloud`, task C.17), the ways in (`allow_api_keys`, `allow_mcp`, #231), a tool of
+    ///   the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path
+    ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`),
     /// - `settings.set_setting pdf_folder` with a folder other than the stored one,
     /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template.
     ///
@@ -5472,8 +5823,11 @@ impl Core {
         match request {
             Request::UpdateSettings { settings } => {
                 let now = self.settings.current();
-                (settings.voice.enabled && !now.voice.enabled)
-                    || (settings.mail_to_cloud && !now.mail_to_cloud)
+                let on = |new: bool, stored: bool| new && !stored;
+                on(settings.voice.enabled, now.voice.enabled)
+                    || on(settings.mail_to_cloud, now.mail_to_cloud)
+                    || on(settings.allow_api_keys, now.allow_api_keys)
+                    || on(settings.allow_mcp, now.allow_mcp)
                     || now.tools.needs_a_person(&settings.tools)
             }
             Request::SetSetting { key: SettingKey::PdfFolder, value } => {
@@ -5619,7 +5973,8 @@ impl crate::assistant::Host for Core {
 
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
-    /// the list lacks), then [`crate::assistant::place_of`] for that model.
+    /// the list lacks), then [`crate::assistant::place_of`] for that model. Only models turned on
+    /// count (task S.24, [`crate::assistant::ModelAccess::choose_on`]).
     fn model<'a>(
         &'a self,
         engine: &'a str,
@@ -5633,8 +5988,19 @@ impl crate::assistant::Host for Core {
                 Some((kind, server)) => crate::assistant::place_of(*kind, server, described),
                 None => crate::assistant::Place::Remote,
             };
-            let models = self.ai.known_models(engine, model).await;
-            let (model, place) = crate::assistant::ModelAccess::choose(models, model, place)?;
+            // Only models turned on count (task S.24): one asked that is off gives way to
+            // "Automatic" among those of this account that are on.
+            let listed = match self.ai.known_models(engine, model).await {
+                Ok(models) => Ok(self.ai.mark_enabled(engine, models).await),
+                Err(err) => Err(err),
+            };
+            let asked_on = match model {
+                Some(model) => self.ai.is_on(engine, model, listed.as_deref().ok()).await,
+                None => false,
+            };
+            let off = self.models_off_message(engine).await;
+            let off = || torro_core::ai::AiError::NotFound(off);
+            let (model, place) = crate::assistant::ModelAccess::choose_on(listed, model, asked_on, place, off)?;
             Ok(crate::assistant::ModelAccess { provider, model, place })
         })
     }
@@ -6293,9 +6659,28 @@ mod tests {
         .with_inbox(crate::inbox::tests::inbox_in(dir))
     }
 
-    /// What a client on the socket gets back for `request` with `key`.
+    /// What a client on the socket gets back for `request` with `key`, come the way its kind comes
+    /// ([`door_for`]).
     async fn ask(core: &Core, key: Option<&Key>, request: Request) -> Response {
-        core.handle_from(key, request).await.unwrap_or_else(Refused::response)
+        core.handle_from(key, door_for(core, key), request).await.unwrap_or_else(Refused::response)
+    }
+
+    /// [`ask`] with the way `door` (#231).
+    async fn ask_via(core: &Core, key: Option<&Key>, door: Door, request: Request) -> Response {
+        core.handle_from(key, door, request).await.unwrap_or_else(Refused::response)
+    }
+
+    /// The way a client of `key`'s kind comes when it is used as meant (#231): MCP for an MCP
+    /// client and for the stored key of the assistant or a bot (an agent carried it in
+    /// `TORRO_TOKEN`; a lent one passes either way), else the API (a script, a hook, the app key,
+    /// an unknown key).
+    fn door_for(core: &Core, key: Option<&Key>) -> Door {
+        let kind = core.client_of(key).and_then(|id| core.client_kind(&id));
+        let by_mcp = |kind: &str| {
+            torro_ipc::api::is_mcp_kind(kind)
+                || [torro_ipc::api::ASSISTANT_CLIENT, torro_ipc::api::BOT_CLIENT].contains(&kind)
+        };
+        if kind.as_deref().is_some_and(by_mcp) { Door::Mcp } else { Door::Api }
     }
 
     fn code(response: &Response) -> &str {
@@ -6536,7 +6921,8 @@ mod tests {
         let mut chosen = Rights::assistant();
         chosen.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         chosen.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
-        let Response::ClientKey { client, .. } = ask(&core, Some(&app_key), create(Some(chosen.clone()))).await else {
+        // The assistant gets no key (#231).
+        let Response::Client { client } = ask(&core, Some(&app_key), create(Some(chosen.clone()))).await else {
             panic!("created with its rights");
         };
         let expected = chosen.for_kind(torro_ipc::api::ASSISTANT_CLIENT);
@@ -6560,6 +6946,277 @@ mod tests {
         });
         let parsed: Request = serde_json::from_value(json).expect("parses without rights");
         assert!(matches!(parsed, Request::CreateClient { rights: None, .. }));
+    }
+
+    /// #231: the kinds `clients.create_client` takes are closed; the assistant gets its client
+    /// without a key, "Other MCP client" a key and a source of its own name; neither the assistant
+    /// nor a bot ever gets a new key.
+    #[tokio::test]
+    async fn create_client_takes_known_kinds_and_keeps_keys_from_the_assistant_and_bots() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let create = |name: &str, kind: &str| Request::CreateClient {
+            name: name.into(),
+            kind: kind.into(),
+            template: RightsTemplate::ReadOnly,
+            agent: None,
+            rights: None,
+        };
+        for kind in ["zed", "bot", "Script"] {
+            assert_eq!(code(&ask(&core, Some(&app_key), create("X", kind)).await), "error", "{kind}");
+        }
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: Vec::new() });
+
+        let Response::Client { client: assistant } =
+            ask(&core, Some(&app_key), create("Assistant", torro_ipc::api::ASSISTANT_CLIENT)).await
+        else {
+            panic!("the assistant's client, without a key");
+        };
+        let Response::ClientKey { client: zed, .. } = ask(&core, Some(&app_key), create("Zed", "mcp")).await else {
+            panic!("an MCP client gets a key");
+        };
+        let Response::ClientKey { client: warp, .. } = ask(&core, Some(&app_key), create("Warp", "mcp")).await else {
+            panic!("a second one with another name");
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), create("zed", "mcp")).await), "conflict", "its name is its source");
+        let source = |client: &torro_ipc::ClientInfo| torro_ipc::api::post_source(Some(client), None).map(|s| s.key());
+        assert_eq!((source(&zed), source(&warp)), (Ok("agent:mcp:Zed".into()), Ok("agent:mcp:Warp".into())));
+
+        let (bot, _) =
+            core.clients.add("Travel planner", torro_ipc::api::BOT_CLIENT, Rights::none()).await.expect("bot");
+        for id in [&assistant.id, &bot.id] {
+            let refused = ask(&core, Some(&app_key), Request::NewClientKey { id: id.clone() }).await;
+            assert_eq!(code(&refused), "unsupported", "{id}");
+        }
+        assert!(matches!(
+            ask(&core, Some(&app_key), Request::NewClientKey { id: zed.id.clone() }).await,
+            Response::ClientKey { .. }
+        ));
+        assert_eq!(code(&ask(&core, Some(&app_key), Request::NewClientKey { id: "gone".into() }).await), "not-found");
+    }
+
+    /// #231: a command switched off for a client is `forbidden` with its reason, though the level
+    /// allows it; the other commands of the area still run.
+    #[tokio::test]
+    async fn a_command_switched_off_is_refused_with_its_reason() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.denied = ["workspaces.delete_template".to_string()].into();
+        let (_, key) = client(&core, rights).await;
+        let refused = ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await;
+        let Response::Error { code, message } = &refused else { panic!("refused, got {refused:?}") };
+        assert_eq!(code, "forbidden");
+        assert!(message.contains("turned it off for this command"), "{message}");
+        assert!(core.store.load("dev").is_ok(), "nothing ran");
+        assert!(matches!(ask(&core, Some(&key), Request::ListTemplates).await, Response::Templates { .. }));
+        assert!(matches!(ask(&core, Some(&key), Request::Ping).await, Response::Pong { .. }));
+    }
+
+    /// #231: what the assistant may by its kind (its memory, its own access) stays allowed whatever
+    /// the list says; its access names the commands switched off, and those are refused.
+    #[tokio::test]
+    async fn the_assistant_keeps_what_its_kind_may_and_tells_what_is_switched_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core(dir.path()).with_assistant(assistant);
+        let mut rights = Rights::assistant();
+        rights.denied = ["assistant.list_memories", "assistant.my_access", "tasks.list_lists"].map(String::from).into();
+        let (_, key) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+        assert!(matches!(ask(&core, Some(&key), Request::ListMemories).await, Response::Memories { .. }));
+        let access = my_access_of(&ask(&core, Some(&key), Request::MyAccess).await);
+        assert!(access.rights.denied.contains("tasks.list_lists"), "{:?}", access.rights.denied);
+        assert_eq!(code(&ask(&core, Some(&key), Request::TaskCollections).await), "forbidden");
+        assert!(matches!(ask(&core, Some(&key), Request::CalendarCollections).await, Response::Collections { .. }));
+    }
+
+    /// What `system.ping` with `key` through `door` gets: `pong`, or the error code.
+    async fn ping_via(core: &Core, key: &Key, door: Door) -> String {
+        match ask_via(core, Some(key), door, Request::Ping).await {
+            Response::Pong { .. } => "pong".into(),
+            Response::Error { code, .. } => code,
+            other => panic!("expected a pong or an error, got {other:?}"),
+        }
+    }
+
+    /// #231 (`docs/api.md` "Transport"): a script comes through the API, an MCP client through MCP,
+    /// a hook either way; a kind from an older `clients.json` is checked like a script. With "Allow
+    /// API keys" off the script is refused and the agent is not; with "Allow MCP" off the agent and
+    /// the hook are, a key lent to the assistant is not. A closed way refuses `system.ping` too,
+    /// with the reason, and the log has the line.
+    #[tokio::test]
+    async fn each_kind_comes_its_way_while_its_switch_is_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let rights = RightsTemplate::ReadOnly.rights();
+        let (script, script_key) = core.clients.add("Backup", "script", rights.clone()).await.expect("added");
+        let (_, agent) = core.clients.add("Claude Code", "claude-code", rights.clone()).await.expect("added");
+        let (_, other) = core.clients.add("Zed", "mcp", rights.clone()).await.expect("added");
+        let (_, hook) = core
+            .clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
+            .await
+            .expect("added");
+        let (_, old) = core.clients.add("Old", "zed-editor", rights.clone()).await.expect("from an older version");
+        let (assistant, stored) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        let lent = core.clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let ways = |answers: [&str; 2]| answers.map(String::from);
+        for (key, expected, who) in [
+            (&script_key, ["pong", "unauthorized"], "script"),
+            (&agent, ["unauthorized", "pong"], "agent"),
+            (&other, ["unauthorized", "pong"], "other MCP client"),
+            (&hook, ["pong", "pong"], "hook"),
+            (&old, ["pong", "unauthorized"], "an unknown kind"),
+            (lent.key(), ["pong", "pong"], "lent"),
+            (&stored, ["unauthorized", "pong"], "the assistant's stored key, like an MCP client's"),
+            (&app_key, ["pong", "pong"], "app key"),
+        ] {
+            let got = [ping_via(&core, key, Door::Api).await, ping_via(&core, key, Door::Mcp).await];
+            assert_eq!(got, ways(expected), "{who}");
+        }
+        let Response::Error { message, .. } = ask_via(&core, Some(&agent), Door::Api, Request::ListTemplates).await
+        else {
+            panic!("refused");
+        };
+        assert!(message.contains(crate::clients::MCP_KEY), "{message}");
+
+        let switch = |key, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
+        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, false)).await, Response::Ok);
+        let Response::Error { code, message } = ask_via(&core, Some(&script_key), Door::Api, Request::Ping).await
+        else {
+            panic!("refused");
+        };
+        assert_eq!((code.as_str(), message.contains(crate::clients::API_OFF)), ("unauthorized", true), "{message}");
+        assert_eq!(ping_via(&core, &old, Door::Api).await, "unauthorized");
+        assert_eq!(ping_via(&core, &agent, Door::Mcp).await, "pong", "MCP stays open");
+        assert_eq!(ping_via(&core, &hook, Door::Mcp).await, "pong");
+
+        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, true)).await, Response::Ok);
+        assert_eq!(core.handle(switch(SettingKey::AllowMcp, false)).await, Response::Ok);
+        let Response::Error { message, .. } = ask_via(&core, Some(&agent), Door::Mcp, Request::Ping).await else {
+            panic!("refused");
+        };
+        assert!(message.contains(crate::clients::MCP_OFF), "{message}");
+        for door in [Door::Api, Door::Mcp] {
+            assert_eq!(ping_via(&core, &hook, door).await, "unauthorized", "{door:?}");
+            assert_eq!(ping_via(&core, &other, door).await, "unauthorized", "{door:?}");
+            assert_eq!(ping_via(&core, lent.key(), door).await, "pong", "the assistant is bound to no switch");
+            assert_eq!(ping_via(&core, &stored, door).await, "unauthorized", "not its stored key");
+        }
+        assert_eq!(ping_via(&core, &script_key, Door::Api).await, "pong", "the API stays open");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let logged = audit_lines(dir.path());
+        assert!(
+            logged.iter().any(|line| line.client.as_deref() == Some(script.id.as_str())
+                && line.command == "system.ping"
+                && line.result == "unauthorized"),
+            "{logged:?}"
+        );
+    }
+
+    /// #231: an approval asked for while the command was on and MCP open runs after "Allow" only if
+    /// both still hold: switched off meanwhile it is `forbidden`, with MCP off `unauthorized`.
+    #[tokio::test]
+    async fn an_approval_does_not_run_once_its_command_or_its_way_is_turned_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        save_template(&core, "review");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (id, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let first = waits(ask(&core, Some(&key), delete("dev")).await);
+        let second = waits(ask(&core, Some(&key), delete("review")).await);
+        let outcome = |approval: torro_ipc::ApprovalInfo| match approval.state {
+            torro_ipc::ApprovalState::Done { response } => code(&response).to_string(),
+            other => panic!("expected a run, got {other:?}"),
+        };
+
+        let mut narrowed = RightsTemplate::ReadAndWrite.rights();
+        narrowed.denied = ["workspaces.delete_template".to_string()].into();
+        let update = Request::UpdateClient { id: id.clone(), rights: narrowed };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&first.id, true)).await);
+        assert_eq!(outcome(allowed), "forbidden");
+        assert!(core.store.load("dev").is_ok(), "not deleted");
+
+        let update = Request::UpdateClient { id, rights: RightsTemplate::ReadAndWrite.rights() };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let off = Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) };
+        assert_eq!(core.handle(off).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&second.id, true)).await);
+        assert_eq!(outcome(allowed), "unauthorized");
+        assert!(core.store.load("review").is_ok(), "not deleted");
+    }
+
+    /// #231: an approval asked for with the assistant's stored key (handed out before #231, used like
+    /// an MCP client's) does not run once MCP is off, as no request with it would; one asked for with
+    /// a key the core lent the assistant is bound to no switch and runs.
+    #[tokio::test]
+    async fn an_approval_of_a_stored_assistant_key_does_not_pass_allow_mcp() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        save_template(&core, "review");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let rights = RightsTemplate::ReadAndWrite.rights();
+        let (assistant, stored) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("added");
+        let lent = core.clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let by_stored = waits(ask_via(&core, Some(&stored), Door::Mcp, delete("dev")).await);
+        let by_lent = waits(ask_via(&core, Some(lent.key()), Door::Mcp, delete("review")).await);
+
+        let off = Request::SetSetting { key: SettingKey::AllowMcp, value: serde_json::json!(false) };
+        assert_eq!(core.handle(off).await, Response::Ok);
+        let ran = |approval: torro_ipc::ApprovalInfo| match approval.state {
+            torro_ipc::ApprovalState::Done { response } => *response,
+            other => panic!("expected a run, got {other:?}"),
+        };
+        let allowed = ran(approval(ask(&core, Some(&app_key), decide(&by_stored.id, true)).await));
+        assert_eq!(code(&allowed), "unauthorized", "the stored key is checked like an MCP client's");
+        assert!(core.store.load("dev").is_ok(), "not deleted");
+        let allowed = ran(approval(ask(&core, Some(&app_key), decide(&by_lent.id, true)).await));
+        assert_eq!(allowed, Response::Ok, "a lent key passes");
+        assert!(core.store.load("review").is_err(), "deleted");
+    }
+
+    /// #231: no client opens the API or MCP again, also with every right in `settings`; closing
+    /// them is an admin change that waits for a person.
+    #[tokio::test]
+    async fn only_people_open_the_api_and_mcp_and_clients_may_close_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        let (_, agent) = client(&core, rights.clone()).await;
+        let (_, script) = core.clients.add("Backup", "script", rights).await.expect("added");
+        let switch = |key, on: bool| Request::SetSetting { key, value: serde_json::json!(on) };
+        for (key, setting) in [(&script, SettingKey::AllowMcp), (&agent, SettingKey::AllowApiKeys)] {
+            assert_eq!(code(&ask(&core, Some(key), switch(setting, true)).await), "forbidden", "{setting:?}");
+        }
+        let mut whole = settings(&core).await;
+        assert_eq!(core.handle(switch(SettingKey::AllowApiKeys, false)).await, Response::Ok);
+        whole.allow_api_keys = true;
+        let refused = ask(&core, Some(&agent), Request::UpdateSettings { settings: whole }).await;
+        assert_eq!(code(&refused), "forbidden", "the whole settings do not open it either");
+        assert!(!settings(&core).await.allow_api_keys);
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let asked = waits(ask(&core, Some(&agent), switch(SettingKey::AllowMcp, false)).await);
+        assert!(settings(&core).await.allow_mcp, "not before a person allows it");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(!settings(&core).await.allow_mcp, "closed once the person allowed it");
+        assert_eq!(ask(&core, Some(&app_key), switch(SettingKey::AllowMcp, true)).await, Response::Ok);
     }
 
     /// The approval a `pending` answer names; panics on any other answer.
@@ -7441,7 +8098,9 @@ mod tests {
         let core = core(dir.path()).with_approvals(crate::approvals::Approvals::system());
         save_template(&core, "dev");
         let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
-        let refused = core.handle_from(Some(&key), Request::DeleteTemplate { id: "dev".into() }).await;
+        let refused = core
+            .handle_from(Some(&key), door_for(&core, Some(&key)), Request::DeleteTemplate { id: "dev".into() })
+            .await;
         assert_eq!(refused, Err(Refused::NeedsApproval { command: "workspaces.delete_template" }));
         assert_eq!(code(&Refused::NeedsApproval { command: "x" }.response()), "forbidden");
         assert!(core.store.load("dev").is_ok());
@@ -7914,7 +8573,9 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
-        let Err(refused) = core.handle_from(Some(&key), set).await else { panic!("refused") };
+        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), set).await else {
+            panic!("refused")
+        };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_github_token", lack: Lack::ForPeople });
         assert!(record.lock().expect("record").is_empty(), "nothing went to GitHub");
         assert_eq!(tokens.get_plain("github:mahype"), None);
@@ -13843,7 +14504,10 @@ mod tests {
         assert_eq!(asked.summary, trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")]));
         for request in [Request::GetProfile, Request::ListConversations] {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Err(Refused::Forbidden { command: name })
+            );
         }
         // The person sees every note.
         assert_eq!(
@@ -13959,7 +14623,7 @@ mod tests {
         for request in assistant_requests(&conversation.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), request).await,
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
                 Err(Refused::Forbidden { command: name }),
                 "{name}"
             );
@@ -13984,7 +14648,11 @@ mod tests {
         let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         for request in assistant_requests("0123456789abcdef") {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await.map_err(Refused::command), Err(name), "{name}");
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await.map_err(Refused::command),
+                Err(name),
+                "{name}"
+            );
         }
 
         let mut rights = RightsTemplate::ReadAndWrite.rights();
@@ -14126,7 +14794,10 @@ mod tests {
         requests.push(to_bot(&bot.id, Some(&conversation.id)));
         for request in requests {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request.clone()).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request.clone()).await,
+                Err(Refused::Forbidden { command: name })
+            );
             let actor = crate::assistant::Actor::Bot(bot.client.clone());
             let ran = crate::assistant::Host::run_as(&core, &actor, request, "test", false).await;
             assert_eq!(code(&ran), "forbidden", "{name} from the bot's answer");
@@ -14191,7 +14862,10 @@ mod tests {
             to_bot(&travel.id, None),
         ] {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Err(Refused::Forbidden { command: name })
+            );
         }
     }
 
@@ -14208,7 +14882,7 @@ mod tests {
         for request in bots_requests(&bot.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), request).await,
+                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
                 Err(Refused::Lacks { command: name, lack: Lack::Area { area: Area::Bots } })
             );
         }
@@ -14374,6 +15048,11 @@ mod tests {
         assert!(!state.was_cancelled(), "and the state reads as running again");
     }
 
+    /// `ai.set_model_enabled` turning `model` of `account` on (task S.24).
+    fn turn_on(account: &str, model: &str) -> Request {
+        Request::SetModelEnabled { account: account.into(), model: model.into(), enabled: true }
+    }
+
     /// Task E12.5: a function is assigned a model, only a deciding one is taken for mail, and
     /// while `mail_to_cloud` is off no model that runs elsewhere is taken – so no agent can route
     /// mail past the data rule.
@@ -14424,7 +15103,7 @@ mod tests {
         };
         assert_eq!(code(&core.handle(unknown).await), "not-found");
 
-        // The decision model is taken, and the list says so.
+        // The decision model here is on by the rule (#231) and taken, and the list says so.
         let Response::AiAssignments { assignments } = core.handle(set(Some("nimble"))).await else {
             panic!("assignments")
         };
@@ -14446,6 +15125,97 @@ mod tests {
         let Response::AiAssignments { assignments } = core.handle(back).await else { panic!("assignments") };
         assert!(!assignments[0].assignment.is_ready());
         assert_eq!(assignments[0].assignment.engine, None);
+    }
+
+    /// #231 (task S.24): `ai.set_assignment` takes no model that is off – not even from an agent
+    /// with admin rights in `ai`, and not with `mail_to_cloud` on – and an account with no model on
+    /// is refused too. A model turned off after it was assigned is not asked: mail stays without a
+    /// category rather than going to it or to another model.
+    #[tokio::test]
+    async fn a_function_takes_no_model_that_is_off_and_one_turned_off_is_not_asked() {
+        use torro_core::ai::AiFunction;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = crate::account::ai::tests::fake_deciding_ollama().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let connect = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = core.handle(connect).await else { panic!("connected") };
+        let engine = account.id;
+        // The person lets mail go to cloud models: the switches alone must still hold.
+        let cloud = Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(true) };
+        assert_eq!(ask(&core, Some(&app_key), cloud).await, Response::Ok);
+
+        let set = |model: Option<&str>, enabled: bool| Request::SetAiAssignment {
+            function: AiFunction::InboxCategorize,
+            engine: Some(engine.clone()),
+            model: model.map(str::to_string),
+            effort: None,
+            enabled,
+        };
+        // A deciding model here starts on although it has no tools (#231); this server does not say
+        // that qwen3 runs here, so it counts as elsewhere and is off. The person turns nimble off.
+        assert_eq!(switched(&core, &engine).await, [("nimble".to_string(), true), ("qwen3:8b".to_string(), false)]);
+        let turn_off = Request::SetModelEnabled { account: engine.clone(), model: "nimble".into(), enabled: false };
+        assert_eq!(ask(&core, Some(&app_key), turn_off.clone()).await, Response::Ok);
+        assert_eq!(switched(&core, &engine).await, [("nimble".to_string(), false), ("qwen3:8b".to_string(), false)]);
+        let provider = core.ai.label_of(&engine).await.expect("label");
+        let off = Response::Error {
+            code: "unsupported".into(),
+            message: trf(
+                "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+                &[("model", &"nimble"), ("provider", &provider)],
+            ),
+        };
+        assert_eq!(core.handle(set(Some("nimble"), true)).await, off);
+
+        // The scenario of the review: an agent with admin rights in `ai` asks, the person
+        // approves – and still nothing is stored.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Ai, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        let asked = waits(ask(&core, Some(&key), set(Some("nimble"), true)).await);
+        let done = approval(core.handle(decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
+        assert_eq!(*response, off);
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel), "nothing assigned");
+
+        // Switched off, the assignment can be stored whatever its model, so a person can always stop it.
+        assert!(matches!(core.handle(set(Some("nimble"), false)).await, Response::AiAssignments { .. }));
+
+        // Turned on, it is taken and asked.
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "nimble")).await, Response::Ok);
+        assert!(matches!(core.handle(set(Some("nimble"), true)).await, Response::AiAssignments { .. }));
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
+
+        // Turned off afterwards: nothing is asked, and no other model stands in for it.
+        assert_eq!(ask(&core, Some(&app_key), turn_off).await, Response::Ok);
+        assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel));
+
+        // No model named and none on at the account: refused with the sentence of task S.24.
+        let none_on = Response::Error {
+            code: "unsupported".into(),
+            message: trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &provider)]),
+        };
+        assert_eq!(core.handle(set(None, true)).await, none_on);
+
+        // A model on that does not decide is no model for sorting mail either (#231).
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "qwen3:8b")).await, Response::Ok);
+        let none_decides = Response::Error {
+            code: "unsupported".into(),
+            message: trf(
+                "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+                &[("provider", &provider)],
+            ),
+        };
+        assert_eq!(core.handle(set(None, true)).await, none_decides);
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "nimble")).await, Response::Ok);
+        assert!(matches!(core.handle(set(None, true)).await, Response::AiAssignments { .. }), "nimble decides");
     }
 
     #[tokio::test]
@@ -14504,7 +15274,10 @@ mod tests {
             server: Some(server),
             key: torro_ipc::Secret::new(AI_KEY),
         };
-        let Err(refused) = core.handle_from(Some(&key), connect(ollama.url("/v1"))).await else { panic!("refused") };
+        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), connect(ollama.url("/v1"))).await
+        else {
+            panic!("refused")
+        };
         assert_eq!(refused, Refused::Lacks { command: "accounts.connect_ai", lack: Lack::ForPeople });
         assert_eq!(keys.get_plain(&format!("ai:ollama@127.0.0.1:{}", ollama.port())), None);
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
@@ -15777,6 +16550,8 @@ mod tests {
             .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
             .await
             .expect("openrouter");
+        // Models elsewhere start off (task S.24); the person turned one on.
+        assert_eq!(core.handle(turn_on(&remote.id, "qwen/qwen3-14b")).await, Response::Ok);
         core.clients
             .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
             .await
@@ -15806,6 +16581,8 @@ mod tests {
         core.attach_assistant();
         let account =
             core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        // The cloud model starts off (task S.24); the person turned it on.
+        assert_eq!(core.handle(turn_on(&account.id, "glm-5.3:cloud")).await, Response::Ok);
         core.clients
             .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
             .await
@@ -15831,6 +16608,333 @@ mod tests {
             })
             .collect();
         assert_eq!(answered, [Some("qwen3:8b")], "the model checked answers");
+    }
+
+    /// `ai.set_model_enabled` for `model` of `account` (task S.24).
+    fn switch(account: &str, model: &str, enabled: bool) -> Request {
+        Request::SetModelEnabled { account: account.into(), model: model.into(), enabled }
+    }
+
+    /// The models of `account` with whether each is on, as `ai.list_models` answers the app key.
+    async fn switched(core: &Core, account: &str) -> Vec<(String, bool)> {
+        let list = Request::AiModels { account: account.into(), all: true };
+        let Response::AiModels { models, .. } = core.handle(list).await else { panic!("models") };
+        models.into_iter().map(|model| (model.id, model.enabled)).collect()
+    }
+
+    /// Task S.24: `ai.list_models` says which models are on – at first the one that computes here –,
+    /// the person switches them, and the switches stay out of `settings.get_settings`.
+    #[tokio::test]
+    async fn models_are_switched_for_the_suite_and_kept_apart_from_the_settings() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let connect = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: Default::default(),
+        };
+        let Response::Account { account } = ask(&core, Some(&app_key), connect).await else { panic!("connected") };
+        let at_first = [("glm-5.3:cloud".to_string(), false), ("qwen3:8b".to_string(), true)];
+        assert_eq!(switched(&core, &account.id).await, at_first);
+
+        assert_eq!(ask(&core, Some(&app_key), switch(&account.id, "glm-5.3:cloud", true)).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), switch(&account.id, "qwen3:8b", false)).await, Response::Ok);
+        let now = [("glm-5.3:cloud".to_string(), true), ("qwen3:8b".to_string(), false)];
+        assert_eq!(switched(&core, &account.id).await, now);
+        let unknown = switch(&account.id, "llama3:8b", true);
+        assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found", "not offered");
+
+        let settings = serde_json::to_string(&ask(&core, Some(&app_key), Request::Settings).await).expect("json");
+        assert!(!settings.contains("glm-5.3") && !settings.contains("qwen3"), "{settings}");
+        let stored = std::fs::read_to_string(dir.path().join("config").join(torro_core::ai::MODELS_FILE));
+        assert!(stored.expect("its own file").contains("glm-5.3:cloud"));
+    }
+
+    /// Task S.24, the first start after the update: the assistant's default for new chats, a
+    /// function's model (#231) and a bot's model stay on, also where they compute elsewhere.
+    #[tokio::test]
+    async fn the_models_the_suite_uses_stay_on_after_the_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama_with_cloud(true).await, fake_openrouter().await);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        let local = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let local = local.expect("ollama");
+        let cloud = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let default = serde_json::json!({"engine": local.id, "model": "glm-5.3:cloud"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(core.handle(set).await, Response::Ok);
+        let mut save = save_bot(None, "Travel planner");
+        if let Request::SaveBot { engine, model, .. } = &mut save {
+            (*engine, *model) = (cloud.id.clone(), Some("openai/gpt-4o".into()));
+        }
+        bot_of(core.handle(save).await);
+        // Assigned before the switches came, so no check of today stood in the way.
+        let function = torro_core::ai::AiFunction::InboxCategorize;
+        let assigned = torro_core::ai::AiAssignment {
+            function,
+            engine: Some(cloud.id.clone()),
+            model: Some("qwen/qwen3-14b".into()),
+            effort: None,
+            enabled: true,
+        };
+        core.settings.set_ai_assignment(function, Some(assigned)).expect("assigned");
+
+        core.keep_used_models_on().await;
+        let on =
+            |list: Vec<(String, bool)>| list.into_iter().filter(|(_, on)| *on).map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(on(switched(&core, &local.id).await), ["glm-5.3:cloud", "qwen3:8b"]);
+        let mut on_cloud = on(switched(&core, &cloud.id).await);
+        on_cloud.sort();
+        assert_eq!(on_cloud, ["openai/gpt-4o", "qwen/qwen3-14b"]);
+    }
+
+    /// PR review #242, the first start after the update: an assignment that is switched off is not in
+    /// use, so its model – here one in the cloud – stays off.
+    #[tokio::test]
+    async fn an_assignment_switched_off_keeps_no_model_on_after_the_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let cloud = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let function = torro_core::ai::AiFunction::InboxCategorize;
+        let assigned = torro_core::ai::AiAssignment {
+            function,
+            engine: Some(cloud.id.clone()),
+            model: Some("openai/gpt-4o".into()),
+            effort: None,
+            enabled: false,
+        };
+        core.settings.set_ai_assignment(function, Some(assigned)).expect("assigned");
+
+        core.keep_used_models_on().await;
+        assert!(switched(&core, &cloud.id).await.iter().all(|(_, on)| !on), "nothing turned on");
+        let stored = std::fs::read_to_string(dir.path().join("config").join(torro_core::ai::MODELS_FILE));
+        let stored = stored.expect("written, with the mark gone");
+        assert!(!stored.contains(&cloud.id), "{stored}");
+    }
+
+    /// #231, the first start after the update: an assistant default and a bot with "Automatic" at
+    /// accounts in the cloud keep the model "Automatic" took on – listed as engines before their
+    /// servers answered, with the model on once they did – so nobody loses the assistant.
+    #[tokio::test]
+    async fn what_automatic_used_stays_on_after_the_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (openrouter, anthropic) = (fake_openrouter().await, crate::account::ai::tests::fake_anthropic().await);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        let cloud = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let claude = core
+            .ai
+            .connect(
+                AiProvider::Anthropic,
+                Some(&anthropic.url("/v1")),
+                torro_core::account::Secret::new(crate::account::ai::tests::CLAUDE_KEY),
+            )
+            .await
+            .expect("anthropic");
+        let default = serde_json::json!({"engine": claude.id});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(core.handle(set).await, Response::Ok);
+        let mut save = save_bot(None, "Travel planner");
+        if let Request::SaveBot { engine, model, .. } = &mut save {
+            (*engine, *model) = (cloud.id.clone(), None);
+        }
+        bot_of(core.handle(save).await);
+
+        core.keep_used_models_on().await;
+        let Response::Engines { engines } = core.handle(Request::ListEngines).await else { panic!("engines") };
+        for id in [&cloud.id, &claude.id] {
+            assert!(engines.iter().any(|engine| &engine.id == id), "{id} before its list: {engines:?}");
+        }
+        let on =
+            |list: Vec<(String, bool)>| list.into_iter().filter(|(_, on)| *on).map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(on(switched(&core, &cloud.id).await), ["qwen/qwen3-14b"]);
+        assert_eq!(on(switched(&core, &claude.id).await), ["claude-opus-5"]);
+    }
+
+    /// #231: a client turning on a model of a server that does not answer gets the server's error,
+    /// not `forbidden`: without the list nobody can say where the model computes, and nothing is
+    /// turned on. The person gets the same.
+    #[tokio::test]
+    async fn turning_on_a_model_of_a_server_that_is_away_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        // An Ollama on this computer that was connected once and does not run now.
+        let account = torro_core::Account::ai(AiProvider::Ollama, NOBODY);
+        let file = crate::account::github::tests::accounts_file(dir.path());
+        torro_core::account::save_to(&file, std::slice::from_ref(&account)).expect("stored");
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Ai, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+
+        assert_eq!(code(&ask(&core, Some(&key), turn_on(&account.id, "qwen3:8b")).await), "offline");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(code(&ask(&core, Some(&app_key), turn_on(&account.id, "qwen3:8b")).await), "offline");
+        let stored = dir.path().join("config").join(torro_core::ai::MODELS_FILE);
+        assert!(!stored.exists(), "nothing turned on");
+    }
+
+    /// API review of PR #242: while `ai-models.json` does not read, a client with the rights gets the
+    /// same `error` as the person – before any server is asked and before any approval, so nobody
+    /// approves a switch that must fail. The message names the file, never its path.
+    #[tokio::test]
+    async fn a_client_hears_of_a_file_of_switches_that_does_not_read_before_any_approval() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        // An Ollama on this computer that does not run now: asking it would answer `offline`.
+        let account = torro_core::Account::ai(AiProvider::Ollama, NOBODY);
+        let file = crate::account::github::tests::accounts_file(dir.path());
+        torro_core::account::save_to(&file, std::slice::from_ref(&account)).expect("stored");
+        let switches = dir.path().join("config").join(torro_core::ai::MODELS_FILE);
+        std::fs::write(&switches, b"{\"accounts\": {").expect("a damaged file");
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Ai, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+
+        let off = Request::SetModelEnabled { account: account.id.clone(), model: "qwen3:8b".into(), enabled: false };
+        for request in [turn_on(&account.id, "qwen3:8b"), off] {
+            let by_client = ask(&core, Some(&key), request.clone()).await;
+            let by_person = ask(&core, Some(&app_key), request).await;
+            assert_eq!(by_client, by_person, "the same answer");
+            let Response::Error { code, message } = by_client else { panic!("refused: {by_client:?}") };
+            assert_eq!(code, "error");
+            assert!(message.contains(torro_core::ai::MODELS_FILE), "{message}");
+            assert!(!message.contains(&dir.path().display().to_string()), "no path: {message}");
+        }
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+        assert_eq!(std::fs::read(&switches).expect("there"), b"{\"accounts\": {", "never written over");
+    }
+
+    /// Task S.24: no client turns on a model that computes elsewhere, whatever its rights, and
+    /// nothing waits for the person then; a model that computes here goes off and on only once the
+    /// person allowed it, the approval naming model and place from the core's list. The log names
+    /// the account and the switch, never the model.
+    #[tokio::test]
+    async fn only_people_turn_on_a_model_elsewhere_and_agents_switch_with_approval() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let account = account.expect("ollama");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+
+        let Err(refused) =
+            core.handle_from(Some(&key), door_for(&core, Some(&key)), switch(&account.id, "glm-5.3:cloud", true)).await
+        else {
+            panic!("refused")
+        };
+        assert_eq!(refused, Refused::Lacks { command: "ai.set_model_enabled", lack: Lack::ForPeople });
+        let unlisted = ask(&core, Some(&key), switch(&account.id, "llama3:8b", true)).await;
+        assert_eq!(code(&unlisted), "forbidden", "a model the list lacks counts as elsewhere");
+        let nowhere = ask(&core, Some(&key), switch("ai:ollama@nowhere.example", "qwen3:8b", false)).await;
+        assert_eq!(code(&nowhere), "not-found", "no account, nothing to approve");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let label = core.ai.label_of(&account.id).await.expect("a label");
+        let words: [(&str, &dyn std::fmt::Display); 2] = [("model", &"qwen3:8b"), ("account", &label)];
+        let asked = waits(ask(&core, Some(&key), switch(&account.id, "qwen3:8b", false)).await);
+        assert_eq!(asked.summary, trf("Turn off “{model}” of {account}", &words));
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert_eq!(switched(&core, &account.id).await[1], ("qwen3:8b".to_string(), false));
+
+        let asked = waits(ask(&core, Some(&key), switch(&account.id, "qwen3:8b", true)).await);
+        let expected = trf("Turn on “{model}” of {account} (runs on this computer)", &words);
+        assert_eq!(asked.summary, expected);
+        approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(switched(&core, &account.id).await[1], ("qwen3:8b".to_string(), true));
+        assert_eq!(switched(&core, &account.id).await[0], ("glm-5.3:cloud".to_string(), false), "still off");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("qwen3") && !log.contains("glm-5.3"), "{log}");
+        let first = audit_lines(dir.path()).into_iter().find(|line| line.command == "ai.set_model_enabled");
+        let first = first.expect("logged");
+        assert_eq!(first.ids, [format!("account:{}", account.id), "enabled:true".to_string()]);
+    }
+
+    /// Task S.24: with the local model off and only the cloud model of the same Ollama on,
+    /// "Automatic" takes the cloud model and the data rule counts it as elsewhere: a bot without a
+    /// model is not asked after mail. A model asked that is off gives way. With nothing on the
+    /// account is no engine, and a message or a bot's ask with it is `unsupported`.
+    #[tokio::test]
+    async fn automatic_takes_the_only_model_on_and_the_data_rule_follows_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant));
+        core.attach_assistant();
+        let account = core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await;
+        let account = account.expect("ollama");
+        assert_eq!(core.handle(switch(&account.id, "qwen3:8b", false)).await, Response::Ok);
+        assert_eq!(core.handle(switch(&account.id, "glm-5.3:cloud", true)).await, Response::Ok);
+
+        let access = Host::model(&*core, &account.id, None).await.expect("a model");
+        assert_eq!((access.model, access.place), ("glm-5.3:cloud".to_string(), Place::Remote));
+        let access = Host::model(&*core, &account.id, Some("qwen3:8b")).await.expect("replaced");
+        assert_eq!((access.model, access.place), ("glm-5.3:cloud".to_string(), Place::Remote), "off gives way");
+
+        core.clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let automatic = bot_with(&core, "Packing helper", &account.id, reading(&[Area::Calendar])).await;
+        let main = said(&core, "Ask the packing helper").await;
+        let refused = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, true, &[]).await;
+        let Response::Error { code, message } = refused else { panic!("refused: {refused:?}") };
+        assert!(code == "forbidden" && message.contains("mail"), "the data rule: {message}");
+
+        assert_eq!(core.handle(switch(&account.id, "glm-5.3:cloud", false)).await, Response::Ok);
+        let Response::Engines { engines } = core.handle(Request::ListEngines).await else { panic!("engines") };
+        assert!(engines.iter().all(|engine| engine.id != account.id), "{engines:?}");
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: account.id.clone(),
+            model: Some("glm-5.3:cloud".into()),
+            effort: None,
+            text: "Hello".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+        };
+        let label = core.ai.label_of(&account.id).await.expect("a label");
+        let off = trf("Turn on a model of {provider} in Settings › Accounts.", &[("provider", &label)]);
+        assert_eq!(core.handle(send).await, Response::Error { code: "unsupported".into(), message: off.clone() });
+        let asked = Request::AskBot { bot: automatic.id.clone(), text: "Hello".into(), conversation: None };
+        assert_eq!(core.handle(asked).await, Response::Error { code: "unsupported".into(), message: off.clone() });
+        let delegated = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, false, &[]).await;
+        assert_eq!(delegated, Response::Error { code: "unsupported".into(), message: off });
     }
 
     /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
@@ -16028,6 +17132,11 @@ mod tests {
             engines.push(connected.expect("ollama").id);
         }
         let (told, untold) = (engines[0].clone(), engines[1].clone());
+        // Task S.24: only models that are on count. A model in use before the switches came stays on,
+        // also one the list lacks and one that counts as elsewhere; the cloud model the person turns on.
+        let used = vec![(told.clone(), "llama3:8b".to_string()), (untold.clone(), "qwen3:8b".to_string())];
+        core.ai.keep_used_models_on(used, Vec::new()).await.expect("kept on");
+        assert_eq!(core.handle(turn_on(&told, "glm-5.3:cloud")).await, Response::Ok);
         assert_eq!(at(told.clone(), None).await, ("qwen3:8b".to_string(), Place::Local), "Automatic: local first");
         assert_eq!(at(told.clone(), Some("glm-5.3:cloud")).await, ("glm-5.3:cloud".to_string(), Place::Remote));
         assert_eq!(at(told.clone(), Some("qwen3:8b")).await, ("qwen3:8b".to_string(), Place::Local));
@@ -16052,6 +17161,7 @@ mod tests {
             .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
             .await
             .expect("openrouter");
+        assert_eq!(core.handle(turn_on(&remote.id, "qwen/qwen3-14b")).await, Response::Ok, "elsewhere: off at first");
         let place = |engine: String| {
             let core = &core;
             async move { Host::model(core, &engine, None).await.map(|access| access.place).expect("a model") }
@@ -16471,7 +17581,9 @@ mod tests {
             user: None,
             secret: torro_ipc::Secret::new("tk_clientSECRET"),
         };
-        let Err(refused) = core.handle_from(Some(&key), login).await else { panic!("refused") };
+        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), login).await else {
+            panic!("refused")
+        };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_ntfy_login", lack: Lack::ForPeople });
         assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
@@ -16618,13 +17730,22 @@ mod tests {
         let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
         assert_eq!(ask(&core, Some(&app_key), set).await, Response::Ok);
 
+        // The default's model computes elsewhere, so it is off until someone turns it on (task
+        // S.24, #231): OpenRouter has no model on and is passed over, never asked.
+        let Response::TaskSuggestion { suggestion } = ask(&core, Some(&app_key), suggest(&entry)).await else {
+            panic!("a suggestion")
+        };
+        assert_eq!(suggestion.title, "Read it", "the local AI");
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (0, 1));
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "qwen/qwen3-14b")).await, Response::Ok);
+
         let Response::TaskSuggestion { suggestion } = ask(&core, Some(&app_key), suggest(&entry)).await else {
             panic!("a suggestion")
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).map(torro_pim::EventTime::Date);
         assert_eq!((suggestion.title.as_str(), suggestion.due), ("Fix the deploy", due));
         assert_eq!(suggestion.model, "qwen/qwen3-14b", "the default's model");
-        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 0));
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 1));
 
         // A mail entry: the local AI, whatever the default says.
         let mail = crate::inbox::NewMail {
@@ -16648,7 +17769,7 @@ mod tests {
         let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).expect("valid date");
         assert_eq!((suggestion.start, suggestion.end), (Some(torro_pim::EventTime::Date(day)), None));
         assert!(suggestion.engine.starts_with("ai:ollama@"), "{}", suggestion.engine);
-        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 1), "mail never went out");
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 2), "mail never went out");
 
         // Without the local AI, mail has none to go to.
         let gone = Request::RemoveAccount { id: suggestion.engine.clone() };
@@ -16702,8 +17823,57 @@ mod tests {
                 }
             }
         };
+        assert_eq!(suggested(filed.clone()).await, "qwen3:8b", "mail stays on this computer");
+        // The cloud model is off until someone turns it on (task S.24, #231): "Automatic" then.
+        assert_eq!(suggested(posted_entry(&core).await).await, "qwen3:8b", "the default's model is off");
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&account.id, "glm-5.3:cloud")).await, Response::Ok);
         assert_eq!(suggested(filed).await, "qwen3:8b", "mail stays on this computer");
         assert_eq!(suggested(posted_entry(&core).await).await, "glm-5.3:cloud", "the default's model");
+    }
+
+    /// PR review #242: suggestions ask only a model that is on. A closed model of OpenRouter the
+    /// person turned on is taken (closed weights only come last, as with "Automatic"), never the
+    /// open one that is off; with none on, or only one that decides, the answer is `not-connected`
+    /// and nothing is asked.
+    #[tokio::test]
+    async fn suggestions_ask_only_models_that_are_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let openrouter = fake_openrouter().await;
+        let chat = answers_chat(&openrouter, "/api/v1/chat/completions", r#"{"title": "Fix the deploy"}"#).await;
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OpenRouter,
+            server: Some(openrouter.url("/api/v1")),
+            key: torro_ipc::Secret::new(AI_KEY),
+        };
+        assert!(matches!(ask(&core, Some(&app_key), connect).await, Response::Account { .. }));
+        let engine = format!("ai:openrouter@127.0.0.1:{}", openrouter.port());
+        let entry = posted_entry(&core).await;
+        let suggest = |id: &str| Request::SuggestTaskFromItem { id: id.to_string(), lists: Vec::new() };
+
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&entry)).await), "not-connected", "nothing is on");
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "openai/gpt-4o")).await, Response::Ok);
+        let asked = ask(&core, Some(&app_key), suggest(&entry)).await;
+        let Response::TaskSuggestion { suggestion } = asked else { panic!("a suggestion: {asked:?}") };
+        assert_eq!(suggestion.model, "openai/gpt-4o", "the closed model that is on, not the open one that is off");
+        assert_eq!(chat.calls_async().await, 1);
+
+        let off = Request::SetModelEnabled { account: engine.clone(), model: "openai/gpt-4o".into(), enabled: false };
+        assert_eq!(ask(&core, Some(&app_key), off).await, Response::Ok);
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&entry)).await), "not-connected", "none on any more");
+        assert_eq!(chat.calls_async().await, 1, "nothing asked");
+
+        // An Ollama whose only model on decides (nimble, on by the rule): it is on for the mail
+        // sorting and suggests nothing.
+        let gone = Request::RemoveAccount { id: engine };
+        assert_eq!(ask(&core, Some(&app_key), gone).await, Response::Ok);
+        let ollama = crate::account::ai::tests::fake_deciding_ollama().await;
+        let local = answers_chat(&ollama, "/v1/chat/completions", r#"{"title": "Read it"}"#).await;
+        core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&entry)).await), "not-connected");
+        assert_eq!(local.calls_async().await, 0, "nothing asked");
     }
 
     /// The state of the inbox entry `id`, as the app key reads it.

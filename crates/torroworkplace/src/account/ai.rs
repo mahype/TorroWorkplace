@@ -21,6 +21,12 @@
 //! could carry it elsewhere), the header is marked sensitive so no `Debug` prints it, and every
 //! error passes through [`openai::scrub`], so no answer, message or log line repeats it. All four
 //! live in [`Wire`], once for both protocols.
+//!
+//! Which models are on for the suite (task S.24, `docs/settings.md` › KI) is kept here as well, apart
+//! from the lists the servers give: `<config>/ai-models.json` (0600, written whole and atomically,
+//! [`torro_core::ai::ModelSwitches`]; never written over while it does not read, `Switches::damaged`). Listing a server's models never sets [`AiModel::enabled`];
+//! the core marks a list it answers with ([`AiAccounts::mark_enabled`]). Where a model computes,
+//! which the rule at the start needs, is the data rule's word ([`crate::assistant::place_of`]).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,7 +38,8 @@ use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
-    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, anthropic, openai, systemone,
+    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, ModelSwitches, Provider, anthropic, openai,
+    systemone,
 };
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
@@ -532,6 +539,177 @@ pub struct AiAccounts {
     local: Vec<(AiProvider, String)>,
     /// In the order of `accounts.json`; a new account comes last.
     slots: RwLock<Vec<Slot>>,
+    /// Which models are on (task S.24): `ai-models.json` next to `accounts.json`, read on first use
+    /// ([`AiAccounts::switches`]); `None` until then. One lock for reading and writing, so two
+    /// switches at once never write over each other.
+    switches: tokio::sync::Mutex<Option<Switches>>,
+    /// `false` while the core keeps the models in use on at its start (#231,
+    /// [`AiAccounts::hold_until_kept`]): until then the readers of the switches wait
+    /// ([`AiAccounts::kept`]), so no module counts a model in use as off. `true` otherwise.
+    kept: tokio::sync::watch::Sender<bool>,
+}
+
+/// How long the readers of the switches wait for the models in use to be kept on at the start
+/// ([`AiAccounts::kept`]) before they read the switches as they are: it reads two files and writes
+/// one, so this is only a bound for a disk that hangs.
+const KEPT_WAIT: Duration = Duration::from_secs(10);
+
+/// What the core holds of `ai-models.json` (task S.24), as the file holds it: the switches, and
+/// whether the models in use are still to be kept on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Switches {
+    #[serde(flatten)]
+    held: ModelSwitches,
+    /// The first start after the update that brought the switches has not passed yet (#231): there
+    /// was no file when the core first read it, so the models in use are still to be kept on
+    /// ([`AiAccounts::keep_used_models_on`]). A mark of its own, kept in the file, so a switch a
+    /// person turns before (which writes the file) does not stop it, and a core that stops in
+    /// between keeps them on at its next start. Never set for a file that was there (older ones
+    /// read without it), one that does not read, or without a home directory: nothing is turned
+    /// on in doubt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    keep_used: bool,
+    /// Accounts a module used with "Automatic" before the switches came (#231), whose model is still
+    /// to be kept on: at the first start after the update the core may not reach their servers, and
+    /// what "Automatic" took is in the list of the server only. Taken over at the first list that
+    /// loads ([`AiAccounts::take_over`]); until then such an account counts as offering a model
+    /// ([`AiAccounts::offers_a_model`]). A person who switches at the account drops it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    automatic: std::collections::BTreeMap<String, Automatic>,
+    /// The file that is there but did not read when the core first looked (PR review #242), so the
+    /// switches above are empty and only the rule decides. Never written then
+    /// ([`Switches::writable`]): writing would lose every switch the person made. Only in memory.
+    #[serde(skip)]
+    damaged: Option<PathBuf>,
+}
+
+impl Switches {
+    /// The switches as they were read from `file`, when it is there but does not read.
+    fn damaged(file: &std::path::Path) -> Switches {
+        Switches { damaged: Some(file.to_path_buf()), ..Switches::default() }
+    }
+
+    /// `Ok` when these switches may be written; the sentence that names the file when it did not
+    /// read ([`Switches::damaged`]): the person repairs or removes it, the core never does. By its
+    /// name only: clients read the sentence too (`ai.set_model_enabled` is an MCP tool), the whole
+    /// path is in the core's log from the first read ([`read_switches`]), as for `approvals.json`.
+    fn writable(&self) -> Result<(), String> {
+        match &self.damaged {
+            None => Ok(()),
+            Some(_) => Err(trf(
+                "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
+                &[("file", &ai::MODELS_FILE)],
+            )),
+        }
+    }
+}
+
+/// What a module used "Automatic" at an AI account for before the switches came (#231), so the
+/// first start after the update keeps on the model it took ([`AiAccounts::keep_used_models_on`]).
+/// Each mark that is set turns on its own pick ([`Automatic::picks`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Automatic {
+    /// New chats or a bot: the model "Automatic" took then ([`crate::assistant::ModelAccess::automatic`]:
+    /// open weights, on this computer first, with tools).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat: bool,
+    /// A function that needs a decision model, with mail allowed to the cloud: the first model that
+    /// decides, as sorting mail took it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decides: bool,
+    /// The same while mail may not leave this computer: the first model that decides and computes here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decides_here: bool,
+}
+
+impl Automatic {
+    /// What "Automatic" was used for at a function: its decision model for one that needs one
+    /// (only one on this computer for a function that reads mail while `mail_to_cloud` is off), else
+    /// the model a chat takes.
+    pub fn for_function(function: ai::AiFunction, mail_to_cloud: bool) -> Automatic {
+        match function.needs_decision() {
+            true if function.reads_mail() && !mail_to_cloud => Automatic { decides_here: true, ..Automatic::default() },
+            true => Automatic { decides: true, ..Automatic::default() },
+            false => Automatic { chat: true, ..Automatic::default() },
+        }
+    }
+
+    /// Both uses together: every pick of either.
+    fn and(self, other: Automatic) -> Automatic {
+        Automatic {
+            chat: self.chat || other.chat,
+            decides: self.decides || other.decides,
+            decides_here: self.decides_here || other.decides_here,
+        }
+    }
+
+    /// The models of `models` (all of the account's, as its server lists them) that "Automatic"
+    /// took for the uses marked, `place` saying where each computes; none for a use the account
+    /// offers nothing for.
+    pub fn picks(self, models: &[AiModel], place: impl Fn(&AiModel) -> crate::assistant::Place) -> Vec<AiModel> {
+        let here = |model: &AiModel| place(model) == crate::assistant::Place::Local;
+        let decides = |model: &&AiModel| model.decision == Some(true);
+        let mut picks = Vec::new();
+        if self.chat {
+            picks.extend(crate::assistant::ModelAccess::automatic(models.to_vec(), &place).ok());
+        }
+        if self.decides {
+            picks.extend(models.iter().find(decides).cloned());
+        }
+        if self.decides_here {
+            picks.extend(models.iter().filter(decides).find(|model| here(model)).cloned());
+        }
+        picks
+    }
+}
+
+/// Whether `model` of the account at `server` (its kind and base address, `None` when it is gone)
+/// computes on this computer, as the data rule says ([`crate::assistant::place_of`]).
+fn computes_here(server: Option<&(AiProvider, String)>, model: &AiModel) -> bool {
+    server.is_some_and(|(provider, base)| {
+        crate::assistant::place_of(*provider, base, model) == crate::assistant::Place::Local
+    })
+}
+
+/// Whether any model of the account at `server` could compute on this computer: one that its server
+/// says runs on its own machine would. Never for a provider in the cloud or a server on the network,
+/// whose models are on only once someone turns them on.
+fn may_compute_here(server: Option<&(AiProvider, String)>) -> bool {
+    computes_here(server, &AiModel { remote: Some(false), ..AiModel::named("") })
+}
+
+/// The switches in `file`: none, with the models in use still to be kept on, when it is not there;
+/// empty without a home directory. Empty and marked damaged ([`Switches::damaged`]) when it is there
+/// but does not read, which the core's log then says: only the rule decides then (nothing elsewhere
+/// is on), and the file is left as it is.
+fn read_switches(file: Option<&std::path::Path>) -> Switches {
+    let Some(file) = file else { return Switches::default() };
+    match std::fs::read(file) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Switches { keep_used: true, ..Switches::default() },
+        Err(err) => {
+            eprintln!(
+                "torroworkplace: cannot read {}, so only the rule decides which models are on: {err}",
+                file.display()
+            );
+            Switches::damaged(file)
+        }
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+            eprintln!(
+                "torroworkplace: {} does not read, so only the rule decides which models are on: {err}",
+                file.display()
+            );
+            Switches::damaged(file)
+        }),
+    }
+}
+
+/// Writes `switches` to `file` (0600, atomically), creating the folder.
+fn write_switches(file: &std::path::Path, switches: &Switches) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(switches).map_err(|err| err.to_string())?;
+    if let Some(dir) = file.parent() {
+        crate::clients::create_private_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    }
+    crate::clients::write_private(file, &bytes).map_err(|err| err.to_string())
 }
 
 impl AiAccounts {
@@ -560,23 +738,36 @@ impl AiAccounts {
         http: Option<reqwest::Client>,
         local: Vec<(AiProvider, String)>,
     ) -> AiAccounts {
-        AiAccounts { accounts_file, keys, http, local, slots: RwLock::new(Vec::new()) }
+        AiAccounts {
+            accounts_file,
+            keys,
+            http,
+            local,
+            slots: RwLock::new(Vec::new()),
+            switches: tokio::sync::Mutex::new(None),
+            kept: tokio::sync::watch::Sender::new(true),
+        }
     }
 
     /// Loads the stored AI accounts with their keys, in the background. Asks no server: a local one
-    /// may not run now, and that is no problem until it is used. An account that needs a key and
-    /// has none is listed with a problem and can be connected again or removed.
+    /// may not run now, and that is no problem until it is used – except the servers of accounts
+    /// still to take over from "Automatic" (#231, [`AiAccounts::take_over`]), after the core kept
+    /// the models in use on. An account that needs a key and has none is listed with a problem and
+    /// can be connected again or removed.
     pub fn start(self: &Arc<Self>) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(err) = service.load().await {
                 eprintln!("torroworkplace: cannot read the AI accounts: {err}");
             }
+            // What "Automatic" used before the switches (#231): once the core has noted it.
+            service.kept().await;
+            service.take_over_automatic().await;
         });
     }
 
     /// Reads the AI accounts of `accounts.json` and their keys.
-    async fn load(&self) -> Result<(), String> {
+    pub(crate) async fn load(&self) -> Result<(), String> {
         let Some(path) = self.accounts_file.clone() else { return Ok(()) };
         let keys = Arc::clone(&self.keys);
         let loaded = keychain(move || {
@@ -718,7 +909,8 @@ impl AiAccounts {
     /// `all` only those not known to have closed weights ([`ai::open_weights_only`]). Reading
     /// changes no data, only how the account is shown: an answer renews when it last answered, a
     /// refused key becomes its problem until it answers again. The whole list is kept for
-    /// [`AiAccounts::known_models`].
+    /// [`AiAccounts::known_models`]. The one exception (#231): the first list after the update keeps
+    /// on what "Automatic" used at the account ([`AiAccounts::take_over`]), once.
     pub async fn models(&self, id: &str, all: bool) -> Result<Vec<AiModel>, AiError> {
         let result = self.provider(id).await?.models().await;
         if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
@@ -735,7 +927,49 @@ impl AiAccounts {
             }
         }
         let models = result?;
+        self.take_over(id, &models).await;
         Ok(if all { models } else { ai::open_weights_only(models) })
+    }
+
+    /// Keeps on what "Automatic" took at the account `id` before the switches came (#231,
+    /// [`Switches::automatic`]), now that its server listed `models` (all of them): once, and only
+    /// while it is still to be taken over. A file that cannot be written is only reported; the next
+    /// list tries again. The log names the account and how many models, never which.
+    async fn take_over(&self, id: &str, models: &[AiModel]) {
+        let server = self.server(id).await;
+        let mut held = self.switches().await;
+        let Some(switches) = held.as_mut() else { return };
+        let Some(automatic) = switches.automatic.get(id).copied() else { return };
+        let Some((provider, base)) = server else { return };
+        let place = |model: &AiModel| crate::assistant::place_of(provider, &base, model);
+        let mut changed = switches.clone();
+        changed.automatic.remove(id);
+        let mut kept = 0;
+        for model in automatic.picks(models, place) {
+            if !changed.held.is_on(id, &model, place(&model) == crate::assistant::Place::Local) {
+                changed.held.turn_on(id, &model.id);
+                kept += 1;
+            }
+        }
+        match self.store_switches(&changed).await {
+            Ok(()) => {
+                *switches = changed;
+                eprintln!("torroworkplace: {id}: kept on {kept} model(s) \"Automatic\" used before the switches");
+            }
+            Err(err) => eprintln!("torroworkplace: cannot keep on what \"Automatic\" used at {id}: {err}"),
+        }
+    }
+
+    /// Asks the server of every account still to take over from "Automatic" for its models
+    /// ([`AiAccounts::take_over`], #231). One that does not answer stays marked for its first list.
+    async fn take_over_automatic(&self) {
+        let pending: Vec<String> =
+            self.switches().await.as_ref().map(|held| held.automatic.keys().cloned().collect()).unwrap_or_default();
+        for id in pending {
+            if let Err(err) = self.models(&id, true).await {
+                eprintln!("torroworkplace: {id}: \"Automatic\" is taken over at its first list ({})", err.code());
+            }
+        }
     }
 
     /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
@@ -794,7 +1028,293 @@ impl AiAccounts {
         })
         .await?;
         self.slots.write().await.retain(|slot| slot.account.id != id);
+        self.forget_switches(id).await;
         Ok(())
+    }
+
+    // Which models are on (task S.24, `docs/settings.md` › KI).
+
+    /// `ai-models.json` next to `accounts.json`; `None` without a home directory.
+    fn models_file(&self) -> Option<PathBuf> {
+        self.accounts_file.as_ref().map(|file| file.with_file_name(ai::MODELS_FILE))
+    }
+
+    /// The switches, read from `ai-models.json` on first use. Holds the lock: whoever changes them
+    /// writes the file before letting go.
+    async fn switches(&self) -> tokio::sync::MutexGuard<'_, Option<Switches>> {
+        let mut held = self.switches.lock().await;
+        if held.is_none() {
+            let file = self.models_file();
+            let read = tokio::task::spawn_blocking(move || read_switches(file.as_deref())).await;
+            *held = Some(read.unwrap_or_default());
+        }
+        held
+    }
+
+    /// Makes the readers of the switches ([`AiAccounts::mark_enabled`], [`AiAccounts::offers_a_model`])
+    /// wait until [`AiAccounts::keep_used_models_on`] has run (#231), at most [`KEPT_WAIT`]. The core
+    /// calls it at its start, before anything can read them, and then keeps the models in use on.
+    pub fn hold_until_kept(&self) {
+        self.kept.send_replace(false);
+    }
+
+    /// Waits until the models in use are kept on ([`AiAccounts::hold_until_kept`]); at once when
+    /// nobody holds the readers.
+    async fn kept(&self) {
+        let mut kept = self.kept.subscribe();
+        // Timed out, the switches are read as they are: better a model counted off than a core
+        // that hangs. Then for good, so a takeover that never came does not hold every reader again.
+        if tokio::time::timeout(KEPT_WAIT, kept.wait_for(|kept| *kept)).await.is_err() {
+            self.kept.send_replace(true);
+        }
+    }
+
+    /// Writes `switches` to `ai-models.json` on a blocking thread; never while the file did not read
+    /// ([`Switches::writable`]).
+    async fn store_switches(&self, switches: &Switches) -> Result<(), String> {
+        switches.writable()?;
+        let file = self.models_file().ok_or("No home directory, so the models turned on cannot be stored.")?;
+        let switches = switches.clone();
+        tokio::task::spawn_blocking(move || write_switches(&file, &switches)).await.map_err(|err| err.to_string())?
+    }
+
+    /// The label of the account `id` ([`label`]), as the person reads it: `Ollama`, `OpenRouter`.
+    pub async fn label_of(&self, id: &str) -> Option<String> {
+        self.slots.read().await.iter().find(|slot| slot.account.id == id).map(|slot| label(&slot.account))
+    }
+
+    /// `models` of the account `id` with [`AiModel::enabled`] set from the switches: what
+    /// `ai.list_models` answers. A list straight from the server has it `false` everywhere.
+    pub async fn mark_enabled(&self, id: &str, models: Vec<AiModel>) -> Vec<AiModel> {
+        self.kept().await;
+        let server = self.server(id).await;
+        let held = self.switches().await;
+        let switches = held.as_ref().map(|held| &held.held);
+        models
+            .into_iter()
+            .map(|mut model| {
+                let here = computes_here(server.as_ref(), &model);
+                model.enabled = switches.is_some_and(|switches| switches.is_on(id, &model, here));
+                model
+            })
+            .collect()
+    }
+
+    /// Whether the model `model` of the account `id` is on: judged by its entry in `listed` (its
+    /// account's models as the server listed them), else by its id alone ([`AiModel::named`]: a
+    /// model of Ollama the list lacks counts as elsewhere, so it is on only when turned on).
+    pub async fn is_on(&self, id: &str, model: &str, listed: Option<&[AiModel]>) -> bool {
+        let described = listed.and_then(|models| models.iter().find(|known| known.id == model));
+        let model = described.cloned().unwrap_or_else(|| AiModel::named(model));
+        self.mark_enabled(id, vec![model]).await.first().is_some_and(|model| model.enabled)
+    }
+
+    /// Whether the account `id` has at least one model on that can chat (its tools not ruled out: a
+    /// model that only decides, like nimble, is on for the mail sorting, never for a chat), what
+    /// `assistant.list_engines` lists and
+    /// what an answer needs: judged by the account's list as the core last held it, where it holds
+    /// one (a model turned on that the server no longer offers does not count). Without one, a model
+    /// turned on by id counts, and so does an account still to take over from "Automatic"
+    /// ([`Switches::automatic`]); the server is asked only where the rule could turn a model on: at
+    /// an account where nothing was turned off yet, whose models could compute on this computer
+    /// ([`AiAccounts::known_models`]). A list that fails then counts as "yes": the answer reports the
+    /// server's problem, not the switches. `false` for an id that is no AI account.
+    pub async fn offers_a_model(&self, id: &str) -> bool {
+        self.kept().await;
+        let Some(server) = self.server(id).await else { return false };
+        let (follows_rule, turned_on, automatic) = {
+            let held = self.switches().await;
+            let automatic = held.as_ref().is_some_and(|held| held.automatic.contains_key(id));
+            let switches = held.as_ref().map(|held| &held.held);
+            (switches.is_none_or(|s| s.follows_rule(id)), switches.is_some_and(|s| s.has_turned_on(id)), automatic)
+        };
+        // Models turned on by id count while the core has no list to check them against; with one,
+        // only those the server still offers. So does a model "Automatic" took before the switches
+        // came (#231), still to be kept on: nobody loses the assistant while its server is away.
+        let listed =
+            self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
+        if (turned_on || automatic) && listed.is_none() {
+            return true;
+        }
+        if let Some(listed) = listed {
+            return self.mark_enabled(id, listed).await.iter().any(chats);
+        }
+        if !follows_rule || !may_compute_here(Some(&server)) {
+            return false;
+        }
+        match self.known_models(id, None).await {
+            Ok(models) => self.mark_enabled(id, models).await.iter().any(chats),
+            Err(_) => true,
+        }
+    }
+
+    /// Whether turning on `model` of the account `id` would let something compute elsewhere, what
+    /// only a person may do (`docs/api.md`, "Was nie nach außen geht", 6): judged by the account's
+    /// list as the core holds it (asked now when it lacks the model), else by its id alone, so in
+    /// doubt it counts as elsewhere for Ollama. `Ok(false)` for an id that is no AI account: the
+    /// command then answers `not-found`. The list's error when the core holds no list and cannot
+    /// load one (#231): then it cannot say, and the caller answers with the server's problem rather
+    /// than a refusal – safe, since nothing is turned on without the list.
+    pub async fn runs_elsewhere(&self, id: &str, model: &str) -> Result<bool, AiError> {
+        let Some(server) = self.server(id).await else { return Ok(false) };
+        let listed = self.known_models(id, Some(model)).await?;
+        let described = listed.into_iter().find(|known| known.id == model);
+        Ok(!computes_here(Some(&server), &described.unwrap_or_else(|| AiModel::named(model))))
+    }
+
+    /// The name of the model `model` of the account `id` and whether it computes on this computer,
+    /// as the account's list in the core says (asked now when it lacks the model), for an approval's
+    /// summary; `None` for a model the account does not list. Never the client's words.
+    pub async fn described(&self, id: &str, model: &str) -> Option<(String, bool)> {
+        let server = self.server(id).await?;
+        let models = self.known_models(id, Some(model)).await.ok()?;
+        let described = models.into_iter().find(|known| known.id == model)?;
+        let here = computes_here(Some(&server), &described);
+        Some((described.name, here))
+    }
+
+    /// `ai.set_model_enabled`: turns `model` of the account `id` on or off and stores it. Turning on
+    /// asks the server for its models first ([`AiAccounts::models`]) and takes only one of them
+    /// ([`AiError::NotFound`] otherwise); turning off takes any id. The first time something is turned
+    /// off at an account whose models could compute here, the models the rule has on are kept on
+    /// ([`ModelSwitches::turn_off`]), so the list is needed then ([`AiAccounts::known_models`]).
+    /// [`AiError::NotFound`] for an id that is no AI account, [`AiError::Format`] when the file
+    /// cannot be written (nothing changes then) or is there but did not read (PR review #242: it is
+    /// never written over, [`Switches::writable`]). An account still to take over from "Automatic"
+    /// ([`Switches::automatic`], #231) is not any more once the switch is stored: the person's
+    /// switch wins; a switch that fails is none, and a list it loaded takes over as any first list.
+    pub async fn set_enabled(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
+        // Taken out while switching, so the list asked for below takes nothing over; the switch
+        // stores the account without it.
+        let noted = self.switches().await.as_mut().and_then(|held| held.automatic.remove(id));
+        let switched = self.switch(id, model, enabled).await;
+        if switched.is_err()
+            && let Some(noted) = noted
+        {
+            if let Some(held) = self.switches().await.as_mut() {
+                held.automatic.entry(id.to_string()).or_insert(noted);
+            }
+            // A list loaded on the way: taken over now, as at any first list.
+            let listed =
+                self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
+            if let Some(models) = listed {
+                self.take_over(id, &models).await;
+            }
+        }
+        switched
+    }
+
+    /// `Ok` while the switches may be written; [`AiError::Format`] with the sentence that names
+    /// `ai-models.json` while it is there but did not read (PR review #242): then every switch is
+    /// refused. The core asks it before anything else of `ai.set_model_enabled` – before a server
+    /// is asked and before an approval –, so a client and the person get the same answer.
+    pub async fn switches_writable(&self) -> Result<(), AiError> {
+        self.switches().await.as_ref().map_or(Ok(()), Switches::writable).map_err(AiError::Format)
+    }
+
+    /// [`AiAccounts::set_enabled`] apart from what "Automatic" used.
+    async fn switch(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
+        let server = self.server(id).await.ok_or_else(|| no_account(id))?;
+        // Before any server is asked: a file that did not read refuses every switch alike.
+        self.switches_writable().await?;
+        let on_by_rule: Vec<String> = if enabled {
+            let models = self.models(id, true).await?;
+            if !models.iter().any(|known| known.id == model) {
+                let provider = self.label_of(id).await.unwrap_or_else(|| id.to_string());
+                return Err(AiError::NotFound(trf(
+                    "{provider} does not offer the model {model}.",
+                    &[("provider", &provider), ("model", &model)],
+                )));
+            }
+            Vec::new()
+        } else if may_compute_here(Some(&server))
+            && self.switches().await.as_ref().is_none_or(|held| held.held.follows_rule(id))
+        {
+            let models = self.known_models(id, None).await?;
+            models
+                .iter()
+                .filter(|known| ModelSwitches::starts_on(known, computes_here(Some(&server), known)))
+                .map(|known| known.id.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut held = self.switches().await;
+        let switches = held.get_or_insert_with(Switches::default);
+        let mut changed = switches.clone();
+        match enabled {
+            true => changed.held.turn_on(id, model),
+            false => changed.held.turn_off(id, model, on_by_rule),
+        }
+        self.store_switches(&changed).await.map_err(AiError::Format)?;
+        *switches = changed;
+        Ok(())
+    }
+
+    /// The first start after the update that brought the switches (task S.24): when there was no
+    /// `ai-models.json` at the core's first look ([`Switches::keep_used`]), the models the suite
+    /// already uses – `used` as pairs of account id and model id (the assistant's default for new
+    /// chats, the models of the bots and of the functions) – are turned on, so nothing that worked
+    /// stops, and the file is written with the mark gone. Afterwards it does nothing, and a model a
+    /// module chooses later turns nothing on. Ids that are no AI account (`ai:…`) are left out, and
+    /// so are accounts a person switched a model at already (#231): their switch wins. Lets the
+    /// readers of the switches go ([`AiAccounts::hold_until_kept`]) whatever came of it.
+    ///
+    /// `automatic` (#231): the accounts used with "Automatic" (no model named) and what for. The
+    /// model it took is in the server's list only, so they are noted ([`Switches::automatic`]) and
+    /// taken over at the first list that loads ([`AiAccounts::take_over`]); no server is asked here.
+    pub async fn keep_used_models_on(
+        &self,
+        used: Vec<(String, String)>,
+        automatic: Vec<(String, Automatic)>,
+    ) -> Result<(), String> {
+        let kept = self.keep_used(used, automatic).await;
+        self.kept.send_replace(true);
+        kept
+    }
+
+    /// [`AiAccounts::keep_used_models_on`] without letting the readers go.
+    async fn keep_used(&self, used: Vec<(String, String)>, automatic: Vec<(String, Automatic)>) -> Result<(), String> {
+        let mut held = self.switches().await;
+        let switches = held.get_or_insert_with(Switches::default);
+        if !switches.keep_used {
+            return Ok(());
+        }
+        // While the mark stands, every entry is a person's: there was no file before.
+        let switched = switches.held.accounts.keys().cloned().collect::<std::collections::BTreeSet<_>>();
+        let mut seeded = switches.clone();
+        for (account, model) in used.iter().filter(|(account, _)| account.starts_with("ai:")) {
+            if !switched.contains(account) {
+                seeded.held.turn_on(account, model);
+            }
+        }
+        for (account, uses) in automatic.into_iter().filter(|(account, _)| account.starts_with("ai:")) {
+            if !switched.contains(&account) {
+                let noted = seeded.automatic.entry(account).or_default();
+                *noted = noted.and(uses);
+            }
+        }
+        seeded.keep_used = false;
+        self.store_switches(&seeded).await?;
+        *switches = seeded;
+        Ok(())
+    }
+
+    /// Forgets the switches of the removed account `id`, so it starts with the rule when connected
+    /// again. A file that cannot be written is only reported: the account is gone either way.
+    async fn forget_switches(&self, id: &str) {
+        let mut held = self.switches().await;
+        let switches = held.get_or_insert_with(Switches::default);
+        if !switches.held.accounts.contains_key(id) && !switches.automatic.contains_key(id) {
+            return;
+        }
+        let mut changed = switches.clone();
+        changed.held.forget(id);
+        changed.automatic.remove(id);
+        match self.store_switches(&changed).await {
+            Ok(()) => *switches = changed,
+            Err(err) => eprintln!("torroworkplace: cannot forget the models of a removed AI account: {err}"),
+        }
     }
 
     fn http(&self) -> Result<&reqwest::Client, AiError> {
@@ -802,8 +1322,15 @@ impl AiAccounts {
     }
 }
 
-fn no_account(id: &str) -> AiError {
+/// [`AiError::NotFound`] for the id `id` that is no AI account.
+pub(crate) fn no_account(id: &str) -> AiError {
     AiError::NotFound(torro_core::i18n::trf("There is no AI account {id}.", &[("id", &id)]))
+}
+
+/// Whether `model` is on and may answer a chat: its tools are not ruled out (#231). A model that
+/// only decides is on for the mail sorting and counts for nothing else.
+fn chats(model: &AiModel) -> bool {
+    model.enabled && model.tools != Some(false)
 }
 
 #[cfg(test)]
@@ -1337,10 +1864,10 @@ pub(crate) mod tests {
     }
 
     /// Anthropic's key for the tests; must look like a real one so `scrub` has something to find.
-    const CLAUDE_KEY: &str = "sk-ant-api03-0123456789SECRETabcdef";
+    pub(crate) const CLAUDE_KEY: &str = "sk-ant-api03-0123456789SECRETabcdef";
 
     /// A fake Anthropic whose `/v1/models` answers with two models for the right key.
-    async fn fake_anthropic() -> MockServer {
+    pub(crate) async fn fake_anthropic() -> MockServer {
         let server = MockServer::start_async().await;
         server
             .mock_async(|when, then| {
@@ -1565,6 +2092,383 @@ pub(crate) mod tests {
         let left = account::load_from(&accounts_file(dir.path())).expect("read");
         assert_eq!(left, [ollama, github]);
         assert!(!ai.knows(&openrouter.id).await && ai.remove(&openrouter.id).await.is_err());
+    }
+
+    /// Which models of `id` are on, by id, as `ai.list_models` would mark them (task S.24).
+    async fn on(ai: &AiAccounts, id: &str) -> Vec<String> {
+        let models = ai.models(id, true).await.expect("models");
+        ai.mark_enabled(id, models).await.into_iter().filter(|model| model.enabled).map(|model| model.id).collect()
+    }
+
+    /// Task S.24, the rule at the start: models with tools that compute here are on; Ollama's cloud
+    /// model, OpenRouter and Anthropic are off, and an account with nothing on offers no model.
+    #[tokio::test]
+    async fn at_the_start_only_models_that_compute_here_are_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter, anthropic) =
+            (fake_ollama_with_cloud(true).await, fake_openrouter().await, fake_anthropic().await);
+        let plain = fake_ollama().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let ollama = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let plain = ai.connect(AiProvider::Ollama, Some(&plain.url("/v1")), Secret::default()).await.expect("ollama");
+        let openrouter = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let claude = ai
+            .connect(AiProvider::Anthropic, Some(&anthropic.url("/v1")), Secret::new(CLAUDE_KEY))
+            .await
+            .expect("anthropic");
+
+        assert_eq!(on(&ai, &ollama.id).await, ["qwen3:8b"], "the cloud model is off");
+        assert_eq!(on(&ai, &plain.id).await, ["qwen3:8b", "broken:1b"], "gemma3 cannot use tools");
+        assert!(on(&ai, &openrouter.id).await.is_empty(), "OpenRouter computes elsewhere");
+        assert!(on(&ai, &claude.id).await.is_empty(), "Anthropic computes elsewhere");
+        assert!(ai.offers_a_model(&ollama.id).await);
+        assert!(!ai.offers_a_model(&openrouter.id).await && !ai.offers_a_model(&claude.id).await);
+        assert!(!ai.offers_a_model("ai:ollama@nowhere.example").await, "no such account");
+        assert_eq!(ai.runs_elsewhere(&ollama.id, "glm-5.3:cloud").await, Ok(true));
+        assert_eq!(ai.runs_elsewhere(&ollama.id, "qwen3:8b").await, Ok(false));
+        assert_eq!(ai.runs_elsewhere(&openrouter.id, "qwen/qwen3-14b").await, Ok(true), "open, but in the cloud");
+        assert_eq!(ai.runs_elsewhere("ai:ollama@nowhere.example", "qwen3:8b").await, Ok(false), "no account");
+        assert!(!dir.path().join("config").join(ai::MODELS_FILE).exists(), "nothing stored by reading");
+    }
+
+    /// #231: a decision model on this computer starts on, although it has no tools – sorting mail
+    /// needs it.
+    #[tokio::test]
+    async fn a_decision_model_here_starts_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = fake_deciding_ollama().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let ollama = ai.connect(AiProvider::Ollama, Some(&server.url("/v1")), Secret::default()).await.expect("ollama");
+        // The fake's tags list only nimble, so qwen3 counts as elsewhere.
+        assert_eq!(on(&ai, &ollama.id).await, ["nimble"]);
+        assert!(!ai.offers_a_model(&ollama.id).await, "on for the mail sorting, never a chat engine");
+    }
+
+    /// Task S.24: switching stores `ai-models.json` (0600) and survives a new start; turning on takes
+    /// only a model the server offers, turning off any; the first model turned off keeps the others
+    /// the rule had on, and new ones stay off from then on; a removed account forgets its switches.
+    #[tokio::test]
+    async fn switches_are_stored_and_read_again_at_the_next_start() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let local = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+
+        assert!(matches!(ai.set_enabled(&cloud.id, "nope/none", true).await, Err(AiError::NotFound(_))));
+        assert!(matches!(
+            ai.set_enabled("ai:ollama@nowhere.example", "qwen3:8b", false).await,
+            Err(AiError::NotFound(_))
+        ));
+        ai.set_enabled(&cloud.id, "openai/gpt-4o", true).await.expect("on");
+        ai.set_enabled(&local.id, "broken:1b", false).await.expect("off");
+        ai.set_enabled(&local.id, "llama3:8b", false).await.expect("a model it does not list goes off too");
+        assert_eq!(on(&ai, &cloud.id).await, ["openai/gpt-4o"]);
+        assert_eq!(on(&ai, &local.id).await, ["qwen3:8b"], "the rule's other model stays on");
+        let switches = ai.switches().await.as_ref().map(|held| held.held.clone()).expect("held");
+        assert!(!switches.follows_rule(&local.id), "new models stay off from now on");
+
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).expect("stored").permissions().mode() & 0o777, 0o600);
+        }
+        let again = service(dir.path(), &keys, Vec::new());
+        again.load().await.expect("loaded");
+        assert_eq!(on(&again, &cloud.id).await, ["openai/gpt-4o"], "after a new start");
+        assert_eq!(on(&again, &local.id).await, ["qwen3:8b"]);
+        assert!(again.keep_used_models_on(vec![(local.id.clone(), "gemma3:4b".into())], Vec::new()).await.is_ok());
+        assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "a person switched there: their switch wins");
+
+        again.remove(&cloud.id).await.expect("removed");
+        let stored = std::fs::read_to_string(&file).expect("stored");
+        assert!(!stored.contains(&cloud.id) && !stored.contains("SECRET"), "{stored}");
+    }
+
+    /// Task S.24, the first start after the update: the models in use stay on, also one elsewhere,
+    /// once; ids of other engines are left out.
+    #[tokio::test]
+    async fn the_models_in_use_stay_on_at_the_first_start() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let used = vec![(cloud.id.clone(), "qwen/qwen3-14b".to_string()), ("claude-code".into(), "opus".into())];
+        ai.keep_used_models_on(used, Vec::new()).await.expect("kept on");
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
+        assert!(ai.offers_a_model(&cloud.id).await);
+        let stored = std::fs::read_to_string(dir.path().join("config").join(ai::MODELS_FILE)).expect("stored");
+        assert!(!stored.contains("claude-code"), "{stored}");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "openai/gpt-4o".into())], Vec::new()).await.expect("once only");
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
+    }
+
+    /// #231: a switch a person turns before the models in use are kept on does not stop it – the
+    /// mark is the file's own – but wins at its account; a file from before the mark keeps nothing on.
+    #[tokio::test]
+    async fn an_early_switch_does_not_stop_keeping_the_models_in_use_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let local = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.set_enabled(&local.id, "broken:1b", false).await.expect("a person's switch, written at once");
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        assert!(std::fs::read_to_string(&file).expect("stored").contains("keep_used"), "still to do");
+
+        // The core stopped here; at its next start it keeps them on all the same.
+        let again = service(dir.path(), &keys, Vec::new());
+        again.load().await.expect("loaded");
+        let used = vec![(cloud.id.clone(), "qwen/qwen3-14b".to_string()), (local.id.clone(), "gemma3:4b".into())];
+        again.keep_used_models_on(used, Vec::new()).await.expect("kept on");
+        assert_eq!(on(&again, &cloud.id).await, ["qwen/qwen3-14b"]);
+        assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "the person's account stays theirs");
+        assert!(!std::fs::read_to_string(&file).expect("stored").contains("keep_used"), "done");
+
+        // A file written before the mark existed: the update has passed, nothing is turned on.
+        let old = tempfile::tempdir().expect("temp dir");
+        let ai = service(old.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let file = old.path().join("config").join(ai::MODELS_FILE);
+        std::fs::write(&file, r#"{"accounts": {}}"#).expect("an old file");
+        let ai = service(old.path(), &keys, Vec::new());
+        ai.load().await.expect("loaded");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())], Vec::new())
+            .await
+            .expect("nothing to do");
+        assert!(on(&ai, &cloud.id).await.is_empty());
+    }
+
+    /// PR review #242: an `ai-models.json` that does not read is never written over. Reading falls
+    /// back on the rule (no model elsewhere is on), every switch is refused with `error` and a
+    /// sentence naming the file, and the file stays as it was, with every switch the person made.
+    #[tokio::test]
+    async fn a_file_of_switches_that_does_not_read_is_never_written_over() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let local = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        let damaged = br#"{"accounts": {"#.to_vec();
+        std::fs::write(&file, &damaged).expect("a damaged file");
+
+        let ai = service(dir.path(), &keys, Vec::new());
+        ai.load().await.expect("loaded");
+        assert!(on(&ai, &cloud.id).await.is_empty(), "nothing elsewhere is on");
+        assert!(on(&ai, &local.id).await.contains(&"qwen3:8b".to_string()), "the rule decides");
+        let refused = trf(
+            "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
+            &[("file", &ai::MODELS_FILE)],
+        );
+        // Clients read it too (the MCP tool): the file's name only, the path is the log's.
+        assert!(!refused.contains(&dir.path().display().to_string()), "{refused}");
+        for (account, model, enabled) in [(&cloud.id, "openai/gpt-4o", true), (&local.id, "qwen3:8b", false)] {
+            let err = ai.set_enabled(account, model, enabled).await.expect_err("refused");
+            assert_eq!((err.code(), err.to_string()), ("error", refused.clone()));
+        }
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "openai/gpt-4o".into())], Vec::new()).await.expect("nothing");
+        ai.remove(&cloud.id).await.expect("removed");
+        assert_eq!(std::fs::read(&file).expect("still there"), damaged, "never written over");
+    }
+
+    /// #231: while the core keeps the models in use on, the readers of the switches wait for it, so
+    /// none counts a model in use as off.
+    #[tokio::test]
+    async fn readers_wait_until_the_models_in_use_are_kept_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let ai = Arc::new(service(dir.path(), &keys, Vec::new()));
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.hold_until_kept();
+        let reader = tokio::spawn({
+            let (ai, id) = (Arc::clone(&ai), cloud.id.clone());
+            async move { ai.offers_a_model(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!reader.is_finished(), "it waits");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())], Vec::new()).await.expect("kept on");
+        assert!(reader.await.expect("read"), "and reads the model kept on");
+    }
+
+    /// #231: what "Automatic" took before the switches – for a chat open weights, here first, with
+    /// tools; for sorting mail the first model that decides, here only where mail may not leave.
+    #[test]
+    fn automatic_picks_what_it_took_before_the_switches() {
+        use crate::assistant::Place;
+        let model = |id: &str, tools: bool, open: bool, decides: bool, remote: bool| AiModel {
+            tools: Some(tools),
+            open_weights: Some(open),
+            decision: Some(decides),
+            remote: Some(remote),
+            ..AiModel::named(id)
+        };
+        let models = [
+            model("closed", true, false, false, false),
+            model("cloud-decides", false, true, true, true),
+            model("cloud-tools", true, true, false, true),
+            model("here-decides", false, true, true, false),
+            model("here-tools", true, true, false, false),
+        ];
+        let place = |model: &AiModel| if model.remote == Some(true) { Place::Remote } else { Place::Local };
+        let ids = |uses: Automatic| uses.picks(&models, place).into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(ids(Automatic { chat: true, ..Automatic::default() }), ["here-tools"]);
+        assert_eq!(ids(Automatic { decides: true, ..Automatic::default() }), ["cloud-decides"]);
+        assert_eq!(ids(Automatic { decides_here: true, ..Automatic::default() }), ["here-decides"]);
+        let both = Automatic { chat: true, ..Automatic::default() }
+            .and(Automatic { decides_here: true, ..Automatic::default() });
+        assert_eq!(ids(both), ["here-tools", "here-decides"]);
+        assert!(Automatic::default().picks(&models, place).is_empty());
+        let sorting = ai::AiFunction::InboxCategorize;
+        assert_eq!(Automatic::for_function(sorting, false), Automatic { decides_here: true, ..Automatic::default() });
+        assert_eq!(Automatic::for_function(sorting, true), Automatic { decides: true, ..Automatic::default() });
+    }
+
+    /// #231: an account used with "Automatic" before the switches keeps that model on at its first
+    /// list – OpenRouter and Anthropic compute elsewhere, so the rule alone would leave them off –,
+    /// counts as offering a model until then, and is taken over once.
+    #[tokio::test]
+    async fn what_automatic_used_stays_on_at_the_first_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (openrouter, anthropic) = (fake_openrouter().await, fake_anthropic().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let claude = ai
+            .connect(AiProvider::Anthropic, Some(&anthropic.url("/v1")), Secret::new(CLAUDE_KEY))
+            .await
+            .expect("anthropic");
+        let chat = Automatic { chat: true, ..Automatic::default() };
+        let automatic = vec![(cloud.id.clone(), chat), (claude.id.clone(), chat), ("claude-code".into(), chat)];
+        ai.keep_used_models_on(Vec::new(), automatic).await.expect("noted");
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        let stored = std::fs::read_to_string(&file).expect("stored");
+        assert!(stored.contains("automatic") && !stored.contains("claude-code"), "{stored}");
+        assert!(ai.offers_a_model(&cloud.id).await && ai.offers_a_model(&claude.id).await, "before any list");
+
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"], "open weights first");
+        assert_eq!(on(&ai, &claude.id).await, ["claude-opus-5"]);
+        assert!(!std::fs::read_to_string(&file).expect("stored").contains("automatic"), "taken over");
+        ai.set_enabled(&cloud.id, "qwen/qwen3-14b", false).await.expect("off");
+        assert!(on(&ai, &cloud.id).await.is_empty(), "once only: a list later turns nothing on again");
+    }
+
+    /// #231: a server that does not answer at the first start keeps the account marked, and it
+    /// counts as offering a model; its first list takes it over. A person who switches there first
+    /// wins: nothing is taken over.
+    #[tokio::test]
+    async fn automatic_waits_for_a_server_that_is_away_and_gives_way_to_a_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/v1/key");
+                then.status(200).json_body(json!({"data": {"label": "sk-or-v1-012…def", "limit": null}}));
+            })
+            .await;
+        let away = server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/v1/models");
+                then.status(503);
+            })
+            .await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&server.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("connected");
+        let chat = Automatic { chat: true, ..Automatic::default() };
+        ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
+        ai.take_over_automatic().await;
+        assert!(ai.models(&cloud.id, true).await.is_err(), "the server is away");
+        assert!(ai.offers_a_model(&cloud.id).await, "nobody loses the assistant meanwhile");
+
+        away.delete_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/v1/models");
+                then.status(200).json_body(json!({"data": [
+                    {"id": "qwen/qwen3-14b", "name": "Qwen3 14B", "hugging_face_id": "Qwen/Qwen3-14B",
+                     "supported_parameters": ["tools"]},
+                ]}));
+            })
+            .await;
+        ai.take_over_automatic().await;
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"], "taken over at the first list");
+
+        // Another account, where the person switches before the list loads.
+        let other = tempfile::tempdir().expect("temp dir");
+        let openrouter = fake_openrouter().await;
+        let ai = service(other.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
+        ai.set_enabled(&cloud.id, "openai/gpt-4o", true).await.expect("the person's switch");
+        assert_eq!(on(&ai, &cloud.id).await, ["openai/gpt-4o"], "their switch wins");
+
+        // A switch that fails is none: the list it loaded takes over all the same.
+        let third = tempfile::tempdir().expect("temp dir");
+        let ai = service(third.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
+        assert!(ai.set_enabled(&cloud.id, "nope/none", true).await.is_err(), "not offered");
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
+    }
+
+    /// Task S.24: a model turned on that the server no longer offers counts once the core holds the
+    /// account's list, so the account then has no model on.
+    #[tokio::test]
+    async fn a_model_turned_on_that_the_server_no_longer_offers_does_not_count() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "gone/model".into())], Vec::new()).await.expect("kept on");
+        assert!(ai.offers_a_model(&cloud.id).await, "without a list the switch counts");
+        assert!(on(&ai, &cloud.id).await.is_empty(), "the server does not list it");
+        assert!(!ai.offers_a_model(&cloud.id).await, "with the list it does not count");
     }
 
     #[test]

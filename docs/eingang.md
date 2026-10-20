@@ -210,9 +210,10 @@ Benachrichtigungs-Apps.
 
 **Als Quelle:**
 
-- Der Assistent „Agents & API“ (A.7) richtet beim Verbinden eines Clients gleich die Hooks ein
-  (Claude Code `settings.json`, Codex `hooks.json`), mit einem eigenen Skript-Schlüssel, der nur
-  `inbox.post_item` darf.
+- Der Dialog „Connect client“ unter MCP (A.7, seit #231) richtet beim Verbinden eines Clients gleich
+  die Hooks ein (Claude Code `settings.json`, Codex `hooks.json`), mit einem eigenen Schlüssel, der
+  nur `inbox.post_item` darf; danach schaltet sie „Report when waiting or done“ auf der Seite des
+  Agenten unter MCP an und aus.
 - Jeder Eintrag kennt Sitzung, Projekt (`cwd`) und, wenn der Kern es zuordnen kann, das Fenster.
   „Öffnen“ heißt: **in dieses Fenster springen**, nicht „irgendein Terminal öffnen“.
 - Einträge erledigen sich selbst: Wartet Claude auf Freigabe und es geht weiter (nächster

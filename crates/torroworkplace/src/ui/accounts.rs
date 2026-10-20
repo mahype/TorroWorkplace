@@ -1,20 +1,35 @@
-//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2): the
-//! accounts as rows of one settings group per provider (status dot, label on one line, status and
-//! last sync below, chevron), "Add account" in the header bar – always, also with accounts; a
-//! detail page per account with groups for the status ("Sync now"), the calendars and task lists
+//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2, fixed groups
+//! since S.30): the accounts as rows of fixed settings groups (status dot, label on one line,
+//! status and last sync below, chevron), in this order and also without an account – Nextcloud,
+//! Mail (with the CalDAV accounts of a mail provider), GitHub, AI, ntfy ([`Group`]); an account of
+//! a kind none of them holds gets a group of its own at the end. Each group says in a sentence
+//! what belongs there and ends with its "Add" ([`Message::Add`]), which opens the add-account
+//! dialog (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of
+//! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
+//! has an account to take over: the page asks for TorroMail's accounts when it opens ([`opened`])
+//! and after the dialog closes, not with every reload. Under AI stands the data rule "Mail to
+//! cloud models" (`settings.set_setting mail_to_cloud`, task C.17), for the assistant and all its
+//! bots.
+//!
+//! A detail page per account has groups for the status ("Sync now"), the calendars and task lists
 //! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
 //! "Remove account…" behind a confirmation that names the account and acts on it alone. A
 //! sign-in in progress (an entry without an id) is a "Signing in…" row without a detail page.
-//! Empty: a sentence about what to add. The add flow is `wizard.rs` (task S.6); it and the confirmation
-//! are dialogs over the whole window ([`overlay`]). The shell hands the answers to requests to
-//! [`answered`], so the dialog shows the outcome of its own requests.
+//! The dialog and the confirmation are dialogs over the whole window ([`overlay`]). The shell
+//! hands the answers to requests to [`answered`], so the dialog shows the outcome of its own
+//! requests.
 //!
 //! A GitHub account (task G.1) has no calendars or lists yet: its detail page shows what the
 //! token's scopes allow and what is missing ([`github_permissions`]) in place of them.
 //!
-//! An AI account (task KI.1a, kind `ai`) has neither: its row says only how it stands, its page
-//! shows the status without "Sync now" (nothing of it syncs), the server's address and where the
-//! key lives.
+//! An AI account (task KI.1a, kind `ai`) has neither: its row says how it stands, its page shows
+//! the status without "Sync now" (nothing of it syncs), the server's address and where the key
+//! lives. Between status and connection stands the group "Models" (task S.31, `docs/settings.md` ›
+//! KI): a row per model with what it can, where it computes ([`model_place`]) and a switch
+//! (`ai.set_model_enabled`), faded and without a switch where it can't use tools; at OpenRouter a
+//! search and "Show closed models". The page asks for the models as it opens (`ai.list_models`
+//! with `all`), not with every reload; a switch shows at once and turns back when the core
+//! refuses. The account's row counts the models on from the last list ("3 models on").
 //!
 //! A CalDAV account (a mail provider's, task M7.2) shows "CalDAV" as its kind, the server and user
 //! in the connection group, and "Change password…" there: a dialog over the window asks for the
@@ -50,37 +65,44 @@
 //!
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
 //! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the services of a mail
-//! account, and `OpenApp` for the buttons that open a window. The pure parts (relative time, status
-//! text, whether a collection is shown, which accounts are listed) are plain functions with unit
-//! tests.
+//! account, `OpenApp` for the buttons that open a window, `TorroMailAccounts` for the import,
+//! `SetSetting { key: MailToCloud }` for the data rule and `AiModels` / `SetModelEnabled` for an AI
+//! account's models. The pure parts (relative time, status text,
+//! whether a collection is shown, which accounts are listed, the groups) are plain functions with
+//! unit tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
 use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Space, column, container, row, text, toggler};
+use iced::widget::{Space, column, container, row, svg, text, toggler};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
+use torro_core::ai::{AiModel, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_gui::dialog::frame as dialog_frame;
-use torro_gui::icon::Icon;
+use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Status, empty_state};
+use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
 use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
-use torro_ipc::{AccountInfo, MailView, NtfyTopicView, NtfyView, Request, Response, ServiceState, TopicName};
+use torro_ipc::{
+    AccountInfo, MailView, NtfyTopicView, NtfyView, Request, Response, ServiceState, SettingKey, TopicName,
+    TorroMailAccount,
+};
 use torro_mail::{MailFormat, Notify, Role, Security, Services};
 use torro_pim::AccountState;
 
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
-use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row, wizard};
+use super::{Action, Data, Header, chevron, confirm, dialog, notice, pressable, row_frame, setting_row, wizard};
 use crate::account::ntfy::TOPICS_MAX;
+use crate::assistant::{Place, place_of};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -99,6 +121,48 @@ pub struct State {
     pub topic: Option<TopicEdit>,
     /// The "Change login" dialog of the open ntfy account.
     pub login: Option<LoginChange>,
+    /// TorroMail's accounts as the last answer listed them (task S.30): whether the group Mail
+    /// offers "Import from TorroMail…" ([`wizard::can_import`]). `None` until an answer came; a
+    /// list that could not be read counts as empty.
+    pub torromail: Option<Vec<TorroMailAccount>>,
+    /// `TorroMailAccounts` was sent by the page and has not answered.
+    asking_torromail: bool,
+    /// The models of each AI account as `ai.list_models` last answered (task S.31), by account id,
+    /// with the switches pressed since: the open page lists them, the account's row in the list
+    /// counts those that are on. Asked when an AI account's page opens, never with a reload.
+    pub models: BTreeMap<String, Vec<AiModel>>,
+    /// What the open AI account's page shows of its models besides the list (task S.31).
+    pub models_page: ModelsPage,
+    /// The model switches sent and not answered yet, oldest first. The core answers each with `ok`
+    /// or an error; a refusal turns the oldest one back ([`answered`]). Kept when the page closes,
+    /// so a late refusal still corrects the count in the list.
+    switching: VecDeque<ModelSwitch>,
+}
+
+/// The state of the group "Models" on an AI account's page (task S.31) beside the models
+/// themselves ([`State::models`]): whether they are being asked for, why that failed, why the
+/// core refused the last switch, and the search and "Show closed models" of OpenRouter. A new
+/// page starts with a fresh one.
+#[derive(Debug, Default)]
+pub struct ModelsPage {
+    /// `ai.list_models` was sent for the open page and has not answered: "Loading models…".
+    pub loading: bool,
+    /// Why the models could not be listed, in the core's words: a sentence in the group.
+    pub error: Option<String>,
+    /// Why the core refused the last switch: a sentence under the group, until the next switch.
+    pub refused: Option<String>,
+    /// What the search field of OpenRouter holds; matched against name and id, any case.
+    pub search: String,
+    /// OpenRouter lists its models with closed weights too ([`shown_models`]).
+    pub show_closed: bool,
+}
+
+/// One model switch on its way to the core: which account's model, and what it was switched to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelSwitch {
+    account: String,
+    model: String,
+    enabled: bool,
 }
 
 /// The topic dialog of an ntfy account's page (task E5.14). For a new topic the name and label are
@@ -270,7 +334,13 @@ impl State {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    AddAccount,
+    /// The "Add" of a group (task S.30): the add-account dialog at that provider's first step.
+    Add(wizard::Provider),
+    /// "Import from TorroMail…" of the group Mail (task S.30): the dialog at TorroMail's accounts.
+    ImportTorroMail,
+    /// The switch of the data rule under AI (task C.17, moved here with S.30): whether cloud models
+    /// read the mail the assistant and its bots may read – a setting of the suite, not a right.
+    MailToCloud(bool),
     Wizard(wizard::Message),
     /// Opens the detail page of an account.
     Open(String),
@@ -325,6 +395,16 @@ pub enum Message {
     LoginSecretEdited(Secret),
     SubmitLogin,
     CloseLogin,
+    /// The switch of a model on an AI account's page (task S.31), by the model's id: sends
+    /// `ai.set_model_enabled` and shows the new state at once. A model that can't use tools has no
+    /// switch, so it does nothing for one.
+    SetModel(String, bool),
+    /// "Retry" after the models could not be listed: asks the server again.
+    LoadModels,
+    /// The search field over OpenRouter's models was typed in.
+    ModelSearch(String),
+    /// "Show closed models" of OpenRouter, on or off.
+    ShowClosed(bool),
 }
 
 /// What Escape means on this page right now: close the add-account dialog, the password or server
@@ -347,17 +427,42 @@ pub fn escape(state: &State) -> Option<Message> {
     }
 }
 
+/// The page opens (task S.30): it asks for TorroMail's accounts, so the group Mail knows whether to
+/// offer the import. The shell sends the returned request when Accounts is chosen or the window
+/// starts on it; the answer comes back through [`answered`].
+pub fn opened(state: &mut State) -> Action {
+    state.asking_torromail = true;
+    Action::Send(Request::TorroMailAccounts)
+}
+
+/// The page has neither TorroMail's accounts nor asked for them: a window that started on Accounts
+/// before the core answered asks with its first good load.
+pub fn unlisted(state: &State) -> bool {
+    state.torromail.is_none() && !state.asking_torromail
+}
+
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
-        // The dialog asks for TorroMail's accounts as it opens (task M7.4).
-        Message::AddAccount => {
-            let (wizard, ask) = wizard::State::open();
+        // The AI providers ask for the servers on this computer as they open.
+        Message::Add(provider) => {
+            let (wizard, ask) = wizard::State::at(provider, data);
             state.wizard = Some(wizard);
             ask
         }
+        // The step asks for TorroMail's accounts as it opens (task M7.4).
+        Message::ImportTorroMail => {
+            let (wizard, ask) = wizard::State::torromail();
+            state.wizard = Some(wizard);
+            ask
+        }
+        // The app key's: only a person lets mail out (task C.17, `Request::kept_for_people`).
+        Message::MailToCloud(on) => {
+            Action::Send(Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::Value::Bool(on) })
+        }
+        // An account may have come from TorroMail or gone: the import asks again.
         Message::Wizard(wizard::Message::Close) => {
             state.wizard = None;
-            Action::None
+            opened(state)
         }
         Message::Wizard(message) => match state.wizard.as_mut() {
             Some(wizard) => wizard::update(wizard, message, data),
@@ -366,11 +471,23 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Open(id) => {
             state.selected = Some(id);
             close_dialogs(state);
-            Action::None
+            state.models_page = ModelsPage::default();
+            load_models(state, data)
         }
         Message::Back => {
             state.selected = None;
             close_dialogs(state);
+            state.models_page = ModelsPage::default();
+            Action::None
+        }
+        Message::SetModel(model, enabled) => set_model(state, data, model, enabled),
+        Message::LoadModels => load_models(state, data),
+        Message::ModelSearch(search) => {
+            state.models_page.search = search;
+            Action::None
+        }
+        Message::ShowClosed(on) => {
+            state.models_page.show_closed = on;
             Action::None
         }
         Message::SyncNow => Action::Send(Request::Sync),
@@ -533,6 +650,70 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.login = None;
             Action::None
         }
+    }
+}
+
+/// The open page's AI account; `None` on every other page.
+fn selected_ai<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
+    selected(state, data).filter(|account| account.kind == AI_KIND)
+}
+
+/// Asks the open AI account's server for all its models (task S.31), closed ones too: OpenRouter's
+/// page filters them itself ([`shown_models`]). Nothing for any other page.
+fn load_models(state: &mut State, data: &Data) -> Action {
+    let Some(account) = selected_ai(state, data) else { return Action::None };
+    state.models_page.loading = true;
+    state.models_page.error = None;
+    Action::Send(Request::AiModels { account: account.id.clone(), all: true })
+}
+
+/// A model's switch on the open AI account's page: the new state shows at once and goes to the
+/// core, which may refuse it ([`answered`] turns it back then). Nothing for a model that can't use
+/// tools (it has no switch), one the page does not list, or a state it already has.
+fn set_model(state: &mut State, data: &Data, model: String, enabled: bool) -> Action {
+    let Some(account) = selected_ai(state, data).map(|account| account.id.clone()) else { return Action::None };
+    let Some(listed) = state.models.get_mut(&account).and_then(|models| models.iter_mut().find(|m| m.id == model))
+    else {
+        return Action::None;
+    };
+    if !has_switch(listed) || listed.enabled == enabled {
+        return Action::None;
+    }
+    listed.enabled = enabled;
+    state.models_page.refused = None;
+    state.switching.push_back(ModelSwitch { account: account.clone(), model: model.clone(), enabled });
+    Action::Send(Request::SetModelEnabled { account, model, enabled })
+}
+
+/// The answers the AI accounts' models wait for (task S.31), after their lists: the oldest switch
+/// on its way takes `ok` or an error, a refused one is turned back and its reason shown on the
+/// open page; else an error while the open page loads is why its models could not be listed.
+/// Returns whether one of them took the answer.
+fn models_answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    let refusal = match result {
+        Ok(Response::Error { message, .. }) | Err(message) => Some(message.clone()),
+        _ => None,
+    };
+    if !state.switching.is_empty() && (refusal.is_some() || matches!(result, Ok(Response::Ok))) {
+        let Some(switch) = state.switching.pop_front() else { return false };
+        if let Some(message) = refusal {
+            let models = state.models.get_mut(&switch.account).into_iter().flatten();
+            for model in models.filter(|model| model.id == switch.model) {
+                model.enabled = !switch.enabled;
+            }
+            if state.selected.as_deref() == Some(switch.account.as_str()) {
+                state.models_page.refused = Some(message);
+            }
+        }
+        return true;
+    }
+    match refusal {
+        Some(message) if state.models_page.loading => {
+            state.models_page.loading = false;
+            state.models_page.error = Some(message);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -721,11 +902,33 @@ fn password_request(account: &AccountInfo, password: Secret) -> Option<Request> 
 }
 
 /// The answer to a request the shell sent: the add-account dialog, the password dialog and the
-/// server dialog take the answers to their own requests ([`wizard::answered`]). Returns whether
-/// one did; then the shell shows no notice.
+/// server dialog take the answers to their own requests ([`wizard::answered`]), the page TorroMail's
+/// accounts it asked for ([`opened`]) and an AI account's models and switches (task S.31). Returns
+/// whether one did; then the shell shows no notice.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    // An AI account's models (task S.31) name their account: whoever asked, they are the latest.
+    if let Ok(Response::AiModels { account, models }) = result {
+        if state.selected.as_deref() == Some(account.as_str()) {
+            state.models_page.loading = false;
+            state.models_page.error = None;
+        }
+        state.models.insert(account.clone(), models.clone());
+        return true;
+    }
+    // The list is the page's whoever asked; an open step TorroMail gets it too.
+    let listed = match result {
+        Ok(Response::TorroMailAccounts { accounts }) => {
+            state.torromail = Some(accounts.clone());
+            state.asking_torromail = false;
+            true
+        }
+        _ => false,
+    };
     if let Some(wizard) = state.wizard.as_mut() {
-        return wizard::answered(wizard, result);
+        return wizard::answered(wizard, result) || listed;
+    }
+    if listed || models_answered(state, result) {
+        return true;
     }
     if let Some(change) = state.password.as_mut().filter(|change| change.sending) {
         match refusal(result) {
@@ -767,6 +970,13 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         }
         return true;
     }
+    // Nothing else of the page waits: an error is the answer to TorroMail's list. The import is a
+    // shortcut, so a list that cannot be read only leaves the button out, quietly.
+    if state.asking_torromail && matches!(result, Err(_) | Ok(Response::Error { .. })) {
+        state.asking_torromail = false;
+        state.torromail.get_or_insert_default();
+        return true;
+    }
     false
 }
 
@@ -791,8 +1001,8 @@ fn refusal(result: &Result<Response, String>) -> Option<String> {
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match selected(state, data) {
-        Some(account) => detail(account, data, now),
-        None => list(data, now),
+        Some(account) => detail(state, account, data, now),
+        None => list(state, data, now),
     }
 }
 
@@ -872,21 +1082,12 @@ fn password_dialog<'a>(change: &'a PasswordChange, account: &'a AccountInfo) -> 
     dialog(body.push(buttons), widgets::POPOVER_WIDTH, Message::ClosePassword)
 }
 
-/// The header bar of the page: "Add account" on the list; on an account's detail its label with
-/// a back button to the list.
-pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
-    if let Some(account) = selected(state, data) {
-        return Header { sub_page: Some((account.label.clone(), Message::Back)), actions: Vec::new() };
-    }
-    let add = match class {
-        SizeClass::Wide | SizeClass::Medium => {
-            widgets::text_button(Some(Icon::Plus), tr("Add account"), style::button::primary, Some(Message::AddAccount))
-        }
-        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
-            widgets::compact_button(Icon::Plus, tr("Add account"), style::button::primary, Some(Message::AddAccount))
-        }
-    };
-    Header { sub_page: None, actions: vec![add] }
+/// The header bar of the page: on an account's detail its label with a back button to the list.
+/// The list has no button of its own since task S.30: each group carries its "Add", so there is
+/// no primary button in every size class.
+pub fn header<'a>(state: &'a State, data: &'a Data, _class: SizeClass) -> Header<'a, Message> {
+    let sub_page = selected(state, data).map(|account| (account.label.clone(), Message::Back));
+    Header { sub_page, actions: Vec::new() }
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
@@ -973,15 +1174,97 @@ pub fn account_detail(state: &AccountState, now: DateTime<Utc>) -> String {
     }
 }
 
-/// The providers of `accounts`, each once, in the order they first appear: one group per provider.
-fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<&'a str> {
-    let mut kinds: Vec<&str> = Vec::new();
-    for account in accounts {
-        if !kinds.contains(&account.kind.as_str()) {
-            kinds.push(&account.kind);
+/// A fixed group of the list (task S.30, `docs/settings.md` › Accounts): always shown, also
+/// without an account, in the order of [`Group::ALL`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Nextcloud,
+    /// Mail accounts and the CalDAV accounts of a mail provider (kinds `mail` and `caldav`).
+    Mail,
+    GitHub,
+    Ai,
+    Ntfy,
+}
+
+impl Group {
+    const ALL: [Group; 5] = [Group::Nextcloud, Group::Mail, Group::GitHub, Group::Ai, Group::Ntfy];
+
+    /// The kinds of account (`AccountInfo::kind`) the group lists.
+    fn kinds(self) -> &'static [&'static str] {
+        match self {
+            Group::Nextcloud => &["nextcloud"],
+            Group::Mail => &["mail", "caldav"],
+            Group::GitHub => &["github"],
+            Group::Ai => &[AI_KIND],
+            Group::Ntfy => &[NTFY_KIND],
         }
     }
-    kinds
+
+    /// The provider the group's "Add" opens the dialog at.
+    fn provider(self) -> wizard::Provider {
+        match self {
+            Group::Nextcloud => wizard::Provider::Nextcloud,
+            Group::Mail => wizard::Provider::Mail,
+            Group::GitHub => wizard::Provider::GitHub,
+            Group::Ai => wizard::Provider::Ai,
+            Group::Ntfy => wizard::Provider::Ntfy,
+        }
+    }
+
+    fn title(self) -> String {
+        provider_name(self.kinds()[0])
+    }
+
+    /// The sentence under the group: what belongs here.
+    fn about(self) -> &'static str {
+        match self {
+            Group::Nextcloud => tr("Calendars and tasks from your Nextcloud."),
+            Group::Mail => tr("Mailboxes, and the calendars and tasks of the same provider."),
+            Group::GitHub => tr("Issues, pull requests and projects from GitHub."),
+            Group::Ai => tr("Models for the assistant and its bots, on this computer or in the cloud."),
+            Group::Ntfy => tr("Notifications from your servers and scripts, by topic."),
+        }
+    }
+
+    /// The words of the group's "Add" button.
+    fn add_label(self) -> &'static str {
+        match self {
+            Group::Nextcloud => tr("Add Nextcloud…"),
+            Group::Mail => tr("Add mail account…"),
+            Group::GitHub => tr("Add GitHub account…"),
+            Group::Ai => tr("Add AI provider…"),
+            Group::Ntfy => tr("Add ntfy server…"),
+        }
+    }
+}
+
+/// One group of the list: a fixed [`Group`], or a kind of account none of them holds, as a group
+/// of its own (named by [`provider_name`], without "Add").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Listed<'a> {
+    Fixed(Group),
+    Other(&'a str),
+}
+
+impl Listed<'_> {
+    fn holds(self, kind: &str) -> bool {
+        match self {
+            Listed::Fixed(group) => group.kinds().contains(&kind),
+            Listed::Other(other) => other == kind,
+        }
+    }
+}
+
+/// The groups of the list: every fixed group in its order, accounts or not, then each kind of
+/// `accounts` that no fixed group holds, once, in the order it first appears.
+fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<Listed<'a>> {
+    let mut groups: Vec<Listed<'a>> = Group::ALL.into_iter().map(Listed::Fixed).collect();
+    for account in accounts {
+        if !groups.iter().any(|group| group.holds(&account.kind)) {
+            groups.push(Listed::Other(&account.kind));
+        }
+    }
+    groups
 }
 
 /// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago". A time in the future
@@ -1025,23 +1308,79 @@ fn selected<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
 
 // ----- Views --------------------------------------------------------------------------------
 
-fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+/// The fixed groups, each with its accounts, its sentence and its "Add", and the data rule under AI;
+/// then a group for each kind of account none of them holds. A group without an account is its
+/// "Add" and its sentence, so the page is never empty.
+fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     // The accounts first, then the sign-ins in progress, so a new row appears below the others.
     let entries: Vec<&AccountInfo> = listed(&data.accounts).chain(pending(&data.accounts)).collect();
-    if entries.is_empty() {
-        return empty_state(
-            tr("No accounts yet."),
-            tr("Add your Nextcloud or a mail provider to see calendars and tasks in the apps."),
-        );
-    }
-    let groups = providers(&entries).into_iter().map(|kind| {
-        let rows = entries
+    let mut page = column![].spacing(layout::section_gap());
+    for group in providers(&entries) {
+        let mut rows: Vec<Element<'a, Message>> = entries
             .iter()
-            .filter(|account| account.kind == kind)
-            .map(|account| if account.id.is_empty() { pending_row(account) } else { account_row(account, now) });
-        widgets::group(provider_name(kind), rows.collect(), None)
+            .filter(|account| group.holds(&account.kind))
+            .map(|account| match account.id.is_empty() {
+                true => pending_row(account),
+                false => account_row(account, models_on(state, &account.id), now),
+            })
+            .collect();
+        let fixed = match group {
+            Listed::Fixed(fixed) => fixed,
+            Listed::Other(kind) => {
+                page = page.push(widgets::group(provider_name(kind), rows, None));
+                continue;
+            }
+        };
+        rows.push(add_row(fixed, fixed == Group::Mail && offers_import(state)));
+        page = page.push(widgets::group(fixed.title(), rows, Some(fixed.about().to_string())));
+        if fixed == Group::Ai {
+            page = page.push(data_rule_group(data.settings.mail_to_cloud));
+        }
+    }
+    page.into()
+}
+
+/// The group Mail offers "Import from TorroMail…": the last list TorroMail gave has an account the
+/// step TorroMail can take over ([`wizard::can_import`]).
+fn offers_import(state: &State) -> bool {
+    state.torromail.as_deref().is_some_and(wizard::can_import)
+}
+
+/// The last row of a fixed group: its "Add", and in Mail "Import from TorroMail…" next to it while
+/// TorroMail has an account to take over. Ghost buttons on the content axis like "Add topic…": the
+/// page has no primary button, and the groups are many.
+fn add_row<'a>(group: Group, import: bool) -> Element<'a, Message> {
+    let add = widgets::text_button(
+        Some(Icon::Plus),
+        group.add_label(),
+        style::button::ghost,
+        Some(Message::Add(group.provider())),
+    );
+    let import = import.then(|| {
+        // The suite has no download icon; the envelope says where the accounts come from.
+        widgets::text_button(
+            Some(Icon::Mail),
+            tr("Import from TorroMail…"),
+            style::button::ghost,
+            Some(Message::ImportTorroMail),
+        )
     });
-    column(groups).spacing(layout::section_gap()).into()
+    let buttons = row![add].push(import).spacing(space::s()).align_y(Alignment::Center);
+    row_frame(on_axis(buttons.into()), false)
+}
+
+/// "Mail to cloud models" under the group AI (task C.17, here since S.30): off, only AI accounts
+/// on the person's own computers read mail; on, models elsewhere too. The sentence under it says
+/// that it holds for the assistant and every bot.
+fn data_rule_group<'a>(mail_to_cloud: bool) -> Element<'a, Message> {
+    let switch = toggler(mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
+    let detail = match mail_to_cloud {
+        false => tr("Off: only AI accounts on your own computers read mail"),
+        true => tr("Mail goes to the model's provider and can't be taken back"),
+    };
+    let row = setting_row(None, tr("Mail to cloud models"), Some(detail.to_string()), switch);
+    let footer = tr("Holds for the assistant and all its bots, whatever their rights allow.");
+    widgets::group(tr("Data rule"), vec![row], Some(footer.to_string()))
 }
 
 /// A sign-in in progress: attention dot, the server and "Signing in…". Not pressable: there is
@@ -1053,21 +1392,48 @@ fn pending_row<'a>(account: &'a AccountInfo) -> Element<'a, Message> {
 }
 
 /// One account in the list: status dot, label, status and last sync, and a chevron; the whole row
-/// opens the detail page.
-fn account_row<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
+/// opens the detail page. `models_on`: how many models of an AI account are on, if known
+/// ([`models_on`]).
+fn account_row<'a>(account: &'a AccountInfo, models_on: Option<usize>, now: DateTime<Utc>) -> Element<'a, Message> {
+    let dot = widgets::status_dot(status_line(&account.state).tone.status());
+    let row = setting_row(Some(dot), account.label.as_str(), Some(row_detail(account, models_on, now)), chevron());
+    pressable(row, Some(Message::Open(account.id.clone())))
+}
+
+/// How many models of the account `id` are on, as the last list of its models says (task S.31);
+/// `None` while the page has never listed them.
+fn models_on(state: &State, id: &str) -> Option<usize> {
+    state.models.get(id).map(|models| models.iter().filter(|model| model.enabled).count())
+}
+
+/// "1 model on", "3 models on".
+fn models_on_text(n: usize) -> String {
+    match n {
+        1 => tr("1 model on").to_string(),
+        n => trf("{n} models on", &[("n", &n)]),
+    }
+}
+
+/// The line under an account's name in the list. An AI account never syncs: "Last synced" would
+/// say nothing true about it; it says how many of its models are on once its page listed them
+/// (`models_on`, task S.31). An ntfy account listens instead, so its topics are what matters. In
+/// the group Mail a CalDAV account says what it is, as its page does (task S.30).
+fn row_detail(account: &AccountInfo, models_on: Option<usize>, now: DateTime<Utc>) -> String {
     let line = status_line(&account.state);
-    let dot = widgets::status_dot(line.tone.status());
-    // An AI account never syncs: "Last synced" would say nothing true about it. An ntfy account
-    // listens instead, so its topics are what matters.
-    let detail = match (&account.ntfy, &account.state) {
+    match (&account.ntfy, &account.state) {
         (Some(view), AccountState::Connected { problem: None, .. }) => {
             format!("{} · {}", line.text, topics_text(view.topics.len()))
         }
-        _ if account.kind == AI_KIND || account.ntfy.is_some() => line.text,
+        _ if account.kind == AI_KIND => match models_on {
+            Some(n) => format!("{} · {}", line.text, models_on_text(n)),
+            None => line.text,
+        },
+        _ if account.ntfy.is_some() => line.text,
+        _ if account.kind == "caldav" => {
+            format!("{} · {}", provider_name("caldav"), account_detail(&account.state, now))
+        }
         _ => account_detail(&account.state, now),
-    };
-    let row = setting_row(Some(dot), account.label.as_str(), Some(detail), chevron());
-    pressable(row, Some(Message::Open(account.id.clone())))
+    }
 }
 
 /// The name of an account and its provider, at the top of its detail page.
@@ -1088,7 +1454,7 @@ fn remove_button<'a>() -> Element<'a, Message> {
 
 /// The detail page: the name, then the groups for status, calendars and lists and the connection,
 /// and the removal at the end. A mail account has [`mail_detail`] instead.
-fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     if let Some(mail) = &account.mail {
         return mail_detail(account, mail, now);
     }
@@ -1096,10 +1462,10 @@ fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> E
         return ntfy_detail(account, view, data, now);
     }
     // A GitHub account has no calendars or lists (yet); what its token may do matters instead. An
-    // AI account has nothing of the kind.
+    // AI account has its models (task S.31).
     let middle = match account.kind.as_str() {
         "github" => Some(permissions_group(account.scopes.as_deref())),
-        AI_KIND => None,
+        AI_KIND => Some(models_group(state, account)),
         _ => Some(collections_moved()),
     };
     column![heading(account), status_group(account, now)]
@@ -1424,6 +1790,176 @@ const AI_KIND: &str = "ai";
 
 /// The kind of an ntfy account (task E5.12), `torro_core::account::AccountKind::Ntfy` as listed.
 const NTFY_KIND: &str = "ntfy";
+
+// ----- An AI account's models (task S.31) ----------------------------------------------------
+
+/// The provider of an AI account, from its id `ai:<provider>@<host>` (`torro_core::Account::ai`):
+/// the account list does not carry it otherwise. `None` for any other id or an unknown provider.
+pub fn ai_provider(id: &str) -> Option<AiProvider> {
+    let (provider, _) = id.strip_prefix("ai:")?.split_once('@')?;
+    AiProvider::ALL.into_iter().find(|known| known.id() == provider)
+}
+
+/// Where `model` of an AI account of `provider` at the base address `server` computes, in the words
+/// of its row (`docs/settings.md` › KI): "On this computer" where the data rule counts it as local
+/// ([`crate::assistant::place_of`], so the page says what the rule does), else "Ollama Cloud" for
+/// Ollama's cloud models, "Cloud (Anthropic)" for Anthropic and "Cloud" for everything else. An
+/// unknown provider computes elsewhere, as the rule assumes in doubt.
+pub fn model_place(provider: Option<AiProvider>, server: &str, model: &AiModel) -> &'static str {
+    let Some(provider) = provider else { return tr("Cloud") };
+    match (place_of(provider, server, model), provider) {
+        (Place::Local, _) => tr("On this computer"),
+        (Place::Remote, AiProvider::Ollama) => tr("Ollama Cloud"),
+        (Place::Remote, AiProvider::Anthropic) => tr("Cloud (Anthropic)"),
+        (Place::Remote, _) => tr("Cloud"),
+    }
+}
+
+/// A model has a switch when a module can use it ([`AiModel::is_usable`], #231): it can use tools
+/// (or does not say), or it decides, as sorting mail needs. One that can do neither stands faded
+/// with "Can't use tools or decide", because no module of the suite can use it.
+pub fn has_switch(model: &AiModel) -> bool {
+    model.is_usable()
+}
+
+/// "131K context", "1M context": how much fits into one conversation, rounded to thousands or, from
+/// a million on, to millions of tokens.
+fn context_text(tokens: u64) -> String {
+    match tokens {
+        1_000_000.. => trf("{n}M context", &[("n", &((tokens + 500_000) / 1_000_000))]),
+        _ => trf("{n}K context", &[("n", &((tokens + 500) / 1000).max(1))]),
+    }
+}
+
+/// The line under a model's name: what it can (tools, deciding, thinking, its context) and where it
+/// computes, "Tools · Thinking · 131K context · Cloud"; a decision model says "Decides", so one sees
+/// what it is for (#231), and a model that can do neither starts with "Can't use tools or decide".
+pub fn model_detail(model: &AiModel, place: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if model.tools == Some(true) {
+        parts.push(tr("Tools").to_string());
+    }
+    if model.decision == Some(true) {
+        parts.push(tr("Decides").to_string());
+    }
+    if !model.is_usable() {
+        parts.push(tr("Can't use tools or decide").to_string());
+    }
+    if model.reasoning == Some(true) {
+        parts.push(tr("Thinking").to_string());
+    }
+    parts.extend(model.context.map(context_text));
+    parts.push(place.to_string());
+    parts.join(" · ")
+}
+
+/// The models a page lists, in the server's order. With `filters` (OpenRouter, hundreds of models)
+/// only those whose name or id holds `search` (any case, spaces around ignored), and those with
+/// closed weights only with `show_closed` (Open First); without, all of them.
+pub fn shown_models<'a>(models: &'a [AiModel], filters: bool, search: &str, show_closed: bool) -> Vec<&'a AiModel> {
+    let search = search.trim().to_lowercase();
+    models
+        .iter()
+        .filter(|model| !filters || show_closed || model.open_weights != Some(false))
+        .filter(|model| {
+            !filters
+                || search.is_empty()
+                || model.name.to_lowercase().contains(&search)
+                || model.id.to_lowercase().contains(&search)
+        })
+        .collect()
+}
+
+/// The group "Models" of an AI account's page (`docs/settings.md` › KI): at OpenRouter first the
+/// search and "Show closed models", then one row per model with its name, what it can and where it
+/// computes, and its switch; a model that can't use tools faded and without one. While the list
+/// is asked for "Loading models…", a failure as a sentence with "Retry". A refused switch is a
+/// sentence under the group.
+fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, Message> {
+    let page = &state.models_page;
+    let provider = ai_provider(&account.id);
+    let filters = provider == Some(AiProvider::OpenRouter);
+    let server = match &account.state {
+        AccountState::Connected { server, .. } | AccountState::SigningIn { server, .. } => server.as_str(),
+        AccountState::NotConnected => "",
+    };
+    let models = state.models.get(&account.id);
+    let mut rows: Vec<Element<'a, Message>> = Vec::new();
+    if filters && models.is_some() {
+        rows.push(model_filters(page));
+    }
+    match (models, &page.error) {
+        (_, Some(error)) => rows.push(wrapped_row(
+            Some(notice_icon()),
+            tr("The models could not be listed"),
+            error.clone(),
+            Some(widgets::text_button(None, tr("Retry"), style::button::secondary, Some(Message::LoadModels))),
+        )),
+        (None, None) => rows.push(quiet_row(tr("Loading models…"))),
+        (Some(models), None) => {
+            let shown = shown_models(models, filters, &page.search, page.show_closed);
+            if shown.is_empty() {
+                let empty =
+                    if models.is_empty() { tr("This server offers no models.") } else { tr("No models match.") };
+                rows.push(quiet_row(empty));
+            }
+            rows.extend(shown.into_iter().map(|model| model_row(model, model_place(provider, server, model))));
+        }
+    }
+    let footer = tr("The assistant, its bots and every other module offer only the models that are on.");
+    let group = widgets::group(tr("Models"), rows, Some(footer.to_string()));
+    match &page.refused {
+        Some(refused) => column![group, notice(refused.clone())].spacing(layout::item_gap()).into(),
+        None => group,
+    }
+}
+
+/// The search field and "Show closed models" over OpenRouter's models, in one row. The field is as
+/// high as the chip (28, `size::control_sm()`): 4 above and below its line of text, as a filter
+/// beside chips, not a form field.
+fn model_filters(page: &ModelsPage) -> Element<'_, Message> {
+    let search = wizard::field(tr("Search models"), &page.search)
+        .padding([space::xs(), space::s()])
+        .on_input(Message::ModelSearch);
+    let closed = widgets::choice_chip(
+        tr("Show closed models"),
+        None,
+        page.show_closed,
+        Some(Message::ShowClosed(!page.show_closed)),
+    );
+    row_frame(row![search, closed].spacing(space::s()).align_y(Alignment::Center), false)
+}
+
+/// One model: its name, what it can and where it computes, and its switch. A model no module can
+/// use ([`has_switch`]) stands faded (`text_3`) without a switch.
+fn model_row<'a>(model: &'a AiModel, place: &str) -> Element<'a, Message> {
+    let detail = model_detail(model, place);
+    if !has_switch(model) {
+        let lines = column![
+            widgets::ellipsized(typo::body(), model.name.as_str(), theme::text_3),
+            widgets::ellipsized(typo::meta(), detail, theme::text_3),
+        ];
+        return row_frame(lines.width(Fill), true);
+    }
+    let id = model.id.clone();
+    let switch = toggler(model.enabled)
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
+        .on_toggle(move |on| Message::SetModel(id.clone(), on));
+    setting_row(None, model.name.as_str(), Some(detail), switch)
+}
+
+/// A row that only says something quiet in `text_3`: loading, nothing there.
+fn quiet_row<'a>(text: &'a str) -> Element<'a, Message> {
+    row_frame(typo::text(typo::body(), text).style(theme::text_3), false)
+}
+
+/// The alert icon in the error colour, in front of a failure's words (the colour is only here).
+fn notice_icon<'a>() -> Element<'a, Message> {
+    icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) })
+        .into()
+}
 
 /// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
 /// An AI account gets the dot and the word only: nothing of it syncs.
@@ -1837,12 +2373,127 @@ mod tests {
         assert_eq!(account_detail(&AccountState::NotConnected, now), tr("Needs sign-in"));
     }
 
+    fn of_kind(id: &str, kind: &str) -> AccountInfo {
+        AccountInfo { kind: kind.into(), ..account(id, connected(None, None)) }
+    }
+
+    /// Task S.30: the groups stand in a fixed order whatever accounts there are, also with none; a
+    /// kind no group holds gets a group of its own at the end, once.
     #[test]
-    fn one_group_per_provider_in_order_of_appearance() {
-        let mut github = account("github:anna", connected(None, None));
-        github.kind = "github".into();
-        let (a, b) = (account("nextcloud:a", connected(None, None)), account("nextcloud:b", connected(None, None)));
-        assert_eq!(providers(&[&a, &github, &b]), ["nextcloud", "github"]);
+    fn the_groups_are_fixed_and_unknown_kinds_follow_at_the_end() {
+        let fixed: Vec<Listed<'_>> = Group::ALL.into_iter().map(Listed::Fixed).collect();
+        assert_eq!(providers(&[]), fixed, "every group without an account");
+        assert_eq!(
+            Group::ALL,
+            [Group::Nextcloud, Group::Mail, Group::GitHub, Group::Ai, Group::Ntfy],
+            "Nextcloud, Mail, GitHub, AI, ntfy"
+        );
+        let (github, slack, a, b, more) = (
+            of_kind("github:anna", "github"),
+            of_kind("slack:anna", "slack"),
+            of_kind("nextcloud:a", "nextcloud"),
+            of_kind("nextcloud:b", "nextcloud"),
+            of_kind("slack:ben", "slack"),
+        );
+        let groups = providers(&[&slack, &github, &a, &b, &more]);
+        assert_eq!(groups[..5], fixed[..], "the order does not follow the accounts");
+        assert_eq!(groups[5..], [Listed::Other("slack")], "the unknown kind once, at the end");
+        let titles: Vec<String> = Group::ALL.into_iter().map(Group::title).collect();
+        assert_eq!(titles, [tr("Nextcloud"), tr("Mail"), tr("GitHub"), tr("AI"), "ntfy"]);
+        // Every page builds: no accounts, accounts, an unknown kind.
+        drop(view(&State::default(), &Data::default()));
+        drop(view(&State::default(), &Data { accounts: vec![slack, github, a], ..Data::default() }));
+    }
+
+    /// Task S.30: a mail provider's CalDAV account stands in the group Mail and says "CalDAV".
+    #[test]
+    fn a_caldav_account_is_listed_under_mail_as_caldav() {
+        let mail = Listed::Fixed(Group::Mail);
+        assert!(mail.holds("mail") && mail.holds("caldav") && !mail.holds("nextcloud"));
+        let data = caldav_data();
+        let caldav = &data.accounts[0];
+        let detail = row_detail(caldav, None, Utc::now());
+        assert!(detail.starts_with(&format!("{} · ", tr("CalDAV"))), "{detail}");
+        assert!(detail.contains(tr("Connected")), "{detail}");
+        let nextcloud = account("nextcloud:anna", connected(None, None));
+        assert!(!row_detail(&nextcloud, None, Utc::now()).contains(tr("CalDAV")));
+    }
+
+    /// Task S.30: each group's "Add" opens the dialog at its own provider (the AI providers ask for
+    /// the servers on this computer at once); the header bar has no button of its own.
+    #[test]
+    fn every_group_adds_its_own_provider_and_the_header_has_no_button() {
+        let data = two_accounts();
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini] {
+            assert!(header(&State::default(), &data, class).actions.is_empty(), "{class:?}");
+        }
+        let providers = Group::ALL.map(Group::provider);
+        assert_eq!(
+            providers,
+            [
+                wizard::Provider::Nextcloud,
+                wizard::Provider::Mail,
+                wizard::Provider::GitHub,
+                wizard::Provider::Ai,
+                wizard::Provider::Ntfy
+            ]
+        );
+        for provider in providers {
+            let mut state = State::default();
+            let action = update(&mut state, Message::Add(provider), &data);
+            assert!(state.wizard.is_some() && overlay(&state, &data).is_some(), "{provider:?}");
+            match provider {
+                wizard::Provider::Ai => assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}"),
+                _ => assert!(matches!(action, Action::None), "{provider:?}: {action:?}"),
+            }
+        }
+    }
+
+    /// Task S.30: the page asks for TorroMail's accounts as it opens and when the dialog closes,
+    /// keeps the answer, and offers the import only while an account can be taken over.
+    #[test]
+    fn the_import_is_offered_only_with_an_account_to_take_over() {
+        let data = Data::default();
+        let mut state = State::default();
+        assert!(unlisted(&state) && !offers_import(&state));
+        assert!(matches!(opened(&mut state), Action::Send(Request::TorroMailAccounts)));
+        assert!(!unlisted(&state), "asked");
+        let demo = super::super::launch::demo_answer(&Request::TorroMailAccounts, &super::super::launch::demo_data())
+            .expect("the demo's TorroMail");
+        assert!(answered(&mut state, &Ok(demo)));
+        assert!(offers_import(&state), "the demo's Posteo account can be taken over");
+        let Some(accounts) = state.torromail.as_mut() else { panic!("listed") };
+        for account in accounts.iter_mut() {
+            account.connected = true;
+        }
+        assert!(!offers_import(&state), "everything is here already");
+        assert!(matches!(
+            update(&mut state, Message::ImportTorroMail, &data),
+            Action::Send(Request::TorroMailAccounts)
+        ));
+        assert!(state.wizard.is_some() && overlay(&state, &data).is_some());
+        let closed = update(&mut state, Message::Wizard(wizard::Message::Close), &data);
+        assert!(matches!(closed, Action::Send(Request::TorroMailAccounts)), "asks again after the dialog");
+        assert!(state.wizard.is_none());
+        // A list that cannot be read leaves the button out, quietly, and is asked for no more.
+        let mut broken = State::default();
+        opened(&mut broken);
+        assert!(answered(&mut broken, &Err("TorroMail's state.json is not valid JSON".into())));
+        assert!(!offers_import(&broken) && !unlisted(&broken));
+        assert!(!answered(&mut broken, &Err("no template".into())), "only the one answer it waited for");
+        drop(view(&state, &data));
+    }
+
+    /// Task S.30: the data rule stands under AI and its switch sends the setting, never a right.
+    #[test]
+    fn the_data_rule_under_ai_sends_the_setting() {
+        let data = Data::default();
+        for on in [true, false] {
+            let action = update(&mut State::default(), Message::MailToCloud(on), &data);
+            let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
+            assert_eq!((key, value), (SettingKey::MailToCloud, serde_json::json!(on)));
+            drop(data_rule_group(on));
+        }
     }
 
     #[test]
@@ -1856,7 +2507,7 @@ mod tests {
         update(&mut state, Message::AskRemove, &data);
         assert!(overlay(&state, &data).is_some());
         update(&mut state, Message::CancelRemove, &data);
-        update(&mut state, Message::AddAccount, &data);
+        update(&mut state, Message::Add(wizard::Provider::Nextcloud), &data);
         assert!(overlay(&state, &data).is_some());
         assert!(matches!(escape(&state), Some(Message::Wizard(wizard::Message::Close))));
     }
@@ -1899,15 +2550,6 @@ mod tests {
         assert!(state.selected.is_none() && !state.confirm_remove, "back on the list");
         let again = update(&mut state, Message::Remove, &data);
         assert!(matches!(again, Action::None), "no account open: nothing to remove");
-    }
-
-    #[test]
-    fn adding_is_possible_with_accounts() {
-        let data = two_accounts();
-        let state = State::default();
-        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini] {
-            assert_eq!(header(&state, &data, class).actions.len(), 1, "{class:?} offers Add account");
-        }
     }
 
     #[test]
@@ -1967,10 +2609,14 @@ mod tests {
     fn the_dialog_takes_only_its_own_answers() {
         let mut state = State::default();
         assert!(!answered(&mut state, &Err("no template".into())), "no dialog: the shell shows it");
-        let ask = update(&mut state, Message::AddAccount, &Data::default());
+        let ask = update(&mut state, Message::ImportTorroMail, &Data::default());
         assert!(matches!(ask, Action::Send(Request::TorroMailAccounts)), "it opens asking for TorroMail's accounts");
         assert!(answered(&mut state, &Ok(Response::TorroMailAccounts { accounts: Vec::new() })));
         assert!(!answered(&mut state, &Err("no template".into())), "the dialog waits for nothing else");
+        // A dialog at a provider takes the answers of its own steps only.
+        let mut github = State::default();
+        update(&mut github, Message::Add(wizard::Provider::GitHub), &Data::default());
+        assert!(!answered(&mut github, &Err("no template".into())));
     }
 
     #[test]
@@ -2340,6 +2986,213 @@ mod tests {
         drop(view(&state, &data));
     }
 
+    // ----- An AI account's models (task S.31) ----------------------------------------------------
+
+    const OPENROUTER: &str = "ai:openrouter@openrouter.ai";
+
+    /// The demo's OpenRouter page with its models as the demo answers them.
+    fn open_ai() -> (State, Data) {
+        let data = super::super::launch::demo_data();
+        let mut state = State::default();
+        let ask = update(&mut state, Message::Open(OPENROUTER.into()), &data);
+        let request = sent(ask);
+        assert!(
+            matches!(&request, Request::AiModels { account, all: true } if account == OPENROUTER),
+            "opening the page asks for all its models: {request:?}"
+        );
+        assert!(state.models_page.loading);
+        drop(view(&state, &data));
+        let answer = super::super::launch::demo_answer(&request, &data).expect("the demo's models");
+        assert!(answered(&mut state, &Ok(answer)));
+        assert!(!state.models_page.loading);
+        (state, data)
+    }
+
+    fn listed_model<'a>(state: &'a State, id: &str) -> &'a AiModel {
+        state.models[OPENROUTER].iter().find(|model| model.id == id).expect("a demo model")
+    }
+
+    #[test]
+    fn the_provider_comes_from_the_account_id() {
+        assert_eq!(ai_provider("ai:ollama@localhost:11434"), Some(AiProvider::Ollama));
+        assert_eq!(ai_provider(OPENROUTER), Some(AiProvider::OpenRouter));
+        assert_eq!(ai_provider("ai:lm_studio@localhost:1234"), Some(AiProvider::LmStudio));
+        assert_eq!(ai_provider("ai:openai_compatible@gpu.local:8000"), Some(AiProvider::OpenAiCompatible));
+        for other in ["ai:unknown@host", "ai:ollama", "nextcloud:anna@cloud.example.org", ""] {
+            assert_eq!(ai_provider(other), None, "{other}");
+        }
+    }
+
+    /// The group Models lists every model with what it can and where it computes; only the page of
+    /// an AI account asks for them, and a reload asks for nothing.
+    #[test]
+    fn an_ai_page_lists_its_models() {
+        let (state, data) = open_ai();
+        assert_eq!(state.models[OPENROUTER].len(), super::super::launch::demo_models().len());
+        let qwen = listed_model(&state, "qwen/qwen3-235b-a22b");
+        let place = model_place(Some(AiProvider::OpenRouter), "https://openrouter.ai/api/v1", qwen);
+        assert_eq!(place, tr("Cloud"));
+        assert_eq!(
+            model_detail(qwen, place),
+            [tr("Tools"), tr("Thinking"), &trf("{n}K context", &[("n", &131)]), tr("Cloud")].join(" · ")
+        );
+        drop(view(&state, &data));
+        let mut nextcloud = State::default();
+        let action = update(&mut nextcloud, Message::Open("nextcloud:anna@cloud.example.org".into()), &data);
+        assert!(matches!(action, Action::None) && !nextcloud.models_page.loading, "no models elsewhere");
+        assert!(matches!(update(&mut nextcloud, Message::LoadModels, &data), Action::None));
+    }
+
+    #[test]
+    fn the_context_is_counted_in_thousands_or_millions() {
+        assert_eq!(context_text(131_072), trf("{n}K context", &[("n", &131)]));
+        assert_eq!(context_text(200_000), trf("{n}K context", &[("n", &200)]));
+        assert_eq!(context_text(300), trf("{n}K context", &[("n", &1)]));
+        assert_eq!(context_text(1_048_576), trf("{n}M context", &[("n", &1)]));
+    }
+
+    /// A switch sends `ai.set_model_enabled` for the open account's model and shows the new state
+    /// at once; the list's row counts what is on.
+    #[test]
+    fn a_switch_sends_set_model_enabled() {
+        let (mut state, data) = open_ai();
+        assert_eq!(models_on(&state, OPENROUTER), Some(1), "the demo has one on");
+        let request = sent(update(&mut state, Message::SetModel("deepseek/deepseek-chat-v3.1".into(), true), &data));
+        assert!(
+            matches!(&request, Request::SetModelEnabled { account, model, enabled: true }
+                if account == OPENROUTER && model == "deepseek/deepseek-chat-v3.1"),
+            "{request:?}"
+        );
+        assert!(listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled, "on at once");
+        assert_eq!(models_on(&state, OPENROUTER), Some(2));
+        let account = data.accounts.iter().find(|account| account.id == OPENROUTER).expect("demo AI account");
+        assert_eq!(
+            row_detail(account, models_on(&state, OPENROUTER), Utc::now()),
+            format!("{} · {}", tr("Connected"), trf("{n} models on", &[("n", &2)]))
+        );
+        assert_eq!(row_detail(account, None, Utc::now()), tr("Connected"), "not listed yet: the status alone");
+        assert_eq!(models_on_text(1), tr("1 model on"));
+        assert!(answered(&mut state, &Ok(Response::Ok)));
+        assert!(listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled, "taken: it stays on");
+        // Switching to what it is, or a model the page does not list, sends nothing.
+        let again = update(&mut state, Message::SetModel("deepseek/deepseek-chat-v3.1".into(), true), &data);
+        assert!(matches!(again, Action::None));
+        assert!(matches!(update(&mut state, Message::SetModel("nobody/none".into(), true), &data), Action::None));
+    }
+
+    /// A model that can neither use tools nor decide stands without a switch, and pressing one anyway
+    /// sends nothing; a decision model has one and says it decides (#231).
+    #[test]
+    fn a_model_without_tools_has_no_switch() {
+        let (mut state, data) = open_ai();
+        let gemma = listed_model(&state, "google/gemma-3-27b-it");
+        assert!(!has_switch(gemma));
+        assert!(model_detail(gemma, tr("Cloud")).starts_with(tr("Can't use tools or decide")));
+        assert!(has_switch(&AiModel::named("unknown")), "a server that does not tell keeps the switch");
+        let nimble = AiModel { tools: Some(false), decision: Some(true), ..AiModel::named("nimble") };
+        assert!(has_switch(&nimble), "sorting mail uses it");
+        let place = tr("On this computer");
+        assert_eq!(model_detail(&nimble, place), format!("{} · {place}", tr("Decides")));
+        let deciding = listed_model(&state, "nimble");
+        assert!(has_switch(deciding) && !deciding.enabled, "the demo's decision model has a switch");
+        let action = update(&mut state, Message::SetModel("google/gemma-3-27b-it".into(), true), &data);
+        assert!(matches!(action, Action::None));
+        assert!(!listed_model(&state, "google/gemma-3-27b-it").enabled);
+    }
+
+    /// Where each model computes, in the words of the data rule.
+    #[test]
+    fn every_model_says_where_it_computes() {
+        let local = AiModel { remote: Some(false), ..AiModel::named("qwen3:8b") };
+        let cloud = AiModel { remote: Some(true), ..AiModel::named("gpt-oss:120b-cloud") };
+        let ollama = Some(AiProvider::Ollama);
+        assert_eq!(model_place(ollama, "http://localhost:11434/v1", &local), tr("On this computer"));
+        assert_eq!(model_place(ollama, "http://localhost:11434/v1", &cloud), tr("Ollama Cloud"));
+        let lm_studio = Some(AiProvider::LmStudio);
+        assert_eq!(model_place(lm_studio, "http://localhost:1234/v1", &AiModel::named("x")), tr("On this computer"));
+        let claude = AiModel::named("claude-sonnet-4-5");
+        assert_eq!(
+            model_place(Some(AiProvider::Anthropic), "https://api.anthropic.com/v1", &claude),
+            tr("Cloud (Anthropic)")
+        );
+        let any = AiModel::named("m");
+        assert_eq!(model_place(Some(AiProvider::OpenRouter), "https://openrouter.ai/api/v1", &any), tr("Cloud"));
+        let compatible = Some(AiProvider::OpenAiCompatible);
+        assert_eq!(model_place(compatible, "http://localhost:8000/v1", &any), tr("On this computer"));
+        assert_eq!(model_place(compatible, "https://llm.example.org/v1", &any), tr("Cloud"));
+        assert_eq!(model_place(None, "http://localhost:11434/v1", &local), tr("Cloud"), "unknown: elsewhere");
+    }
+
+    /// OpenRouter's page searches name and id and hides closed models until asked; any other page
+    /// lists everything.
+    #[test]
+    fn openrouter_searches_and_hides_closed_models() {
+        let models = super::super::launch::demo_models();
+        let ids = |shown: Vec<&AiModel>| shown.into_iter().map(|model| model.id.clone()).collect::<Vec<_>>();
+        let open = ids(shown_models(&models, true, "", false));
+        assert_eq!(open.len(), models.len() - 2, "the two closed ones hidden");
+        assert!(!open.iter().any(|id| id == "openai/gpt-5"));
+        assert_eq!(ids(shown_models(&models, true, "", true)).len(), models.len());
+        assert_eq!(ids(shown_models(&models, true, " LLAMA ", false)), ["meta-llama/llama-3.3-70b-instruct"]);
+        assert_eq!(ids(shown_models(&models, true, "gpt", false)), Vec::<String>::new(), "closed: not shown");
+        assert_eq!(ids(shown_models(&models, true, "gpt", true)), ["openai/gpt-5"]);
+        assert_eq!(ids(shown_models(&models, true, "Mistral Small", false)).len(), 1, "by name");
+        assert_eq!(shown_models(&models, false, "llama", false).len(), models.len(), "no filters elsewhere");
+        // The page keeps both, and a new page starts without them.
+        let (mut state, data) = open_ai();
+        update(&mut state, Message::ModelSearch("qwen".into()), &data);
+        update(&mut state, Message::ShowClosed(true), &data);
+        assert_eq!((state.models_page.search.as_str(), state.models_page.show_closed), ("qwen", true));
+        drop(view(&state, &data));
+        update(&mut state, Message::ModelSearch("nothing like it".into()), &data);
+        drop(view(&state, &data));
+        update(&mut state, Message::Back, &data);
+        assert!(state.models_page.search.is_empty() && !state.models_page.show_closed);
+        assert!(state.models.contains_key(OPENROUTER), "the list's row still counts them");
+    }
+
+    /// A refused switch turns back and says why under the group; the next switch clears it.
+    #[test]
+    fn a_refused_switch_turns_back() {
+        let (mut state, data) = open_ai();
+        update(&mut state, Message::SetModel("qwen/qwen3-235b-a22b".into(), false), &data);
+        update(&mut state, Message::SetModel("deepseek/deepseek-chat-v3.1".into(), true), &data);
+        assert!(!listed_model(&state, "qwen/qwen3-235b-a22b").enabled);
+        let refused = Response::Error { code: "forbidden".into(), message: "Only a person turns this on.".into() };
+        assert!(answered(&mut state, &Err("The server cannot be reached.".into())), "the oldest switch's answer");
+        assert!(listed_model(&state, "qwen/qwen3-235b-a22b").enabled, "turned back on");
+        assert!(listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled, "the other one waits");
+        assert_eq!(state.models_page.refused.as_deref(), Some("The server cannot be reached."));
+        drop(view(&state, &data));
+        assert!(answered(&mut state, &Ok(refused)));
+        assert!(!listed_model(&state, "deepseek/deepseek-chat-v3.1").enabled);
+        assert_eq!(state.models_page.refused.as_deref(), Some("Only a person turns this on."));
+        assert!(!answered(&mut state, &Ok(Response::Ok)), "nothing waits any more");
+        update(&mut state, Message::SetModel("llama".into(), true), &data);
+        assert!(state.models_page.refused.is_some(), "a model it does not list changes nothing");
+        update(&mut state, Message::SetModel("meta-llama/llama-3.3-70b-instruct".into(), true), &data);
+        assert!(state.models_page.refused.is_none(), "a new switch, a new answer");
+    }
+
+    /// The server's refusal to list is a sentence in the group with "Retry", which asks again.
+    #[test]
+    fn a_list_that_fails_says_why_and_can_be_retried() {
+        let data = super::super::launch::demo_data();
+        let mut state = State::default();
+        update(&mut state, Message::Open(OPENROUTER.into()), &data);
+        let refused = Response::Error { code: "auth".into(), message: "The server refused the key.".into() };
+        assert!(answered(&mut state, &Ok(refused)));
+        assert_eq!(state.models_page.error.as_deref(), Some("The server refused the key."));
+        assert!(!state.models_page.loading);
+        drop(view(&state, &data));
+        assert!(!answered(&mut state, &Err("later".into())), "it waits for nothing any more");
+        let again = sent(update(&mut state, Message::LoadModels, &data));
+        assert!(matches!(again, Request::AiModels { all: true, .. }) && state.models_page.error.is_none());
+        let answer = super::super::launch::demo_answer(&again, &data).expect("the demo's models");
+        assert!(answered(&mut state, &Ok(answer)));
+        assert!(state.models.contains_key(OPENROUTER) && state.models_page.error.is_none());
+    }
+
     // ----- The inbox and ntfy (task E5.14) -------------------------------------------------------
 
     const NTFY: &str = "ntfy:push.example.org";
@@ -2407,7 +3260,7 @@ mod tests {
         assert_eq!(topics_text(1), tr("1 topic"));
         let (state, data) = open_demo(NTFY);
         drop(view(&state, &data));
-        drop(account_row(ntfy, Utc::now()));
+        drop(account_row(ntfy, None, Utc::now()));
     }
 
     #[test]

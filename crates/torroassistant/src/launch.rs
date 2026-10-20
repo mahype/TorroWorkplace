@@ -10,7 +10,8 @@
 //!   starts it this way, and a workspace template brings the same bot back with its argument.
 //! - `--demo`: sample conversations in memory instead of the core ([`crate::demo`]).
 //! - `--settings <section>`: open the window with its settings in the content area, at this
-//!   section (`general`, `profile`, `bots`, `voice`, `history`; task S.18). A start parameter, so
+//!   section (`general`, `access`, `profile`, `bots`, `voice`, `history`; tasks S.18, S.34). In a
+//!   bot's window `--bot <id> --settings access` opens Access at that bot. A start parameter, so
 //!   only a person starting the program opens the settings: no text of an answer can, and the
 //!   links of an answer stay on `http(s)` ([`crate::app`]).
 //! - `--open <state>`: start in a state ([`Open`]), for screenshots; needs `--demo`.
@@ -335,6 +336,9 @@ mod tests {
         }
         let demo = Launch::parse(&args(&["--demo", "--settings=voice"])).expect("valid");
         assert_eq!(demo.settings.as_deref(), Some("voice"));
+        // Task S.34: Access, also in a bot's window, where it opens at the bot.
+        let bot = Launch::parse(&args(&["--demo", "--settings", "access", "--bot", "b0000001"])).expect("valid");
+        assert_eq!((bot.settings.as_deref(), bot.window), (Some("access"), Window::Bot("b0000001".into())));
         assert_eq!(Launch::parse(&args(&[])).expect("valid").settings, None);
         assert_eq!(Launch::parse(&args(&["--settings"])), Err(LaunchError::MissingValue("--settings")));
         for bad in ["appearance", "rights", "", "Voice"] {

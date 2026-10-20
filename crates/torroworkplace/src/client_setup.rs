@@ -1,8 +1,8 @@
 //! Putting Torro Workplace's MCP server into the configuration of a coding agent or app, and taking
-//! it out again (task A.7 in `docs/tasks/api-mcp.md`, concept in `docs/api.md`, "Steuerzentrale:
-//! Abschnitt „Agents & API“"), and the hooks with which coding agents report to the inbox (task
-//! E2.3 in `docs/tasks/eingang.md`). The "Connect agent" wizard (`ui/agent_wizard.rs`) and
-//! "Disconnect…" on an agent's page (`ui/agents.rs`) use it.
+//! it out again (task A.7 in `docs/tasks/api-mcp.md`, concept in `docs/settings.md` › "MCP"), and
+//! the hooks with which coding agents report to the inbox (task E2.3 in `docs/tasks/eingang.md`).
+//! The "Connect client" dialog (`ui/agent_wizard.rs`), "Disconnect…" and the switch "Report when
+//! waiting or done" on a client's page under MCP (`ui/mcp.rs`, task S.35) use it.
 //!
 //! - **Detect** ([`detect`]): which of the known clients ([`Target`]) are on this computer and how
 //!   each is reached ([`Method`]): Claude Code and Codex through their own command (`claude mcp
@@ -43,7 +43,8 @@
 //!   client there takes the record over; disconnecting the first one then leaves the entry of the
 //!   second alone. Deriving the target from the client's kind alone would remove the newer
 //!   client's entry. Disconnecting an agent client also takes out its hooks and names their hook
-//!   client, which the agents page then removes from the core.
+//!   client, which the MCP page then removes from the core. The page reads the hook notes back
+//!   ([`hook_notes`]) to know which agent client a hook client reports for and where its hooks are.
 //!
 //! Why the control centre writes these files and not the core: the key leaves the core once, in
 //! the answer to `clients.create_client`, and the files belong to the person's other programs, not
@@ -767,6 +768,20 @@ fn powershell_command(program: &Path, key_file: &Path, agent: AgentKind) -> Stri
     format!("& {} hook {} {KEY_FILE_ARG} {}", quote(program), agent.id(), quote(key_file))
 }
 
+/// The command an MCP client runs to reach Torro Workplace, for a client set up by hand (task
+/// S.35, MCP › "MCP server"): `<program> mcp`, with the program quoted when its path holds a space
+/// or a quote – in single quotes on Unix, in double quotes on Windows. The key is never part of
+/// it; the client passes it in [`TOKEN_VARIABLE`].
+pub fn mcp_command(program: &Path) -> String {
+    let path = program.display().to_string();
+    let plain = !path.chars().any(|c| c.is_whitespace() || c == '\'' || c == '"');
+    match (plain, cfg!(windows)) {
+        (true, _) => format!("{path} mcp"),
+        (false, true) => format!("\"{path}\" mcp"),
+        (false, false) => format!("'{}' mcp", path.replace('\'', "'\\''")),
+    }
+}
+
 /// Whether `command` is one of ours for `agent`: it names a `torroworkplace` program and runs
 /// `hook <agent>` either at its end (an older wizard's entry with `TORRO_TOKEN='…'` in front, or
 /// one set up by hand as task E2.2 describes, which would otherwise report everything twice) or
@@ -1017,6 +1032,36 @@ pub fn hook_records(env: &Env) -> Result<Vec<HookRecord>, SetupError> {
     load_records(env).map(|records| records.hooks)
 }
 
+/// What `client_setup.json` notes of one hook client (task S.35): which agent client it reports
+/// for and where its hooks are, for the page of that agent under MCP. Never a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookNote {
+    /// The hook client's id (`ClientInfo::id`, kind `hook`).
+    pub client: String,
+    /// The agent client it was set up with ([`HookRecord::owner`]); `None` in notes of an older
+    /// version.
+    pub owner: Option<String>,
+    pub agent: AgentKind,
+    /// Where its hooks are, for people (`~/.claude/settings.json`).
+    pub place: String,
+}
+
+/// The hooks noted in `client_setup.json`, one [`HookNote`] per hook client; none without a file.
+/// An unreadable file is an error and stays as it is.
+pub fn hook_notes(env: &Env) -> Result<Vec<HookNote>, SetupError> {
+    let records = load_records(env)?;
+    Ok(records
+        .hooks
+        .into_iter()
+        .map(|record| HookNote {
+            place: env.shown(&record.file),
+            client: record.client,
+            owner: record.owner,
+            agent: record.agent,
+        })
+        .collect())
+}
+
 /// Sets up `target` through `method` for the client `client` with its `key`: notes it first (so
 /// a half-written entry can still be removed), then writes the entry ([`add`]). The note takes
 /// over an older one of the same target. If writing fails, the note goes again.
@@ -1160,6 +1205,8 @@ pub enum Job {
     Hook { agent: AgentKind, owner: Option<String>, client: String, key: IssuedKey },
     /// [`disconnect`] and [`unhook`]: [`Outcome::Disconnected`].
     Disconnect { client: String },
+    /// [`hook_notes`]: [`Outcome::HookNotes`].
+    HookNotes,
 }
 
 /// What [`Job::Disconnect`] took out of the configuration.
@@ -1168,8 +1215,8 @@ pub struct Released {
     /// The target whose MCP entry was removed; `None` when the wizard did not write one for the
     /// client.
     pub target: Option<Target>,
-    /// The hook clients whose hooks went with the client ([`unhook`]); the agents page removes
-    /// them from the core.
+    /// The hook clients whose hooks went with the client ([`unhook`]); the MCP page removes them
+    /// from the core.
     pub hook_clients: Vec<String>,
 }
 
@@ -1182,6 +1229,8 @@ pub enum Outcome {
     Hooked(Result<String, String>),
     /// What was removed; nothing when the client was not set up by the wizard.
     Disconnected(Result<Released, String>),
+    /// The hooks noted in `client_setup.json` ([`hook_notes`]).
+    HookNotes(Result<Vec<HookNote>, String>),
 }
 
 /// Runs `job` in `env` (`None`: no home directory) with `runner`.
@@ -1203,6 +1252,10 @@ pub fn run(job: Job, env: Option<&Env>, runner: &dyn Runner) -> Outcome {
             Some(env) => release(env, &client, runner).map_err(|err| err.message()),
             None => Err(no_home()),
         }),
+        Job::HookNotes => Outcome::HookNotes(match env {
+            Some(env) => hook_notes(env).map_err(|err| err.message()),
+            None => Err(no_home()),
+        }),
     }
 }
 
@@ -1221,6 +1274,7 @@ pub async fn perform(job: Job) -> Outcome {
         Job::Connect { .. } => Outcome::Connected(Err(tr("Something went wrong. Try again.").to_string())),
         Job::Hook { .. } => Outcome::Hooked(Err(tr("Something went wrong. Try again.").to_string())),
         Job::Disconnect { .. } => Outcome::Disconnected(Err(tr("Something went wrong. Try again.").to_string())),
+        Job::HookNotes => Outcome::HookNotes(Err(tr("Something went wrong. Try again.").to_string())),
     };
     let fallback = failed(&job);
     tokio::task::spawn_blocking(move || run(job, Env::current().as_ref(), &System)).await.unwrap_or(fallback)
@@ -1228,7 +1282,8 @@ pub async fn perform(job: Job) -> Outcome {
 
 /// The demo's answer to `job`: Claude Code and Codex found with their commands, Cursor with its
 /// file, Gemini CLI and Claude Desktop not; connecting, setting up hooks and disconnecting succeed
-/// without touching anything.
+/// without touching anything; no hooks are noted (the control centre's demo brings its own notes,
+/// `ui::launch::demo_hook_notes`).
 pub fn demo(job: &Job) -> Outcome {
     match job {
         Job::Detect => Outcome::Detected(vec![
@@ -1251,6 +1306,7 @@ pub fn demo(job: &Job) -> Outcome {
         Job::Connect { .. } => Outcome::Connected(Ok(())),
         Job::Hook { agent, .. } => Outcome::Hooked(Ok(format!("~/{}", hook_file_in_home(*agent)))),
         Job::Disconnect { .. } => Outcome::Disconnected(Ok(Released::default())),
+        Job::HookNotes => Outcome::HookNotes(Ok(Vec::new())),
     }
 }
 
@@ -1743,6 +1799,37 @@ mod tests {
 
         assert!(matches!(demo(&Job::Detect), Outcome::Detected(found) if found.len() == 3));
         assert_eq!(demo(&connect), Outcome::Connected(Ok(())));
+        assert_eq!(demo(&Job::HookNotes), Outcome::HookNotes(Ok(Vec::new())));
+        assert_eq!(run(Job::HookNotes, Some(&env), &Fake::default()), Outcome::HookNotes(Ok(Vec::new())));
+        assert!(matches!(run(Job::HookNotes, None, &Fake::default()), Outcome::HookNotes(Err(_))));
+    }
+
+    /// Task S.35: the MCP page reads which agent client a hook client reports for and where its
+    /// hooks are, never a key.
+    #[test]
+    fn the_hook_notes_name_owner_and_place() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        connect_hooks(&env, AgentKind::Codex, Some("a1"), "h1", &key()).expect("hooks");
+        let notes = run(Job::HookNotes, Some(&env), &Fake::default());
+        let expected = HookNote {
+            client: "h1".into(),
+            owner: Some("a1".into()),
+            agent: AgentKind::Codex,
+            place: "~/.codex/hooks.json".into(),
+        };
+        assert_eq!(notes, Outcome::HookNotes(Ok(vec![expected])));
+        assert!(!format!("{notes:?}").contains(KEY));
+        fs::write(env.config_dir.join(RECORD_FILE), "not json").expect("broken");
+        assert!(matches!(hook_notes(&env), Err(SetupError::Unreadable(_))));
+    }
+
+    #[test]
+    fn the_mcp_command_quotes_only_what_needs_it() {
+        assert_eq!(mcp_command(Path::new("/usr/bin/torroworkplace")), "/usr/bin/torroworkplace mcp");
+        let spaced = mcp_command(Path::new("/Applications/Torro Workplace/torroworkplace"));
+        assert!(spaced.ends_with(" mcp") && spaced.matches("Torro Workplace").count() == 1, "{spaced}");
+        assert!(spaced.starts_with('\'') || spaced.starts_with('"'), "{spaced}");
     }
 
     // ----- Hooks (task E2.3) -----

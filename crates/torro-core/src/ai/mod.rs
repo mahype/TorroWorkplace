@@ -305,6 +305,124 @@ pub struct AiModel {
     /// `/api/show`), `null` where it does not tell. Only such a model is offered for sorting mail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<bool>,
+    /// The model is turned on for the whole suite (task S.24, `docs/settings.md` › KI): modules
+    /// offer only models that are on. Never from the server: a list read from it has `false`
+    /// everywhere, and the core sets it from its switches ([`ModelSwitches`]) before
+    /// `ai.list_models` answers. Read as `false` where it is missing.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl AiModel {
+    /// A model known by its id only, as when a message names one its account did not list (or the
+    /// list failed): the id for its name, nothing known about tools, weights or where it runs, and
+    /// not on.
+    pub fn named(id: &str) -> AiModel {
+        AiModel {
+            id: id.to_string(),
+            name: id.to_string(),
+            tools: None,
+            open_weights: None,
+            context: None,
+            reasoning: None,
+            remote: None,
+            decision: None,
+            enabled: false,
+        }
+    }
+
+    /// A module of the suite can use the model (#231): it can use tools (`tools` is not `false`,
+    /// the assistant and its bots) or it decides ([`AiModel::decision`] is `true`, sorting mail).
+    /// Only such a model has a switch and starts on ([`ModelSwitches::starts_on`]); one that can do
+    /// neither is of no use to any module.
+    pub fn is_usable(&self) -> bool {
+        self.tools != Some(false) || self.decision == Some(true)
+    }
+}
+
+/// The name of the file the core keeps [`ModelSwitches`] in, next to `accounts.json` in the
+/// configuration directory. Not in `settings.json`: the rights of the area `ai` decide who switches
+/// models, not those of `settings`, and two switches at once must not overwrite each other through a
+/// whole settings object.
+pub const MODELS_FILE: &str = "ai-models.json";
+
+/// Which models of the AI accounts are on for the whole suite (task S.24, `docs/settings.md` › KI),
+/// as `ai-models.json` holds them: per account (`ai:…`) the models turned on and whether the person
+/// ever turned one off there.
+///
+/// **The rule at the start** ([`ModelSwitches::starts_on`]): on is every model a module can use
+/// ([`AiModel::is_usable`]: it can use tools or decides) that computes on this computer; models that compute elsewhere (Ollama's cloud models, OpenRouter,
+/// Anthropic, servers on the network) are off until someone turns them on. New models that compute
+/// here join while nothing was turned off at their account ([`AccountSwitches::turned_off`]).
+/// Whether a model computes here is the caller's to say (the core's data rule,
+/// `torroworkplace::assistant::place_of`); nothing here knows addresses.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSwitches {
+    /// Per account id; an account without an entry follows the rule at the start alone.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub accounts: std::collections::BTreeMap<String, AccountSwitches>,
+}
+
+/// The switches of one AI account ([`ModelSwitches`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountSwitches {
+    /// The models turned on, by id, whatever the rule says.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub on: std::collections::BTreeSet<String>,
+    /// The person (or an agent with approval) turned a model of this account off once. From then on
+    /// only [`AccountSwitches::on`] counts: the models the rule had on were written into it at that
+    /// moment ([`ModelSwitches::turn_off`]), and new ones stay off.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turned_off: bool,
+}
+
+impl ModelSwitches {
+    /// The rule at the start for `model`: on when a module can use it ([`AiModel::is_usable`]: it
+    /// may use tools, or it decides, #231) and it computes on this computer (`here`).
+    pub fn starts_on(model: &AiModel, here: bool) -> bool {
+        here && model.is_usable()
+    }
+
+    /// Whether `model` of the account `account` is on: turned on, or on by the rule while nothing
+    /// was turned off there. `here`: the model computes on this computer.
+    pub fn is_on(&self, account: &str, model: &AiModel, here: bool) -> bool {
+        match self.accounts.get(account) {
+            None => ModelSwitches::starts_on(model, here),
+            Some(held) => held.on.contains(&model.id) || (!held.turned_off && ModelSwitches::starts_on(model, here)),
+        }
+    }
+
+    /// Whether models the rule turns on count at `account`: nothing was turned off there yet.
+    pub fn follows_rule(&self, account: &str) -> bool {
+        self.accounts.get(account).is_none_or(|held| !held.turned_off)
+    }
+
+    /// Whether the account has a model turned on by id, whatever the server lists.
+    pub fn has_turned_on(&self, account: &str) -> bool {
+        self.accounts.get(account).is_some_and(|held| !held.on.is_empty())
+    }
+
+    /// Turns `model` of `account` on.
+    pub fn turn_on(&mut self, account: &str, model: &str) {
+        self.accounts.entry(account.to_string()).or_default().on.insert(model.to_string());
+    }
+
+    /// Turns `model` of `account` off. The first time at an account, the models the rule has on now
+    /// (`on_by_rule`, ids) are written into [`AccountSwitches::on`] first, so they stay on; from then
+    /// on new models stay off. A model that was not on changes nothing but that mark.
+    pub fn turn_off(&mut self, account: &str, model: &str, on_by_rule: impl IntoIterator<Item = String>) {
+        let held = self.accounts.entry(account.to_string()).or_default();
+        if !held.turned_off {
+            held.on.extend(on_by_rule);
+            held.turned_off = true;
+        }
+        held.on.remove(model);
+    }
+
+    /// Forgets the switches of `account` (it was removed): connected again, it starts with the rule.
+    pub fn forget(&mut self, account: &str) {
+        self.accounts.remove(account);
+    }
 }
 
 /// A function of the suite that a model does for the person (`docs/ki.md`, "Zuordnung je
@@ -755,6 +873,7 @@ mod tests {
             reasoning: None,
             remote: None,
             decision: None,
+            enabled: false,
         }
     }
 
@@ -829,6 +948,51 @@ mod tests {
         }
         assert!(AiProvider::OpenRouter.needs_key() && !AiProvider::Ollama.needs_key());
         assert_eq!(AiProvider::LmStudio.name(), "LM Studio");
+    }
+
+    /// Task S.24: at the start the models with tools (or deciding ones, #231) that compute here are on; a model turned on
+    /// stays on, and the first one turned off keeps the others the rule had on, while new ones
+    /// stay off from then on.
+    #[test]
+    fn models_start_on_here_and_turning_one_off_keeps_the_others() {
+        let with_tools = |id: &str, tools: Option<bool>| AiModel { tools, ..AiModel::named(id) };
+        let (local, unsure, toolless) =
+            (with_tools("qwen3:8b", Some(true)), with_tools("lm", None), with_tools("gemma3:4b", Some(false)));
+        let cloud = with_tools("glm-5.3:cloud", Some(true));
+        let mut switches = ModelSwitches::default();
+        let account = "ai:ollama@localhost:11434";
+        assert!(switches.is_on(account, &local, true) && switches.is_on(account, &unsure, true));
+        assert!(!switches.is_on(account, &toolless, true), "no tools, no decisions: no module can use it");
+        // #231: a decision model has no tools, but sorting mail uses it.
+        let nimble = AiModel { decision: Some(true), ..with_tools("nimble", Some(false)) };
+        assert!(nimble.is_usable() && !toolless.is_usable() && unsure.is_usable());
+        assert!(switches.is_on(account, &nimble, true), "a decision model here starts on");
+        assert!(!switches.is_on(account, &nimble, false), "elsewhere it is off like any other");
+        assert!(!switches.is_on(account, &cloud, false), "elsewhere: off until someone turns it on");
+        assert!(switches.follows_rule(account) && !switches.has_turned_on(account));
+
+        switches.turn_on(account, &cloud.id);
+        assert!(switches.is_on(account, &cloud, false) && switches.has_turned_on(account));
+        switches.turn_off(account, &local.id, ["qwen3:8b".to_string(), "lm".to_string()]);
+        assert!(!switches.is_on(account, &local, true), "off");
+        assert!(switches.is_on(account, &unsure, true), "the rule's other model stays on");
+        assert!(!switches.is_on(account, &with_tools("new:1b", Some(true)), true), "new ones stay off now");
+        assert!(!switches.follows_rule(account));
+
+        let json = serde_json::to_string(&switches).expect("json");
+        assert_eq!(serde_json::from_str::<ModelSwitches>(&json).expect("back"), switches);
+        assert_eq!(serde_json::from_str::<ModelSwitches>("{}").expect("empty"), ModelSwitches::default());
+        switches.forget(account);
+        assert!(switches.is_on(account, &local, true), "a removed account starts with the rule again");
+    }
+
+    #[test]
+    fn a_model_from_the_server_is_never_on_by_itself() {
+        let read: AiModel =
+            serde_json::from_value(serde_json::json!({"id": "qwen3:8b", "name": "Qwen3"})).expect("model");
+        assert!(!read.enabled);
+        let shown = serde_json::to_value(AiModel { enabled: true, ..AiModel::named("qwen3:8b") }).expect("json");
+        assert_eq!(shown["enabled"], serde_json::json!(true));
     }
 
     #[test]

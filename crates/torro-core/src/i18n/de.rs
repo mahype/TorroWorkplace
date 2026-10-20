@@ -61,7 +61,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Light or dark colors for all Torro apps. “System” follows your desktop.",
         "Helle oder dunkle Farben für alle Torro-Apps. „System“ folgt deinem Desktop.",
     ),
-    ("Mentions and messages", "Erwähnungen und Nachrichten"),
     ("Name", "Name"),
     ("{n} d ago", "vor {n} Tg."),
     ("{n} days ago", "vor {n} Tagen"),
@@ -75,7 +74,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nextcloud is connected.", "Nextcloud ist verbunden."),
     ("{n} h ago", "vor {n} Std."),
     ("{n} min ago", "vor {n} Min."),
-    ("No accounts yet.", "Noch keine Konten."),
     ("No home directory", "Kein Home-Verzeichnis"),
     ("Not running", "Läuft nicht"),
     ("Not set up", "Nicht eingerichtet"),
@@ -1512,10 +1510,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Tray: inbox count (E3.3b)
     ("Notification Hub ({n})", "Mitteilungszentrale ({n})"),
     // Control centre: agents & API (A.6)
-    ("Agents & API", "Agenten & API"),
     ("Agents", "Agenten"),
     ("Hooks", "Hooks"),
-    ("Scripts", "Skripte"),
     ("Script", "Skript"),
     ("{agent} hooks", "Hooks von {agent}"),
     ("Access", "Zugriff"),
@@ -1624,11 +1620,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Copied", "Kopiert"),
     ("Disconnect…", "Trennen…"),
     ("Disconnect", "Trennen"),
-    ("Disconnect this agent?", "Diesen Agenten trennen?"),
-    (
-        "{name} loses access at once: its key stops working. Connect it again to give it access.",
-        "{name} verliert sofort den Zugriff, sein Schlüssel funktioniert nicht mehr. Verbinde ihn erneut, um ihm Zugriff zu geben.",
-    ),
     // Inbox: make a task (E3.5)
     ("Make a task \"{title}\" in \"{list}\" from {entry}", "Aufgabe „{title}“ in „{list}“ aus {entry} anlegen"),
     ("Make task", "Aufgabe anlegen"),
@@ -1644,10 +1635,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Connect agent", "Agent verbinden"),
     ("Connect", "Verbinden"),
     ("Create key", "Schlüssel erstellen"),
-    (
-        "Choose the agent or program that should use Torro Workplace.",
-        "Wähle den Agenten oder das Programm, das Torro Workplace nutzen soll.",
-    ),
     ("Name the script and choose what it may do.", "Benenne das Skript und wähle, was es darf."),
     ("Choose what {name} may do.", "Wähle, was {name} darf."),
     (
@@ -1657,12 +1644,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Connecting {name} …", "{name} wird verbunden …"),
     ("Copy the key now.", "Kopiere den Schlüssel jetzt."),
     ("Looking for agents on this computer …", "Suche Agenten auf diesem Computer …"),
-    ("Agents and programs", "Agenten und Programme"),
-    ("A key for your own program", "Ein Schlüssel für dein eigenes Programm"),
-    (
-        "Not listed? Choose Script and put the key into its configuration yourself.",
-        "Nicht dabei? Wähle „Skript“ und trage den Schlüssel selbst in seine Konfiguration ein.",
-    ),
     ("Found · set up with the {command} command", "Gefunden · wird mit dem Befehl {command} eingerichtet"),
     ("Found · writes {file}", "Gefunden · schreibt {file}"),
     (
@@ -1747,17 +1728,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Control centre: agents page polish (A.6b)
     ("yesterday {time}", "gestern {time}"),
     ("{area} · each time with your approval", "{area} · jedes Mal mit deiner Freigabe"),
-    ("Hook", "Hook"),
-    (
-        "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its Notification Hub hooks are removed too.",
-        "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Agent verbinden“ sie eingerichtet hat, werden auch sein Konfigurationseintrag und seine Hooks für die Mitteilungszentrale entfernt.",
-    ),
     ("Disconnect these hooks?", "Diese Hooks trennen?"),
     (
         "{name} stop reporting at once: their key stops working and they are taken out of the agent's settings.",
         "{name} melden sofort nichts mehr: Ihr Schlüssel funktioniert nicht mehr, und sie werden aus den Einstellungen des Agenten entfernt.",
     ),
-    ("Disconnect this script?", "Dieses Skript trennen?"),
     ("Calendars left off don't exist for this agent.", "Ausgeschaltete Kalender gibt es für diesen Agenten nicht."),
     ("Lists left off don't exist for this agent.", "Ausgeschaltete Listen gibt es für diesen Agenten nicht."),
     ("Urgent", "Dringend"),
@@ -2039,10 +2014,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Password was refused", "Passwort wurde abgelehnt"),
     ("The server cannot be reached.", "Der Server ist nicht erreichbar."),
     // Mail provider in the add-account wizard (M7.2)
-    (
-        "Add your Nextcloud or a mail provider to see calendars and tasks in the apps.",
-        "Füge deine Nextcloud oder einen Mail-Anbieter hinzu, um Kalender und Aufgaben in den Apps zu sehen.",
-    ),
     ("Advanced", "Erweitert"),
     ("Appointments and events", "Termine und Ereignisse"),
     ("Calendar and task service found", "Kalender- und Aufgabendienst gefunden"),
@@ -2485,7 +2456,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("TorroMail has no such account.", "TorroMail hat dieses Konto nicht."),
     ("Use", "Übernehmen"),
-    ("Use accounts from TorroMail?", "Konten aus TorroMail übernehmen?"),
     (
         "Uses JMAP, which Torro Workplace does not support yet.",
         "Nutzt JMAP, was Torro Workplace noch nicht unterstützt.",
@@ -2964,7 +2934,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Automatic", "Automatisch"),
     ("Effort: {level}", "Aufwand: {level}"),
     ("How hard the model thinks", "Wie gründlich das Modell nachdenkt"),
-    ("Show all models", "Alle Modelle zeigen"),
     // Assistant app: permission mode (issue #132)
     ("Ask before changes", "Vor Änderungen fragen"),
     ("Default access", "Standardzugriff"),
@@ -3013,10 +2982,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Entwirf eine Antwort auf Annas Angebot: Wir nehmen an, Lieferung im November.",
     ),
     ("Focus time", "Fokuszeit"),
-    (
-        "I found five mails from Anna, but I may not create tasks. You can allow it in the control centre.",
-        "Ich habe fünf Mails von Anna gefunden, darf aber keine Aufgaben anlegen. Du kannst es in der Steuerzentrale erlauben.",
-    ),
     ("Input", "Eingabe"),
     (
         "Load the template Writing and block my afternoon in the calendar.",
@@ -3409,20 +3374,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Schlag Züge vor Flügen vor. Frag zuerst nach dem Budget.",
     ),
     ("Suggested a bot", "Bot vorgeschlagen"),
-    ("Take this bot's access away?", "Diesem Bot den Zugriff entziehen?"),
     (
         "The assistant suggests asking this bot. It works only with what both of them may use.",
         "Der Assistent schlägt vor, diesen Bot zu fragen. Er arbeitet nur mit dem, was beide dürfen.",
     ),
-    (
-        "The assistant's bots, each with rights of its own. Open one to set what it may use.",
-        "Die Bots des Assistenten, jeder mit eigenen Rechten. Öffne einen, um festzulegen, was er nutzen darf.",
-    ),
     ("The bot is still answering in this conversation.", "Der Bot antwortet in dieser Unterhaltung noch."),
-    (
-        "The bot uses only what you allowed it in the control centre.",
-        "Der Bot nutzt nur, was du ihm in der Steuerzentrale erlaubt hast.",
-    ),
     (
         "The description is too long: {count} of {max} characters.",
         "Die Beschreibung ist zu lang: {count} von {max} Zeichen.",
@@ -3484,10 +3440,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("{bot} · {title}", "{bot} · {title}"),
     ("{count} of {max} skills", "{count} von {max} Fähigkeiten"),
-    (
-        "{name} loses its access at once. Saving the bot again in the assistant gives it a new one, without any rights.",
-        "{name} verliert sofort seinen Zugriff. Speicherst du den Bot im Assistenten erneut, bekommt er einen neuen, ohne Rechte.",
-    ),
     (
         "“{name}” and its access will be deleted for good. Its conversations stay, but no one answers there any more.",
         "„{name}“ und sein Zugriff werden endgültig gelöscht. Seine Unterhaltungen bleiben, aber dort antwortet niemand mehr.",
@@ -3571,10 +3523,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("connects accounts", "verbindet Konten"),
     ("changes settings", "ändert Einstellungen"),
     ("admin commands", "Verwaltungsbefehle"),
-    (
-        "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen in Torro Workplace.",
-        "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Werkzeuge, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
-    ),
+    // Inbox: AI task and AI event (issue #120)
+    ("AI event", "KI-Termin"),
+    ("AI task", "KI-Aufgabe"),
     // Inbox: the AI fills in the dialogs of Task and Event (issue #120)
     ("Fill in with AI", "Mit KI ausfüllen"),
     ("The AI fills in only what waits in your inbox", "Die KI füllt nur aus, was in deinem Eingang wartet"),
@@ -3719,21 +3670,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("All settings", "Alle Einstellungen"),
     ("Close settings", "Einstellungen schließen"),
     ("History", "Verlauf"),
-    ("Turn on in Torro Workplace", "In Torro Workplace einschalten"),
-    ("Change in Torro Workplace", "In Torro Workplace ändern"),
-    (
-        "Turning the assistant on or off, and what it may use, stay in Torro Workplace: its key is kept there.",
-        "Den Assistenten ein- und ausschalten und festlegen, was er nutzen darf, bleibt in Torro Workplace: Dort liegt sein Schlüssel.",
-    ),
-    (
-        "These settings are ready once you turn it on under General.",
-        "Diese Einstellungen stehen bereit, sobald du ihn unter Allgemein einschaltest.",
-    ),
     ("Make one with New bot in the sidebar.", "Leg in der Seitenleiste mit „Neuer Bot“ einen an."),
-    (
-        "Bots are assistants for one field, each with rights of its own. A new bot may use nothing until you allow it in Torro Workplace.",
-        "Bots sind Assistenten für ein Gebiet, jeder mit eigenen Rechten. Ein neuer Bot darf nichts, bis du es in Torro Workplace erlaubst.",
-    ),
     (
         "Save the bot first; until then it may use nothing.",
         "Speichere den Bot zuerst; bis dahin darf er nichts nutzen.",
@@ -3784,18 +3721,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Name und Signatur jedes Kontos, und wie seine E-Mails geschrieben werden.",
     ),
     ("All rules in the Notification Hub", "Alle Regeln in der Mitteilungszentrale"),
-    ("Connect program", "Programm verbinden"),
     ("No programs connected", "Keine Programme verbunden"),
     (
         "Choose Connect program to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
         "Wähle „Programm verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop oder Cursor einzurichten oder einen Schlüssel für ein Skript zu erstellen.",
     ),
-    (
-        "The assistant chats with you and works in Torro Workplace with only what you allow it here.",
-        "Der Assistent unterhält sich mit dir und arbeitet in Torro Workplace nur mit dem, was du ihm hier erlaubst.",
-    ),
     ("Take access away…", "Zugriff entziehen…"),
-    ("Take away", "Entziehen"),
     (
         "Its settings are behind the gear in its window.",
         "Seine Einstellungen stehen hinter dem Zahnrad in seinem Fenster.",
@@ -3974,8 +3905,195 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Stop filing mail from everyone at {domain} as {category}",
         "E-Mails von allen bei {domain} nicht mehr als {category} ablegen",
     ),
-    // The assistant's own tools (WZ.2-WZ.4, #225): area, refusals, the PDF tool's errors and approvals
+    // Accounts, API and MCP; models on and off (issue #231)
+    ("1 model on", "1 Modell an"),
+    ("Accounts in TorroMail", "Konten in TorroMail"),
+    ("Add AI provider…", "KI-Anbieter hinzufügen…"),
+    ("Add GitHub account…", "GitHub-Konto hinzufügen…"),
+    ("Add mail account…", "Mail-Konto hinzufügen…"),
+    ("Add Nextcloud…", "Nextcloud hinzufügen…"),
+    ("Add ntfy server…", "ntfy-Server hinzufügen…"),
+    ("Allow API keys", "API-Schlüssel erlauben"),
+    ("Allow MCP", "MCP erlauben"),
+    (
+        "Another MCP client has this name. Choose another one.",
+        "Ein anderer MCP-Client hat diesen Namen. Wähle einen anderen.",
+    ),
+    (
+        "Any client that speaks MCP, with a key you put in yourself",
+        "Jeder Client, der MCP spricht, mit einem Schlüssel, den du selbst einträgst",
+    ),
+    ("API", "API"),
+    ("API and MCP", "API und MCP"),
+    (
+        "Bots are assistants for one field, each with rights of its own. A new bot may use nothing until you allow it under Access.",
+        "Bots sind Assistenten für ein Gebiet, jeder mit eigenen Rechten. Ein neuer Bot darf nichts nutzen, bis du es unter Zugriff erlaubst.",
+    ),
+    ("Calendars and tasks from your Nextcloud.", "Kalender und Aufgaben aus deiner Nextcloud."),
+    (
+        "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen under Settings › Access.",
+        "Kalender, Listen, Repositories, Quellen, Mail-Konten, Werkzeuge, Senden und Admin-Befehle wählst du unter Einstellungen › Zugriff.",
+    ),
+    ("Change under Access", "Unter Zugriff ändern"),
+    (
+        "Choose the client that should use Torro Workplace through MCP.",
+        "Wähle den Client, der Torro Workplace über MCP nutzen soll.",
+    ),
+    (
+        "Choose the mail accounts to take over from TorroMail.",
+        "Wähle die Mail-Konten, die aus TorroMail übernommen werden.",
+    ),
+    ("Cloud (Anthropic)", "Cloud (Anthropic)"),
+    ("Connect client", "Client verbinden"),
+    ("Connected clients", "Verbundene Clients"),
+    (
+        "Connected clients can use Torro Workplace through MCP",
+        "Verbundene Clients können Torro Workplace über MCP nutzen",
+    ),
+    (
+        "Copy it into your program's configuration now. It is shown only this once; Torro Workplace keeps only a fingerprint of it.",
+        "Kopiere ihn jetzt in die Konfiguration deines Programms. Er wird nur dieses eine Mal gezeigt; Torro Workplace behält nur einen Fingerabdruck davon.",
+    ),
+    ("Data rule", "Datenregel"),
+    ("Disconnect this client?", "Diesen Client trennen?"),
+    (
+        "Each bot has rights of its own. A new bot may use nothing until you allow it here.",
+        "Jeder Bot hat eigene Rechte. Ein neuer Bot darf nichts nutzen, bis du es hier erlaubst.",
+    ),
+    ("Every key of a script or program is refused", "Jeder Schlüssel eines Skripts oder Programms wird abgewiesen"),
+    ("Every MCP client and its hooks are refused", "Jeder MCP-Client und seine Hooks werden abgewiesen"),
+    ("Hide commands", "Befehle ausblenden"),
+    (
+        "Holds for the assistant and all its bots, whatever their rights allow.",
+        "Gilt für den Assistenten und alle seine Bots, was immer ihre Rechte erlauben.",
+    ),
+    ("Hooks without an agent", "Hooks ohne Agent"),
+    ("Import from TorroMail", "Aus TorroMail übernehmen"),
+    ("Import from TorroMail…", "Aus TorroMail übernehmen…"),
+    ("Issues, pull requests and projects from GitHub.", "Issues, Pull Requests und Projekte von GitHub."),
+    ("Keys", "Schlüssel"),
+    ("Loading models…", "Modelle werden geladen…"),
+    ("Looking for TorroMail's accounts…", "Suche die Konten von TorroMail…"),
+    (
+        "Mailboxes, and the calendars and tasks of the same provider.",
+        "Postfächer und die Kalender und Aufgaben desselben Anbieters.",
+    ),
+    ("Manage models…", "Modelle verwalten…"),
+    ("MCP", "MCP"),
+    ("MCP client", "MCP-Client"),
+    ("MCP clients", "MCP-Clients"),
+    ("MCP server", "MCP-Server"),
+    ("Models", "Modelle"),
+    (
+        "Models for the assistant and its bots, on this computer or in the cloud.",
+        "Modelle für den Assistenten und seine Bots, auf diesem Rechner oder in der Cloud.",
+    ),
+    ("Name the client and choose what it may do.", "Gib dem Client einen Namen und wähle, was er darf."),
+    ("No model is turned on", "Kein Modell ist eingeschaltet"),
+    ("No models match.", "Kein Modell passt."),
+    (
+        "Not listed? Choose Other MCP client and put the key into its configuration yourself.",
+        "Nicht dabei? Wähle „Anderer MCP-Client“ und trage den Schlüssel selbst in seine Konfiguration ein.",
+    ),
+    (
+        "Notifications from your servers and scripts, by topic.",
+        "Benachrichtigungen deiner Server und Skripte, nach Thema.",
+    ),
+    ("Ollama Cloud", "Ollama Cloud"),
+    ("Only your program holds it", "Nur dein Programm kennt ihn"),
+    ("Other MCP client", "Anderer MCP-Client"),
+    (
+        "Programs reach Torro Workplace on this computer only. Only you can turn this on again.",
+        "Programme erreichen Torro Workplace nur auf diesem Rechner. Nur du kannst das wieder einschalten.",
+    ),
+    (
+        "Put this command into the client's configuration and pass the key as {variable}. The key is shown only this once; Torro Workplace keeps only a fingerprint of it.",
+        "Trage diesen Befehl in die Konfiguration des Clients ein und übergib den Schlüssel als {variable}. Der Schlüssel wird nur dieses eine Mal gezeigt; Torro Workplace behält nur einen Fingerabdruck davon.",
+    ),
+    ("Report when waiting or done", "Melden, wenn er wartet oder fertig ist"),
+    ("Revoke", "Widerrufen"),
+    ("Revoke this key?", "Diesen Schlüssel widerrufen?"),
+    ("Revoke…", "Widerrufen…"),
+    (
+        "Save the bot once more in its editor; until then it may use nothing.",
+        "Speichere den Bot noch einmal in seinem Editor; bis dahin darf er nichts nutzen.",
+    ),
+    (
+        "Scripts and programs with a key can use Torro Workplace",
+        "Skripte und Programme mit Schlüssel können Torro Workplace nutzen",
+    ),
+    ("Search models", "Modelle suchen"),
+    ("Show closed models", "Geschlossene Modelle zeigen"),
+    ("Show commands", "Befehle zeigen"),
+    (
+        "The assistant, its bots and every other module offer only the models that are on.",
+        "Der Assistent, seine Bots und alle anderen Module bieten nur angeschaltete Modelle an.",
+    ),
+    (
+        "The bot uses only what you allowed it under Access.",
+        "Der Bot nutzt nur, was du ihm unter Zugriff erlaubt hast.",
+    ),
+    (
+        "The command for a client you set up yourself; it takes the client's key as {variable}. Only you can turn MCP on again.",
+        "Der Befehl für einen Client, den du selbst einrichtest; er bekommt den Schlüssel des Clients als {variable}. Nur du kannst MCP wieder einschalten.",
+    ),
+    (
+        "The hooks could not be taken out of the agent's settings",
+        "Die Hooks konnten nicht aus den Einstellungen des Agenten entfernt werden",
+    ),
+    ("The hooks could not be taken out of {file}", "Die Hooks konnten nicht aus {file} entfernt werden"),
+    ("The models could not be listed", "Die Modelle konnten nicht abgerufen werden"),
+    (
+        "These settings are ready once you turn it on under Access.",
+        "Diese Einstellungen stehen bereit, sobald du ihn unter Zugriff einschaltest.",
+    ),
+    ("Thinking", "Denken"),
+    ("This server offers no models.", "Dieser Server bietet keine Modelle an."),
     ("Tools", "Werkzeuge"),
+    ("TorroMail has no mail accounts to take over.", "TorroMail hat keine Mail-Konten zum Übernehmen."),
+    ("Turn it on under Access", "Unter Zugriff einschalten"),
+    ("Turn off an unknown model of {account}", "Ein unbekanntes Modell von {account} abschalten"),
+    ("Turn off “{model}” of {account}", "„{model}“ von {account} abschalten"),
+    (
+        "Turn on a model of {provider} in Settings › Accounts.",
+        "Schalte unter Einstellungen › Konten ein Modell von {provider} an.",
+    ),
+    ("Turn on an unknown model of {account}", "Ein unbekanntes Modell von {account} anschalten"),
+    ("Turn on models in Settings › Accounts.", "Schalte Modelle unter Einstellungen › Konten an."),
+    ("Turn on “{model}” of {account} (runs elsewhere)", "„{model}“ von {account} anschalten (rechnet anderswo)"),
+    (
+        "Turn on “{model}” of {account} (runs on this computer)",
+        "„{model}“ von {account} anschalten (rechnet auf diesem Rechner)",
+    ),
+    ("Turned off in Settings › Accounts", "Abgeschaltet unter Einstellungen › Konten"),
+    ("Turned off in {area}", "Abgeschaltet in {area}"),
+    (
+        "Turning the assistant on or off and what it may use are set under Access.",
+        "Ob der Assistent an ist und was er nutzen darf, legst du unter Zugriff fest.",
+    ),
+    (
+        "What Connect client set up could not be read: {problem}",
+        "Was „Client verbinden“ eingerichtet hat, ließ sich nicht lesen: {problem}",
+    ),
+    (
+        "Write includes reading, Full also deletes and overwrites. Commands switched off stay off.",
+        "Schreiben schließt Lesen ein, Voll löscht und überschreibt auch. Ausgeschaltete Befehle bleiben aus.",
+    ),
+    ("You turned this off for the assistant in {area}.", "Du hast das für den Assistenten in {area} abgeschaltet."),
+    (
+        "{name} loses access at once: its key stops working. Create a new key to give it access again.",
+        "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Erstelle einen neuen Schlüssel, um wieder Zugriff zu geben.",
+    ),
+    (
+        "{name} loses access at once: its key stops working. Where Connect client set them up, its configuration entry and its Notification Hub hooks are removed too.",
+        "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Client verbinden“ sie eingerichtet hat, werden auch sein Eintrag in der Konfiguration und seine Hooks für die Mitteilungszentrale entfernt.",
+    ),
+    ("{n} models on", "{n} Modelle an"),
+    ("{n} off", "{n} aus"),
+    ("{n}K context", "{n}K Kontext"),
+    ("{n}M context", "{n}M Kontext"),
+    ("{provider} does not offer the model {model}.", "{provider} bietet das Modell {model} nicht an."),
+    // The assistant's own tools (WZ.2-WZ.4, #225): area, refusals, the PDF tool's errors and approvals
     ("The assistant's own tools, such as making PDFs", "Eigene Werkzeuge des Assistenten, etwa PDFs erstellen"),
     (
         "The tool {tool} is switched off in the assistant's settings.",
@@ -4030,10 +4148,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Make PDFs", "PDFs erstellen"),
     ("The assistant may use it", "Der Assistent darf es verwenden"),
     ("The assistant may not use it", "Der Assistent darf es nicht verwenden"),
-    ("Allow it in Torro Workplace", "In Torro Workplace erlauben"),
+    ("Allow it under Access", "Unter Zugriff erlauben"),
     (
-        "A tool works only while it is on here and allowed in Torro Workplace. Only you can switch it on and choose the folder and the logos.",
-        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet und in Torro Workplace erlaubt ist. Nur du kannst es einschalten und den Ordner und die Logos wählen.",
+        "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose the folder and the logos.",
+        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet und unter Zugriff erlaubt ist. Nur du kannst es einschalten und den Ordner und die Logos wählen.",
     ),
     ("Desktop", "Schreibtisch"),
     ("Use desktop", "Schreibtisch verwenden"),
@@ -4054,7 +4172,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose a logo", "Logo wählen"),
     ("Pictures", "Bilder"),
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
-    // Agents & API › the selection of tools (WZ.7, #225)
+    // The rights editor › the selection of tools (WZ.7, #225)
     (
         "Includes tools added later. Each works only while it is on in the assistant's settings.",
         "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
@@ -4085,5 +4203,34 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "The new one with the due dates is on your desktop: Release checklist-2.pdf.",
         "Die neue mit den Fälligkeiten liegt auf deinem Schreibtisch: Release checklist-2.pdf.",
+    ),
+    // Design review #231
+    ("Command", "Befehl"),
+    ("Refused while API keys are off", "Abgelehnt, solange API-Schlüssel aus sind"),
+    ("Refused while MCP is off", "Abgelehnt, solange MCP aus ist"),
+    ("Create key…", "Schlüssel erstellen…"),
+    ("Connect client…", "Client verbinden…"),
+    (
+        "I found five mails from Anna, but I may not create tasks. You can allow it in Settings › Access.",
+        "Ich habe fünf Mails von Anna gefunden, darf aber keine Aufgaben anlegen. Du kannst es unter Einstellungen › Zugriff erlauben.",
+    ),
+    // ai.set_assignment and the switches of the models (S.24, review of #231)
+    (
+        "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
+        "„{model}“ von {provider} ist abgeschaltet. Schalte es unter Einstellungen › Konten an.",
+    ),
+    // Code review #231
+    ("Decides", "Entscheidet"),
+    ("Can't use tools or decide", "Kann weder Werkzeuge nutzen noch entscheiden"),
+    (
+        "No model of {provider} that decides is on. Turn one on in Settings › Accounts.",
+        "Kein Modell von {provider}, das entscheidet, ist an. Schalte eins unter Einstellungen › Konten an.",
+    ),
+    ("You turned this off for {bot} in {area}.", "Du hast das für {bot} in {area} abgeschaltet."),
+    ("You turned this off in {area}.", "Du hast das in {area} abgeschaltet."),
+    // PR review #242
+    (
+        "{file} cannot be read, so no model can be turned on or off. Repair or remove it, then restart Torro Workplace.",
+        "{file} lässt sich nicht lesen, darum kann kein Modell an- oder abgeschaltet werden. Repariere oder entferne die Datei und starte Torro Workplace dann neu.",
     ),
 ];

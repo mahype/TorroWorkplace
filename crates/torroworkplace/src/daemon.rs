@@ -227,7 +227,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
         let quit = quit_tx.clone();
         let socket = socket.clone();
         tokio::spawn(async move {
-            server::serve_with_key(&socket, move |key, request| {
+            server::serve_with_key(&socket, move |key, door, request| {
                 let core = Arc::clone(&core);
                 let refresh = refresh.clone();
                 let quit = quit.clone();
@@ -238,7 +238,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
                     let ends = matches!(request, Request::Quit);
                     // A refused request ran nothing: no notification, no new menu, so a foreign
                     // client cannot flood the desktop.
-                    let response = match core.handle_from(key.as_ref(), request).await {
+                    let response = match core.handle_from(key.as_ref(), door, request).await {
                         Ok(response) => response,
                         Err(refused) => return refused.response(),
                     };
@@ -576,6 +576,9 @@ fn describe(request: &Request) -> String {
         Request::SetNtfyLogin { .. } => "set ntfy login".into(),
         Request::SetNtfyTopic { account, .. } => format!("set a topic of {account}"),
         Request::AiModels { .. } => "ai models".into(),
+        // Never the model's name: the log names the account and the switch only (task S.24).
+        Request::SetModelEnabled { account, enabled: true, .. } => format!("turn on a model of {account}"),
+        Request::SetModelEnabled { account, enabled: false, .. } => format!("turn off a model of {account}"),
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::SearchMail { .. } => "search mail".into(),

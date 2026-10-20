@@ -127,6 +127,17 @@ pub struct Settings {
     /// does not read gives the defaults, never a settings file that fails.
     #[serde(default, deserialize_with = "lenient_reminders")]
     pub reminders: Reminders,
+    /// "Allow API keys" (#231, `docs/api.md` "Transport"): while off, the core refuses every key of
+    /// the kind `script` (`unauthorized`). On unless a person turned it off; only a person turns it
+    /// on again (`settings.set_setting allow_api_keys`, app key only), any client allowed to change
+    /// settings may turn it off.
+    #[serde(default = "on")]
+    pub allow_api_keys: bool,
+    /// "Allow MCP" (#231): while off, the core refuses every key of an MCP client and of a hook
+    /// (`unauthorized`). On unless a person turned it off; turned on again only by a person, like
+    /// [`Settings::allow_api_keys`].
+    #[serde(default = "on")]
+    pub allow_mcp: bool,
     /// The assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"): which ones a
     /// person switched on and how the PDF tool sets its pages ([`Tools`]). Read leniently: a value
     /// that does not read gives the defaults (every tool off), never a settings file that fails.
@@ -421,6 +432,8 @@ impl Default for Settings {
             reminders: Reminders::default(),
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
+            allow_api_keys: on(),
+            allow_mcp: on(),
             tools: Tools::default(),
         }
     }
@@ -1706,6 +1719,8 @@ mod tests {
             reminders: Reminders::default(),
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
+            allow_api_keys: true,
+            allow_mcp: true,
             tools: Tools::default(),
         };
         assert_eq!(load_from(&path), expected);
@@ -1721,6 +1736,20 @@ mod tests {
         assert!(!load_from(&path).mail_to_cloud, "a file from before the setting keeps mail local");
         fs::write(&path, r#"{"mailToCloud":true}"#).expect("write");
         assert!(load_from(&path).mail_to_cloud);
+    }
+
+    /// #231: API keys and MCP work unless a person turned them off, also with a file from before.
+    #[test]
+    fn api_keys_and_mcp_are_allowed_unless_turned_off() {
+        let dir = TempDir::new("doors");
+        let path = dir.file("settings.json");
+        assert!(Settings::default().allow_api_keys && Settings::default().allow_mcp);
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        let before = load_from(&path);
+        assert!(before.allow_api_keys && before.allow_mcp, "a file from before the switches keeps both ways open");
+        fs::write(&path, r#"{"allowApiKeys":false,"allowMcp":false}"#).expect("write");
+        let off = load_from(&path);
+        assert!(!off.allow_api_keys && !off.allow_mcp);
     }
 
     #[test]
@@ -1857,6 +1886,8 @@ mod tests {
             },
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
+            allow_api_keys: false,
+            allow_mcp: false,
             tools: Tools {
                 enabled: BTreeSet::from([ToolId::Pdf]),
                 pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),

@@ -1,20 +1,24 @@
-//! The "Connect agent" dialog (task A.7 in `docs/tasks/api-mcp.md`, concept in `docs/api.md`,
-//! "Steuerzentrale: Abschnitt „Agents & API“"), opened from the header of the agents page.
+//! The dialogs that give a program a key (task A.7 in `docs/tasks/api-mcp.md`, task S.35 in
+//! `docs/tasks/steuerzentrale.md`, concept in `docs/settings.md` › "API" and "MCP"): **"Connect
+//! client"** in the header of MCP ([`State::new`]) and **"Create key"** in the header of API
+//! ([`State::key`]), which is the dialog's path "Script" alone.
 //!
 //! Steps, in the frame of the add-account dialog (`wizard.rs`): title, a subtitle per step, errors
 //! bottom left, "Back", "Cancel" and the step's primary button bottom right.
 //!
-//! 1. **Client:** the clients found on this computer first (Claude Code, Codex, Claude Desktop,
-//!    Cursor, each with where its entry goes), then "Script", then the known clients that were not
-//!    found, faded with "Not found". Detection runs in the shell ([`client_setup::Job::Detect`]);
-//!    until it answers the step says it is looking.
+//! 1. **Client** (only "Connect client"): the clients found on this computer first (Claude Code,
+//!    Codex, Gemini CLI, Claude Desktop, Cursor, each with where its entry goes), then "Other MCP
+//!    client", then the known clients that were not found, faded with "Not found". Detection runs
+//!    in the shell ([`client_setup::Job::Detect`]); until it answers the step says it is looking.
 //! 2. **Rights:** "Read only", "Read and write" (chosen at first) or "Full access", and the note
 //!    that areas, calendars, lists, inbox sources, mail accounts and approvals can be narrowed on
-//!    the agent's page afterwards, and that sending mail asks first whichever template is chosen
-//!    ([`Outbound::WithApproval`] in all of them). A script also needs a name: it is its inbox source (`script:<name>`), so it must
-//!    differ from every other script and from `cli` – checked here first (the message shows after
-//!    the first "Create key", `torro-design` 5) and by the core. For Claude Code, Codex and Gemini
-//!    CLI a check box "Report to the Notification Hub when waiting or done", ticked at first (task E2.3).
+//!    the client's page afterwards, and that sending mail asks first whichever template is chosen
+//!    ([`Outbound::WithApproval`] in all of them). A script and an "Other MCP client" also need a
+//!    name: it is their inbox source (`script:<name>`, `agent:mcp:<name>`), so it must differ from
+//!    every other client of its kind and, for a script, from `cli` – checked here first (the
+//!    message shows after the first "Create key", `torro-design` 5) and by the core. For Claude
+//!    Code, Codex and Gemini CLI a check box "Report to the Notification Hub when waiting or
+//!    done", ticked at first (task E2.3). "Create key" starts here and has no "Back".
 //! 3. **Connecting:** `clients.create_client`, then for an agent the shell writes its MCP entry with
 //!    the key ([`client_setup::Job::Connect`]). With the check box ticked a second client follows,
 //!    of the kind `hook` for this agent ("Claude Code hooks", `clients.create_client` with the
@@ -28,15 +32,17 @@
 //!    or why the hooks could not be set up (a cross in the error colour): then the hook client is
 //!    removed again, and the agent works without them. The keys are dropped from memory.
 //!
-//!    **Key:** a script's key, or an agent's key whose entry could not be written (with the
-//!    reason): shown this once with "Copy", the way the agents page shows a new key. A click next
-//!    to the dialog keeps it; "Done" and Escape end it for good.
+//!    **Key:** a script's key, an "Other MCP client"'s key with the command its configuration
+//!    runs ([`client_setup::mcp_command`]), or an agent's key whose entry could not be written
+//!    (with the reason): shown this once with "Copy", the way a client's page shows a new key. A
+//!    click next to the dialog keeps it; "Done" and Escape end it for good.
 //!
-//! `Message::Close` and `Message::Dismiss` are handled by `agents.rs`, which asks [`closable`]
-//! and [`dismissable`] first. [`view`] is the dialog's content; `agents::overlay` puts it on the
+//! The page that hosts the dialog keeps it in an `Option` and hands every message to [`update_in`],
+//! which closes it on Cancel, Done, Escape and a click next to it as far as [`closable`] and
+//! [`dismissable`] allow. [`view`] is the dialog's content; the page's `overlay` puts it on the
 //! dialog surface. Its rows ([`wrap_row`]) let label and line below wrap instead of cutting them
 //! off, since the dialog is only as wide as a narrow window allows; the lines below carry no full
-//! stop, like the rows of the agents page.
+//! stop, like the rows of the pages.
 
 use iced::widget::space as blank;
 use iced::widget::text::IntoFragment;
@@ -49,11 +55,11 @@ use torro_gui::{dialog, layout, style, typo, widgets};
 use torro_inbox::AgentKind;
 #[cfg(doc)]
 use torro_ipc::api::Outbound;
-use torro_ipc::api::{HOOK_CLIENT, RightsTemplate};
+use torro_ipc::api::{HOOK_CLIENT, MCP_CLIENT, RightsTemplate, SCRIPT_CLIENT};
 use torro_ipc::{IssuedKey, Request, Response};
 
 use super::{Action, Data, chevron, one_line, pressable, row_frame};
-use crate::client_setup::{Found, Job, Method, Outcome, TOKEN_VARIABLE, Target};
+use crate::client_setup::{self, Found, Job, Method, Outcome, TOKEN_VARIABLE, Target};
 
 /// The step the dialog is on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -70,7 +76,8 @@ enum Step {
     /// The shell writes the agent's hooks.
     WritingHooks,
     Done,
-    /// The key is shown once: a script's, or an agent's whose entry could not be written.
+    /// The key is shown once: a script's, an "Other MCP client"'s, or an agent's whose entry
+    /// could not be written.
     Key,
 }
 
@@ -79,13 +86,36 @@ enum Step {
 pub enum Choice {
     /// A client the wizard sets up itself; only one that was found can be chosen.
     Agent(Target),
-    /// Any program: its key is shown to copy.
+    /// Any program with a key for the API ("Create key"): its key is shown to copy.
     Script,
+    /// Any other MCP client ("Other MCP client", kind `mcp`): its key and command are shown to
+    /// copy.
+    Other,
+}
+
+impl Choice {
+    /// The kind `clients.create_client` gets for it.
+    fn kind(self) -> &'static str {
+        match self {
+            Choice::Agent(target) => target.kind(),
+            Choice::Script => SCRIPT_CLIENT,
+            Choice::Other => MCP_CLIENT,
+        }
+    }
+
+    /// Whether the person names the client: a script and an "Other MCP client", whose name is
+    /// their inbox source.
+    fn named(self) -> bool {
+        matches!(self, Choice::Script | Choice::Other)
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct State {
     step: Step,
+    /// "Create key" ([`State::key`]): starts on the rights of a script and has no way back to a
+    /// list of clients.
+    key_only: bool,
     /// What detection found; `None` until it answered.
     found: Option<Vec<Found>>,
     choice: Option<Choice>,
@@ -108,12 +138,23 @@ pub struct State {
     hook_client: Option<String>,
     /// How setting up the hooks went: where they went, or why not. `None`: not set up.
     hooks: Option<Result<String, String>>,
+    /// The command an "Other MCP client" runs ([`client_setup::mcp_command`]), shown with its key.
+    command: String,
+    /// "Copy" next to the command was pressed.
+    copied_command: bool,
 }
 
 impl State {
-    /// A dialog on its first step, waiting for detection.
+    /// "Connect client" on its first step, waiting for detection (the host sends
+    /// [`Job::Detect`]).
     pub fn new() -> State {
-        State::default()
+        let program = std::env::current_exe().unwrap_or_else(|_| torro_core::AppId::WORKPLACE.binary.into());
+        State { command: client_setup::mcp_command(&program), ..State::default() }
+    }
+
+    /// "Create key": the rights of a new script with its name, no detection and no "Back".
+    pub fn key() -> State {
+        State { step: Step::Rights, choice: Some(Choice::Script), key_only: true, ..State::default() }
     }
 }
 
@@ -133,6 +174,8 @@ pub enum Message {
     /// "Connect" / "Create key", or Enter in the name field.
     Connect,
     CopyKey,
+    /// "Copy" next to an "Other MCP client"'s command.
+    CopyCommand,
     /// Typing into the key's field changes nothing; the field always shows the key.
     KeepKey,
     /// A job the shell ran for the dialog: detection, writing the entry.
@@ -150,11 +193,28 @@ pub fn dismissable(state: &State) -> bool {
     matches!(state.step, Step::Client | Step::Rights | Step::Done)
 }
 
+/// Hands `message` to the dialog in `slot`, the way every page that hosts it does: Cancel, Done
+/// and Escape ([`Message::Close`]) close it unless it is creating the client ([`closable`]), a
+/// click next to it ([`Message::Dismiss`]) only on the steps that hold nothing to lose
+/// ([`dismissable`]); everything else goes to [`update`]. Nothing happens without a dialog.
+pub fn update_in(slot: &mut Option<State>, message: Message, data: &Data) -> Action {
+    let Some(open) = slot.as_mut() else { return Action::None };
+    let close = match message {
+        Message::Close => closable(open),
+        Message::Dismiss => dismissable(open),
+        message => return update(open, message, data),
+    };
+    if close {
+        *slot = None;
+    }
+    Action::None
+}
+
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Close | Message::Dismiss | Message::KeepKey => Action::None,
         Message::Back => {
-            if state.step == Step::Rights {
+            if state.step == Step::Rights && !state.key_only {
                 state.step = Step::Client;
                 state.error = None;
                 state.tried = false;
@@ -188,6 +248,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             None => Action::None,
         },
+        Message::CopyCommand => {
+            state.copied_command = true;
+            Action::Copy(state.command.clone())
+        }
         Message::Setup(outcome) => setup(state, outcome),
     }
 }
@@ -201,63 +265,73 @@ fn hook_agent(state: &State) -> Option<AgentKind> {
     }
 }
 
-/// `Some(None)` for "Script", `Some(found)` for a found agent, `None` for an agent not found.
+/// `Some(None)` for "Script" and "Other MCP client", `Some(found)` for a found agent, `None` for an
+/// agent not found.
 fn found(state: &State, choice: Choice) -> Option<Option<&Found>> {
     match choice {
-        Choice::Script => Some(None),
+        Choice::Script | Choice::Other => Some(None),
         Choice::Agent(target) => state.found.as_ref()?.iter().find(|found| found.target == target).map(Some),
     }
 }
 
-/// Sends `clients.create_client` once the step is complete; a script without a valid name gets
-/// its message instead.
+/// Sends `clients.create_client` once the step is complete; a script or an "Other MCP client"
+/// without a valid name gets its message instead.
 fn connect(state: &mut State, data: &Data) -> Action {
     let Some(choice) = state.choice.filter(|_| state.step == Step::Rights) else { return Action::None };
     state.tried = true;
-    let (name, kind) = match choice {
-        Choice::Agent(target) => (target.label().to_string(), target.kind()),
-        Choice::Script => match name_problem(&state.name, data) {
+    let name = match choice {
+        Choice::Agent(target) => target.label().to_string(),
+        Choice::Script | Choice::Other => match name_problem(&state.name, choice.kind(), data) {
             Some(problem) => {
                 state.error = Some(problem.to_string());
                 return Action::None;
             }
-            None => (state.name.trim().to_string(), "script"),
+            None => state.name.trim().to_string(),
         },
     };
     state.error = None;
     state.step = Step::Creating;
     Action::Send(Request::CreateClient {
         name,
-        kind: kind.to_string(),
+        kind: choice.kind().to_string(),
         template: state.template,
         agent: None,
         rights: None,
     })
 }
 
-/// What is wrong with `name` for a new script: empty, `cli` (the app key's source) or the name of
-/// another script (in any case, as the core compares).
-pub fn name_problem(name: &str, data: &Data) -> Option<&'static str> {
+/// What is wrong with `name` for a new client of `kind` (`script` or `mcp`): empty, the name of
+/// another client of that kind (in any case, as the core compares) or, for a script, `cli` (the
+/// app key's source).
+pub fn name_problem(name: &str, kind: &str, data: &Data) -> Option<&'static str> {
     let name = name.trim();
-    let taken = name.eq_ignore_ascii_case("cli")
-        || data.clients.iter().any(|client| client.kind == "script" && client.name.eq_ignore_ascii_case(name));
-    if name.is_empty() {
-        Some(tr("Enter a name."))
-    } else if taken {
-        Some(tr("Another script has this name. Choose another one."))
-    } else {
-        None
+    let taken = (kind == SCRIPT_CLIENT && name.eq_ignore_ascii_case("cli"))
+        || data.clients.iter().any(|client| client.kind == kind && client.name.eq_ignore_ascii_case(name));
+    match (name.is_empty(), taken, kind == SCRIPT_CLIENT) {
+        (true, _, _) => Some(tr("Enter a name.")),
+        (false, true, true) => Some(tr("Another script has this name. Choose another one.")),
+        (false, true, false) => Some(tr("Another MCP client has this name. Choose another one.")),
+        (false, false, _) => None,
     }
 }
 
 /// The answer to a request the shell sent, while the dialog is open. `Some` when it was the
 /// dialog's (then the shell shows no notice of its own) with what to do next: for an agent's new
-/// key, writing its entry ([`Job::Connect`]). `None` for every other answer.
+/// key, writing its entry ([`Job::Connect`]). `None` for every other answer, and for a new key of a
+/// client of another kind than the one the dialog is creating – a page's own request (a hook
+/// switch, task S.35) may be answered meanwhile.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
+    let expected = match state.step {
+        Step::Creating => state.choice.map(Choice::kind)?,
+        Step::CreatingHooks => HOOK_CLIENT,
+        _ => return None,
+    };
+    if matches!(result, Ok(Response::ClientKey { client, .. }) if client.kind != expected) {
+        return None;
+    }
     match state.step {
         Step::Creating => Some(created(state, result)),
-        Step::CreatingHooks => Some(hook_created(state, result)),
-        _ => None,
+        _ => Some(hook_created(state, result)),
     }
 }
 
@@ -364,7 +438,7 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
                 return Action::Send(Request::RemoveClient { id });
             }
         }
-        Outcome::Connected(_) | Outcome::Hooked(_) | Outcome::Disconnected(_) => {}
+        Outcome::Connected(_) | Outcome::Hooked(_) | Outcome::Disconnected(_) | Outcome::HookNotes(_) => {}
     }
     Action::None
 }
@@ -372,11 +446,10 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
 // ----- Views --------------------------------------------------------------------------------
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let header = column![
-        typo::text(typo::title(), tr("Connect agent")),
-        typo::text(typo::body(), subtitle(state)).style(theme::text_2)
-    ]
-    .spacing(space::xs());
+    let title = if state.key_only { tr("Create key") } else { tr("Connect client") };
+    let header =
+        column![typo::text(typo::title(), title), typo::text(typo::body(), subtitle(state)).style(theme::text_2)]
+            .spacing(space::xs());
     let body = match state.step {
         Step::Client => client_step(state),
         Step::Rights => rights_step(state, data),
@@ -392,7 +465,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     dialog::frame(header, body, footer(state, data), space::xl())
 }
 
-/// "Claude Code", or the script's name.
+/// "Claude Code", or the name of the script or the "Other MCP client".
 fn chosen_name(state: &State) -> String {
     match state.choice {
         Some(Choice::Agent(target)) => target.label().to_string(),
@@ -403,9 +476,10 @@ fn chosen_name(state: &State) -> String {
 fn subtitle(state: &State) -> String {
     let name = chosen_name(state);
     match state.step {
-        Step::Client => tr("Choose the agent or program that should use Torro Workplace.").to_string(),
+        Step::Client => tr("Choose the client that should use Torro Workplace through MCP.").to_string(),
         Step::Rights => match state.choice {
             Some(Choice::Script) => tr("Name the script and choose what it may do.").to_string(),
+            Some(Choice::Other) => tr("Name the client and choose what it may do.").to_string(),
             _ => trf("Choose what {name} may do.", &[("name", &name)]),
         },
         Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks => {
@@ -416,7 +490,7 @@ fn subtitle(state: &State) -> String {
     }
 }
 
-/// The clients: found ones to press, "Script", and the others faded with "Not found".
+/// The clients: found ones to press, "Other MCP client", and the others faded with "Not found".
 fn client_step(state: &State) -> Element<'_, Message> {
     let Some(found) = &state.found else {
         return typo::text(typo::body(), tr("Looking for agents on this computer …")).style(theme::text_2).into();
@@ -428,13 +502,18 @@ fn client_step(state: &State) -> Element<'_, Message> {
             pressable(row, Some(Message::Choose(Choice::Agent(found.target))))
         })
         .collect();
-    let script = wrap_row(None, tr("Script"), Some(tr("A key for your own program").to_string()), chevron());
-    rows.push(pressable(script, Some(Message::Choose(Choice::Script))));
+    let other = wrap_row(
+        None,
+        tr("Other MCP client"),
+        Some(tr("Any client that speaks MCP, with a key you put in yourself").to_string()),
+        chevron(),
+    );
+    rows.push(pressable(other, Some(Message::Choose(Choice::Other))));
     rows.extend(
         Target::ALL.into_iter().filter(|target| !found.iter().any(|found| found.target == *target)).map(missing_row),
     );
-    let footer = tr("Not listed? Choose Script and put the key into its configuration yourself.");
-    widgets::group(tr("Agents and programs"), rows, Some(footer.to_string()))
+    let footer = tr("Not listed? Choose Other MCP client and put the key into its configuration yourself.");
+    widgets::group(tr("MCP clients"), rows, Some(footer.to_string()))
 }
 
 /// "Found · set up with the claude command", "Found · writes ~/.cursor/mcp.json".
@@ -458,11 +537,14 @@ fn missing_row(target: Target) -> Element<'static, Message> {
     )
 }
 
-/// A script's name, and the three templates with a check at the chosen one.
+/// The name of a script or an "Other MCP client", and the three templates with a check at the
+/// chosen one.
 fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let mut page = column![].spacing(layout::section_gap());
-    if state.choice == Some(Choice::Script) {
-        let field = text_input("nightly-backup", &state.name)
+    if let Some(choice) = state.choice.filter(|choice| choice.named()) {
+        // An example, not a word to translate.
+        let example = if choice == Choice::Script { "nightly-backup" } else { "my-editor" };
+        let field = text_input(example, &state.name)
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
@@ -471,7 +553,7 @@ fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             .style(style::text_input)
             .on_input(Message::Name)
             .on_submit(Message::Connect);
-        let footer = match state.tried.then(|| name_problem(&state.name, data)).flatten() {
+        let footer = match state.tried.then(|| name_problem(&state.name, choice.kind(), data)).flatten() {
             Some(problem) => problem,
             None => tr("Its reports in the Notification Hub appear under this name."),
         };
@@ -619,7 +701,8 @@ fn row_padding(detail: bool) -> f32 {
     }
 }
 
-/// The key this once: why it is shown, the key in a field to select, and "Copy".
+/// The key this once: why it is shown, the key in a field to select, and "Copy"; for an "Other MCP
+/// client" also the command its configuration runs, with "Copy" of its own.
 fn key_step(state: &State) -> Element<'_, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(error) = &state.error {
@@ -631,6 +714,18 @@ fn key_step(state: &State) -> Element<'_, Message> {
             typo::text(typo::body(), tr("Put this key into its configuration yourself. It is shown only this once."))
                 .style(theme::text_2),
         );
+    } else if state.choice == Some(Choice::Other) {
+        body = body.push(
+            typo::text(
+                typo::body(),
+                trf(
+                    "Put this command into the client's configuration and pass the key as {variable}. The key is shown only this once; Torro Workplace keeps only a fingerprint of it.",
+                    &[("variable", &TOKEN_VARIABLE)],
+                ),
+            )
+            .style(theme::text_2),
+        );
+        body = body.push(command_line(&state.command, state.copied_command, Message::CopyCommand, Message::KeepKey));
     } else {
         body = body.push(
             typo::text(
@@ -644,21 +739,76 @@ fn key_step(state: &State) -> Element<'_, Message> {
         );
     }
     let key = state.key.as_ref().map_or("", IssuedKey::expose);
-    // Tabular figures: a key is read and compared character by character.
-    let field = text_input("", key)
+    body.push(copy_line(tr("Key"), key, state.copied, Message::CopyKey, Message::KeepKey)).into()
+}
+
+/// `text` (a key) under its `label` in `CAPTION` (`text_3`), in a field to select, in tabular
+/// figures – it is read and compared character by character –, and "Copy" sending `copy`, which says
+/// "Copied" once it was pressed. Typing into the field sends `keep`, which must change nothing.
+pub(super) fn copy_line<'a, M: Clone + 'a>(
+    label: &'a str,
+    text: &'a str,
+    copied: bool,
+    copy: M,
+    keep: M,
+) -> Element<'a, M> {
+    copy_field(label, text.to_string(), None, copied, copy, keep)
+}
+
+/// The command an MCP client runs ([`crate::client_setup::mcp_command`]) as [`copy_line`] under
+/// "Command", its path cut at the front ([`short_command`]) so the end that tells what runs – the
+/// program and `mcp` – always shows; the whole command is the field's tooltip, and "Copy" copies all
+/// of it (the caller's `copy`).
+pub(super) fn command_line<'a, M: Clone + 'a>(command: &'a str, copied: bool, copy: M, keep: M) -> Element<'a, M> {
+    let shown = short_command(command);
+    let whole = (shown != command).then_some(command);
+    copy_field(tr("Command"), shown, whole, copied, copy, keep)
+}
+
+/// `command` with the folders of its program left out: "…/torroworkplace mcp" for
+/// "/Users/anna/bin/torroworkplace mcp" (quotes of a path with spaces dropped, it is only shown);
+/// as it is when it names no folder.
+fn short_command(command: &str) -> String {
+    match command.rfind(['/', '\\']) {
+        Some(at) => {
+            let separator = &command[at..at + 1];
+            let rest: String = command[at + 1..].chars().filter(|c| !matches!(c, '\'' | '"')).collect();
+            format!("…{separator}{rest}")
+        }
+        None => command.to_string(),
+    }
+}
+
+/// The parts of [`copy_line`] and [`command_line`]: `shown` in the field, `whole` as its tooltip
+/// where the field shows less. "Copy" is a bar button, as high as the field (32).
+fn copy_field<'a, M: Clone + 'a>(
+    label: &'a str,
+    shown: String,
+    whole: Option<&'a str>,
+    copied: bool,
+    copy: M,
+    keep: M,
+) -> Element<'a, M> {
+    let field = text_input("", &shown)
         .size(typo::body().size)
         .line_height(typo::body().line_height)
         .font(typo::body().tabular().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
-        // Without an edit handler the field cannot take focus, so the key could not be selected.
-        .on_input(|_| Message::KeepKey);
-    let copy = match state.copied {
-        true => widgets::text_button(Some(Icon::Check), tr("Copied"), style::button::secondary, Some(Message::CopyKey)),
-        false => widgets::text_button(Some(Icon::Copy), tr("Copy"), style::button::secondary, Some(Message::CopyKey)),
+        // Without an edit handler the field cannot take focus, so the text could not be selected.
+        // Edits change nothing: the field always shows the text.
+        .on_input(move |_| keep.clone());
+    let field: Element<'a, M> = match whole {
+        Some(whole) => widgets::with_tooltip(field, whole),
+        None => field.into(),
     };
-    body.push(row![field, copy].spacing(space::s()).align_y(Alignment::Center)).into()
+    let button = match copied {
+        true => widgets::bar_button(Icon::Check, tr("Copied"), true, style::button::secondary, Some(copy)),
+        false => widgets::bar_button(Icon::Copy, tr("Copy"), true, style::button::secondary, Some(copy)),
+    };
+    let line = row![field, button].spacing(space::s()).align_y(Alignment::Center);
+    column![typo::text(typo::caption(), label).style(theme::text_3), line].spacing(space::xs()).into()
 }
 
 /// The error left (on the rights step), "Back", "Cancel" and the step's primary button right.
@@ -670,14 +820,14 @@ fn footer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             .into(),
         _ => blank::horizontal().into(),
     };
-    let back = (state.step == Step::Rights)
+    let back = (state.step == Step::Rights && !state.key_only)
         .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
     let cancel = matches!(state.step, Step::Client | Step::Rights)
         .then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match (state.step, state.choice) {
-        (Step::Rights, Some(Choice::Script)) => {
-            let ready = !state.tried || name_problem(&state.name, data).is_none();
+        (Step::Rights, Some(choice)) if choice.named() => {
+            let ready = !state.tried || name_problem(&state.name, choice.kind(), data).is_none();
             primary(tr("Create key"), ready.then_some(Message::Connect))
         }
         (Step::Rights, _) => primary(tr("Connect"), Some(Message::Connect)),
@@ -712,6 +862,17 @@ mod tests {
             rights: RightsTemplate::ReadAndWrite.rights(),
             agent: None,
         }
+    }
+
+    /// #231: the command shows its end – program and `mcp` –, the folders before it cut off.
+    #[test]
+    fn the_command_is_cut_at_the_front() {
+        assert_eq!(short_command("/Users/anna/bin/torroworkplace mcp"), "…/torroworkplace mcp");
+        assert_eq!(short_command("'/Users/anna/my apps/torroworkplace' mcp"), "…/torroworkplace mcp");
+        assert_eq!(short_command(r#""C:\Program Files\torroworkplace.exe" mcp"#), "…\\torroworkplace.exe mcp");
+        assert_eq!(short_command("torroworkplace mcp"), "torroworkplace mcp");
+        let program = std::path::Path::new("/opt/torro/torroworkplace");
+        assert!(short_command(&crate::client_setup::mcp_command(program)).ends_with("/torroworkplace mcp"));
     }
 
     #[test]
@@ -872,15 +1033,22 @@ mod tests {
         drop(view(&state, &data));
     }
 
+    /// Task S.35: "Create key" is the path "Script" alone – it starts on the rights, with no way
+    /// back to a list of clients.
     #[test]
     fn a_script_needs_a_free_name_and_shows_its_key() {
         let data = Data { clients: vec![client("s1", "backup", "script")], ..Data::default() };
-        let mut state = detected();
-        let _ = update(&mut state, Message::Choose(Choice::Script), &data);
-        assert!(name_problem("", &data).is_some());
-        assert!(name_problem("CLI", &data).is_some(), "the app key's source");
-        assert!(name_problem(" Backup ", &data).is_some(), "another script's name in any case");
-        assert_eq!(name_problem("nightly", &data), None);
+        let mut state = State::key();
+        assert_eq!((state.step, state.choice), (Step::Rights, Some(Choice::Script)));
+        let _ = update(&mut state, Message::Back, &data);
+        assert_eq!(state.step, Step::Rights, "no Back in Create key");
+        assert!(name_problem("", "script", &data).is_some());
+        assert!(name_problem("CLI", "script", &data).is_some(), "the app key's source");
+        assert!(name_problem(" Backup ", "script", &data).is_some(), "another script's name in any case");
+        assert_eq!(name_problem("nightly", "script", &data), None);
+        assert_eq!(name_problem("backup", "mcp", &data), None, "a script's name is free for an MCP client");
+        assert_eq!(name_problem("cli", "mcp", &data), None, "cli is only the app key's script source");
+        drop(view(&state, &data));
 
         assert!(matches!(update(&mut state, Message::Connect, &data), Action::None), "no name yet");
         assert_eq!(state.error.as_deref(), Some(tr("Enter a name.")));
@@ -894,6 +1062,51 @@ mod tests {
         assert_eq!(state.step, Step::Key);
         assert!(state.error.is_none());
         drop(view(&state, &data));
+    }
+
+    /// Task S.35: "Connect client" offers "Other MCP client" instead of "Script": a name checked
+    /// against the other clients of the kind `mcp`, then its key with the command to copy.
+    #[test]
+    fn another_mcp_client_gets_a_free_name_its_key_and_the_command() {
+        let data = Data { clients: vec![client("m1", "Zed", MCP_CLIENT)], ..Data::default() };
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Other), &data);
+        assert_eq!(state.step, Step::Rights);
+        let _ = update(&mut state, Message::Name("zed".into()), &data);
+        assert!(matches!(update(&mut state, Message::Connect, &data), Action::None));
+        assert_eq!(state.error.as_deref(), Some(tr("Another MCP client has this name. Choose another one.")));
+        let _ = update(&mut state, Message::Name(" Helix ".into()), &data);
+        let action = update(&mut state, Message::Connect, &data);
+        assert!(matches!(
+            action,
+            Action::Send(Request::CreateClient { ref name, ref kind, agent: None, .. }) if name == "Helix" && kind == MCP_CLIENT
+        ));
+        // A new key of another kind is not the dialog's: a page's hook switch may be answered first.
+        assert!(answered(&mut state, &key_answer("h9", "Claude Code hooks", HOOK_CLIENT)).is_none());
+        assert!(matches!(answered(&mut state, &key_answer("m2", "Helix", MCP_CLIENT)), Some(Action::None)));
+        assert_eq!(state.step, Step::Key);
+        assert!(state.command.ends_with(" mcp"), "{}", state.command);
+        let copy = update(&mut state, Message::CopyCommand, &data);
+        assert!(matches!(copy, Action::Copy(ref text) if *text == state.command));
+        assert!(
+            matches!(update(&mut state, Message::CopyKey, &data), Action::Copy(ref key) if key == "torro_n1_secret")
+        );
+        drop(view(&state, &data));
+    }
+
+    #[test]
+    fn the_host_closes_the_dialog_only_when_nothing_is_lost() {
+        let data = Data::default();
+        let mut slot = Some(detected());
+        let _ = update_in(&mut slot, Message::Dismiss, &data);
+        assert!(slot.is_none(), "a click next to the first step closes it");
+        let mut slot = Some(State::key());
+        let _ = update_in(&mut slot, Message::Name("nightly".into()), &data);
+        let _ = update_in(&mut slot, Message::Connect, &data);
+        let _ = update_in(&mut slot, Message::Close, &data);
+        assert!(slot.is_some(), "not while the key is being created");
+        let _ = update_in(&mut slot, Message::Setup(Outcome::Connected(Ok(()))), &data);
+        assert!(matches!(update_in(&mut None, Message::Close, &data), Action::None));
     }
 
     #[test]
@@ -920,7 +1133,7 @@ mod tests {
         drop(view(&state, &data));
         let _ = update(&mut state, Message::Choose(Choice::Agent(Target::ClaudeDesktop)), &data);
         assert_eq!(state.step, Step::Client, "the demo did not find Claude Desktop");
-        let _ = update(&mut state, Message::Choose(Choice::Script), &data);
+        let _ = update(&mut state, Message::Choose(Choice::Other), &data);
         assert_eq!(state.step, Step::Rights);
         drop(view(&state, &data));
     }

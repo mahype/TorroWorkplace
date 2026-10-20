@@ -19,7 +19,7 @@ use torro_core::settings::{AssistantDefault, CalendarReminders, PdfTemplateId, R
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Rights};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::tools::ToolInfo;
@@ -85,19 +85,36 @@ impl Demo {
         &self.settings
     }
 
-    /// The assistant's client, so the sections show the assistant as on. Switching it is the
-    /// control centre's; the demo only pretends it was.
+    /// The assistant's client, so the sections show the assistant as on, with one command switched
+    /// off, so the rights editor shows what that looks like (task S.33); and the clients of the
+    /// sample bots ([`Demo::bots`]): the travel planner reads two calendars, so Access has a bot to
+    /// open (task S.34), the release helper may use nothing. The demo only pretends to switch or
+    /// change them.
     fn clients(&self) -> Vec<ClientInfo> {
         let created = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap_or_else(Utc::now);
-        vec![ClientInfo {
-            id: "a51c3e88".into(),
-            name: "Assistant".into(),
-            kind: ASSISTANT_CLIENT.into(),
+        let client = |id: &str, name: &str, kind: &str, rights: Rights| ClientInfo {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
             created,
             last_used: None,
-            rights: Rights::assistant(),
+            rights,
             agent: None,
-        }]
+        };
+        let mut travel = Rights::none();
+        travel.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
+        travel.calendars =
+            Selection::Only(vec![WORK_CALENDAR.into(), "nextcloud:anna@cloud.example.org/family".into()]);
+        vec![
+            client(
+                "a51c3e88",
+                "Assistant",
+                ASSISTANT_CLIENT,
+                Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
+            ),
+            client("c0000001", tr("Travel planner"), BOT_CLIENT, travel),
+            client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none()),
+        ]
     }
 
     /// Two accounts with calendars and task lists, for "Calendars" (task S.19) and "Lists" to
@@ -179,6 +196,18 @@ impl Demo {
             // The local AI, so the mail window's "Categorization" has a model to offer.
             account("ai:ollama@localhost:11434", "ai", "Ollama", connected("http://localhost:11434", ""), Vec::new()),
         ]
+    }
+
+    /// The calendars (`events`) or the task lists of the sample accounts the suite shows, as
+    /// `calendar.list_calendars` and `tasks.list_lists` answer: without the hidden ones
+    /// ([`SHARED_CALENDAR`]). What the rights editor offers to choose from (task S.33).
+    fn collections(&self, events: bool) -> Vec<Collection> {
+        self.accounts()
+            .into_iter()
+            .flat_map(|account| account.collections)
+            .filter(|collection| if events { collection.kind.has_events() } else { collection.kind.has_todos() })
+            .filter(|collection| !self.settings.hidden_collections.contains(&collection.id))
+            .collect()
     }
 
     /// The sample ntfy account: one server with two topics, whose subscriptions stay with the
@@ -317,17 +346,30 @@ impl Demo {
         ]
     }
 
-    /// One sample bot.
+    /// The sample bots of the assistant's demo (`torroassistant::demo`), so Access lists what its
+    /// sidebar does: "Release helper", which may use nothing yet, and "Travel planner".
     fn bots(&self) -> Vec<BotSummary> {
-        vec![BotSummary {
-            id: "b0000001".into(),
-            name: "Travel planner".into(),
-            description: "Plans trips by train".into(),
-            avatar: LETTER_AVATAR.into(),
-            engine: "ai:ollama@localhost:11434".into(),
-            model: None,
-            client: "c0000001".into(),
-        }]
+        let release = BotSummary {
+            id: "b0000002".into(),
+            name: tr("Release helper").into(),
+            description: tr("Writes release notes and checks what is open").into(),
+            avatar: "radar".into(),
+            engine: "ai:openrouter@openrouter.ai".into(),
+            model: Some("qwen/qwen3-32b".into()),
+            client: "c0000002".into(),
+        };
+        vec![
+            release,
+            BotSummary {
+                id: "b0000001".into(),
+                name: tr("Travel planner").into(),
+                description: tr("Plans trips by train").into(),
+                avatar: LETTER_AVATAR.into(),
+                engine: "ai:ollama@localhost:11434".into(),
+                model: None,
+                client: "c0000001".into(),
+            },
+        ]
     }
 
     /// The assistant's own tools as `tools.list_tools` lists them for the app key: switched on as the
@@ -363,7 +405,8 @@ impl Demo {
     }
 
     /// The models the sample AI account offers (`ai.list_models`): one that writes and one that
-    /// only decides, which is what sorting mail needs (task E12.10).
+    /// only decides, which is what sorting mail needs (task E12.10), both turned on; and one turned
+    /// off, which no choice offers (task S.26).
     fn models(&self) -> Vec<AiModel> {
         vec![
             AiModel {
@@ -375,6 +418,7 @@ impl Demo {
                 reasoning: Some(true),
                 remote: Some(false),
                 decision: None,
+                enabled: true,
             },
             AiModel {
                 id: "nimble".into(),
@@ -385,6 +429,18 @@ impl Demo {
                 reasoning: Some(false),
                 remote: Some(false),
                 decision: Some(true),
+                enabled: true,
+            },
+            AiModel {
+                id: "llama3.3:70b".into(),
+                name: "llama3.3:70b".into(),
+                tools: Some(true),
+                open_weights: Some(true),
+                context: None,
+                reasoning: Some(false),
+                remote: Some(false),
+                decision: Some(true),
+                enabled: false,
             },
         ]
     }
@@ -483,6 +539,8 @@ impl Backend for Demo {
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
+            Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
+            Request::TaskCollections => Response::Collections { collections: self.collections(false) },
             Request::ListSources => Response::Sources { sources: self.sources() },
             Request::ListRules => {
                 let (rules, hits) = self.rules();

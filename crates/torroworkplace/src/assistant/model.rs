@@ -4,7 +4,10 @@
 //! First the model, then the place (task S.23): the core picks the model the message names or
 //! "Automatic" ([`ModelAccess::automatic`], local models first) and only then says where it runs
 //! ([`Host::model`], [`super::data_rule::place_of`]); the prompt, the earlier answers it may read
-//! and the mark `local_only` of the memory follow from that place.
+//! and the mark `local_only` of the memory follow from that place. Only models turned on count
+//! (task S.24, [`ModelAccess::choose_on`]): one the message names that is off is replaced by
+//! "Automatic" among those of the same account that are on, and the answer names the model that
+//! wrote it.
 //!
 //! One answer is a loop of at most [`Limits::max_steps`] steps. Each step sends the conversation
 //! with the tools the assistant may use now ([`super::tools::allowed`]; rights are read anew every
@@ -61,9 +64,13 @@ pub trait Host: Send + Sync {
     /// The model `model` of the engine `engine` (an AI account id), or for `None` the one
     /// "Automatic" picks among its models ([`ModelAccess::automatic`]), and where that model runs,
     /// for the data rule ([`data_rule::place_of`], task S.23: account **and** model; a model the
-    /// account does not describe counts as elsewhere where that matters). Hosts decide with
-    /// [`ModelAccess::choose`]. Errors as [`AiError`] says (`NotFound` for no such account or no
-    /// model "Automatic" could take, `NoKey` …).
+    /// account does not describe counts as elsewhere where that matters).
+    ///
+    /// Only models turned on for the suite count (task S.24, [`AiModel::enabled`]): a `model` that
+    /// is off is treated as `None`, and "Automatic" picks among the models of the same account that
+    /// are on – never another account's. Hosts decide with [`ModelAccess::choose_on`] (a host
+    /// without switches may use [`ModelAccess::choose`]). Errors as [`AiError`] says (`NotFound`
+    /// for no such account or no model "Automatic" could take, also when none is on; `NoKey` …).
     fn model<'a>(&'a self, engine: &'a str, model: Option<&'a str>) -> BoxFuture<'a, Result<ModelAccess, AiError>>;
 
     /// What the person lets go to models outside their computers (task C.17, the setting
@@ -367,17 +374,43 @@ impl ModelAccess {
             return Ok((model.id.clone(), place(&model)));
         };
         let described = models.ok().and_then(|models| models.into_iter().find(|model| model.id == asked));
-        let model = described.unwrap_or_else(|| AiModel {
-            id: asked.to_string(),
-            name: asked.to_string(),
-            tools: None,
-            open_weights: None,
-            context: None,
-            reasoning: None,
-            remote: None,
-            decision: None,
-        });
+        let model = described.unwrap_or_else(|| AiModel::named(asked));
         Ok((model.id.clone(), place(&model)))
+    }
+
+    /// [`ModelAccess::choose`] with the switches (task S.24): `models` as the account listed them,
+    /// each with [`AiModel::enabled`] set; `asked_on` whether the model `asked` is on (the host
+    /// judges a model the list lacks by its switches). A model asked that is off counts as none.
+    /// "Automatic" then takes a model that is on: one on this computer first (as S.23), open
+    /// weights before closed ones (Open First as an order: a closed model is on only because
+    /// someone turned it on), one that can use tools before one that does not say; never one known
+    /// to lack tools. When no model is on it fails with `off`, the sentence that tells the person
+    /// to turn one on; without a list it fails with the list's error.
+    pub fn choose_on(
+        models: Result<Vec<AiModel>, AiError>,
+        asked: Option<&str>,
+        asked_on: bool,
+        place: impl Fn(&AiModel) -> Place,
+        off: impl FnOnce() -> AiError,
+    ) -> Result<(String, Place), AiError> {
+        if let Some(asked) = asked.filter(|_| asked_on) {
+            return ModelAccess::choose(models, Some(asked), place);
+        }
+        let mut on: Vec<AiModel> = models?.into_iter().filter(|model| model.enabled).collect();
+        if on.is_empty() {
+            return Err(off());
+        }
+        on.retain(|model| model.tools != Some(false));
+        // Stable: the server's order stays within each group.
+        on.sort_by_key(|model| {
+            (place(model) != Place::Local, model.open_weights == Some(false), model.tools != Some(true))
+        });
+        let model = on
+            .into_iter()
+            .next()
+            .ok_or_else(|| AiError::NotFound(tr("The AI account offers no model that can use tools.").into()))?;
+        let at = place(&model);
+        Ok((model.id, at))
     }
 
     /// "Automatic", the model of an account when the message names none: of its models with open
@@ -1077,6 +1110,7 @@ pub(crate) mod tests {
             reasoning: None,
             remote,
             decision: None,
+            enabled: false,
         }
     }
 
@@ -1459,6 +1493,30 @@ pub(crate) mod tests {
         .expect("asked");
         assert_eq!(at, Place::Remote);
         assert!(ModelAccess::choose(Err(AiError::Offline), None, &place).is_err(), "Automatic needs the list");
+    }
+
+    /// Task S.24: only models that are on count. A model asked that is off gives way to
+    /// "Automatic" among those on (local first); a closed model the person turned on is taken when
+    /// it is the only one; with none on the host's sentence comes back.
+    #[test]
+    fn only_models_that_are_on_are_chosen() {
+        let on = |model: AiModel| AiModel { enabled: true, ..model };
+        let place = scripted_place(Place::Local);
+        let off = || AiError::NotFound("Turn on a model".into());
+        let mixed = vec![model("qwen3:8b", Some(true), Some(false)), on(model(CLOUD, Some(true), Some(true)))];
+        let chosen = ModelAccess::choose_on(Ok(mixed.clone()), Some("qwen3:8b"), false, &place, off);
+        assert_eq!(chosen.map(|(model, _)| model), Ok(CLOUD.to_string()), "off gives way");
+        let chosen = ModelAccess::choose_on(Ok(mixed), Some("llama3:8b"), true, &place, off);
+        assert_eq!(chosen.map(|(model, _)| model), Ok("llama3:8b".to_string()), "on, though the list lacks it");
+        let closed = AiModel { open_weights: Some(false), ..on(model("openai/gpt-4o", Some(true), None)) };
+        let open = on(model("qwen/qwen3-14b", Some(true), None));
+        let chosen = ModelAccess::choose_on(Ok(vec![closed.clone()]), None, false, &place, off);
+        assert_eq!(chosen.map(|(model, _)| model), Ok("openai/gpt-4o".to_string()), "turned on, so taken");
+        let chosen = ModelAccess::choose_on(Ok(vec![closed, open]), None, false, &place, off);
+        assert_eq!(chosen.map(|(model, _)| model), Ok("qwen/qwen3-14b".to_string()), "open weights first");
+        let none = vec![model("qwen3:8b", Some(true), Some(false))];
+        assert_eq!(ModelAccess::choose_on(Ok(none), None, false, &place, off), Err(off()));
+        assert_eq!(ModelAccess::choose_on(Err(AiError::Offline), None, false, &place, off), Err(AiError::Offline));
     }
 
     /// Task S.23: what a local model of the account retold of a mail does not reach its cloud model

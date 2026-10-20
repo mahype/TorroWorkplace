@@ -13,7 +13,8 @@
 //!   assistant's own tools (issue #225) only when the tool is in the rights' selection
 //!   ([`Rights::reaches_tool`]); callers cut that selection to the tools a person switched on first
 //!   ([`with_tools_on`]), so a tool needs both. Rights are not checked here for safety – the core
-//!   checks every call – but so the model is not offered what would be `forbidden` anyway.
+//!   checks every call – but so the model is not offered what would be `forbidden` anyway, a
+//!   command the person switched off for it (`Rights::denied`, #231) too.
 //! - **How many** ([`offered`]): all of them up to [`MAX_TOOLS`]; beyond that, and always for a
 //!   small model ([`is_small`]), the reading ones and the memory first, then [`FIND_TOOLS`], which
 //!   searches the allowed ones ([`find`]) and adds its matches from the next step on. The memory is
@@ -429,7 +430,7 @@ pub fn lack_in(
 /// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`,
 /// `Claude Code does not get Mail (data rule)` (`engine` is the name of the engine that answers).
 pub fn lack_summary(lack: Lack, engine: &str) -> String {
-    let area = |area: Area| crate::ui::agents::area_label(area);
+    let area = |area: Area| torro_settings_ui::rights::area_label(area);
     match lack {
         Lack::Area { area: a } => trf("No access to {area}", &[("area", &area(a))]),
         Lack::Level { area: a, needs: Access::Delete } => trf("Needs full access to {area}", &[("area", &area(a))]),
@@ -443,6 +444,7 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
             trf("{engine} does not get {area} (data rule)", &[("engine", &engine), ("area", &area(a))])
         }
         Lack::ReadOnly => tr("Read only in this conversation").into(),
+        Lack::Denied { area: a } => trf("Turned off in {area}", &[("area", &area(a))]),
         Lack::ToolOff { tool } => trf("{tool} is switched off", &[("tool", &tool.title())]),
         Lack::Tool { tool } => trf("No access to the tool {tool}", &[("tool", &tool.title())]),
     }
@@ -560,6 +562,27 @@ mod tests {
         assert_eq!(
             lack_summary(Lack::Tool { tool: pdf }, "Ollama"),
             trf("No access to the tool {tool}", &[("tool", &"PDF")])
+        );
+    }
+
+    /// #231: a command switched off for the assistant is not offered, its neighbours are, and what
+    /// it may by its kind (its memory) stays; a refusal of it reads "Turned off".
+    #[test]
+    fn a_command_switched_off_is_not_offered() {
+        let mut rights = Rights::assistant();
+        rights.denied = ["calendar.list_events", "assistant.remember"].map(String::from).into();
+        let tools = allowed(Some(&rights), &[]);
+        assert!(named(&tools, "calendar_list_events").is_none(), "switched off");
+        assert!(named(&tools, "calendar_list_calendars").is_some(), "the area stays");
+        assert!(named(&tools, "assistant_remember").is_some(), "its memory is its own");
+        let list = named(&allowed(Some(&Rights::assistant()), &[]), "calendar_list_events").expect("offered").command;
+        let operation = Operation { command: list, access: list.access };
+        let lack = lack_in(ASSISTANT_CLIENT, Some(&rights), operation, &[], &[], Mode::Default);
+        assert_eq!(lack, Some(Lack::Denied { area: Area::Calendar }));
+        let calendar = torro_settings_ui::rights::area_label(Area::Calendar);
+        assert_eq!(
+            lack_summary(Lack::Denied { area: Area::Calendar }, "Ollama"),
+            trf("Turned off in {area}", &[("area", &calendar)])
         );
     }
 

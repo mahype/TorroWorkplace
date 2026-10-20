@@ -1212,7 +1212,10 @@ impl PimService {
             | Request::SaveDraft { .. }
             | Request::SendDraft { .. } => return None,
             // No collection: AI accounts have none (task KI.1a).
-            Request::ConnectAi { .. } | Request::AiModels { .. } | Request::FindAiServers => return None,
+            Request::ConnectAi { .. }
+            | Request::AiModels { .. }
+            | Request::SetModelEnabled { .. }
+            | Request::FindAiServers => return None,
             // No collection: ntfy accounts have topics only (task E5.12).
             Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. } => return None,
             // No collection: the assistant's conversations are its own (task C.1).

@@ -17,6 +17,16 @@
 //! The composer picks the engine and the model (only models that can call tools, AI accounts on
 //! this computer first) and the areas switched off for this conversation ("Without Mail").
 //!
+//! Models turned on (task S.26): the picker – the composer's and the bot editor's – offers only the
+//! models turned on for the suite (`AiModel::enabled`, switched in the control centre under
+//! Accounts, task S.24), asks every AI account for them again each time it opens, and ends with
+//! "Manage models…", which opens the control centre's accounts. A model the choice names that is
+//! turned off – a bot's, the default of new chats, a conversation's – stands on top of its engine
+//! with "Turned off in Settings › Accounts", since the core answers with "Automatic" then
+//! ([`App::turned_off`]). With AI accounts but no model on anywhere the welcome says so
+//! ([`App::no_model_on`]): the core lists no engine then, so the window asks
+//! `accounts.list_accounts` whether there is an AI account at all.
+//!
 //! Following an answer: there is no `subscribe` yet, so the window asks `assistant.get_conversation`
 //! with `after` = the last number it has, every [`FOLLOW`] while an answer runs ([`FOLLOW_WAITING`]
 //! while it waits for an approval) and every [`REFRESH`] otherwise, and merges what comes
@@ -30,10 +40,10 @@
 //! only while it is scrolled to the bottom ([`App::follow_bottom`]); scrolled up, nothing moves.
 //!
 //! First start: without the client "Assistant" (`clients.list_clients`) a new chat asks the person
-//! to choose what the assistant may use, with a button that opens the control centre on its page
-//! "Assistant" (`torroworkplace ui --section assistant`, task C.6); "Change access" under a refused
-//! tool opens the same page. Without an AI account it says so and opens the accounts page
-//! (`--section accounts`).
+//! to choose what the assistant may use, with a button that opens the settings at Access in this
+//! window (task S.34, [`App::open_access`]); "Change access" under a refused tool opens Access too,
+//! at the bot when a bot's conversation is open. Without an AI account it says so and opens the
+//! control centre's accounts page (`--section accounts`).
 //!
 //! Settings (task S.18, `docs/settings.md`): the gear in the title band – and "Settings" in the
 //! sidebar where there is no band – turns the content area into the assistant's settings and back
@@ -52,13 +62,10 @@
 //! opens a bot's chat – its newest conversation or a new one – in which messages go to the bot
 //! (`assistant.send_message { bot }`) and the picker starts at the bot's engine and model. The bot
 //! editor (profile, personality, instructions, skills, engine) takes the chat's place and saves with
-//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" opens the control centre at
-//! the bot's rights (`--section bot:<id>`). The editor's section "Access" (task B.5) sets a level per
-//! area and "Ask first" for the bot's own client: it reads `clients.list_clients` and what exists
-//! (`calendar.list_calendars`, `tasks.list_lists`, `inbox.list_sources`, `accounts.list_accounts`)
-//! each time it opens, and a save sends `bots.save_bot`, then – only when a row changed –
-//! `clients.list_clients` again and `clients.update_client` with the changed rows laid onto what
-//! the core holds then. `--bot <id>` is a chat window with one bot
+//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" and the editor's "What the
+//! bot may use" open the settings at Access at this bot (task S.34): the bot's rights are chosen
+//! there, with the rights editor of `torro-settings-ui`; the editor itself never sends `clients.*`.
+//! `--bot <id>` is a chat window with one bot
 //! ([`Window::Bot`]), titled "{bot} · {title}"; "Open in new window" of a bot starts it through
 //! `assistant.open_window`. Its methods live in `app/bots.rs`.
 //!
@@ -164,10 +171,8 @@ pub const BOT_NAME: &str = "assistant-bot-name";
 pub const BOT_FORM: &str = "assistant-bot-form";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
-/// The control centre's page "Assistant" (task C.6): what the assistant may use. The same word the
-/// settings sections point at, so the two never drift apart.
-pub const ASSISTANT_PAGE: &str = settings::CONTROL_CENTRE;
-/// The control centre's page where AI accounts are added (task S.25 brings a page `ai`).
+/// The control centre's page where AI accounts are added and their models turned on (task S.26;
+/// there is no page `ai`, issue #231).
 pub const ACCOUNTS_PAGE: &str = settings::AI_SECTION;
 
 /// The id of the scrolling entries of the open conversation.
@@ -319,7 +324,7 @@ pub enum Message {
     AskDeleteBot(String),
     ConfirmDeleteBot,
     BotDeleted(String, Result<(), Refusal>),
-    /// "Access…": the control centre at the bot's rights (`--section bot:<id>`).
+    /// "Access…", "What the bot may use": the settings at Access at this bot (task S.34).
     BotAccess(String),
     /// "Open in new window" of a bot: `assistant.open_window { bot }`.
     OpenBotWindow(String),
@@ -375,8 +380,12 @@ pub enum Message {
     PickEffort(Option<Effort>),
     /// From the permission mode's menu (issue #132).
     PickMode(PermissionMode),
-    /// "Show all models" in the picker: AI accounts list closed models too (issue #131).
-    ToggleAllModels,
+    /// "Manage models…" at the end of the picker and under "No model is turned on" (task S.26): the
+    /// control centre's accounts, where the models of each AI account are turned on and off.
+    ManageModels,
+    /// Whether there is an AI account at all (`accounts.list_accounts`), asked while no AI account
+    /// is an engine (task S.26): then no model is on, or there is no AI account.
+    AiAccounts(Result<bool, Refusal>),
     /// Switch an area off for this conversation, or on again.
     ToggleArea(Area),
     /// Unfold the tool line with this number, or fold it.
@@ -412,8 +421,8 @@ pub enum Message {
     /// Start or raise another app of the suite.
     OpenApp(String),
     AppOpened(Result<(), String>),
-    /// "Set up access", "Change access": the control centre's page "Assistant" (task C.6), where
-    /// the person chooses what the assistant may use.
+    /// "Set up access", "Change access": the settings at Access (task S.34), where the person
+    /// chooses what the assistant – or the bot of the open conversation – may use.
     SetUp,
     /// "Add an AI account": the control centre's accounts, where AI accounts are added.
     AddAiAccount,
@@ -476,10 +485,14 @@ pub struct App {
     /// The engines in the picker's order ([`chat::ordered`]).
     pub(crate) engines: Vec<Engine>,
     pub(crate) engines_loaded: bool,
-    /// The models of each AI account, by engine id, as listed (the picker filters them).
+    /// The models of each AI account, by engine id, as listed with closed ones too
+    /// (`ai.list_models { all }`): the picker offers those turned on ([`App::offered_models`]) and
+    /// names the others a choice may still hold.
     pub(crate) models: HashMap<String, Result<Vec<AiModel>, String>>,
-    /// AI accounts list every model, closed ones too (`ai.list_models { all }`, issue #131).
-    pub(crate) all_models: bool,
+    /// There is an AI account (task S.26): `true` once an AI account is an engine, else as
+    /// `accounts.list_accounts` last said. With none as an engine, it tells "No model is turned on"
+    /// from "No AI account yet".
+    pub(crate) ai_accounts: bool,
     /// What a new chat starts with, as set in the control centre (`settings.assistant_default`);
     /// `None`: the one used last.
     pub(crate) default: Option<AssistantDefault>,
@@ -600,7 +613,7 @@ impl App {
             engines: Vec::new(),
             engines_loaded: false,
             models: HashMap::new(),
-            all_models: false,
+            ai_accounts: false,
             default: None,
             access: Access::Unknown,
             profile: None,
@@ -678,9 +691,15 @@ impl App {
         if app.current.is_none() {
             tasks.push(operation::focus(EDITOR));
         }
-        // `--settings <section>`: the window opens with the settings in its content area.
+        // `--settings <section>`: the window opens with the settings in its content area; Access in
+        // a bot's window (`--bot <id> --settings access`) at that bot.
         if let Some(section) = app.launch.settings.clone() {
             tasks.push(app.open_settings(Some(&section)));
+            if let (Some(pane), Window::Bot(bot)) = (app.settings.as_mut(), &app.launch.window)
+                && section == settings::access::ID
+            {
+                settings::show_access(&mut pane.sections, Some(bot.clone()));
+            }
         }
         (app, Task::batch(tasks))
     }
@@ -778,6 +797,10 @@ impl App {
         if let Some(question) = self.settings_question(&message) {
             return question;
         }
+        // A change of rights made a moment ago goes out before the settings go (task S.34).
+        if let Some(save) = self.save_before_leaving(&message) {
+            return Task::batch([save, self.update(message)]);
+        }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
@@ -845,7 +868,7 @@ impl App {
             Message::AskDeleteBot(id) => self.ask_delete_bot(id),
             Message::ConfirmDeleteBot => return self.delete_bot(),
             Message::BotDeleted(id, result) => return self.bot_deleted(id, result),
-            Message::BotAccess(id) => self.open_section(&crate::bots::access_section(&id)),
+            Message::BotAccess(id) => return self.open_access(Some(id)),
             Message::OpenBotWindow(id) => {
                 self.close_menus();
                 let request = Request::OpenChatWindow { window: ChatWindow::Bot(id) };
@@ -920,12 +943,10 @@ impl App {
                 self.mode = mode;
                 self.menu = None;
             }
-            Message::ToggleAllModels => {
-                self.all_models = !self.all_models;
-                // Listed anew with the other filter; the picker shows "Loading" meanwhile.
-                self.models.clear();
-                return self.fetch_all_models();
-            }
+            Message::ManageModels => self.open_section(ACCOUNTS_PAGE),
+            Message::AiAccounts(Ok(any)) => self.ai_accounts = any,
+            // An old core or none: the window keeps what it said.
+            Message::AiAccounts(Err(_)) => {}
             Message::ToggleArea(area) => {
                 if let Some(at) = self.without.iter().position(|off| *off == area) {
                     self.without.remove(at);
@@ -939,8 +960,14 @@ impl App {
                 }
             }
             Message::ToggleMenu(menu) => {
+                let picker = matches!(menu, Menu::Picker | Menu::BotPicker);
                 self.menu = if self.menu.as_ref() == Some(&menu) { None } else { Some(menu) };
                 // A conversation's menu from the sidebar row leaves the drawer open under it.
+                // A picker that opens asks for the models again (task S.26): one turned on in the
+                // control centre meanwhile is offered at once. What came last shows until then.
+                if picker && self.menu.is_some() {
+                    return self.refetch_models();
+                }
             }
             Message::CloseMenu => self.close_menus(),
             Message::OpenInWindow(id) => {
@@ -1005,11 +1032,14 @@ impl App {
             }
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => self.note(format!("{} {err}", tr("Couldn't open the app."))),
-            Message::SetUp => self.open_section(ASSISTANT_PAGE),
+            Message::SetUp => return self.open_access(self.chat_bot().map(str::to_owned)),
             Message::AddAiAccount => self.open_section(ACCOUNTS_PAGE),
             Message::ToggleSettings => return self.toggle_settings(),
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                // The sections see the host's sends and loads first: Access settles its draft by
+                // them (task S.34).
+                settings::received(&mut pane.sections, &message);
                 let outcome = pane.host.update(message);
                 return self.settings_outcome(outcome);
             }
@@ -1237,7 +1267,37 @@ impl App {
         self.engines_loaded = true;
         self.models.retain(|id, _| self.engines.iter().any(|engine| &engine.id == id));
         self.choose_default();
-        self.fetch_all_models()
+        // An AI account with no model on is no engine (task S.24): without any, only the accounts
+        // tell whether there is one whose models are all off.
+        let accounts = if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
+            self.ai_accounts = true;
+            Task::none()
+        } else {
+            self.fetch_ai_accounts()
+        };
+        Task::batch([accounts, self.fetch_all_models()])
+    }
+
+    /// Whether there is an AI account at all (`accounts.list_accounts`, task S.26).
+    fn fetch_ai_accounts(&mut self) -> Task<Message> {
+        self.ask(Request::Accounts, |result| {
+            Message::AiAccounts(result.and_then(|response| match response {
+                Response::Accounts { accounts } => Ok(accounts.iter().any(|account| account.kind == "ai")),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        })
+    }
+
+    /// The models of every AI account again, as a picker opens (task S.26): the switches may have
+    /// changed in the control centre.
+    fn refetch_models(&mut self) -> Task<Message> {
+        let engines: Vec<String> = self
+            .engines
+            .iter()
+            .filter(|engine| engine.kind == EngineKind::Ai)
+            .map(|engine| engine.id.clone())
+            .collect();
+        Task::batch(engines.into_iter().map(|id| self.fetch_models(id)).collect::<Vec<_>>())
     }
 
     /// The models of each AI account not listed yet; the picker asks again when it opens.
@@ -1253,7 +1313,9 @@ impl App {
     }
 
     fn fetch_models(&mut self, engine: String) -> Task<Message> {
-        let request = Request::AiModels { account: engine.clone(), all: self.all_models };
+        // Closed models too: what the picker offers is what is turned on (task S.26), and a closed
+        // model may be among them.
+        let request = Request::AiModels { account: engine.clone(), all: true };
         self.ask(request, move |result| {
             Message::Models(
                 engine.clone(),
@@ -1299,8 +1361,10 @@ impl App {
             self.chosen = Chosen::Default;
             return;
         }
-        let models = &self.models;
-        let listed = |id: &str| models.get(id).and_then(|models| models.as_ref().ok()).map(Vec::as_slice);
+        // Only models turned on (task S.26): the first one offered, never one that is off.
+        let offered: HashMap<String, Vec<AiModel>> =
+            self.models.keys().filter_map(|id| Some((id.clone(), self.offered_models(id)?.ok()?))).collect();
+        let listed = |id: &str| offered.get(id).map(Vec::as_slice);
         let preferred = chat::preferred_choice(self.default.as_ref(), &self.conversations, &self.engines, listed);
         (self.choice, self.effort) = preferred.map_or((None, None), |(choice, effort)| (Some(choice), effort));
         self.chosen = Chosen::Default;
@@ -1758,6 +1822,47 @@ impl App {
         load.map(Message::SettingsHost)
     }
 
+    /// The settings at Access, at the bot with this id or at the assistant (`None`), task S.34: what
+    /// "Set up access", "Change access", "Access…" and "What the bot may use" open. Open settings
+    /// switch to it; closed ones open there, with their first load.
+    fn open_access(&mut self, bot: Option<String>) -> Task<Message> {
+        self.close_menus();
+        let load = match self.settings.is_some() {
+            true => Task::none(),
+            false => self.open_settings(None),
+        };
+        if let Some(pane) = self.settings.as_mut() {
+            settings::show_access(&mut pane.sections, bot);
+            pane.host.open(settings::access::ID);
+        }
+        load
+    }
+
+    /// What has to go out before `message` takes the settings away: a change of rights in Access
+    /// that waits for its clock ([`settings::save_now`]). The host sends it as any other change; its
+    /// answer may come after the settings are gone, which loses nothing – the core has it. `None`
+    /// while nothing waits or `message` keeps the settings.
+    fn save_before_leaving(&mut self, message: &Message) -> Option<Task<Message>> {
+        let leaving = self.leaves_settings(message)
+            || matches!(message, Message::SettingsHost(torro_settings_ui::host::Message::Back));
+        if !leaving {
+            return None;
+        }
+        self.save_settings()
+    }
+
+    /// Sends what the open sections still have to save ([`settings::save_now`]) through the host;
+    /// `None` while nothing waits or no settings are open. For every way the settings close:
+    /// [`App::save_before_leaving`] for the window's own, [`App::settings_outcome`] for a section
+    /// that closes them ("Discard", "Edit" at a bot).
+    fn save_settings(&mut self) -> Option<Task<Message>> {
+        let pane = self.settings.as_mut()?;
+        match pane.host.act(settings::save_now(&mut pane.sections)) {
+            Outcome::Work(task) => Some(task.map(Message::SettingsHost)),
+            _ => None,
+        }
+    }
+
     /// The content area shows the chat or the bot editor again: the settings step aside. A click in
     /// the sidebar – a chat, a bot, "New chat", "New bot" – comes through here, once
     /// [`App::settings_question`] has let the message through.
@@ -1816,8 +1921,9 @@ impl App {
             // so a changed default or a new bot is in the chat at once.
             Outcome::Changed => Task::batch([self.fetch_appearance(), self.load_all()]),
             Outcome::Close => {
+                let save = self.save_settings().unwrap_or_else(Task::none);
                 self.settings = None;
-                Task::none()
+                save
             }
             Outcome::OpenUrl(url) => open_link(url),
             Outcome::Answer(result) => {
@@ -1832,7 +1938,10 @@ impl App {
                 Task::none()
             }
             // "Edit" at a bot: its editor takes the content area, so the settings close.
-            Outcome::App(AppAction::EditBot(id)) => self.edit_bot(id),
+            Outcome::App(AppAction::EditBot(id)) => {
+                let save = self.save_settings().unwrap_or_else(Task::none);
+                Task::batch([save, self.edit_bot(id)])
+            }
             // Tools (task WZ.6): only the app opens the system's choosers; a path chosen there by
             // the person goes out as a setting ([`Message::FolderPicked`], [`Message::LogoPicked`]).
             Outcome::App(AppAction::PickFolder) => Task::perform(pick_folder(), Message::FolderPicked),
@@ -1913,15 +2022,36 @@ impl App {
         }
     }
 
-    /// The listed models of `engine` the picker offers; `None` while not listed or failed.
+    /// The listed models of `engine` the picker offers: an AI account's that can call tools and are
+    /// turned on (task S.26), in the account's order; an agent's own. `None` while not listed, the
+    /// error's text when the listing failed.
     pub(crate) fn offered_models(&self, engine: &str) -> Option<Result<Vec<AiModel>, &str>> {
         if let Some(agent) = self.engines.iter().find(|e| e.id == engine && e.kind == EngineKind::Agent) {
             return chat::engine_models(agent, None).map(Ok);
         }
         self.models.get(engine).map(|listed| match listed {
-            Ok(models) => Ok(chat::tool_models(models)),
+            Ok(models) => Ok(chat::tool_models(models).into_iter().filter(|model| model.enabled).collect()),
             Err(err) => Err(err.as_str()),
         })
+    }
+
+    /// Whether `choice` names a model of an AI account that is not turned on (task S.26): its
+    /// account's list is in and has the model off, or not at all. The core answers with
+    /// "Automatic" then, so the picker and the bot editor say "Turned off in Settings › Accounts".
+    /// `false` for "Automatic", for an agent's model and while the list is not in or failed.
+    pub(crate) fn turned_off(&self, choice: &Choice) -> bool {
+        let Some(model) = &choice.model else { return false };
+        let ai = self.engines.iter().any(|engine| engine.id == choice.engine && engine.kind == EngineKind::Ai);
+        match self.models.get(&choice.engine) {
+            Some(Ok(listed)) if ai => !listed.iter().any(|known| &known.id == model && known.enabled),
+            _ => false,
+        }
+    }
+
+    /// There are AI accounts, but no model is turned on at any of them (task S.26): the core lists
+    /// none of them as an engine. The welcome says so instead of "No AI account yet".
+    pub(crate) fn no_model_on(&self) -> bool {
+        self.engines_loaded && self.ai_accounts && !self.engines.iter().any(|engine| engine.kind == EngineKind::Ai)
     }
 
     /// The composer offers an effort for the chosen engine and model (issue #131).
@@ -1937,8 +2067,8 @@ impl App {
         self.effort.filter(|_| self.effort_offered())
     }
 
-    /// Opens the control centre on `section` (`torroworkplace ui --section …`, `bot:<id>` for a
-    /// bot's rights); nothing starts in the demo or in tests.
+    /// Opens the control centre on `section` (`torroworkplace ui --section …`: the accounts, or
+    /// what a settings section points at); nothing starts in the demo or in tests.
     fn open_section(&mut self, section: &str) {
         self.close_menus();
         #[cfg(test)]

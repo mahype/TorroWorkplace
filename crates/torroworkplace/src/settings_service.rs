@@ -111,7 +111,8 @@ impl SettingsStore {
     /// task C.9): voice stays off when it is off as stored now, whatever `new` says. The core
     /// refuses such a request before (`forbidden`); this keeps it so when a person switched voice
     /// off between that check and the write. The same holds for letting mail go to cloud models
-    /// (`mail_to_cloud`, task C.17): a client may keep it local, never let it out.
+    /// (`mail_to_cloud`, task C.17): a client may keep it local, never let it out; and for the ways
+    /// in (`allow_api_keys`, `allow_mcp`, #231): a client may close them, never open them.
     ///
     /// Nor which model does which function (`ai_assignments`, task E12.5): those are checked
     /// against the accounts, the models and the data rule when they are set
@@ -133,6 +134,8 @@ impl SettingsStore {
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
+            let allow_api_keys = settings.allow_api_keys && new.allow_api_keys;
+            let allow_mcp = settings.allow_mcp && new.allow_mcp;
             let reminders = Reminders { calendars, ..new.reminders.clone() };
             let tools = settings.tools.from_client(&new.tools);
             *settings = Settings {
@@ -141,6 +144,8 @@ impl SettingsStore {
                 list_orders,
                 voice,
                 mail_to_cloud,
+                allow_api_keys,
+                allow_mcp,
                 reminders,
                 tools,
                 ..new
@@ -356,6 +361,11 @@ enum Change {
     MailToCloud(bool),
     /// Which mail categories the sidebar leaves out (task E12.10).
     HiddenCategories(Vec<torro_mail::Category>),
+    /// "Allow API keys" (#231). Who may switch it on is the core's check
+    /// (`Request::kept_for_people`).
+    AllowApiKeys(bool),
+    /// "Allow MCP" (#231), checked like [`Change::AllowApiKeys`].
+    AllowMcp(bool),
     /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
     /// defaults when parsed and merged onto the stored ones when applied ([`Reminders::merged`]).
     Reminders(serde_json::Value),
@@ -415,6 +425,8 @@ impl Change {
                 Reminders::default().merged(value)?;
                 Change::Reminders(value.clone())
             }
+            SettingKey::AllowApiKeys => Change::AllowApiKeys(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::AllowMcp => Change::AllowMcp(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::ToolEnabled => Change::ToolEnabled(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::PdfFolder => Change::PdfFolder(PdfSettings::folder_from(value)?),
             SettingKey::PdfTemplate => {
@@ -463,6 +475,8 @@ impl Change {
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
             Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
+            Change::AllowApiKeys(allowed) => settings.allow_api_keys = allowed,
+            Change::AllowMcp(allowed) => settings.allow_mcp = allowed,
             // Checked when parsed: what the stored ones hold cannot make the fields it names unfit.
             Change::Reminders(change) => {
                 if let Ok(merged) = settings.reminders.merged(&change) {
@@ -1110,6 +1124,8 @@ mod tests {
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 ai_assignments: std::collections::BTreeMap::new(),
                 hidden_categories: Vec::new(),
+                allow_api_keys: true,
+                allow_mcp: true,
                 tools: Default::default(),
             }
         );
@@ -1238,6 +1254,26 @@ mod tests {
         sent.mail_to_cloud = false;
         store.update_keeping_hidden(sent).expect("written");
         assert!(!store.current().mail_to_cloud);
+    }
+
+    /// #231: a client's whole settings never open the API or MCP again, but may close them; the
+    /// person sets them one by one.
+    #[test]
+    fn a_client_never_opens_the_api_or_mcp_but_may_close_them() {
+        let (_dir, store) = store();
+        let mut sent = store.current();
+        sent.allow_api_keys = false;
+        sent.allow_mcp = false;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert!(!store.current().allow_api_keys && !store.current().allow_mcp, "closed");
+        sent.allow_api_keys = true;
+        sent.allow_mcp = true;
+        store.update_keeping_hidden(sent).expect("written");
+        assert!(!store.current().allow_api_keys && !store.current().allow_mcp, "a client does not open them");
+        store.set(SettingKey::AllowApiKeys, &json!(true)).expect("the person");
+        store.set(SettingKey::AllowMcp, &json!(true)).expect("the person");
+        assert!(store.current().allow_api_keys && store.current().allow_mcp);
+        assert!(store.set(SettingKey::AllowMcp, &json!("on")).is_err(), "only true or false");
     }
 
     /// An absolute path on this system, for folders and logos.

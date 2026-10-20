@@ -15,7 +15,8 @@
 //! ```
 //!
 //! The core answers with one bare [`Response`]. Without a valid key it answers only
-//! `system.ping`; everything else gets the error code `unauthorized`.
+//! `system.ping`; everything else gets the error code `unauthorized`. `torroworkplace mcp` and the
+//! hooks add `"via":"mcp"` ([`Door`]), so the core knows which way a key came (#231).
 //!
 //! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`]. The request set is
 //! the API of the suite (`docs/api.md`); [`api`] describes every request for API and MCP.
@@ -181,7 +182,7 @@ impl fmt::Debug for Key {
     }
 }
 
-/// One line from a client: API version, key and request.
+/// One line from a client: API version, key, the way it came and request.
 ///
 /// `key` may be missing; then the core answers only `system.ping`. The core answers with a bare
 /// [`Response`], not with an envelope.
@@ -191,7 +192,37 @@ pub struct Envelope {
     pub v: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<Key>,
+    /// The way the request came (#231, `docs/api.md` "Transport"): `torroworkplace mcp` and the
+    /// hook command `torroworkplace hook` send [`Door::Mcp`], every other program sends nothing.
+    /// Missing means [`Door::Api`], so older programs keep working ([`Envelope::door`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Door>,
     pub request: Request,
+}
+
+impl Envelope {
+    /// The way the request came: [`Envelope::via`], [`Door::Api`] when it is missing.
+    pub fn door(&self) -> Door {
+        self.via.unwrap_or_default()
+    }
+}
+
+/// The way a request reaches the core (#231, `via` in the [`Envelope`]): the API (scripts, the
+/// suite's own programs, `ctl`) or MCP (`torroworkplace mcp` and the hooks of coding agents).
+///
+/// The core checks right after the key whether the client's kind may come this way and whether
+/// its switch is on (`allow_api_keys`, `allow_mcp`): a script only over the API, an agent only
+/// over MCP, a hook client over both (`docs/api.md`, "Transport"). It is what the program says,
+/// not a proof: it keeps a key from being used in the wrong place, not malicious code of the same
+/// user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Door {
+    /// `"api"`: the socket as scripts and the suite's programs use it; also when `via` is missing.
+    #[default]
+    Api,
+    /// `"mcp"`: through `torroworkplace mcp` or `torroworkplace hook`.
+    Mcp,
 }
 
 /// What a client can ask the core for.
@@ -591,7 +622,10 @@ pub enum Request {
     /// server's order ([`Response::AiModels`]). Each says whether it can call tools and whether
     /// its weights are open, where the server tells. Without `all` only models known to have open
     /// weights and those the server says nothing about are listed (Open First: on OpenRouter only
-    /// open models, on a local server all of them).
+    /// open models, on a local server all of them). Each says whether it is turned on for the
+    /// suite (`enabled`, task S.24, [`Request::SetModelEnabled`]), from the core's switches. The
+    /// first list after the update that brought them keeps on, once, the model "Automatic" used at
+    /// the account before (#231).
     ///
     /// Error codes: `not-found` for an id that is no AI account, `not-connected` when the account
     /// needs a key and none is stored on this device, `auth` when the server refuses the key,
@@ -603,6 +637,38 @@ pub enum Request {
         /// Also list models whose weights are closed (OpenRouter).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all: bool,
+    },
+    /// Turns the model `model` of the AI account `account` on or off for the whole suite (task S.24,
+    /// `docs/settings.md` › KI): the assistant, its bots and every other module offer only models
+    /// that are on, and a module set to a model turned off answers with "Automatic" among the models
+    /// of the same account that are on. Answered with [`Response::Ok`]; switching to what it is
+    /// already changes nothing. Kept in `<config>/ai-models.json`, not in the settings.
+    ///
+    /// Turning on asks the account's server for its models first (the model must be one of them);
+    /// turning off needs no server, except the first time at an account whose models the core has
+    /// not listed yet: the models the rule had on are kept on then, so the list is asked for.
+    ///
+    /// Turning on a model that computes elsewhere (`remote`, or any model of a provider in the cloud)
+    /// is the person's alone, like `mail_to_cloud` (`docs/api.md`, "Was nie nach außen geht", 6):
+    /// every client key gets `forbidden`, whatever its rights. Turning one off, and turning on a
+    /// model that computes on this computer, are admin commands of `ai` with approval; the approval
+    /// names account, model and where it computes as the core lists them.
+    ///
+    /// Error codes: `not-found` for an id that is no AI account and for turning on a model the
+    /// account does not offer (turning one off works then too); `offline`, `auth`, `not-connected`
+    /// and `busy` when the server must be asked and cannot answer – also for a client turning a
+    /// model on, before any approval, since without the list nobody can say where it computes
+    /// (#231); `forbidden` as above; `error` when the switches cannot be stored, and while
+    /// `ai-models.json` is there but does not read: it is never written over then, and the message
+    /// names it (PR review #242).
+    #[serde(rename = "ai.set_model_enabled")]
+    SetModelEnabled {
+        /// The account: `ai:<provider>@<host>` from `accounts.list_accounts`.
+        account: String,
+        /// The model's id from `ai.list_models` (`qwen3:8b`).
+        model: String,
+        /// `true` turns it on, `false` off.
+        enabled: bool,
     },
     /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434` and
     /// LM Studio at `localhost:1234`, by asking each for its models (`GET <server>/models`, a
@@ -1038,14 +1104,23 @@ pub enum Request {
     /// and `rights` that [`Request::UpdateClient`] would refuse (a collection named by a bare URL,
     /// a bad GitHub or mail selection); nothing is created then. A `script` client named `cli` or
     /// like another script client is `conflict`: its name is its inbox source (`script:<name>`),
-    /// and the app key reports as `script:cli`.
+    /// and the app key reports as `script:cli`. So is an `mcp` client named like another one
+    /// (`agent:mcp:<name>`, #231).
+    ///
+    /// The kinds are closed (#231, [`api::CLIENT_KINDS`]): any other kind is `error`, `bot` too (a
+    /// bot's client is made with its bot, `bots.save_bot`). The assistant's client
+    /// ([`api::ASSISTANT_CLIENT`]) is answered with [`Response::Client`], without a key: the core
+    /// runs its tools itself, so no key ever reaches an app's process (decision 12 in
+    /// `docs/api.md`).
     #[serde(rename = "clients.create_client")]
     CreateClient {
         /// What the person calls it: `Claude Code`.
         name: String,
-        /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor`, `script`, or `hook`
-        /// for the hooks of coding agents ([`api::HOOK_CLIENT`]), which may only report to the
-        /// inbox ([`api::Rights::for_kind`]).
+        /// Which program ([`api::CLIENT_KINDS`]): `script` (a key for the API), an MCP client –
+        /// `claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor` or `mcp` ("Other MCP
+        /// client", [`api::MCP_KINDS`]) –, `hook` for the hooks of coding agents
+        /// ([`api::HOOK_CLIENT`]), which may only report to the inbox ([`api::Rights::for_kind`]),
+        /// or `assistant` ([`api::ASSISTANT_CLIENT`]).
         kind: String,
         template: RightsTemplate,
         /// Only and always with kind `hook`: the coding agent whose hooks use the key. It is
@@ -1061,11 +1136,15 @@ pub enum Request {
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
-    /// bare URL instead of its id is `error` and changes nothing.
+    /// bare URL instead of its id is `error` and changes nothing. Names in
+    /// [`api::Rights::denied`] that the catalogue does not know, and `system.ping`, are dropped
+    /// ([`api::deniable`]).
     #[serde(rename = "clients.update_client")]
     UpdateClient { id: String, rights: Rights },
     /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops
-    /// working at once. An unknown id is `not-found`.
+    /// working at once. An unknown id is `not-found`; the clients of the assistant and of bots
+    /// ([`api::ASSISTANT_CLIENT`], [`api::BOT_CLIENT`]) are `unsupported`: they never get a key
+    /// (decision 12 in `docs/api.md`).
     #[serde(rename = "clients.new_key")]
     NewClientKey { id: String },
     /// Removes the client `id` and its key; the key stops working at once. Answered with
@@ -1331,10 +1410,12 @@ pub enum Request {
     /// mail entry the whole mail when the store holds or can fetch it. The data rule of the
     /// assistant holds (`docs/ki.md`, principle 4): an entry of mail, Nextcloud or Talk goes only to
     /// a model on the person's computers – a local AI account is taken instead of one elsewhere.
+    /// Only models turned on are asked (task S.24): an account with none on that can chat is passed
+    /// over, and a closed model on is taken where it is the only one (PR review #242).
     ///
     /// Errors: `not-found` for an unknown id or an entry of a source the client may not see (hook
-    /// clients see none); `not-connected` when no AI account is set up, or none the data rule lets
-    /// read the entry; the AI server's errors (`offline`, `auth`, `busy`, `error`); `error` when
+    /// clients see none); `not-connected` when no AI account with a model on is set up, or none the
+    /// data rule lets read the entry; the AI server's errors (`offline`, `auth`, `busy`, `error`); `error` when
     /// its answer is no suggestion.
     #[serde(rename = "inbox.suggest_task_from_item")]
     SuggestTaskFromItem {
@@ -1493,7 +1574,10 @@ pub enum Request {
     /// ([`Response::AiAssignments`], task E12.5). `not-found` for a function this version does
     /// not know or an account that does not exist; `error` for a model the account does not
     /// offer, for a function that needs a decision model and a model that does not decide, and –
-    /// while mail may not leave this computer – for a model that runs elsewhere.
+    /// while mail may not leave this computer – for a model that runs elsewhere; `unsupported` for
+    /// a model that is turned off (`ai.set_model_enabled`, task S.24, #231), and with no model named
+    /// for an account with no model on – for a function that needs a decision model, with none on
+    /// that decides.
     #[serde(rename = "ai.set_assignment")]
     SetAiAssignment {
         /// The function's key: `inbox.categorize`.
@@ -1938,8 +2022,11 @@ pub enum Request {
     // except its memory (`api::loops_back`, `api::own_memory`), so it never drives itself. Every
     // request keeps the limits of [`assistant::limit_refusal`] (`error`). Profile and memory (task
     // C.10) live in `<config>/assistant/` (0600).
-    /// The engines the assistant can answer with ([`Response::Engines`]): every AI account in the
-    /// order they were added, then the test engine where the core offers it. Never fails.
+    /// The engines the assistant can answer with ([`Response::Engines`]): every AI account with at
+    /// least one model turned on (task S.24, [`Request::SetModelEnabled`]) in the order they were
+    /// added, then the test engine where the core offers it. After the update that brought the
+    /// switches, an account used with "Automatic" counts as well until its server first lists its
+    /// models; the model "Automatic" took there is on from then (#231). Never fails.
     #[serde(rename = "assistant.list_engines")]
     ListEngines,
     /// Every conversation without its entries, pinned first, then the most recently active
@@ -1976,10 +2063,13 @@ pub enum Request {
     /// there already). Follow the answer with `assistant.get_conversation` and `after`.
     ///
     /// The assistant works with the rights of its own client, not the caller's; `without` narrows
-    /// them for this answer. Errors: `not-found` for an unknown conversation or engine, `busy`
-    /// while the conversation still answers, `unsupported` for an engine whose answers the core
-    /// cannot run (an AI account while the core has not started), `error` for a limit
-    /// ([`assistant::limit_refusal`]) or a conversation that cannot be stored.
+    /// them for this answer. A `model` turned off (task S.24, [`Request::SetModelEnabled`]) is
+    /// replaced by "Automatic" among the account's models that are on; the answer names the model
+    /// that wrote it. Errors: `not-found` for an unknown conversation or engine, `busy` while the
+    /// conversation still answers, `unsupported` for an engine whose answers the core cannot run (an
+    /// AI account while the core has not started, or one with no model turned on: never another
+    /// account instead), `error` for a limit ([`assistant::limit_refusal`]) or a conversation that
+    /// cannot be stored.
     #[serde(rename = "assistant.send_message")]
     SendMessage {
         /// The conversation to continue; left out, a new one starts with this message.
@@ -2172,7 +2262,8 @@ pub enum Request {
         avatar: Option<String>,
         /// The engine it answers with when asked: an id from `assistant.list_engines`.
         engine: String,
-        /// The model of that engine; left out, the engine picks one.
+        /// The model of that engine; left out, the engine picks one. One turned off (task S.24) is
+        /// replaced by "Automatic" among the account's models that are on while it stays off.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         /// How it speaks, at most 4,000 characters.
@@ -2198,7 +2289,8 @@ pub enum Request {
     /// its answer in the background with the bot's engine and model, like `assistant.send_message`
     /// ([`Response::Conversation`], at once). The bot works with its own client's rights.
     /// `not-found` for an unknown bot or conversation (also one of another bot), `busy` while the
-    /// conversation still answers, `error` for a limit.
+    /// conversation still answers, `unsupported` when the bot's AI account has no model turned on
+    /// (task S.24), `error` for a limit.
     #[serde(rename = "bots.ask_bot")]
     AskBot {
         /// The bot's id.
@@ -2480,6 +2572,16 @@ pub enum SettingKey {
     /// of category keys, e.g. `["spam", "auto_reply"]`. An empty list shows every category that
     /// occurs. A key this version does not know is dropped when the file is read.
     HiddenCategories,
+    /// "Allow API keys" (#231, Settings › API): `true` (the default) or `false`. Off, every key of
+    /// the kind `script` is refused with `unauthorized`. Only the app key may send `true` – a
+    /// person in the control centre (point 6 of "Was nie nach außen geht", `docs/api.md`); a
+    /// client gets `forbidden`, whatever its rights. Any client allowed to change settings may
+    /// send `false`.
+    AllowApiKeys,
+    /// "Allow MCP" (#231, Settings › MCP): `true` (the default) or `false`. Off, every key of an
+    /// MCP client and of a hook is refused with `unauthorized`. Only the app key may send `true`,
+    /// like [`SettingKey::AllowApiKeys`]; any client allowed to change settings may send `false`.
+    AllowMcp,
     /// Switches one of the assistant's own tools on or off (issue #225): `{"tool": "pdf",
     /// "enabled": false}` (`torro_core::settings::ToolSwitch`). Only the app key may switch a tool
     /// on – a person in the assistant's settings (point 9 of "Was nie nach außen geht",
@@ -2635,6 +2737,12 @@ pub enum Response {
     ClientKey {
         client: ClientInfo,
         key: IssuedKey,
+    },
+    /// A new client without a key (#231): the assistant's ([`api::ASSISTANT_CLIENT`]), made by
+    /// [`Request::CreateClient`]. The core runs its tools itself, so it never hands out a key for
+    /// it.
+    Client {
+        client: ClientInfo,
     },
     /// The account a sign-in just connected ([`Request::ConnectGithub`],
     /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::ConnectNtfy`],
@@ -3602,7 +3710,9 @@ pub struct ClientInfo {
     pub id: String,
     /// `Claude Code`
     pub name: String,
-    /// `claude-code`, `codex`, `claude-desktop`, `cursor`, `script` or `hook`.
+    /// `script`, an MCP client (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`,
+    /// `mcp`), `hook`, `assistant` or `bot` ([`api::CLIENT_KINDS`]); a `clients.json` from an
+    /// older version may hold another, checked like `script`.
     pub kind: String,
     pub created: DateTime<Utc>,
     /// The last request with its key, to the minute.
@@ -3809,7 +3919,8 @@ mod tests {
 
     #[test]
     fn envelope_carries_version_key_and_request() {
-        let envelope = Envelope { v: API_VERSION, key: Some(Key::new("torro_app_00")), request: Request::Ping };
+        let envelope =
+            Envelope { v: API_VERSION, key: Some(Key::new("torro_app_00")), via: None, request: Request::Ping };
         let json = serde_json::to_string(&envelope).unwrap();
         assert_eq!(json, r#"{"v":1,"key":"torro_app_00","request":{"method":"system.ping"}}"#);
 
@@ -3820,16 +3931,30 @@ mod tests {
         assert_eq!(read.request, Request::Status);
     }
 
+    /// #231: an envelope without `via` came through the API; MCP says so.
+    #[test]
+    fn an_envelope_without_via_came_through_the_api() {
+        let read: Envelope = serde_json::from_str(r#"{"v":1,"request":{"method":"system.ping"}}"#).unwrap();
+        assert_eq!((read.via, read.door()), (None, Door::Api));
+        let mcp = Envelope { v: 1, key: None, via: Some(Door::Mcp), request: Request::Ping };
+        let json = serde_json::to_string(&mcp).unwrap();
+        assert_eq!(json, r#"{"v":1,"via":"mcp","request":{"method":"system.ping"}}"#);
+        let read: Envelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.door(), Door::Mcp);
+        let api: Envelope = serde_json::from_str(r#"{"v":1,"via":"api","request":{"method":"system.ping"}}"#).unwrap();
+        assert_eq!(api.door(), Door::Api);
+    }
+
     #[test]
     fn keys_do_not_show_in_debug_output() {
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), request: Request::Ping };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), via: None, request: Request::Ping };
         assert!(!format!("{envelope:?}").contains("secret"));
     }
 
     #[test]
     fn a_github_token_does_not_show_in_debug_output() {
         let request = Request::SetGithubToken { token: Secret::new("ghp_secret") };
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("secret"), "{envelope:?}");
         let json = serde_json::to_string(&request).expect("serializes");
         assert_eq!(json, r#"{"method":"accounts.set_github_token","token":"ghp_secret"}"#);
@@ -3846,7 +3971,7 @@ mod tests {
             calendars: true,
             tasks: false,
         };
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
         let json = serde_json::to_value(&request).expect("serializes");
         assert_eq!(json["method"], "accounts.connect_caldav");
@@ -3868,7 +3993,7 @@ mod tests {
             tasks: false,
             caldav: None,
         };
-        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
         let json = serde_json::to_value(&request).expect("serializes");
         assert_eq!(

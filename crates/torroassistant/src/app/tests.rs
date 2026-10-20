@@ -300,7 +300,8 @@ fn the_picker_offers_only_models_that_can_call_tools() {
         Some(Ok(models)) => models.into_iter().map(|model| model.id).collect(),
         other => panic!("the models are in: {other:?}"),
     };
-    assert_eq!(offered, ["qwen3:14b", "qwen3:8b", "llama3.3:70b"], "gemma3:4b cannot call tools");
+    // Task S.26: only models turned on; gemma3:4b cannot call tools, llama3.3:70b is off.
+    assert_eq!(offered, ["qwen3:14b", "qwen3:8b"]);
     let mut app = app;
     let pick = Choice { engine: OLLAMA.into(), model: Some("qwen3:8b".into()) };
     let _ = app.update(Message::Pick(pick.clone()));
@@ -311,8 +312,9 @@ fn the_picker_offers_only_models_that_can_call_tools() {
     assert_eq!(app.choice, Some(pick));
 }
 
-/// Issue #131: Claude Code's own models, an effort only where the model takes one, and "Show all
-/// models" lists the AI accounts anew with closed models.
+/// Issue #131: Claude Code's own models and an effort only where the model takes one. Task S.26:
+/// "Manage models…" opens the control centre's accounts, and a picker that opens asks every AI
+/// account again for its models, closed ones too.
 #[test]
 fn the_effort_goes_with_the_message_where_the_model_thinks() {
     let mut app = started(&["--open", "effort"]);
@@ -339,7 +341,11 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
         [Request::SendMessage { effort: Some(torro_core::ai::Effort::High), model: Some(model), .. }] if model == "opus"
     ));
 
-    let _ = app.update(Message::ToggleAllModels);
+    let _ = app.update(Message::ManageModels);
+    assert_eq!(app.sections, [ACCOUNTS_PAGE], "where the models are turned on");
+    assert_eq!(ACCOUNTS_PAGE, "accounts");
+    let _ = app.update(Message::CloseMenu);
+    let _ = app.update(Message::ToggleMenu(Menu::Picker));
     let asked: Vec<bool> = sent(&mut app)
         .into_iter()
         .filter_map(|request| match request {
@@ -348,6 +354,54 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
         })
         .collect();
     assert_eq!(asked, [true, true], "each AI account again, closed models too");
+    let _ = app.update(Message::ToggleMenu(Menu::Picker));
+    assert!(sent(&mut app).is_empty(), "closing asks nothing");
+}
+
+/// Task S.26: a model a choice holds that is turned off – here the travel planner's – shows as
+/// turned off in the picker and the bot editor; the core answers with "Automatic" then.
+#[test]
+fn a_model_that_is_off_is_named_as_turned_off() {
+    let mut app = started(&[]);
+    let _ = app.update(Message::NewBotChat(TRAVEL.into()));
+    let off = Choice { engine: OLLAMA.into(), model: Some("llama3.3:70b".into()) };
+    assert_eq!(app.choice.as_ref(), Some(&off), "the bot's model stays the choice");
+    assert!(app.turned_off(&off));
+    assert!(!app.turned_off(&Choice { engine: OLLAMA.into(), model: Some("qwen3:14b".into()) }), "on");
+    assert!(!app.turned_off(&Choice { engine: OLLAMA.into(), model: None }), "Automatic");
+    assert!(app.turned_off(&Choice { engine: OLLAMA.into(), model: Some("gone:1b".into()) }), "not listed");
+    let _ = app.update(Message::ToggleMenu(Menu::Picker));
+    settle(&mut app);
+    let _ = app.view();
+
+    let mut editor = started(&["--open", "bot-editor"]);
+    settle(&mut editor);
+    let draft = editor.bot_draft.as_ref().expect("the editor is open");
+    assert_eq!(draft.choice.as_ref(), Some(&off));
+    let _ = editor.update(Message::ToggleMenu(Menu::BotPicker));
+    settle(&mut editor);
+    let _ = editor.view();
+}
+
+/// Task S.26: AI accounts, but no model on at any – the core lists none as an engine: the welcome
+/// says so and leads to the accounts, not "No AI account yet".
+#[test]
+fn without_a_model_on_the_welcome_says_where_to_turn_one_on() {
+    let mut app = started(&["--open", "no-engines"]);
+    assert!(app.engines_loaded && app.engines.is_empty());
+    assert!(!app.no_model_on(), "the demo has no AI account then");
+    assert!(app.sent.is_empty(), "asked once, answered");
+    let _ = app.update(Message::AiAccounts(Ok(true)));
+    assert!(app.no_model_on());
+    let _ = app.view();
+    let _ = app.update(Message::ManageModels);
+    assert_eq!(app.sections, [ACCOUNTS_PAGE]);
+
+    // Once an AI account is an engine again, models are on.
+    let mut on = started(&[]);
+    assert!(on.ai_accounts && !on.no_model_on());
+    let asked: Vec<Request> = sent(&mut on);
+    assert!(!asked.iter().any(|request| matches!(request, Request::Accounts)), "nothing to ask: {asked:?}");
 }
 
 /// Issue #132: the mode picked under the composer goes with the message, a new chat starts with the
@@ -574,8 +628,9 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     assert!(app.switchable().is_empty(), "without a client there is nothing to switch off");
     sent(&mut app);
     let _ = app.update(Message::SetUp);
-    // "Set up access" opens the control centre's page "Assistant" itself, no request.
-    assert_eq!(app.sections, [ASSISTANT_PAGE]);
+    // "Set up access" opens Access in this window (task S.34), no request of the window.
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    assert!(app.sections.is_empty(), "not the control centre");
     assert!(sent(&mut app).is_empty());
 
     let mut none = started(&["--open", "no-engines"]);
@@ -586,14 +641,25 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     assert!(none.settings.is_none(), "the control centre, not the settings in the window");
 }
 
+/// Task S.34: "Change access" under a refused tool opens Access in this window, at the assistant –
+/// or at the bot whose conversation is open.
 #[test]
-fn change_access_under_a_refused_tool_opens_the_assistant_page() {
+fn change_access_under_a_refused_tool_opens_access() {
     let mut app = started(&["--open", "forbidden"]);
     let _ = app.view();
     let _ = app.update(Message::SetUp);
-    assert_eq!(app.sections, ["assistant"]);
-    assert_eq!(ASSISTANT_PAGE, "assistant", "the section `torroworkplace ui` takes");
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    settings_loaded(&mut app);
+    assert!(settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data()).is_none());
+    assert!(app.sections.is_empty(), "not the control centre");
     assert_eq!(ACCOUNTS_PAGE, "accounts");
+
+    let mut bot = started(&["--open", "bot"]);
+    assert_eq!(bot.chat_bot(), Some(TRAVEL));
+    let _ = bot.update(Message::SetUp);
+    settings_loaded(&mut bot);
+    let open = settings::access::open_bot(&pane(&bot).sections.access, pane(&bot).host.data());
+    assert_eq!(open.map(|summary| summary.id.as_str()), Some(TRAVEL), "the bot's own rights");
 }
 
 #[test]
@@ -644,6 +710,7 @@ fn claude_code() -> Engine {
         reasoning: Some(reasoning),
         remote: None,
         decision: None,
+        enabled: false,
     };
     Engine {
         id: CLAUDE_CODE.into(),
@@ -768,7 +835,8 @@ fn the_sidebar_opens_a_bots_chat_and_a_new_chat_goes_back_to_the_assistant() {
     assert_eq!((app.current.as_deref(), app.chat_bot()), (Some(BOT_CHAT), Some(TRAVEL)));
     let _ = app.update(Message::NewBotChat(TRAVEL.into()));
     assert_eq!((app.current.as_deref(), app.chat_bot()), (None, Some(TRAVEL)));
-    assert_eq!(app.choice, Some(Choice { engine: OLLAMA.into(), model: Some("qwen3:14b".into()) }), "the bot's engine");
+    let travel = Choice { engine: OLLAMA.into(), model: Some("llama3.3:70b".into()) };
+    assert_eq!(app.choice, Some(travel), "the bot's engine and model");
     let _ = app.update(Message::NewChat);
     assert_eq!(app.chat_bot(), None, "a new chat in the main window is the assistant's");
     let _ = app.update(Message::Select(BOT_CHAT.into()));
@@ -882,7 +950,11 @@ fn the_bot_editor_saves_the_bot_and_never_its_access() {
             assert!(
                 !matches!(
                     request,
-                    Request::UpdateClient { .. } | Request::CreateClient { .. } | Request::RemoveClient { .. }
+                    Request::UpdateClient { .. }
+                        | Request::CreateClient { .. }
+                        | Request::RemoveClient { .. }
+                        | Request::NewClientKey { .. }
+                        | Request::ClientActivity { .. }
                 ),
                 "the editor touches a client: {request:?}"
             );
@@ -926,13 +998,25 @@ fn deleting_a_bot_asks_first_and_the_main_window_goes_back_to_the_assistant() {
     assert!(lisbon.bot_deleted);
 }
 
+/// Task S.34: "Access…" and the bot editor's "What the bot may use" open Access at the bot, in this
+/// window, the settings open or not.
 #[test]
 fn access_opens_the_bots_rights_and_a_window_is_asked_of_the_core() {
+    for open in [false, true] {
+        let mut app = started(&["--open", "bot-editor"]);
+        if open {
+            let _ = app.update(Message::ToggleSettings);
+        }
+        sent(&mut app);
+        let _ = app.update(Message::BotAccess(TRAVEL.into()));
+        settings_loaded(&mut app);
+        assert_eq!(pane(&app).host.current().id, settings::access::ID);
+        let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
+        assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
+        assert!(app.sections.is_empty() && sent(&mut app).is_empty(), "no request, no control centre");
+    }
     let mut app = started(&[]);
     sent(&mut app);
-    let _ = app.update(Message::BotAccess(TRAVEL.into()));
-    assert_eq!(app.sections, ["bot:b0000001"], "torroworkplace ui --section bot:<id>");
-    assert!(sent(&mut app).is_empty(), "no request: the control centre opens");
     let _ = app.update(Message::OpenBotWindow(TRAVEL.into()));
     assert_eq!(sent(&mut app), [Request::OpenChatWindow { window: ChatWindow::Bot(TRAVEL.into()) }]);
 }
@@ -1175,10 +1259,10 @@ fn settings_voice_starts_at_the_voice_section() {
     assert!(!pane(&app).host.loaded(), "its data is on its way");
 }
 
-/// What the sections ask of the app: "Edit" at a bot is the bot editor, "Access ↗" the control
-/// centre at this very bot. Neither is a request of this window.
+/// What the sections ask of the app: "Edit" at a bot is the bot editor, "Access" the section
+/// Access at this very bot (task S.34). Neither is a request of this window.
 #[test]
-fn the_sections_reach_the_editor_and_the_control_centre() {
+fn the_sections_reach_the_editor_and_access() {
     use torro_settings_ui::assistant::bots as section;
 
     let mut app = started(&[]);
@@ -1186,11 +1270,108 @@ fn the_sections_reach_the_editor_and_the_control_centre() {
     settings_loaded(&mut app);
     sent(&mut app);
     let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Access(TRAVEL.into()))));
-    assert_eq!(app.sections, ["bot:b0000001"], "torroworkplace ui --section bot:<id>");
-    assert!(app.settings.is_some(), "the control centre is another window");
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
+    assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
+    assert!(app.sections.is_empty(), "not the control centre");
     let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Edit(TRAVEL.into()))));
     assert!(app.settings.is_none(), "the editor takes the content area");
     assert_eq!(sent(&mut app), [Request::GetBot { id: TRAVEL.into() }]);
+}
+
+/// `--bot <id> --settings access` opens Access at that bot in the bot's window (task S.34).
+#[test]
+fn settings_access_with_a_bot_starts_at_the_bot() {
+    let mut app = started(&["--bot", TRAVEL, "--settings", "access"]);
+    assert_eq!(pane(&app).host.current().id, settings::access::ID);
+    settings_loaded(&mut app);
+    let bot = settings::access::open_bot(&pane(&app).sections.access, pane(&app).host.data());
+    assert_eq!(bot.map(|summary| summary.id.as_str()), Some(TRAVEL));
+    let main = started(&["--settings", "access"]);
+    assert!(settings::access::open_bot(&pane(&main).sections.access, pane(&main).host.data()).is_none());
+}
+
+/// A right changed a moment ago is not lost when the settings close before its clock (task
+/// S.34): every way out sends it first, and the settings still close.
+#[test]
+fn leaving_the_settings_saves_a_waiting_right() {
+    use torro_ipc::api::{Area, Level};
+    use torro_settings_ui::rights;
+
+    let level = || {
+        Message::SettingsPage(settings::Message::Access(settings::access::Message::Rights(rights::Message::Level(
+            Area::Mail,
+            Level::Read,
+        ))))
+    };
+    for way in [
+        Message::ToggleSettings,
+        Message::Escape,
+        Message::Select(TOOLS.into()),
+        Message::SettingsHost(torro_settings_ui::host::Message::Back),
+    ] {
+        let mut app = started(&["--settings", "access"]);
+        settings_loaded(&mut app);
+        let _ = app.update(level());
+        let task = app.update(way.clone());
+        assert!(app.settings.is_none(), "{way:?}: the settings close");
+        assert!(task.units() > 0, "{way:?}: the change is on its way");
+    }
+    // Nothing waits: nothing extra goes.
+    let mut app = started(&["--settings", "access"]);
+    settings_loaded(&mut app);
+    assert!(app.save_before_leaving(&Message::ToggleSettings).is_none());
+}
+
+/// Task S.34, the boundary in this process: the window's own code sends no `clients.*` but reading
+/// the list – no client made, removed or changed, no key, no activity, no rights editor. Those are
+/// the settings section Access's alone (`torro_settings_ui::assistant::access`), under its own test.
+#[test]
+fn the_window_itself_never_touches_clients() {
+    // Spelled in pieces: this test's own words are not what it looks for.
+    let forbidden = [
+        ["Create", "Client"].concat(),
+        ["Remove", "Client"].concat(),
+        ["Update", "Client"].concat(),
+        ["NewClient", "Key"].concat(),
+        ["Client", "Activity"].concat(),
+        ["rights", "::"].concat(),
+        ["rights", " as"].concat(),
+        ["Mail", "ToCloud"].concat(),
+        // The window hands Access no message of its own: what changes rights comes from a person's
+        // click in the section, never from the window's code.
+        ["access::", "Message"].concat(),
+    ];
+    // This file names what it checks; every other file of the window is read whole.
+    let this = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/tests.rs");
+    let mut found = Vec::new();
+    let mut files = 0;
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { panic!("cannot read {}", dir.display()) };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|ext| ext != "rs") || path == this {
+                continue;
+            }
+            files += 1;
+            let text = std::fs::read_to_string(&path).expect("a source file reads");
+            let code = text.lines().take_while(|line| line.trim() != "#[cfg(test)]");
+            for line in code.filter(|line| !line.trim_start().starts_with("//")) {
+                found.extend(
+                    forbidden
+                        .iter()
+                        .filter(|word| line.contains(word.as_str()))
+                        .map(|word| format!("{}: {word}", path.display())),
+                );
+            }
+        }
+    }
+    assert!(files > 10, "the window's sources were read");
+    assert!(found.is_empty(), "the window reaches into the rights: {found:?}");
 }
 
 /// Task S.18, not negotiable: only a person opens the settings. A link of an answer opens a web
