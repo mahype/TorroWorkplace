@@ -545,6 +545,9 @@ const IDEMPOTENT: &[&str] = &[
     "workspaces.update_template",
     "workspaces.delete_template",
     "workspaces.rename_template",
+    // The same key or startup again leaves the template as it is (issue #243).
+    "workspaces.set_template_shortcut",
+    "workspaces.set_template_startup",
     "calendar.delete_event",
     // Dismissed stays dismissed; the same pause again ends when it did (task ER1.2).
     "calendar.dismiss_reminder",
@@ -1507,6 +1510,25 @@ mod tests {
             Err(ToolError::Input(_))
         ));
         assert_eq!(request_for("no_such_tool", JsonObject::new(), &Utc), Err(ToolError::UnknownTool));
+        // Issue #243: `key: null` takes the key away, a digit gives it.
+        let away = request_for("workspaces_set_template_shortcut", args(json!({"id": "dev", "key": null})), &Utc);
+        assert_eq!(away, Ok(Request::SetTemplateShortcut { id: "dev".into(), key: None }));
+        let given = request_for("workspaces_set_template_shortcut", args(json!({"id": "dev", "key": 3})), &Utc);
+        assert_eq!(given, Ok(Request::SetTemplateShortcut { id: "dev".into(), key: Some(3) }));
+        let left_out = request_for("workspaces_set_template_shortcut", args(json!({"id": "dev"})), &Utc);
+        assert!(matches!(left_out, Err(ToolError::Input(_))), "no key is no `null`: {left_out:?}");
+        let startup = json!({"id": "dev", "startup": {"screen": "DP-1"}});
+        assert_eq!(
+            request_for("workspaces_set_template_startup", args(startup), &Utc),
+            Ok(Request::SetTemplateStartup {
+                id: "dev".into(),
+                startup: Some(torro_setups::Startup {
+                    screen: "DP-1".into(),
+                    fallback: torro_setups::ScreenFallback::Main
+                }),
+            })
+        );
+        assert_eq!(request_for("workspaces_list_screens", JsonObject::new(), &Utc), Ok(Request::ListScreens));
         // The full form of list_events still works.
         let events = request_for(
             "calendar_list_events",
@@ -2485,6 +2507,8 @@ mod tests {
                 source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
                 tree: None,
                 windows: vec![],
+                shortcut: None,
+                startup: None,
             };
             Store::at(dir.to_path_buf()).save(&template).expect("saved");
         }

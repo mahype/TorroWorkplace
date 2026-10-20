@@ -2114,6 +2114,8 @@ mod tests {
             workspace: None,
             templates: 0,
             busy: false,
+            wm_version: None,
+            shortcuts: None,
         });
         let _ = ui.update(Message::Loaded(Box::new(data.clone())));
         assert!(ui.setup.is_some(), "the setup is pending");

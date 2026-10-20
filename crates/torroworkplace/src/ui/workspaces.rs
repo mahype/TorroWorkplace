@@ -260,7 +260,16 @@ mod tests {
 
     fn template(id: &str, name: &str) -> TemplateSummary {
         let updated = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).unwrap();
-        TemplateSummary { id: id.into(), name: name.into(), windows: 3, updated }
+        TemplateSummary {
+            id: id.into(),
+            name: name.into(),
+            windows: 3,
+            updated,
+            shortcut: None,
+            startup: None,
+            workspace: "1".into(),
+            monitor: None,
+        }
     }
 
     fn data() -> Data {

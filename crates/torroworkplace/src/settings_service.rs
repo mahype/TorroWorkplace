@@ -463,6 +463,8 @@ enum Change {
     PdfFolder(Option<String>),
     /// One PDF template, replaced whole. Who may set its logo is the core's check, as for the folder.
     PdfTemplate(PdfTemplateId, PdfTemplate),
+    /// The modifiers of the template keys (issue #243).
+    WorkspaceShortcuts(torro_core::settings::ShortcutModifiers),
 }
 
 impl Change {
@@ -521,6 +523,9 @@ impl Change {
                 let (id, template) = PdfTemplate::from_value(value)?;
                 Change::PdfTemplate(id, template)
             }
+            SettingKey::WorkspaceShortcuts => {
+                Change::WorkspaceShortcuts(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
         })
     }
 
@@ -576,6 +581,7 @@ impl Change {
             Change::ToolEnabled(switch) => settings.tools.set_on(switch.tool, switch.enabled),
             Change::PdfFolder(folder) => settings.tools.pdf.folder = folder,
             Change::PdfTemplate(id, template) => *settings.tools.pdf.template_mut(id) = template,
+            Change::WorkspaceShortcuts(modifiers) => settings.workspaces.modifiers = modifiers,
         }
     }
 }
@@ -1302,6 +1308,9 @@ mod tests {
         Change::parse(SettingKey::Component, &mail_off).expect("a switch").apply(&mut settings);
         let reminders = json!({"allDay": true, "calendars": {"a/work": "full_screen"}});
         Change::parse(SettingKey::Reminders, &reminders).expect("valid reminders").apply(&mut settings);
+        let keys = json!("ctrl_shift");
+        Change::parse(SettingKey::WorkspaceShortcuts, &keys).expect("valid modifiers").apply(&mut settings);
+        assert!(Change::parse(SettingKey::WorkspaceShortcuts, &json!("hyper")).is_err(), "only the four choices");
         assert_eq!(
             settings,
             Settings {
@@ -1330,6 +1339,9 @@ mod tests {
                 allow_api_keys: true,
                 allow_mcp: true,
                 tools: Default::default(),
+                workspaces: torro_core::settings::WorkspaceSettings {
+                    modifiers: torro_core::settings::ShortcutModifiers::CtrlShift,
+                },
             }
         );
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);

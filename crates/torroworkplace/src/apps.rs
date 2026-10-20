@@ -7,8 +7,9 @@
 //! The inbox is three entries (task E8.1): its mail window, its notifications window and its hub,
 //! one binary `torroinbox` with three window classes. All three are installed or none.
 //!
-//! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task, and (task WZ.8) a new mail
-//! with a file of the tools' register attached: [`Target`] reads what the request names, the core
+//! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task, (task WZ.8) a new mail
+//! with a file of the tools' register attached, and (issue #243) the core's dialog to edit a
+//! workspace template: [`Target`] reads what the request names, the core
 //! looks it up, and [`target_command`] builds the command line from what it found ([`Opened`]),
 //! never from the target's text.
 //!
@@ -271,6 +272,9 @@ pub enum Target<'a> {
     /// `file:<id>`: a file of the tools' register (issue #225), by its id of 8 hex digits, to go
     /// along with a new mail.
     File { id: &'a str },
+    /// `template:<id>`: a workspace template (issue #243) by its id, a slug, to edit in the core's
+    /// dialog. Always the dialog's mode "Edit", never "Save" (its Cancel deletes the template).
+    Template { id: &'a str },
 }
 
 /// The start of a task target.
@@ -279,14 +283,23 @@ const TASK_TARGET: &str = "task:";
 /// The start of a file target.
 const FILE_TARGET: &str = "file:";
 
+/// The start of a template target.
+const TEMPLATE_TARGET: &str = "template:";
+
 /// How long the id of a file of the register is: 8 hex digits (`crate::tools::files::new_id`).
 const FILE_ID_LEN: usize = 8;
 
 impl<'a> Target<'a> {
     /// The target `text` names; `Err` with the forms there are for anything else, for a uid that
-    /// is empty or holds control characters, and for a file id that is not 8 hex digits.
+    /// is empty or holds control characters, for a file id that is not 8 hex digits, and for a
+    /// template id with other characters than `a`–`z`, `0`–`9` and `-` (the form of a template's id).
     pub fn parse(text: &'a str) -> Result<Target<'a>, &'static str> {
-        const FORMS: &str = "a target is mail:<address>:<Message-ID>, task:<uid> or file:<id>";
+        const FORMS: &str = "a target is mail:<address>:<Message-ID>, task:<uid>, file:<id> or template:<id>";
+        if let Some(id) = text.strip_prefix(TEMPLATE_TARGET) {
+            let slug = !id.is_empty()
+                && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+            return if slug { Ok(Target::Template { id }) } else { Err(FORMS) };
+        }
         if let Some(id) = text.strip_prefix(FILE_TARGET) {
             let hex = id.len() == FILE_ID_LEN && id.bytes().all(|byte| byte.is_ascii_hexdigit());
             return if hex { Ok(Target::File { id }) } else { Err(FORMS) };
@@ -305,16 +318,17 @@ impl<'a> Target<'a> {
     }
 
     /// The entry of the suite this target opens in: the inbox's mail window (its compose window for
-    /// a file), or the tasks app.
+    /// a file), the tasks app, or the core (its dialog for a template).
     pub fn app(self) -> AppId {
         match self {
             Target::Mail { .. } | Target::File { .. } => AppId::INBOX_MAIL,
             Target::Task { .. } => AppId::TASKS,
+            Target::Template { .. } => AppId::WORKPLACE,
         }
     }
 
     /// `app` may show it: any window of the inbox (they share a binary) for a mail or a file, the
-    /// tasks app for a task.
+    /// tasks app for a task, the core (`torroworkplace`) for a template.
     pub fn opens_in(self, app: AppId) -> bool {
         app.binary == self.app().binary
     }
@@ -334,6 +348,10 @@ pub enum Opened {
     File {
         path: String,
     },
+    /// A workspace template by the id its store holds, to edit in the core's dialog.
+    Template {
+        id: String,
+    },
 }
 
 impl Opened {
@@ -342,18 +360,21 @@ impl Opened {
         match self {
             Opened::Mail { .. } | Opened::File { .. } => AppId::INBOX_MAIL,
             Opened::Task { .. } => AppId::TASKS,
+            Opened::Template { .. } => AppId::WORKPLACE,
         }
     }
 }
 
 /// The command line that starts a window of `program` (the path of [`Opened::app`]'s binary)
-/// showing `opened`: `torroinbox --view mail --message=m:…`, `torrotasks --task=<uid>` or
-/// `torroinbox --compose --attach=<path>`. One argument each, with `=`, so a value that starts
+/// showing `opened`: `torroinbox --view mail --message=m:…`, `torrotasks --task=<uid>`,
+/// `torroinbox --compose --attach=<path>` or `torroworkplace ui --template=<id>` (the dialog in its
+/// mode "Edit"; the mode "Save", `--saved`, is never built here). One argument each, with `=`, so a value that starts
 /// with `-` stays a value; started without a shell.
 pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
     let (mut command, argument) = match opened {
         Opened::Mail { message } => (opened.app().command(program), format!("--message={message}")),
         Opened::Task { uid } => (opened.app().command(program), format!("--task={uid}")),
+        Opened::Template { id } => (opened.app().command(program), format!("--template={id}")),
         // A file opens the compose window, not the mail window the inbox's mail entry names.
         Opened::File { path } => (vec![program, "--compose".to_string()], format!("--attach={path}")),
     };
@@ -539,6 +560,22 @@ pub mod tests {
             target_command("/bin/torroinbox".into(), &opened),
             ["/bin/torroinbox", "--compose", "--attach=/home/anna/Desktop/Offer.pdf"]
         );
+    }
+
+    /// Issue #243: `template:<id>` opens the core's dialog to edit the template, never in the mode
+    /// that deletes it on Cancel.
+    #[test]
+    fn a_template_target_opens_the_dialog_to_edit_it() {
+        let template = Target::parse("template:deep-work-2").expect("template");
+        assert_eq!(template, Target::Template { id: "deep-work-2" });
+        assert!(template.opens_in(AppId::WORKPLACE) && !template.opens_in(AppId::TASKS));
+        for bad in ["template:", "template:Dev", "template:../x", "template:a b", "template:a --saved"] {
+            assert!(Target::parse(bad).is_err(), "{bad:?}");
+        }
+        let opened = Opened::Template { id: "dev".into() };
+        let command = target_command("/bin/torroworkplace".into(), &opened);
+        assert_eq!(command, ["/bin/torroworkplace", "ui", "--template=dev"]);
+        assert!(!command.iter().any(|arg| arg.contains("saved")), "never the mode Save");
     }
 
     #[test]

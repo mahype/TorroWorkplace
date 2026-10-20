@@ -60,7 +60,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   `FakeWm`-Test für `focus_monitor`; `cargo build` für macOS- und Windows-Ziele bleibt grün (`cfg`).
 
 ### WS.2 Gerüst: Vorlagenfelder, Einstellung, Requests, Katalog, Handler
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WS.1 · **Dateien:** `crates/torro-setups/src/{template,capture,storage}.rs`,
   `crates/torro-core/src/{settings,app}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{core,mcp,audit,approvals,apps,daemon,cli,notify}.rs`,

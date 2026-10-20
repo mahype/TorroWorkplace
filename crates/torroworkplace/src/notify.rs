@@ -431,7 +431,16 @@ mod tests {
     use torro_setups::TemplateSummary;
 
     fn summary(name: &str, windows: usize) -> TemplateSummary {
-        TemplateSummary { id: "dev".into(), name: name.into(), windows, updated: chrono::Utc::now() }
+        TemplateSummary {
+            id: "dev".into(),
+            name: name.into(),
+            windows,
+            updated: chrono::Utc::now(),
+            shortcut: None,
+            startup: None,
+            workspace: "1".into(),
+            monitor: None,
+        }
     }
 
     fn text(summary: &str, body: &str) -> Option<(String, String)> {

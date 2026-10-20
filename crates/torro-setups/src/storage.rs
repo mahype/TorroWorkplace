@@ -21,7 +21,7 @@ use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
-use crate::{SCHEMA_VERSION, SetupsError, Template};
+use crate::{MAX_SHORTCUT, SCHEMA_VERSION, SetupsError, Startup, Template};
 
 /// Backups kept per template.
 pub const MAX_BACKUPS: usize = 5;
@@ -101,6 +101,58 @@ impl Store {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(io_error(err)),
         }
+    }
+
+    /// Gives the template `id` the key `key` (`0` to [`MAX_SHORTCUT`]), or takes its key away with
+    /// `None`. Another template that holds the key loses it, in the same call: its file is written
+    /// first, so a crash in between leaves the key with nobody rather than with two templates.
+    /// Each file is written atomically ([`Store::save`]); the caller makes sure nobody else writes
+    /// templates meanwhile (the core runs this under its `exclusive`).
+    ///
+    /// Returns the template as written and the id of the one that lost the key, if any (the first
+    /// by [`Store::list`]'s order; files edited by hand may give a key to several, all lose it).
+    /// [`SetupsError::NotFound`] for an unknown id, [`SetupsError::Format`] for a key above
+    /// [`MAX_SHORTCUT`]; nothing is written then.
+    pub fn set_shortcut(&self, id: &str, key: Option<u8>) -> Result<(Template, Option<String>), SetupsError> {
+        if key.is_some_and(|key| key > MAX_SHORTCUT) {
+            return Err(SetupsError::Format(format!("a key is a digit from 0 to {MAX_SHORTCUT}")));
+        }
+        let mut template = self.load(id)?;
+        let now = Utc::now();
+        let mut taken_from = None;
+        if key.is_some() {
+            for mut holder in self.list()?.into_iter().filter(|other| other.id != id && other.shortcut == key) {
+                holder.shortcut = None;
+                holder.updated = now;
+                self.save(&holder)?;
+                taken_from.get_or_insert(holder.id);
+            }
+        }
+        template.shortcut = key;
+        template.updated = now;
+        self.save(&template)?;
+        Ok((template, taken_from))
+    }
+
+    /// The template that holds `key` now, other than `except`; `None` when no other one does. What
+    /// [`Store::set_shortcut`] would take the key from, for the summary of an approval.
+    pub fn shortcut_holder(&self, key: u8, except: &str) -> Result<Option<Template>, SetupsError> {
+        Ok(self.list()?.into_iter().find(|other| other.id != except && other.shortcut == Some(key)))
+    }
+
+    /// Loads the template `id` at every login as `startup` says, or no more with `None`. The screen
+    /// is not checked: it may be connected later. [`SetupsError::NotFound`] for an unknown id,
+    /// [`SetupsError::Format`] for a screen without a name.
+    pub fn set_startup(&self, id: &str, startup: Option<Startup>) -> Result<Template, SetupsError> {
+        let startup = startup.map(|startup| Startup { screen: startup.screen.trim().to_string(), ..startup });
+        if startup.as_ref().is_some_and(|startup| startup.screen.is_empty()) {
+            return Err(SetupsError::Format("a screen needs a name".into()));
+        }
+        let mut template = self.load(id)?;
+        template.startup = startup;
+        template.updated = Utc::now();
+        self.save(&template)?;
+        Ok(template)
     }
 
     /// A free id for `name`: [`slug`], with `-2`, `-3`, … appended when taken.
@@ -287,6 +339,8 @@ mod tests {
                 floating: false,
                 rect: Rect { x: 0, y: 0, width: 800, height: 600 },
             }],
+            shortcut: None,
+            startup: None,
         }
     }
 
@@ -374,6 +428,56 @@ mod tests {
         assert!(!store.backups_dir("setup").exists());
         assert_eq!(store.load("setup"), Err(SetupsError::NotFound("setup".into())));
         assert_eq!(store.delete("setup"), Err(SetupsError::NotFound("setup".into())));
+    }
+
+    #[test]
+    fn a_key_moves_from_its_holder_to_the_template() {
+        let (_dir, store) = store();
+        store.save(&Template { shortcut: Some(1), ..sample("mail", "Mail") }).unwrap();
+        store.save(&sample("dev", "Dev")).unwrap();
+
+        assert_eq!(store.shortcut_holder(1, "dev").unwrap().map(|t| t.id), Some("mail".into()));
+        let (dev, taken_from) = store.set_shortcut("dev", Some(1)).unwrap();
+
+        assert_eq!((dev.shortcut, taken_from.as_deref()), (Some(1), Some("mail")));
+        assert_eq!(store.load("dev").unwrap().shortcut, Some(1));
+        assert_eq!(store.load("mail").unwrap().shortcut, None, "the holder lost it");
+        assert_eq!(store.shortcut_holder(1, "dev").unwrap(), None);
+
+        // Again: nobody else holds it.
+        assert_eq!(store.set_shortcut("dev", Some(1)).unwrap().1, None);
+    }
+
+    #[test]
+    fn a_key_is_taken_away_and_checked() {
+        let (_dir, store) = store();
+        store.save(&Template { shortcut: Some(0), ..sample("dev", "Dev") }).unwrap();
+        store.save(&Template { shortcut: Some(3), ..sample("mail", "Mail") }).unwrap();
+
+        let (dev, taken_from) = store.set_shortcut("dev", None).unwrap();
+        assert_eq!((dev.shortcut, taken_from), (None, None));
+        assert_eq!(store.load("mail").unwrap().shortcut, Some(3), "others keep theirs");
+
+        assert!(matches!(store.set_shortcut("dev", Some(10)), Err(SetupsError::Format(_))));
+        assert_eq!(store.set_shortcut("gone", Some(2)), Err(SetupsError::NotFound("gone".into())));
+        assert_eq!(store.load("dev").unwrap().shortcut, None, "nothing written");
+    }
+
+    #[test]
+    fn startup_is_set_and_cleared() {
+        let (_dir, store) = store();
+        store.save(&sample("dev", "Dev")).unwrap();
+        let startup = Startup { screen: " DP-1 ".into(), fallback: crate::ScreenFallback::Skip };
+
+        let saved = store.set_startup("dev", Some(startup)).unwrap();
+        let expected = Startup { screen: "DP-1".into(), fallback: crate::ScreenFallback::Skip };
+        assert_eq!(saved.startup.as_ref(), Some(&expected));
+        assert_eq!(store.load("dev").unwrap().startup, Some(expected));
+
+        assert_eq!(store.set_startup("dev", None).unwrap().startup, None);
+        let nameless = Startup { screen: " ".into(), fallback: crate::ScreenFallback::Main };
+        assert!(matches!(store.set_startup("dev", Some(nameless)), Err(SetupsError::Format(_))));
+        assert_eq!(store.set_startup("gone", None), Err(SetupsError::NotFound("gone".into())));
     }
 
     #[test]

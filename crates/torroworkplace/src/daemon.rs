@@ -235,6 +235,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
                     // Hotkeys go through `ctl`, so commands from the socket get the same
                     // notifications as clicks in the tray.
                     let changes = changes_state(&request).then(|| describe(&request));
+                    let notifies = tells_on_desktop(&request);
                     let ends = matches!(request, Request::Quit);
                     // A refused request ran nothing: no notification, no new menu, so a foreign
                     // client cannot flood the desktop.
@@ -246,7 +247,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
                         end_after_answer(quit);
                     }
                     if let Some(what) = changes {
-                        report(&what, &response);
+                        if notifies {
+                            report(&what, &response);
+                        }
                         let _ = refresh.send(());
                     }
                     response
@@ -433,8 +436,9 @@ async fn tend_inbox(core: Arc<Core>) {
     }
 }
 
-/// Template commands: they change the menu and get a notification. Calendar and task
-/// requests from the apps get neither; the apps show their own feedback.
+/// Template commands: they change the menu, and most get a notification ([`tells_on_desktop`]).
+/// Calendar and task requests from the apps get neither; the apps show their own feedback. A
+/// template's key and startup (issue #243) change the menu too: it shows the key.
 fn changes_state(request: &Request) -> bool {
     matches!(
         request,
@@ -442,7 +446,17 @@ fn changes_state(request: &Request) -> bool {
             | Request::UpdateTemplate { .. }
             | Request::DeleteTemplate { .. }
             | Request::LoadTemplate { .. }
+            | Request::SetTemplateShortcut { .. }
+            | Request::SetTemplateStartup { .. }
     )
+}
+
+/// Of [`changes_state`], the commands whose result comes as a desktop notification: what the tray
+/// and the keys start. A key and a startup are set in the core's dialog, which shows its own
+/// result; a notification ("Template saved") after each of its saves would only repeat it.
+fn tells_on_desktop(request: &Request) -> bool {
+    changes_state(request)
+        && !matches!(request, Request::SetTemplateShortcut { .. } | Request::SetTemplateStartup { .. })
 }
 
 /// A short name for a request, for messages.
@@ -519,6 +533,12 @@ fn describe(request: &Request) -> String {
         Request::Accounts => "accounts".into(),
         Request::RemoveAccount { id } => format!("remove account {id}"),
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
+        Request::SetTemplateShortcut { id, key: Some(key) } => format!("key {key} for {id}"),
+        Request::SetTemplateShortcut { id, key: None } => format!("no key for {id}"),
+        // Never the screen: the name of a monitor says little, but it is the client's text.
+        Request::SetTemplateStartup { id, startup: Some(_) } => format!("load {id} at login"),
+        Request::SetTemplateStartup { id, startup: None } => format!("load {id} not at login"),
+        Request::ListScreens => "screens".into(),
         // The app only, never the target: it names a mail or a task (task E8.7a).
         Request::OpenApp { app, .. } => format!("open {app}"),
         Request::ListApps => "apps".into(),
@@ -657,6 +677,22 @@ fn report(what: &str, response: &Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #243: a key and a startup change the menu, but the dialog that sets them shows its own
+    /// result, so no notification comes.
+    #[test]
+    fn keys_and_startup_refresh_the_menu_without_a_notification() {
+        let key = Request::SetTemplateShortcut { id: "dev".into(), key: Some(2) };
+        let startup = Request::SetTemplateStartup { id: "dev".into(), startup: None };
+        for request in [&key, &startup] {
+            assert!(changes_state(request) && !tells_on_desktop(request), "{request:?}");
+        }
+        assert!(tells_on_desktop(&Request::LoadTemplate { id: "dev".into(), mode: torro_setups::LoadMode::Add }));
+        assert_eq!(describe(&key), "key 2 for dev");
+        assert_eq!(describe(&Request::SetTemplateShortcut { id: "dev".into(), key: None }), "no key for dev");
+        assert_eq!(describe(&startup), "load dev not at login");
+        assert_eq!(describe(&Request::ListScreens), "screens");
+    }
 
     /// Task E8.7a: messages about these requests name the list and the app, never the mail
     /// account, the mail's id, its Message-ID or what an app was opened on.

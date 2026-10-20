@@ -1419,6 +1419,9 @@ impl Request {
             Request::DeleteTemplate { .. } => &DELETE_TEMPLATE,
             Request::LoadTemplate { .. } => &LOAD_TEMPLATE,
             Request::RenameTemplate { .. } => &RENAME_TEMPLATE,
+            Request::SetTemplateShortcut { .. } => &SET_TEMPLATE_SHORTCUT,
+            Request::SetTemplateStartup { .. } => &SET_TEMPLATE_STARTUP,
+            Request::ListScreens => &LIST_SCREENS,
             Request::ConnectNextcloud { .. } => &CONNECT_NEXTCLOUD,
             Request::ConnectGithub => &CONNECT_GITHUB,
             Request::SetGithubToken { .. } => &SET_GITHUB_TOKEN,
@@ -1607,6 +1610,9 @@ pub static CATALOGUE: &[&Command] = &[
     &DELETE_TEMPLATE,
     &LOAD_TEMPLATE,
     &RENAME_TEMPLATE,
+    &SET_TEMPLATE_SHORTCUT,
+    &SET_TEMPLATE_STARTUP,
+    &LIST_SCREENS,
     &LIST_CALENDARS,
     &LIST_EVENTS,
     &SAVE_EVENT,
@@ -1757,8 +1763,10 @@ static STATUS: Command = Command {
     area: Area::System,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns a short status: version, window manager, active workspace, number of templates and \
-                  whether a template is being saved or loaded.",
+    description: "Returns a short status: version, window manager and its version (`wmVersion`), active \
+                  workspace, number of templates, whether a template is being saved or loaded, and whether the \
+                  template keys work (`shortcuts`: modifiers, `active`, `problem`; only with read access to \
+                  workspaces).",
 };
 
 // Never an MCP tool: an agent must not switch off the service that checks and logs its requests
@@ -1822,6 +1830,37 @@ static RENAME_TEMPLATE: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Gives the template a new name; its id stays the same.",
+};
+
+static SET_TEMPLATE_SHORTCUT: Command = Command {
+    name: "workspaces.set_template_shortcut",
+    area: Area::Workspaces,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Gives the template a digit key 0-9 that loads it (with the modifiers of the setting \
+                  workspace_shortcuts, in mode `add`), or takes its key away with `key: null`. A key belongs to \
+                  one template only: another template that has it loses it. Returns the template.",
+};
+
+// Admin like `start_at_login`: a lasting rule that starts programs at every login.
+static SET_TEMPLATE_STARTUP: Command = Command {
+    name: "workspaces.set_template_startup",
+    area: Area::Workspaces,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Makes the template load at every login, in mode `add` onto the workspace that the screen \
+                  `startup.screen` (a name from list_screens) shows; `startup.fallback` `main` loads it on the main \
+                  screen when that one is missing, `skip` leaves it out. `startup: null` stops loading it at \
+                  login. The programs of the template then start at every login. Returns the template.",
+};
+
+static LIST_SCREENS: Command = Command {
+    name: "workspaces.list_screens",
+    area: Area::Workspaces,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the screens the window manager knows now with name, size in logical pixels, scale and \
+                  whether it is the main screen, for workspaces.set_template_startup.",
 };
 
 static LIST_CALENDARS: Command = Command {
@@ -2431,7 +2470,8 @@ static GET_SETTINGS: Command = Command {
                   state pending, skipped or done, and its version), the components a person turned off \
                   (`componentsOff`; all others are on), how reminders of events come (`reminders`, with the \
                   style of each calendar you see), whether keys of scripts and of MCP clients work at all \
-                  (`allowApiKeys`, `allowMcp`) and the assistant's own tools (`tools`: the ones switched on in \
+                  (`allowApiKeys`, `allowMcp`), the modifiers of the template keys (`workspaces`) and the \
+                  assistant's own tools (`tools`: the ones switched on in \
                   `enabled`, the PDF folder and the templates `letter`, `report` and `note`).",
 };
 
@@ -2488,7 +2528,9 @@ static SET_SETTING: Command = Command {
                   \"marginsMm\": [top, right, bottom, left] from 5 to 50, \"fontSizePt\": 8 to 16, \"header\": \
                   \"{title}\", \"footer\": \"\", \"pageNumbers\": true, \"logo\": null}; header and footer one line \
                   of at most 200 characters, `{title}` and `{date}` are filled in; a logo other than the stored one \
-                  is for a person, so send the stored one or null).",
+                  is for a person, so send the stored one or null) or `workspace_shortcuts` (the modifiers held with \
+                  a digit key to load the template that has it: \"super_alt\", \"super_ctrl\", \"ctrl_alt\" or \
+                  \"ctrl_shift\"; on macOS Super is Command and Alt is Option; the keys are bound anew at once).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -2597,8 +2639,10 @@ static OPEN_APP: Command = Command {
                   list. With `target` a new window always starts and shows one thing: `mail:<address>:<Message-ID>` (a task's \
                   `link.id`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app, `file:<id>` \
                   (the `id` of tools_create_pdf) a new mail with that file attached in the inbox's compose window, \
-                  for the person to address and send; `app` must be that app (`torroinbox` or an inbox window \
-                  class for mail and files). A mail or task this key may not read is `not-found`, and so is a \
+                  for the person to address and send, `template:<id>` (an id from workspaces_list_templates) the \
+                  dialog to edit that workspace template's name, key and startup; `app` must be that app \
+                  (`torroinbox` or an inbox window class for mail and files, `torroworkplace` for a template). A \
+                  mail, task or template this key may not read is `not-found`, and so is a \
                   file this key did not make or cannot reach (the PDF tool switched off, no read access to \
                   `tools`, `pdf` not selected).",
 };
@@ -3743,6 +3787,12 @@ mod tests {
             Request::DeleteTemplate { id: "dev".into() },
             Request::LoadTemplate { id: "dev".into(), mode: LoadMode::Add },
             Request::RenameTemplate { id: "dev".into(), name: "Dev".into() },
+            Request::SetTemplateShortcut { id: "dev".into(), key: Some(1) },
+            Request::SetTemplateStartup {
+                id: "dev".into(),
+                startup: Some(torro_setups::Startup { screen: "DP-1".into(), fallback: Default::default() }),
+            },
+            Request::ListScreens,
             Request::ConnectNextcloud { server: "cloud.example.test".into() },
             Request::ConnectGithub,
             Request::SetGithubToken { token: crate::Secret::new("ghp_example") },
@@ -5113,9 +5163,22 @@ mod tests {
                 "allow_mcp",
                 "tool_enabled",
                 "pdf_folder",
-                "pdf_template"
+                "pdf_template",
+                "workspace_shortcuts"
             ]
         );
+
+        // Issue #243: a key is a digit, `null` takes it away; a start rule names its screen.
+        let schema = SET_TEMPLATE_SHORTCUT.input_schema().expect("schema");
+        assert_eq!(schema.get("required"), Some(&serde_json::json!(["id", "key"])));
+        let key = schema.as_value().pointer("/properties/key").expect("key is a field");
+        assert_eq!(key.get("maximum"), Some(&serde_json::json!(9)), "{key}");
+        let schema = SET_TEMPLATE_STARTUP.input_schema().expect("schema");
+        let text = schema.as_value().to_string();
+        assert!(text.contains("screen") && text.contains("skip"), "{text}");
+        assert_eq!(schema.get("required"), Some(&serde_json::json!(["id", "startup"])));
+        let left_out = serde_json::json!({"method": "workspaces.set_template_shortcut", "id": "dev"});
+        assert!(serde_json::from_value::<Request>(left_out).is_err(), "a left-out key is not `null`");
 
         let schema = MOVE_TODO.input_schema().expect("schema");
         assert_eq!(schema.get("required"), Some(&serde_json::json!(["href", "etag"])));

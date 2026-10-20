@@ -9,6 +9,12 @@
 //! mail, notifications and the hub – each with its own window class, name and start arguments,
 //! so window rules, the app switcher and workspace templates tell them apart.
 
+/// The window class of the core's small dialog window (issue #243, `torroworkplace ui --template=<id>`):
+/// a template's name, key and startup, after "Save workspace…" in the tray or from the control
+/// centre. No app of its own, so not in [`AppId::ALL`]; the window manager floats it, and like the
+/// control centre ([`AppId::WORKPLACE`]) it never goes into a workspace template.
+pub const WORKPLACE_DIALOG_CLASS: &str = "torro-workplace-dialog";
+
 /// An app of the suite, or one kind of window of an app with several ([`AppId::INBOX_MAIL`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AppId {
@@ -155,6 +161,7 @@ mod tests {
 
     #[test]
     fn window_classes_are_unique() {
+        assert!(AppId::ALL.iter().all(|app| app.window_class != WORKPLACE_DIALOG_CLASS), "the dialog is no app");
         for (i, app) in AppId::ALL.iter().enumerate() {
             assert!(
                 AppId::ALL[i + 1..].iter().all(|other| other.window_class != app.window_class),

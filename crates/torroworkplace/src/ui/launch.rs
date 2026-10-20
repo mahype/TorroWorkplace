@@ -805,10 +805,19 @@ pub fn demo_data() -> Data {
         name: name.into(),
         windows,
         updated: now - age,
+        shortcut: None,
+        startup: None,
+        workspace: "3".into(),
+        monitor: Some("DP-1".into()),
     };
+    // Issue #243: keys 1 and 2, and the first loads at every login.
     let templates = vec![
-        template("development", "Development", 6, Duration::days(2)),
-        template("writing", "Writing", 3, Duration::days(9)),
+        TemplateSummary {
+            shortcut: Some(1),
+            startup: Some(torro_setups::Startup { screen: "DP-1".into(), fallback: Default::default() }),
+            ..template("development", "Development", 6, Duration::days(2))
+        },
+        TemplateSummary { shortcut: Some(2), ..template("writing", "Writing", 3, Duration::days(9)) },
         template("review-call", "Review call", 4, Duration::hours(3)),
     ];
     let apps = AppId::ALL
@@ -881,6 +890,12 @@ pub fn demo_data() -> Data {
             workspace: Some("3".into()),
             templates: templates.len(),
             busy: false,
+            wm_version: Some("0.56.0".into()),
+            shortcuts: Some(torro_ipc::ShortcutStatus {
+                modifiers: torro_core::settings::ShortcutModifiers::default(),
+                active: true,
+                problem: None,
+            }),
         }),
         accounts,
         templates,

@@ -386,7 +386,15 @@ mod tests {
     }
 
     fn status(backend: &str) -> Status {
-        Status { version: "0.9.0".into(), backend: backend.into(), workspace: None, templates: 2, busy: false }
+        Status {
+            version: "0.9.0".into(),
+            backend: backend.into(),
+            workspace: None,
+            templates: 2,
+            busy: false,
+            wm_version: None,
+            shortcuts: None,
+        }
     }
 
     #[test]

@@ -366,6 +366,10 @@ mod tests {
                 name: "Entwicklung".into(),
                 windows: 3,
                 updated: chrono::Utc::now(),
+                shortcut: None,
+                startup: None,
+                workspace: "3".into(),
+                monitor: None,
             }],
             ..Snapshot::default()
         }

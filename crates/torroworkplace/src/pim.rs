@@ -1155,6 +1155,9 @@ impl PimService {
             | Request::Accounts
             | Request::RemoveAccount { .. }
             | Request::RenameTemplate { .. }
+            | Request::SetTemplateShortcut { .. }
+            | Request::SetTemplateStartup { .. }
+            | Request::ListScreens
             | Request::OpenApp { .. }
             | Request::ListApps
             | Request::ListDesigns

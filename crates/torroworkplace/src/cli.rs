@@ -37,6 +37,7 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups update <id> [--json]
   torroworkplace ctl setups delete <id> [--json]
   torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]
+  torroworkplace ctl setups key <id> <0-9|none> [--json]
   torroworkplace ctl clients list [--json]
   torroworkplace ctl clients add <name> [--kind {kinds}]
                                         [--agent claude-code|codex|gemini]
@@ -184,7 +185,7 @@ fn missing_value(flag: &str) -> UsageError {
 fn ctl_request(words: &[&str], options: &Options) -> Result<Request, UsageError> {
     match words {
         ["setups", verb, args @ ..] => setups_request(verb, args, options.mode),
-        ["setups"] => Err(UsageError::new("ctl setups needs a subcommand: list, save, update, delete or load")),
+        ["setups"] => Err(UsageError::new("ctl setups needs a subcommand: list, save, update, delete, load or key")),
         ["clients", verb, args @ ..] => clients_request(verb, args, options),
         ["clients"] => Err(UsageError::new(tr("ctl clients needs a subcommand: list, add, remove or new-key"))),
         ["approvals"] => Ok(Request::ListApprovals),
@@ -272,11 +273,26 @@ fn setups_request(verb: &str, args: &[&str], mode: Option<&str>) -> Result<Reque
         ("update", [id]) => Ok(Request::UpdateTemplate { id: id.to_string() }),
         ("delete", [id]) => Ok(Request::DeleteTemplate { id: id.to_string() }),
         ("load", [id]) => Ok(Request::LoadTemplate { id: id.to_string(), mode: parse_mode(mode)? }),
-        ("update" | "delete" | "load", []) => Err(UsageError::new(format!("ctl setups {verb} needs a template id"))),
-        ("list" | "save" | "update" | "delete" | "load", _) => {
+        // Issue #243: only the key here; startup and screens are for the control centre, the API
+        // and MCP.
+        ("key", [id, key]) => Ok(Request::SetTemplateShortcut { id: id.to_string(), key: parse_key(key)? }),
+        ("key", [_]) => Err(UsageError::new("ctl setups key needs a key: 0-9 or none")),
+        ("update" | "delete" | "load" | "key", []) => {
+            Err(UsageError::new(format!("ctl setups {verb} needs a template id")))
+        }
+        ("list" | "save" | "update" | "delete" | "load" | "key", _) => {
             Err(UsageError::new(format!("too many arguments for ctl setups {verb}")))
         }
-        _ => Err(UsageError::new(format!("unknown subcommand {verb:?}; try list, save, update, delete or load"))),
+        _ => Err(UsageError::new(format!("unknown subcommand {verb:?}; try list, save, update, delete, load or key"))),
+    }
+}
+
+/// A digit key `0` … `9`, or `none` to take the key away.
+fn parse_key(key: &str) -> Result<Option<u8>, UsageError> {
+    match key.as_bytes() {
+        [digit @ b'0'..=b'9'] => Ok(Some(digit - b'0')),
+        _ if key == "none" => Ok(None),
+        _ => Err(UsageError::new(format!("unknown key {key:?}; use a digit 0-9 or none"))),
     }
 }
 
@@ -523,8 +539,9 @@ pub fn render(response: &Response) -> String {
 
 /// `id  name  (n windows)`, with the id padded to `id_width` so the names line up.
 fn template_line(template: &TemplateSummary, id_width: usize) -> String {
+    let key = template.shortcut.map(|key| format!(", key {key}")).unwrap_or_default();
     format!(
-        "{:<id_width$}  {}  ({} {})",
+        "{:<id_width$}  {}  ({} {}{key})",
         template.id,
         template.name,
         template.windows,
@@ -600,6 +617,10 @@ mod tests {
             name: name.into(),
             windows,
             updated: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            shortcut: None,
+            startup: None,
+            workspace: "1".into(),
+            monitor: None,
         }
     }
 
@@ -643,6 +664,23 @@ mod tests {
         assert_eq!(request(&["ctl", "setups", "load", "dev", "--mode", "add"]), load(LoadMode::Add));
         assert_eq!(request(&["ctl", "setups", "load", "dev", "--mode=replace"]), load(LoadMode::Replace));
         assert_eq!(request(&["ctl", "setups", "load", "dev", "--mode", "empty"]), load(LoadMode::Empty));
+    }
+
+    /// Issue #243: `ctl setups key <id> <0-9|none>`.
+    #[test]
+    fn setups_key_takes_a_digit_or_none() {
+        let key = |key| Request::SetTemplateShortcut { id: "dev".into(), key };
+        assert_eq!(request(&["ctl", "setups", "key", "dev", "1"]), key(Some(1)));
+        assert_eq!(request(&["ctl", "setups", "key", "dev", "0"]), key(Some(0)));
+        assert_eq!(request(&["ctl", "setups", "key", "dev", "none"]), key(None));
+        for bad in
+            [&["ctl", "setups", "key", "dev"][..], &["ctl", "setups", "key", "dev", "10"], &["ctl", "setups", "key"]]
+        {
+            assert!(parse_strs(bad).is_err(), "{bad:?}");
+        }
+        assert!(parse_strs(&["ctl", "setups", "key", "dev", "F1"]).is_err());
+        let held = TemplateSummary { shortcut: Some(3), ..summary("dev", "Dev", 2) };
+        assert_eq!(render(&Response::Saved { template: held }), "saved dev  Dev  (2 windows, key 3)");
     }
 
     #[test]
@@ -808,6 +846,8 @@ mod tests {
             workspace: None,
             templates: 2,
             busy: false,
+            wm_version: None,
+            shortcuts: None,
         });
         assert!(render(&status).contains("workspace: -"));
         let loaded = Response::Loaded { restored: 2, failed: vec![("kitty".into(), "gone".into())] };
@@ -885,6 +925,8 @@ mod tests {
                     source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
                     tree: None,
                     windows: vec![],
+                    shortcut: None,
+                    startup: None,
                 })
                 .expect("saved");
         }
