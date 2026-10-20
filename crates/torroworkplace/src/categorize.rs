@@ -279,12 +279,20 @@ pub fn narrow_request(model: &str, content: &Content, offered: &[Offer]) -> Deci
 
 /// The question about the category, over `offered`.
 fn category_question(offered: &[Offer]) -> Question {
-    Question::Choice {
-        instructions: format!(
+    // "Other" is named only where it is an option: in the second of two calls it may stand in
+    // another group (correctness review of #255).
+    let instructions = match offered.iter().find(|offer| offer.category == Category::Other) {
+        Some(other) => format!(
             "What kind of mail is this for the person who received it? Pick the one that fits best; pick \
              \"{}\" when none does. {UNTRUSTED}",
-            offered.iter().find(|offer| offer.category == Category::Other).map_or("other", |offer| offer.name.as_str())
+            other.name
         ),
+        None => format!(
+            "What kind of mail is this for the person who received it? Pick the one that fits best. {UNTRUSTED}"
+        ),
+    };
+    Question::Choice {
+        instructions,
         criteria: offered.iter().map(|offer| (offer.name.clone(), offer.means.clone())).collect(),
     }
 }

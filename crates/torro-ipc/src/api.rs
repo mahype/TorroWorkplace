@@ -3144,8 +3144,9 @@ static UPDATE_SORT_RULE: Command = Command {
     area: Area::Inbox,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Changes a sorting rule – its category, conditions, exceptions and whether it is on – and returns \
-                  it; its place stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there, \
+    description: "Changes a sorting rule and returns it: `category` and `conditions` always, `exceptions` and \
+                  `enabled` where given (left out, they stay; an empty `exceptions` takes them away). Its place \
+                  stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there or out of reach, \
                   `error` as for create_sort_rule. Needs the person's approval.",
 };
 
@@ -4131,8 +4132,8 @@ mod tests {
                     field: torro_inbox::SortField::Subject,
                     value: "receipt".into(),
                 }],
-                exceptions: Vec::new(),
-                enabled: false,
+                exceptions: None,
+                enabled: Some(false),
             },
             Request::RemoveSortRule { id: "r1".into() },
             Request::MoveSortRule { id: "r1".into(), position: 0 },

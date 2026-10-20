@@ -903,6 +903,10 @@ async fn ask_model(
     content: &categorize::Content,
 ) -> Result<Option<categorize::Decided>, DecideError> {
     let catalogue = inbox.catalogue().map_err(DecideError::Mail)?;
+    // The person let the model choose fewer than two categories: there is nothing to ask.
+    if categorize::plan(&catalogue) == categorize::Plan::Nothing {
+        return Err(DecideError::NothingToChoose);
+    }
     categorize::decide(model, content, &catalogue, |request| async move { ai.decide(engine, &request).await })
         .await
         .map_err(DecideError::Ai)
@@ -914,6 +918,8 @@ enum DecideError {
     Ai(torro_core::ai::AiError),
     /// The mail store could not be read or written.
     Mail(String),
+    /// The catalogue leaves the model fewer than two categories to choose between (task E15.4).
+    NothingToChoose,
 }
 
 impl DecideError {
@@ -922,6 +928,10 @@ impl DecideError {
         match self {
             DecideError::Ai(err) => ai_error(err),
             DecideError::Mail(message) => Response::Error { code: "error".into(), message: message.clone() },
+            DecideError::NothingToChoose => Response::Error {
+                code: "unsupported".into(),
+                message: tr("Let the AI choose at least two categories under Categorization.").to_string(),
+            },
         }
     }
 
@@ -930,6 +940,7 @@ impl DecideError {
         match self {
             DecideError::Ai(err) => err.to_string(),
             DecideError::Mail(message) => message.clone(),
+            DecideError::NothingToChoose => "the model may choose fewer than two categories".into(),
         }
     }
 }
@@ -1002,6 +1013,8 @@ async fn catch_up_run(run: CatchUpRun, accounts: Vec<String>) {
                     let asking = ask_model(&ai, &inbox, (engine, model), &facts.content);
                     match tokio::time::timeout(CATEGORY_TIMEOUT, asking).await {
                         Ok(Ok(decided)) => (decided.map(|decided| (decided.category, Some(decided))), true),
+                        // The model may choose nothing: the rules alone sort, as without a model.
+                        Ok(Err(DecideError::NothingToChoose)) => (None, false),
                         // The server is gone or busy: stop, rather than hammer it for 500 messages.
                         Ok(Err(err)) => {
                             eprintln!("torroworkplace: inbox: the decision model stopped answering: {}", err.to_line());
@@ -1783,7 +1796,13 @@ impl Core {
             while started.elapsed() < ACCOUNTS_WAIT && !core.mail.loaded() {
                 tokio::time::sleep(ACCOUNTS_STEP).await;
             }
-            core.resume_category_removals().await;
+            // Without the accounts read, the mail of some would keep the old key for good: the
+            // removal waits for the next start instead.
+            if core.mail.loaded() {
+                core.resume_category_removals().await;
+            } else {
+                eprintln!("torroworkplace: inbox: the mail accounts were not read in time; removing categories waits");
+            }
         });
         let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
         self.mail.pause_from_start(mail_off);
@@ -3608,6 +3627,8 @@ impl Core {
                 let (engine, model) = decider_of(&settings, &ai).await.ok()?;
                 match decide_mail_with(&ai, &mail, &inbox, (&engine, &model), &account, &message).await {
                     Ok(category) => category,
+                    // The person's choice, not a failure: nothing to log for every mail.
+                    Err(DecideError::NothingToChoose) => None,
                     Err(err) => {
                         eprintln!("torroworkplace: inbox: cannot sort a mail of {account}: {}", err.to_line());
                         None
@@ -3786,10 +3807,27 @@ impl Core {
         &self,
         category: torro_mail::Category,
         replacement: Option<torro_mail::Category>,
+        reach: Reach<'_>,
     ) -> Response {
         if category.is_built_in() {
             let message = tr("The categories of the suite can be changed, not removed.");
             return Response::Error { code: "unsupported".into(), message: message.to_string() };
+        }
+        // Before the mail accounts are read nothing can tell whether mail names the category,
+        // and a removal must never leave mail with a key nobody can find again.
+        if !self.mail.loaded() {
+            let message = tr("The mail accounts are still being read. Try again in a moment.");
+            return Response::Error { code: "busy".into(), message: message.to_string() };
+        }
+        // A category still taking the mail of another one goes once that is done – else that
+        // mail would be filed under a category already gone.
+        let pending = match self.inbox.pending_removals() {
+            Ok(pending) => pending,
+            Err(message) => return Response::Error { code: "error".into(), message },
+        };
+        if pending.iter().any(|(_, taking)| *taking == category) {
+            let message = tr("This category is still taking the mail of a category removed. Try again in a moment.");
+            return Response::Error { code: "busy".into(), message: message.to_string() };
         }
         let noted = match self.inbox.removal_of(category) {
             Ok(noted) => noted,
@@ -3830,16 +3868,25 @@ impl Core {
             return Response::CategoryRemoved { category, replacement: None };
         }
         let Some(replacement) = replacement else {
-            let message = trf(
-                "{mail} mails, {entries} entries and {rules} sorting rules are filed as “{category}”. Choose a \
-                 category for them.",
-                &[
-                    ("mail", &mail.to_string()),
-                    ("entries", &uses.entries.to_string()),
-                    ("rules", &uses.rules.to_string()),
-                    ("category", &torro_core::category::name_of(def)),
-                ],
-            );
+            // The numbers cover every mail account; a client may not read them all, so it is
+            // told that something is filed there, not how much (API review of #255).
+            let name = torro_core::category::name_of(def);
+            let message = match reach {
+                Reach::Suite => trf(
+                    "{mail} mails, {entries} entries and {rules} sorting rules are filed as “{category}”. Choose a \
+                     category for them.",
+                    &[
+                        ("mail", &mail.to_string()),
+                        ("entries", &uses.entries.to_string()),
+                        ("rules", &uses.rules.to_string()),
+                        ("category", &name),
+                    ],
+                ),
+                Reach::Client(_) => trf(
+                    "Mail, entries or sorting rules are filed as “{category}”. Choose a category for them.",
+                    &[("category", &name)],
+                ),
+            };
             return Response::Error { code: "conflict".into(), message };
         };
         if let Err(refused) = self.inbox.begin_removal(category, replacement) {
@@ -3922,7 +3969,9 @@ impl Core {
         // Sorting again (task E15.4) goes through mail that has a category already: how far it
         // came is what it went through, not what has a category. An account it has not reached
         // yet has gone through nothing.
-        let again = self.catch_up.again.load(std::sync::atomic::Ordering::Acquire);
+        // Only while it runs: afterwards the backlog's own count says what waits again
+        // (correctness review of #255).
+        let again = running && self.catch_up.again.load(std::sync::atomic::Ordering::Acquire);
         let accounts: Vec<torro_ipc::inbox::CategoryProgress> = accounts
             .into_iter()
             .map(|mut progress| {
@@ -4161,7 +4210,7 @@ impl Core {
                 }
             }
             Request::RemoveCategory { category, replacement } => {
-                Box::pin(self.remove_category(category, replacement)).await
+                Box::pin(self.remove_category(category, replacement, reach)).await
             }
             Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
             request => {
@@ -13668,6 +13717,20 @@ mod tests {
             Some(Category::Social)
         );
         assert!(messages(restarted.handle(search(vec![club.category])).await).is_empty());
+
+        // Correctness review: a category still taking another's mail is not removed meanwhile, or
+        // that mail would end up under a key gone.
+        let make = |name: &str| Request::CreateCategory {
+            group: CategoryGroup::Info,
+            name: name.into(),
+            description: "Something.".into(),
+            model: false,
+        };
+        let Response::Category { category: from } = restarted.handle(make("From")).await else { panic!("made") };
+        let Response::Category { category: to } = restarted.handle(make("To")).await else { panic!("made") };
+        restarted.inbox.begin_removal(from.category, to.category).expect("noted");
+        let chained = Request::RemoveCategory { category: to.category, replacement: Some(Category::Other) };
+        assert_eq!(code(&restarted.handle(chained).await), "busy");
     }
 
     /// Task E15.4: sorting again goes through the whole window, also mail that has a category:
@@ -13762,7 +13825,8 @@ mod tests {
         else {
             panic!("the state")
         };
-        assert!(categorization.again);
+        // Done: the backlog's own count stands again – both mails have a category.
+        assert!(!categorization.again);
         let progress = categorization.accounts.first().expect("anna");
         assert_eq!(
             (progress.messages, progress.done, progress.state),

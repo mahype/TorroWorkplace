@@ -1872,6 +1872,26 @@ fn conditions_words(conditions: &[torro_inbox::SortCondition]) -> String {
     words.join(&format!(" {} ", tr("and")))
 }
 
+/// How much of a new category description a summary shows; the rest is "…".
+const DESCRIPTION_SHOWN: usize = 120;
+
+/// `sentence` with what a sorting rule leaves alone and whether it is off, where the request says
+/// so: ", except mail with \"delay\" in the subject", ", without exceptions", ", switched off".
+fn with_rule_extras(
+    sentence: String,
+    exceptions: Option<&Vec<torro_inbox::SortCondition>>,
+    enabled: Option<bool>,
+) -> String {
+    let mut sentence = sentence;
+    if let Some(exceptions) = exceptions.filter(|exceptions| !exceptions.is_empty()) {
+        sentence.push_str(&trf(", except mail {exceptions}", &[("exceptions", &conditions_words(exceptions))]));
+    }
+    if enabled == Some(false) {
+        sentence.push_str(tr(", switched off"));
+    }
+    sentence
+}
+
 /// A stored sorting rule in words, for the summaries that change one: "the sorting rule that
 /// files mail from … as \"Invoice\"". From the stored rule, never from the request.
 fn sort_rule_words(facts: &InboxFacts) -> String {
@@ -2014,12 +2034,43 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 ("group", &format!("\"{}\"", torro_core::category::group_label(*group))),
             ],
         ),
-        Request::UpdateCategory { category, name: Some(name), .. } if !name.trim().is_empty() => trf(
-            "Change the mail category {category} and call it {name}",
-            &[("category", &category_name(facts, *category)), ("name", &format!("\"{}\"", quote(name)))],
-        ),
-        Request::UpdateCategory { category, .. } => {
-            trf("Change the mail category {category}", &[("category", &category_name(facts, *category))])
+        // Every field that changes is named (API review of #255): a new description steers the
+        // model, a group or the model switch decides what is offered – none of it hidden behind
+        // "change".
+        Request::UpdateCategory { category, group, name, description, model } => {
+            let mut changes: Vec<String> = Vec::new();
+            match name.as_deref().map(str::trim) {
+                Some("") => changes.push(tr("put back the suite's name").to_string()),
+                Some(name) => changes.push(trf("call it {name}", &[("name", &format!("\"{}\"", quote(name)))])),
+                None => {}
+            }
+            if let Some(group) = group {
+                let group = format!("\"{}\"", torro_core::category::group_label(*group));
+                changes.push(trf("move it to {group}", &[("group", &group)]));
+            }
+            match description.as_deref().map(str::trim) {
+                Some("") => changes.push(tr("put back the suite's description").to_string()),
+                Some(text) => {
+                    let short: String = text.chars().take(DESCRIPTION_SHOWN).collect();
+                    let cut = if short.chars().count() < text.chars().count() { "…" } else { "" };
+                    let text = format!("\"{}{cut}\"", quote(&short));
+                    changes.push(trf("describe it as {text}", &[("text", &text)]));
+                }
+                None => {}
+            }
+            match model {
+                Some(true) => changes.push(tr("let the AI choose it").to_string()),
+                Some(false) => changes.push(tr("no longer let the AI choose it").to_string()),
+                None => {}
+            }
+            let category = category_name(facts, *category);
+            match changes.is_empty() {
+                true => trf("Change the mail category {category}", &[("category", &category)]),
+                false => trf(
+                    "Change the mail category {category}: {changes}",
+                    &[("category", &category), ("changes", &changes.join(", "))],
+                ),
+            }
         }
         Request::RemoveCategory { category, replacement: Some(replacement) } => trf(
             "Remove the mail category {category} and file its mail as {replacement}",
@@ -2028,12 +2079,32 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::RemoveCategory { category, replacement: None } => {
             trf("Remove the mail category {category}", &[("category", &category_name(facts, *category))])
         }
-        // A new sorting rule is named as it will be written.
-        Request::CreateSortRule { category, conditions, .. } => trf(
-            "From now on file mail {conditions} as {category}",
-            &[("conditions", &conditions_words(conditions)), ("category", &category_name(facts, *category))],
-        ),
-        Request::UpdateSortRule { .. } => trf("Change {rule}", &[("rule", &sort_rule_words(facts))]),
+        // A new sorting rule is named as it will be written, exceptions and switch included.
+        Request::CreateSortRule { category, conditions, exceptions, enabled, .. } => {
+            let rule = trf(
+                "From now on file mail {conditions} as {category}",
+                &[("conditions", &conditions_words(conditions)), ("category", &category_name(facts, *category))],
+            );
+            with_rule_extras(rule, Some(exceptions), Some(*enabled))
+        }
+        // The stored rule and what it becomes (API review of #255).
+        Request::UpdateSortRule { category, conditions, exceptions, enabled, .. } => {
+            let becomes = trf(
+                "Change {rule}: from now on it files mail {conditions} as {category}",
+                &[
+                    ("rule", &sort_rule_words(facts)),
+                    ("conditions", &conditions_words(conditions)),
+                    ("category", &category_name(facts, *category)),
+                ],
+            );
+            let mut sentence = with_rule_extras(becomes, exceptions.as_ref(), *enabled);
+            // Exceptions taken away are worth saying: the rule then holds for more mail.
+            let had = facts.sort_rule.as_ref().is_some_and(|rule| !rule.exceptions.is_empty());
+            if had && exceptions.as_ref().is_some_and(Vec::is_empty) {
+                sentence.push_str(tr(", without its exceptions"));
+            }
+            sentence
+        }
         Request::RemoveSortRule { .. } => trf("Remove {rule}", &[("rule", &sort_rule_words(facts))]),
         Request::MoveSortRule { position, .. } => trf(
             "Move {rule} to place {n}",
@@ -4538,8 +4609,8 @@ pub(crate) mod tests {
             id: "r1".into(),
             category: tax,
             conditions: vec![SortCondition { field: SortField::Sender, value: "evil@example.org".into() }],
-            exceptions: Vec::new(),
-            enabled: true,
+            exceptions: None,
+            enabled: Some(true),
         };
         let stored = trf(
             "the sorting rule that files mail {conditions} as {category}",
@@ -4548,8 +4619,35 @@ pub(crate) mod tests {
                 ("category", &bills),
             ],
         );
-        assert_eq!(inbox_summary(&update, &facts), trf("Change {rule}", &[("rule", &stored)]));
-        assert!(!inbox_summary(&update, &facts).contains("evil@example.org"));
+        // The stored rule from the inbox, and what it becomes as it will be written (API review).
+        let becomes = trf(
+            "Change {rule}: from now on it files mail {conditions} as {category}",
+            &[
+                ("rule", &stored),
+                ("conditions", &trf("from {sender}", &[("sender", &"\"evil@example.org\"")])),
+                ("category", &"\"Tax\""),
+            ],
+        );
+        assert_eq!(inbox_summary(&update, &facts), becomes);
+        let off = Request::UpdateSortRule {
+            id: "r1".into(),
+            category: Category::Invoice,
+            conditions: vec![SortCondition { field: SortField::Domain, value: "shop.example".into() }],
+            exceptions: None,
+            enabled: Some(false),
+        };
+        assert!(inbox_summary(&off, &facts).ends_with(tr(", switched off")), "switching off is said");
+        let changed = Request::UpdateCategory {
+            category: Category::Invoice,
+            group: Some(CategoryGroup::Junk),
+            name: None,
+            description: Some("Anything with a price.".into()),
+            model: Some(false),
+        };
+        let words = inbox_summary(&changed, &facts);
+        assert!(words.contains("Anything with a price."), "{words}");
+        assert!(words.contains(tr("no longer let the AI choose it")), "{words}");
+        assert!(words.contains(torro_core::category::group_label(CategoryGroup::Junk)), "{words}");
         let moved = Request::MoveSortRule { id: "r1".into(), position: 0 };
         assert_eq!(inbox_summary(&moved, &facts), trf("Move {rule} to place {n}", &[("rule", &stored), ("n", &"1")]));
         // Without the rule in the inbox nothing is made up.
@@ -4576,8 +4674,8 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&renamed, &facts),
             trf(
-                "Change the mail category {category} and call it {name}",
-                &[("category", &bills), ("name", &"\"Rechnungen\"")]
+                "Change the mail category {category}: {changes}",
+                &[("category", &bills), ("changes", &trf("call it {name}", &[("name", &"\"Rechnungen\"")]))]
             )
         );
     }

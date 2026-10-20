@@ -768,11 +768,11 @@ Changes a mail category, one of the suite's or the person's own, and returns it:
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | A mail category: one of the suite's keys, or `custom_<n>` for one the person made (`inbox.list_categories` lists the catalogue). |
-| `description` | string | nein |  |
-| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` | nein |  |
-| `model` | boolean | nein |  |
-| `name` | string | nein |  |
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The category's key, as `inbox.list_categories` gives it. |
+| `description` | string | nein | What it means, as a model reads it; empty puts back the suite's description. Left out: as it is. |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` | nein | The group to move it to. Left out: as it is. |
+| `model` | boolean | nein | A decision model may choose it. Left out: as it is. |
+| `name` | string | nein | Its new name; empty puts back the suite's word. Left out: as it is. |
 
 ### `inbox.remove_category`
 
@@ -782,7 +782,7 @@ Removes a mail category the person made. Mail, inbox entries and sorting rules t
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | A mail category: one of the suite's keys, or `custom_<n>` for one the person made (`inbox.list_categories` lists the catalogue). |
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The key of a category the person made, `custom_<n>`. |
 | `replacement` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | nein | Where what names the category goes. |
 
 ### `inbox.list_sort_rules`
@@ -801,12 +801,12 @@ Adds a sorting rule for mail at `position` (0 first; left out: last) and returns
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | A mail category: one of the suite's keys, or `custom_<n>` for one the person made (`inbox.list_categories` lists the catalogue). |
-| `conditions` | array<object> | ja |  |
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as: a category of `inbox.list_categories`. |
+| `conditions` | array<object> | ja | All of them must hold; at least one, at most 10. |
 | `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `conditions[].value` | string | ja | What the field is compared with; one line. |
 | `enabled` | boolean | nein | Switched off, it holds for nothing. Left out: on. |
-| `exceptions` | array<object> | nein |  |
+| `exceptions` | array<object> | nein | None of them may hold; at most 10. |
 | `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `exceptions[].value` | string | ja | What the field is compared with; one line. |
 | `position` | integer | nein | Where it stands, 0 first; left out: last. |
@@ -815,19 +815,19 @@ Adds a sorting rule for mail at `position` (0 first; left out: last) and returns
 
 Zugriff `admin` · MCP-Tool `inbox_update_sort_rule`
 
-Changes a sorting rule – its category, conditions, exceptions and whether it is on – and returns it; its place stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there, `error` as for create_sort_rule. Needs the person's approval.
+Changes a sorting rule and returns it: `category` and `conditions` always, `exceptions` and `enabled` where given (left out, they stay; an empty `exceptions` takes them away). Its place stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there or out of reach, `error` as for create_sort_rule. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | A mail category: one of the suite's keys, or `custom_<n>` for one the person made (`inbox.list_categories` lists the catalogue). |
-| `conditions` | array<object> | ja |  |
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as. |
+| `conditions` | array<object> | ja | All of them must hold; at least one. |
 | `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `conditions[].value` | string | ja | What the field is compared with; one line. |
-| `enabled` | boolean | nein |  |
-| `exceptions` | array<object> | nein |  |
+| `enabled` | boolean | nein | On or off. Left out: as it is. |
+| `exceptions` | array<object> | nein | None of them may hold; an empty list takes them all away. Left out: as they are. |
 | `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
 | `exceptions[].value` | string | ja | What the field is compared with; one line. |
-| `id` | string | ja |  |
+| `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
 
 ### `inbox.remove_sort_rule`
 
@@ -837,7 +837,7 @@ Removes a sorting rule and returns the rules left, in order. Mail it filed keeps
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `id` | string | ja |  |
+| `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
 
 ### `inbox.move_sort_rule`
 
@@ -847,8 +847,8 @@ Moves one sorting rule to `position` (0 first, past the end: last); the others k
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `id` | string | ja |  |
-| `position` | integer | ja |  |
+| `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
+| `position` | integer | ja | Its new place, 0 first. |
 
 ### `inbox.hide_sender`
 

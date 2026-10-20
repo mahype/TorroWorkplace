@@ -692,6 +692,10 @@ impl Inbox {
                 check_mute(&changeable(db, id, Some(client))?.item, *scope, *until, Utc::now()).map(drop)
             }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
+            // Nobody is asked about a sorting rule the client may not see (task E15.3).
+            Request::UpdateSortRule { id, .. } | Request::RemoveSortRule { id } | Request::MoveSortRule { id, .. } => {
+                visible_sort_rule(db, id, Some(client)).map(drop)
+            }
             // Nobody is asked to let the AI read an entry the client may not see (issue #120).
             Request::OpenItem { id }
             | Request::SuggestTaskFromItem { id, .. }
@@ -810,7 +814,8 @@ impl Inbox {
                             let sender = rules::mail_sender(stand_in).ok_or_else(|| {
                                 Failure::Invalid("this mail names no sender to remember the category for".into())
                             })?;
-                            let (rule, new_rule) = category_rule(&tx, &sender, category, &stand_in.source, now)?;
+                            let (rule, new_rule) =
+                                category_rule(&tx, &sender, category, &stand_in.source, client, now)?;
                             (Some(rule), new_rule)
                         }
                     };
@@ -1933,29 +1938,30 @@ fn answer(
         }
         // The sorting rules (task E15.3). Listing them names senders and words of mail, so a key
         // without read access to mail sees none, as it counts no category either.
-        Request::ListSortRules => {
-            let reads_mail = client
-                .is_none_or(|client| client.kind != HOOK_CLIENT && client.rights.area(Area::Mail).allows(Access::Read));
-            let rules = if reads_mail { catalogue::list_rules(db)? } else { Vec::new() };
-            Ok(Response::SortRules { rules })
-        }
+        Request::ListSortRules => Ok(Response::SortRules { rules: sort_rules_for(db, client)? }),
         Request::CreateSortRule { category, conditions, exceptions, position, enabled } => {
             let words = catalogue::RuleWords { category, conditions, exceptions, enabled };
             let (rule, position) = catalogue::create_rule(db, words, position, now)?;
             Ok(Response::SortRule { rule, position })
         }
         Request::UpdateSortRule { id, category, conditions, exceptions, enabled } => {
-            let words = catalogue::RuleWords { category, conditions, exceptions, enabled };
+            // What the request leaves out stays as it is.
+            let stored = visible_sort_rule(db, &id, client)?;
+            let exceptions = exceptions.unwrap_or(stored.exceptions);
+            let words =
+                catalogue::RuleWords { category, conditions, exceptions, enabled: enabled.unwrap_or(stored.enabled) };
             let (rule, position) = catalogue::update_rule(db, &id, words)?;
             Ok(Response::SortRule { rule, position })
         }
         Request::RemoveSortRule { id } => {
+            visible_sort_rule(db, &id, client)?;
             catalogue::remove_rule(db, &id)?;
-            Ok(Response::SortRules { rules: catalogue::list_rules(db)? })
+            Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
         }
         Request::MoveSortRule { id, position } => {
+            visible_sort_rule(db, &id, client)?;
             catalogue::move_rule(db, &id, position)?;
-            Ok(Response::SortRules { rules: catalogue::list_rules(db)? })
+            Ok(Response::SortRules { rules: sort_rules_for(db, client)? })
         }
         other => Err(Failure::Invalid(format!("{} is no inbox command", other.operation().name()))),
     }
@@ -2960,7 +2966,7 @@ fn set_item_category(
     let (rule, new_rule) = if remember {
         let sender = rules::mail_sender(&item)
             .ok_or_else(|| Failure::Invalid("this mail names no sender to remember the category for".into()))?;
-        let (rule, new_rule) = category_rule(db, &sender, category, &item.source, now)?;
+        let (rule, new_rule) = category_rule(db, &sender, category, &item.source, client, now)?;
         (Some(rule), new_rule)
     } else {
         (None, false)
@@ -2981,9 +2987,12 @@ fn category_rule(
     sender: &str,
     category: torro_mail::Category,
     source: &SourceRef,
+    client: Option<&ClientInfo>,
     now: DateTime<Utc>,
 ) -> Result<(Rule, bool), Failure> {
-    let (sorting, new_rule) = catalogue::keep_sender(db, sender, category, source, now)?;
+    let scope = Scope::of(client);
+    let sees = |made_in: &str| made_in.parse::<SourceRef>().is_ok_and(|made_in| scope.sees(&made_in));
+    let (sorting, new_rule) = catalogue::keep_sender(db, sender, category, source, now, sees)?;
     let rule = Rule {
         id: sorting.id,
         source: source.clone(),
@@ -4093,6 +4102,40 @@ fn rule_category_in(
     let sorting = catalogue::sort_rules_in(db)?;
     let kept = rules::sort_category(&sorting, input);
     Ok(rules::mail_category(kept, invite, auto_submitted, junk))
+}
+
+/// The sorting rules `client` may see, in their order (task E15.3). They name senders and words of
+/// mail, so a key without read access to mail sees none, as it counts no category either; a rule
+/// "Always for this sender?" made in a mail account it may not read it does not see, as
+/// `inbox.list_rules` never showed it that rule.
+fn sort_rules_for(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<torro_inbox::SortRule>, Failure> {
+    if client.is_some_and(|client| client.kind == HOOK_CLIENT || !client.rights.area(Area::Mail).allows(Access::Read)) {
+        return Ok(Vec::new());
+    }
+    let scope = Scope::of(client);
+    let rules = catalogue::list_rules(db)?;
+    let mut shown = Vec::with_capacity(rules.len());
+    for rule in rules {
+        if sees_source(&scope, catalogue::source_of(db, &rule.id)?.as_deref()) {
+            shown.push(rule);
+        }
+    }
+    Ok(shown)
+}
+
+/// The sorting rule `id` if `client` sees it ([`sort_rules_for`]), else `not-found` – also when
+/// it is there, so nothing tells a hidden rule from a missing one.
+fn visible_sort_rule(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<torro_inbox::SortRule, Failure> {
+    sort_rules_for(db, client)?.into_iter().find(|rule| rule.id == id).ok_or_else(|| catalogue::no_rule(id))
+}
+
+/// A sorting rule of the mail account `source` (`None`: a rule of the editor, for every account)
+/// is one `scope` sees.
+fn sees_source(scope: &Scope, source: Option<&str>) -> bool {
+    match source {
+        None => true,
+        Some(source) => source.parse::<SourceRef>().is_ok_and(|source| scope.sees(&source)),
+    }
 }
 
 /// The rule of "Always for this sender?" with the id `id`, as `inbox.list_rules` lists it (task
@@ -6638,8 +6681,8 @@ pub(crate) mod tests {
             id: first.id.clone(),
             category: Category::Receipt,
             conditions: vec![on(SortField::Subject, "  Receipt  ")],
-            exceptions: vec![on(SortField::Text, "refund")],
-            enabled: false,
+            exceptions: Some(vec![on(SortField::Text, "refund")]),
+            enabled: Some(false),
         };
         let (changed, place) = made(inbox.handle(change, None, at(8, 4)));
         assert_eq!((changed.category, changed.enabled, place), (Category::Receipt, false, 2));
@@ -6679,6 +6722,88 @@ pub(crate) mod tests {
         assert_eq!(inbox.handle(Request::ListSortRules, Some(&blind), at(9, 0)), Response::SortRules { rules: vec![] });
     }
 
+    /// API review of #255: a rule "Always for this sender?" kept in a mail account a key may not
+    /// read is no rule for that key – not listed, not changed, not moved, not removed, and not
+    /// replaced when it files the same sender in its own account. Rules of the editor hold for
+    /// every account and are listed to every key that reads mail.
+    #[test]
+    fn a_kept_rule_of_another_account_stays_out_of_reach() {
+        use torro_inbox::{SortCondition, SortField};
+        use torro_mail::Category;
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let other: SourceRef = "mail:bob@example.org".parse().expect("a source");
+        let mine: SourceRef = ANNA.parse().expect("a source");
+        // Bob's account keeps billing@shop.example as an invoice; the editor has a rule for all.
+        let kept = inbox.with(|db| {
+            catalogue::keep_sender(db, "billing@shop.example", Category::Invoice, &other, at(8, 0), |_| true)
+        });
+        let (kept, _) = kept.expect("kept");
+        let editor = Request::CreateSortRule {
+            category: Category::Promotion,
+            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            exceptions: Vec::new(),
+            position: None,
+            enabled: true,
+        };
+        assert!(matches!(inbox.handle(editor, None, at(8, 1)), Response::SortRule { .. }));
+
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = Selection::Only(vec![mine.key()]);
+        let anna_only = client("c0ffee02", "agent", rights);
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, Some(&anna_only), at(9, 0)) else {
+            panic!("the rules")
+        };
+        assert_eq!(rules.iter().map(|rule| rule.category).collect::<Vec<_>>(), [Category::Promotion]);
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, at(9, 0)) else {
+            panic!("rules")
+        };
+        assert_eq!(rules.len(), 2, "the person sees both");
+        for request in [
+            Request::RemoveSortRule { id: kept.id.clone() },
+            Request::MoveSortRule { id: kept.id.clone(), position: 1 },
+            Request::UpdateSortRule {
+                id: kept.id.clone(),
+                category: Category::Spam,
+                conditions: kept.conditions.clone(),
+                exceptions: None,
+                enabled: None,
+            },
+        ] {
+            assert_eq!(inbox.refusal(&request, Some(&anna_only)).as_ref().map(code), Some("not-found"), "{request:?}");
+            assert_eq!(code(&inbox.handle(request, Some(&anna_only), at(9, 1))), "not-found");
+        }
+        // Filing the same sender in Anna's account keeps a rule of its own, Bob's stays.
+        let made = inbox
+            .with(|db| category_rule(db, "billing@shop.example", Category::Receipt, &mine, Some(&anna_only), at(9, 2)));
+        assert!(made.expect("kept").1, "a new rule");
+        let Response::SortRules { rules } = inbox.handle(Request::ListSortRules, None, at(9, 3)) else {
+            panic!("rules")
+        };
+        assert!(rules.iter().any(|rule| rule.id == kept.id && rule.category == Category::Invoice), "Bob's stays");
+        assert_eq!(rules.len(), 3);
+        // An update that leaves the switch and the exceptions out keeps them.
+        let editor_id = rules.iter().find(|rule| rule.category == Category::Promotion).map(|rule| rule.id.clone());
+        let off = Request::UpdateSortRule {
+            id: editor_id.clone().expect("the editor's"),
+            category: Category::Promotion,
+            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            exceptions: Some(vec![SortCondition { field: SortField::Text, value: "invoice".into() }]),
+            enabled: Some(false),
+        };
+        assert!(matches!(inbox.handle(off, None, at(9, 4)), Response::SortRule { .. }));
+        let renamed = Request::UpdateSortRule {
+            id: editor_id.expect("the editor's"),
+            category: Category::Newsletter,
+            conditions: vec![SortCondition { field: SortField::Subject, value: "sale".into() }],
+            exceptions: None,
+            enabled: None,
+        };
+        let Response::SortRule { rule, .. } = inbox.handle(renamed, None, at(9, 5)) else { panic!("changed") };
+        assert_eq!((rule.enabled, rule.exceptions.len()), (false, 1), "left out, kept");
+    }
+
     /// Task E15.3: what files new mail first – a sorting rule before the headers, an exception
     /// leaves the mail to the next rule, a rule switched off holds for nothing.
     #[test]
@@ -6715,8 +6840,8 @@ pub(crate) mod tests {
             id: rule.id,
             category: rule.category,
             conditions: rule.conditions,
-            exceptions: rule.exceptions,
-            enabled: false,
+            exceptions: Some(rule.exceptions),
+            enabled: Some(false),
         };
         assert!(matches!(inbox.handle(off, None, at(8, 1)), Response::SortRule { .. }));
         assert_eq!(

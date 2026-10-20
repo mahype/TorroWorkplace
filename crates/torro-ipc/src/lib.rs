@@ -1750,13 +1750,19 @@ pub enum Request {
     /// for `inbox.create_category`.
     #[serde(rename = "inbox.update_category")]
     UpdateCategory {
+        /// The category's key, as `inbox.list_categories` gives it.
         category: torro_mail::Category,
+        /// The group to move it to. Left out: as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         group: Option<torro_mail::CategoryGroup>,
+        /// Its new name; empty puts back the suite's word. Left out: as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        /// What it means, as a model reads it; empty puts back the suite's description. Left out:
+        /// as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+        /// A decision model may choose it. Left out: as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<bool>,
     },
@@ -1767,6 +1773,7 @@ pub enum Request {
     /// that is not in the catalogue, `error` for a replacement that is not.
     #[serde(rename = "inbox.remove_category")]
     RemoveCategory {
+        /// The key of a category the person made, `custom_<n>`.
         category: torro_mail::Category,
         /// Where what names the category goes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1784,8 +1791,11 @@ pub enum Request {
     /// than one line, a category that is not in the catalogue, or more than 500 rules.
     #[serde(rename = "inbox.create_sort_rule")]
     CreateSortRule {
+        /// What mail the rule holds for is filed as: a category of `inbox.list_categories`.
         category: torro_mail::Category,
+        /// All of them must hold; at least one, at most 10.
         conditions: Vec<torro_inbox::SortCondition>,
+        /// None of them may hold; at most 10.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exceptions: Vec<torro_inbox::SortCondition>,
         /// Where it stands, 0 first; left out: last.
@@ -1795,27 +1805,42 @@ pub enum Request {
         #[serde(default = "on", skip_serializing_if = "is_on")]
         enabled: bool,
     },
-    /// Changes a sorting rule ([`Response::SortRule`], task E15.1): all of it but its id and its
-    /// place. `not-found` for a rule that is not there; `error` as for `inbox.create_sort_rule`.
+    /// Changes a sorting rule ([`Response::SortRule`], task E15.1): its category and conditions,
+    /// and its exceptions and switch where given – left out, they stay as they are. Its id, place
+    /// and age stay. `not-found` for a rule that is not there or that this key may not see;
+    /// `error` as for `inbox.create_sort_rule`.
     #[serde(rename = "inbox.update_sort_rule")]
     UpdateSortRule {
+        /// The rule's id, as `inbox.list_sort_rules` gives it.
         id: String,
+        /// What mail the rule holds for is filed as.
         category: torro_mail::Category,
+        /// All of them must hold; at least one.
         conditions: Vec<torro_inbox::SortCondition>,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        exceptions: Vec<torro_inbox::SortCondition>,
-        #[serde(default = "on", skip_serializing_if = "is_on")]
-        enabled: bool,
+        /// None of them may hold; an empty list takes them all away. Left out: as they are.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exceptions: Option<Vec<torro_inbox::SortCondition>>,
+        /// On or off. Left out: as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
     },
     /// Removes a sorting rule ([`Response::SortRules`], task E15.1). Mail it filed keeps its
-    /// category. `not-found` for a rule that is not there.
+    /// category. `not-found` for a rule that is not there or that this key may not see.
     #[serde(rename = "inbox.remove_sort_rule")]
-    RemoveSortRule { id: String },
+    RemoveSortRule {
+        /// The rule's id, as `inbox.list_sort_rules` gives it.
+        id: String,
+    },
     /// Moves a sorting rule to `position`, 0 first ([`Response::SortRules`], task E15.1); the
     /// others keep their order around it. A position past the end puts it last. `not-found` for a
-    /// rule that is not there.
+    /// rule that is not there or that this key may not see.
     #[serde(rename = "inbox.move_sort_rule")]
-    MoveSortRule { id: String, position: u32 },
+    MoveSortRule {
+        /// The rule's id, as `inbox.list_sort_rules` gives it.
+        id: String,
+        /// Its new place, 0 first.
+        position: u32,
+    },
     /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
     ///
     /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation

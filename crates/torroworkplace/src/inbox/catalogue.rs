@@ -75,6 +75,8 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
         let (Some(category), Some(group)) = (category, CategoryGroup::from_key(&group)) else { continue };
         defs.push(CategoryDef { category, group, name: Some(name), description: Some(description), model });
     }
+    // By group, as the sidebar lists them; within a group the suite's order, then the person's.
+    defs.sort_by_key(|def| CategoryGroup::ALL.iter().position(|group| *group == def.group));
     Ok(defs)
 }
 
@@ -115,14 +117,15 @@ pub(super) fn create(
         .ok_or_else(|| Failure::Invalid(tr("Describe what belongs in the category.").into()))?;
     let mut catalogue = catalogue_in(db)?;
     // Checked as it would stand, with a key no category has yet.
+    let unborn = CustomCategory::new(u32::MAX).map_or(Category::Other, Category::Custom);
     catalogue.push(CategoryDef {
-        category: CustomCategory::new(u32::MAX).map_or(Category::Other, Category::Custom),
+        category: unborn,
         group,
         name: Some(name.clone()),
         description: Some(description.clone()),
         model,
     });
-    check(&catalogue)?;
+    check(&catalogue, unborn)?;
     db.execute(
         "INSERT INTO custom_categories (grp, name, description, model, created) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![group.key(), name, description, model, stamp(now)],
@@ -173,7 +176,7 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
     if let Some(held) = catalogue.iter_mut().find(|held| held.category == category) {
         *held = def.clone();
     }
-    check(&catalogue)?;
+    check(&catalogue, category)?;
     if category.is_built_in() {
         // Only what differs from the suite is kept, so a category put back reads as new.
         let suite = CategoryDef::built_in(category);
@@ -199,32 +202,35 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
     Ok(def)
 }
 
-/// The catalogue as it would stand is one a person can read and a model can be asked about:
-/// no two categories read alike, and no group offers a model more than it can choose between.
-pub(super) fn check(catalogue: &[CategoryDef]) -> Result<(), Failure> {
-    let mut seen: Vec<String> = Vec::new();
-    for def in catalogue {
-        let name = torro_core::category::name_of(def);
-        let folded = name.to_lowercase();
-        if seen.contains(&folded) {
-            return Err(Failure::Invalid(trf("There is a category called “{name}” already.", &[("name", &name)])));
-        }
-        seen.push(folded);
+/// The catalogue as it would stand with `changed` made or changed is one a person can read and a
+/// model can be asked about: `changed` reads like no other category, and its group offers a model
+/// no more than it can choose between.
+///
+/// Only `changed` is weighed (correctness review of #255): the suite's words follow the core's
+/// language, so a name of the person's own may read like one of the suite's after the language
+/// changed – that must not block every other change of the catalogue.
+pub(super) fn check(catalogue: &[CategoryDef], changed: Category) -> Result<(), Failure> {
+    let Some(def) = catalogue.iter().find(|def| def.category == changed) else { return Ok(()) };
+    let name = torro_core::category::name_of(def);
+    let taken = catalogue
+        .iter()
+        .filter(|other| other.category != changed)
+        .any(|other| torro_core::category::name_of(other).to_lowercase() == name.to_lowercase());
+    if taken {
+        return Err(Failure::Invalid(trf("There is a category called “{name}” already.", &[("name", &name)])));
     }
-    for group in CategoryGroup::ALL {
-        // "Other" is always offered: it is what "nothing fits" means (task E15.4).
-        let offered = |def: &&CategoryDef| def.model || def.category == Category::Other;
-        let for_model = catalogue.iter().filter(|def| def.group == group).filter(offered).count();
-        if for_model > MODEL_PER_GROUP_MAX {
-            return Err(Failure::Invalid(trf(
-                "{group} would have {n} categories for the AI; at most {most} fit.",
-                &[
-                    ("group", &torro_core::category::group_label(group)),
-                    ("n", &for_model.to_string()),
-                    ("most", &MODEL_PER_GROUP_MAX.to_string()),
-                ],
-            )));
-        }
+    // "Other" is always offered: it is what "nothing fits" means (task E15.4).
+    let offered = |held: &&CategoryDef| held.model || held.category == Category::Other;
+    let for_model = catalogue.iter().filter(|held| held.group == def.group).filter(offered).count();
+    if for_model > MODEL_PER_GROUP_MAX {
+        return Err(Failure::Invalid(trf(
+            "{group} would have {n} categories for the AI; at most {most} fit.",
+            &[
+                ("group", &torro_core::category::group_label(def.group)),
+                ("n", &for_model.to_string()),
+                ("most", &MODEL_PER_GROUP_MAX.to_string()),
+            ],
+        )));
     }
     Ok(())
 }
@@ -467,18 +473,39 @@ pub(super) fn move_rule(db: &mut Connection, id: &str, position: u32) -> Result<
 /// files `sender`'s mail as `category`, with the mail account it was made in. One sender has one:
 /// the same again is the rule there (`false`); another category replaces it (`true`). A new one
 /// goes first, since the person just decided about this very sender.
+///
+/// Only rules this very path made count (`source`), and only of mail accounts `sees` lets
+/// through (correctness review of #255): a rule of the editor with the same sender stays the
+/// editor's, and a client never replaces a rule of an account it may not read.
 pub(super) fn keep_sender(
     db: &Connection,
     sender: &str,
     category: Category,
     source: &SourceRef,
     now: DateTime<Utc>,
+    sees: impl Fn(&str) -> bool,
 ) -> Result<(SortRule, bool), Failure> {
     let mut order = order_of(db)?;
-    let kept: Vec<SortRule> =
-        sort_rules_in(db)?.into_iter().filter(|rule| only_sender(rule).as_deref() == Some(sender)).collect();
+    let mut kept: Vec<SortRule> = Vec::new();
+    let mut statement = db.prepare("SELECT source, data FROM sort_rules WHERE source IS NOT NULL")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (made_in, data) = row?;
+        let rule: SortRule = serde_json::from_str(&data)?;
+        if sees(&made_in) && only_sender(&rule).as_deref() == Some(sender) {
+            kept.push(rule);
+        }
+    }
+    drop(statement);
     if let Some(same) = kept.iter().find(|rule| rule.category == category && rule.enabled) {
         return Ok((same.clone(), false));
+    }
+    if order.len() - kept.len() >= SORT_RULES_MAX {
+        let most = SORT_RULES_MAX.to_string();
+        return Err(Failure::Invalid(trf(
+            "There are {most} sorting rules already; remove one first.",
+            &[("most", &most)],
+        )));
     }
     for old in &kept {
         db.execute("DELETE FROM sort_rules WHERE id = ?1", [&old.id])?;
@@ -566,7 +593,15 @@ fn renumber(db: &Connection, order: &[String]) -> Result<(), Failure> {
     Ok(())
 }
 
-fn no_rule(id: &str) -> Failure {
+/// The mail account "Always for this sender?" made the rule `id` in; `None` for a rule of the
+/// editor and one that is not there.
+pub(super) fn source_of(db: &Connection, id: &str) -> Result<Option<String>, Failure> {
+    let source: Option<Option<String>> =
+        db.query_row("SELECT source FROM sort_rules WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+    Ok(source.flatten())
+}
+
+pub(super) fn no_rule(id: &str) -> Failure {
     Failure::NotFound(trf("There is no sorting rule {id}.", &[("id", &id)]))
 }
 
