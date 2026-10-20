@@ -79,7 +79,7 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Space, column, container, row, svg, text, toggler};
+use iced::widget::{Space, column, container, row, scrollable, svg, text, toggler};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
@@ -1064,8 +1064,11 @@ pub fn provider_column<'a>(
             Message::ShowProvider(group.key().to_string()),
         )
     });
-    let items = column(items).spacing(space::xs()).width(Fill);
-    Some(container(items).width(width).height(Fill).padding(space::s()).into())
+    // Scrolls on its own, so a low window still reaches the last provider.
+    let items = container(column(items).spacing(space::xs()).width(Fill)).padding(space::s());
+    let items =
+        scrollable(items).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable);
+    Some(container(items).width(width).height(Fill).into())
 }
 
 /// Whether the providers stand in a column beside the list ([`provider_column`]): wide and medium.
@@ -1398,16 +1401,20 @@ fn provider_mark(group: Listed<'_>, entries: &[&AccountInfo], palette: &Palette)
 }
 
 /// The overview's "Open accounts" (task S.37): as the list shows one provider, it shows the first
-/// whose accounts need the person – the one the attention row named, or one before it. Nothing
-/// changes while no account does.
+/// with an account the overview lists as needing the person – not signed in or failing; one
+/// signing in right now is not among them – and leaves an open account's page for the list.
+/// The choice stays while no account needs the person.
 pub fn show_in_need(state: &mut State, data: &Data) {
-    let entries = entries(data);
-    let in_need = providers(&entries)
-        .into_iter()
-        .find(|&group| matches!(group_tone(group, &entries), Some(Tone::Attention | Tone::Error)));
-    if let Some(group) = in_need {
+    let in_need: Vec<&AccountInfo> = listed(&data.accounts)
+        .filter(|account| !matches!(account.state, AccountState::SigningIn { .. }))
+        .filter(|account| status_line(&account.state).tone != Tone::Ok)
+        .collect();
+    if let Some(group) = providers(&in_need).into_iter().find(|&group| accounts_in(group, &in_need) > 0) {
         state.provider = Some(group.key().to_string());
     }
+    state.selected = None;
+    close_dialogs(state);
+    state.models_page = ModelsPage::default();
 }
 
 /// The groups of the list: every fixed group in its order, accounts or not, then each kind of
@@ -2640,9 +2647,21 @@ mod tests {
     fn the_way_into_the_list_chooses_the_provider_it_is_about() {
         let broken = AccountInfo { kind: "github".into(), ..account("github:anna", connected(None, Some("Gone"))) };
         let data = Data { accounts: vec![of_kind("nextcloud:a", "nextcloud"), broken], ..Data::default() };
-        let mut state = State { provider: Some("ntfy".into()), ..State::default() };
+        let mut state =
+            State { provider: Some("ntfy".into()), selected: Some("nextcloud:a".into()), ..State::default() };
         show_in_need(&mut state, &data);
         assert_eq!(state.provider.as_deref(), Some("github"));
+        assert_eq!(state.selected, None, "the list, not the page left open");
+        let signing_in = AccountInfo {
+            kind: "nextcloud".into(),
+            ..account(
+                "nextcloud:b",
+                AccountState::SigningIn { server: "https://cloud.example.org".into(), login_url: String::new() },
+            )
+        };
+        let waiting = Data { accounts: vec![signing_in, data.accounts[1].clone()], ..Data::default() };
+        show_in_need(&mut state, &waiting);
+        assert_eq!(state.provider.as_deref(), Some("github"), "a sign-in in progress is not in need");
         let fine = Data { accounts: vec![of_kind("nextcloud:a", "nextcloud")], ..Data::default() };
         show_in_need(&mut state, &fine);
         assert_eq!(state.provider.as_deref(), Some("github"), "nothing in need: the choice stays");

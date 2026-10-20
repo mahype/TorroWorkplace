@@ -1020,7 +1020,8 @@ Beide ändern `ui/accounts.rs` und laufen nacheinander, S.36 zuerst.
   `Icon::Sparkles` AI, `Icon::Bell` ntfy, `Icon::Folder` andere Art), Name (`Group::title` bzw. `provider_name`),
   `Trail::Count` mit der Zahl der Konten aus `listed` (keine Zahl bei 0). Braucht ein Konto der Gruppe Aufmerksamkeit
   oder hat einen Fehler (schlechtester `Tone` aus `status_line`, laufende Anmeldungen mitgezählt), ist das Symbol
-  `Mark::Tinted` in `attention` bzw. `error` der Palette. Die Shell reicht dafür `palette(&self.theme())` an die Seite.
+  `Mark::Tinted` in `attention_text` bzw. `error_text` der Palette (geändert bei der Umsetzung: `attention` und
+  `error` sind für kleine Symbole auf hellem Grund zu hell). Die Shell reicht dafür `palette(&self.theme())` an die Seite.
   Reine Funktionen mit Tests: gewählte Gruppe, Zahl, schlechtester Ton.
 - **Größenklassen:** Breit: Spalte `size::sidebar()` breit (`SidebarMode::Expanded`), Mittel: Spalte `shell::rail()`
   breit nur mit Symbolen (`SidebarMode::Rail`, Name und Zahl als Tooltip; in der Planung entschieden), beide am linken

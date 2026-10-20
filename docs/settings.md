@@ -316,8 +316,8 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
 ### Accounts
 
 - **Feste Gruppen**, immer sichtbar, in dieser Reihenfolge: **Nextcloud**, **Mail** (mit den CalDAV-Konten
-  eines Mail-Anbieters, Art `caldav`), **GitHub**, **AI**, **ntfy**. Eine leere Gruppe sagt in einem Satz, was
-  hierher gehört („Add a Nextcloud for calendars and tasks.“), statt zu verschwinden.
+  eines Mail-Anbieters, Art `caldav`), **GitHub**, **AI**, **ntfy**. Jeder Anbieter sagt in einem Satz unter seinem
+  Namen, was hierher gehört; ohne Konto steht „No account yet.“ über seinem „Add“, statt dass er verschwindet.
 - **Anbieter links, Konten rechts** (#244, S.37): Die Gruppen stehen als Anbieter in einer Spalte am linken
   Rand des Inhalts (Breit mit Namen und Zahl, Mittel nur mit Symbolen, Schmal als Chips über der Liste); das
   Symbol färbt sich, wenn ein Konto Aufmerksamkeit braucht oder einen Fehler hat. „Open accounts“ der Übersicht
@@ -326,7 +326,7 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
   Anbieter: Name, darunter der Satz, was hierher gehört, dann seine Konten und „Add“. Ohne Wahl ist der erste
   Anbieter mit Konto gewählt; das Öffnen eines Kontos wählt seinen Anbieter, damit „Back“ dort landet. Entwurf:
   `docs/prototypes/accounts/index.html` (Variante A).
-- **„+ Add“ je Gruppe** (in der Kopfzeile der Gruppe bzw. als Zeile am Ende der leeren Gruppe) öffnet den
+- **„+ Add“ je Gruppe** (seit #244 als letzte Zeile der Gruppe „Accounts“ des gewählten Anbieters) öffnet den
   Add-Dialog direkt beim ersten Schritt dieses Anbieters. Der Dialog hat keinen Katalog mehr und kein „Back“
   zu einem Katalog; „Back“ gibt es nur noch zwischen den Schritten eines Anbieters. Der globale Knopf „Add
   account“ in der Kopfleiste entfällt, ebenso die Zeile „Slack – Coming soon“.
@@ -334,7 +334,7 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
   nur, wenn TorroMail Konten hat, die die Suite übernehmen kann und noch nicht hat. Der Knopf öffnet denselben
   Dialog bei einem eigenen Schritt „TorroMail“, der nur die Liste zum Übernehmen zeigt (wie bisher oben im
   Katalog). Die Einrichtung beim ersten Start („Take over from TorroMail“) öffnet denselben Schritt.
-- **KI-Konten:** Gruppe „AI“ und Kontoseite mit „Models“, siehe [KI](#ki). Unter der Gruppe die Datenregel.
+- **KI-Konten:** Gruppe „AI“ und Kontoseite mit „Models“, siehe [KI](#ki). Bei AI unter den Konten die Datenregel.
 
 ### API
 
