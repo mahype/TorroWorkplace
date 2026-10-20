@@ -3102,7 +3102,7 @@ pub fn group_row<'a, M: 'a>(
 //
 // The rights of a client or a bot (task U.13): the control centre's API and MCP and the bot
 // editor of the assistant show them alike – a row per area with a [`segmented`] control of the
-// levels, all controls starting in one column at the right ([`segment_column`]), or, where a name
+// levels, all controls ending in one column at the right ([`segment_column`]), or, where a name
 // would not fit beside that column, each control on a line of its own under its name.
 
 /// The estimated width of a [`segmented`] control with `labels`: each label in `CAPTION` with the
@@ -3137,7 +3137,8 @@ pub fn segment_column<'t>(
 
 /// A row of a settings [`group`] with a segmented `control`. With a `column` ([`segment_column`])
 /// the row is 44 high (56 with a `detail`), 16 at the sides, name and line on one line each, the
-/// control at the left of the column at the right. Without one the name, the line below it
+/// control at the right of the column – right-aligned, so controls of every width end on the axis
+/// of the switches, chevrons and buttons of the other rows. Without one the name, the line below it
 /// (wrapping) and the control on a line of its own under both; 12 above and below, 16 at the sides.
 /// The sides stay 16 in every design, the width [`segment_column`] reckons with.
 pub fn segment_row<'a, M: 'a>(
@@ -3146,18 +3147,39 @@ pub fn segment_row<'a, M: 'a>(
     control: impl Into<Element<'a, M>>,
     column: Option<f32>,
 ) -> Element<'a, M> {
+    segment_row_noted(label, None, detail, control, column)
+}
+
+/// A [`segment_row`] with a quiet `note` right after the name, in `META` and `text_3` (the rights
+/// editor's "· 2 off"): it says something about the row, but is not part of its name. The caller
+/// writes the note as it is shown, separator included.
+pub fn segment_row_noted<'a, M: 'a>(
+    label: impl IntoFragment<'a>,
+    note: Option<String>,
+    detail: Option<String>,
+    control: impl Into<Element<'a, M>>,
+    column: Option<f32>,
+) -> Element<'a, M> {
+    let name = |wrapping: Wrapping| {
+        let name = row![typo::text(typo::body(), label).wrapping(wrapping)]
+            .push(note.map(|note| typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::None)))
+            .spacing(space::xs())
+            .align_y(Alignment::Center);
+        container(name).width(Fill).clip(true)
+    };
     match column {
         Some(slot) => {
             let height = if detail.is_some() { size::header() + space::m() } else { size::header() };
-            let mut text = column![single_line(typo::text(typo::body(), label))];
+            let mut text = column![name(Wrapping::None)];
             if let Some(detail) = detail {
                 text = text.push(single_line(typo::text(typo::meta(), detail).style(theme::text_2)));
             }
-            let row = row![text.width(Fill), container(control).width(slot)].spacing(space::l());
+            let control = container(control).width(slot).align_x(Alignment::End);
+            let row = row![text.width(Fill), control].spacing(space::l());
             container(row.align_y(Alignment::Center)).width(Fill).center_y(height).padding([0.0, space::l()]).into()
         }
         None => {
-            let mut lines = column![typo::text(typo::body(), label)];
+            let mut lines = column![name(Wrapping::WordOrGlyph)];
             if let Some(detail) = detail {
                 lines =
                     lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));

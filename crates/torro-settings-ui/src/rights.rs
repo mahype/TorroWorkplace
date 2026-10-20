@@ -528,6 +528,7 @@ pub fn off_count(area: Area, rights: &Rights) -> usize {
 
 /// The first sentence of a command's catalogue description, for the line under its name:
 /// everything up to the first full stop that ends a sentence ("e.g." does not), or all of it.
+/// Still in the catalogue's Markdown; [`plain`] takes that out for people.
 pub fn first_sentence(description: &str) -> &str {
     let mut from = 0;
     while let Some(found) = description[from..].find(". ") {
@@ -539,6 +540,12 @@ pub fn first_sentence(description: &str) -> &str {
         from = end;
     }
     description
+}
+
+/// `text` without the Markdown marks the catalogue's descriptions use for agents – backticks around
+/// a name (`` `due_only` ``) and `*` for emphasis –, so the line under a command reads as plain text.
+pub fn plain(text: &str) -> String {
+    text.chars().filter(|c| !matches!(c, '`' | '*')).collect()
 }
 
 /// The warning under an area's row of a client of `kind` with `rights`, while that area reaches the
@@ -578,10 +585,10 @@ pub fn sends_freely(rights: &Rights) -> bool {
     can_send(rights.area(Area::Mail).level) && rights.outbound == Outbound::Free
 }
 
-/// The width of the slot every segmented control of the editor starts in, left-aligned: as wide as
-/// the widest of them (all four levels, "Ask first", "Send on my behalf", "All · Selected") in the
-/// language shown. So "None" stands under "None" whether an area offers two levels or four, and the
-/// page lines up in every size class without a width of its own.
+/// The width of the slot every control of the editor stands in, right-aligned: as wide as the widest
+/// segmented control (all four levels, "Ask first", "Send on my behalf", "All · Selected") in the
+/// language shown. So every control ends on the axis of the switches and chevrons of the other rows,
+/// and the page lines up in every size class without a width of its own.
 pub fn segment_slot() -> f32 {
     let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(widgets::level_label);
     let confirm = widgets::confirm_options().map(|(label, _)| label);
@@ -615,11 +622,12 @@ pub fn control_column(width: f32) -> Option<f32> {
     widgets::segment_column(segment_slot(), areas.chain(admins).chain([sending]), width)
 }
 
-/// `control` where the editor puts its controls: at the left of the column, or as it is (at the
-/// right edge of its row) without one ([`control_column`]).
+/// `control` where the editor puts its controls: at the right of the column – where the segmented
+/// controls of `widgets::segment_row` end too –, or as it is (at the right edge of its row) without
+/// one ([`control_column`]).
 pub fn in_column<'a, M: 'a>(control: impl Into<Element<'a, M>>, column: Option<f32>) -> Element<'a, M> {
     match column {
-        Some(slot) => container(control).width(slot).into(),
+        Some(slot) => container(control).width(slot).align_x(Alignment::End).into(),
         None => control.into(),
     }
 }
@@ -667,14 +675,21 @@ fn area_detail(area: Area) -> &'static str {
     }
 }
 
-/// An area's name in its row, and how many of its commands are switched off while some are
-/// ("Calendar · 2 off"). On the name, not on the line below it: the names are short, so the count
-/// fits beside the column of controls in every language, where the longest line would be cut.
+/// An area's name in its row with how many of its commands are switched off while some are
+/// ("Calendar · 2 off"), as [`control_column`] reckons its width. On the name, not on the line below
+/// it: the names are short, so the count fits beside the column of controls in every language, where
+/// the longest line would be cut. The row shows the count quieter than the name ([`off_note`]).
 pub fn area_name(area: Area, off: usize) -> String {
-    match off {
-        0 => area_label(area).to_string(),
-        n => format!("{} · {}", area_label(area), trf("{n} off", &[("n", &n)])),
+    match off_note(off) {
+        None => area_label(area).to_string(),
+        Some(note) => format!("{} {note}", area_label(area)),
     }
+}
+
+/// What follows an area's name while some of its commands are switched off: "· 2 off", shown in
+/// `META` and `text_3` (`widgets::segment_row_noted`); `None` while none are.
+pub fn off_note(off: usize) -> Option<String> {
+    (off > 0).then(|| format!("· {}", trf("{n} off", &[("n", &off)])))
 }
 
 /// What the admin switch of an area allows.
@@ -971,8 +986,14 @@ fn access_group<'a>(
             offered.into_iter().map(|level| (widgets::level_label(level), Message::Level(area, level))),
             active,
         );
-        let name = area_name(area, off_count(area, rights));
-        rows.push(widgets::segment_row(name, Some(area_detail(area).to_string()), control, column));
+        let note = off_note(off_count(area, rights));
+        rows.push(widgets::segment_row_noted(
+            area_label(area),
+            note,
+            Some(area_detail(area).to_string()),
+            control,
+            column,
+        ));
         rows.extend(bot_warning(area, rights, kind).map(warning_row));
         if area == Area::Mail && can_send(granted.level) {
             rows.extend(outbound_rows(rights, column));
@@ -999,7 +1020,8 @@ fn access_group<'a>(
 }
 
 /// "Show commands" under an area, or "Hide commands" while its commands are shown; the whole row
-/// is the button.
+/// is the button. Its chevron stands where the names of the commands below start ([`indent`] and
+/// the gap of a `setting_row`'s mark), so the row and the commands it opens share one axis.
 fn disclosure_row<'a>(area: Area, shown: bool) -> Element<'a, Message> {
     let (label, which) = match shown {
         true => (tr("Hide commands"), Icon::ChevronUp),
@@ -1007,7 +1029,8 @@ fn disclosure_row<'a>(area: Area, shown: bool) -> Element<'a, Message> {
     };
     let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let words = typo::text(typo::body(), label).style(theme::text_2);
-    let content = row![indent(), mark, words].spacing(space::s()).align_y(Alignment::Center);
+    let label = row![mark, words].spacing(space::s()).align_y(Alignment::Center);
+    let content = row![indent(), label].spacing(space::m()).align_y(Alignment::Center);
     pressable(row_frame(content, false), Some(Message::Expand(area)))
 }
 
@@ -1024,7 +1047,7 @@ fn command_row<'a>(
     let name = command.name;
     let switch =
         toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(move |on| Message::Command(name, on));
-    let detail = Some(first_sentence(command.description).to_string());
+    let detail = Some(plain(first_sentence(command.description)));
     let row = setting_row(Some(indent()), naming.name(command), detail, in_column(switch, column));
     pressable(row, Some(Message::Command(name, !on)))
 }
@@ -1486,8 +1509,15 @@ mod tests {
         assert_eq!(first_sentence("Deletes the event. It cannot be restored."), "Deletes the event.");
         assert_eq!(first_sentence("Pauses, e.g. during a talk. Then more."), "Pauses, e.g. during a talk.");
         assert_eq!(first_sentence("No full stop"), "No full stop");
+        // #231: the line under a command shows no Markdown of the catalogue.
+        assert_eq!(
+            plain("Lists them: with `due_only` *only* the due ones."),
+            "Lists them: with due_only only the due ones."
+        );
         for command in CATALOGUE {
-            assert!(!first_sentence(command.description).is_empty(), "{}", command.name);
+            let line = plain(first_sentence(command.description));
+            assert!(!line.is_empty(), "{}", command.name);
+            assert!(!line.contains(['`', '*']), "{}", command.name);
         }
     }
 
@@ -1498,6 +1528,8 @@ mod tests {
         assert_eq!(area_name(Area::Calendar, 0), tr("Calendar"));
         let two = trf("{n} off", &[("n", &2)]);
         assert_eq!(area_name(Area::Calendar, 2), format!("{} · {two}", tr("Calendar")));
+        assert_eq!(off_note(0), None);
+        assert_eq!(off_note(2), Some(format!("· {two}")));
 
         let mut state = State::default();
         assert_eq!(send(&mut state, &fixture, "c1", Message::Expand(Area::Calendar)), Action::None);
