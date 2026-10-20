@@ -14,7 +14,7 @@ pub mod socket;
 
 use std::path::PathBuf;
 
-use crate::{Events, Monitor, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WorkspaceId};
+use crate::{Events, KeyBind, Monitor, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WorkspaceId};
 
 /// A connection to the running Hyprland instance.
 #[derive(Debug, Clone)]
@@ -33,6 +33,13 @@ impl Hyprland {
     /// Sends one dispatcher expression (`hl.dsp…`) as `dispatch <expression>` and checks the answer.
     async fn dispatch(&self, expression: &str) -> Result<(), WmError> {
         let answer = socket::request(&self.socket_dir, &format!("dispatch {expression}")).await?;
+        dispatch::check_answer(&answer)
+    }
+
+    /// Runs one Lua expression (`hl.bind(…)`, `hl.window_rule(…)`) as `eval <expression>`, what
+    /// `hyprctl eval` does, and checks the answer like a dispatch.
+    async fn eval(&self, expression: &str) -> Result<(), WmError> {
+        let answer = socket::request(&self.socket_dir, &format!("eval {expression}")).await?;
         dispatch::check_answer(&answer)
     }
 }
@@ -79,10 +86,42 @@ impl WindowManager for Hyprland {
     /// them before every start of the window.
     async fn cover_monitors(&self, covers: &[crate::Cover]) -> Result<(), WmError> {
         for cover in covers {
-            let answer = socket::request(&self.socket_dir, &format!("eval {}", dispatch::cover_rule(cover))).await?;
-            dispatch::check_answer(&answer)?;
+            self.eval(&dispatch::cover_rule(cover)).await?;
         }
         Ok(())
+    }
+
+    /// Task WS.1: `hl.dsp.focus({ monitor = … })`.
+    async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
+        self.dispatch(&dispatch::focus_monitor(monitor)).await
+    }
+
+    /// Task WS.1: from `j/version`; `None` when Hyprland does not answer.
+    async fn version(&self) -> Option<String> {
+        let answer = socket::request(&self.socket_dir, "j/version").await.ok()?;
+        json::parse_version(&answer)
+    }
+
+    /// Task WS.1: one `eval hl.bind(…)` per bind. Hyprland drops run-time binds when it reloads its
+    /// configuration ([`crate::WmEvent::ConfigReloaded`]).
+    async fn bind_keys(&self, binds: &[KeyBind]) -> Result<(), WmError> {
+        for bind in binds {
+            self.eval(&dispatch::bind_key(bind)?).await?;
+        }
+        Ok(())
+    }
+
+    /// Task WS.1: one `eval hl.unbind(…)` per key text.
+    async fn unbind_keys(&self, keys: &[String]) -> Result<(), WmError> {
+        for keys in keys {
+            self.eval(&dispatch::unbind_key(keys)).await?;
+        }
+        Ok(())
+    }
+
+    /// Task WS.1: one named rule per class ([`dispatch::float_rule`]).
+    async fn float_dialogs(&self, class: &str) -> Result<(), WmError> {
+        self.eval(&dispatch::float_rule(class)).await
     }
 
     /// Task 1.6.
@@ -252,6 +291,63 @@ mod tests {
             ]
         );
         assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn binds_go_out_as_eval_lines_one_per_bind() {
+        let dir = temp_instance_dir("binds");
+        let server = answer_requests(&dir, 4).await;
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let bind = |keys: &str, id: &str| KeyBind {
+            keys: keys.into(),
+            command: vec!["/usr/bin/torroworkplace".into(), "load".into(), id.into()],
+        };
+        let bound = wm.bind_keys(&[bind("SUPER + ALT + 1", "a"), bind("SUPER + ALT + 0", "b")]).await;
+        let unbound = wm.unbind_keys(&["SUPER + ALT + 1".into()]).await;
+        let floated = wm.float_dialogs("torro-dialog").await;
+        let received = server.await.expect("server task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!((bound, unbound, floated), (Ok(()), Ok(()), Ok(())));
+        assert_eq!(
+            received,
+            vec![
+                r#"eval hl.bind("SUPER + ALT + 1", hl.dsp.exec_cmd("'/usr/bin/torroworkplace' 'load' 'a'"))"#.to_owned(),
+                r#"eval hl.bind("SUPER + ALT + 0", hl.dsp.exec_cmd("'/usr/bin/torroworkplace' 'load' 'b'"))"#.to_owned(),
+                r#"eval hl.unbind("SUPER + ALT + 1")"#.to_owned(),
+                r#"eval hl.window_rule({ name = "torro-float-torro-dialog", match = { class = "^torro-dialog$" }, float = true, center = true })"#.to_owned(),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn focus_monitor_dispatches_and_version_reads_j_version() {
+        let dir = temp_instance_dir("monitor");
+        let server = answer_one_request(&dir, "ok\n").await;
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let focused = wm.focus_monitor("DP-2").await;
+        let received = server.await.expect("server task");
+        assert_eq!(received, r#"dispatch hl.dsp.focus({ monitor = "DP-2" })"#);
+        assert_eq!(focused, Ok(()));
+
+        let _ = std::fs::remove_file(dir.join(".socket.sock"));
+        let server = answer_one_request(&dir, r#"{"version": "0.56.0", "tag": "v0.56.0"}"#).await;
+        let version = wm.version().await;
+        let received = server.await.expect("server task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(received, "j/version");
+        assert_eq!(version.as_deref(), Some("0.56.0"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_hyprland_has_no_version() {
+        let dir = temp_instance_dir("no-version");
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let version = wm.version().await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(version, None);
     }
 
     #[cfg(unix)]

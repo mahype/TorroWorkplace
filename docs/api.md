@@ -76,7 +76,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | Bereich | Lesen | Schreiben | Löschen | Verwalten (`Admin`) |
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
-| `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
+| `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
 | `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰ | `save_event` ¹⁹, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
@@ -412,6 +412,10 @@ Titel aus dem Cache, das Protokoll nur die App. `file:<id>` (Issue #225) öffnet
 mit einer PDF aus dem Register der eigenen Werkzeuge als Anhang (`torroinbox --compose --attach <pfad>`); ein
 Client braucht dafür dasselbe wie für `tools.open_file` (Schalter, Leserecht in `tools`, `pdf` gewählt, die
 Datei hat er selbst erzeugt), sonst `not-found`. Die Freigabe nennt den Titel aus dem Register.
+`template:<id>` (Issue #243) öffnet den kleinen Dialog des Kerns zum Bearbeiten einer Vorlage (`torroworkplace ui
+--template=<id>`), immer im Modus „Edit“, nie im Modus „Save“: dessen „Cancel“ löscht die Vorlage, und das darf
+kein Ziel von außen auslösen. Ein Client braucht Leserecht in `workspaces` (sonst `not-found`); die Freigabe nennt den
+Namen der Vorlage aus dem Speicher.
 
 ¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
 | month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
@@ -591,6 +595,24 @@ Auswahl in den Rechten (`Rights::tools`). Ein Befehl eines Werkzeugs läuft nur,
 `forbidden` (`Lack::ToolOff` bzw. `Lack::Tool`), geprüft vor der Freigabe und bei ihrer Ausführung noch einmal.
 `open_file`, `save_file_as`, `apps.open_app` mit `file:` und Anhänge in `mail.save_draft` nehmen nur Dateien
 aus dem Register des Kerns; ein Client nur solche, die er selbst erzeugt hat.
+
+²³ **Tasten und Laden beim Start** (Issue #243, [tasks/workspaces.md](tasks/workspaces.md)): Je Eigenschaft einer
+Vorlage ein Befehl, damit nichts Ausgelassenes verloren geht; der Name bleibt bei `rename_template`.
+`set_template_shortcut { id, key }` gibt der Vorlage eine Ziffer 0–9 (`null` nimmt sie weg; `key` und `startup` sind
+Pflichtfelder, ein ausgelassenes ist ein Fehler und nie `null`); gedrückt wird sie mit
+den Modifikatoren der Einstellung `workspace_shortcuts` (`super_alt`, `super_ctrl`, `ctrl_alt`, `ctrl_shift`) und
+lädt wie `load_template` im Modus `add`. Hält eine andere Vorlage die Taste, verliert sie sie: beide Dateien in einer
+Schreibrunde, während kein Speichern oder Laden läuft (sonst `busy`). `set_template_startup { id, startup }` lädt die
+Vorlage bei jeder Anmeldung auf den Workspace des Bildschirms `startup.screen`; fehlt er, lädt `fallback: main` auf den
+Hauptbildschirm (der bei 0,0, sonst der erste), `skip` lässt sie aus. Das ist eine bleibende Regel, die bei jeder
+Anmeldung Programme startet, wie `start_at_login`: darum **`Admin`**, für Clients also immer mit Freigabe. Ein
+Bildschirm, der gerade fehlt, ist erlaubt. `list_screens` (`Read`) nennt die Bildschirme mit Name, logischer Größe,
+Skalierung und `main`; `unsupported` ohne Fenstermanager. Beide Befehle antworten mit `saved` und der Vorlage, deren
+Zusammenfassung jetzt auch `shortcut`, `startup`, `workspace` und `monitor` trägt (optional, verträglich).
+`system.status` nennt dazu `wmVersion` und `shortcuts` (Modifikatoren, `active`, `problem`), Letzteres nur mit
+Leserecht in `workspaces`. Die Freigabe nennt die Namen beider Vorlagen aus dem Speicher („Give "Deep work" key 1,
+taken from "Mail"“), ins Protokoll kommen die Kennungen gehasht, bei einer umgezogenen Taste auch die der bisherigen
+Inhaberin (`taken-from:<hash>`), nie der Bildschirm.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

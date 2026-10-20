@@ -97,6 +97,41 @@ fn start_control_centre(section: Section) -> Result<(), String> {
     SystemLauncher.spawn(&control_centre_command(program, section)).map(|_| ()).map_err(|err| err.to_string())
 }
 
+/// The command line of the template dialog in its mode "Save" for `id`, the template saved just now
+/// (task WS.7): `torroworkplace ui --template=<id> --saved`, the line of the mode "Edit"
+/// ([`crate::apps::target_command`]) with `--saved`. Only "Save workspace…" in the tray builds it
+/// ([`Core::save_workspace`]): the dialog's Cancel deletes the template again, so `apps.open_app`
+/// never opens this mode.
+fn save_dialog_command(program: String, id: &str) -> Vec<String> {
+    let mut command = crate::apps::target_command(program, &crate::apps::Opened::Template { id: id.to_string() });
+    command.push("--saved".to_string());
+    command
+}
+
+/// Starts the template dialog in its mode "Save" for `id` through `launcher` ([`save_dialog_command`],
+/// the core's own binary as [`sibling`] finds it), without waiting for it: the dialog loads what it
+/// shows itself and ends after Save or Cancel. `false`, with a line on stderr, when it cannot start.
+fn start_save_dialog(launcher: &impl Launcher, id: &str) -> bool {
+    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+    match launcher.spawn(&save_dialog_command(program, id)) {
+        Ok(_) => true,
+        Err(err) => {
+            eprintln!("torroworkplace: cannot open the dialog of template {id}: {err}");
+            false
+        }
+    }
+}
+
+/// What "Save workspace…" in the tray did (task WS.7, [`Core::save_workspace`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedWorkspace {
+    /// The answer of `workspaces.save_template`: `Saved` with the new template, or why not.
+    pub response: Response,
+    /// Whether the dialog for the new template started. It then shows the result itself, so the
+    /// tray tells nothing more; without it the tray reports the save as after any other.
+    pub dialog: bool,
+}
+
 /// Shows the person the control centre: an open one comes to the front, else one starts on
 /// `section` through `start`. An open one is never closed and restarted, because that would throw
 /// away whatever the person is typing there (a half-pasted token, say).
@@ -1200,6 +1235,14 @@ pub struct Core {
     /// The assistant's own tools and the register of their files (issue #225, task WZ.4): the user's
     /// ([`crate::tools::Tools::system`]); tests bring theirs with temporary roots ([`Core::with_tools`]).
     tools: Arc<crate::tools::Tools>,
+    /// How the template keys stand (issue #243), as the part that binds them last reported it
+    /// ([`Core::report_shortcuts`]): bound or not, and why not. `None` until it reports, and where
+    /// nothing binds them; `system.status` then names no `shortcuts`.
+    shortcuts: std::sync::Mutex<Option<(bool, Option<String>)>>,
+    /// The template keys bound on Hyprland (task WS.3), so a change binds only the difference
+    /// ([`Core::bind_template_keys`]). Written down for the next core of the same Hyprland instance
+    /// ([`crate::workspace_keys::Ledger`]); none in tests.
+    keys: crate::workspace_keys::BoundKeys,
 }
 
 impl Core {
@@ -1242,7 +1285,121 @@ impl Core {
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
             tools: Arc::new(crate::tools::Tools::system()),
+            shortcuts: std::sync::Mutex::new(None),
+            // Tests never read or write the user's ledger of bound keys.
+            keys: if cfg!(test) {
+                crate::workspace_keys::BoundKeys::default()
+            } else {
+                crate::workspace_keys::BoundKeys::system()
+            },
         }
+    }
+
+    /// Tells the core how the template keys stand (issue #243): `active` when the keys of every
+    /// template that has one are bound with the modifiers of the settings, else `problem` says why
+    /// not, for people ("another program holds Ctrl + Alt + 3"). Whoever binds the keys calls this
+    /// after every (re)binding, also after a failed one (`workspace_keys`, tasks WS.3 and WS.4);
+    /// `system.status` shows it as [`torro_ipc::ShortcutStatus`] with the modifiers as now set.
+    pub fn report_shortcuts(&self, active: bool, problem: Option<String>) {
+        *self.shortcuts.lock().unwrap_or_else(PoisonError::into_inner) = Some((active, problem));
+    }
+
+    /// The binds the template keys should have on Hyprland now (task WS.3): the keys of the stored
+    /// templates with the modifiers of the settings, each loading its template through this binary's
+    /// `ctl`. `Err` with the reason when the templates cannot be read.
+    fn wanted_keys(&self) -> Result<Vec<torro_wm::KeyBind>, String> {
+        let templates = self.store.list().map_err(|err| err.to_string())?;
+        let modifiers = self.settings.current().workspaces.modifiers;
+        let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+        Ok(crate::workspace_keys::hyprland_binds(&crate::workspace_keys::slots(&templates), modifiers, &program))
+    }
+
+    /// Binds the template keys on Hyprland as the templates and settings say now, only the difference
+    /// to what is bound ([`crate::workspace_keys::BoundKeys::sync`]), and reports the result
+    /// ([`Core::report_shortcuts`]). Elsewhere nothing: AeroSpace and GlazeWM have no run-time binds,
+    /// macOS and Windows bind the keys in the tray (task WS.4).
+    async fn bind_template_keys(&self) {
+        if !matches!(self.backend, Backend::Hyprland(_)) {
+            return;
+        }
+        let report = self.keys.sync(&self.backend, || self.wanted_keys()).await;
+        self.report_shortcuts(report.active, report.problem);
+    }
+
+    /// Releases the template keys bound on Hyprland when the service ends (review fix of issue #243):
+    /// binds made at run time outlive the core, and a key left bound would still load its template, or
+    /// run twice once the next core binds it. What cannot be released stays written down, and the next
+    /// core of this Hyprland releases it first ([`crate::workspace_keys::BoundKeys::release`]), also
+    /// when the caller stops waiting before every key is released. From then on this core binds no key
+    /// again: neither [`Core::bind_template_keys`] after a request still being answered nor the rebind
+    /// after a reload of Hyprland ([`Core::follow_template_keys`]). Elsewhere nothing. The daemon calls
+    /// it once at the end, after it stopped the socket server.
+    pub async fn release_template_keys(&self) {
+        if matches!(self.backend, Backend::Hyprland(_)) {
+            self.keys.release(&self.backend).await;
+        }
+    }
+
+    /// Hyprland (task WS.3): binds the template keys now and again after every reload of its
+    /// configuration, which drops them ([`crate::workspace_keys::follow`]). Part of [`Core::start`].
+    fn follow_template_keys(self: &Arc<Self>) {
+        if !matches!(self.backend, Backend::Hyprland(_)) {
+            return;
+        }
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            // Subscribed before the first binding, so a reload in between is not missed.
+            match core.backend.events().await {
+                Ok(events) => {
+                    let report = |report: crate::workspace_keys::Report| {
+                        core.report_shortcuts(report.active, report.problem);
+                    };
+                    crate::workspace_keys::follow(&core.backend, &core.keys, events, || core.wanted_keys(), report)
+                        .await;
+                }
+                Err(err) => {
+                    eprintln!(
+                        "torroworkplace: no window manager events, the keys are not bound again after a reload: {err}"
+                    );
+                    core.bind_template_keys().await;
+                }
+            }
+        });
+    }
+
+    /// Loads the templates that load at login, once per session, in the background
+    /// ([`crate::startup_templates::run`], task WS.5): each the way `workspaces.load_template` in the
+    /// mode `add` does, through [`Core::handle`], so it takes its turn with the other saves and loads
+    /// (`busy` while one runs). Without a window manager nothing. Part of [`Core::start`].
+    fn load_templates_at_login(self: &Arc<Self>) {
+        if matches!(self.backend, Backend::Unsupported { .. }) {
+            return;
+        }
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let file = torro_core::paths::AppPaths::for_app(AppId::WORKPLACE)
+                .map(|paths| paths.state.join(crate::startup_templates::FILE));
+            let marking = crate::startup_templates::Marking {
+                file: file.as_deref(),
+                session: crate::startup_templates::Session::current(),
+            };
+            let core = &core;
+            let load = |id: String| core.handle(Request::LoadTemplate { id, mode: torro_setups::LoadMode::Add });
+            let pace = crate::startup_templates::Pace::LOGIN;
+            if let Some(done) =
+                crate::startup_templates::run(&core.backend, core.store.list(), marking, pace, load).await
+            {
+                crate::startup_templates::report(&done);
+            }
+        });
+    }
+
+    /// The template keys as [`Core::report_shortcuts`] last told, with the modifiers the settings
+    /// name now; `None` before any report.
+    fn shortcut_status(&self) -> Option<torro_ipc::ShortcutStatus> {
+        let (active, problem) = self.shortcuts.lock().unwrap_or_else(PoisonError::into_inner).clone()?;
+        let modifiers = self.settings.current().workspaces.modifiers;
+        Some(torro_ipc::ShortcutStatus { modifiers, active, problem })
     }
 
     /// Prepares the window manager for the reminder window (task ER2.2) and names the monitors it
@@ -1506,6 +1663,13 @@ impl Core {
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
         self.follow_voice();
+        // The template keys on Hyprland (task WS.3).
+        self.follow_template_keys();
+        // The template dialog floats instead of being tiled (task WS.7).
+        let core = Arc::clone(self);
+        tokio::spawn(async move { core.float_dialog().await });
+        // The templates that load at login, once per session (task WS.5).
+        self.load_templates_at_login();
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
         let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {
@@ -1666,6 +1830,7 @@ impl Core {
             },
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
+        ids.extend(self.holder_ids(&request));
         // A key lent to an agent that drives the assistant (task C.7): the log names the engine,
         // as for the assistant's own tools (decision 5 in `docs/assistent.md`).
         let mut scope = None;
@@ -2239,6 +2404,7 @@ impl Core {
         mode: Mode,
     ) -> Response {
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
+        ids.extend(self.holder_ids(&request));
         ids.push(crate::audit::engine_id(engine));
         let mut origin = crate::approvals::Origin {
             engine: Some(engine.to_string()),
@@ -2540,9 +2706,17 @@ impl Core {
             Request::DeleteTemplate { id }
             | Request::UpdateTemplate { id }
             | Request::LoadTemplate { id, .. }
-            | Request::RenameTemplate { id, .. } => {
+            | Request::RenameTemplate { id, .. }
+            | Request::SetTemplateStartup { id, .. } => {
                 Facts { name: self.store.load(id).ok().map(|template| template.name), ..Facts::default() }
             }
+            // The template by its stored name, and the one that would lose the key by its own
+            // (issue #243): a key belongs to one template only.
+            Request::SetTemplateShortcut { id, key } => Facts {
+                name: self.store.load(id).ok().map(|template| template.name),
+                moved_from: self.key_holder(id, *key).map(|holder| holder.name),
+                ..Facts::default()
+            },
             // The account's label as the core knows it, never a name the client sends along.
             Request::RemoveAccount { id: account }
             | Request::UpdateMailAccount { id: account, .. }
@@ -2654,7 +2828,7 @@ impl Core {
                     time: Utc::now(),
                     client: Some(approval.client.clone()),
                     command: approval.command.clone(),
-                    ids: decided_ids(&request, &origin),
+                    ids: [decided_ids(&request, &origin), self.holder_ids(&request)].concat(),
                     result: "denied".into(),
                     approval: Some(approval.id.clone()),
                 };
@@ -2663,7 +2837,8 @@ impl Core {
             }
             Err(err) => return err.response(),
         };
-        let (command, ids) = (request.operation().name(), decided_ids(&request, &origin));
+        let (command, ids) =
+            (request.operation().name(), [decided_ids(&request, &origin), self.holder_ids(&request)].concat());
         // Boxed: the run goes through `handle_within` again, deep in the stack already, and the
         // checks of the tools (#225) and of the models' switches (#231) made this frame too big.
         let response = Box::pin(self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin)).await;
@@ -2853,7 +3028,23 @@ impl Core {
     /// (`hidden_collections` stays empty, so even the ids of hidden collections stay unknown).
     ///
     /// The checks of [`Core::handle_from`] must have passed before.
+    ///
+    /// When a template or the modifiers changed ([`crate::workspace_keys::rebinds_after`], and the
+    /// answer is no error), the template keys follow before the answer goes out, so `system.status`
+    /// right after tells how they stand (task WS.3).
     pub async fn handle_within(&self, request: Request, reach: Reach<'_>) -> Response {
+        let rebinds = crate::workspace_keys::rebinds_after(&request);
+        // Boxed: the answer's future is large, and waiting for the keys after it must not put it on
+        // the stack a second time.
+        let response = Box::pin(self.answer_within(request, reach)).await;
+        if rebinds && !matches!(response, Response::Error { .. }) {
+            self.bind_template_keys().await;
+        }
+        response
+    }
+
+    /// [`Core::handle_within`] without the template keys: the answer to `request` itself.
+    async fn answer_within(&self, request: Request, reach: Reach<'_>) -> Response {
         let client = matches!(reach, Reach::Client(_));
         match request {
             Request::Ping => Response::Pong { version: version(), api: API_VERSION },
@@ -2867,10 +3058,15 @@ impl Core {
             },
             Request::SaveTemplate { name } => self.exclusive(self.save(name)).await,
             Request::UpdateTemplate { id } => self.exclusive(self.update(id)).await,
-            Request::DeleteTemplate { id } => match self.store.delete(&id) {
-                Ok(()) => Response::Ok,
-                Err(err) => error(&err),
-            },
+            // In turn with saves and loads (issue #243): an update that captures meanwhile would
+            // write the deleted template back.
+            Request::DeleteTemplate { id } => {
+                self.exclusive(async {
+                    self.store.delete(&id)?;
+                    Ok(Response::Ok)
+                })
+                .await
+            }
             Request::LoadTemplate { id, mode } => {
                 self.exclusive(async {
                     let template = self.store.load(&id)?;
@@ -3028,10 +3224,28 @@ impl Core {
             Request::ListColorSchemes => Response::ColorSchemes { color_schemes: self.list_color_schemes() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
             Request::RemoveAccount { id } => self.remove_account(&id).await,
-            Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
-                Ok(template) => Response::Saved { template },
-                Err(err) => error(&err),
-            },
+            // In turn with saves, loads and keys (issue #243): renaming loads and writes the whole
+            // template, so a key set meanwhile would be written over, and two templates held it.
+            Request::RenameTemplate { id, name } => {
+                self.exclusive(async { Ok(Response::Saved { template: self.rename(&id, &name)? }) }).await
+            }
+            // Both files in one round while no save or load runs (issue #243): the key never ends
+            // up with two templates, and an update that captures meanwhile cannot drop it.
+            Request::SetTemplateShortcut { id, key } => {
+                self.exclusive(async {
+                    let (template, _) = self.store.set_shortcut(&id, key)?;
+                    Ok(Response::Saved { template: TemplateSummary::from(&template) })
+                })
+                .await
+            }
+            Request::SetTemplateStartup { id, startup } => {
+                self.exclusive(async {
+                    let template = self.store.set_startup(&id, startup)?;
+                    Ok(Response::Saved { template: TemplateSummary::from(&template) })
+                })
+                .await
+            }
+            Request::ListScreens => list_screens(&self.backend).await,
             // A binary or a window class: the inbox's mail window is `torro-inbox-mail` (task E8.1).
             // With a target, a new window showing a mail or a task (task E8.7a).
             // A client's target comes through `handle_client` or `run_approved` with its maker; here
@@ -4574,6 +4788,17 @@ impl Core {
                 let path = file.path.to_str().ok_or_else(no_file)?.to_string();
                 Ok((crate::apps::Opened::File { path }, file.title))
             }
+            // A template to edit in the core's dialog (issue #243): like a list the client may not
+            // read, a template without read access to `workspaces` is not there.
+            crate::apps::Target::Template { id } => {
+                let reads = match reach {
+                    Reach::Suite => true,
+                    Reach::Client(rights) => rights.area(Area::Workspaces).allows(Access::Read),
+                };
+                let template = if reads { self.store.load(id).ok() } else { None };
+                let template = template.ok_or_else(|| Box::new(refusal("not-found", "no such template".into())))?;
+                Ok((crate::apps::Opened::Template { id: template.id }, template.name))
+            }
         }
     }
 
@@ -4589,6 +4814,9 @@ impl Core {
             },
             Some(target) => match self.open_target(app, target, reach, maker).await {
                 Ok((opened, _)) => {
+                    if matches!(opened, crate::apps::Opened::Template { .. }) {
+                        self.float_dialog().await;
+                    }
                     let program = sibling(opened.app().binary).to_string_lossy().into_owned();
                     let command = crate::apps::target_command(program, &opened);
                     SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
@@ -5936,6 +6164,40 @@ impl Core {
         }
     }
 
+    /// "Save workspace…" in the tray (task WS.7): `workspaces.save_template` without a name, through
+    /// [`Core::handle`], so the windows are captured at the click, before any dialog is there to be
+    /// captured with them; then, once it answered `Saved`, the dialog for the new template in its mode
+    /// "Save" through `launcher` ([`start_save_dialog`]), floating ([`Core::float_dialog`]). Waits for
+    /// the save, not for the dialog. A save that fails starts no dialog.
+    pub async fn save_workspace(&self, launcher: &impl Launcher) -> SavedWorkspace {
+        let response = self.handle(Request::SaveTemplate { name: None }).await;
+        let dialog = match &response {
+            Response::Saved { template } => {
+                self.float_dialog().await;
+                start_save_dialog(launcher, &template.id)
+            }
+            _ => false,
+        };
+        SavedWorkspace { response, dialog }
+    }
+
+    /// Shows the person the control centre on `section` (task WS.7, "Manage workspaces…" in the tray):
+    /// an open one comes to the front and stays on its page, else one starts there
+    /// ([`show_control_centre`]).
+    pub async fn show_section(&self, section: Section) -> Result<(), String> {
+        show_control_centre(&self.backend, section, self.start_control_centre).await
+    }
+
+    /// Asks the window manager to float the template dialog ([`torro_core::app::WORKPLACE_DIALOG_CLASS`],
+    /// [`WindowManager::float_dialogs`]): at the core's start and again before each dialog opens,
+    /// because a reload of Hyprland's configuration drops the rule. A failure is only logged; the
+    /// dialog then opens tiled.
+    async fn float_dialog(&self) {
+        if let Err(err) = self.backend.float_dialogs(torro_core::app::WORKPLACE_DIALOG_CLASS).await {
+            eprintln!("torroworkplace: the template dialog will not float: {err}");
+        }
+    }
+
     /// Brings the app's window to the front, or starts the app when it has none – with the
     /// arguments of its entry (`torroinbox --view mail`, [`AppId::command`]).
     pub async fn open_app(&self, app: AppId) -> Result<(), String> {
@@ -5949,7 +6211,8 @@ impl Core {
     }
 
     /// The status for `reach`. A client without read access to `workspaces` gets no workspace
-    /// name and 0 templates: `system.status` is open to every key, the workspaces are not.
+    /// name, 0 templates and nothing of the template keys: `system.status` is open to every key, the
+    /// workspaces are not.
     async fn status(&self, reach: Reach<'_>) -> Response {
         let snapshot = self.snapshot().await;
         let workspaces = match reach {
@@ -5962,6 +6225,8 @@ impl Core {
             workspace: snapshot.workspace.filter(|_| workspaces),
             templates: if workspaces { snapshot.templates.len() } else { 0 },
             busy: snapshot.busy,
+            wm_version: self.backend.version().await,
+            shortcuts: self.shortcut_status().filter(|_| workspaces),
         })
     }
 
@@ -5978,6 +6243,24 @@ impl Core {
         Ok(Response::Saved { template: TemplateSummary::from(&template) })
     }
 
+    /// The template other than `id` that holds `key` now, the one `workspaces.set_template_shortcut`
+    /// takes it from (issue #243); `None` for no key, nobody holding it, or a store that cannot be
+    /// read (the command itself then reports why).
+    fn key_holder(&self, id: &str, key: Option<u8>) -> Option<torro_setups::Template> {
+        self.store.shortcut_holder(key?, id).ok().flatten()
+    }
+
+    /// The log ids of who loses a key with `request` (issue #243, [`crate::audit::taken_from_id`]),
+    /// looked up before it runs; empty for every other request.
+    fn holder_ids(&self, request: &Request) -> Vec<String> {
+        match request {
+            Request::SetTemplateShortcut { id, key } => {
+                self.key_holder(id, *key).map(|holder| crate::audit::taken_from_id(&holder.id)).into_iter().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// Gives a template a new name; empty names are refused.
     fn rename(&self, id: &str, name: &str) -> Result<TemplateSummary, SetupsError> {
         let name = name.trim();
@@ -5991,18 +6274,23 @@ impl Core {
         Ok(TemplateSummary::from(&template))
     }
 
-    /// Captures the active workspace again under an existing template, keeping its name and
-    /// creation time.
+    /// Captures the active workspace again under an existing template, keeping its name, creation
+    /// time, key and startup.
     async fn update(&self, id: String) -> Result<Response, SetupsError> {
         let old = self.store.load(&id)?;
         let mut template = capture(&self.backend, id, command_for, Local::now()).await?;
         template.name = old.name;
         template.created = old.created;
+        // Its key and its startup are settings of the template, not of the windows (issue #243).
+        template.shortcut = old.shortcut;
+        template.startup = old.startup;
         self.store.save(&template)?;
         Ok(Response::Saved { template: TemplateSummary::from(&template) })
     }
 
-    /// Runs a save or load unless another one is running.
+    /// Runs a save or load unless another one is running; every command that writes a template runs
+    /// through here (save, update, delete, rename, key, startup), so none writes over another's
+    /// change. `busy` while one runs.
     async fn exclusive(&self, work: impl Future<Output = Result<Response, SetupsError>>) -> Response {
         let Ok(_guard) = self.work.try_lock() else {
             return Response::Error { code: "busy".into(), message: "another save or load is running".into() };
@@ -6681,6 +6969,28 @@ fn asker(client: &torro_ipc::ClientInfo) -> String {
     }
 }
 
+/// `workspaces.list_screens` (issue #243): the monitors of `wm` as screens, the main one marked
+/// ([`torro_setups::main_monitor`]); `unsupported` without a window manager.
+async fn list_screens(wm: &impl WindowManager) -> Response {
+    let monitors = match wm.monitors().await {
+        Ok(monitors) => monitors,
+        Err(err) => return error(&SetupsError::from(err)),
+    };
+    let main = torro_setups::main_monitor(&monitors).map(|monitor| monitor.name.clone());
+    let size = |pixels: i32| u32::try_from(pixels).unwrap_or(0);
+    let screens = monitors
+        .iter()
+        .map(|monitor| torro_ipc::ScreenInfo {
+            name: monitor.name.clone(),
+            width: size(monitor.rect.width),
+            height: size(monitor.rect.height),
+            scale: monitor.scale,
+            main: main.as_ref() == Some(&monitor.name),
+        })
+        .collect();
+    Response::Screens { screens }
+}
+
 /// A failure as a response with a stable code for scripts.
 fn error(err: &SetupsError) -> Response {
     let code = match err {
@@ -6932,6 +7242,8 @@ mod tests {
             source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
             tree: None,
             windows: vec![],
+            shortcut: None,
+            startup: None,
         };
         core.store.save(&template).expect("saved");
         let templates = |answer: Response| match answer {
@@ -6945,6 +7257,180 @@ mod tests {
         rights.areas.remove(&Area::Workspaces);
         let (_, outsider) = client(&core, rights).await;
         assert_eq!(templates(ask(&core, Some(&outsider), Request::Status).await), 0);
+
+        // Issue #243: the template keys as last reported, only with read access to `workspaces`.
+        let keys = |answer: Response| match answer {
+            Response::Status(status) => status.shortcuts,
+            other => panic!("status answers with Status, got {other:?}"),
+        };
+        assert_eq!(keys(core.handle(Request::Status).await), None, "nothing reported yet");
+        core.report_shortcuts(false, Some("Ctrl + Alt + 3 is taken".into()));
+        let reported = keys(ask(&core, Some(&reader), Request::Status).await).expect("reported");
+        assert_eq!((reported.active, reported.problem.as_deref()), (false, Some("Ctrl + Alt + 3 is taken")));
+        assert_eq!(reported.modifiers, torro_core::settings::ShortcutModifiers::default());
+        assert_eq!(keys(ask(&core, Some(&outsider), Request::Status).await), None);
+    }
+
+    /// A template `id` named `name` with key `key`, in the store of `core`.
+    fn keyed_template(core: &Core, id: &str, name: &str, key: Option<u8>) {
+        let now = chrono::Utc::now();
+        let source = torro_setups::Source { workspace: "3".into(), monitor: Some("DP-1".into()), monitor_rect: None };
+        let template = torro_setups::Template {
+            schema_version: torro_setups::SCHEMA_VERSION,
+            id: id.into(),
+            name: name.into(),
+            wm: "hyprland".into(),
+            created: now,
+            updated: now,
+            source,
+            tree: None,
+            windows: vec![],
+            shortcut: key,
+            startup: None,
+        };
+        core.store.save(&template).expect("saved");
+    }
+
+    fn saved_template(answer: Response) -> TemplateSummary {
+        match answer {
+            Response::Saved { template } => template,
+            other => panic!("expected the saved template, got {other:?}"),
+        }
+    }
+
+    /// Issue #243: a key moves to the template that gets it, `null` takes it away, and every other
+    /// field of the templates stays.
+    #[tokio::test]
+    async fn a_template_key_moves_from_its_holder_and_can_be_taken_away() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        keyed_template(&core, "mail", "Mail", Some(1));
+        keyed_template(&core, "dev", "Dev", None);
+        let key = |id: &str, key| Request::SetTemplateShortcut { id: id.into(), key };
+
+        let dev = saved_template(core.handle(key("dev", Some(1))).await);
+        assert_eq!((dev.shortcut, dev.name.as_str(), dev.workspace.as_str()), (Some(1), "Dev", "3"));
+        assert_eq!(core.store.load("mail").expect("mail").shortcut, None, "the holder lost the key");
+
+        let dev = saved_template(core.handle(key("dev", None)).await);
+        assert_eq!(dev.shortcut, None);
+        assert_eq!(core.store.load("dev").expect("dev").shortcut, None);
+
+        assert_eq!(code(&core.handle(key("gone", Some(2))).await), "not-found");
+        assert_eq!(code(&core.handle(key("dev", Some(10))).await), "error");
+    }
+
+    /// Review fix of issue #243: every command that writes a template waits its turn, so a rename or a
+    /// delete cannot write over a key set (or an update) at the same time; `busy` while one runs, and
+    /// nothing changed.
+    #[tokio::test]
+    async fn every_command_that_writes_a_template_takes_its_turn() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        keyed_template(&core, "dev", "Dev", Some(1));
+        let held = core.work.lock().await;
+        let writes = [
+            Request::RenameTemplate { id: "dev".into(), name: "Development".into() },
+            Request::DeleteTemplate { id: "dev".into() },
+            Request::SetTemplateShortcut { id: "dev".into(), key: Some(2) },
+            Request::SetTemplateStartup { id: "dev".into(), startup: None },
+            Request::UpdateTemplate { id: "dev".into() },
+        ];
+        for request in writes.clone() {
+            assert_eq!(code(&core.handle(request.clone()).await), "busy", "{request:?}");
+        }
+        let dev = core.store.load("dev").expect("still there");
+        assert_eq!((dev.name.as_str(), dev.shortcut), ("Dev", Some(1)), "nothing changed");
+        drop(held);
+        let renamed = saved_template(core.handle(writes[0].clone()).await);
+        assert_eq!(renamed.name, "Development");
+        assert_eq!(core.handle(writes[1].clone()).await, Response::Ok);
+        assert_eq!(code(&core.handle(writes[1].clone()).await), "not-found");
+    }
+
+    /// Issue #243: loading at login is set and cleared; a screen not connected now is allowed.
+    #[tokio::test]
+    async fn a_template_loads_at_login_on_a_screen_until_switched_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        keyed_template(&core, "dev", "Dev", Some(4));
+        let startup = torro_setups::Startup { screen: "HDMI-A-1".into(), fallback: torro_setups::ScreenFallback::Skip };
+        let set = |startup| Request::SetTemplateStartup { id: "dev".into(), startup };
+
+        let dev = saved_template(core.handle(set(Some(startup.clone()))).await);
+        assert_eq!((dev.startup, dev.shortcut), (Some(startup), Some(4)), "the key stays");
+        assert_eq!(saved_template(core.handle(set(None)).await).startup, None);
+        assert_eq!(
+            code(&core.handle(Request::SetTemplateStartup { id: "gone".into(), startup: None }).await),
+            "not-found"
+        );
+    }
+
+    /// Issue #243: the screens with their logical size, the main one at 0,0; `unsupported` without
+    /// a window manager.
+    #[tokio::test]
+    async fn the_screens_are_listed_with_the_main_one() {
+        use torro_wm::fake::FakeWm;
+        use torro_wm::{Monitor, Rect};
+        let wm = FakeWm::new("1");
+        wm.set_monitors(vec![
+            Monitor {
+                name: "HDMI-A-1".into(),
+                rect: Rect { x: 3840, y: 0, width: 1920, height: 1080 },
+                scale: 1.0,
+                active_workspace: None,
+            },
+            Monitor {
+                name: "DP-1".into(),
+                rect: Rect { x: 0, y: 0, width: 3840, height: 1080 },
+                scale: 2.0,
+                active_workspace: None,
+            },
+        ]);
+        let screen = |name: &str, width, height, scale, main| torro_ipc::ScreenInfo {
+            name: name.into(),
+            width,
+            height,
+            scale,
+            main,
+        };
+        assert_eq!(
+            list_screens(&wm).await,
+            Response::Screens {
+                screens: vec![screen("HDMI-A-1", 1920, 1080, 1.0, false), screen("DP-1", 3840, 1080, 2.0, true)]
+            }
+        );
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(code(&core(dir.path()).handle(Request::ListScreens).await), "unsupported");
+    }
+
+    /// Issue #243: `template:<id>` opens the dialog only for a key that may read the templates;
+    /// for any other it is not there, like a task list it may not see.
+    #[tokio::test]
+    async fn a_template_target_needs_read_access_to_workspaces() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        keyed_template(&core, "dev", "Dev", None);
+        let target = |id: &str| Some(format!("template:{id}"));
+
+        let shown = core.open_target("torroworkplace", "template:dev", Reach::Suite, Maker::App).await;
+        let (opened, title) = shown.expect("the suite reaches it");
+        assert_eq!((opened, title.as_str()), (crate::apps::Opened::Template { id: "dev".into() }, "Dev"));
+        let reader = RightsTemplate::ReadOnly.rights();
+        let reach = Reach::Client(&reader);
+        assert!(core.open_target("torroworkplace", "template:dev", reach, Maker::App).await.is_ok());
+        let gone = core.open_target("torroworkplace", "template:gone", reach, Maker::App).await;
+        assert_eq!(gone.err().map(|refused| code(&refused).to_string()).as_deref(), Some("not-found"));
+
+        // A key that may open apps but not read the templates: the template is not there.
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.areas.remove(&Area::Workspaces);
+        rights.areas.insert(Area::Apps, AreaRights { level: Level::Write, admin: false });
+        let (_, outsider) = client(&core, rights).await;
+        let open = Request::OpenApp { app: "torroworkplace".into(), target: target("dev") };
+        assert_eq!(code(&ask(&core, Some(&outsider), open).await), "not-found");
+        let wrong_app = Request::OpenApp { app: "torrotasks".into(), target: target("dev") };
+        assert_eq!(code(&ask(&core, Some(&outsider), wrong_app).await), "error");
     }
 
     #[tokio::test]
@@ -7381,6 +7867,8 @@ mod tests {
                 source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
                 tree: None,
                 windows: vec![],
+                shortcut: None,
+                startup: None,
             })
             .expect("saved");
     }
@@ -8890,6 +9378,60 @@ mod tests {
         assert_eq!(show_control_centre(&wm, Section::Approvals, record_start).await, Ok(()));
         assert_eq!(wm.calls(), vec![Call::Focus(open)]);
         assert_eq!(started(Section::Approvals), before + 1);
+    }
+
+    /// A launcher that records the command lines instead of starting them, or fails each start.
+    #[derive(Default)]
+    struct Recorder {
+        started: std::sync::Mutex<Vec<Vec<String>>>,
+        fails: bool,
+    }
+
+    impl Launcher for Recorder {
+        fn spawn(&self, command: &[String]) -> Result<u32, SetupsError> {
+            if self.fails {
+                return Err(SetupsError::Launch("no such program".into()));
+            }
+            let mut started = self.started.lock().expect("lock");
+            started.push(command.to_vec());
+            Ok(u32::try_from(started.len()).unwrap_or(u32::MAX))
+        }
+    }
+
+    /// Task WS.7: after "Save workspace…" the dialog opens for the new template in its mode "Save":
+    /// the line of the mode "Edit" (`template:<id>` of `apps.open_app`) with `--saved`.
+    #[test]
+    fn the_save_dialog_starts_for_the_new_template_in_the_mode_save() {
+        assert_eq!(
+            save_dialog_command("/bin/torroworkplace".into(), "deep-work"),
+            ["/bin/torroworkplace", "ui", "--template=deep-work", "--saved"]
+        );
+        let launcher = Recorder::default();
+        assert!(start_save_dialog(&launcher, "deep-work"));
+        let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+        assert_eq!(*launcher.started.lock().expect("lock"), [save_dialog_command(program, "deep-work")]);
+        assert!(!start_save_dialog(&Recorder { fails: true, ..Recorder::default() }, "deep-work"), "it says so");
+    }
+
+    /// Task WS.7: a save that fails (here: no window manager) opens no dialog, and the tray reports why.
+    #[tokio::test]
+    async fn a_failed_save_opens_no_dialog() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let launcher = Recorder::default();
+        let saved = core(dir.path()).save_workspace(&launcher).await;
+        assert!(matches!(saved.response, Response::Error { .. }), "{:?}", saved.response);
+        assert!(!saved.dialog);
+        assert!(launcher.started.lock().expect("lock").is_empty());
+    }
+
+    /// Task WS.7: "Manage workspaces…" starts the control centre on its page Workspaces.
+    #[tokio::test]
+    async fn manage_workspaces_opens_the_workspaces_page() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { start_control_centre: record_start, ..core(dir.path()) };
+        let before = started(Section::Workspaces);
+        assert_eq!(core.show_section(Section::Workspaces).await, Ok(()));
+        assert_eq!(started(Section::Workspaces), before + 1);
     }
 
     #[tokio::test]
@@ -11569,6 +12111,8 @@ mod tests {
                 source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
                 tree: None,
                 windows: vec![],
+                shortcut: None,
+                startup: None,
             })
             .expect("saved");
         let mut rights = RightsTemplate::ReadAndWrite.rights();
@@ -16304,6 +16848,8 @@ mod tests {
                     source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
                     tree: None,
                     windows: vec![],
+                    shortcut: None,
+                    startup: None,
                 })
                 .expect("saved")
         };

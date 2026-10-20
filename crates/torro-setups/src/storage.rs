@@ -21,13 +21,17 @@ use chrono::{DateTime, NaiveDateTime, TimeDelta, Utc};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
-use crate::{SCHEMA_VERSION, SetupsError, Template};
+use crate::{MAX_SHORTCUT, SCHEMA_VERSION, SetupsError, Startup, Template};
 
 /// Backups kept per template.
 pub const MAX_BACKUPS: usize = 5;
 
 /// Format of backup file names; fixed width, so names sort by age.
 const BACKUP_STAMP: &str = "%Y%m%dT%H%M%S%.3fZ";
+
+/// The longest screen name a startup takes, in characters. Window managers name screens like
+/// `DP-1` or `HDMI-A-1`; the limit keeps a client from storing a text of any length in a template.
+const MAX_SCREEN_NAME: usize = 100;
 
 /// The template store at a root directory.
 #[derive(Debug, Clone)]
@@ -101,6 +105,59 @@ impl Store {
             Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(io_error(err)),
         }
+    }
+
+    /// Gives the template `id` the key `key` (`0` to [`MAX_SHORTCUT`]), or takes its key away with
+    /// `None`. Another template that holds the key loses it, in the same call: its file is written
+    /// first, so a crash in between leaves the key with nobody rather than with two templates.
+    /// Each file is written atomically ([`Store::save`]); the caller makes sure nobody else writes
+    /// templates meanwhile (the core runs this under its `exclusive`).
+    ///
+    /// Returns the template as written and the id of the one that lost the key, if any (the first
+    /// by [`Store::list`]'s order; files edited by hand may give a key to several, all lose it).
+    /// [`SetupsError::NotFound`] for an unknown id, [`SetupsError::Format`] for a key above
+    /// [`MAX_SHORTCUT`]; nothing is written then.
+    pub fn set_shortcut(&self, id: &str, key: Option<u8>) -> Result<(Template, Option<String>), SetupsError> {
+        if key.is_some_and(|key| key > MAX_SHORTCUT) {
+            return Err(SetupsError::Format(format!("a key is a digit from 0 to {MAX_SHORTCUT}")));
+        }
+        let mut template = self.load(id)?;
+        let now = Utc::now();
+        let mut taken_from = None;
+        if key.is_some() {
+            for mut holder in self.list()?.into_iter().filter(|other| other.id != id && other.shortcut == key) {
+                holder.shortcut = None;
+                holder.updated = now;
+                self.save(&holder)?;
+                taken_from.get_or_insert(holder.id);
+            }
+        }
+        template.shortcut = key;
+        template.updated = now;
+        self.save(&template)?;
+        Ok((template, taken_from))
+    }
+
+    /// The template that holds `key` now, other than `except`; `None` when no other one does. What
+    /// [`Store::set_shortcut`] would take the key from, for the summary of an approval.
+    pub fn shortcut_holder(&self, key: u8, except: &str) -> Result<Option<Template>, SetupsError> {
+        Ok(self.list()?.into_iter().find(|other| other.id != except && other.shortcut == Some(key)))
+    }
+
+    /// Loads the template `id` at every login as `startup` says, or no more with `None`. Whether the
+    /// screen is connected is not checked: it may be later. [`SetupsError::NotFound`] for an unknown
+    /// id, [`SetupsError::Format`] for a screen name that is empty, longer than
+    /// [`MAX_SCREEN_NAME`] characters or holds a control character.
+    pub fn set_startup(&self, id: &str, startup: Option<Startup>) -> Result<Template, SetupsError> {
+        let startup = startup.map(|startup| Startup { screen: startup.screen.trim().to_string(), ..startup });
+        if let Some(startup) = &startup {
+            check_screen_name(&startup.screen)?;
+        }
+        let mut template = self.load(id)?;
+        template.startup = startup;
+        template.updated = Utc::now();
+        self.save(&template)?;
+        Ok(template)
     }
 
     /// A free id for `name`: [`slug`], with `-2`, `-3`, … appended when taken.
@@ -255,6 +312,21 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
+/// A screen name a startup takes: not empty, at most [`MAX_SCREEN_NAME`] characters, no control
+/// characters (they would break the notification and the log that name it).
+fn check_screen_name(screen: &str) -> Result<(), SetupsError> {
+    if screen.is_empty() {
+        return Err(SetupsError::Format("a screen needs a name".into()));
+    }
+    if screen.chars().count() > MAX_SCREEN_NAME {
+        return Err(SetupsError::Format(format!("a screen name has at most {MAX_SCREEN_NAME} characters")));
+    }
+    if screen.chars().any(char::is_control) {
+        return Err(SetupsError::Format("a screen name has no control characters".into()));
+    }
+    Ok(())
+}
+
 fn io_error(err: io::Error) -> SetupsError {
     SetupsError::Io(err.to_string())
 }
@@ -287,6 +359,8 @@ mod tests {
                 floating: false,
                 rect: Rect { x: 0, y: 0, width: 800, height: 600 },
             }],
+            shortcut: None,
+            startup: None,
         }
     }
 
@@ -374,6 +448,75 @@ mod tests {
         assert!(!store.backups_dir("setup").exists());
         assert_eq!(store.load("setup"), Err(SetupsError::NotFound("setup".into())));
         assert_eq!(store.delete("setup"), Err(SetupsError::NotFound("setup".into())));
+    }
+
+    #[test]
+    fn a_key_moves_from_its_holder_to_the_template() {
+        let (_dir, store) = store();
+        store.save(&Template { shortcut: Some(1), ..sample("mail", "Mail") }).expect("saved");
+        store.save(&sample("dev", "Dev")).expect("saved");
+
+        assert_eq!(store.shortcut_holder(1, "dev").expect("holder read").map(|t| t.id), Some("mail".into()));
+        let (dev, taken_from) = store.set_shortcut("dev", Some(1)).expect("key set");
+
+        assert_eq!((dev.shortcut, taken_from.as_deref()), (Some(1), Some("mail")));
+        assert_eq!(store.load("dev").expect("loaded").shortcut, Some(1));
+        assert_eq!(store.load("mail").expect("loaded").shortcut, None, "the holder lost it");
+        assert_eq!(store.shortcut_holder(1, "dev").expect("holder read"), None);
+
+        // Again: nobody else holds it.
+        assert_eq!(store.set_shortcut("dev", Some(1)).expect("key set").1, None);
+    }
+
+    #[test]
+    fn a_key_is_taken_away_and_checked() {
+        let (_dir, store) = store();
+        store.save(&Template { shortcut: Some(0), ..sample("dev", "Dev") }).expect("saved");
+        store.save(&Template { shortcut: Some(3), ..sample("mail", "Mail") }).expect("saved");
+
+        let (dev, taken_from) = store.set_shortcut("dev", None).expect("key set");
+        assert_eq!((dev.shortcut, taken_from), (None, None));
+        assert_eq!(store.load("mail").expect("loaded").shortcut, Some(3), "others keep theirs");
+
+        assert!(matches!(store.set_shortcut("dev", Some(10)), Err(SetupsError::Format(_))));
+        assert_eq!(store.set_shortcut("gone", Some(2)), Err(SetupsError::NotFound("gone".into())));
+        assert_eq!(store.load("dev").expect("loaded").shortcut, None, "nothing written");
+    }
+
+    #[test]
+    fn startup_is_set_and_cleared() {
+        let (_dir, store) = store();
+        store.save(&sample("dev", "Dev")).expect("saved");
+        let startup = Startup { screen: " DP-1 ".into(), fallback: crate::ScreenFallback::Skip };
+
+        let saved = store.set_startup("dev", Some(startup)).expect("startup set");
+        let expected = Startup { screen: "DP-1".into(), fallback: crate::ScreenFallback::Skip };
+        assert_eq!(saved.startup.as_ref(), Some(&expected));
+        assert_eq!(store.load("dev").expect("loaded").startup, Some(expected));
+
+        assert_eq!(store.set_startup("dev", None).expect("startup set").startup, None);
+        let nameless = Startup { screen: " ".into(), fallback: crate::ScreenFallback::Main };
+        assert!(matches!(store.set_startup("dev", Some(nameless)), Err(SetupsError::Format(_))));
+        assert_eq!(store.set_startup("gone", None), Err(SetupsError::NotFound("gone".into())));
+    }
+
+    /// A screen name is not empty, at most 100 characters and holds no control characters; a name
+    /// that breaks a rule writes nothing.
+    #[test]
+    fn a_screen_name_is_short_and_without_control_characters() {
+        let (_dir, store) = store();
+        store.save(&sample("dev", "Dev")).expect("saved");
+        let on = |screen: &str| Startup { screen: screen.into(), fallback: crate::ScreenFallback::Main };
+
+        assert!(store.set_startup("dev", Some(on(&"D".repeat(MAX_SCREEN_NAME)))).is_ok(), "100 is allowed");
+        store.set_startup("dev", None).expect("startup set");
+        for wrong in [String::new(), "D".repeat(MAX_SCREEN_NAME + 1), "DP-1\nrm".into(), "DP\u{1b}[2J".into()] {
+            let refused = store.set_startup("dev", Some(on(&wrong)));
+            assert!(matches!(refused, Err(SetupsError::Format(_))), "{wrong:?}: {refused:?}");
+        }
+        assert_eq!(store.load("dev").expect("loaded").startup, None, "nothing written");
+        // Characters, not bytes: 100 umlauts are 200 bytes and still a name.
+        assert!(store.set_startup("dev", Some(on(&"Ä".repeat(MAX_SCREEN_NAME)))).is_ok());
     }
 
     #[test]

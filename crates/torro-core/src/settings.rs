@@ -160,6 +160,70 @@ pub struct Settings {
     /// that does not read gives the defaults (every tool off), never a settings file that fails.
     #[serde(default, deserialize_with = "lenient")]
     pub tools: Tools,
+    /// Workspace templates (issue #243): the modifiers held with the digit keys that load them
+    /// ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of
+    /// this system (Linux super_alt, macOS and Windows ctrl_alt).
+    #[serde(default, deserialize_with = "lenient")]
+    #[schemars(transform = without_default)]
+    pub workspaces: WorkspaceSettings,
+}
+
+/// What the suite does with workspace templates (issue #243, `settings.set_setting
+/// workspace_shortcuts`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSettings {
+    /// The modifiers held with a digit key `1` … `0` to load the template that has the key, one
+    /// choice for all templates; default per system: Linux super_alt, macOS and Windows ctrl_alt.
+    #[serde(default)]
+    #[schemars(transform = without_default)]
+    pub modifiers: ShortcutModifiers,
+}
+
+/// Drops the `default` schemars takes from `#[serde(default)]`: the default of the template keys
+/// depends on the system the core runs on, and a schema built on one system would state it for
+/// all (the API reference, built on macOS, would differ from one built on Linux). The description
+/// names the default of each system instead.
+fn without_default(schema: &mut Schema) {
+    schema.remove("default");
+}
+
+/// The modifiers of the template keys (issue #243): pressed with a digit, they load the template
+/// with that key. Names as on Linux; on macOS Super is Command and Alt is Option, on Windows Super
+/// is the Windows key. The default is per system ([`ShortcutModifiers::default`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShortcutModifiers {
+    /// `"super_alt"`: Super + Alt, the default on Linux.
+    SuperAlt,
+    /// `"super_ctrl"`: Super + Ctrl.
+    SuperCtrl,
+    /// `"ctrl_alt"`: Ctrl + Alt (Control + Option on macOS), the default on macOS and Windows.
+    CtrlAlt,
+    /// `"ctrl_shift"`: Ctrl + Shift.
+    CtrlShift,
+}
+
+impl ShortcutModifiers {
+    /// Every choice, in the order the control centre offers them.
+    pub const ALL: [ShortcutModifiers; 4] = [
+        ShortcutModifiers::SuperAlt,
+        ShortcutModifiers::SuperCtrl,
+        ShortcutModifiers::CtrlAlt,
+        ShortcutModifiers::CtrlShift,
+    ];
+}
+
+impl Default for ShortcutModifiers {
+    /// Super + Alt on Linux (Hyprland binds Super + digit itself), Ctrl + Option on macOS (Command
+    /// + Option + digit is taken by many apps), Ctrl + Alt on Windows.
+    fn default() -> ShortcutModifiers {
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            ShortcutModifiers::CtrlAlt
+        } else {
+            ShortcutModifiers::SuperAlt
+        }
+    }
 }
 
 /// How a mail that has HTML first shows in the reader (`settings.set_setting mail_view`, task
@@ -470,6 +534,7 @@ impl Default for Settings {
             allow_api_keys: on(),
             allow_mcp: on(),
             tools: Tools::default(),
+            workspaces: WorkspaceSettings::default(),
         }
     }
 }
@@ -1532,6 +1597,27 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #243: the modifiers of the template keys default per system, read their names and
+    /// fall back to the default when a file holds something else.
+    #[test]
+    fn the_template_keys_modifiers_are_read_leniently() {
+        use super::{Settings, ShortcutModifiers};
+
+        let mac_or_windows = cfg!(any(target_os = "macos", target_os = "windows"));
+        let default = if mac_or_windows { ShortcutModifiers::CtrlAlt } else { ShortcutModifiers::SuperAlt };
+        assert_eq!(Settings::default().workspaces.modifiers, default);
+        let old: Settings = serde_json::from_str("{}").expect("old file");
+        assert_eq!(old.workspaces.modifiers, default, "a file from before issue #243");
+        let set: Settings =
+            serde_json::from_value(serde_json::json!({"workspaces": {"modifiers": "ctrl_shift"}})).expect("chosen");
+        assert_eq!(set.workspaces.modifiers, ShortcutModifiers::CtrlShift);
+        let odd: Settings =
+            serde_json::from_value(serde_json::json!({"workspaces": {"modifiers": "hyper"}, "zoom": 1.1}))
+                .expect("odd value");
+        assert_eq!(odd.workspaces.modifiers, default);
+        assert_eq!(serde_json::to_value(ShortcutModifiers::SuperCtrl).expect("json"), "super_ctrl");
+    }
+
     /// Task E12.5: the assignments are read leniently – an entry this version cannot use is
     /// dropped, the rest of the settings survive.
     #[test]
@@ -1761,6 +1847,7 @@ mod tests {
             allow_api_keys: true,
             allow_mcp: true,
             tools: Tools::default(),
+            workspaces: WorkspaceSettings::default(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -1962,6 +2049,7 @@ mod tests {
                 enabled: BTreeSet::from([ToolId::Pdf]),
                 pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),
             },
+            workspaces: WorkspaceSettings { modifiers: ShortcutModifiers::CtrlShift },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

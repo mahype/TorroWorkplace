@@ -473,6 +473,8 @@ mod tests {
             source: Source { workspace: "1".into(), monitor: None, monitor_rect: None },
             tree: None,
             windows,
+            shortcut: None,
+            startup: None,
         }
     }
 

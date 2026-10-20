@@ -59,6 +59,18 @@ pub struct Cover {
     pub focus: bool,
 }
 
+/// A global key bind that runs a command (task WS.1), e.g. `SUPER + ALT + 1` → `torroworkplace load …`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyBind {
+    /// The keys in Hyprland's spelling: modifiers and the key joined by ` + `, e.g. `SUPER + ALT + 1`.
+    /// [`crate::WindowManager::unbind_keys`] needs exactly this text again (Hyprland compares it
+    /// case-sensitively), so callers keep it as they bound it.
+    pub keys: String,
+    /// The program and its arguments, one element each, never a shell line. The backend quotes each
+    /// element for the shell itself, so spaces and quotes in paths and ids are safe.
+    pub command: Vec<String>,
+}
+
 /// A normal window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Window {
@@ -97,10 +109,26 @@ pub struct Split {
 /// Something happened in the window manager.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WmEvent {
-    WindowOpened { window: WindowId, class: String, workspace: WorkspaceId },
-    WindowClosed { window: WindowId },
-    WindowMoved { window: WindowId, workspace: WorkspaceId },
-    WorkspaceFocused { workspace: WorkspaceId },
+    WindowOpened {
+        window: WindowId,
+        class: String,
+        workspace: WorkspaceId,
+    },
+    WindowClosed {
+        window: WindowId,
+    },
+    WindowMoved {
+        window: WindowId,
+        workspace: WorkspaceId,
+    },
+    WorkspaceFocused {
+        workspace: WorkspaceId,
+    },
+    /// The window manager read its configuration again (Hyprland: `configreloaded`). Whatever was
+    /// registered at run time – key binds ([`crate::WindowManager::bind_keys`]), window rules
+    /// ([`crate::WindowManager::float_dialogs`], [`crate::WindowManager::cover_monitors`]) – is gone
+    /// and has to be registered again. Only Hyprland sends it.
+    ConfigReloaded,
 }
 
 /// Why a window manager call failed.

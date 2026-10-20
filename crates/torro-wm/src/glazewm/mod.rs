@@ -117,6 +117,21 @@ pub fn size_command(first: &WindowId, split: Split) -> Result<String, WmError> {
     Ok(format!("command --id {} size --{axis} {percent:.0}%", container_id(first)?))
 }
 
+/// `command focus --monitor <index>`: GlazeWM focuses the workspace the monitor at `index` shows. The
+/// index counts in the order of `query monitors`, which is GlazeWM's own order of monitors.
+pub fn focus_monitor_command(index: usize) -> String {
+    format!("command focus --monitor {index}")
+}
+
+/// The position of the monitor named `name` in `monitors` (the order of `query monitors`), for
+/// [`focus_monitor_command`]. `NotFound` when none has that name.
+fn monitor_index(monitors: &[Monitor], name: &str) -> Result<usize, WmError> {
+    monitors
+        .iter()
+        .position(|monitor| monitor.name == name)
+        .ok_or_else(|| WmError::NotFound(format!("no monitor named {name:?}")))
+}
+
 impl WindowManager for GlazeWm {
     fn name(&self) -> &'static str {
         "glazewm"
@@ -166,6 +181,13 @@ impl WindowManager for GlazeWm {
 
     async fn events(&self) -> Result<Events, WmError> {
         events::subscribe(self.port).await
+    }
+
+    /// Task WS.1: GlazeWM addresses monitors by index only, so the name is looked up in
+    /// `query monitors` first.
+    async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
+        let index = monitor_index(&self.monitors().await?, monitor)?;
+        self.command(&focus_monitor_command(index)).await
     }
 }
 
@@ -303,6 +325,16 @@ mod tests {
                 format!("command --id {CODE} close"),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn focus_monitor_looks_up_the_index_by_name() {
+        let fake = fake().await;
+        let wm = GlazeWm { port: fake.port };
+        assert_eq!(wm.focus_monitor(r"\\.\DISPLAY2").await, Ok(()));
+        let unknown = wm.focus_monitor("DP-9").await;
+        assert!(matches!(unknown, Err(WmError::NotFound(_))), "{unknown:?}");
+        assert_eq!(fake.received(), vec!["query monitors", "command focus --monitor 1", "query monitors"]);
     }
 
     #[tokio::test]

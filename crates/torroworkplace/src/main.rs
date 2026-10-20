@@ -6,9 +6,13 @@
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
 //! - `hook claude-code|codex|gemini`: run by the hooks of coding agents; reports waiting and
 //!   finished sessions to the inbox, silently and always with exit code 0 (see `hook`).
+//! - `workspace_keys`: the template keys (modifiers + digit), bound by the daemon on Hyprland
+//!   and by the tray on macOS and Windows.
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
+//!   `ui --template=<id> [--saved]` shows only the dialog of one workspace template, in a small
+//!   window of its own (the tray and `apps.open_app` start it).
 //! - `mcp`: one MCP server for the whole suite, on stdio, with the agent's key from
 //!   `TORRO_TOKEN`.
 //!
@@ -48,11 +52,15 @@ mod pim;
 mod reminders;
 mod settings_service;
 mod sources;
+// Loading templates at login (issue #243, task WS.5).
+mod startup_templates;
 mod suggest;
 // The assistant's own tools (issue #225): the PDF tool, its register and its commands.
 mod tools;
 mod tray;
 mod ui;
+// The template keys (issue #243): what they are, and binding them on Hyprland (task WS.3).
+mod workspace_keys;
 
 const APP: AppId = AppId::WORKPLACE;
 

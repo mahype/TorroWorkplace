@@ -1,4 +1,4 @@
-//! Reading Hyprland's JSON answers (`j/clients`, `j/activeworkspace`, `j/monitors`).
+//! Reading Hyprland's JSON answers (`j/clients`, `j/activeworkspace`, `j/monitors`, `j/version`).
 //!
 //! Task 1.4 in `docs/tasks/phase-1.md`. Fixtures live in `tests/fixtures/hyprland-*.json`.
 //!
@@ -63,6 +63,29 @@ pub fn parse_active_workspace(json: &str) -> Result<WorkspaceId, WmError> {
 pub fn parse_monitors(json: &str) -> Result<Vec<Monitor>, WmError> {
     let monitors: Vec<RawMonitor> = serde_json::from_str(json).map_err(|err| protocol("monitors", &err))?;
     monitors.into_iter().map(Monitor::try_from).collect()
+}
+
+/// The version in a `j/version` answer, e.g. `0.56.0` (task WS.1). Hyprland writes it in `version`;
+/// older ones only have `tag` (`v0.40.0-12-gabc`), whose leading `v` is dropped. `None` for an answer
+/// without either or one that is not JSON.
+pub fn parse_version(json: &str) -> Option<String> {
+    let version: RawVersion = serde_json::from_str(json).ok()?;
+    let from_tag = || version.tag.as_deref().map(|tag| tag.trim().trim_start_matches('v').to_owned());
+    version
+        .version
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .or_else(from_tag)
+        .filter(|text| !text.is_empty())
+}
+
+/// The fields of `j/version` we read.
+#[derive(Debug, Deserialize)]
+struct RawVersion {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    tag: Option<String>,
 }
 
 fn protocol(what: &str, err: &serde_json::Error) -> WmError {
@@ -358,6 +381,17 @@ mod tests {
         let monitor_of: Vec<Option<&str>> = windows.iter().map(|w| w.monitor.as_deref()).collect();
         // Unknown id 7 and a missing `monitor` field both stay unnamed.
         assert_eq!(monitor_of, vec![Some("eDP-1"), Some("DP-1"), None, None]);
+    }
+
+    #[test]
+    fn version_comes_from_version_or_else_tag() {
+        let current =
+            r#"{"branch": "", "commit": "abc", "version": "0.56.0", "dirty": false, "tag": "v0.56.0", "flags": []}"#;
+        assert_eq!(parse_version(current).as_deref(), Some("0.56.0"));
+        assert_eq!(parse_version(r#"{"tag": "v0.40.0-12-gabc"}"#).as_deref(), Some("0.40.0-12-gabc"));
+        assert_eq!(parse_version(r#"{"version": "", "tag": "v0.41.0"}"#).as_deref(), Some("0.41.0"));
+        assert_eq!(parse_version(r#"{"commit": "abc"}"#), None);
+        assert_eq!(parse_version("unknown request"), None);
     }
 
     #[test]

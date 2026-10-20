@@ -189,6 +189,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::Status
         | Request::Quit
         | Request::ListTemplates
+        | Request::ListScreens
         | Request::SaveTemplate { .. }
         | Request::ConnectNextcloud { .. }
         | Request::ConnectGithub
@@ -230,7 +231,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UpdateTemplate { id: template }
         | Request::DeleteTemplate { id: template }
         | Request::LoadTemplate { id: template, .. }
-        | Request::RenameTemplate { id: template, .. } => vec![format!("template:{}", hashed(template))],
+        | Request::RenameTemplate { id: template, .. }
+        // The template only, never the screen it loads on (issue #243); the one that loses a key
+        // is added by the core, which looks it up ([`taken_from_id`]).
+        | Request::SetTemplateShortcut { id: template, .. }
+        | Request::SetTemplateStartup { id: template, .. } => vec![format!("template:{}", hashed(template))],
         Request::SaveEvent { event } | Request::DeleteEvent { event } => {
             [Some(collection(&event.collection)), item(&event.href)].into_iter().flatten().collect()
         }
@@ -427,6 +432,12 @@ pub fn engine_id(engine: &str) -> String {
 /// not have the form the core makes are hashed.
 pub fn delegation_ids(bot: &str, assistant: &str) -> Vec<String> {
     vec![made_id("bot", bot), behalf_id(assistant)]
+}
+
+/// `taken-from:<hash>`: the template that lost its key to `workspaces.set_template_shortcut` (issue
+/// #243), hashed like the template the command names: ids of templates are made from their names.
+pub fn taken_from_id(template: &str) -> String {
+    format!("taken-from:{}", hashed(template))
 }
 
 /// `for:<client id>`: the client a bot ran for (task B.2), also on the lines of a person's decision.
@@ -726,6 +737,14 @@ pub(crate) mod tests {
 
         let template = super::ids(&Request::RenameTemplate { id: "secret-plans".into(), name: "Secret plans".into() });
         assert!(!template.join(" ").contains("secret"), "{template:?}");
+        // Issue #243: the template hashed, never the screen; the one that lost the key hashed too.
+        let startup = torro_setups::Startup { screen: "DELL-U3423WE".into(), fallback: Default::default() };
+        let startup = super::ids(&Request::SetTemplateStartup { id: "secret-plans".into(), startup: Some(startup) });
+        assert_eq!(startup, template);
+        assert!(!startup.join(" ").contains("DELL"), "{startup:?}");
+        let key = super::ids(&Request::SetTemplateShortcut { id: "secret-plans".into(), key: Some(3) });
+        assert_eq!(key, template);
+        assert_eq!(taken_from_id("mail-day"), format!("taken-from:{}", hashed("mail-day")));
         let preview = Request::PreviewFilter { account: "github:anna".into(), queries: vec!["is:open salary".into()] };
         assert_eq!(super::ids(&preview), vec!["account:github:anna".to_string()]);
         // The account, and a repository's name only hashed (task G.9), the same in any case.

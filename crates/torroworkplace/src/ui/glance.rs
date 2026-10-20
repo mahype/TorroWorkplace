@@ -189,8 +189,15 @@ mod tests {
     }
 
     fn running(accounts: Vec<AccountInfo>) -> Data {
-        let status =
-            Status { version: "0.9.0".into(), backend: "hyprland".into(), workspace: None, templates: 2, busy: false };
+        let status = Status {
+            version: "0.9.0".into(),
+            backend: "hyprland".into(),
+            workspace: None,
+            templates: 2,
+            busy: false,
+            wm_version: None,
+            shortcuts: None,
+        };
         Data { status: Some(status), accounts, ..Data::default() }
     }
 

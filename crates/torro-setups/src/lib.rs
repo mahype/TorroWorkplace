@@ -16,5 +16,6 @@ pub mod storage;
 mod template;
 
 pub use template::{
-    LayoutTree, LoadMode, SCHEMA_VERSION, SetupsError, Source, Strategy, Template, TemplateSummary, TemplateWindow,
+    LayoutTree, LoadMode, MAX_SHORTCUT, SCHEMA_VERSION, ScreenFallback, SetupsError, Source, Startup, Strategy,
+    Template, TemplateSummary, TemplateWindow, main_monitor,
 };

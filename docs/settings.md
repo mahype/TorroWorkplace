@@ -65,7 +65,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
 | **MCP** | Ob Agenten Torro über MCP nutzen dürfen; die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub | #231 (S.35) |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
-| **Workspaces** | Vorlagen: umbenennen, löschen, Tastenplatz F1–F10, beim Anmelden laden; Strategie je Fenster | v1 (Liste, Umbenennen, Löschen), Rest später |
+| **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Hell/dunkel, Design-Paket ([design-pakete.md](design-pakete.md)), Zoom; gilt für alle Apps, die Apps verweisen hierher | v1 |
 | **General** | Sprache (System / English / Deutsch), Start beim Anmelden, Einrichtung erneut; Gruppe **Apps**: je App „On“ (Komponente) und „Open“, dazu der Satz, dass ihre Einstellungen hinter dem Zahnrad liegen | v1, Gruppe Apps mit S.21 |
 | **Updates** | Automatisch prüfen, „Check for updates now“, zuletzt geprüft | später |
@@ -447,6 +447,51 @@ Assistent-Fenster denselben nutzen.
 7. **Weg im Umschlag, Schalter für API und MCP.** Verworfen: keine Schalter (dann ließe sich die API nicht
    abschalten) und eine echte Trennung über getrennte Sockets (Aufwand ohne Schutz gegen denselben Benutzer).
 
+## Workspaces (#243)
+
+Die Seite **Workspaces** der Steuerzentrale zeigt den Fenstermanager, die Tasten und die Vorlagen. Name, Taste und
+Start sind Eigenschaften einer Vorlage. Jede hat einen eigenen Befehl (`workspaces.rename_template`,
+`workspaces.set_template_shortcut`, `workspaces.set_template_startup`), damit eine Änderung nichts anderes löscht.
+
+- **Fenstermanager:** Gruppe „Window manager“ mit Name, Version und Bildschirmen. Fehlt er, steht da, welcher
+  erwartet wird und was zu tun ist.
+- **Tastenkürzel:** Zeile „Shortcuts“ mit der Wahl des Modifikators (`set_setting workspace_shortcuts`). Vorgabe:
+  Super + Alt unter Linux, Ctrl + Option unter macOS, Ctrl + Alt unter Windows. Die Zeile sagt, ob die Tasten wirken,
+  oder warum nicht.
+- **Vorlagen:** nach Taste sortiert (1 … 9, 0, dann ohne Taste). Je Zeile die Taste, der Name, Fensterzahl und
+  Alter, „Beim Start · DP-1“ bei Start, „Laden“ (in den aktiven Workspace, wie „Hinzufügen“) und „…“ mit
+  „Bearbeiten…“, „Aus aktuellem Workspace aktualisieren“ und „Löschen…“ (mit Rückfrage).
+- **Workspace speichern…** speichert den aktiven Workspace und öffnet danach den Dialog.
+
+**Dialog** „Vorlage bearbeiten“ (von der Seite oder aus dem Tray) und „Workspace speichern“ (direkt nach dem
+Speichern):
+
+- **Name.**
+- **Taste:** „Keine“ oder 1 … 0. Hält eine andere Vorlage die Taste, sagt der Dialog es vorher; Speichern nimmt
+  sie ihr weg.
+- **Start:** Schalter „Beim Start laden“, dazu der Bildschirm als Skizze in echten Proportionen. Ein nicht
+  angeschlossener Bildschirm bleibt wählbar. „Wenn der Bildschirm fehlt“: „Hauptbildschirm verwenden“ (Vorgabe)
+  oder „Überspringen“.
+- **Abbrechen** schließt im Modus „Vorlage bearbeiten“ ohne Änderung. Im Modus „Workspace speichern“ löscht es die
+  gerade gespeicherte Vorlage wieder.
+- Speichern schickt nur, was sich geändert hat. Ein Fehler bleibt im Dialog stehen.
+- Fenster der Steuerzentrale und des Dialogs kommen nie in eine Vorlage.
+
+**Tray-Menü:** Vorlagen mit Taste erscheinen mit ihrer Ziffer, „Aktualisieren“ und „Löschen“ gibt es nur auf dieser
+Seite. Einzelheiten in [core.md](core.md#tray-menü-im-prototyp).
+
+**Tasten:** Unter Hyprland setzt der Dienst die belegten Tasten zur Laufzeit, beim Start und nach jedem Neuladen der
+Konfiguration erneut. Unter macOS und Windows meldet er sie beim System an; ein Druck lädt die Vorlage wie
+„Hinzufügen“. Lässt sich eine Taste nicht anmelden, weil sie schon belegt ist, zeigt die Zeile „Shortcuts“ es an.
+
+**Laden beim Start:** Einmal pro Anmeldung. Nach dem Start wartet der Dienst, bis der Fenstermanager die Bildschirme
+stabil meldet. Dann lädt er jede Vorlage mit Start auf ihren Bildschirm, im Modus „Hinzufügen“, und gibt den Fokus an
+den Bildschirm zurück, der ihn vorher hatte. Fehlt ein Bildschirm, lädt die Vorlage auf den Hauptbildschirm (der bei
+0, 0 liegt, sonst der erste) oder wird übersprungen, je nach ihrer Einstellung. Ein Neustart des Dienstes in
+derselben Anmeldung lädt nichts ein zweites Mal (Merker `startup.json` im State-Verzeichnis).
+
+Die F1–F10 der alten Python-App (`SUPER + F1` … `F10`) sind verworfen; es gibt die Tasten 1 … 0.
+
 ## Kalender und Listen pro Fenster (später)
 
 Jedes App-Fenster bekommt ein eigenes **Fenster-Profil**: welche Kalender bzw. Listen es zeigt,
@@ -467,7 +512,9 @@ kacheln, etwa „Arbeit · Woche“ und „Familie · Monat“.
 | Geheimnisse (App-Passwörter, Tokens, API-Schlüssel) | Schlüsselbund des Systems, Dienst `torroworkplace` (gibt es) |
 | Einstellungen (Sprache, Autostart, ausgeblendete Sammlungen, gewähltes Design `design`, Schrift `font`, Farbschema `colorScheme` …) | `settings.json` im Config-Verzeichnis, atomar geschrieben |
 | Designs, Schriften, Farbschemata | `designs/<id>/`, `fonts/<id>/`, `color-schemes/<id>/` im Datenverzeichnis; aufgelistet mit `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes`, gewählt mit `settings.set_setting { key: "design" \| "font" \| "color_scheme" }` (L.3, L.22) |
-| Vorlagen | wie bisher `templates/` im Datenverzeichnis |
+| Vorlagen | wie bisher `templates/` im Datenverzeichnis; Felder `shortcut` und `startup` (#243) |
+| Tastenmodifikator der Vorlagen | `settings.json`, Feld `workspaces.modifiers` (`super_alt`, `super_ctrl`, `ctrl_alt`, `ctrl_shift`) |
+| Start-Merker (Vorlagen beim Anmelden) | `startup.json` im State-Verzeichnis |
 
 Die Steuerzentrale liest und schreibt nie selbst Dateien, sondern fragt den Dienst über IPC
 (`Settings`, `SetSetting`, `Accounts`, `AddAccount…`, `RemoveAccount`, `TestAccount`). So sehen

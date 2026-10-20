@@ -4,6 +4,8 @@
 //! `apps/workspace-setups/workspace_setups/capture.py`.
 
 use chrono::{DateTime, Local, Utc};
+use torro_core::AppId;
+use torro_core::app::{WORKPLACE_BUNDLE_ID, WORKPLACE_DIALOG_CLASS};
 use torro_wm::{Rect, Window, WindowManager};
 
 use crate::layout::infer_tree;
@@ -12,9 +14,23 @@ use crate::{SCHEMA_VERSION, SetupsError, Source, Strategy, Template, TemplateWin
 /// Classes of programs that only run once; their windows default to [`Strategy::Move`].
 pub const SINGLE_INSTANCE: &[&str] = &["spotify", "slack", "signal", "discord", "obsidian", "1password"];
 
+/// Windows that never go into a template (issue #243): the control centre and the core's dialog,
+/// which is open right while "Save workspace…" captures, by every name a window manager gives them
+/// ([`never_captured`]): their window classes on Linux (Hyprland), the bundle id of the core's app on
+/// macOS (AeroSpace names windows by it), and the core's binary, which AeroSpace takes for a program
+/// without a bundle and GlazeWM on Windows as the executable's name.
+pub const NEVER_CAPTURED: &[&str] =
+    &[AppId::WORKPLACE.window_class, WORKPLACE_DIALOG_CLASS, WORKPLACE_BUNDLE_ID, AppId::WORKPLACE.binary];
+
+/// Whether a window of `class` ([`Window::class`]) is one of [`NEVER_CAPTURED`], ignoring case:
+/// Windows does not tell `TorroWorkplace.exe` from `torroworkplace.exe`.
+pub fn never_captured(class: &str) -> bool {
+    NEVER_CAPTURED.iter().any(|never| never.eq_ignore_ascii_case(class))
+}
+
 /// The active workspace as a template with id `id` (callers get it from
-/// `Store::unique_id`). Windows get ids `window-1`, `window-2`, … in the order the window
-/// manager lists them; tiled ones go into the tree (`layout::infer_tree`); rectangles are
+/// `Store::unique_id`), without the windows of [`NEVER_CAPTURED`]. Windows get ids `window-1`,
+/// `window-2`, … in the order the window manager lists them; tiled ones go into the tree (`layout::infer_tree`); rectangles are
 /// stored relative to the monitor. `resolve` finds the start command of a window (the
 /// daemon passes `launch::command_for`). The name is [`auto_name`].
 pub async fn capture(
@@ -24,7 +40,8 @@ pub async fn capture(
     now: DateTime<Local>,
 ) -> Result<Template, SetupsError> {
     let workspace = wm.active_workspace().await?;
-    let windows = wm.windows(Some(&workspace)).await?;
+    let mut windows = wm.windows(Some(&workspace)).await?;
+    windows.retain(|window| !never_captured(&window.class));
     let monitors = wm.monitors().await?;
 
     // The monitor that shows the workspace; failing that, the one the first window is on.
@@ -72,6 +89,8 @@ pub async fn capture(
         },
         tree,
         windows: template_windows,
+        shortcut: None,
+        startup: None,
     })
 }
 
@@ -213,6 +232,49 @@ mod tests {
 
         assert_eq!(template.source.monitor.as_deref(), Some("DP-2"));
         assert_eq!(template.windows[0].rect, Rect { x: 160, y: 10, width: 1920, height: 1080 });
+    }
+
+    #[tokio::test]
+    async fn the_control_centre_and_the_dialog_are_never_captured() {
+        let wm = FakeWm::new("3");
+        let rect = Rect { x: 0, y: 0, width: 960, height: 1080 };
+        wm.add_window(window("0xa", AppId::WORKPLACE.window_class, "3", rect));
+        wm.add_window(window("0xb", "foot", "3", Rect { x: 960, ..rect }));
+        let mut dialog = window("0xc", WORKPLACE_DIALOG_CLASS, "3", Rect { x: 600, y: 300, width: 640, height: 480 });
+        dialog.floating = true;
+        wm.add_window(dialog);
+
+        let template = capture(&wm, "tpl-4".into(), |_| Vec::new(), fixed_now()).await.expect("captured");
+
+        let classes: Vec<&str> = template.windows.iter().map(|w| w.class.as_str()).collect();
+        assert_eq!(classes, ["foot"]);
+        assert_eq!(template.windows[0].id, "window-1", "numbered without the left-out windows");
+        assert_eq!(template.tree, Some(LayoutTree::Window { id: "window-1".into() }));
+    }
+
+    /// Review fix of issue #243: on macOS AeroSpace names the control centre and the dialog by the
+    /// bundle id (or, without a bundle, by the binary), on Windows GlazeWM by the executable, in any
+    /// case; neither goes into a template there either. Other programs still do.
+    #[tokio::test]
+    async fn torro_windows_are_never_captured_on_macos_and_windows_either() {
+        let wm = FakeWm::new("3");
+        let rect = Rect { x: 0, y: 0, width: 960, height: 1080 };
+        for (id, class) in [
+            ("0xa", "io.github.mahype.torro-workplace"),
+            ("0xb", "torroworkplace"),
+            ("0xc", "TorroWorkplace"),
+            ("0xd", "com.mitchellh.ghostty"),
+            ("0xe", "io.github.mahype.torro-calendar"),
+        ] {
+            wm.add_window(window(id, class, "3", rect));
+        }
+
+        let template = capture(&wm, "tpl-5".into(), |_| Vec::new(), fixed_now()).await.expect("captured");
+
+        let classes: Vec<&str> = template.windows.iter().map(|w| w.class.as_str()).collect();
+        assert_eq!(classes, ["com.mitchellh.ghostty", "io.github.mahype.torro-calendar"]);
+        assert!(never_captured("TORRO-WORKPLACE-DIALOG"));
+        assert!(!never_captured("torrocalendar"), "the suite's apps belong in templates");
     }
 
     #[test]

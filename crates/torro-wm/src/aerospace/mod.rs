@@ -3,7 +3,7 @@
 //! Task X.6 in `docs/tasks/plattformen.md`. AeroSpace is an i3-like tiling window manager;
 //! everything goes through its command line program `aerospace` ([`cli`]): `list-windows`,
 //! `list-workspaces` and `list-monitors` with `--json`, `focus`, `move-node-to-workspace`,
-//! `close`, `join-with` and `resize` with `--window-id`. Events come from
+//! `close`, `join-with` and `resize` with `--window-id`, `focus-monitor` with a pattern. Events come from
 //! `aerospace subscribe` ([`events`]); rectangles, which the program does not print, from
 //! CoreGraphics ([`geometry`]).
 //!
@@ -156,6 +156,12 @@ impl WindowManager for AeroSpace {
 
     async fn events(&self) -> Result<Events, WmError> {
         events::subscribe(self.program.clone()).await
+    }
+
+    /// Task WS.1: `focus-monitor -- ^<name>$` ([`cli::monitor_pattern`]); `--` lets a pattern start
+    /// with `-`. AeroSpace refuses a name no monitor has, which comes back as `Protocol`.
+    async fn focus_monitor(&self, monitor: &str) -> Result<(), WmError> {
+        self.run(&["focus-monitor", "--", &cli::monitor_pattern(monitor)]).await.map(|_| ())
     }
 }
 
@@ -339,6 +345,13 @@ cat "$dir/geometry.json"
             fake.commands(),
             ["focus --window-id 102", "move-node-to-workspace --window-id 103 -- -web", "close --window-id 101"]
         );
+    }
+
+    #[tokio::test]
+    async fn focus_monitor_matches_the_whole_name() {
+        let fake = Fake::new("focus-monitor");
+        fake.wm().focus_monitor("DELL U2723QE").await.expect("focus monitor");
+        assert_eq!(fake.commands(), ["focus-monitor -- ^DELL U2723QE$"]);
     }
 
     #[tokio::test]

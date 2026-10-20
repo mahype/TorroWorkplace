@@ -29,7 +29,7 @@ pub(crate) const APP_NAME: &str = "Torro Workplace";
 /// (the AppUserModelID limit). Never change it once released: the system keys the user's
 /// notification settings by it.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-const APP_ID: &str = "io.github.mahype.torro-workplace";
+const APP_ID: &str = torro_core::app::WORKPLACE_BUNDLE_ID;
 
 /// The summary and body for a finished command, or `None` when there is nothing to tell.
 ///
@@ -54,8 +54,10 @@ pub fn message(what: &str, response: &Response) -> Option<(String, String)> {
             )),
         },
         Response::Error { code, message } => {
+            // Named as the tray's entries (and the page's "Load") are, which load in the modes `add`
+            // and `replace`; only the mode `empty` (`ctl`, the API) refuses a workspace with windows.
             let body = if code == "workspace-not-empty" {
-                tr("The workspace is not empty. Choose “Add” or “Replace”.").to_string()
+                tr("The workspace is not empty. Choose “Load” or “Replace windows”.").to_string()
             } else {
                 message.clone()
             };
@@ -431,7 +433,16 @@ mod tests {
     use torro_setups::TemplateSummary;
 
     fn summary(name: &str, windows: usize) -> TemplateSummary {
-        TemplateSummary { id: "dev".into(), name: name.into(), windows, updated: chrono::Utc::now() }
+        TemplateSummary {
+            id: "dev".into(),
+            name: name.into(),
+            windows,
+            updated: chrono::Utc::now(),
+            shortcut: None,
+            startup: None,
+            workspace: "1".into(),
+            monitor: None,
+        }
     }
 
     fn text(summary: &str, body: &str) -> Option<(String, String)> {
@@ -482,7 +493,7 @@ mod tests {
         let response = Response::Error { code: "workspace-not-empty".into(), message: "3 windows".into() };
         assert_eq!(
             message("load dev", &response),
-            text(tr("Failed"), tr("The workspace is not empty. Choose “Add” or “Replace”."))
+            text(tr("Failed"), tr("The workspace is not empty. Choose “Load” or “Replace windows”."))
         );
     }
 

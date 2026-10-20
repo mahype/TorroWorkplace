@@ -47,6 +47,8 @@ pub fn parse_event(line: &str) -> Option<WmEvent> {
             check_workspace_id(id)?;
             Some(WmEvent::WorkspaceFocused { workspace: workspace_name(workspace)? })
         }
+        // `configreloaded>>` with empty data (task WS.1): run-time binds and rules are gone.
+        "configreloaded" => Some(WmEvent::ConfigReloaded),
         _ => None,
     }
 }
@@ -197,6 +199,15 @@ mod tests {
     }
 
     #[test]
+    fn parses_config_reloaded() {
+        assert_eq!(parse_event("configreloaded>>"), Some(WmEvent::ConfigReloaded));
+        // The data is empty today; should a version send some, it is still a reload.
+        assert_eq!(parse_event("configreloaded>>1"), Some(WmEvent::ConfigReloaded));
+        assert_eq!(parse_event("configreloaded"), None, "no event without `>>`");
+        assert_eq!(parse_event("configreloadedx>>"), None);
+    }
+
+    #[test]
     fn v1_and_unused_events_are_ignored() {
         assert_eq!(parse_event("movewindow>>55d0a1b2c3d4,2"), None);
         assert_eq!(parse_event("workspace>>2"), None);
@@ -242,7 +253,7 @@ mod tests {
         assert!(matches!(err, WmError::NotRunning(_)), "{err:?}");
     }
 
-    /// A stand-in for Hyprland: writes three event lines and closes the socket.
+    /// A stand-in for Hyprland: writes four event lines and closes the socket.
     #[cfg(unix)]
     #[tokio::test]
     async fn subscribe_forwards_parsed_events_from_socket() {
@@ -260,9 +271,11 @@ mod tests {
         let listener = UnixListener::bind(dir.join(EVENT_SOCKET)).expect("bind fake socket");
         let server = tokio::spawn(async move {
             let (mut conn, _) = listener.accept().await.expect("accept");
-            conn.write_all(b"openwindow>>55d0a1b2c3d4,3,foot,~\nclosewindow>>55d0a1b2c3d4\nworkspacev2>>4,4\n")
-                .await
-                .expect("write events");
+            conn.write_all(
+                b"openwindow>>55d0a1b2c3d4,3,foot,~\nclosewindow>>55d0a1b2c3d4\nworkspacev2>>4,4\nconfigreloaded>>\n",
+            )
+            .await
+            .expect("write events");
             // Dropping the connection closes the socket, which ends the stream.
         });
 
@@ -286,6 +299,7 @@ mod tests {
                 },
                 WmEvent::WindowClosed { window: window("55d0a1b2c3d4") },
                 WmEvent::WorkspaceFocused { workspace: workspace("4") },
+                WmEvent::ConfigReloaded,
             ]
         );
     }

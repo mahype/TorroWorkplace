@@ -54,8 +54,8 @@ use torro_pim::model::GitHubLabel;
 use torro_pim::source::GitHubRepo;
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
-use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
+use torro_setups::{Startup, TemplateSummary};
 
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
@@ -257,6 +257,7 @@ pub enum Request {
     /// Overwrites a template with the active workspace, keeping its name and settings.
     #[serde(rename = "workspaces.update_template")]
     UpdateTemplate { id: String },
+    /// Deletes a template. Waits for no other template work: while one is saved or loaded, `busy`.
     #[serde(rename = "workspaces.delete_template")]
     DeleteTemplate { id: String },
     /// Loads a template onto the active workspace.
@@ -266,6 +267,44 @@ pub enum Request {
         /// `empty` (only into an empty workspace), `add` or `replace` (closes the windows there).
         mode: LoadMode,
     },
+    /// Gives the template `id` a digit key that loads it (issue #243), or takes its key away with
+    /// `key: null`. The key is pressed with the modifiers of the setting `workspace_shortcuts`
+    /// ([`SettingKey::WorkspaceShortcuts`]) and loads like `load_template` in mode `add`. A key
+    /// belongs to one template at most: another template that holds it loses it, both written in
+    /// one round while no save or load runs. Everything else of the template stays.
+    ///
+    /// Answered with [`Response::Saved`] (the template with its new key). Codes: `not-found` for an
+    /// unknown id, `error` for a key above 9, `busy` while a save or load runs.
+    #[serde(rename = "workspaces.set_template_shortcut")]
+    SetTemplateShortcut {
+        id: String,
+        /// The digit key, `0` to `9`; `null` takes the key away. Required: a call that leaves it
+        /// out is refused rather than taken for `null`.
+        #[serde(deserialize_with = "Option::deserialize")]
+        #[schemars(required, range(max = 9))]
+        key: Option<u8>,
+    },
+    /// Loads the template `id` once at every login (issue #243), in mode `add` onto the workspace
+    /// the screen `startup.screen` shows, or no more with `startup: null`. A screen that is not
+    /// connected now is allowed (it may be at the next login); `startup.fallback` says what happens
+    /// when it is missing then. Everything else of the template stays. A rule that starts programs
+    /// at every login, like `start_at_login`: `Admin`.
+    ///
+    /// Answered with [`Response::Saved`]. Codes: `not-found` for an unknown id, `error` for a screen
+    /// without a name, `busy` while a save or load runs.
+    #[serde(rename = "workspaces.set_template_startup")]
+    SetTemplateStartup {
+        id: String,
+        /// Where and how it loads at login; `null` for not at login. Required, like the key of
+        /// [`Request::SetTemplateShortcut`].
+        #[serde(deserialize_with = "Option::deserialize")]
+        #[schemars(required)]
+        startup: Option<Startup>,
+    },
+    /// The screens the window manager knows now ([`Response::Screens`]), for choosing where a
+    /// template loads at login. `unsupported` without a supported window manager.
+    #[serde(rename = "workspaces.list_screens")]
+    ListScreens,
 
     /// Starts Login Flow v2 for a Nextcloud; the core opens the browser and polls in the
     /// background ([`Response::LoginStarted`]). The account is added to the others; signing in
@@ -1070,7 +1109,7 @@ pub enum Request {
     /// cannot be changed `error`.
     #[serde(rename = "accounts.remove_account")]
     RemoveAccount { id: String },
-    /// Renames a template; its id stays.
+    /// Renames a template; its id stays. While another template is saved or loaded, `busy`.
     #[serde(rename = "workspaces.rename_template")]
     RenameTemplate { id: String, name: String },
     /// Opens or focuses one of the suite's apps by binary name (`torrocalendar`, `torrotasks`) or
@@ -1085,20 +1124,25 @@ pub enum Request {
     /// (`torroinbox --view mail --message m:…`), `task:<uid>` a task in the tasks app
     /// (`torrotasks --task=<uid>`), `file:<id>` a new mail in the inbox's compose window with a file
     /// of the assistant's tools attached (issue #225, the id of `tools.create_pdf`; `torroinbox
-    /// --compose --attach=<path>`). `app` must be the app the target opens in (any inbox window for
-    /// a mail, the inbox for a file), else `error`. The core checks the target and builds the arguments; nothing of it
+    /// --compose --attach=<path>`), `template:<id>` the core's dialog to edit a workspace template
+    /// (issue #243, `torroworkplace ui --template=<id>`; always to edit, never the dialog after
+    /// "Save workspace…", whose Cancel deletes the template). `app` must be the app the target
+    /// opens in (any inbox window for a mail, the inbox for a file, `torroworkplace` for a
+    /// template), else `error`. The core checks the target and builds the arguments; nothing of it
     /// reaches a shell. A window open already cannot be told to show something else yet, so a
     /// target always starts a new window. Codes besides the above: `not-found` for a mail or task
     /// the caller may not see (a client needs read access to `mail` and the account, or to `tasks`
     /// and the task's list; for a file one it made itself, the tool switched on, read access to
-    /// `tools` and the tool in its selection) or that is gone or changed; `error` for a target of another form or longer than
+    /// `tools` and the tool in its selection; for a template read access to `workspaces`) or that
+    /// is gone or changed; `error` for a target of another form or longer than
     /// 1000 bytes.
     #[serde(rename = "apps.open_app")]
     OpenApp {
         /// Binary name or window class, from `apps.list_apps`.
         app: String,
-        /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>` or `file:<id>` (a new
-        /// mail with that file of the assistant's tools attached); left out: the app as it starts.
+        /// What the app shows: `mail:<address>:<Message-ID>`, `task:<uid>`, `file:<id>` (a new
+        /// mail with that file of the assistant's tools attached) or `template:<id>` (the dialog
+        /// to edit a workspace template); left out: the app as it starts.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target: Option<String>,
     },
@@ -2623,6 +2667,12 @@ pub enum SettingKey {
     /// stored (point 9); any client allowed to change settings may change the other fields, keep the
     /// stored logo or remove it.
     PdfTemplate,
+    /// The modifiers held with a digit key `1` … `0` to load the workspace template that has the
+    /// key (issue #243, `workspaces.set_template_shortcut`): `"super_alt"`, `"super_ctrl"`,
+    /// `"ctrl_alt"` or `"ctrl_shift"` (`torro_core::settings::ShortcutModifiers`; on macOS Super is
+    /// Command and Alt is Option). One choice for all templates; the default is Super + Alt on
+    /// Linux, Ctrl + Alt (Control + Option) on macOS and Windows. The keys are bound anew at once.
+    WorkspaceShortcuts,
 }
 
 /// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
@@ -2754,6 +2804,10 @@ pub enum Response {
     /// The colour schemes ([`Request::ListColorSchemes`]), the standard first.
     ColorSchemes {
         color_schemes: Vec<ColorSchemeInfo>,
+    },
+    /// The screens of [`Request::ListScreens`], in the window manager's order.
+    Screens {
+        screens: Vec<ScreenInfo>,
     },
     Clients {
         clients: Vec<ClientInfo>,
@@ -3688,6 +3742,26 @@ pub struct ServiceState {
     pub problem: Option<String>,
 }
 
+/// One screen as [`Request::ListScreens`] reports it (issue #243).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenInfo {
+    /// The window manager's name (`DP-1`), what [`Request::SetTemplateStartup`] takes.
+    pub name: String,
+    /// Size in logical pixels, for a sketch in true proportions.
+    pub width: u32,
+    pub height: u32,
+    /// The scale the screen draws with (`2.0` on HiDPI).
+    pub scale: f32,
+    /// The main screen: the one at position 0,0, else the first one. A template whose screen is
+    /// missing at login loads here unless it says `skip` (`torro_setups::main_monitor`).
+    pub main: bool,
+}
+
+// `Response` is `Eq`; a scale is never NaN (the window managers' answers are checked for a finite,
+// positive scale), so equality stays reflexive.
+impl Eq for ScreenInfo {}
+
 /// One of the suite's apps, as [`Request::ListApps`] reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -3973,6 +4047,27 @@ pub struct Status {
     pub templates: usize,
     /// A load or save is running.
     pub busy: bool,
+    /// The window manager's version as it reports it (`0.56.0`), when it does (issue #243).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wm_version: Option<String>,
+    /// The template keys (issue #243): the modifiers and whether they work; `None` while nothing
+    /// binds them (no supported window manager, not started yet) and for a client key without read
+    /// access to `workspaces`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcuts: Option<ShortcutStatus>,
+}
+
+/// Whether the template keys work (issue #243, [`Status::shortcuts`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutStatus {
+    /// The modifiers held with the digit keys, as the setting `workspace_shortcuts` says.
+    pub modifiers: torro_core::settings::ShortcutModifiers,
+    /// The keys of all templates that have one are bound now.
+    pub active: bool,
+    /// Why they are not, for people (another program holds a key, the window manager refused).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// Why talking to the core failed.

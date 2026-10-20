@@ -7,12 +7,16 @@
 //! - the tray icon (see `tray`),
 //! - a refresher that rebuilds the tray menu after every command, on window manager events and
 //!   when the open approvals change ([`watch_approvals`]) or anything is written to the inbox
-//!   ([`watch_inbox`]), all debounced into one refresh,
+//!   ([`watch_inbox`]), all debounced into one refresh; on macOS and Windows the template keys
+//!   ([`template_keys`]) go with each new menu, so a change of a key or the modifiers refreshes too,
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
 //!
 //! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
-//! tray or the socket, goes through [`Core::handle`].
+//! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
+//! state directory before the core starts ([`claim_service`]), and when it ends it stops the socket
+//! server and releases the template keys it bound on Hyprland ([`Core::release_template_keys`]), after
+//! which nothing binds them again.
 //!
 //! Where the main thread goes depends on the system. On Linux it waits for the service
 //! (`block_on`); ksni runs its D-Bus task on the same runtime. On macOS and Windows the tray
@@ -46,7 +50,8 @@ pub struct Daemon {
 
 impl Daemon {
     /// Runs `request` in the background and refreshes the menu before (to show "busy") and
-    /// after.
+    /// after. How it went comes as a notification, except an app or a dialog that opened: the
+    /// window is the answer ([`shows_itself`]).
     pub fn run(&self, request: Request) {
         let core = Arc::clone(&self.core);
         let refresh = self.refresh.clone();
@@ -54,14 +59,55 @@ impl Daemon {
         self.runtime.spawn(async move {
             let what = describe(&request);
             let ends = matches!(request, Request::Quit);
+            let quiet = shows_itself(&request);
             let _ = refresh.send(());
             let response = core.handle(request).await;
-            report(&what, &response);
+            match quiet && !matches!(response, Response::Error { .. }) {
+                true => log(&what, &response),
+                false => report(&what, &response),
+            }
             if ends && matches!(response, Response::Ok) {
                 end_after_answer(quit);
             }
             let _ = refresh.send(());
         });
+    }
+
+    /// "Save workspace…" in the tray (task WS.7): saves the active workspace now and opens the dialog
+    /// for the new template ([`Core::save_workspace`]), refreshing the menu before and after like
+    /// [`Daemon::run`]. The dialog shows the result; only a failed save, or a save whose dialog could
+    /// not start, comes as a notification.
+    pub fn save_workspace(&self) {
+        let core = Arc::clone(&self.core);
+        let refresh = self.refresh.clone();
+        self.runtime.spawn(async move {
+            let what = describe(&Request::SaveTemplate { name: None });
+            let _ = refresh.send(());
+            let saved = core.save_workspace(&torro_setups::launch::SystemLauncher).await;
+            match saved.dialog {
+                true => log(&what, &saved.response),
+                false => report(&what, &saved.response),
+            }
+            let _ = refresh.send(());
+        });
+    }
+
+    /// "Manage workspaces…" in the tray (task WS.7): the control centre on its page Workspaces
+    /// ([`Core::show_section`]). A failure is only logged, as for [`Daemon::open_app`].
+    pub fn manage_workspaces(&self) {
+        let core = Arc::clone(&self.core);
+        self.runtime.spawn(async move {
+            if let Err(err) = core.show_section(crate::ui::Section::Workspaces).await {
+                eprintln!("torroworkplace: cannot open the workspaces page: {err}");
+            }
+        });
+    }
+
+    /// Tells the core how the template keys the tray registered stand (task WS.4), for
+    /// `system.status` ([`Core::report_shortcuts`]).
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn report_shortcuts(&self, report: crate::workspace_keys::Report) {
+        self.core.report_shortcuts(report.active, report.problem);
     }
 
     /// Opens or focuses one of the suite's apps.
@@ -178,6 +224,9 @@ enum Shows {
 }
 
 async fn serve(shows: Shows) -> Result<(), String> {
+    // Before anything starts: two services started at once would both start the core (bind the
+    // template keys, load the templates of the login) before one of them failed on the socket.
+    let _service = claim_service()?;
     let socket = socket_path().ok_or("no home directory")?;
     // Bounded: a program that holds the socket or pipe name but never answers must not stall
     // the start; the server then fails on the taken name with a clear error instead.
@@ -221,7 +270,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
 
-    let ipc = {
+    let mut ipc = {
         let core = Arc::clone(&core);
         let refresh = refresh_tx.clone();
         let quit = quit_tx.clone();
@@ -235,6 +284,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
                     // Hotkeys go through `ctl`, so commands from the socket get the same
                     // notifications as clicks in the tray.
                     let changes = changes_state(&request).then(|| describe(&request));
+                    let notifies = tells_on_desktop(&request);
+                    // The tray on macOS and Windows registers the template keys with each new menu.
+                    let rekeys = crate::workspace_keys::rebinds_after(&request);
                     let ends = matches!(request, Request::Quit);
                     // A refused request ran nothing: no notification, no new menu, so a foreign
                     // client cannot flood the desktop.
@@ -246,7 +298,11 @@ async fn serve(shows: Shows) -> Result<(), String> {
                         end_after_answer(quit);
                     }
                     if let Some(what) = changes {
-                        report(&what, &response);
+                        if notifies {
+                            report(&what, &response);
+                        }
+                        let _ = refresh.send(());
+                    } else if rekeys {
                         let _ = refresh.send(());
                     }
                     response
@@ -297,14 +353,58 @@ async fn serve(shows: Shows) -> Result<(), String> {
     let result = tokio::select! {
         _ = quit_rx.recv() => Ok(()),
         _ = tokio::signal::ctrl_c() => Ok(()),
-        ended = ipc => match ended {
+        ended = &mut ipc => match ended {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err.to_string()),
             Err(err) => Err(format!("socket task: {err}")),
         },
     };
+    // The socket takes no more requests before the keys go: a change that came in now would bind its
+    // key again. A request already being answered may still finish; after the release it binds nothing
+    // (`BoundKeys::release`), and neither does a reload of Hyprland.
+    ipc.abort();
+    // Bounded: a window manager that does not answer must not keep the service from ending; what
+    // was not released by then stays written down for the next core.
+    if tokio::time::timeout(RELEASE_WAIT, core.release_template_keys()).await.is_err() {
+        eprintln!("torroworkplace: the template keys were not released in time; the next start releases them");
+    }
     let _ = std::fs::remove_file(&socket);
     result
+}
+
+/// The file in the core's state directory that the running service holds locked ([`claim_service`]).
+const SERVICE_LOCK: &str = "service.lock";
+
+/// How long the end of the service waits for the template keys to be released.
+const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// Makes this process the one service of the user: locks [`SERVICE_LOCK`] for as long as the
+/// returned file lives (the system drops the lock when the process ends, also when it is killed).
+/// "already running" while another service holds it.
+///
+/// The socket alone cannot tell: it is bound only after the core started (the server binds it when
+/// it starts serving), and a second service started at the same time would get that far as well. A
+/// file system without locks is only logged; then the socket's check is all there is, as before.
+fn claim_service() -> Result<Option<std::fs::File>, String> {
+    let state = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state;
+    let path = state.join(SERVICE_LOCK);
+    let opened = std::fs::create_dir_all(&state)
+        .and_then(|()| std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path));
+    let file = match opened {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!("torroworkplace: cannot open {}: {err}; not checking for a second service", path.display());
+            return Ok(None);
+        }
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err("already running".into()),
+        Err(std::fs::TryLockError::Error(err)) => {
+            eprintln!("torroworkplace: cannot lock {}: {err}; not checking for a second service", path.display());
+            Ok(None)
+        }
+    }
 }
 
 /// What shows the state to the user: the tray icon, or nothing when headless or without a
@@ -319,6 +419,7 @@ enum Front {
 }
 
 impl Front {
+    /// Shows `snapshot` first; on macOS and Windows with the template keys ([`template_keys`]).
     async fn start(daemon: &Arc<Daemon>, shows: Shows, snapshot: Snapshot) -> Result<Front, String> {
         match shows {
             Shows::Nothing => {
@@ -332,25 +433,51 @@ impl Front {
             }
             #[cfg(any(target_os = "macos", windows))]
             Shows::Desktop(handle) => {
-                handle.start(Arc::clone(daemon), snapshot);
+                let keys = template_keys(&daemon.core, &snapshot).await;
+                handle.start(Arc::clone(daemon), snapshot, keys);
                 Ok(Front::Desktop(handle))
             }
         }
     }
 
-    async fn show(&self, snapshot: Snapshot) {
+    /// Shows `snapshot`; on macOS and Windows with the template keys `core` names now.
+    async fn show(&self, core: &Core, snapshot: Snapshot) {
         match self {
             #[cfg(target_os = "linux")]
             Front::Tray(handle) => {
+                let _ = core;
                 handle.update(|tray| tray.snapshot = snapshot).await;
             }
             #[cfg(any(target_os = "macos", windows))]
-            Front::Desktop(handle) => handle.show(snapshot),
+            Front::Desktop(handle) => {
+                let keys = template_keys(core, &snapshot).await;
+                handle.show(snapshot, keys);
+            }
             Front::None => {
-                let _ = snapshot;
+                let _ = (core, snapshot);
             }
         }
     }
+}
+
+/// The template keys the tray on macOS and Windows registers (task WS.4): the keys of the templates in
+/// `snapshot`, held with the modifiers of the settings. `None` without a window manager to load them
+/// (`Snapshot::unsupported`), so the keys stay free for other programs. Unreadable settings give the
+/// system's default modifiers, as everywhere else in the core.
+///
+/// When the templates could not be read, `snapshot` lists none and the keys are released until the
+/// next menu finds them again.
+#[cfg(any(target_os = "macos", windows))]
+async fn template_keys(core: &Core, snapshot: &Snapshot) -> Option<crate::workspace_keys::TemplateKeys> {
+    if snapshot.unsupported.is_some() {
+        return None;
+    }
+    let modifiers = match core.handle(Request::Settings).await {
+        Response::Settings { settings } => settings.workspaces.modifiers,
+        _ => torro_core::settings::ShortcutModifiers::default(),
+    };
+    let slots = crate::workspace_keys::summary_slots(&snapshot.templates);
+    Some(crate::workspace_keys::TemplateKeys { modifiers, slots })
 }
 
 /// Rebuilds the menu when asked; bursts of requests (a load opens many windows) collapse
@@ -359,7 +486,7 @@ async fn refresher(core: Arc<Core>, mut requests: mpsc::UnboundedReceiver<()>, f
     while requests.recv().await.is_some() {
         tokio::time::sleep(Duration::from_millis(150)).await;
         while requests.try_recv().is_ok() {}
-        front.show(core.snapshot().await).await;
+        front.show(&core, core.snapshot().await).await;
     }
 }
 
@@ -433,8 +560,9 @@ async fn tend_inbox(core: Arc<Core>) {
     }
 }
 
-/// Template commands: they change the menu and get a notification. Calendar and task
-/// requests from the apps get neither; the apps show their own feedback.
+/// Template commands: they change the menu, and most get a notification ([`tells_on_desktop`]).
+/// Calendar and task requests from the apps get neither; the apps show their own feedback. A
+/// template's key and startup (issue #243) change the menu too: it shows the key.
 fn changes_state(request: &Request) -> bool {
     matches!(
         request,
@@ -442,7 +570,17 @@ fn changes_state(request: &Request) -> bool {
             | Request::UpdateTemplate { .. }
             | Request::DeleteTemplate { .. }
             | Request::LoadTemplate { .. }
+            | Request::SetTemplateShortcut { .. }
+            | Request::SetTemplateStartup { .. }
     )
+}
+
+/// Of [`changes_state`], the commands whose result comes as a desktop notification: what the tray
+/// and the keys start. A key and a startup are set in the core's dialog, which shows its own
+/// result; a notification ("Template saved") after each of its saves would only repeat it.
+fn tells_on_desktop(request: &Request) -> bool {
+    changes_state(request)
+        && !matches!(request, Request::SetTemplateShortcut { .. } | Request::SetTemplateStartup { .. })
 }
 
 /// A short name for a request, for messages.
@@ -519,6 +657,12 @@ fn describe(request: &Request) -> String {
         Request::Accounts => "accounts".into(),
         Request::RemoveAccount { id } => format!("remove account {id}"),
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
+        Request::SetTemplateShortcut { id, key: Some(key) } => format!("key {key} for {id}"),
+        Request::SetTemplateShortcut { id, key: None } => format!("no key for {id}"),
+        // Never the screen: the name of a monitor says little, but it is the client's text.
+        Request::SetTemplateStartup { id, startup: Some(_) } => format!("load {id} at login"),
+        Request::SetTemplateStartup { id, startup: None } => format!("load {id} not at login"),
+        Request::ListScreens => "screens".into(),
         // The app only, never the target: it names a mail or a task (task E8.7a).
         Request::OpenApp { app, .. } => format!("open {app}"),
         Request::ListApps => "apps".into(),
@@ -635,8 +779,22 @@ fn describe(request: &Request) -> String {
     }
 }
 
-/// Tells the user how a tray command went: on stderr, and as a desktop notification.
+/// Requests of the tray whose window is the answer (task WS.7): an app, or the template dialog
+/// ("Edit…"), that opened. A notification "Done" on top would only repeat it; a failure still comes.
+fn shows_itself(request: &Request) -> bool {
+    matches!(request, Request::OpenApp { .. })
+}
+
+/// Tells the user how a tray command went: on stderr ([`log`]), and as a desktop notification.
 fn report(what: &str, response: &Response) {
+    log(what, response);
+    if let Some((summary, body)) = crate::notify::message(what, response) {
+        crate::notify::show(summary, body);
+    }
+}
+
+/// How a tray command went, on stderr only.
+fn log(what: &str, response: &Response) {
     match response {
         Response::Error { message, .. } => eprintln!("torroworkplace: {what} failed: {message}"),
         Response::Loaded { restored, failed } => {
@@ -649,14 +807,38 @@ fn report(what: &str, response: &Response) {
         Response::Pending { approval } => eprintln!("torroworkplace: {what}: waits for approval {}", approval.id),
         _ => eprintln!("torroworkplace: {what}: ok"),
     }
-    if let Some((summary, body)) = crate::notify::message(what, response) {
-        crate::notify::show(summary, body);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #243: a key and a startup change the menu, but the dialog that sets them shows its own
+    /// result, so no notification comes.
+    #[test]
+    fn keys_and_startup_refresh_the_menu_without_a_notification() {
+        let key = Request::SetTemplateShortcut { id: "dev".into(), key: Some(2) };
+        let startup = Request::SetTemplateStartup { id: "dev".into(), startup: None };
+        for request in [&key, &startup] {
+            assert!(changes_state(request) && !tells_on_desktop(request), "{request:?}");
+        }
+        assert!(tells_on_desktop(&Request::LoadTemplate { id: "dev".into(), mode: torro_setups::LoadMode::Add }));
+        assert_eq!(describe(&key), "key 2 for dev");
+        assert_eq!(describe(&Request::SetTemplateShortcut { id: "dev".into(), key: None }), "no key for dev");
+        assert_eq!(describe(&startup), "load dev not at login");
+        assert_eq!(describe(&Request::ListScreens), "screens");
+    }
+
+    /// Task WS.7: an app or the template dialog that opened is its own answer; other tray commands
+    /// still come as a notification.
+    #[test]
+    fn an_opened_window_needs_no_notification() {
+        let edit = Request::OpenApp { app: AppId::WORKPLACE.binary.into(), target: Some("template:dev".into()) };
+        assert!(shows_itself(&edit));
+        assert!(shows_itself(&Request::OpenApp { app: AppId::WORKPLACE.binary.into(), target: None }));
+        assert!(!shows_itself(&Request::LoadTemplate { id: "dev".into(), mode: torro_setups::LoadMode::Add }));
+        assert!(!shows_itself(&Request::SaveTemplate { name: None }));
+    }
 
     /// Task E8.7a: messages about these requests name the list and the app, never the mail
     /// account, the mail's id, its Message-ID or what an app was opened on.

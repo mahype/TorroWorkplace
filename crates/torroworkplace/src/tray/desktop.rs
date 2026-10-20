@@ -13,6 +13,13 @@
 //! - muda reports clicks to a handler that forwards them into the loop, which maps the entry to
 //!   its [`Action`] and runs it on the [`Daemon`].
 //!
+//! The template keys (issue #243, task WS.4) live here too: `global-hotkey` registers them with the
+//! system, and on macOS its manager must be made and used on the main thread. Every snapshot brings
+//! the keys as they should be ([`TemplateKeys`]); [`DesktopKeys`] registers the difference, tells the
+//! core how they stand (`Daemon::report_shortcuts`) and, like a click on "Add" in the menu, loads the
+//! template of a pressed key in the mode `add`. The presses come through `global-hotkey`'s event
+//! handler into the loop, as muda's clicks do.
+//!
 //! Every native object (icon, menu) is created and changed on the main thread only. The icon is
 //! always the red grid (issue #114); it is drawn again only when the voice mark changes.
 //!
@@ -25,6 +32,10 @@
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
+use torro_core::i18n::trf;
+use torro_ipc::Request;
+use torro_setups::LoadMode;
 use tray_icon::menu::{IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
@@ -36,6 +47,7 @@ use super::icon;
 use super::menu::{self, Action, Item, Waiting};
 use crate::core::Snapshot;
 use crate::daemon::Daemon;
+use crate::workspace_keys::{DesktopKeys, Report, TemplateKeys};
 
 /// Side of the icon image, in pixels.
 ///
@@ -80,12 +92,14 @@ impl std::error::Error for TrayError {}
 
 /// What reaches the event loop from other threads.
 enum Event {
-    /// The service is up: remember the daemon and show the icon with this menu.
-    Start(Arc<Daemon>, Snapshot),
-    /// The state changed: rebuild the menu.
-    Show(Snapshot),
+    /// The service is up: remember the daemon, show the icon with this menu and register these keys.
+    Start(Arc<Daemon>, Snapshot, Option<TemplateKeys>),
+    /// The state changed: rebuild the menu, follow the keys.
+    Show(Snapshot, Option<TemplateKeys>),
     /// An entry of the menu was clicked.
     Menu(MenuEvent),
+    /// A template key was pressed or released.
+    Key(GlobalHotKeyEvent),
     /// The service ended: leave the loop.
     Exit,
     /// Does nothing but wake the loop once more (see [`App::show`]).
@@ -100,15 +114,19 @@ enum Event {
 pub struct Handle(Arc<Mutex<EventLoopProxy<Event>>>);
 
 impl Handle {
-    /// Shows the icon with the menu for `snapshot`; clicks go to `daemon` from now on. Call once,
-    /// when the service is ready.
-    pub fn start(&self, daemon: Arc<Daemon>, snapshot: Snapshot) {
-        self.send(Event::Start(daemon, snapshot));
+    /// Shows the icon with the menu for `snapshot` and registers the template keys `keys`; clicks
+    /// and keys go to `daemon` from now on. Call once, when the service is ready.
+    ///
+    /// `keys` is `None` when no window manager could load a template (`Snapshot::unsupported`): then
+    /// no key is registered and nothing is reported, so the keys stay free for other programs.
+    pub fn start(&self, daemon: Arc<Daemon>, snapshot: Snapshot, keys: Option<TemplateKeys>) {
+        self.send(Event::Start(daemon, snapshot, keys));
     }
 
-    /// Rebuilds the menu for `snapshot`.
-    pub fn show(&self, snapshot: Snapshot) {
-        self.send(Event::Show(snapshot));
+    /// Rebuilds the menu for `snapshot` and registers the template keys as `keys` says now (see
+    /// [`Handle::start`]); keys that did not change cost nothing.
+    pub fn show(&self, snapshot: Snapshot, keys: Option<TemplateKeys>) {
+        self.send(Event::Show(snapshot, keys));
     }
 
     /// Ends the event loop, so [`Shell::run`] returns. Call when the service has ended.
@@ -154,6 +172,10 @@ impl Shell {
         // every such event (also hovering) in a channel nobody reads, for as long as the service
         // runs.
         TrayIconEvent::set_event_handler(Some(|_| {}));
+        // The template keys come in the same way as the clicks; without a handler they would wait
+        // in a channel nobody reads.
+        let keys = handle.clone();
+        GlobalHotKeyEvent::set_event_handler(Some(move |event| keys.send(Event::Key(event))));
         Ok(Shell { event_loop, handle })
     }
 
@@ -165,8 +187,16 @@ impl Shell {
     /// Runs the loop on this (the main) thread until [`Handle::exit`].
     pub fn run(self) -> Result<(), TrayError> {
         self.event_loop.set_control_flow(ControlFlow::Wait);
-        let mut app =
-            App { handle: self.handle, daemon: None, tray: None, mark: None, actions: Vec::new(), generation: 0 };
+        let mut app = App {
+            handle: self.handle,
+            daemon: None,
+            tray: None,
+            mark: None,
+            actions: Vec::new(),
+            generation: 0,
+            hotkeys: None,
+            keys: DesktopKeys::default(),
+        };
         self.event_loop.run_app(&mut app).map_err(TrayError::EventLoop)
     }
 }
@@ -183,6 +213,13 @@ struct App {
     /// Counts the menus built so far. Ids carry it, so a click that arrives from a menu already
     /// replaced does nothing instead of running another entry.
     generation: u64,
+    /// The system's template keys, made the first time there are keys to follow (on the main
+    /// thread, inside the running loop, as macOS wants it); `None` before. Made once: it fails only
+    /// when the system refuses its event handler or hidden window, and trying again with every new
+    /// menu would only repeat the message.
+    hotkeys: Option<Result<GlobalHotKeyManager, String>>,
+    /// What is registered and which template each key loads.
+    keys: DesktopKeys,
 }
 
 impl App {
@@ -243,6 +280,43 @@ impl App {
         }
     }
 
+    /// Registers the template keys as `wanted` says and tells the core how they stand. Nothing for
+    /// `None` (no window manager). When the system's manager cannot be made, the report says why
+    /// and no key is registered while the service runs.
+    fn follow_keys(&mut self, wanted: Option<&TemplateKeys>) {
+        let Some(wanted) = wanted else { return };
+        if self.hotkeys.is_none() {
+            let made = GlobalHotKeyManager::new().map_err(|err| err.to_string());
+            if let Err(err) = &made {
+                eprintln!("torroworkplace: cannot register the template keys: {err}");
+                let problem = trf("The template keys are not available: {error}", &[("error", err)]);
+                self.report_keys(Report { active: false, problem: Some(problem) });
+            }
+            self.hotkeys = Some(made);
+        }
+        let Some(Ok(manager)) = &self.hotkeys else { return };
+        if let Some(report) = self.keys.apply(manager, wanted) {
+            self.report_keys(report);
+        }
+    }
+
+    fn report_keys(&self, report: Report) {
+        if let Some(daemon) = &self.daemon {
+            daemon.report_shortcuts(report);
+        }
+    }
+
+    /// Loads the template of a pressed key in the mode `add`, like "Add" in its menu; releasing the
+    /// key does nothing.
+    fn press(&self, event: GlobalHotKeyEvent) {
+        if event.state() != HotKeyState::Pressed {
+            return;
+        }
+        if let (Some(daemon), Some(id)) = (&self.daemon, self.keys.template(event.id())) {
+            daemon.run(Request::LoadTemplate { id: id.to_string(), mode: LoadMode::Add });
+        }
+    }
+
     /// Runs the action behind the clicked entry.
     fn click(&self, id: &MenuId) {
         let Some(index) = action_index(&id.0, self.generation) else { return };
@@ -259,12 +333,17 @@ impl ApplicationHandler<Event> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: Event) {
         match event {
-            Event::Start(daemon, snapshot) => {
+            Event::Start(daemon, snapshot, keys) => {
                 self.daemon = Some(daemon);
                 self.show(&snapshot);
+                self.follow_keys(keys.as_ref());
             }
-            Event::Show(snapshot) => self.show(&snapshot),
+            Event::Show(snapshot, keys) => {
+                self.show(&snapshot);
+                self.follow_keys(keys.as_ref());
+            }
             Event::Menu(event) => self.click(&event.id),
+            Event::Key(event) => self.press(event),
             Event::Exit => event_loop.exit(),
             Event::Wake => {}
         }

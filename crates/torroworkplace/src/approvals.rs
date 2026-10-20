@@ -1171,6 +1171,32 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::RenameTemplate { id, name } => {
             trf("Rename template \"{name}\" to \"{new}\"", &[("name", &named(id)), ("new", &quote(name))])
         }
+        // Issue #243: the templates by the names the store keeps, the one that loses the key too.
+        Request::SetTemplateShortcut { id, key: Some(key) } => match &facts.moved_from {
+            Some(other) => trf(
+                "Give \"{name}\" key {key}, taken from \"{other}\"",
+                &[("name", &named(id)), ("key", key), ("other", &quote(other))],
+            ),
+            None => trf("Give \"{name}\" key {key}", &[("name", &named(id)), ("key", key)]),
+        },
+        Request::SetTemplateShortcut { id, key: None } => {
+            trf("Take the key away from \"{name}\"", &[("name", &named(id))])
+        }
+        // The screen is the client's text: quoted, a screen it names need not be connected. With
+        // `main` it may load elsewhere, which the summary says.
+        Request::SetTemplateStartup { id, startup: Some(startup) } => {
+            let (name, screen) = (named(id), quote(&startup.screen));
+            let args = [("name", &name as &dyn std::fmt::Display), ("screen", &screen)];
+            match startup.fallback {
+                torro_setups::ScreenFallback::Main => {
+                    trf("Load \"{name}\" at every login on {screen}, else on the main screen", &args)
+                }
+                torro_setups::ScreenFallback::Skip => trf("Load \"{name}\" at every login on {screen}", &args),
+            }
+        }
+        Request::SetTemplateStartup { id, startup: None } => {
+            trf("Load \"{name}\" no longer at login", &[("name", &named(id))])
+        }
         Request::ConnectNextcloud { server } => trf("Connect the Nextcloud at {server}", &[("server", &quote(server))]),
         Request::ConnectGithub => tr("Connect a GitHub account").to_string(),
         // The server only, never the topics: their names are passwords on a public server. Written
@@ -3630,6 +3656,44 @@ pub(crate) mod tests {
         assert_eq!(
             summary(&rename, &named("Development")),
             trf("Rename template \"{name}\" to \"{new}\"", &[("name", &"Development"), ("new", &"Review")])
+        );
+        // Issue #243: a key by the stored names of both templates, the start by its screen.
+        let key = |key| Request::SetTemplateShortcut { id: "dev".into(), key };
+        let moved = Facts { moved_from: Some("Mail".into()), ..named("Development") };
+        assert_eq!(
+            summary(&key(Some(3)), &moved),
+            trf(
+                "Give \"{name}\" key {key}, taken from \"{other}\"",
+                &[("name", &"Development"), ("key", &3), ("other", &"Mail")]
+            )
+        );
+        assert_eq!(
+            summary(&key(Some(0)), &named("Development")),
+            trf("Give \"{name}\" key {key}", &[("name", &"Development"), ("key", &0)])
+        );
+        assert_eq!(
+            summary(&key(None), &named("Development")),
+            trf("Take the key away from \"{name}\"", &[("name", &"Development")])
+        );
+        let startup = |screen: &str| torro_setups::Startup { screen: screen.into(), fallback: Default::default() };
+        let at_login = Request::SetTemplateStartup { id: "dev".into(), startup: Some(startup("DP-1\nAllow all")) };
+        assert_eq!(
+            summary(&at_login, &named("Development")),
+            trf(
+                "Load \"{name}\" at every login on {screen}, else on the main screen",
+                &[("name", &"Development"), ("screen", &"DP-1 Allow all")]
+            )
+        );
+        let only_there = torro_setups::Startup { fallback: torro_setups::ScreenFallback::Skip, ..startup("DP-1") };
+        let only_there = Request::SetTemplateStartup { id: "dev".into(), startup: Some(only_there) };
+        assert_eq!(
+            summary(&only_there, &named("Development")),
+            trf("Load \"{name}\" at every login on {screen}", &[("name", &"Development"), ("screen", &"DP-1")])
+        );
+        let off = Request::SetTemplateStartup { id: "dev".into(), startup: None };
+        assert_eq!(
+            summary(&off, &named("Development")),
+            trf("Load \"{name}\" no longer at login", &[("name", &"Development")])
         );
         let hide = Request::SetCollectionShown { collection: "anna/https://x/cal/work/".into(), shown: false };
         assert_eq!(
