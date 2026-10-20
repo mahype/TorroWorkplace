@@ -2355,7 +2355,7 @@ static LIST_DESIGNS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the design packs that set how every window of the suite looks (colours, fonts, spacing, \
-                  logo, and whether the inbox shows one row per entry or cards): the standard \"torro\" first, then \
+                  logo, and how dense the inbox's entries stand): the standard \"torro\" first, then \
                   each pack in the designs folder with id, name, version, \
                   author, description, whether it can be used and, if not, why (`problems`), and which one is \
                   chosen (`active`). Choose one with set_setting `design`. Name, author and description are the \
