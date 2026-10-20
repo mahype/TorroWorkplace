@@ -3805,6 +3805,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("category|Spam", "Unerwünscht"),
     ("category|Phishing", "Betrug"),
     ("category|Other", "Sonstiges"),
+    ("Category {n}", "Kategorie {n}"),
     // The mail window's categories (E12.8).
     ("Categories", "Kategorien"),
     ("Category", "Kategorie"),
@@ -3929,6 +3930,36 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Stop filing mail from everyone at {domain} as {category}",
         "E-Mails von allen bei {domain} nicht mehr als {category} ablegen",
     ),
+    // Editable categories and sorting rules (issue #255)
+    ("and", "und"),
+    ("from {sender}", "von {sender}"),
+    ("from anyone at {domain}", "von allen bei {domain}"),
+    ("with {text} in the subject", "mit {text} im Betreff"),
+    ("with {text} in the text", "mit {text} im Text"),
+    (
+        "the sorting rule that files mail {conditions} as {category}",
+        "die Sortierregel für E-Mails {conditions} → {category}",
+    ),
+    ("an unknown sorting rule", "eine unbekannte Sortierregel"),
+    (
+        "Sort the mail of the last 30 days into categories again, except what you filed by hand",
+        "Die E-Mails der letzten 30 Tage neu einordnen, außer was du von Hand eingeordnet hast",
+    ),
+    ("Add the mail category {name} to {group}", "Die E-Mail-Kategorie {name} in {group} anlegen"),
+    (
+        "Change the mail category {category} and call it {name}",
+        "Die E-Mail-Kategorie {category} ändern und {name} nennen",
+    ),
+    ("Change the mail category {category}", "Die E-Mail-Kategorie {category} ändern"),
+    (
+        "Remove the mail category {category} and file its mail as {replacement}",
+        "Die E-Mail-Kategorie {category} entfernen und ihre E-Mails als {replacement} ablegen",
+    ),
+    ("Remove the mail category {category}", "Die E-Mail-Kategorie {category} entfernen"),
+    ("From now on file mail {conditions} as {category}", "Ab jetzt E-Mails {conditions} als {category} ablegen"),
+    ("Change {rule}", "Ändern: {rule}"),
+    ("Remove {rule}", "Entfernen: {rule}"),
+    ("Move {rule} to place {n}", "An Stelle {n} verschieben: {rule}"),
     // Accounts, API and MCP; models on and off (issue #231)
     ("1 model on", "1 Modell an"),
     ("Accounts in TorroMail", "Konten in TorroMail"),

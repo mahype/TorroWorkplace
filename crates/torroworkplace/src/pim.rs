@@ -1044,7 +1044,15 @@ impl PimService {
             | Request::SetItemCategory { .. }
             | Request::ClassifyItem { .. }
             | Request::GetCategorization
-            | Request::CatchUpCategories { .. } => return None,
+            | Request::CatchUpCategories { .. }
+            | Request::CreateCategory { .. }
+            | Request::UpdateCategory { .. }
+            | Request::RemoveCategory { .. }
+            | Request::ListSortRules
+            | Request::CreateSortRule { .. }
+            | Request::UpdateSortRule { .. }
+            | Request::RemoveSortRule { .. }
+            | Request::MoveSortRule { .. } => return None,
             Request::SaveEvent { event } | Request::DeleteEvent { event } => {
                 (Role::Calendar, &event.collection, event.href.as_deref())
             }

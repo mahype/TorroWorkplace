@@ -3604,7 +3604,18 @@ E15.1 ── E15.2 ── E15.3 ── E15.4 ── E15.5
 Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinander.
 
 ### E15.1 API und dynamische Kennungen
-- [ ] offen
+- [x] erledigt (2026-10-20): `Category::Custom(CustomCategory)` mit `custom_<n>`, Serde und Schema von
+  Hand, `BUILT_IN`, `default_group`, `CategoryDef`; `torro_core::category::{suite_label, name_of,
+  description_of, fallback_name, group_description}` (statt `label`/`description`, damit jede Anzeige
+  den Katalog fragt); `SortRule`/`SortCondition`/`SortField`; acht Requests mit Katalogeintrag und
+  MCP-Tool, `again` an `inbox.catch_up_categories`, `CategoryInfo::of` mit `description`, `model`,
+  `built_in`, `renamed`; Freigabe-Sätze aus dem Katalog (`InboxFacts::{categories, sort_rule}`),
+  Protokoll und Benachrichtigung ohne Namen. Abweichung: Damit jeder Commit baut, lesen Mail-Fenster
+  (Pille, Seitenleiste, Menü), Hub-Seite „Rules“ und die Seitenleisten-Schalter den Katalog schon
+  hier (`Rows`, `MailList`, `Reading` tragen ihn; `CategoryView` merkt sich Kategorien und Namen).
+  Nebenbefund behoben: `inbox.set_item_category` mit Eintragskennung bekam für die Freigabe keinen
+  Eintrag nachgeschlagen. Die Fakten der Freigabe liegen in einer Box, sonst lief ein Test über den
+  Stapel.
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/{lib,category}.rs`,
   `crates/torro-core/src/category.rs`, `crates/torro-inbox/src/{lib,item,rules}.rs`,
   `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,mcp,approvals,audit,daemon,pim}.rs`,

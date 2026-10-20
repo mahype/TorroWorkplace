@@ -468,6 +468,12 @@ impl Demo {
             .collect()
     }
 
+    /// The catalogue of mail categories (`inbox.list_categories`): the suite's own, as nobody
+    /// changed them.
+    fn categories(&self) -> Vec<torro_ipc::inbox::CategoryInfo> {
+        torro_mail::CategoryDef::defaults().iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()
+    }
+
     /// How far the sample inbox is sorted (`inbox.get_categorization`): most of it done, the rest
     /// waiting for the backlog run.
     fn categorization(&self) -> torro_ipc::inbox::Categorization {
@@ -481,6 +487,7 @@ impl Demo {
                 done: 184,
                 state: torro_ipc::inbox::CatchUpState::NotStarted,
             }],
+            again: false,
         }
     }
 
@@ -537,6 +544,7 @@ impl Backend for Demo {
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
+            Request::ListCategories { .. } => Response::Categories { categories: self.categories() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },

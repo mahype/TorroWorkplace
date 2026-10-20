@@ -44,6 +44,8 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
         torro_ipc::Request::GetCategorization,
+        // The catalogue (task E15.2): what the categories are called and where they stand now.
+        torro_ipc::Request::ListCategories { account: None },
     ]
 }
 
@@ -747,6 +749,7 @@ mod tests {
                 torro_ipc::Request::Accounts,
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,
+                torro_ipc::Request::ListCategories { account: None },
             ]
         );
     }
@@ -885,7 +888,7 @@ mod tests {
             [(categorization::Message::CatchUp(false), false), (categorization::Message::CatchUp(true), true)]
         {
             let Action::Send(requests) = categorization::update::<()>(message, &data) else { panic!("a request") };
-            assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel }]);
+            assert_eq!(requests, vec![torro_ipc::Request::CatchUpCategories { cancel, again: false }]);
         }
     }
 }
@@ -974,7 +977,7 @@ pub mod categorization {
                 // Picking a model switches the sorting on: that is what picking one means.
                 enabled: true,
             }),
-            Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel }),
+            Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),
             Message::Shown(category, shown) => {
                 let mut hidden = data.settings.hidden_categories.clone();
                 hidden.retain(|held| *held != category);
@@ -1172,20 +1175,36 @@ pub mod categorization {
         )
     }
 
-    /// One switch per category, by group, so the sidebar shows only what is wanted.
+    /// One switch per category, by group, so the sidebar shows only what is wanted. The groups
+    /// and names are the catalogue's (task E15.2); a core that sent none gives the suite's own.
     fn category_rows(data: &Data) -> Vec<Element<'_, Message>> {
         let hidden = &data.settings.hidden_categories;
+        let catalogue = catalogue(data);
         let mut rows = Vec::new();
         for group in CategoryGroup::ALL {
-            for category in group.categories() {
+            let of_group: Vec<&torro_ipc::inbox::CategoryInfo> =
+                catalogue.iter().filter(|info| info.group == group).collect();
+            for (nth, info) in of_group.into_iter().enumerate() {
+                let category = info.category;
                 let shown = !hidden.contains(&category);
-                let label = torro_core::category::label(category);
-                let first = group.categories().first().copied();
-                let note: Option<String> =
-                    (first == Some(category)).then(|| torro_core::category::group_label(group).to_owned());
-                rows.push(setting_row(None, label, note, switch(shown, move |on| Message::Shown(category, on))));
+                let note: Option<String> = (nth == 0).then(|| info.group_label.clone());
+                rows.push(setting_row(
+                    None,
+                    info.label.clone(),
+                    note,
+                    switch(shown, move |on| Message::Shown(category, on)),
+                ));
             }
         }
         rows
+    }
+
+    /// The catalogue as the load brought it, or the suite's own when the core sent none (an
+    /// older core, or a load that failed half-way).
+    pub(crate) fn catalogue(data: &Data) -> Vec<torro_ipc::inbox::CategoryInfo> {
+        if !data.categories.is_empty() {
+            return data.categories.clone();
+        }
+        torro_mail::CategoryDef::defaults().iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()
     }
 }

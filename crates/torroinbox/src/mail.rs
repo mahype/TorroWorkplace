@@ -380,13 +380,8 @@ impl MailSource for DemoSource {
     async fn list_categories(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
         Ok(DemoSource::category_counts_for(self, account.as_deref())
             .into_iter()
-            .map(|(category, unread, messages)| CategoryInfo {
-                category,
-                group: category.group(),
-                label: torro_core::category::label(category).to_string(),
-                group_label: torro_core::category::group_label(category.group()).to_string(),
-                unread,
-                messages,
+            .filter_map(|(category, unread, messages)| {
+                torro_mail::CategoryDef::built_in(category).map(|def| CategoryInfo::of(&def, unread, messages))
             })
             .collect())
     }
@@ -650,29 +645,48 @@ impl MailSource for crate::empty::EmptySource {
 
 /// What the sidebar's group "Categories" shows (task E12.8): a whole group of mail categories, or
 /// one category of it. Both list the mail of every account's inbox that is of one of them.
+///
+/// Made from the catalogue the window loaded (task E15.2): which categories a group holds and
+/// what a category is called are the person's to change, so the view keeps both as they were
+/// when it was opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CategoryView {
     /// The group, which gives the entry its icon and its colour.
     pub group: CategoryGroup,
     /// One category of the group, or `None` for the whole group.
     pub only: Option<torro_mail::Category>,
+    /// The categories it lists: the one chosen, else every one of the group.
+    pub categories: Vec<torro_mail::Category>,
+    /// What a person reads for it.
+    pub label: String,
 }
 
 impl CategoryView {
+    /// The whole `group`, with the categories the catalogue puts in it now.
+    pub fn of_group(group: CategoryGroup, catalogue: &[CategoryInfo]) -> CategoryView {
+        let categories = catalogue.iter().filter(|held| held.group == group).map(|held| held.category).collect();
+        let label = torro_core::category::group_label(group).to_string();
+        CategoryView { group, only: None, categories, label }
+    }
+
+    /// The one category of `held`.
+    pub fn of_category(held: &CategoryInfo) -> CategoryView {
+        CategoryView {
+            group: held.group,
+            only: Some(held.category),
+            categories: vec![held.category],
+            label: held.label.clone(),
+        }
+    }
+
     /// The categories this view lists: the one chosen, else every one of the group.
     pub fn categories(&self) -> Vec<torro_mail::Category> {
-        match self.only {
-            Some(category) => vec![category],
-            None => self.group.categories(),
-        }
+        self.categories.clone()
     }
 
     /// What a person reads for it.
     pub fn label(&self) -> String {
-        match self.only {
-            Some(category) => torro_core::category::label(category).to_string(),
-            None => torro_core::category::group_label(self.group).to_string(),
-        }
+        self.label.clone()
     }
 
     /// Which listing its messages belong to, so one view's page is never shown as another's.
@@ -1224,6 +1238,9 @@ pub fn subject(summary: &MessageSummary) -> String {
 /// What the message list gets to draw.
 pub struct MailList<'a> {
     pub messages: &'a [MessageSummary],
+    /// The catalogue of categories (task E15.2): what a mail's category is called and where it
+    /// stands now.
+    pub categories: &'a [CategoryInfo],
     /// The view shown: a folder, the smart view of attachments, or a window of mail waiting for
     /// its folders ([`View::Mail`]).
     pub view: &'a View,
@@ -1336,7 +1353,7 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     // What the mail is (task E12.8), before the other marks: it says most about the row.
-    marks.extend(message.category.map(category_mark));
+    marks.extend(message.category.map(|held| category_mark(held, data.categories)));
     // An invitation (task E8.3b): its time and the answers stand on its card and in the reader.
     marks.extend(message.invite.as_ref().map(|invite| invite_mark(invite, data.now)));
     if message.has_attachments {
@@ -1396,7 +1413,7 @@ fn row_buttons<'a>(data: &MailList<'_>, message: &MessageSummary) -> Vec<RowActi
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut chips = Vec::new();
     // What the mail is (task E12.8): the whole pill, where the card has room for it.
-    chips.extend(message.category.map(category_pill));
+    chips.extend(message.category.map(|held| category_pill(held, data.categories)));
     if let Some(invite) = &message.invite {
         chips.extend(invite_chips(invite, data.now));
     }
@@ -1657,24 +1674,39 @@ pub(crate) fn group_mark(group: CategoryGroup) -> (Icon, usize) {
     }
 }
 
+/// What `category` is called and which group it stands in now, from the catalogue the window
+/// loaded (`inbox.list_categories`, task E15.2): the person may rename any category and move it.
+/// Without an entry – a load still on its way – the suite's word and group, and for a category
+/// the person made "Category 7" in "Info".
+pub(crate) fn category_look(categories: &[CategoryInfo], category: torro_mail::Category) -> (String, CategoryGroup) {
+    match categories.iter().find(|held| held.category == category) {
+        Some(held) => (held.label.clone(), held.group),
+        None => {
+            (torro_core::category::fallback_name(category), category.default_group().unwrap_or(CategoryGroup::Info))
+        }
+    }
+}
+
 /// What a person reads for `held` beside the pill: the category, and that a model guessed it.
-pub(crate) fn category_words(held: MailCategory) -> String {
-    let label = torro_core::category::label(held.category);
-    if held.is_suggestion() { trf("{category} · suggested", &[("category", &label)]) } else { label.to_string() }
+pub(crate) fn category_words(held: MailCategory, categories: &[CategoryInfo]) -> String {
+    let (label, _) = category_look(categories, held.category);
+    if held.is_suggestion() { trf("{category} · suggested", &[("category", &label)]) } else { label }
 }
 
 /// The small mark of a mail's category for a row (task E12.8): the group's icon in its colour,
 /// the words in the tooltip. The whole pill goes where there is room – the reader and the card.
-pub(crate) fn category_mark<'a>(held: MailCategory) -> (Element<'a, Message>, f32) {
-    let (mark, group) = group_mark(held.category.group());
+pub(crate) fn category_mark<'a>(held: MailCategory, categories: &[CategoryInfo]) -> (Element<'a, Message>, f32) {
+    let (_, group) = category_look(categories, held.category);
+    let (mark, group) = group_mark(group);
     let pill = widgets::category_mark(mark, group, icon::SIZE_SM);
-    (widgets::with_tooltip(pill, category_words(held)), icon::SIZE_SM)
+    (widgets::with_tooltip(pill, category_words(held, categories)), icon::SIZE_SM)
 }
 
 /// The whole pill of a mail's category, for the reader and the card (task E12.8).
-pub(crate) fn category_pill<'a>(held: MailCategory) -> Element<'a, Message> {
-    let (mark, group) = group_mark(held.category.group());
-    widgets::category_pill(mark, group, torro_core::category::label(held.category), held.is_suggestion())
+pub(crate) fn category_pill<'a>(held: MailCategory, categories: &[CategoryInfo]) -> Element<'a, Message> {
+    let (label, group) = category_look(categories, held.category);
+    let (mark, group) = group_mark(group);
+    widgets::category_pill(mark, group, label, held.is_suggestion())
 }
 
 /// The mark of an invitation in a row's first line, with its width: the calendar's icon,
@@ -1843,6 +1875,8 @@ fn small_icon<'a>(which: Icon, colour: Option<Color>) -> Element<'a, Message> {
 pub struct Reading<'a> {
     /// The message's id.
     pub id: &'a str,
+    /// The catalogue of categories (task E15.2), for the name and group of the mail's pill.
+    pub categories: &'a [CategoryInfo],
     /// The message from the list, for title and header while the whole of it loads.
     pub summary: Option<&'a MessageSummary>,
     /// The whole message: `None` while it loads, then the answer.
@@ -2312,7 +2346,7 @@ fn head_with<'a>(
         // suggestion mark when a model guessed it (`docs/ki.md`, principle 5). Also in the panel,
         // which draws this head without the subject.
         if let Some(held) = summary.category {
-            head = head.push(widgets::chip_row(vec![category_pill(held)]));
+            head = head.push(widgets::chip_row(vec![category_pill(held, reading.categories)]));
             // Phishing (task E12.9): a band over the message, and its links ask before they open.
             // Nothing is hidden, moved or deleted – the one change is the extra click.
             if held.category == torro_mail::Category::Phishing {
@@ -3033,6 +3067,7 @@ mod tests {
         let html = mail.as_ref().ok().and_then(|mail| HtmlMail::new(mail, &demo, true));
         let summary = mail.as_ref().ok().map(|mail| mail.summary.clone());
         let reading = Reading {
+            categories: &[],
             id,
             summary: summary.as_ref(),
             loaded: loaded.then_some(&mail),
@@ -3514,6 +3549,7 @@ mod tests {
             for (view, look) in views.iter().flat_map(|view| looks.map(|look| (view, look))) {
                 for (messages, bare) in [(&summaries[..], false), (&summaries[..], true), (&[], true)] {
                     let data = MailList {
+                        categories: &[],
                         messages,
                         view,
                         no_accounts: false,
@@ -3554,6 +3590,7 @@ mod tests {
                         scale: 1.0,
                     });
                     let reading = Reading {
+                        categories: &[],
                         task,
                         id: &message.summary.id,
                         summary: Some(&message.summary),
@@ -3645,6 +3682,7 @@ mod tests {
         let plain = MessageSummary { invite: None, ..invitation.clone() };
         let messages = [plain.clone(), invitation.clone()];
         let data = |bare, selected: &'static str| MailList {
+            categories: &[],
             messages: &messages,
             view: &view,
             no_accounts: false,

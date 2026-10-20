@@ -829,6 +829,55 @@ pub enum RuleEffect {
     Category { category: torro_mail::Category },
 }
 
+/// A sorting rule for mail (task E15.1, issue #255, `docs/kategorien.md`): mail that meets every
+/// one of `conditions` and none of `exceptions` is filed as `category`.
+///
+/// The rules stand in an order the person sees and changes (`inbox.move_sort_rule`); the **first**
+/// one that holds decides ([`crate::rules::sort_category`]). They come after a category the person
+/// set by hand and before the headers and the decision model. "Always for this sender?" keeps
+/// one of these too, with a single condition on the sender.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SortRule {
+    /// Opaque id given by the core; pass it to `inbox.update_sort_rule`, `inbox.move_sort_rule`
+    /// and `inbox.remove_sort_rule`.
+    pub id: String,
+    /// What the mail is filed as.
+    pub category: torro_mail::Category,
+    /// Every one of them must hold; at least one.
+    pub conditions: Vec<SortCondition>,
+    /// None of them may hold: what the rule leaves alone although its conditions hold.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exceptions: Vec<SortCondition>,
+    /// Switched off, the rule holds for nothing and keeps its place.
+    pub enabled: bool,
+    /// When it was made.
+    pub created: DateTime<Utc>,
+}
+
+/// One test of a [`SortRule`] on a mail. Upper and lower case never count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SortCondition {
+    pub field: SortField,
+    /// What the field is compared with; one line.
+    pub value: String,
+}
+
+/// What of a mail a [`SortCondition`] looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SortField {
+    /// The sender's address, the whole of it: `billing@shop.example`.
+    Sender,
+    /// The domain of the sender's address, or one below it: `shop.example` holds for
+    /// `billing@shop.example` and `news@mail.shop.example`.
+    Domain,
+    /// The subject contains the value.
+    Subject,
+    /// The text contains the value, as far as the suite holds the text: the start of it when
+    /// mail arrives, more once it was read.
+    Text,
+}
+
 /// What `inbox.hide_sender` hides of a mail entry (tasks E3.10, E3.11).
 ///
 /// The scopes need different rights (`torro_ipc::api`, `Request::operation`): `conversation`

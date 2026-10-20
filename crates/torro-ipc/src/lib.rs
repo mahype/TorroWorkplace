@@ -102,6 +102,16 @@ fn complete_by_default() -> bool {
     true
 }
 
+/// `enabled` of a sorting rule that does not say (task E15.1): on.
+fn on() -> bool {
+    true
+}
+
+/// Leaves `enabled: true` out of a sorting rule's request, the default.
+fn is_on(value: &bool) -> bool {
+    *value
+}
+
 /// Named pipe names on Windows, where the core listens on a pipe instead of a socket file.
 #[cfg(windows)]
 pub(crate) mod pipe {
@@ -1701,14 +1711,111 @@ pub enum Request {
     GetCategorization,
     /// Starts sorting the mail that has no category yet, or stops it with `cancel: true`
     /// ([`Response::Categorization`], task E12.4). One run looks at the inbox of the last 30 days,
-    /// at most 500 messages per account, throttled in the background; mail that already has a
-    /// category is never asked about again. `not-connected` without a decision model.
+    /// at most 500 messages per account, throttled in the background; the sorting rules come
+    /// first, a decision model is asked for the rest. Mail that already has a category is never
+    /// asked about again – unless `again: true` (task E15.4): then every mail of that window is
+    /// sorted anew, except one the person filed by hand. `not-connected` without a decision model
+    /// when only the model could help (no `again`).
     #[serde(rename = "inbox.catch_up_categories")]
     CatchUpCategories {
         /// Stop a run instead of starting one; what was sorted stays sorted.
         #[serde(default)]
         cancel: bool,
+        /// Sort the mail of the window anew, also mail that has a category already – after new
+        /// rules or changed descriptions. A category the person set by hand stays.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        again: bool,
     },
+    /// Makes a mail category of the person's own ([`Response::Category`], task E15.1,
+    /// `docs/kategorien.md`). Its key is `custom_<n>` and never changes. `error` for a name that is
+    /// empty, longer than 60 characters, more than one line or already a category's, for a
+    /// description that is empty or longer than 500 characters, and when `model` would make more
+    /// than 20 categories of the group a model chooses between.
+    #[serde(rename = "inbox.create_category")]
+    CreateCategory {
+        /// The group it stands in.
+        group: torro_mail::CategoryGroup,
+        /// What it is called.
+        name: String,
+        /// What it means, with examples and exceptions: what a decision model reads.
+        description: String,
+        /// A decision model may choose it.
+        #[serde(default)]
+        model: bool,
+    },
+    /// Changes a mail category, of the suite or the person's own ([`Response::Category`], task
+    /// E15.1). Only the fields given change; the key stays, so mail and rules keep it. An empty
+    /// `name` or `description` puts back the suite's words for one of its categories (`error` for
+    /// one of the person's). `not-found` for a category that is not in the catalogue; `error` as
+    /// for `inbox.create_category`.
+    #[serde(rename = "inbox.update_category")]
+    UpdateCategory {
+        category: torro_mail::Category,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        group: Option<torro_mail::CategoryGroup>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<bool>,
+    },
+    /// Removes a mail category the person made ([`Response::CategoryRemoved`], task E15.1). Mail,
+    /// entries and sorting rules that name it move to `replacement`, keeping where their category
+    /// came from; without mail, entries or rules none is needed. `conflict` when some name it and
+    /// no `replacement` is given, `unsupported` for a category of the suite, `not-found` for one
+    /// that is not in the catalogue, `error` for a replacement that is not.
+    #[serde(rename = "inbox.remove_category")]
+    RemoveCategory {
+        category: torro_mail::Category,
+        /// Where what names the category goes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replacement: Option<torro_mail::Category>,
+    },
+    /// The sorting rules for mail, in their order ([`Response::SortRules`], task E15.1): the first
+    /// one whose conditions hold and whose exceptions do not decides a new mail's category, after
+    /// a category the person set by hand and before the headers and the decision model.
+    #[serde(rename = "inbox.list_sort_rules")]
+    ListSortRules,
+    /// Adds a sorting rule for mail ([`Response::SortRule`], task E15.1): mail that meets every
+    /// condition and no exception is filed as `category` from now on. Mail already filed is sorted
+    /// anew only by `inbox.catch_up_categories` with `again`. `error` for no condition, more than
+    /// 10 conditions or 10 exceptions, a value that is empty, longer than 200 characters or more
+    /// than one line, a category that is not in the catalogue, or more than 500 rules.
+    #[serde(rename = "inbox.create_sort_rule")]
+    CreateSortRule {
+        category: torro_mail::Category,
+        conditions: Vec<torro_inbox::SortCondition>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exceptions: Vec<torro_inbox::SortCondition>,
+        /// Where it stands, 0 first; left out: last.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        position: Option<u32>,
+        /// Switched off, it holds for nothing. Left out: on.
+        #[serde(default = "on", skip_serializing_if = "is_on")]
+        enabled: bool,
+    },
+    /// Changes a sorting rule ([`Response::SortRule`], task E15.1): all of it but its id and its
+    /// place. `not-found` for a rule that is not there; `error` as for `inbox.create_sort_rule`.
+    #[serde(rename = "inbox.update_sort_rule")]
+    UpdateSortRule {
+        id: String,
+        category: torro_mail::Category,
+        conditions: Vec<torro_inbox::SortCondition>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exceptions: Vec<torro_inbox::SortCondition>,
+        #[serde(default = "on", skip_serializing_if = "is_on")]
+        enabled: bool,
+    },
+    /// Removes a sorting rule ([`Response::SortRules`], task E15.1). Mail it filed keeps its
+    /// category. `not-found` for a rule that is not there.
+    #[serde(rename = "inbox.remove_sort_rule")]
+    RemoveSortRule { id: String },
+    /// Moves a sorting rule to `position`, 0 first ([`Response::SortRules`], task E15.1); the
+    /// others keep their order around it. A position past the end puts it last. `not-found` for a
+    /// rule that is not there.
+    #[serde(rename = "inbox.move_sort_rule")]
+    MoveSortRule { id: String, position: u32 },
     /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
     ///
     /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
@@ -2977,6 +3084,29 @@ pub enum Response {
     /// [`Request::CatchUpCategories`]).
     Categorization {
         categorization: crate::inbox::Categorization,
+    },
+    /// One mail category as it stands now ([`Request::CreateCategory`],
+    /// [`Request::UpdateCategory`]).
+    Category {
+        category: crate::inbox::CategoryInfo,
+    },
+    /// A mail category is gone ([`Request::RemoveCategory`]); what named it now names
+    /// `replacement`.
+    CategoryRemoved {
+        category: torro_mail::Category,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replacement: Option<torro_mail::Category>,
+    },
+    /// The sorting rules for mail, in their order ([`Request::ListSortRules`],
+    /// [`Request::RemoveSortRule`], [`Request::MoveSortRule`]).
+    SortRules {
+        rules: Vec<torro_inbox::SortRule>,
+    },
+    /// One sorting rule as stored ([`Request::CreateSortRule`], [`Request::UpdateSortRule`]),
+    /// with where it stands, 0 first.
+    SortRule {
+        rule: torro_inbox::SortRule,
+        position: u32,
     },
     /// The lasting rules of the inbox ([`Request::ListRules`]).
     Rules {

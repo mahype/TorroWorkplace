@@ -34,7 +34,7 @@ pub use account::{
     ACCOUNT_PREFIX, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify, Security, Services,
     account_id, is_account_id,
 };
-pub use category::{Category, CategoryGroup, CategorySource, MailCategory};
+pub use category::{Category, CategoryDef, CategoryGroup, CategorySource, CustomCategory, MailCategory};
 pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message,
     MessageSummary, MessageTraits, Role,

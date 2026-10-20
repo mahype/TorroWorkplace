@@ -138,6 +138,9 @@ pub struct Data {
     /// How the sorting of mail by a model stands (`inbox.get_categorization`, task E12.10): the
     /// backlog per account.
     pub categorization: torro_ipc::inbox::Categorization,
+    /// The catalogue of mail categories (`inbox.list_categories`, task E15.2): what each one is
+    /// called and which group it stands in now. Empty from a load that did not ask for it.
+    pub categories: Vec<torro_ipc::inbox::CategoryInfo>,
     /// The models of every AI account, each with the account it came from (`ai.list_models`,
     /// task E12.10): the mail window's "Categorization" offers the deciding ones of all of them,
     /// so a model can be picked before anything is assigned. Only filled where the load asked
@@ -184,6 +187,7 @@ impl Data {
             }
             Response::AiAssignments { assignments } => self.assignments = assignments,
             Response::Categorization { categorization } => self.categorization = categorization,
+            Response::Categories { categories } => self.categories = categories,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
             // Both `calendar.list_calendars` and `tasks.list_lists` answer with collections, and
@@ -207,6 +211,13 @@ impl Data {
             }
             _ => {}
         }
+    }
+
+    /// What a person reads for `category`: its name in the catalogue (task E15.2), else the
+    /// suite's word – a category the person made and the load does not know is "Category 7",
+    /// never its bare key.
+    pub fn category_name(&self, category: torro_mail::Category) -> String {
+        category_name_in(&self.categories, category)
     }
 
     /// What a load asks for in a second round, once the first answers are in: requests that only
@@ -234,6 +245,15 @@ impl Data {
         }
         wanted
     }
+}
+
+/// What a person reads for `category` in the catalogue `categories` ([`Data::category_name`]).
+pub fn category_name_in(categories: &[torro_ipc::inbox::CategoryInfo], category: torro_mail::Category) -> String {
+    categories
+        .iter()
+        .find(|held| held.category == category)
+        .map(|held| held.label.clone())
+        .unwrap_or_else(|| torro_core::category::fallback_name(category))
 }
 
 /// Loads `wanted` through `backend`, in the given order, into one [`Data`].

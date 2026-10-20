@@ -2623,7 +2623,8 @@ impl Core {
                 (request, None, summary)
             }
             (_, Area::Inbox) => {
-                let mut facts = self.inbox.facts(&request);
+                // Boxed: the facts live across the awaits below, in a frame deep in the stack.
+                let mut facts = Box::new(self.inbox.facts(&request));
                 // A mail message without an entry (issue #123): its traits as the mail store holds
                 // them, never as the client says.
                 if facts.item.is_none() && mail_message_id(&request).is_some() {
@@ -3328,6 +3329,14 @@ impl Core {
             | Request::ClassifyItem { .. }
             | Request::GetCategorization
             | Request::CatchUpCategories { .. }
+            | Request::CreateCategory { .. }
+            | Request::UpdateCategory { .. }
+            | Request::RemoveCategory { .. }
+            | Request::ListSortRules
+            | Request::CreateSortRule { .. }
+            | Request::UpdateSortRule { .. }
+            | Request::RemoveSortRule { .. }
+            | Request::MoveSortRule { .. }
             | Request::GetStats { .. }
             | Request::GetQuiet) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -3647,18 +3656,15 @@ impl Core {
             Ok(counts) => counts,
             Err(err) => return err.response(),
         };
-        let categories = torro_mail::Category::ALL
-            .into_iter()
-            .map(|category| {
-                let (unread, messages) = counts.get(&category).copied().unwrap_or((0, 0));
-                torro_ipc::inbox::CategoryInfo {
-                    category,
-                    group: category.group(),
-                    label: torro_core::category::label(category).to_string(),
-                    group_label: torro_core::category::group_label(category.group()).to_string(),
-                    unread,
-                    messages,
-                }
+        let catalogue = match self.inbox.catalogue() {
+            Ok(catalogue) => catalogue,
+            Err(message) => return Response::Error { code: "error".into(), message },
+        };
+        let categories = catalogue
+            .iter()
+            .map(|def| {
+                let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
+                torro_ipc::inbox::CategoryInfo::of(def, unread, messages)
             })
             .collect();
         Response::Categories { categories }
@@ -3707,6 +3713,7 @@ impl Core {
             engine: assignment.as_ref().and_then(|held| held.engine.clone()),
             model: assignment.and_then(|held| held.model),
             accounts,
+            again: false,
         };
         Response::Categorization { categorization }
     }
@@ -3895,7 +3902,23 @@ impl Core {
             // the inbox database (task E12.4).
             Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
             Request::GetCategorization => Box::pin(self.get_categorization(reach)).await,
-            Request::CatchUpCategories { cancel } => Box::pin(self.catch_up_categories(cancel, reach)).await,
+            Request::CatchUpCategories { cancel, again: false } => {
+                Box::pin(self.catch_up_categories(cancel, reach)).await
+            }
+            // The catalogue and the sorting rules (task E15.1): their handlers come with tasks
+            // E15.2 to E15.4.
+            Request::CatchUpCategories { again: true, .. }
+            | Request::CreateCategory { .. }
+            | Request::UpdateCategory { .. }
+            | Request::RemoveCategory { .. }
+            | Request::ListSortRules
+            | Request::CreateSortRule { .. }
+            | Request::UpdateSortRule { .. }
+            | Request::RemoveSortRule { .. }
+            | Request::MoveSortRule { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: tr("This core cannot change the mail categories yet.").to_string(),
+            },
             Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
@@ -10560,11 +10583,11 @@ mod tests {
         else {
             panic!("the catalogue answers with Categories");
         };
-        assert_eq!(categories.len(), torro_mail::Category::ALL.len());
+        assert_eq!(categories.len(), torro_mail::Category::BUILT_IN.len());
         assert!(categories.iter().all(|held| held.unread == 0 && held.messages == 0));
         assert_eq!(
-            categories[0].label,
-            torro_core::category::label(categories[0].category),
+            Some(categories[0].label.as_str()),
+            torro_core::category::suite_label(categories[0].category),
             "the words are the suite's own"
         );
         // An account that is not there is `not-found`, never zeros that read as "nothing of any
@@ -10580,7 +10603,7 @@ mod tests {
         assert!(!categorization.enabled && categorization.model.is_none() && categorization.accounts.is_empty());
 
         // Without a decision model neither the backlog run nor one mail is asked.
-        let run = ask(&core, Some(&app_key), Request::CatchUpCategories { cancel: false }).await;
+        let run = ask(&core, Some(&app_key), Request::CatchUpCategories { cancel: false, again: false }).await;
         assert_eq!(code(&run), "not-connected", "no model, nothing asked");
         let one = ask(&core, Some(&app_key), Request::ClassifyItem { id: "i0000001".into() }).await;
         assert_eq!(code(&one), "not-found", "no such entry");
@@ -10592,7 +10615,7 @@ mod tests {
         for request in [
             Request::ListCategories { account: None },
             Request::GetCategorization,
-            Request::CatchUpCategories { cancel: false },
+            Request::CatchUpCategories { cancel: false, again: false },
             Request::ClassifyItem { id: "i0000001".into() },
         ] {
             assert_eq!(code(&ask(&core, Some(&blind), request).await), "forbidden");
@@ -10631,7 +10654,7 @@ mod tests {
             Response::Categories { .. }
         ));
         assert!(matches!(ask(&core, Some(&key), Request::GetCategorization).await, Response::Categorization { .. }));
-        let run = ask(&core, Some(&key), Request::CatchUpCategories { cancel: false }).await;
+        let run = ask(&core, Some(&key), Request::CatchUpCategories { cancel: false, again: false }).await;
         assert_eq!(code(&run), "forbidden", "the backlog run needs the admin switch");
     }
 
@@ -15679,7 +15702,7 @@ mod tests {
 
         // The run: it asks the model for the other one, and says so while it goes.
         assert!(matches!(
-            core.handle(Request::CatchUpCategories { cancel: false }).await,
+            core.handle(Request::CatchUpCategories { cancel: false, again: false }).await,
             Response::Categorization { .. }
         ));
         let mut sorted = None;

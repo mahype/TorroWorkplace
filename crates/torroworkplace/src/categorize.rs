@@ -143,7 +143,9 @@ fn pick_model(models: &[AiModel], allowed: impl Fn(&AiModel) -> bool) -> Option<
 pub fn request(model: &str, content: &Content) -> DecisionRequest {
     let criteria = Category::BY_MODEL
         .into_iter()
-        .map(|category| (category.key().to_string(), category::description(category).to_string()))
+        .map(|category| {
+            (category.key().into_owned(), category::suite_description(category).unwrap_or_default().to_string())
+        })
         .collect();
     let mut questions = BTreeMap::new();
     questions.insert(

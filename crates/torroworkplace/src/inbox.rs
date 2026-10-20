@@ -821,10 +821,32 @@ impl Inbox {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, ..InboxFacts::default() }
                 }
+                // Filing by hand names the entry and the category by its name in the catalogue
+                // (task E15.1).
+                Request::SetItemCategory { id, .. } | Request::ClassifyItem { id } => {
+                    let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
+                    InboxFacts { item, categories: catalogue_in(db)?, ..InboxFacts::default() }
+                }
                 Request::RemoveRule { id } => {
                     let rule = read_rules(db, &Scope::All, "id = ?", by_id(id))?.pop();
-                    InboxFacts { rule, ..InboxFacts::default() }
+                    // A category kept for a sender is named as the catalogue calls it (E15.1).
+                    let filing = rule.as_ref().is_some_and(|rule| matches!(rule.effect, RuleEffect::Category { .. }));
+                    let categories = if filing { catalogue_in(db)? } else { Vec::new() };
+                    InboxFacts { rule, categories, ..InboxFacts::default() }
                 }
+                Request::CreateCategory { .. }
+                | Request::UpdateCategory { .. }
+                | Request::RemoveCategory { .. }
+                | Request::CreateSortRule { .. } => {
+                    InboxFacts { categories: catalogue_in(db)?, ..InboxFacts::default() }
+                }
+                Request::UpdateSortRule { id, .. }
+                | Request::RemoveSortRule { id }
+                | Request::MoveSortRule { id, .. } => InboxFacts {
+                    sort_rule: sort_rule_in(db, id)?.map(Box::new),
+                    categories: catalogue_in(db)?,
+                    ..InboxFacts::default()
+                },
                 _ => InboxFacts::default(),
             })
         });
@@ -1092,6 +1114,12 @@ impl Inbox {
                 .collect())
         })
         .map_err(|failure| failure.to_string())
+    }
+
+    /// The catalogue of mail categories (task E15.1): every category with what the person made
+    /// of it, in the order the sidebar lists them. `Err` holds the message for the log.
+    pub fn catalogue(&self) -> Result<Vec<torro_mail::CategoryDef>, String> {
+        self.with(|db| catalogue_in(db)).map_err(|failure| failure.to_string())
     }
 
     /// What the fixed rules make of `mail` (task E12.2, `docs/kategorien.md`): a category kept
@@ -3880,6 +3908,18 @@ impl MailLater {
     pub fn back_at(&self, account: &str, message: &str) -> Option<DateTime<Utc>> {
         self.back.get(account)?.get(message).copied()
     }
+}
+
+/// The catalogue of mail categories (task E15.1): the suite's, as it brings them. Task E15.2
+/// keeps what the person changed and made.
+fn catalogue_in(_db: &Connection) -> Result<Vec<torro_mail::CategoryDef>, Failure> {
+    Ok(torro_mail::CategoryDef::defaults())
+}
+
+/// The sorting rule `id`, as stored (task E15.1); `None` while there is none. Task E15.3 keeps
+/// them.
+fn sort_rule_in(_db: &Connection, _id: &str) -> Result<Option<torro_inbox::SortRule>, Failure> {
+    Ok(None)
 }
 
 /// What the fixed rules make of `mail` for the sender `sender` (task E12.2): a category kept for

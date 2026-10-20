@@ -6842,7 +6842,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let edit = |remember| Message::SetCategory(id(), category, remember);
                 let sender = Self::mail_sender_of(item).unwrap_or_else(|| item.source.label().to_string());
                 let always = trf("Always for {sender}", &[("sender", &sender)]);
-                let mark = mail::group_mark(category.group()).0;
+                let mark = mail::group_mark(mail::category_look(&self.categories, category).1).0;
                 vec![
                     choice(mark, tr("Only this mail").to_owned(), edit(false)),
                     choice(Icon::Repeat, always, edit(true)),
@@ -7455,7 +7455,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::CategoryAlways) => {
                 let title = self
                     .picked_category
-                    .map(|category| trf("File as {category}", &[("category", &torro_core::category::label(category))]))
+                    .map(|category| {
+                        trf("File as {category}", &[("category", &mail::category_look(&self.categories, category).0)])
+                    })
                     .unwrap_or_default();
                 Some(widgets::floating(&category_at, below, self.choice_menu(title), Message::CloseMenu))
             }
@@ -7752,6 +7754,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let accounts = mail::by_account(&self.folders);
         Some(Reading {
             id: &letter.id,
+            categories: &self.categories,
             summary,
             loaded: letter.loaded.as_ref(),
             now: self.now,
@@ -7832,6 +7835,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             } else {
                 mail::list(mail::MailList {
                     messages: &self.messages,
+                    categories: &self.categories,
                     view: &self.view,
                     no_accounts: self.folders.is_empty(),
                     selected: self.cursor.as_deref(),
@@ -7915,6 +7919,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn rows_data<'a>(&'a self, anchors: &detail::Anchors) -> list::Rows<'a> {
         list::Rows {
             view: &self.view,
+            categories: &self.categories,
             selected: self.cursor.as_deref(),
             now: self.now,
             anchors: anchors.clone(),
@@ -8108,7 +8113,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 continue;
             }
             let unread: u32 = of_group.iter().map(|held| held.unread).sum();
-            let view = View::Category(mail::CategoryView { group, only: None });
+            let view = View::Category(mail::CategoryView::of_group(group, &self.categories));
             let open = self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
             // four colours are learnt.
@@ -8125,7 +8130,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 continue;
             }
             for held in of_group {
-                let view = View::Category(mail::CategoryView { group, only: Some(held.category) });
+                let view = View::Category(mail::CategoryView::of_category(held));
                 entries.push(NavEntry {
                     mark: Mark::Tinted(mail::group_mark(group).0, self.category_colour(at)),
                     label: held.label.clone(),
@@ -8446,21 +8451,29 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let width = choice_menu_width(&choices);
         let mut list = column![menu_caption(tr("Category"))];
         let mut at = 0;
+        // The catalogue as the window loaded it (task E15.2): the person's names and groups,
+        // their own categories too. The three the headers decide are no choice to make by hand.
+        let catalogue = if self.categories.is_empty() {
+            torro_mail::CategoryDef::defaults().iter().map(|def| CategoryInfo::of(def, 0, 0)).collect()
+        } else {
+            self.categories.clone()
+        };
         for group in CategoryGroup::ALL {
-            let of_group: Vec<torro_mail::Category> =
-                group.categories().into_iter().filter(|c| !c.by_rule_only()).collect();
+            let of_group: Vec<&CategoryInfo> = catalogue
+                .iter()
+                .filter(|held| held.group == group && !(held.built_in && held.category.by_rule_only()))
+                .collect();
             if of_group.is_empty() {
                 continue;
             }
             list = list.push(menu_caption(torro_core::category::group_label(group)));
-            for category in of_group {
+            for held in of_group {
                 let mark = mail::group_mark(group).0;
-                let words = torro_core::category::label(category).to_owned();
                 let choice = Choice {
                     icon: mark,
-                    label: words,
+                    label: held.label.clone(),
                     when: None,
-                    message: Message::PickCategory(category),
+                    message: Message::PickCategory(held.category),
                     line: false,
                 };
                 list = list.push(choice_entry(choice, keys::digit(at + 1), KeyLook::Kbd, width));
@@ -12887,7 +12900,7 @@ mod tests {
 
         let category = app.categories.iter().find(|held| held.messages > 0).map(|held| held.group);
         if let Some(group) = category {
-            let _ = app.update(Message::Show(View::Category(mail::CategoryView { group, only: None })));
+            let _ = app.update(Message::Show(View::Category(mail::CategoryView::of_group(group, &app.categories))));
             load(&mut app);
             assert!(app.messages.iter().all(|message| message.account != excluded));
         }
