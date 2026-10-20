@@ -197,7 +197,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   Dialog mit der neuen Kennung startet (Launcher-Fake).
 
 ### WS.8 Übersetzungen und Doku
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** WS.7 · **Dateien:** `crates/torro-core/src/i18n/de.rs`, `docs/core.md`,
   `docs/settings.md`
 - Alle neuen Texte aus WS.2–WS.7 übersetzen. `core.md` („Funktionen“, „Tray-Menü“, „Vorlagenformat“) und
