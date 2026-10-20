@@ -68,10 +68,11 @@ pub fn file_name(title: &str) -> String {
 }
 
 /// Windows' device names, which no file may have, whatever its case and extension (`nul.txt`, `CON .tar.gz`):
-/// `CON`, `PRN`, `AUX`, `NUL`, and `COM` or `LPT` with one digit `0`–`9` or a superscript `¹`, `²`, `³`.
+/// `CON`, `PRN`, `AUX`, `NUL`, the console's `CONIN$` and `CONOUT$`, and `COM` or `LPT` with one digit `0`–`9` or a
+/// superscript `¹`, `²`, `³`.
 fn reserved(stem: &str) -> bool {
     let base = stem.split('.').next().unwrap_or_default().trim_end().to_ascii_uppercase();
-    if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+    if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
         return true;
     }
     let Some(port) = base.strip_prefix("COM").or_else(|| base.strip_prefix("LPT")) else {
@@ -175,7 +176,8 @@ mod tests {
     /// superscript ports.
     #[test]
     fn every_device_name_of_windows_is_left_out() {
-        let mut names: Vec<String> = ["CON", "PRN", "AUX", "NUL"].iter().map(|name| name.to_string()).collect();
+        let mut names: Vec<String> =
+            ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].iter().map(|name| name.to_string()).collect();
         for port in ["COM", "LPT"] {
             names.extend(('0'..='9').chain(['¹', '²', '³']).map(|digit| format!("{port}{digit}")));
         }
@@ -184,7 +186,7 @@ mod tests {
                 assert_eq!(file_name(&title), "Document.pdf", "{title}");
             }
         }
-        for kept in ["COM10", "LPT", "COMa", "Console", "COM¹²", "NULL", "AUXILIARY.txt"] {
+        for kept in ["COM10", "LPT", "COMa", "Console", "COM¹²", "NULL", "AUXILIARY.txt", "CONIN", "CONOUT$X"] {
             assert_eq!(file_name(kept), format!("{kept}.pdf"));
         }
     }
