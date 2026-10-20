@@ -4252,6 +4252,12 @@ mod badge {
         Rectangle { x: bounds.x + bounds.width - half, y: bounds.y - half, width: edge, height: edge }
     }
 
+    /// The clip of the dot's layer: the dot and one pixel around it (the smoothed edge reaches past
+    /// the quad), within the `viewport`; `None` when none of it is in view.
+    pub(super) fn clip_bounds(dot: Rectangle, viewport: &Rectangle) -> Option<Rectangle> {
+        dot.expand(1.0).intersection(viewport)
+    }
+
     impl<M> Widget<M, Theme, Renderer> for CornerDot<'_, M> {
         fn tag(&self) -> tree::Tag {
             self.content.as_widget().tag()
@@ -4292,10 +4298,13 @@ mod badge {
                 self.content.as_widget().draw(tree, renderer, theme, style, child, cursor, viewport);
             }
             let bounds = dot_bounds(layout.bounds(), self.edge);
-            let quad = Quad { bounds, border: border::rounded(self.edge / 2.0), ..Quad::default() };
             // A layer of its own: wgpu draws a layer's quads before its images, so in the icon's layer
-            // the icon would cover the dot.
-            renderer.with_layer(bounds, |renderer| renderer.fill_quad(quad, Background::Color(self.colour)));
+            // the icon would cover the dot. A layer does not inherit the clip of the one around it, so
+            // it is clipped to the viewport (a scrolled page hides the dot with its entry), one pixel
+            // wider than the dot for its smoothed edge.
+            let Some(clip) = clip_bounds(bounds, viewport) else { return };
+            let quad = Quad { bounds, border: border::rounded(self.edge / 2.0), ..Quad::default() };
+            renderer.with_layer(clip, |renderer| renderer.fill_quad(quad, Background::Color(self.colour)));
         }
     }
 }
@@ -4367,6 +4376,11 @@ mod tests {
     fn a_badged_mark_puts_a_dot_on_the_corner() {
         let dot = badge::dot_bounds(rect(10.0, 20.0, 16.0, 16.0), Scale::Small.dot());
         assert_eq!(dot, rect(23.0, 17.0, 6.0, 6.0), "centre on the corner (26, 20)");
+        let window = rect(0.0, 0.0, 800.0, 600.0);
+        assert_eq!(badge::clip_bounds(dot, &window), Some(rect(22.0, 16.0, 8.0, 8.0)), "room for the edge");
+        let page = rect(0.0, 20.0, 800.0, 580.0);
+        assert_eq!(badge::clip_bounds(dot, &page), Some(rect(22.0, 20.0, 8.0, 4.0)), "cut where the page ends");
+        assert_eq!(badge::clip_bounds(dot, &rect(0.0, 100.0, 800.0, 500.0)), None, "scrolled out of view");
         let colour = Color::WHITE;
         let mark = Mark::Badged(Icon::Cloud, colour);
         assert_ne!(mark, Mark::Badged(Icon::Github, colour), "two badged entries keep their icons apart");
