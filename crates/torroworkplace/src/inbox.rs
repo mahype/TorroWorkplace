@@ -177,13 +177,17 @@ use crate::approvals::{Approvals, InboxFacts};
 use crate::mail::service::MailService;
 use crate::pim::PimService;
 
+mod catalogue;
+
+pub use catalogue::Uses as CategoryUses;
+
 /// The file in the core's state directory.
 pub const FILE: &str = "inbox.sqlite";
 
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -453,6 +457,41 @@ CREATE TABLE woken (
     item TEXT PRIMARY KEY,
     at TEXT NOT NULL
 );
+";
+
+/// From schema version 10 to 11 (tasks E15.2 and E15.3, issue #255): the catalogue of mail
+/// categories as the person keeps it, and the sorting rules.
+///
+/// - `category_edits`: what the person changed about a category of the suite, by its key; `NULL`
+///   keeps the suite's group, word, description or model choice ([`catalogue::catalogue_in`]).
+/// - `custom_categories`: the person's own categories, `custom_<id>`. `AUTOINCREMENT`, so a number
+///   is never given out twice; `replaced_by` names the replacement while a removal runs.
+/// - `sort_rules`: one row per sorting rule, `position` its place (0 first), `category` for
+///   finding the rules of a category, `data` the [`torro_inbox::SortRule`] as JSON.
+const SCHEMA_V11: &str = "
+CREATE TABLE category_edits (
+    category TEXT PRIMARY KEY,
+    grp TEXT,
+    name TEXT,
+    description TEXT,
+    model INTEGER
+);
+CREATE TABLE custom_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    grp TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    model INTEGER NOT NULL,
+    created TEXT NOT NULL,
+    replaced_by TEXT
+);
+CREATE TABLE sort_rules (
+    id TEXT PRIMARY KEY,
+    position INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX sort_rules_by_category ON sort_rules (category);
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -757,6 +796,7 @@ impl Inbox {
                 // that comes back is the mail as an entry would hold it, with its new category –
                 // nothing is stored in the inbox, because there is nothing to store it on.
                 Request::SetItemCategory { category, remember, .. } => {
+                    catalogue::find(&catalogue::catalogue_in(db)?, category)?;
                     let tx = db.transaction()?;
                     let (rule, new_rule) = match remember {
                         false => (None, false),
@@ -825,26 +865,26 @@ impl Inbox {
                 // (task E15.1).
                 Request::SetItemCategory { id, .. } | Request::ClassifyItem { id } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
-                    InboxFacts { item, categories: catalogue_in(db)?, ..InboxFacts::default() }
+                    InboxFacts { item, categories: catalogue::catalogue_in(db)?, ..InboxFacts::default() }
                 }
                 Request::RemoveRule { id } => {
                     let rule = read_rules(db, &Scope::All, "id = ?", by_id(id))?.pop();
                     // A category kept for a sender is named as the catalogue calls it (E15.1).
                     let filing = rule.as_ref().is_some_and(|rule| matches!(rule.effect, RuleEffect::Category { .. }));
-                    let categories = if filing { catalogue_in(db)? } else { Vec::new() };
+                    let categories = if filing { catalogue::catalogue_in(db)? } else { Vec::new() };
                     InboxFacts { rule, categories, ..InboxFacts::default() }
                 }
                 Request::CreateCategory { .. }
                 | Request::UpdateCategory { .. }
                 | Request::RemoveCategory { .. }
                 | Request::CreateSortRule { .. } => {
-                    InboxFacts { categories: catalogue_in(db)?, ..InboxFacts::default() }
+                    InboxFacts { categories: catalogue::catalogue_in(db)?, ..InboxFacts::default() }
                 }
                 Request::UpdateSortRule { id, .. }
                 | Request::RemoveSortRule { id }
                 | Request::MoveSortRule { id, .. } => InboxFacts {
                     sort_rule: sort_rule_in(db, id)?.map(Box::new),
-                    categories: catalogue_in(db)?,
+                    categories: catalogue::catalogue_in(db)?,
                     ..InboxFacts::default()
                 },
                 _ => InboxFacts::default(),
@@ -1119,7 +1159,82 @@ impl Inbox {
     /// The catalogue of mail categories (task E15.1): every category with what the person made
     /// of it, in the order the sidebar lists them. `Err` holds the message for the log.
     pub fn catalogue(&self) -> Result<Vec<torro_mail::CategoryDef>, String> {
-        self.with(|db| catalogue_in(db)).map_err(|failure| failure.to_string())
+        self.with(|db| catalogue::catalogue_in(db)).map_err(|failure| failure.to_string())
+    }
+
+    /// Makes a category of the person's own (`inbox.create_category`, task E15.2). `Err` is the
+    /// answer for the client.
+    pub fn create_category(
+        &self,
+        group: torro_mail::CategoryGroup,
+        name: &str,
+        description: &str,
+        model: bool,
+        now: DateTime<Utc>,
+    ) -> Result<torro_mail::CategoryDef, Response> {
+        let made = self.with(|db| catalogue::create(db, group, name, description, model, now));
+        made.map_err(Failure::response)
+    }
+
+    /// Changes a category of the catalogue (`inbox.update_category`, task E15.2): only the fields
+    /// given. `Err` is the answer for the client.
+    pub fn update_category(
+        &self,
+        category: torro_mail::Category,
+        group: Option<torro_mail::CategoryGroup>,
+        name: Option<String>,
+        description: Option<String>,
+        model: Option<bool>,
+    ) -> Result<torro_mail::CategoryDef, Response> {
+        let changes = catalogue::Changes { group, name, description, model };
+        let changed = self.with(|db| catalogue::update(db, category, changes));
+        changed.map_err(Failure::response)
+    }
+
+    /// How many entries and sorting rules name `category` (task E15.2): what removing it moves
+    /// here. The mail is the mail service's to count.
+    pub fn category_uses(&self, category: torro_mail::Category) -> Result<CategoryUses, Response> {
+        self.with(|db| catalogue::uses(db, category)).map_err(Failure::response)
+    }
+
+    /// The replacement a removal of `category` cut short noted, if one stands (task E15.2).
+    pub fn removal_of(&self, category: torro_mail::Category) -> Result<Option<torro_mail::Category>, Response> {
+        self.with(|db| catalogue::replacement_of(db, category)).map_err(Failure::response)
+    }
+
+    /// Every removal cut short, with its replacement (task E15.2): what the core takes up again
+    /// when it starts. `Err` holds the message for the log.
+    pub fn pending_removals(&self) -> Result<Vec<(torro_mail::Category, torro_mail::Category)>, String> {
+        self.with(|db| catalogue::pending(db)).map_err(|failure| failure.to_string())
+    }
+
+    /// Removes `category`, which nothing names (task E15.2).
+    pub fn remove_unused_category(&self, category: torro_mail::Category) -> Result<(), Response> {
+        let removed = self.with(|db| catalogue::remove_unused(db, category));
+        removed.map_err(Failure::response)
+    }
+
+    /// The first step of removing `category` (task E15.2): it notes `replacement`, leaves the
+    /// catalogue, and its sorting rules name the replacement. The core moves the mail, then calls
+    /// [`Inbox::finish_removal`].
+    pub fn begin_removal(
+        &self,
+        category: torro_mail::Category,
+        replacement: torro_mail::Category,
+    ) -> Result<(), Response> {
+        let begun = self.with(|db| catalogue::begin_removal(db, category, replacement));
+        begun.map_err(Failure::response)
+    }
+
+    /// The last step of removing `category` (task E15.2): its entries name `replacement`, and the
+    /// category is gone.
+    pub fn finish_removal(
+        &self,
+        category: torro_mail::Category,
+        replacement: torro_mail::Category,
+    ) -> Result<(), Response> {
+        let finished = self.with(|db| catalogue::finish_removal(db, category, replacement));
+        finished.map_err(Failure::response)
     }
 
     /// What the fixed rules make of `mail` (task E12.2, `docs/kategorien.md`): a category kept
@@ -2791,6 +2906,9 @@ fn set_item_category(
     if item.source.kind != SourceKind::Mail {
         return Err(Failure::Invalid("only mail has a category".into()));
     }
+    // Only a category of the catalogue (task E15.2): a made-up `custom_<n>` would show as
+    // "Category n" nobody can find again.
+    catalogue::find(&catalogue::catalogue_in(db)?, category)?;
     let (rule, new_rule) = if remember {
         let sender = rules::mail_sender(&item)
             .ok_or_else(|| Failure::Invalid("this mail names no sender to remember the category for".into()))?;
@@ -3298,6 +3416,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 10 {
         tx.execute_batch(SCHEMA_V10)?;
+    }
+    if version < 11 {
+        tx.execute_batch(SCHEMA_V11)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -3908,12 +4029,6 @@ impl MailLater {
     pub fn back_at(&self, account: &str, message: &str) -> Option<DateTime<Utc>> {
         self.back.get(account)?.get(message).copied()
     }
-}
-
-/// The catalogue of mail categories (task E15.1): the suite's, as it brings them. Task E15.2
-/// keeps what the person changed and made.
-fn catalogue_in(_db: &Connection) -> Result<Vec<torro_mail::CategoryDef>, Failure> {
-    Ok(torro_mail::CategoryDef::defaults())
 }
 
 /// The sorting rule `id`, as stored (task E15.1); `None` while there is none. Task E15.3 keeps
@@ -6359,6 +6474,108 @@ pub(crate) mod tests {
         }
     }
 
+    /// Task E15.2: what a category of the person's own may be called and how many a model may
+    /// choose between in one group.
+    #[test]
+    fn a_new_category_keeps_to_its_limits() {
+        use torro_mail::{Category, CategoryGroup};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let make = |name: &str, model: bool| {
+            inbox.create_category(CategoryGroup::Info, name, "What belongs here.", model, at(8, 0))
+        };
+        let refused = |answer: Result<torro_mail::CategoryDef, Response>| match answer {
+            Err(Response::Error { code, .. }) => code,
+            other => panic!("refused, got {other:?}"),
+        };
+        assert_eq!(refused(make("  ", false)), "error", "a name");
+        assert_eq!(refused(make("Two\nlines", false)), "error", "one line");
+        assert_eq!(refused(make(&"x".repeat(61), false)), "error", "60 characters");
+        let suite = torro_core::category::suite_label(Category::Invoice).expect("a word");
+        assert_eq!(refused(make(&suite.to_uppercase(), false)), "error", "no name twice, whatever the case");
+        let blank = inbox.create_category(CategoryGroup::Info, "Club", "  ", false, at(8, 0));
+        assert_eq!(refused(blank), "error", "one's own category says what it is");
+        // "Info" brings five a model chooses between; fifteen more fit, the sixteenth does not.
+        for n in 0..15 {
+            assert!(make(&format!("Topic {n}"), true).is_ok(), "{n}");
+        }
+        assert_eq!(refused(make("One too many", true)), "error");
+        assert!(make("Not for the model", false).is_ok(), "a category the model does not choose always fits");
+        let moved = inbox.update_category(Category::Newsletter, Some(CategoryGroup::Info), None, None, Some(true));
+        assert!(moved.is_ok(), "nothing changes the count");
+        let crowded = inbox.update_category(Category::Spam, Some(CategoryGroup::Info), None, None, None);
+        assert_eq!(refused(crowded), "error", "moving one in counts too");
+        assert_eq!(
+            refused(inbox.update_category(Category::Request, None, Some("Topic 3".into()), None, None)),
+            "error",
+            "renaming into a taken name"
+        );
+    }
+
+    /// Task E15.2: removing a category moves its entries and sorting rules, keeping where an
+    /// entry's category came from; a removal cut short after its first step is still noted when
+    /// the file is opened again, and the category is out of the catalogue meanwhile.
+    #[test]
+    fn a_removed_category_hands_its_entries_and_rules_on() {
+        use torro_mail::{Category, CategoryGroup, MailCategory};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let club =
+            inbox.create_category(CategoryGroup::Info, "Club", "The sports club.", false, at(8, 0)).expect("made");
+        let id = inbox
+            .file_mail(&mail("m:1", "t:1", "Training", "coach@club.example", false, at(8, 0)), Notify::All, at(8, 0))
+            .expect("filed")
+            .expect("an entry");
+        inbox.set_category(&id, Some(MailCategory::by_model(club.category, 0.8))).expect("set");
+        let rule = torro_inbox::SortRule {
+            id: "r1".into(),
+            category: club.category,
+            conditions: vec![torro_inbox::SortCondition {
+                field: torro_inbox::SortField::Domain,
+                value: "club.example".into(),
+            }],
+            exceptions: Vec::new(),
+            enabled: true,
+            created: at(8, 0),
+        };
+        inbox
+            .with(|db| {
+                db.execute(
+                    "INSERT INTO sort_rules (id, position, category, data) VALUES ('r1', 0, ?1, ?2)",
+                    params![club.category.key(), serde_json::to_string(&rule)?],
+                )?;
+                Ok(())
+            })
+            .expect("a rule");
+        assert_eq!(inbox.category_uses(club.category).expect("counted"), CategoryUses { entries: 1, rules: 1 });
+
+        inbox.begin_removal(club.category, Category::Social).expect("noted");
+        assert!(inbox.catalogue().expect("read").iter().all(|def| def.category != club.category));
+        let rules_now: Vec<String> = inbox
+            .with(|db| {
+                let mut statement = db.prepare("SELECT category FROM sort_rules")?;
+                let keys = statement.query_map([], |row| row.get::<_, String>(0))?.collect::<Result<_, _>>()?;
+                Ok(keys)
+            })
+            .expect("read");
+        assert_eq!(rules_now, ["social"], "the rules move with the first step");
+        // Cut short: the file opened again still knows.
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.pending_removals().expect("read"), [(club.category, Category::Social)]);
+        assert_eq!(inbox.removal_of(club.category).expect("read"), Some(Category::Social));
+
+        inbox.finish_removal(club.category, Category::Social).expect("finished");
+        assert_eq!(inbox.pending_removals().expect("read"), Vec::new());
+        let Response::Item { item } = inbox.handle(Request::GetItem { id }, None, at(8, 1)) else {
+            panic!("the entry")
+        };
+        assert_eq!(item.category, Some(MailCategory::by_model(Category::Social, 0.8)), "still the model's");
+        assert_eq!(inbox.category_uses(club.category).expect("counted"), CategoryUses::default());
+    }
+
     /// Task E12.4: `inbox.list_items` lists only the entries of the categories asked for, and
     /// the limit counts what is left – not what SQL read. An entry without a category (and so
     /// everything that is no mail) is out as soon as the filter is given.
@@ -7084,7 +7301,8 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
-                     DROP TABLE woken; PRAGMA user_version = 8;",
+                     DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
+                     DROP TABLE category_edits; PRAGMA user_version = 8;",
                 )?;
                 Ok(())
             })
@@ -7112,7 +7330,8 @@ pub(crate) mod tests {
                 db.execute_batch(
                     "DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
-                     DROP TABLE woken; PRAGMA user_version = 7;",
+                     DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
+                     DROP TABLE category_edits; PRAGMA user_version = 7;",
                 )?;
                 Ok(())
             })
@@ -8406,7 +8625,8 @@ pub(crate) mod tests {
                      ALTER TABLE rules DROP COLUMN counted_since;
                      DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
-                     DROP TABLE woken; PRAGMA user_version = 5;",
+                     DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
+                     DROP TABLE category_edits; PRAGMA user_version = 5;",
                 )?;
                 Ok(())
             })

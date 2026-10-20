@@ -3960,6 +3960,30 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Change {rule}", "Ändern: {rule}"),
     ("Remove {rule}", "Entfernen: {rule}"),
     ("Move {rule} to place {n}", "An Stelle {n} verschieben: {rule}"),
+    ("There is no mail category {category}.", "Es gibt keine E-Mail-Kategorie {category}."),
+    ("Describe what belongs in the category.", "Beschreib, was in die Kategorie gehört."),
+    ("Give the category a name.", "Gib der Kategorie einen Namen."),
+    ("There is a category called “{name}” already.", "Es gibt schon eine Kategorie „{name}“."),
+    (
+        "{group} would have {n} categories for the AI; at most {most} fit.",
+        "{group} hätte {n} Kategorien für die KI; höchstens {most} passen.",
+    ),
+    ("A category's name is one line.", "Der Name einer Kategorie ist eine Zeile."),
+    ("A category's name has at most {most} characters.", "Der Name einer Kategorie hat höchstens {most} Zeichen."),
+    ("A description holds text and line breaks only.", "Eine Beschreibung enthält nur Text und Zeilenumbrüche."),
+    ("A description has at most {most} characters.", "Eine Beschreibung hat höchstens {most} Zeichen."),
+    (
+        "The categories of the suite can be changed, not removed.",
+        "Die mitgelieferten Kategorien lassen sich ändern, aber nicht entfernen.",
+    ),
+    (
+        "{category} cannot take the mail of the category removed.",
+        "{category} kann die E-Mails der entfernten Kategorie nicht aufnehmen.",
+    ),
+    (
+        "{mail} mails, {entries} entries and {rules} sorting rules are filed as “{category}”. Choose a category for them.",
+        "{mail} E-Mails, {entries} Einträge und {rules} Sortierregeln sind als „{category}“ abgelegt. Wähl eine Kategorie für sie.",
+    ),
     // Accounts, API and MCP; models on and off (issue #231)
     ("1 model on", "1 Modell an"),
     ("Accounts in TorroMail", "Konten in TorroMail"),

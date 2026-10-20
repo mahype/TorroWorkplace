@@ -1541,6 +1541,38 @@ impl MailService {
         Ok(counts)
     }
 
+    /// How much mail of `category` every account holds, in any folder (task E15.2): what removing
+    /// the category moves. Every account, whatever a client may read – the person removes it for
+    /// all of them. A store that cannot be opened is an error, never a 0.
+    pub async fn count_category(&self, category: torro_mail::Category) -> Result<u64, MailError> {
+        let mut count = 0;
+        for mailbox in self.every_mailbox().await {
+            count += mailbox.store()?.run(move |store| store.count_category(category)).await?;
+        }
+        Ok(count)
+    }
+
+    /// Files the mail of `category` as `replacement` in every account (task E15.2), keeping where
+    /// each category came from. A store that cannot be opened stops it with an error, so the
+    /// removal stays noted and is taken up again.
+    pub async fn replace_category(
+        &self,
+        category: torro_mail::Category,
+        replacement: torro_mail::Category,
+    ) -> Result<usize, MailError> {
+        let mut changed = 0;
+        for mailbox in self.every_mailbox().await {
+            changed += mailbox.store()?.run(move |store| store.replace_category(category, replacement)).await?;
+        }
+        Ok(changed)
+    }
+
+    /// Every mailbox the service holds, its mail on or off: a category is removed from all of
+    /// them.
+    async fn every_mailbox(&self) -> Vec<Arc<Mailbox>> {
+        self.entries.read().await.iter().map(|entry| Arc::clone(&entry.mailbox)).collect()
+    }
+
     /// How far the backlog of each account in `reach` has been sorted (task E12.4): the window the
     /// run uses is the inbox of the last `days` days, at most `limit` messages.
     pub async fn category_progress(

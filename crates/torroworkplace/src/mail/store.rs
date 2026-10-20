@@ -750,6 +750,23 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
+    /// How much mail of any folder is of `category` (task E15.2): what removing the category
+    /// would move.
+    pub fn count_category(&self, category: Category) -> Result<u64, MailStoreError> {
+        let count: i64 =
+            self.db
+                .query_row("SELECT count(*) FROM messages WHERE category = ?1", [category.key()], |row| row.get(0))?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Files every mail of `category` as `replacement` (task E15.2), keeping where its category
+    /// came from and how sure a model was: the person's choice stays the person's. Returns how
+    /// many changed.
+    pub fn replace_category(&self, category: Category, replacement: Category) -> Result<usize, MailStoreError> {
+        let sql = "UPDATE messages SET category = ?2 WHERE category = ?1";
+        Ok(self.db.execute(sql, params![category.key(), replacement.key()])?)
+    }
+
     /// Keeps the two answers the same model call brings along besides the category (task E12.6):
     /// whether a reply is waited for and how pressing the mail is (0 routine, 1 soon, 2 urgent).
     /// Nothing reads them yet; they are kept so a later step need not run the model over the

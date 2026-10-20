@@ -1692,6 +1692,15 @@ impl Core {
         tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
+        // A removal of a category cut short (task E15.2) needs the mail stores: once they are read.
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            while started.elapsed() < ACCOUNTS_WAIT && !core.mail.loaded() {
+                tokio::time::sleep(ACCOUNTS_STEP).await;
+            }
+            core.resume_category_removals().await;
+        });
         let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
         self.mail.pause_from_start(mail_off);
         self.mail.start();
@@ -3670,6 +3679,138 @@ impl Core {
         Response::Categories { categories }
     }
 
+    /// One category as `inbox.create_category` and `inbox.update_category` answer it (task E15.2):
+    /// with its counts in the accounts `reach` allows, like `inbox.list_categories`.
+    async fn category_answer(&self, def: &torro_mail::CategoryDef, reach: Reach<'_>) -> Response {
+        let counts = self.mail.unread_by_category(reach, None).await.unwrap_or_default();
+        let (unread, messages) = counts.get(&def.category).copied().unwrap_or((0, 0));
+        Response::Category { category: torro_ipc::inbox::CategoryInfo::of(def, unread, messages) }
+    }
+
+    /// `inbox.remove_category` (task E15.2): a category of the person's own goes, and what names
+    /// it – mail of every account, entries, sorting rules – moves to `replacement`. Without
+    /// anything naming it, it goes at once and needs no replacement.
+    ///
+    /// The mail lies in other databases than the entries, so the removal is noted first (the
+    /// category notes its replacement and leaves the catalogue, its rules move along), then the
+    /// mail moves, then the entries – and only then the category is gone. A removal cut short is
+    /// taken up again when the core starts ([`Core::resume_category_removals`]); asking again
+    /// takes it up as well, with the replacement noted then.
+    async fn remove_category(
+        &self,
+        category: torro_mail::Category,
+        replacement: Option<torro_mail::Category>,
+    ) -> Response {
+        if category.is_built_in() {
+            let message = tr("The categories of the suite can be changed, not removed.");
+            return Response::Error { code: "unsupported".into(), message: message.to_string() };
+        }
+        let noted = match self.inbox.removal_of(category) {
+            Ok(noted) => noted,
+            Err(refused) => return refused,
+        };
+        if let Some(noted) = noted {
+            return self.finish_category_removal(category, noted).await;
+        }
+        let catalogue = match self.inbox.catalogue() {
+            Ok(catalogue) => catalogue,
+            Err(message) => return Response::Error { code: "error".into(), message },
+        };
+        let name_of = |wanted: torro_mail::Category| catalogue.iter().find(|def| def.category == wanted);
+        let Some(def) = name_of(category) else {
+            let message = trf("There is no mail category {category}.", &[("category", &category.key())]);
+            return Response::Error { code: "not-found".into(), message };
+        };
+        if let Some(replacement) = replacement
+            && (replacement == category || name_of(replacement).is_none())
+        {
+            let message =
+                trf("{category} cannot take the mail of the category removed.", &[("category", &replacement.key())]);
+            return Response::Error { code: "error".into(), message };
+        }
+        let uses = match self.inbox.category_uses(category) {
+            Ok(uses) => uses,
+            Err(refused) => return refused,
+        };
+        let mail = match self.mail.count_category(category).await {
+            Ok(mail) => mail,
+            Err(err) => return err.response(),
+        };
+        if mail + uses.entries + uses.rules == 0 {
+            if let Err(refused) = self.inbox.remove_unused_category(category) {
+                return refused;
+            }
+            self.forget_hidden_category(category);
+            return Response::CategoryRemoved { category, replacement: None };
+        }
+        let Some(replacement) = replacement else {
+            let message = trf(
+                "{mail} mails, {entries} entries and {rules} sorting rules are filed as “{category}”. Choose a \
+                 category for them.",
+                &[
+                    ("mail", &mail.to_string()),
+                    ("entries", &uses.entries.to_string()),
+                    ("rules", &uses.rules.to_string()),
+                    ("category", &torro_core::category::name_of(def)),
+                ],
+            );
+            return Response::Error { code: "conflict".into(), message };
+        };
+        if let Err(refused) = self.inbox.begin_removal(category, replacement) {
+            return refused;
+        }
+        self.finish_category_removal(category, replacement).await
+    }
+
+    /// The steps of a removal after it was noted ([`Core::remove_category`]): the mail of every
+    /// account, then the entries and the category itself. A step that fails leaves the removal
+    /// noted, so the next start or the next request takes it up again.
+    async fn finish_category_removal(
+        &self,
+        category: torro_mail::Category,
+        replacement: torro_mail::Category,
+    ) -> Response {
+        if let Err(err) = self.mail.replace_category(category, replacement).await {
+            return err.response();
+        }
+        if let Err(refused) = self.inbox.finish_removal(category, replacement) {
+            return refused;
+        }
+        self.forget_hidden_category(category);
+        Response::CategoryRemoved { category, replacement: Some(replacement) }
+    }
+
+    /// A category gone is no longer hidden from the sidebar (task E15.2): its key stays unused,
+    /// and the setting keeps only what still means something.
+    fn forget_hidden_category(&self, category: torro_mail::Category) {
+        let hidden = self.settings.current().hidden_categories;
+        if !hidden.contains(&category) {
+            return;
+        }
+        let kept: Vec<torro_mail::Category> = hidden.into_iter().filter(|held| *held != category).collect();
+        if let Err(err) = self.settings.set(SettingKey::HiddenCategories, &serde_json::json!(kept)) {
+            eprintln!("torroworkplace: settings: cannot forget a removed category: {err}");
+        }
+    }
+
+    /// Takes up the removals of categories that were cut short (task E15.2): once the mail
+    /// accounts are read, each one moves its mail and entries and goes. A step that fails again is
+    /// logged and waits for the next start.
+    async fn resume_category_removals(&self) {
+        let pending = match self.inbox.pending_removals() {
+            Ok(pending) => pending,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the categories being removed: {err}");
+                return;
+            }
+        };
+        for (category, replacement) in pending {
+            if let Response::Error { message, .. } = self.finish_category_removal(category, replacement).await {
+                eprintln!("torroworkplace: inbox: cannot finish removing {}: {message}", category.key());
+            }
+        }
+    }
+
     /// `inbox.get_categorization` (task E12.4): what is assigned and how far the backlog has come
     /// per mail account in reach. Task E12.6 fills in the model and the running state; until then
     /// nothing is assigned and no run has started.
@@ -3905,12 +4046,25 @@ impl Core {
             Request::CatchUpCategories { cancel, again: false } => {
                 Box::pin(self.catch_up_categories(cancel, reach)).await
             }
-            // The catalogue and the sorting rules (task E15.1): their handlers come with tasks
-            // E15.2 to E15.4.
+            // The catalogue (task E15.2): the core answers, since the counts and a removal reach
+            // the mail stores.
+            Request::CreateCategory { group, name, description, model } => {
+                match self.inbox.create_category(group, &name, &description, model, Utc::now()) {
+                    Ok(def) => self.category_answer(&def, reach).await,
+                    Err(refused) => refused,
+                }
+            }
+            Request::UpdateCategory { category, group, name, description, model } => {
+                match self.inbox.update_category(category, group, name, description, model) {
+                    Ok(def) => self.category_answer(&def, reach).await,
+                    Err(refused) => refused,
+                }
+            }
+            Request::RemoveCategory { category, replacement } => {
+                Box::pin(self.remove_category(category, replacement)).await
+            }
+            // The sorting rules and sorting again: their handlers come with tasks E15.3 and E15.4.
             Request::CatchUpCategories { again: true, .. }
-            | Request::CreateCategory { .. }
-            | Request::UpdateCategory { .. }
-            | Request::RemoveCategory { .. }
             | Request::ListSortRules
             | Request::CreateSortRule { .. }
             | Request::UpdateSortRule { .. }
@@ -13269,6 +13423,161 @@ mod tests {
         reading.mail_accounts = Selection::Only(vec![anna.id.clone()]);
         let (_, key) = client(&core, reading).await;
         assert_eq!(counted(ask(&core, Some(&key), Request::ListCategories { account: None }).await), (1, 1));
+    }
+
+    /// Task E15.2: a category of the person's own is made, filed under, counted and found like
+    /// one of the suite; a change to one of the suite outlives the core; removing one that mail
+    /// names needs a replacement, which keeps who filed the mail; a removal cut short after its
+    /// first step is taken up again; and no number is handed out twice.
+    #[tokio::test]
+    async fn a_category_of_ones_own_is_made_used_changed_and_removed() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_mail::{Category, CategoryGroup, CategorySource, CustomCategory};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let raw = format!(
+            "From: Office <office@tax.example>\r\nTo: anna@example.org\r\nSubject: Your return 2025\r\n\
+             Date: {date}\r\nMessage-ID: <return-1@tax.example>\r\nContent-Type: text/plain\r\n\r\nPlease sign\r\n"
+        );
+        server.add("INBOX", &raw, &[]);
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        // The core started anew: its own inbox and mail service over the same files.
+        let fresh = || async {
+            let mail = service_in(dir.path(), &secrets);
+            mail.reload().await;
+            super::tests::core(dir.path()).with_mail(mail)
+        };
+        let search = |categories: Vec<Category>| Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+            categories,
+        };
+        let messages = |answer: Response| -> Vec<torro_mail::MessageSummary> {
+            let Response::MailMessages { messages, .. } = answer else { panic!("a page, got {answer:?}") };
+            messages
+        };
+        let id = messages(ask(&core, Some(&app_key), search(Vec::new())).await)[0].id.clone();
+
+        let made = Request::CreateCategory {
+            group: CategoryGroup::PaperTrail,
+            name: "Tax".into(),
+            description: "Anything for the tax return, not invoices of shops.".into(),
+            model: true,
+        };
+        let Response::Category { category: tax } = ask(&core, Some(&app_key), made.clone()).await else {
+            panic!("a category")
+        };
+        assert_eq!(tax.category, Category::Custom(CustomCategory::new(1).expect("a number")));
+        assert_eq!(
+            (tax.label.as_str(), tax.group, tax.model, tax.built_in),
+            ("Tax", CategoryGroup::PaperTrail, true, false)
+        );
+        assert_eq!(code(&ask(&core, Some(&app_key), made).await), "error", "a name is taken once");
+
+        // Filed under it by hand, counted and found like any other.
+        let filed = Request::SetItemCategory { id: id.clone(), category: tax.category, remember: false };
+        assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
+        let Response::Categories { categories } =
+            ask(&core, Some(&app_key), Request::ListCategories { account: None }).await
+        else {
+            panic!("the catalogue")
+        };
+        let listed = categories.iter().find(|held| held.category == tax.category).expect("listed");
+        assert_eq!((listed.unread, listed.messages), (1, 1));
+        assert_eq!(categories.len(), Category::BUILT_IN.len() + 1);
+        assert_eq!(messages(ask(&core, Some(&app_key), search(vec![tax.category])).await).len(), 1);
+        let unknown = Category::Custom(CustomCategory::new(99).expect("a number"));
+        let made_up = Request::SetItemCategory { id: id.clone(), category: unknown, remember: false };
+        assert_eq!(code(&ask(&core, Some(&app_key), made_up).await), "not-found", "only the catalogue's");
+
+        // One of the suite renamed and moved, and a core started anew reads it so.
+        let renamed = Request::UpdateCategory {
+            category: Category::Invoice,
+            group: Some(CategoryGroup::WaitingForMe),
+            name: Some("Bills".into()),
+            description: Some("Bills of the landlord.".into()),
+            model: None,
+        };
+        let Response::Category { category: bills } = ask(&core, Some(&app_key), renamed).await else {
+            panic!("changed")
+        };
+        assert_eq!((bills.label.as_str(), bills.group, bills.renamed), ("Bills", CategoryGroup::WaitingForMe, true));
+        let again = fresh().await;
+        let Response::Categories { categories } = again.handle(Request::ListCategories { account: None }).await else {
+            panic!("the catalogue")
+        };
+        let held = categories.iter().find(|held| held.category == Category::Invoice).expect("invoice");
+        assert_eq!((held.label.as_str(), held.description.as_str()), ("Bills", "Bills of the landlord."));
+        // Back to the suite's words.
+        let back = Request::UpdateCategory {
+            category: Category::Invoice,
+            group: Some(CategoryGroup::PaperTrail),
+            name: Some(String::new()),
+            description: Some(String::new()),
+            model: None,
+        };
+        let Response::Category { category: invoice } = ask(&core, Some(&app_key), back).await else {
+            panic!("put back")
+        };
+        assert_eq!(Some(invoice.label.as_str()), torro_core::category::suite_label(Category::Invoice));
+        assert!(!invoice.renamed);
+        let suite = Request::RemoveCategory { category: Category::Invoice, replacement: None };
+        assert_eq!(code(&ask(&core, Some(&app_key), suite).await), "unsupported", "the suite's stay");
+
+        // Mail names it: no removal without a replacement, then the mail moves and stays the person's.
+        let bare = Request::RemoveCategory { category: tax.category, replacement: None };
+        assert_eq!(code(&ask(&core, Some(&app_key), bare).await), "conflict");
+        let removed = Request::RemoveCategory { category: tax.category, replacement: Some(Category::Document) };
+        assert_eq!(
+            ask(&core, Some(&app_key), removed).await,
+            Response::CategoryRemoved { category: tax.category, replacement: Some(Category::Document) }
+        );
+        let moved = messages(ask(&core, Some(&app_key), search(vec![Category::Document])).await);
+        let held = moved.first().and_then(|message| message.category).expect("moved");
+        assert_eq!((held.category, held.source), (Category::Document, CategorySource::Person));
+        assert!(messages(ask(&core, Some(&app_key), search(vec![tax.category])).await).is_empty());
+
+        // A removal cut short after its first step: the next start finishes it.
+        let second = Request::CreateCategory {
+            group: CategoryGroup::Info,
+            name: "Club".into(),
+            description: "The sports club.".into(),
+            model: false,
+        };
+        let Response::Category { category: club } = ask(&core, Some(&app_key), second).await else { panic!("made") };
+        assert_eq!(club.category, Category::Custom(CustomCategory::new(2).expect("a number")), "1 is never reused");
+        let filed = Request::SetItemCategory { id: id.clone(), category: club.category, remember: false };
+        assert!(matches!(ask(&core, Some(&app_key), filed).await, Response::ItemCategory { .. }));
+        core.inbox.begin_removal(club.category, Category::Social).expect("noted");
+        let catalogue = core.inbox.catalogue().expect("catalogue");
+        assert!(catalogue.iter().all(|def| def.category != club.category), "out of the catalogue at once");
+        let restarted = fresh().await;
+        restarted.resume_category_removals().await;
+        assert_eq!(restarted.inbox.pending_removals().expect("read"), Vec::new());
+        let moved = messages(restarted.handle(search(vec![Category::Social])).await);
+        assert_eq!(
+            moved.first().and_then(|message| message.category).map(|held| held.category),
+            Some(Category::Social)
+        );
+        assert!(messages(restarted.handle(search(vec![club.category])).await).is_empty());
     }
 
     /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from

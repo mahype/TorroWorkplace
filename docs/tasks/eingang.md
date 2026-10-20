@@ -3657,7 +3657,15 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   Freigabe-Sätze ohne Text des Clients für Änderungen an Vorhandenem; API-Referenz neu erzeugt.
 
 ### E15.2 Katalog und Anzeige
-- [ ] offen
+- [x] erledigt (2026-10-21): Schema 11 mit `category_edits`, `custom_categories` und schon
+  `sort_rules` (für E15.3); Untermodul `inbox/catalogue.rs` (Lesen, Anlegen, Ändern, Prüfen der
+  Grenzen, Entfernen in zwei Schritten); `inbox.create_category`, `inbox.update_category` und
+  `inbox.remove_category` im Kern, die Mail über `MailService::{count_category,
+  replace_category}` in jedem Konto; eine unterbrochene Entfernung setzt `Core::start` fort,
+  sobald die Mailkonten gelesen sind, und ein erneuter Aufruf ebenso. `inbox.set_item_category`
+  nimmt nur Kategorien des Katalogs. Eine entfernte Kategorie fällt aus `hidden_categories`.
+  Die Anzeige stand schon mit E15.1. Abweichung: neue Datei `inbox/catalogue.rs`, damit
+  `inbox.rs` nicht weiter wächst.
 - **Modell:** Opus · **Braucht:** E15.1 · **Dateien:** `crates/torroworkplace/src/{core,inbox,approvals}.rs`,
   `crates/torroworkplace/src/mail/{service,store}.rs`, `crates/torro-core/src/{category,i18n/de}.rs`,
   `crates/torro-inbox/src/demo.rs`, `crates/torroinbox/src/{app,list,mail}.rs`,

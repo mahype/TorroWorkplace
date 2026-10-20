@@ -54,6 +54,11 @@ impl CategoryGroup {
         }
     }
 
+    /// The group named by `key` ([`CategoryGroup::key`]); `None` for a word no group has.
+    pub fn from_key(key: &str) -> Option<CategoryGroup> {
+        CategoryGroup::ALL.into_iter().find(|group| group.key() == key)
+    }
+
     /// The categories the suite puts in this group by default, in the order of its catalogue.
     /// What a group holds now is the core's catalogue's word.
     pub fn default_categories(self) -> Vec<Category> {
