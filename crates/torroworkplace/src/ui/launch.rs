@@ -43,6 +43,8 @@ use torro_ntfy::NtfyError;
 pub enum Open {
     /// Accounts without any account (task S.30): every group with only its sentence and "Add".
     AccountsEmpty,
+    /// Accounts with the provider AI chosen (task S.37): its accounts, "Add" and the data rule.
+    AccountsAi,
     /// The add-account dialog as Nextcloud's "Add" opens it: the server address.
     WizardNextcloud,
     /// The add-account dialog at GitHub's two ways to sign in.
@@ -153,8 +155,9 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 82] = [
+    pub const ALL: [(&'static str, Open); 83] = [
         ("accounts-empty", Open::AccountsEmpty),
+        ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),

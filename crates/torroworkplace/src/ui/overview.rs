@@ -2,7 +2,8 @@
 //! daemon running, window manager detected (`data.status.backend`), accounts and their
 //! state, last sync, number of templates – and a "Needs your attention" card listing
 //! accounts whose state is `Connected { problem: Some(..) }` or that need a new sign-in,
-//! each with a button that jumps to Accounts (`Action::Select(Section::Accounts)`).
+//! each with a button that jumps to Accounts (`Action::Select(Section::Accounts)`); the shell
+//! opens the list at that account's provider there (task S.37, #244).
 //!
 //! The tiles have the surface of a settings group; a status is a dot and a word, the colour only
 //! in the dot. The tiles share the width of the page evenly, at least [`TILE_MIN_WIDTH`] each, and
@@ -29,15 +30,16 @@ pub struct State {}
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The "Open accounts" button of an attention row.
-    OpenAccounts,
+    /// The "Open accounts" button of an attention row, with the row's account id: Accounts shows
+    /// one provider at a time (task S.37), so the shell opens it at this account's.
+    OpenAccounts(String),
     /// "Continue setup" or "Open setup" (task W.9).
     OpenSetup,
 }
 
 pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
     match message {
-        Message::OpenAccounts => Action::Select(Section::Accounts),
+        Message::OpenAccounts(_) => Action::Select(Section::Accounts),
         Message::OpenSetup => Action::OpenSetup,
     }
 }
@@ -142,6 +144,8 @@ impl Reason {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Attention {
+    /// The account's id, for "Open accounts" to open its provider.
+    pub(super) id: String,
     pub(super) label: String,
     pub(super) reason: Reason,
 }
@@ -157,7 +161,7 @@ pub(super) fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
                 AccountState::Connected { problem: Some(problem), .. } => Reason::Problem(problem.clone()),
                 AccountState::Connected { problem: None, .. } | AccountState::SigningIn { .. } => return None,
             };
-            Some(Attention { label: account.label.clone(), reason })
+            Some(Attention { id: account.id.clone(), label: account.label.clone(), reason })
         })
         .collect()
 }
@@ -309,7 +313,12 @@ fn needs_attention<'a>(items: &[Attention], core_running: bool) -> Element<'a, M
 /// An account that needs the user: dot, name, the reason below, and the way to Accounts.
 fn attention_row<'a>(item: &Attention) -> Element<'a, Message> {
     let line = item.reason.line();
-    let open = widgets::text_button(None, tr("Open accounts"), style::button::secondary, Some(Message::OpenAccounts));
+    let open = widgets::text_button(
+        None,
+        tr("Open accounts"),
+        style::button::secondary,
+        Some(Message::OpenAccounts(item.id.clone())),
+    );
     setting_row(line.tone.dot().map(widgets::status_dot), item.label.clone(), Some(line.text), open)
 }
 
@@ -395,8 +404,13 @@ mod tests {
         assert_eq!(
             attention(&accounts),
             vec![
-                Attention { label: "ben@cloud.example.test".into(), reason: Reason::SignIn },
                 Attention {
+                    id: "nextcloud:ben@cloud.example.test".into(),
+                    label: "ben@cloud.example.test".into(),
+                    reason: Reason::SignIn,
+                },
+                Attention {
+                    id: "nextcloud:carla@cloud.example.test".into(),
                     label: "carla@cloud.example.test".into(),
                     reason: Reason::Problem("Server unreachable".into()),
                 },

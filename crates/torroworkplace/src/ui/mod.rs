@@ -63,7 +63,7 @@ use std::time::{Duration, Instant};
 
 use iced::theme::Mode;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, row, scrollable, stack, svg};
+use iced::widget::{column, container, responsive, row, rule, scrollable, stack, svg};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
@@ -563,6 +563,12 @@ impl Ui {
                 self.data.accounts.clear();
                 vec![Message::Select(Section::Accounts)]
             }
+            Open::AccountsAi => {
+                vec![
+                    Message::Select(Section::Accounts),
+                    Message::Accounts(accounts::Message::ShowProvider("ai".into())),
+                ]
+            }
             Open::WizardNextcloud => vec![
                 Message::Select(Section::Accounts),
                 Message::Accounts(accounts::Message::Add(wizard::Provider::Nextcloud)),
@@ -1061,6 +1067,12 @@ impl Ui {
                     }
                 }
             }
+            // Accounts shows one provider (task S.37): "Open accounts" opens the row's account's.
+            Message::Overview(overview::Message::OpenAccounts(id)) => {
+                accounts::show_provider_of(&mut self.accounts, &self.data, &id);
+                let m = overview::Message::OpenAccounts(id);
+                overview::update(&mut self.overview, m, &self.data)
+            }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
@@ -1414,7 +1426,8 @@ impl Ui {
 
     /// The page: loading until the core answered, the error state when it does not answer (the
     /// overview shows that itself), else the section's view under the notices – at most
-    /// `CONTENT_MAX` wide, scrolling inside the margin of the size class.
+    /// `CONTENT_MAX` wide, scrolling inside the margin of the size class. Accounts' list has its
+    /// providers in a column at the left edge beside it (task S.37), which does not scroll with it.
     fn body(&self, class: SizeClass) -> Element<'_, Message> {
         if !self.loaded {
             return widgets::loading();
@@ -1426,9 +1439,11 @@ impl Ui {
                 Message::Tick,
             );
         }
+        let theme = self.theme();
+        let palette = palette(&theme);
         let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
-            Section::Accounts => accounts::view(&self.accounts, &self.data).map(Message::Accounts),
+            Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
             Section::Api => api::view(&self.api, &self.data).map(Message::Api),
             Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
@@ -1438,7 +1453,13 @@ impl Ui {
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
         let page = column(notices).push(page).spacing(space::l());
-        let page = if class == SizeClass::Medium {
+        let providers = match self.section {
+            Section::Accounts => accounts::provider_column(&self.accounts, &self.data, class, &palette),
+            _ => None,
+        };
+        // Beside the providers' column the page starts at it, as beside the sidebar (design skill,
+        // section 6); centred, its distance to the column would grow with the window.
+        let page = if class == SizeClass::Medium || providers.is_some() {
             // Flush with the window: the page starts at the margin (24), where the ink of the header's
             // first symbol starts (16 padding, 6 around the symbol, 2 inside the icon), instead of
             // floating in the middle between header and window edge.
@@ -1446,11 +1467,16 @@ impl Ui {
         } else {
             container(widgets::content(size::content_max(), page)).padding(page_margin(class))
         };
-        scrollable(page)
+        let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
-            .height(Fill)
-            .into()
+            .height(Fill);
+        match providers {
+            Some(providers) => {
+                row![providers.map(Message::Accounts), rule::vertical(size::HAIRLINE).style(style::rule), page].into()
+            }
+            None => page.into(),
+        }
     }
 }
 
@@ -2164,6 +2190,15 @@ mod tests {
         let empty = started(&["--demo", "--open", "accounts-empty"]);
         assert_eq!((empty.section, empty.data.accounts.len()), (Section::Accounts, 0));
         assert!(empty.page_overlay().is_none());
+        let ai = started(&["--demo", "--open", "accounts-ai"]);
+        assert_eq!((ai.section, ai.accounts.provider.as_deref()), (Section::Accounts, Some("ai")));
+        // "Open accounts" of an attention row opens the list at that account's provider (#244).
+        let mut overview = started(&["--demo", "--open", "account-detail"]);
+        let ntfy = accounts::listed(&overview.data.accounts).find(|account| account.kind == "ntfy").expect("ntfy");
+        let id = ntfy.id.clone();
+        let _ = overview.update(Message::Overview(overview::Message::OpenAccounts(id)));
+        assert_eq!(overview.section, Section::Accounts);
+        assert_eq!((overview.accounts.provider.as_deref(), overview.accounts.selected.as_ref()), (Some("ntfy"), None));
         let start = started(&["--demo", "--section", "accounts"]);
         assert!(start.accounts.torromail.is_some(), "a start on Accounts asks too");
         for state in ["wizard-torromail", "wizard-torromail-failed", "wizard-torromail-done"] {

@@ -972,3 +972,83 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   `SetSetting`; `grep -rn "Agents & API" crates docs --include=*.rs --include=*.md` findet nur `docs/tasks/` und Tests.
   Sichtprüfung API und MCP (Liste, Detail, Hooks, Dialoge) in allen Größen, hell und dunkel (Agent
   `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün; `scripts/ci-local.sh`; Agent `torro-api-review`.
+
+## Stufe 6: Accounts übersichtlicher (S.36–S.37, #244)
+
+Konzept: [settings.md › Accounts, API und MCP](../settings.md#accounts-api-und-mcp-231). Entschieden am 2026-10-20
+(#244) an einer klickbaren Vorschau mit drei Varianten: Variante A, die Anbieter links und die Konten des gewählten
+Anbieters rechts. Prototyp: `docs/prototypes/accounts/index.html` (Breit und Schmal; Mittel nach S.37). Er ist
+Richtschnur, die Aufgabe gilt. Keine neue Funktion, kein Request, kein Katalogeintrag: Welcher Anbieter gewählt ist,
+weiß nur die Oberfläche; Agenten filtern `ai_list_models` selbst.
+
+```
+S.36 (Modelle: Suche überall, alphabetisch) ── S.37 (Accounts: Anbieter links, Konten rechts)
+```
+
+Beide ändern `ui/accounts.rs` und laufen nacheinander, S.36 zuerst.
+
+### S.36 KI-Konto: Suche bei jedem Anbieter, Modelle alphabetisch
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** S.31 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
+- `shown_models`: Die Suche (Name oder Id, Groß- und Kleinschreibung egal, Leerzeichen außen egal) gilt bei jedem
+  KI-Anbieter; nur „Show closed models“ (`open_weights`) bleibt OpenRouter. Der Parameter `filters` heißt danach
+  `closed_filter` und sagt nur das. Das Ergebnis ist alphabetisch nach `name` sortiert (ohne Groß- und
+  Kleinschreibung), bei gleichem Namen nach `id`. Sortiert wird nur in der Oberfläche; `ai.list_models` liefert
+  weiter die Reihenfolge des Servers.
+- `models_group` und `model_filters`: Das Suchfeld steht über den Modellen jedes KI-Kontos, sobald die Liste da ist;
+  der Chip „Show closed models“ daneben nur bei OpenRouter.
+- Doc-Kommentare nachziehen: Modulkopf (Absatz zum KI-Konto), `ModelsPage::search`, `Message::ModelSearch`,
+  `shown_models`, `models_group`, `model_filters` (nicht mehr „OpenRouter's“). Keine neuen Texte.
+- **Oberfläche:** Steuerzentrale › Accounts › KI-Konto
+- **API / MCP:** keine Änderung (`ai.list_models`, `ai_list_models` unverändert)
+- **Abnahme:** Test `shown_models` (vorhandenen anpassen): Suche ohne OpenRouter filtert jetzt; geschlossene Modelle
+  ohne OpenRouter immer da; Reihenfolge alphabetisch unabhängig von Groß- und Kleinschreibung, bei gleichem Namen nach
+  Id; Suche nach Id und nach Name. fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+### S.37 Accounts: Anbieter links, Konten des gewählten Anbieters rechts
+- [x] erledigt bis auf die Sichtprüfung in Schmal (#244, PR #247): Tests, fmt, clippy, `scripts/ci-local.sh` und
+  `TORRO_LANG=de` grün; Sichtprüfung auf macOS in Breit (hell und dunkel) und Mittel (dunkel), Design-Review per Agent
+  auf diesen Bildern. Schmal (Chips) ist nicht angesehen, weil sich die Fenstergröße auf macOS nicht erzwingen ließ;
+  steht im PR unter „Von Hand zu prüfen“.
+- **Modell:** Opus · **Braucht:** S.36 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/launch.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`
+- **Gewählter Anbieter:** `State` merkt die Gruppe der Liste (Schlüssel: die erste Art einer festen `Group`, bei
+  `Listed::Other` die Art), neue `Message` zum Wählen. Ohne Wahl, oder wenn die gewählte Art (`Listed::Other`) keine
+  Konten mehr hat: der erste Eintrag aus `providers` mit einem Konto oder einer laufenden Anmeldung, sonst Nextcloud.
+  `Message::Open(id)` wählt die Gruppe des Kontos, damit „Back“ dort landet. Die Wahl gilt, solange die Steuerzentrale
+  läuft (nicht in `ui.json`).
+- **Anbieter-Liste:** eine Zeile je Eintrag aus `providers`, mit `widgets::sidebar_item_in` (Stil `sidebar_item`, auf
+  dem Panel richtig, weil `palette(theme)`): Symbol (`Icon::Cloud` Nextcloud, `Icon::Mail`, `Icon::Github`,
+  `Icon::Sparkles` AI, `Icon::Bell` ntfy, `Icon::Folder` andere Art), Name (`Group::title` bzw. `provider_name`),
+  `Trail::Count` mit der Zahl der Konten aus `listed` (keine Zahl bei 0). Braucht ein Konto der Gruppe Aufmerksamkeit
+  oder hat einen Fehler (schlechtester `Tone` aus `status_line`, laufende Anmeldungen mitgezählt), ist das Symbol
+  `Mark::Tinted` in `attention_text` bzw. `error_text` der Palette (geändert bei der Umsetzung: `attention` und
+  `error` sind für kleine Symbole auf hellem Grund zu hell). Die Shell reicht dafür `palette(&self.theme())` an die Seite.
+  Reine Funktionen mit Tests: gewählte Gruppe, Zahl, schlechtester Ton.
+- **Größenklassen:** Breit: Spalte `size::sidebar()` breit (`SidebarMode::Expanded`), Mittel: Spalte `shell::rail()`
+  breit nur mit Symbolen (`SidebarMode::Rail`, Name und Zahl als Tooltip; in der Planung entschieden), beide am linken
+  Rand des Inhalts über die ganze Höhe mit einer Linie rechts, ohne mitzuscrollen. Dafür baut `ui/mod.rs` › `body` bei
+  Accounts die Spalte links neben die scrollende Seite (Hinweise bleiben in der Seite); `accounts` bekommt eine
+  Funktion, die die Spalte nur auf der Liste in Breit und Mittel liefert, und `view` die Größenklasse und die Palette.
+  Schmal: keine Spalte, über dem Inhalt eine `widgets::chip_row` mit `choice_chip` je Anbieter (Symbol, Name, gewählt).
+  Mini und Leiste unverändert (`glance`).
+- **Rechts (Liste):** Kopf wie `heading` der Kontoseite: Name des Anbieters in `typo::headline()`, darunter `about` in
+  `meta`/`text_2` (der Satz steht damit über den Konten, nicht mehr unter der Karte). Darunter `widgets::group` mit dem
+  Titel „Accounts“ ohne Fußzeile: die Konten und laufenden Anmeldungen der Gruppe wie heute (`account_row`,
+  `pending_row`), dann `add_row` (bei Mail mit „Import from TorroMail…“ wie heute). Ohne Konto steht vor `add_row` eine
+  leise Zeile „No account yet.“ Bei AI folgt `data_rule_group`; bei einer anderen Art kein `add_row`.
+- Die Kontoseite (`detail`) bleibt wie sie ist, ohne Spalte und ohne Chips. `header` unverändert.
+- **Demo:** neues `--open`-Wort `accounts-ai` (Accounts mit gewählter Gruppe AI) für die Sichtprüfung; `Open::ALL`
+  nachziehen.
+- **Texte:** neu „No account yet.“; `de.rs` trägt die Übersetzung ein („Noch kein Konto.“). „Accounts“ ist schon
+  übersetzt.
+- **Doku:** `docs/settings.md`, Tabellenzeile **Accounts** und Abschnitt „Accounts“ unter #231: Anbieter links, Konten
+  des gewählten Anbieters rechts, Satz über den Konten; Modulkopf von `accounts.rs` ebenso.
+- **Oberfläche:** Steuerzentrale › Accounts
+- **API / MCP:** keine Änderung
+- **Abnahme:** Tests der reinen Funktionen (gewählte Gruppe mit und ohne Wahl, verschwundene andere Art, `Open` wählt
+  die Gruppe des Kontos, Zahl ohne laufende Anmeldungen, Ton mit laufender Anmeldung und mit Fehler); vorhandene Tests
+  von `providers` grün. Sichtprüfung (Agent `torro-design-review`) in Breit, Mittel, Schmal, hell und dunkel, mit
+  `--open accounts-ai`, `accounts-empty` und `account-detail-ai`. fmt, clippy, test (auch `TORRO_LANG=de`) grün;
+  `scripts/ci-local.sh`.

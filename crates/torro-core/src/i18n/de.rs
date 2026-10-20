@@ -3921,6 +3921,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Add mail account…", "Mail-Konto hinzufügen…"),
     ("Add Nextcloud…", "Nextcloud hinzufügen…"),
     ("Add ntfy server…", "ntfy-Server hinzufügen…"),
+    ("No account yet.", "Noch kein Konto."),
     ("Allow API keys", "API-Schlüssel erlauben"),
     ("Allow MCP", "MCP erlauben"),
     (

@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Torro Accounts-Layouts</title>
+<style>
+/* Entwurf zu #244 (S.36, S.37): Accounts-Seite, drei Varianten; gewählt ist A. Mittel (Symbol-Spalte) steht nur in S.37. */
+@font-face{font-family:Inter;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf)}
+@font-face{font-family:Inter;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf)}
+@font-face{font-family:Inter;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf)}
+:root{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --accent:#D50C0C; --ok:#3FB984; --attention:#E8A33D; --menu:#17181B;
+  --shadow:0 12px 32px rgba(0,0,0,.5);
+  --note:#1a1c22; --note-line:rgba(91,140,255,.35);
+  --stage:#2a2c31; --barbg:rgba(0,0,0,.25); --bartext:#e6e7ea; --baron:#EDEEF0; --barontext:#111;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --ok:#1F9D68; --attention:#B06F12; --menu:#FFFFFF;
+  --shadow:0 12px 32px rgba(0,0,0,.12);
+  --note:#EEF3FF; --note-line:rgba(59,110,240,.35);
+  --stage:#d6d8dc; --barbg:rgba(0,0,0,.08); --bartext:#222; --baron:#fff; --barontext:#111;
+  color-scheme:light;
+}}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --ok:#1F9D68; --attention:#B06F12; --menu:#FFFFFF;
+  --shadow:0 12px 32px rgba(0,0,0,.12);
+  --note:#EEF3FF; --note-line:rgba(59,110,240,.35);
+  --stage:#d6d8dc; --barbg:rgba(0,0,0,.08); --bartext:#222; --baron:#fff; --barontext:#111;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--stage);color:var(--text);font:400 13px/20px Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;padding-block:16px;padding-left:max(16px, env(safe-area-inset-left, 0px));padding-right:max(16px, env(safe-area-inset-right, 0px))}
+svg.i{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.i.s14{width:14px;height:14px}
+svg.i.s20{width:20px;height:20px}
+
+/* Vorschau-Leiste (nicht Teil der App) */
+.bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:1180px;margin:0 auto 10px;font-size:12px}
+.bar .tabs{display:flex;flex-wrap:wrap;gap:4px;background:var(--barbg);padding:3px;border-radius:8px}
+.bar button{font:500 12px/1 Inter,sans-serif;border:0;border-radius:6px;padding:8px 12px;background:none;color:var(--bartext);cursor:pointer}
+.bar button.on{background:var(--baron);color:var(--barontext)}
+.bar button:focus-visible{outline:2px solid var(--note-line);outline-offset:1px}
+.bar .grow{flex:1}
+.explain{max-width:1180px;margin:0 auto 12px;padding:10px 14px;border-radius:8px;background:var(--note);border:1px solid var(--note-line);color:var(--text);font-size:13px;line-height:20px}
+.explain b{font-weight:600}
+.explain ul{margin:4px 0 0;padding-left:18px}
+
+/* Fenster */
+.window{max-width:1180px;height:760px;margin:0 auto;background:var(--bg);border-radius:12px;display:flex;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.45);border:1px solid var(--line-strong);transition:max-width .2s}
+.window.narrow{max-width:440px}
+@media (max-width:700px){.sidebar{display:none}.panel{margin:0;border:0;border-radius:0}.split{flex-direction:column}.cats{width:auto;border-right:0;border-bottom:1px solid var(--line);flex-direction:row;overflow-x:auto;padding:8px}.cat{height:32px;flex:none}.tiles{grid-template-columns:1fr}}
+.sidebar{width:232px;flex:none;display:flex;flex-direction:column;padding:8px;gap:2px}
+.window.narrow .sidebar{display:none}
+.traffic{display:flex;gap:8px;padding:6px 6px 14px}
+.traffic span{width:12px;height:12px;border-radius:50%;background:#ff5f57}
+.traffic span:nth-child(2){background:#febc2e}.traffic span:nth-child(3){background:#28c840}
+.switcher{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px;border-radius:6px;margin-bottom:6px}
+.logo{width:20px;height:20px;border-radius:5px;background:var(--accent);display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.switcher b{font-weight:500}
+.nav{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;color:var(--text2)}
+.nav.active{background:var(--selected);color:var(--text)}
+.nav svg{color:var(--text3)}
+.nav.active svg{color:var(--text)}
+.panel{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+.window.narrow .panel{margin:0;border-radius:0;border:0}
+.header{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px 0 16px;border-bottom:1px solid var(--line)}
+.crumbs{display:flex;align-items:center;gap:6px;color:var(--text2);white-space:nowrap}
+.crumbs b{color:var(--text);font-weight:500}
+.crumbs a{color:var(--text2);cursor:pointer}
+.crumbs a:hover{color:var(--text)}
+.crumbs svg{color:var(--text3)}
+.header .grow{flex:1}
+.scroll{flex:1;overflow:auto}
+.page{max-width:640px;margin:0 auto;padding:24px 24px 48px;display:flex;flex-direction:column;gap:28px}
+.window.narrow .page{padding:16px 16px 40px}
+
+/* Bausteine wie torro_gui::widgets::group */
+.gtitle{font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.gabout{font-size:12px;line-height:16px;color:var(--text2)}
+.ghead{display:flex;flex-direction:column;gap:2px}
+.group{display:flex;flex-direction:column;gap:8px}
+.card{background:var(--raised);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 16px;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row.short{min-height:44px}
+.row.click{cursor:pointer}
+.row.click:hover{background:var(--hover)}
+.row .txt{flex:1;min-width:0}
+.row .lbl{font-size:13px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .det{font-size:12px;line-height:16px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.faded .lbl,.row.faded .det{color:var(--text3)}
+.row .chev{color:var(--text3)}
+.footer{font-size:12px;line-height:16px;color:var(--text2)}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--ok)}
+.dot.att{background:var(--attention)}
+.dot.off{background:var(--text3)}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 Inter,sans-serif;white-space:nowrap;cursor:pointer}
+.btn:hover{background:var(--hover)}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.logo,.btn.primary{--on-accent:#fff}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-left:-10px}
+.tog{width:30px;height:18px;border-radius:9px;background:var(--line-strong);position:relative;flex:none;cursor:pointer}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:left .12s}
+.tog.on{background:var(--accent)}
+.tog.on::after{left:14px}
+.provicon{width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:var(--selected);color:var(--text2);flex:none}
+.count{font-size:12px;color:var(--text3);font-variant-numeric:tabular-nums}
+.new{outline:2px dashed var(--note-line);outline-offset:4px;border-radius:6px}
+.tag{display:inline-block;font-size:11px;line-height:16px;padding:0 6px;border-radius:4px;background:var(--note);border:1px solid var(--note-line);color:var(--text2);margin-left:6px;vertical-align:1px}
+
+/* Variante A: Kategorien und Detail */
+.split{display:flex;flex:1;min-height:0}
+.cats{width:220px;flex:none;border-right:1px solid var(--line);padding:12px 8px;display:flex;flex-direction:column;gap:2px;overflow:auto}
+.cat{display:flex;align-items:center;gap:10px;height:40px;padding:0 8px;border-radius:6px;cursor:pointer;color:var(--text2)}
+.cat:hover{background:var(--hover)}
+.cat.on{background:var(--selected);color:var(--text)}
+.cat .grow{flex:1}
+.cat .provicon{width:24px;height:24px;border-radius:6px;background:transparent}
+.window.narrow .split{flex-direction:column}
+.window.narrow .cats{width:auto;border-right:0;border-bottom:1px solid var(--line);flex-direction:row;overflow-x:auto;padding:8px}
+.window.narrow .cat{height:32px;flex:none}
+.window.narrow .cat .count,.window.narrow .cat .dot{display:none}
+.detailhead{display:flex;align-items:center;gap:12px}
+.detailhead h2{margin:0;font-size:15px;line-height:20px;font-weight:600}
+.detailhead p{margin:2px 0 0;font-size:12px;line-height:16px;color:var(--text2)}
+
+/* Variante B: Menü "Konto hinzufügen" */
+.menuwrap{position:relative}
+.menu{position:absolute;right:0;top:34px;width:240px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);padding:4px;z-index:5;display:none}
+.menu.open{display:block}
+.menu .mi{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:6px;color:var(--text);cursor:pointer}
+.menu .mi:hover{background:var(--hover)}
+.menu .mi svg{color:var(--text3)}
+.menu .sep{height:1px;background:var(--line);margin:4px 0}
+.collhead{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.collhead svg{color:var(--text3);transition:transform .12s}
+.collapsed .collhead svg.cv{transform:rotate(-90deg)}
+.collapsed .card,.collapsed .gabout,.collapsed .footer{display:none}
+.empty{font-size:12px;color:var(--text3);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.empty a{color:var(--text2);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+
+/* Variante C: Kacheln */
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.tile{background:var(--raised);border:1px solid var(--line);border-radius:8px;padding:16px;display:flex;flex-direction:column;gap:10px;cursor:pointer;min-height:148px}
+.tile:hover{border-color:var(--line-strong);background:var(--hover)}
+.tile .top{display:flex;align-items:center;gap:10px}
+.tile .top b{font-weight:500;flex:1}
+.tile .about{font-size:12px;line-height:16px;color:var(--text2);flex:1}
+.tile .state{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)}
+.tile.emptytile{border-style:dashed;background:transparent}
+.pagewide{max-width:860px}
+
+/* Modelle */
+.filters{display:flex;gap:8px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
+.field{flex:1;display:flex;align-items:center;gap:6px;height:28px;padding:0 8px;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);color:var(--text3)}
+.field input{flex:1;border:0;outline:0;background:none;color:var(--text);font:400 13px Inter,sans-serif;min-width:0}
+.chip{height:28px;display:inline-flex;align-items:center;padding:0 10px;border-radius:14px;border:1px solid var(--line-strong);font-size:12px;font-weight:500;color:var(--text2);cursor:pointer;white-space:nowrap}
+.chip.on{background:var(--selected);color:var(--text)}
+.kv{display:flex;justify-content:space-between;gap:12px}
+.kv span:last-child{color:var(--text2)}
+.window.narrow .tiles{grid-template-columns:1fr}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div class="tabs" id="views">
+    <button data-v="today">Heute</button>
+    <button data-v="a">A · Kategorien + Detail</button>
+    <button data-v="b">B · Nur was da ist</button>
+    <button data-v="c">C · Kacheln</button>
+    <button data-v="models">KI-Konto: Modelle</button>
+  </div>
+  <span class="grow"></span>
+  <div class="tabs" id="widths"><button data-w="wide">Breit</button><button data-w="narrow">Schmal</button></div>
+  <div class="tabs" id="themes"><button data-t="dark">Dunkel</button><button data-t="light">Hell</button></div>
+</div>
+<div class="explain" id="explain"></div>
+
+<div class="window" id="win">
+  <aside class="sidebar">
+    <div class="traffic"><span></span><span></span><span></span></div>
+    <div class="switcher"><div class="logo">T</div><b>Torro Workplace</b></div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>Übersicht</div>
+    <div class="nav active"><svg class="i" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>Konten</div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>API</div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>MCP</div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>Freigaben</div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>Workspaces</div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="8" cy="10" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16" cy="10" r="1"/></svg>Erscheinungsbild</div>
+    <div class="nav"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>Allgemein</div>
+  </aside>
+  <main class="panel" id="panel"></main>
+</div>
+
+<script>
+const I = {
+  chev:'<path d="m9 18 6-6-6-6"/>', down:'<path d="m6 9 6 6 6-6"/>', plus:'<path d="M5 12h14"/><path d="M12 5v14"/>',
+  mail:'<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  cloud:'<circle cx="6" cy="12" r="3"/><circle cx="18" cy="12" r="3"/><circle cx="12" cy="12" r="4"/>',
+  github:'<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>',
+  ai:'<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
+  bell:'<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  refresh:'<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+  shield:'<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
+};
+const ic = (n, cls='') => `<svg class="i ${cls}" viewBox="0 0 24 24">${I[n]}</svg>`;
+
+const GROUPS = [
+  {id:'nextcloud', title:'Nextcloud', icon:'cloud', about:'Kalender und Aufgaben aus deiner Nextcloud.', add:'Nextcloud hinzufügen…',
+   accounts:[{name:'Nextcloud', sub:'cloud.example.org', det:'Verbunden · zuletzt synchronisiert vor 4 Minuten', st:'ok'}]},
+  {id:'mail', title:'Mail', icon:'mail', about:'Postfächer und die Kalender und Aufgaben desselben Anbieters.', add:'Mail-Konto hinzufügen…', import:true,
+   accounts:[{name:'privat@example.org', det:'Verbunden · zuletzt synchronisiert gerade eben', st:'ok'},
+             {name:'arbeit@example.com', det:'Anmeldung nötig', st:'att'},
+             {name:'Kalender (mailbox.example)', det:'CalDAV · zuletzt synchronisiert vor 12 Minuten', st:'ok'}]},
+  {id:'github', title:'GitHub', icon:'github', about:'Issues, Pull Requests und Projekte von GitHub.', add:'GitHub-Konto hinzufügen…',
+   accounts:[{name:'GitHub', det:'Verbunden · zuletzt synchronisiert vor 2 Minuten', st:'ok'}]},
+  {id:'ai', title:'KI', icon:'ai', about:'Modelle für den Assistenten und seine Bots, auf diesem Rechner oder in der Cloud.', add:'KI-Anbieter hinzufügen…', rule:true,
+   accounts:[{name:'OpenRouter', det:'Verbunden · 4 Modelle an', st:'ok', models:true},
+             {name:'Ollama · dieser Rechner', det:'Verbunden · 2 Modelle an', st:'ok'}]},
+  {id:'ntfy', title:'ntfy', icon:'bell', about:'Benachrichtigungen deiner Server und Skripte, nach Thema.', add:'ntfy-Server hinzufügen…', accounts:[]},
+];
+
+const accRow = a => `<div class="row click" ${a.models?'data-go="models"':''}><span class="dot ${a.st==='att'?'att':''}"></span><div class="txt"><div class="lbl">${a.name}</div><div class="det">${a.det}</div></div>${ic('chev','chev')}</div>`;
+const addRow = g => `<div class="row short"><div class="btns"><span class="btn ghost">${ic('plus','s14')}${g.add}</span>${g.import?`<span class="btn ghost">${ic('mail','s14')}Aus TorroMail übernehmen…</span>`:''}</div></div>`;
+const ruleGroup = (about) => `<div class="group">${head('Datenregel', about?'Gilt für den Assistenten und alle seine Bots, egal was ihre Rechte erlauben.':null)}
+  <div class="card"><div class="row"><div class="txt"><div class="lbl">Mail an Cloud-Modelle</div><div class="det">Aus: Mail lesen nur KI-Konten auf deinen eigenen Rechnern</div></div><span class="tog"></span></div></div>
+  ${about?'':'<div class="footer">Gilt für den Assistenten und alle seine Bots, egal was ihre Rechte erlauben.</div>'}</div>`;
+const head = (title, about, mark) => `<div class="ghead ${mark?'new':''}"><div class="gtitle">${title}</div>${about?`<div class="gabout">${about}</div>`:''}</div>`;
+
+function header(crumbs, right='') {
+  return `<div class="header"><div class="crumbs">${crumbs}</div><span class="grow"></span>${right}</div>`;
+}
+
+/* Heute */
+function today() {
+  let g = GROUPS.map(gr => `<div class="group"><div class="gtitle">${gr.title}</div><div class="card">${gr.accounts.map(accRow).join('')}${addRow(gr)}</div><div class="footer">${gr.about}</div></div>${gr.rule?ruleGroup(false):''}`).join('');
+  return header('<b>Konten</b>') + `<div class="scroll"><div class="page">${g}</div></div>`;
+}
+
+/* Punkt 1 in allen Varianten: Text unter dem Titel, vor den Konten */
+function groupBlock(gr, opts={}) {
+  return `<div class="group">${head(gr.title, gr.about, opts.mark)}<div class="card">${gr.accounts.map(accRow).join('')}${opts.noAdd?'':addRow(gr)}</div></div>`;
+}
+
+/* A */
+let catSel = 'mail';
+function variantA() {
+  const cats = GROUPS.map(g => {
+    const att = g.accounts.some(a=>a.st==='att');
+    const dot = g.accounts.length ? `<span class="dot ${att?'att':''}"></span>` : '';
+    return `<div class="cat ${g.id===catSel?'on':''}" data-cat="${g.id}"><span class="provicon">${ic(g.icon)}</span><span class="grow">${g.title}</span>${dot}<span class="count">${g.accounts.length||''}</span></div>`;
+  }).join('');
+  const g = GROUPS.find(x=>x.id===catSel);
+  const rows = g.accounts.length ? g.accounts.map(accRow).join('') : `<div class="row short"><div class="txt"><div class="lbl" style="color:var(--text3)">Noch kein Konto.</div></div></div>`;
+  const body = `<div class="page">
+    <div class="detailhead"><span class="provicon">${ic(g.icon,'s20')}</span><div><h2>${g.title}</h2><p>${g.about}</p></div></div>
+    <div class="card">${rows}${addRow(g)}</div>
+    ${g.rule?ruleGroup(true):''}
+  </div>`;
+  return header('<b>Konten</b>') + `<div class="split"><nav class="cats">${cats}</nav><div class="scroll">${body}</div></div>`;
+}
+
+/* B */
+const collapsed = new Set();
+function variantB() {
+  const menu = `<div class="menuwrap"><span class="btn primary" id="addbtn">${ic('plus','s14')}Konto hinzufügen${ic('down','s14')}</span>
+    <div class="menu" id="addmenu">${GROUPS.map(g=>`<div class="mi">${ic(g.icon)}${g.title}</div>`).join('')}<div class="sep"></div><div class="mi">${ic('mail')}Aus TorroMail übernehmen…</div></div></div>`;
+  const used = GROUPS.filter(g=>g.accounts.length);
+  const unused = GROUPS.filter(g=>!g.accounts.length);
+  const blocks = used.map(g => {
+    let card = g.accounts.map(accRow).join('');
+    if (g.rule) card += `<div class="row"><span style="color:var(--text3)">${ic('shield')}</span><div class="txt"><div class="lbl">Mail an Cloud-Modelle</div><div class="det">Aus: Mail lesen nur KI-Konten auf deinen eigenen Rechnern</div></div><span class="tog"></span></div>`;
+    return `<div class="group ${collapsed.has(g.id)?'collapsed':''}" data-coll="${g.id}">
+      <div class="ghead"><div class="collhead">${ic('down','s14 cv')}<span class="gtitle">${g.title}</span><span class="count">${g.accounts.length}</span></div><div class="gabout" style="padding-left:20px">${g.about}</div></div>
+      <div class="card">${card}</div></div>`;
+  }).join('');
+  const rest = unused.length ? `<div class="empty">Noch nicht verbunden: ${unused.map(g=>`<a>${g.title}</a>`).join(' · ')}</div>` : '';
+  return header('<b>Konten</b>', menu) + `<div class="scroll"><div class="page">${blocks}${rest}</div></div>`;
+}
+
+/* C */
+let tileSel = null;
+function variantC() {
+  if (tileSel) {
+    const g = GROUPS.find(x=>x.id===tileSel);
+    return header(`<a data-back="1">Konten</a>${ic('chev','s14')}<b>${g.title}</b>`) +
+      `<div class="scroll"><div class="page"><div class="detailhead"><span class="provicon">${ic(g.icon,'s20')}</span><div><h2>${g.title}</h2><p>${g.about}</p></div></div>
+      <div class="card">${g.accounts.map(accRow).join('')}${addRow(g)}</div>${g.rule?ruleGroup(true):''}</div></div>`;
+  }
+  const tiles = GROUPS.map(g => {
+    const n = g.accounts.length, att = g.accounts.filter(a=>a.st==='att').length;
+    let state;
+    if (!n) state = `<span class="btn ghost" style="margin-left:-10px">${ic('plus','s14')}Hinzufügen</span>`;
+    else if (att) state = `<span class="dot att"></span>${n} Konten · ${att} braucht Anmeldung`;
+    else state = `<span class="dot"></span>${n===1?'1 Konto':n+' Konten'} · alles in Ordnung`;
+    return `<div class="tile ${n?'':'emptytile'}" data-tile="${g.id}"><div class="top"><span class="provicon">${ic(g.icon)}</span><b>${g.title}</b>${n?ic('chev','chev'):''}</div><div class="about">${g.about}</div><div class="state">${state}</div></div>`;
+  }).join('');
+  return header('<b>Konten</b>') + `<div class="scroll"><div class="page pagewide"><div class="tiles">${tiles}</div>${ruleGroup(true)}</div></div>`;
+}
+
+/* KI-Konto: Modelle */
+const MODELS = [ // Reihenfolge wie vom Server
+  {n:'Qwen: Qwen3 Coder', d:'Werkzeuge · Entscheidet · 262k Kontext · Cloud', on:true, open:true},
+  {n:'OpenAI: GPT-4o', d:'Werkzeuge · Entscheidet · 128k Kontext · Cloud', on:false, open:false},
+  {n:'meta-llama: Llama 3.2 1B Instruct', d:'Kann keine Werkzeuge nutzen oder entscheiden · 131k Kontext · Cloud', faded:true, open:true},
+  {n:'DeepSeek: DeepSeek V3.2', d:'Werkzeuge · Entscheidet · Denken · 164k Kontext · Cloud', on:true, open:true},
+  {n:'Anthropic: Claude Sonnet 4.5', d:'Werkzeuge · Entscheidet · Denken · 1M Kontext · Cloud', on:false, open:false},
+  {n:'Z.AI: GLM 4.6', d:'Werkzeuge · Entscheidet · Denken · 203k Kontext · Cloud', on:true, open:true},
+  {n:'Mistral: Mistral Small 3.2 24B', d:'Werkzeuge · Entscheidet · 131k Kontext · Cloud', on:false, open:true},
+  {n:'OpenAI: gpt-oss-120b', d:'Werkzeuge · Entscheidet · Denken · 131k Kontext · Cloud', on:true, open:true},
+  {n:'Google: Gemini 2.5 Flash', d:'Werkzeuge · Entscheidet · Denken · 1M Kontext · Cloud', on:false, open:false},
+  {n:'MoonshotAI: Kimi K2', d:'Werkzeuge · Entscheidet · 131k Kontext · Cloud', on:false, open:true},
+  {n:'Google: Gemma 3 27B', d:'Werkzeuge · 131k Kontext · Cloud', on:false, open:true},
+];
+let q = '', showClosed = false, sorted = true;
+function modelsView() {
+  return header(`<a data-back-models="1">Konten</a>${ic('chev','s14')}<b>OpenRouter</b>`) + `<div class="scroll"><div class="page">
+    <div class="group"><div class="gtitle">Status</div><div class="card"><div class="row"><span class="dot"></span><div class="txt"><div class="lbl">Verbunden</div><div class="det">4 Modelle an</div></div></div></div></div>
+    <div class="group">
+      <div class="ghead new"><div class="gtitle">Modelle</div><div class="gabout">Der Assistent, seine Bots und jedes andere Modul bieten nur die Modelle an, die an sind.</div></div>
+      <div class="card"><div class="filters new" style="outline-offset:-4px"><label class="field">${ic('search','s14')}<input id="q" placeholder="Modelle suchen" value="${q}"></label><span class="chip ${showClosed?'on':''}" id="closed">Geschlossene Modelle zeigen</span></div><div id="mlist"></div></div>
+      <div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--text3)">Vorschau: <span class="chip ${sorted?'on':''}" id="sortbtn">Alphabetisch</span><span class="chip ${sorted?'':'on'}" id="serverbtn">Wie vom Server (heute)</span></div>
+    </div>
+    <div class="group"><div class="gtitle">Verbindung</div><div class="card">
+      <div class="row short"><div class="txt kv"><span>Server</span><span>openrouter.ai</span></div></div>
+      <div class="row short"><div class="txt kv"><span>Schlüssel</span><span>Im Schlüsselbund des Systems</span></div></div></div></div>
+  </div></div>`;
+}
+function renderModels() {
+  const s = q.trim().toLowerCase();
+  let list = MODELS.filter(m => (showClosed || m.open) && (!s || m.n.toLowerCase().includes(s)));
+  if (sorted) list = [...list].sort((a,b)=>a.n.localeCompare(b.n,'de',{sensitivity:'base'}));
+  const el = document.getElementById('mlist');
+  el.innerHTML = list.length ? list.map((m,i) => `<div class="row ${m.faded?'faded':''}"><div class="txt"><div class="lbl">${m.n}</div><div class="det">${m.d}</div></div>${m.faded?'':`<span class="tog ${m.on?'on':''}" data-m="${MODELS.indexOf(m)}"></span>`}</div>`).join('')
+    : `<div class="row short"><div class="txt"><div class="lbl" style="color:var(--text3)">Keine Modelle passen.</div></div></div>`;
+}
+
+const EXPLAIN = {
+  today:`<b>Heute.</b> Fünf feste Gruppen untereinander, jede mit Konten, „Hinzufügen“ und dem erklärenden Satz <i>unter</i> der Karte. Auch leere Gruppen (ntfy) stehen voll da, dazu die Datenregel. Das ist der Block, der zu viel auf einmal zeigt.`,
+  a:`<b>A · Kategorien und Detail.</b> Links die fünf Anbieter mit Status-Punkt und Anzahl, rechts nur die Konten des gewählten Anbieters. Der erklärende Satz steht oben unter dem Namen. Die Datenregel erscheint nur bei „KI“.
+     <ul><li>Ruhig: Man sieht immer nur eine Gruppe.</li><li>Schmal: Die Anbieter werden zu einer Leiste oben (Knopf „Schmal“).</li><li>Nachteil: Man sieht nicht auf einen Blick alle Konten. Klick links auf einen Anbieter.</li></ul>`,
+  b:`<b>B · Nur was da ist.</b> Es stehen nur Gruppen da, die ein Konto haben. „Konto hinzufügen ▾“ oben rechts ersetzt die fünf Hinzufügen-Zeilen (auch „Aus TorroMail übernehmen…“ steht dort). Gruppen lassen sich einklappen, der Satz steht unter dem Titel. Die Datenregel ist eine Zeile in der KI-Gruppe, Anbieter ohne Konto stehen in einer leisen Zeile am Ende.
+     <ul><li>Am nächsten an heute, aber deutlich kürzer.</li><li>Klick auf den Knopf oben rechts oder auf einen Gruppentitel.</li></ul>`,
+  c:`<b>C · Kacheln.</b> Eine Kachel pro Anbieter mit Erklärsatz und Zustand („2 Konten · 1 braucht Anmeldung“). Ein Klick öffnet die Seite des Anbieters mit seinen Konten und „Hinzufügen“. Leere Anbieter sind gestrichelt.
+     <ul><li>Die beste Übersicht: Der Zustand von allem passt auf einen Bildschirm.</li><li>Nachteil: ein Klick mehr bis zum Konto. Klick auf „Mail“ oder „KI“.</li></ul>`,
+  models:`<b>KI-Konto: Modelle (Punkt 3).</b> Das Suchfeld steht bei jedem KI-Anbieter über den Modellen (heute nur bei OpenRouter), die Liste ist alphabetisch. „Geschlossene Modelle zeigen“ bleibt nur bei OpenRouter. Tippe z. B. „openai“ oder „qwen“, unten lässt sich die Reihenfolge von heute zum Vergleich einschalten. Gestrichelt markiert: was neu ist.`,
+};
+
+let view = 'today';
+function render() {
+  const p = document.getElementById('panel');
+  p.innerHTML = {today, a:variantA, b:variantB, c:variantC, models:modelsView}[view]();
+  document.getElementById('explain').innerHTML = EXPLAIN[view];
+  document.querySelectorAll('#views button').forEach(b=>b.classList.toggle('on', b.dataset.v===view));
+  if (view==='models') { renderModels(); const qi=document.getElementById('q'); qi.oninput=e=>{q=e.target.value;renderModels();}; }
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-v],[data-w],[data-t],[data-cat],[data-tile],[data-back],[data-back-models],[data-go],#addbtn,.collhead,#closed,#sortbtn,#serverbtn,.tog[data-m]');
+  if (!t) { document.getElementById('addmenu')?.classList.remove('open'); return; }
+  if (t.dataset.v) { view = t.dataset.v; tileSel = null; render(); return; }
+  if (t.dataset.w) { document.getElementById('win').classList.toggle('narrow', t.dataset.w==='narrow'); document.querySelectorAll('#widths button').forEach(b=>b.classList.toggle('on', b===t)); return; }
+  if (t.dataset.t) { document.documentElement.dataset.theme = t.dataset.t; document.querySelectorAll('#themes button').forEach(b=>b.classList.toggle('on', b===t)); return; }
+  if (t.dataset.cat) { catSel = t.dataset.cat; render(); return; }
+  if (t.dataset.tile) { tileSel = t.dataset.tile; render(); return; }
+  if (t.dataset.back) { tileSel = null; render(); return; }
+  if (t.dataset.backModels) { view = 'today'; render(); return; }
+  if (t.dataset.go) { view = 'models'; render(); return; }
+  if (t.id==='addbtn') { document.getElementById('addmenu').classList.toggle('open'); return; }
+  if (t.classList.contains('collhead')) { const id=t.closest('[data-coll]').dataset.coll; collapsed.has(id)?collapsed.delete(id):collapsed.add(id); render(); return; }
+  if (t.id==='closed') { showClosed=!showClosed; t.classList.toggle('on',showClosed); renderModels(); return; }
+  if (t.id==='sortbtn') { sorted=true; render(); return; }
+  if (t.id==='serverbtn') { sorted=false; render(); return; }
+  if (t.dataset.m) { const m=MODELS[+t.dataset.m]; m.on=!m.on; renderModels(); return; }
+});
+document.querySelector('#widths button[data-w="wide"]').classList.add('on');
+const sys = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+document.querySelector(`#themes button[data-t="${document.documentElement.dataset.theme || sys}"]`).classList.add('on');
+render();
+</script>
+</body>
+</html>
