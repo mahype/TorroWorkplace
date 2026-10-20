@@ -325,7 +325,7 @@ L.19 ── L.20 ── L.21 ── L.22 ─────────────
 
 L.18 ist unabhängig und kommt zuerst. L.19–L.23 nacheinander. Request und Katalogeinträge kommen in L.22, nicht
 früher: L.19–L.21 ändern Modell, Ordner und Darstellung und haben für Nutzer keine neue Funktion (wie L.1/L.2 vor L.3).
-L.24–L.30 sind unabhängig voneinander; jedes Design und jede Schrift wird erst durchdesignt, dann gebaut. Designs, die
+**L.24–L.30 laufen in Issue #256** (Entscheidung 2026-10-20: erst der PR zu #189 mit L.18–L.23, die neuen Pakete danach). L.24–L.30 sind unabhängig voneinander; jedes Design und jede Schrift wird erst durchdesignt, dann gebaut. Designs, die
 eine neue Schrift vorschlagen, warten auf L.24.
 
 ### L.18 Steuerzentrale: kompakte Seite Appearance
@@ -484,12 +484,12 @@ eine neue Schrift vorschlagen, warten auf L.24.
   Standards), Schrift „Tabular“ (Inter Tabular), je ein unbrauchbarer Eintrag)
 - **Modell:** Opus · **Braucht:** L.18, L.22 · **Dateien:** `crates/torroworkplace/src/ui/{general,mod,launch}.rs`,
   `docs/api.md` (Fußnote ⁹)
-- **Oberfläche:** Appearance, untereinander: Color mode · Design · neu „Font“ · neu „Colour scheme“ · Interface, alle
+- **Oberfläche:** Appearance, untereinander: Color mode · Design · neu „Font“ · neu „Color scheme“ · Interface, alle
   drei Wahlen im Raster aus L.18. Font-Kachel: „Aa 09“ in der Schrift, Name der Familie, Tooltip Paket, Version, Autor,
   Lizenz. Farbschema-Kachel: Streifen aus `bg`, `panel`, `accent`, `text` im aktuellen Modus. Schlägt das gewählte
   Design eine andere Schrift oder ein anderes Farbschema vor als die aktiven, trägt deren Kachel die Marke „Suggested“
   (Tooltip „Suggested for {design}“). Jede Gruppe hat „Open … folder“ rechts in der Überschrift („Open designs
-  folder“, „Open fonts folder“, „Open colour schemes folder“); „Reload“ einmal für alle. Die Beschreibung der Gruppe
+  folder“, „Open fonts folder“, „Open color schemes folder“); „Reload“ einmal für alle. Die Beschreibung der Gruppe
   Design sagt nur noch Abstände, Größen, Radien.
 - **API/MCP:** nutzt `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes`,
   `settings.set_setting` (L.22). Proben und Farbmuster liest die Seite wie heute nur lesend über
@@ -497,8 +497,8 @@ eine neue Schrift vorschlagen, warten auf L.24.
   Designs). Ordner öffnen bleibt eine lokale Aktion der Steuerzentrale ohne Request (wie heute), legt fehlende Ordner
   mit ihren Beispielen an. Die Begründung kommt einmal in `docs/api.md`
   (Fußnote ⁹): Sie öffnet nur den Dateimanager am Desktop eines Menschen, ohne Daten und ohne Rechte.
-- **Übersetzungen** im Bericht: „Font“, „Colour scheme“, „Suggested“, „Suggested for {design}“, „Open fonts folder“,
-  „Open colour schemes folder“, neue Gruppenbeschreibungen.
+- **Übersetzungen** im Bericht: „Font“, „Color scheme“, „Suggested“, „Suggested for {design}“, „Open fonts folder“,
+  „Open color schemes folder“, neue Gruppenbeschreibungen.
 - **Abnahme:** Demo-Zustand `--open design` mit allen vier Gruppen, Tests der Nachrichten, Sichtprüfung breit und
   schmal, hell und dunkel.
 

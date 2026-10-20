@@ -365,7 +365,7 @@ aus *d* Designs, *s* Schriften und *f* Farbschemata *d × s × f* Looks, ohne da
 |---|---|---|
 | **Design** | Schriftstufen (Rolle, Größe, Zeilenhöhe, Gewicht), Abstände, Radien, Layout-Abstände, Maße; später die Layout-Schalter (Stufe 2) | `Design`, „Design“ |
 | **Schrift** | die Familien der drei Rollen Text, Überschrift, Ziffern mit ihren Schnitten, dazu der Größenausgleich | `FontSet`, „Font“ |
-| **Farbschema** | alle Farbrollen hell und dunkel (Flächen, Text, Linien, Akzent, Status, Kalender, Diagramm, Seitenleiste) und das Logo | `ColorScheme`, „Colour scheme“ |
+| **Farbschema** | alle Farbrollen hell und dunkel (Flächen, Text, Linien, Akzent, Status, Kalender, Diagramm, Seitenleiste) und das Logo | `ColorScheme`, „Color scheme“ |
 | **Aussehen** | Design + Schrift + Farbschema + Modus (hell, dunkel, System) | `Appearance`, „Appearance“ (heißt die Seite schon) |
 
 Nicht „Layout“ für das Design: Das Wort gehört schon Stufe 2 und 3. Nicht „Theme“: Bei Iced meint es die Farben,
@@ -452,8 +452,8 @@ benennt ihn einmal um oder löscht ihn; beim nächsten Start legt die Suite die 
 
 - Drei Einstellungen: `design` (gibt es), neu `font` und `color_scheme`, alle mit `torro` als Standard.
 - **Steuerzentrale**, Appearance, kompakt untereinander (Entwurf in Issue #189): **Color mode** als Segment mit
-  Symbolen (Bildschirm, Sonne, Mond) · **Design** · **Font** · **Colour scheme** · Interface. Die drei Wahlen sind
-  Raster kleiner Kacheln: Design mit `preview.png` oder Farbmuster, Font mit „Aa 09“ in der Schrift, Colour scheme mit
+  Symbolen (Bildschirm, Sonne, Mond) · **Design** · **Font** · **Color scheme** · Interface. Die drei Wahlen sind
+  Raster kleiner Kacheln: Design mit `preview.png` oder Farbmuster, Font mit „Aa 09“ in der Schrift, Color scheme mit
   Streifen aus `bg`, `panel`, `accent`, `text` im aktuellen Modus. Name unter der Kachel, Version und Autor im Tooltip,
   die gewählte umrandet mit Häkchen. Unbrauchbare sind ausgegraut mit Warnsymbol; ein Klick zeigt ihre Gründe unter dem
   Raster. Jede Gruppe hat „Open … folder“ rechts in der Überschrift.
@@ -470,8 +470,8 @@ benennt ihn einmal um oder löscht ihn; beim nächsten Start legt die Suite die 
 | Design wählen | Appearance › Design | `settings.set_setting { key: design }` · Admin (gibt es; eine id ohne Design wird mit Hinweis auf `font`/`color_scheme` abgelehnt) | `settings_set_setting` |
 | Schriften auflisten (id, Familie, Paket, Version, Autor, Lizenz, Standard, gültig, Gründe, aktiv) | Appearance › Font | neu `settings.list_fonts` · Read | neu `settings_list_fonts` |
 | Schrift wählen | Appearance › Font | `settings.set_setting { key: font }` · Admin | `settings_set_setting` |
-| Farbschemata auflisten (id, Name, Version, Autor, Beschreibung, Standard, gültig, Gründe, aktiv) | Appearance › Colour scheme | neu `settings.list_color_schemes` · Read | neu `settings_list_color_schemes` |
-| Farbschema wählen | Appearance › Colour scheme | `settings.set_setting { key: color_scheme }` · Admin | `settings_set_setting` |
+| Farbschemata auflisten (id, Name, Version, Autor, Beschreibung, Standard, gültig, Gründe, aktiv) | Appearance › Color scheme | neu `settings.list_color_schemes` · Read | neu `settings_list_color_schemes` |
+| Farbschema wählen | Appearance › Color scheme | `settings.set_setting { key: color_scheme }` · Admin | `settings_set_setting` |
 | Ordner öffnen | „Open … folder“ je Gruppe | – (lokale Aktion der Steuerzentrale wie heute „Open designs folder“) | – |
 | Gewählte lesen | – | `settings.get_settings` · Read (Felder `design`, `font`, `colorScheme`) | `settings_get_settings` |
 

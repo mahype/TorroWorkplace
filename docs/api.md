@@ -314,7 +314,7 @@ alles in `problems` (Dateinamen, Schlüssel, Meldungen des Parsers) sind Text au
 Ablehnung von `set_setting`: Die Beschreibungen der Tools sagen Agenten, ihn als Daten zu behandeln, nie als
 Anweisung. Die Apps folgen den drei Einstellungen wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem
 Takt und lesen nur den Teil neu, der sich geändert hat; nur eine neue Schrift lädt Schriftdateien. „Open designs
-folder“, „Open fonts folder“ und „Open colour schemes folder“ (Steuerzentrale › Appearance, L.18/L.23) haben keinen
+folder“, „Open fonts folder“ und „Open color schemes folder“ (Steuerzentrale › Appearance, L.18/L.23) haben keinen
 Befehl und kein MCP-Tool: Sie öffnen nur den Dateimanager am Desktop eines Menschen (fehlt der Ordner, legt die
 Steuerzentrale ihn mit seinen Beispielen an) – sie geben keine Daten heraus, ändern keine Einstellung und brauchen
 keine Rechte. Ein Agent hätte davon nichts; Teile hinzufügen bleibt Sache des Menschen im Ordner, auflisten und
