@@ -1006,7 +1006,10 @@ Beide ändern `ui/accounts.rs` und laufen nacheinander, S.36 zuerst.
   Id; Suche nach Id und nach Name. fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.37 Accounts: Anbieter links, Konten des gewählten Anbieters rechts
-- [x] erledigt (Sichtprüfung auf macOS in Breit und Mittel; Schmal nicht, die Fenstergröße ließ sich nicht erzwingen)
+- [x] erledigt bis auf die Sichtprüfung in Schmal (#244, PR #247): Tests, fmt, clippy, `scripts/ci-local.sh` und
+  `TORRO_LANG=de` grün; Sichtprüfung auf macOS in Breit (hell und dunkel) und Mittel (dunkel), Design-Review per Agent
+  auf diesen Bildern. Schmal (Chips) ist nicht angesehen, weil sich die Fenstergröße auf macOS nicht erzwingen ließ;
+  steht im PR unter „Von Hand zu prüfen“.
 - **Modell:** Opus · **Braucht:** S.36 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`,
   `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/launch.rs`,
   `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`

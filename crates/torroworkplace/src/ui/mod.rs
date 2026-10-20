@@ -1067,9 +1067,10 @@ impl Ui {
                     }
                 }
             }
-            // Accounts shows one provider (task S.37): "Open accounts" chooses the one in need.
-            Message::Overview(m @ overview::Message::OpenAccounts) => {
-                accounts::show_in_need(&mut self.accounts, &self.data);
+            // Accounts shows one provider (task S.37): "Open accounts" opens the row's account's.
+            Message::Overview(overview::Message::OpenAccounts(id)) => {
+                accounts::show_provider_of(&mut self.accounts, &self.data, &id);
+                let m = overview::Message::OpenAccounts(id);
                 overview::update(&mut self.overview, m, &self.data)
             }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
@@ -2191,6 +2192,13 @@ mod tests {
         assert!(empty.page_overlay().is_none());
         let ai = started(&["--demo", "--open", "accounts-ai"]);
         assert_eq!((ai.section, ai.accounts.provider.as_deref()), (Section::Accounts, Some("ai")));
+        // "Open accounts" of an attention row opens the list at that account's provider (#244).
+        let mut overview = started(&["--demo", "--open", "account-detail"]);
+        let ntfy = accounts::listed(&overview.data.accounts).find(|account| account.kind == "ntfy").expect("ntfy");
+        let id = ntfy.id.clone();
+        let _ = overview.update(Message::Overview(overview::Message::OpenAccounts(id)));
+        assert_eq!(overview.section, Section::Accounts);
+        assert_eq!((overview.accounts.provider.as_deref(), overview.accounts.selected.as_ref()), (Some("ntfy"), None));
         let start = started(&["--demo", "--section", "accounts"]);
         assert!(start.accounts.torromail.is_some(), "a start on Accounts asks too");
         for state in ["wizard-torromail", "wizard-torromail-failed", "wizard-torromail-done"] {

@@ -1,17 +1,18 @@
 //! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2, fixed groups
 //! since S.30, providers beside their accounts since S.37): the providers in this order and also
 //! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub, AI,
-//! ntfy ([`Group`]); an account of a kind none of them holds gets a provider of its own at the
-//! end. They stand in a column at the left edge of the content ([`provider_column`]: wide with
-//! names and counts, medium only icons) or as chips above the list (narrow), the icon in a status
-//! colour where an account needs the person. The list shows one provider ([`chosen`]): its name and the sentence
-//! of what belongs there, then its accounts as rows (status dot, label on one line, status and last
-//! sync below, chevron) and its "Add" ([`Message::Add`]), which opens the add-account dialog
-//! (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
-//! has an account to take over: the page asks for TorroMail's accounts when it opens ([`opened`])
-//! and after the dialog closes, not with every reload. Under AI stands the data rule "Mail to
-//! cloud models" (`settings.set_setting mail_to_cloud`, task C.17), for the assistant and all its
-//! bots.
+//! ntfy ([`Group`]); an account of a kind none of them holds gets a provider of its own at the end.
+//! They stand in a column at the left edge of the content ([`provider_column`]: wide with names and
+//! counts, medium only icons) or as chips above the list (narrow), the icon in a status colour
+//! where an account needs the person. The list shows one provider ([`chosen`]): its name and the
+//! sentence of what belongs there, then its accounts as rows (status dot, label on one line, status
+//! and last sync below, chevron) and its "Add" ([`Message::Add`]), which opens the add-account
+//! dialog (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of
+//! its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while
+//! TorroMail has an account to take over: the page asks for TorroMail's accounts when it opens
+//! ([`opened`]) and after the dialog closes, not with every reload. Under AI stands the data rule
+//! "Mail to cloud models" (`settings.set_setting mail_to_cloud`, task C.17), for the assistant and
+//! all its bots.
 //!
 //! A detail page per account has groups for the status ("Sync now"), the calendars and task lists
 //! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
@@ -29,9 +30,10 @@
 //! lives. Between status and connection stands the group "Models" (task S.31, `docs/settings.md` ›
 //! KI): a row per model with what it can, where it computes ([`model_place`]) and a switch
 //! (`ai.set_model_enabled`), faded and without a switch where it can't use tools, by name (task
-//! S.36); a search over them, at OpenRouter with "Show closed models". The page asks for the models as it opens (`ai.list_models`
-//! with `all`), not with every reload; a switch shows at once and turns back when the core
-//! refuses. The account's row counts the models on from the last list ("3 models on").
+//! S.36); a search over them, at OpenRouter with "Show closed models". The page asks for the models
+//! as it opens (`ai.list_models` with `all`), not with every reload; a switch shows at once and
+//! turns back when the core refuses. The account's row counts the models on from the last list ("3
+//! models on").
 //!
 //! A CalDAV account (a mail provider's, task M7.2) shows "CalDAV" as its kind, the server and user
 //! in the connection group, and "Change password…" there: a dialog over the window asks for the
@@ -1400,17 +1402,12 @@ fn provider_mark(group: Listed<'_>, entries: &[&AccountInfo], palette: &Palette)
     }
 }
 
-/// The overview's "Open accounts" (task S.37): as the list shows one provider, it shows the first
-/// with an account the overview lists as needing the person – not signed in or failing; one
-/// signing in right now is not among them – and leaves an open account's page for the list.
-/// The choice stays while no account needs the person.
-pub fn show_in_need(state: &mut State, data: &Data) {
-    let in_need: Vec<&AccountInfo> = listed(&data.accounts)
-        .filter(|account| !matches!(account.state, AccountState::SigningIn { .. }))
-        .filter(|account| status_line(&account.state).tone != Tone::Ok)
-        .collect();
-    if let Some(group) = providers(&in_need).into_iter().find(|&group| accounts_in(group, &in_need) > 0) {
-        state.provider = Some(group.key().to_string());
+/// The overview's "Open accounts" of the account `id` (task S.37): as the list shows one provider,
+/// it shows that account's, and leaves an open account's page for the list. An account that is
+/// gone by then changes no choice.
+pub fn show_provider_of(state: &mut State, data: &Data, id: &str) {
+    if let Some(account) = listed(&data.accounts).find(|account| account.id == id) {
+        state.provider = Some(key_of(&account.kind).to_string());
     }
     state.selected = None;
     close_dialogs(state);
@@ -2641,30 +2638,27 @@ mod tests {
         assert_eq!(provider_mark(nextcloud, &[&broken], &light), alert(light.error_text), "readable on light");
     }
 
-    /// Task S.37: the overview's "Open accounts" shows the first provider with an account in need,
-    /// whatever was chosen; "Add" and the import show the provider they add to.
+    /// Task S.37: the overview's "Open accounts" of a row shows that row's account's provider, also
+    /// with accounts of several providers in need and whatever was chosen; "Add" and the import show
+    /// the provider they add to.
     #[test]
     fn the_way_into_the_list_chooses_the_provider_it_is_about() {
-        let broken = AccountInfo { kind: "github".into(), ..account("github:anna", connected(None, Some("Gone"))) };
-        let data = Data { accounts: vec![of_kind("nextcloud:a", "nextcloud"), broken], ..Data::default() };
-        let mut state =
-            State { provider: Some("ntfy".into()), selected: Some("nextcloud:a".into()), ..State::default() };
-        show_in_need(&mut state, &data);
-        assert_eq!(state.provider.as_deref(), Some("github"));
+        let github = AccountInfo { kind: "github".into(), ..account("github:anna", connected(None, Some("Gone"))) };
+        let ntfy = AccountInfo { kind: "ntfy".into(), ..account("ntfy:anna", AccountState::NotConnected) };
+        let caldav = AccountInfo { kind: "caldav".into(), ..account("caldav:anna", AccountState::NotConnected) };
+        let data =
+            Data { accounts: vec![of_kind("nextcloud:a", "nextcloud"), github, ntfy, caldav], ..Data::default() };
+        let mut state = State { provider: Some("ai".into()), selected: Some("nextcloud:a".into()), ..State::default() };
+        show_provider_of(&mut state, &data, "ntfy:anna");
+        assert_eq!(state.provider.as_deref(), Some("ntfy"), "the row's provider, not the first in need");
         assert_eq!(state.selected, None, "the list, not the page left open");
-        let signing_in = AccountInfo {
-            kind: "nextcloud".into(),
-            ..account(
-                "nextcloud:b",
-                AccountState::SigningIn { server: "https://cloud.example.org".into(), login_url: String::new() },
-            )
-        };
-        let waiting = Data { accounts: vec![signing_in, data.accounts[1].clone()], ..Data::default() };
-        show_in_need(&mut state, &waiting);
-        assert_eq!(state.provider.as_deref(), Some("github"), "a sign-in in progress is not in need");
+        show_provider_of(&mut state, &data, "github:anna");
+        assert_eq!(state.provider.as_deref(), Some("github"));
+        show_provider_of(&mut state, &data, "caldav:anna");
+        assert_eq!(state.provider.as_deref(), Some("mail"), "CalDAV stands under Mail");
+        show_provider_of(&mut state, &data, "gone:anna");
+        assert_eq!(state.provider.as_deref(), Some("mail"), "an account gone by then changes nothing");
         let fine = Data { accounts: vec![of_kind("nextcloud:a", "nextcloud")], ..Data::default() };
-        show_in_need(&mut state, &fine);
-        assert_eq!(state.provider.as_deref(), Some("github"), "nothing in need: the choice stays");
         update(&mut state, Message::Add(wizard::Provider::Ntfy), &fine);
         assert_eq!(state.provider.as_deref(), Some("ntfy"));
         update(&mut state, Message::ImportTorroMail, &fine);
