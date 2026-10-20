@@ -29,6 +29,7 @@ use torro_ipc::api::{Rights, RightsTemplate};
 use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, IpcError, Key, Request, Response, socket_path};
 use torro_setups::{LoadMode, TemplateSummary};
 
+/// The help, with `{kinds}` for the kinds of client `ctl clients add --kind` takes ([`usage`]).
 const USAGE: &str = "usage:
   torroworkplace status [--json]
   torroworkplace ctl setups list [--json]
@@ -37,7 +38,7 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups delete <id> [--json]
   torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]
   torroworkplace ctl clients list [--json]
-  torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script|hook]
+  torroworkplace ctl clients add <name> [--kind {kinds}]
                                         [--agent claude-code|codex|gemini]
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
@@ -49,6 +50,12 @@ const USAGE: &str = "usage:
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
   torroworkplace hook claude-code|codex|gemini [--key-file <file>]
                                                  (run by an agent's hooks; reads stdin, prints nothing)";
+
+/// The help as printed: the kinds of client are those the core takes ([`torro_ipc::api::CLIENT_KINDS`],
+/// #231; any other is an `error`), so the help never names one it refuses or leaves one out.
+fn usage() -> String {
+    USAGE.replace("{kinds}", &torro_ipc::api::CLIENT_KINDS.join("|"))
+}
 
 /// The kind of a client added without `--kind`.
 const DEFAULT_KIND: &str = "script";
@@ -98,7 +105,7 @@ pub fn from_args(args: &[String]) -> ExitCode {
     match parse(args) {
         Ok(command) => run(command),
         Err(err) => {
-            eprintln!("{}: {err}\n\n{USAGE}", crate::APP.binary);
+            eprintln!("{}: {err}\n\n{}", crate::APP.binary, usage());
             ExitCode::from(64)
         }
     }
@@ -336,7 +343,7 @@ pub fn notify_from_args(args: &[String]) -> ExitCode {
     let command = match parse_notify(args) {
         Ok(command) => command,
         Err(err) => {
-            eprintln!("{}: {err}\n\n{USAGE}", crate::APP.binary);
+            eprintln!("{}: {err}\n\n{}", crate::APP.binary, usage());
             return ExitCode::from(64);
         }
     };
@@ -690,6 +697,16 @@ mod tests {
         assert!(parse_strs(&["ctl", "clients", "list", "extra"]).is_err());
         assert!(parse_strs(&["ctl", "clients"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "frobnicate"]).is_err());
+    }
+
+    /// #231: the help names every kind the core takes for `--kind`, and no other.
+    #[test]
+    fn the_help_names_the_kinds_the_core_takes() {
+        let help = usage();
+        let line = help.lines().find(|line| line.contains("clients add")).expect("the line of clients add");
+        let named = line.split("--kind ").nth(1).and_then(|rest| rest.split(']').next()).expect("its kinds");
+        assert_eq!(named.split('|').collect::<Vec<_>>(), torro_ipc::api::CLIENT_KINDS);
+        assert!(!help.contains("{kinds}"));
     }
 
     #[test]
