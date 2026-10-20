@@ -1408,10 +1408,12 @@ pub enum Request {
     /// mail entry the whole mail when the store holds or can fetch it. The data rule of the
     /// assistant holds (`docs/ki.md`, principle 4): an entry of mail, Nextcloud or Talk goes only to
     /// a model on the person's computers – a local AI account is taken instead of one elsewhere.
+    /// Only models turned on are asked (task S.24): an account with none on that can chat is passed
+    /// over, and a closed model on is taken where it is the only one (PR review #242).
     ///
     /// Errors: `not-found` for an unknown id or an entry of a source the client may not see (hook
-    /// clients see none); `not-connected` when no AI account is set up, or none the data rule lets
-    /// read the entry; the AI server's errors (`offline`, `auth`, `busy`, `error`); `error` when
+    /// clients see none); `not-connected` when no AI account with a model on is set up, or none the
+    /// data rule lets read the entry; the AI server's errors (`offline`, `auth`, `busy`, `error`); `error` when
     /// its answer is no suggestion.
     #[serde(rename = "inbox.suggest_task_from_item")]
     SuggestTaskFromItem {

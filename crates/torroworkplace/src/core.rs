@@ -3880,7 +3880,10 @@ impl Core {
     ///
     /// Only models that are on are asked (task S.24, #231): a default whose model is off counts as
     /// a default without a model ("Automatic" among the models on), and an account with no model
-    /// on is passed over, as `assistant.list_engines` passes it over.
+    /// on is passed over, as `assistant.list_engines` passes it over – and so is one whose models on
+    /// fit none (PR review #242: only a model that decides, say). The model asked is always the one
+    /// picked here; an account whose models cannot be listed answers with the list's error when it
+    /// is chosen, it never asks a model unchecked.
     async fn suggest_from_item(
         &self,
         id: &str,
@@ -3923,19 +3926,33 @@ impl Core {
             }
             let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
             let wanted = default.as_ref().filter(|default| default.engine == account.id);
-            let (place, model) = match problem {
-                true => (crate::assistant::Place::Remote, None),
-                false => self.suggestion_model(&account.id, wanted.and_then(|d| d.model.as_deref()), local_only).await,
+            // An account with a problem is passed over by `choose` anyway; it only counts for which
+            // refusal comes.
+            let place = match problem {
+                true => crate::assistant::Place::Remote,
+                false => {
+                    let wanted = wanted.and_then(|d| d.model.as_deref());
+                    match self.suggestion_model(&account.id, wanted, local_only).await {
+                        Some((place, model)) => {
+                            models.insert(account.id.clone(), model);
+                            place
+                        }
+                        None => continue,
+                    }
+                }
             };
-            if let Some(model) = model {
-                models.insert(account.id.clone(), model);
-            }
             candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
         }
         let chosen = match crate::suggest::choose(&candidates, default.as_ref(), local_only) {
-            // The model its place was judged by is the one asked (task S.23).
-            Ok(chosen) => crate::suggest::Chosen { model: models.remove(&chosen.engine).or(chosen.model), ..chosen },
+            Ok(chosen) => chosen,
             Err(refused) => return refused.response(),
+        };
+        // The model its place was judged by is the one asked (task S.23), and only that one.
+        let chosen = match models.remove(&chosen.engine) {
+            Some(Ok(model)) => crate::suggest::Chosen { model: Some(model), ..chosen },
+            Some(Err(err)) => return crate::suggest::SuggestError::Ai(err).response(),
+            // `choose` takes only accounts without a problem, and each of those has its entry.
+            None => return crate::suggest::SuggestError::NoAi.response(),
         };
         let provider = match self.ai.provider(&chosen.engine).await {
             Ok(provider) => provider,
@@ -3947,27 +3964,34 @@ impl Core {
     /// The model the AI account `id` would suggest with and where it runs (task S.23: a cloud model of
     /// a local Ollama runs elsewhere): `wanted` (the model of the person's default) when it may read
     /// the entry (it runs locally, or the entry is not `local_only`); else of its models the first
-    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, and for an
-    /// entry that may leave it among the others then. Elsewhere and no model when none fits or the
-    /// models cannot be listed: such an account never gets an entry that stays home. `wanted` is
-    /// on (the caller checks); the others are picked among the models that are on (task S.24).
+    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, then among
+    /// the others (elsewhere: `choose` gives an entry that stays home none of those). `wanted` is
+    /// on (the caller checks); the others are picked among the models that are on and may chat
+    /// (task S.24).
+    ///
+    /// `None` when none of those fits, or the account is gone: it is no candidate, so no model that
+    /// is off is ever asked in its place (PR review #242). Elsewhere with the list's error when its
+    /// models cannot be listed: chosen, the answer is that error.
     async fn suggestion_model(
         &self,
         id: &str,
         wanted: Option<&str>,
         local_only: bool,
-    ) -> (crate::assistant::Place, Option<String>) {
+    ) -> Option<(crate::assistant::Place, Result<String, torro_core::ai::AiError>)> {
         use crate::assistant::Place;
-        let Some((provider, server)) = self.ai.server(id).await else { return (Place::Remote, None) };
+        let (provider, server) = self.ai.server(id).await?;
         let place = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model);
         let models = self.ai.known_models(id, wanted).await;
         if let Some(wanted) = wanted
             && let Ok((model, at)) = crate::assistant::ModelAccess::choose(models.clone(), Some(wanted), place)
             && (at == Place::Local || !local_only)
         {
-            return (at, Some(model));
+            return Some((at, Ok(model)));
         }
-        let Ok(models) = models else { return (Place::Remote, None) };
+        let models = match models {
+            Ok(models) => models,
+            Err(err) => return Some((Place::Remote, Err(err))),
+        };
         // A model that only decides (nimble) is on for the mail sorting, never asked to suggest.
         let on = self
             .ai
@@ -3977,12 +4001,9 @@ impl Core {
             .filter(|model| model.enabled && model.tools != Some(false));
         let (local, elsewhere): (Vec<_>, Vec<_>) = on.partition(|model| place(model) == Place::Local);
         if let Ok(model) = crate::suggest::pick_model(local) {
-            return (Place::Local, Some(model));
+            return Some((Place::Local, Ok(model)));
         }
-        match local_only {
-            true => (Place::Remote, None),
-            false => (Place::Remote, crate::suggest::pick_model(elsewhere).ok()),
-        }
+        crate::suggest::pick_model(elsewhere).ok().map(|model| (Place::Remote, Ok(model)))
     }
 
     /// What an AI reads of `entry` (issue #120): for a mail entry the whole text of its newest mail,
@@ -17735,6 +17756,51 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), turn_on(&account.id, "glm-5.3:cloud")).await, Response::Ok);
         assert_eq!(suggested(filed).await, "qwen3:8b", "mail stays on this computer");
         assert_eq!(suggested(posted_entry(&core).await).await, "glm-5.3:cloud", "the default's model");
+    }
+
+    /// PR review #242: suggestions ask only a model that is on. A closed model of OpenRouter the
+    /// person turned on is taken (closed weights only come last, as with "Automatic"), never the
+    /// open one that is off; with none on, or only one that decides, the answer is `not-connected`
+    /// and nothing is asked.
+    #[tokio::test]
+    async fn suggestions_ask_only_models_that_are_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let openrouter = fake_openrouter().await;
+        let chat = answers_chat(&openrouter, "/api/v1/chat/completions", r#"{"title": "Fix the deploy"}"#).await;
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OpenRouter,
+            server: Some(openrouter.url("/api/v1")),
+            key: torro_ipc::Secret::new(AI_KEY),
+        };
+        assert!(matches!(ask(&core, Some(&app_key), connect).await, Response::Account { .. }));
+        let engine = format!("ai:openrouter@127.0.0.1:{}", openrouter.port());
+        let entry = posted_entry(&core).await;
+        let suggest = |id: &str| Request::SuggestTaskFromItem { id: id.to_string(), lists: Vec::new() };
+
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&entry)).await), "not-connected", "nothing is on");
+        assert_eq!(ask(&core, Some(&app_key), turn_on(&engine, "openai/gpt-4o")).await, Response::Ok);
+        let asked = ask(&core, Some(&app_key), suggest(&entry)).await;
+        let Response::TaskSuggestion { suggestion } = asked else { panic!("a suggestion: {asked:?}") };
+        assert_eq!(suggestion.model, "openai/gpt-4o", "the closed model that is on, not the open one that is off");
+        assert_eq!(chat.calls_async().await, 1);
+
+        let off = Request::SetModelEnabled { account: engine.clone(), model: "openai/gpt-4o".into(), enabled: false };
+        assert_eq!(ask(&core, Some(&app_key), off).await, Response::Ok);
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&entry)).await), "not-connected", "none on any more");
+        assert_eq!(chat.calls_async().await, 1, "nothing asked");
+
+        // An Ollama whose only model on decides (nimble, on by the rule): it is on for the mail
+        // sorting and suggests nothing.
+        let gone = Request::RemoveAccount { id: engine };
+        assert_eq!(ask(&core, Some(&app_key), gone).await, Response::Ok);
+        let ollama = crate::account::ai::tests::fake_deciding_ollama().await;
+        let local = answers_chat(&ollama, "/v1/chat/completions", r#"{"title": "Read it"}"#).await;
+        core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest(&entry)).await), "not-connected");
+        assert_eq!(local.calls_async().await, 0, "nothing asked");
     }
 
     /// The state of the inbox entry `id`, as the app key reads it.

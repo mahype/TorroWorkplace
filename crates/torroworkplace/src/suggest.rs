@@ -7,9 +7,10 @@
 //!
 //! Which AI ([`choose`]): the person's default of the assistant (`settings` › `assistant_default`,
 //! issue #131) with its model and effort, when that engine is an AI account; else the first AI
-//! account, its model the first that fits ([`pick_model`]). Coding agents (Claude Code) are no AI
-//! account and are passed over. Accounts with a known problem (no key on this device, a key the
-//! server refused) are passed over too.
+//! account, its model the first that fits ([`pick_model`]) among those turned on (task S.24: the
+//! core picks it, it alone knows the switches; an account with none that fits is passed over).
+//! Coding agents (Claude Code) are no AI account and are passed over. Accounts with a known problem
+//! (no key on this device, a key the server refused) are passed over too.
 //!
 //! The data rule (`docs/ki.md`, principle 4; `crate::assistant::held_back`): an entry of mail,
 //! Nextcloud or Talk goes only to a model on the person's computers. Then a local AI account is
@@ -26,7 +27,7 @@
 
 use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use serde_json::Value;
-use torro_core::ai::{AiError, AiModel, ChatMessage, ChatRequest, Effort, Provider, open_weights_only};
+use torro_core::ai::{AiError, AiModel, ChatMessage, ChatRequest, Effort, Provider};
 use torro_core::i18n::tr;
 use torro_core::settings::AssistantDefault;
 use torro_ipc::{
@@ -103,7 +104,8 @@ pub struct Candidate {
 pub struct Chosen {
     /// The AI account's id.
     pub engine: String,
-    /// The model the default names; `None`: the first that fits ([`pick_model`]).
+    /// The model the default names; `None`: none named. [`suggest`] asks only a model named here:
+    /// the core puts in the one it picked among those turned on (task S.24).
     pub model: Option<String>,
     /// How hard it thinks, as the default says; `None`: as the model decides.
     pub effort: Option<Effort>,
@@ -169,17 +171,21 @@ pub fn choose(
     }
 }
 
-/// The model of an account when the default names none: of those not known to have closed weights
-/// (Open First), the first that can call tools – a model that can is made for chat, unlike the
-/// embedding models a local server lists too –, else the first that does not say, else the first.
-pub fn pick_model(models: Vec<AiModel>) -> Result<String, AiError> {
-    let models = open_weights_only(models);
+/// The model of an account when the default names none, of `models` (the core passes those turned
+/// on): one not known to lack tools first – a model that can call them is made for chat, unlike the
+/// embedding models a local server lists too –, then open weights before closed ones (Open First as
+/// an order, as "Automatic" has it since task S.24: a closed model is on only because someone turned
+/// it on, so it is taken when it is the only one), then one that can call tools before one that does
+/// not say. In the list's order within each.
+pub fn pick_model(mut models: Vec<AiModel>) -> Result<String, AiError> {
+    // Stable: the server's order stays within each group.
+    models.sort_by_key(|model| {
+        (model.tools == Some(false), model.open_weights == Some(false), model.tools != Some(true))
+    });
     models
-        .iter()
-        .find(|model| model.tools == Some(true))
-        .or_else(|| models.iter().find(|model| model.tools.is_none()))
-        .or_else(|| models.first())
-        .map(|model| model.id.clone())
+        .into_iter()
+        .next()
+        .map(|model| model.id)
         .ok_or_else(|| AiError::NotFound(tr("The AI account offers no model.").into()))
 }
 
@@ -387,6 +393,10 @@ pub fn read_event<Tz: TimeZone>(
 /// Asks `provider` (the account `chosen`) for a suggestion of `wanted` from `content`, seen at `now`
 /// in `tz`, and answers it as the core does ([`Response::TaskSuggestion`],
 /// [`Response::EventSuggestion`]) or the error ([`SuggestError::response`]).
+///
+/// Asks only the model `chosen` names (PR review #242): which models are on only the core knows,
+/// so without one nothing is asked – never the first of the server's list, which may be off – and
+/// the answer is [`SuggestError::NoAi`].
 pub async fn suggest<Tz: TimeZone>(
     provider: &dyn Provider,
     chosen: &Chosen,
@@ -398,13 +408,7 @@ pub async fn suggest<Tz: TimeZone>(
 where
     Tz::Offset: std::fmt::Display,
 {
-    let model = match &chosen.model {
-        Some(model) => model.clone(),
-        None => match provider.models().await.and_then(pick_model) {
-            Ok(model) => model,
-            Err(err) => return SuggestError::Ai(err).response(),
-        },
-    };
+    let Some(model) = chosen.model.clone() else { return SuggestError::NoAi.response() };
     let request = ChatRequest {
         model: model.clone(),
         messages: messages(wanted, content, now, tz),
@@ -507,7 +511,19 @@ mod tests {
     }
 
     fn chosen() -> Chosen {
-        Chosen { engine: "ai:ollama@localhost:11434".into(), model: None, effort: None }
+        Chosen { engine: "ai:ollama@localhost:11434".into(), model: Some("qwen3:8b".into()), effort: None }
+    }
+
+    /// PR review #242: only the core knows which models are on, so without a model named nothing
+    /// is asked – not even the server's list, whose first model may be off.
+    #[tokio::test]
+    async fn without_a_model_nothing_is_asked() {
+        let fake = Fake::answering(r#"{"title": "Send the report"}"#);
+        let entry = content("Could you send me the quarterly report?");
+        let unnamed = Chosen { model: None, ..chosen() };
+        let answer = suggest(&fake, &unnamed, Wanted::Task, &entry, utc("2026-10-14T08:30:00Z"), &berlin()).await;
+        assert_eq!(answer, SuggestError::NoAi.response());
+        assert!(fake.asked().is_empty());
     }
 
     /// Acceptance of issue #120: a date in the text becomes the task's due date.
@@ -669,5 +685,17 @@ mod tests {
             "gemma3:4b"
         );
         assert!(matches!(pick_model(Vec::new()), Err(AiError::NotFound(_))));
+    }
+
+    /// PR review #242, as "Automatic" does it (task S.24): closed weights come last, they are not
+    /// left out – a closed model the person turned on is taken when it is the only one.
+    #[test]
+    fn closed_weights_come_last_and_are_still_picked() {
+        let closed = AiModel { open_weights: Some(false), ..model("openai/gpt-4o", Some(true)) };
+        assert_eq!(pick_model(vec![closed.clone()]).expect("a model"), "openai/gpt-4o");
+        let open = model("qwen/qwen3-14b", None);
+        assert_eq!(pick_model(vec![closed.clone(), open]).expect("a model"), "qwen/qwen3-14b", "open first");
+        let embedding = model("nomic-embed-text", Some(false));
+        assert_eq!(pick_model(vec![embedding, closed]).expect("a model"), "openai/gpt-4o", "one that may chat first");
     }
 }
