@@ -1802,8 +1802,9 @@ static UPDATE_TEMPLATE: Command = Command {
     area: Area::Workspaces,
     access: Access::Delete,
     mcp: Mcp::Tool,
-    description: "Overwrites the template with the windows of the active workspace, keeping its name. The previous \
-                  content of the template is lost.",
+    description: "Overwrites the template with the windows of the active workspace, keeping its name, key and \
+                  startup. The previous content of the template is lost. A template that loads at login then starts \
+                  the newly captured programs at every login.",
 };
 
 static DELETE_TEMPLATE: Command = Command {
@@ -1838,8 +1839,9 @@ static SET_TEMPLATE_SHORTCUT: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Gives the template a digit key 0-9 that loads it (with the modifiers of the setting \
-                  workspace_shortcuts, in mode `add`), or takes its key away with `key: null`. A key belongs to \
-                  one template only: another template that has it loses it. Returns the template.",
+                  workspace_shortcuts, in mode `add`), or takes its key away with `key: null`. The key is bound \
+                  system-wide at once: pressing it anywhere starts the template's programs. A key belongs to one \
+                  template only: another template that has it loses it. Returns the template.",
 };
 
 // Admin like `start_at_login`: a lasting rule that starts programs at every login.

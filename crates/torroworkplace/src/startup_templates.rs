@@ -299,9 +299,11 @@ where
 /// Tells the person how loading `done` went, as the daemon reports a command of the menu: every
 /// template on stderr; a notification only for one that failed (in part), with its name in front, since
 /// loads that worked show on the screens themselves and a login brings no row of "Template loaded".
+/// stderr names the template by its id, never by its name: the log holds no contents a person wrote
+/// (`docs/api.md`), the notification is for that person and names it.
 pub fn report(done: &[Done]) {
     for one in done {
-        let what = format!("load {:?} at login", one.name);
+        let what = format!("load template {} at login", one.id);
         let response = match &one.outcome {
             Outcome::Skipped => {
                 eprintln!("torroworkplace: {what}: skipped, screen {} is missing", one.screen);

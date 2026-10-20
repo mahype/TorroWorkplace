@@ -29,6 +29,10 @@ pub const MAX_BACKUPS: usize = 5;
 /// Format of backup file names; fixed width, so names sort by age.
 const BACKUP_STAMP: &str = "%Y%m%dT%H%M%S%.3fZ";
 
+/// The longest screen name a startup takes, in characters. Window managers name screens like
+/// `DP-1` or `HDMI-A-1`; the limit keeps a client from storing a text of any length in a template.
+const MAX_SCREEN_NAME: usize = 100;
+
 /// The template store at a root directory.
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -140,13 +144,14 @@ impl Store {
         Ok(self.list()?.into_iter().find(|other| other.id != except && other.shortcut == Some(key)))
     }
 
-    /// Loads the template `id` at every login as `startup` says, or no more with `None`. The screen
-    /// is not checked: it may be connected later. [`SetupsError::NotFound`] for an unknown id,
-    /// [`SetupsError::Format`] for a screen without a name.
+    /// Loads the template `id` at every login as `startup` says, or no more with `None`. Whether the
+    /// screen is connected is not checked: it may be later. [`SetupsError::NotFound`] for an unknown
+    /// id, [`SetupsError::Format`] for a screen name that is empty, longer than
+    /// [`MAX_SCREEN_NAME`] characters or holds a control character.
     pub fn set_startup(&self, id: &str, startup: Option<Startup>) -> Result<Template, SetupsError> {
         let startup = startup.map(|startup| Startup { screen: startup.screen.trim().to_string(), ..startup });
-        if startup.as_ref().is_some_and(|startup| startup.screen.is_empty()) {
-            return Err(SetupsError::Format("a screen needs a name".into()));
+        if let Some(startup) = &startup {
+            check_screen_name(&startup.screen)?;
         }
         let mut template = self.load(id)?;
         template.startup = startup;
@@ -305,6 +310,21 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// A screen name a startup takes: not empty, at most [`MAX_SCREEN_NAME`] characters, no control
+/// characters (they would break the notification and the log that name it).
+fn check_screen_name(screen: &str) -> Result<(), SetupsError> {
+    if screen.is_empty() {
+        return Err(SetupsError::Format("a screen needs a name".into()));
+    }
+    if screen.chars().count() > MAX_SCREEN_NAME {
+        return Err(SetupsError::Format(format!("a screen name has at most {MAX_SCREEN_NAME} characters")));
+    }
+    if screen.chars().any(char::is_control) {
+        return Err(SetupsError::Format("a screen name has no control characters".into()));
+    }
+    Ok(())
 }
 
 fn io_error(err: io::Error) -> SetupsError {
@@ -478,6 +498,25 @@ mod tests {
         let nameless = Startup { screen: " ".into(), fallback: crate::ScreenFallback::Main };
         assert!(matches!(store.set_startup("dev", Some(nameless)), Err(SetupsError::Format(_))));
         assert_eq!(store.set_startup("gone", None), Err(SetupsError::NotFound("gone".into())));
+    }
+
+    /// A screen name is not empty, at most 100 characters and holds no control characters; a name
+    /// that breaks a rule writes nothing.
+    #[test]
+    fn a_screen_name_is_short_and_without_control_characters() {
+        let (_dir, store) = store();
+        store.save(&sample("dev", "Dev")).unwrap();
+        let on = |screen: &str| Startup { screen: screen.into(), fallback: crate::ScreenFallback::Main };
+
+        assert!(store.set_startup("dev", Some(on(&"D".repeat(MAX_SCREEN_NAME)))).is_ok(), "100 is allowed");
+        store.set_startup("dev", None).unwrap();
+        for wrong in [String::new(), "D".repeat(MAX_SCREEN_NAME + 1), "DP-1\nrm".into(), "DP\u{1b}[2J".into()] {
+            let refused = store.set_startup("dev", Some(on(&wrong)));
+            assert!(matches!(refused, Err(SetupsError::Format(_))), "{wrong:?}: {refused:?}");
+        }
+        assert_eq!(store.load("dev").unwrap().startup, None, "nothing written");
+        // Characters, not bytes: 100 umlauts are 200 bytes and still a name.
+        assert!(store.set_startup("dev", Some(on(&"Ä".repeat(MAX_SCREEN_NAME)))).is_ok());
     }
 
     #[test]

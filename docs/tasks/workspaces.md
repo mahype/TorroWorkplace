@@ -192,7 +192,8 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   `--section workspaces`, wie `show_control_centre`). „Update“ und „Delete“ entfallen im Tray.
 - Neue `Action::SaveWorkspace`: `SaveTemplate` ohne Namen, bei `Saved` den Dialog mit `--saved` starten.
 - Beim Start des Dienstes `float_dialogs("torro-workplace-dialog")`.
-- **API/MCP:** keine neuen.
+- **API/MCP:** keine neuen. „Manage workspaces…“ hat keinen Request: Es ist reine Navigation in die eigene
+  Steuerzentrale (wie „Settings…“), ändert nichts und hat außerhalb der Oberfläche kein Ziel.
 - **Abnahme:** Tests von `build()` für Vorlagen mit/ohne Taste, ohne Fenstermanager; Test, dass `SaveWorkspace` den
   Dialog mit der neuen Kennung startet (Launcher-Fake).
 

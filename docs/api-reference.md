@@ -120,7 +120,7 @@ Saves the windows of the active workspace as a new template and returns it. With
 
 Zugriff `delete` · MCP-Tool `workspaces_update_template`
 
-Overwrites the template with the windows of the active workspace, keeping its name. The previous content of the template is lost.
+Overwrites the template with the windows of the active workspace, keeping its name, key and startup. The previous content of the template is lost. A template that loads at login then starts the newly captured programs at every login.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -162,7 +162,7 @@ Gives the template a new name; its id stays the same.
 
 Zugriff `write` · MCP-Tool `workspaces_set_template_shortcut`
 
-Gives the template a digit key 0-9 that loads it (with the modifiers of the setting workspace_shortcuts, in mode `add`), or takes its key away with `key: null`. A key belongs to one template only: another template that has it loses it. Returns the template.
+Gives the template a digit key 0-9 that loads it (with the modifiers of the setting workspace_shortcuts, in mode `add`), or takes its key away with `key: null`. The key is bound system-wide at once: pressing it anywhere starts the template's programs. A key belongs to one template only: another template that has it loses it. Returns the template.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1644,8 +1644,8 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | `settings.voice.sttModel` | string | nein | The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first model found in the voice folder. |
 | `settings.voice.voice` | string | nein | The Piper voice (`de_DE-thorsten-medium.onnx`, its `.onnx.json` next to it), an absolute path; `None` for the first voice found in the voice folder. |
 | `settings.voice.wakeWord` | string | nein, Standard `"hey torro"` | The phrase that wakes the assistant; fixed to [`WAKE_WORD`] for now. |
-| `settings.workspaces` | object | nein, Standard `{"modifiers":"ctrl_alt"}` | Workspace templates (issue #243): the modifiers held with the digit keys that load them ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of this system. |
-| `settings.workspaces.modifiers` | `"super_alt"` \| `"super_ctrl"` \| `"ctrl_alt"` \| `"ctrl_shift"` | nein, Standard `"ctrl_alt"` | The modifiers held with a digit key `1` … `0` to load the template that has the key, one choice for all templates; the default of this system unless set. |
+| `settings.workspaces` | object | nein | Workspace templates (issue #243): the modifiers held with the digit keys that load them ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of this system (Linux super_alt, macOS and Windows ctrl_alt). |
+| `settings.workspaces.modifiers` | `"super_alt"` \| `"super_ctrl"` \| `"ctrl_alt"` \| `"ctrl_shift"` | nein | The modifiers held with a digit key `1` … `0` to load the template that has the key, one choice for all templates; default per system: Linux super_alt, macOS and Windows ctrl_alt. |
 | `settings.zoom` | number | nein, Standard `1.0` | How large every window of the suite draws, like the zoom of a browser (task Z.1). One value for all apps, so tiled windows stay alike; stored as the factor (`1.1`). |
 
 ## `apps`

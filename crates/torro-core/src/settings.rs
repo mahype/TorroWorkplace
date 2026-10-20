@@ -162,8 +162,9 @@ pub struct Settings {
     pub tools: Tools,
     /// Workspace templates (issue #243): the modifiers held with the digit keys that load them
     /// ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of
-    /// this system.
+    /// this system (Linux super_alt, macOS and Windows ctrl_alt).
     #[serde(default, deserialize_with = "lenient")]
+    #[schemars(transform = without_default)]
     pub workspaces: WorkspaceSettings,
 }
 
@@ -173,9 +174,18 @@ pub struct Settings {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSettings {
     /// The modifiers held with a digit key `1` … `0` to load the template that has the key, one
-    /// choice for all templates; the default of this system unless set.
+    /// choice for all templates; default per system: Linux super_alt, macOS and Windows ctrl_alt.
     #[serde(default)]
+    #[schemars(transform = without_default)]
     pub modifiers: ShortcutModifiers,
+}
+
+/// Drops the `default` schemars takes from `#[serde(default)]`: the default of the template keys
+/// depends on the system the core runs on, and a schema built on one system would state it for
+/// all (the API reference, built on macOS, would differ from one built on Linux). The description
+/// names the default of each system instead.
+fn without_default(schema: &mut Schema) {
+    schema.remove("default");
 }
 
 /// The modifiers of the template keys (issue #243): pressed with a digit, they load the template
