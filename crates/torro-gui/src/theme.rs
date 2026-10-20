@@ -633,14 +633,14 @@ pub mod size {
     pub fn tile_lg() -> f32 {
         design::with(|t| t.design.size.tile_lg)
     }
-    /// 46: the command bar at the top of the mail reader (task E11.1, `widgets::command_bar`):
-    /// Reply, Forward, Archive … as cells over the reader's whole width, a step above an input so
-    /// the actions read as buttons, not as a header.
+    /// 46: the height of the command bar the mail reader had (task E11.1). Since #241 no block uses
+    /// it – the mail's actions stand in the action rail –, but it stays in the pack format (decision
+    /// 9 of E14), so packs that set it keep loading.
     pub fn command() -> f32 {
         design::with(|t| t.design.size.command)
     }
-    /// 42: a Torro pill in the mail reader (task E11.1, `widgets::pill_button`: Task, Event, Mute…)
-    /// and the sender's avatar in the reader's head, which stands at the pills' height.
+    /// 42: the sender's avatar in the reader's head (task E11.1). The Torro pills of the reader that
+    /// had this height went with #241; the size stays in the pack format (decision 9 of E14).
     pub fn pill() -> f32 {
         design::with(|t| t.design.size.pill)
     }

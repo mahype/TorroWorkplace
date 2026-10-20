@@ -196,8 +196,9 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         self
     }
 
-    /// A bar fixed under the head, from edge to edge, that does not scroll (task E11.4: the mail
-    /// window's command bar, `widgets::command_bar`): it brings its own lines, the panel adds none.
+    /// A bar fixed under the head, from edge to edge, that does not scroll: it brings its own lines,
+    /// the panel adds none. (The mail window's command bar of task E11.4 used it; since #241 the mail
+    /// window has none, its actions stand in the rail of [`Panel::side`].)
     pub fn bar(mut self, bar: impl Into<Element<'a, M>>) -> Self {
         self.bar = Some(bar.into());
         self
