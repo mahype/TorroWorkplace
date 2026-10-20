@@ -23,7 +23,7 @@ use torro_ipc::api::{
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, ColorSchemeInfo,
     DesignInfo, FolderChoice, FontInfo, IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request,
-    Response, ServerService, ServiceState, Status, TorroMailAccount,
+    Response, ScreenInfo, ServerService, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -93,8 +93,14 @@ pub enum Open {
     Remove,
     /// The "Delete this template?" confirmation.
     DeleteTemplate,
-    /// The first template's row in rename mode.
-    RenameTemplate,
+    /// The dialog of the template without a key (task WS.6) with key 2 chosen, which another
+    /// template holds: the hint that saving moves the key.
+    EditTemplate,
+    /// "Save workspace…" on the page answered: the dialog in the mode `Save` for the new template,
+    /// with the next free key chosen.
+    SaveTemplate,
+    /// Workspaces without a window manager: the group says which one is expected and what to do.
+    WorkspacesUnsupported,
     /// The approvals page without any approvals: its empty state.
     ApprovalsEmpty,
     /// API without any key (task S.35): the group "Keys" with only its sentence.
@@ -156,7 +162,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 83] = [
+    pub const ALL: [(&'static str, Open); 85] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -204,7 +210,9 @@ impl Open {
         ("switcher", Open::Switcher),
         ("remove", Open::Remove),
         ("delete-template", Open::DeleteTemplate),
-        ("rename-template", Open::RenameTemplate),
+        ("edit-template", Open::EditTemplate),
+        ("save-template", Open::SaveTemplate),
+        ("workspaces-unsupported", Open::WorkspacesUnsupported),
         ("approvals-empty", Open::ApprovalsEmpty),
         ("api-empty", Open::ApiEmpty),
         ("api-off", Open::ApiOff),
@@ -265,6 +273,12 @@ impl Open {
 ///   it so on a first start without accounts.
 /// - `--setup-if-open`: open the setup as long as it is not done, else the `--section` (task W.9):
 ///   what an app's "Open Settings" sends, with the app's step.
+/// - `--template=<id>`: open only the dialog of this template in a small window of its own (task
+///   WS.6, class `torro-workplace-dialog`) instead of the control centre, in the mode `Edit`; it
+///   closes after "Save" or "Cancel". `apps.open_app` with the target `template:<id>` starts this.
+/// - `--saved` (needs `--template`): the dialog in the mode `Save`, for a template saved just now;
+///   "Cancel" deletes it again. Only the tray's "Save workspace…" (task WS.7) passes it, never the
+///   target `template:<id>`, so no program can have a template deleted by opening its dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
@@ -284,6 +298,10 @@ pub struct Launch {
     pub setup: Option<super::setup::Step>,
     /// `--setup-if-open`: [`Launch::setup`] only while the setup is not done (task W.9).
     pub setup_if_open: bool,
+    /// `--template=<id>`: the dialog of this template in a window of its own (task WS.6).
+    pub template: Option<String>,
+    /// `--saved`: that dialog in the mode `Save` ([`super::template_form::Mode::Save`]).
+    pub saved: bool,
 }
 
 impl Default for Launch {
@@ -299,6 +317,8 @@ impl Default for Launch {
             color_scheme: None,
             setup: None,
             setup_if_open: false,
+            template: None,
+            saved: false,
         }
     }
 }
@@ -314,6 +334,8 @@ pub enum LaunchError {
     NeedsDemo(&'static str),
     /// `--step` without `--setup`.
     NeedsSetup(&'static str),
+    /// `--saved` without `--template`.
+    NeedsTemplate(&'static str),
 }
 
 impl fmt::Display for LaunchError {
@@ -325,6 +347,7 @@ impl fmt::Display for LaunchError {
             }
             LaunchError::NeedsDemo(flag) => write!(f, "{flag} only works together with --demo"),
             LaunchError::NeedsSetup(flag) => write!(f, "{flag} only works together with --setup or --setup-if-open"),
+            LaunchError::NeedsTemplate(flag) => write!(f, "{flag} only works together with --template"),
         }
     }
 }
@@ -418,7 +441,28 @@ impl Launch {
                     .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
             ),
         };
-        Ok(Launch { section, client, demo, open, appearance, design, font, color_scheme, setup, setup_if_open })
+        let template = match flag_value(args, "--template")? {
+            Some("") => return Err(LaunchError::MissingValue("--template")),
+            other => other.map(str::to_owned),
+        };
+        let saved = args.iter().any(|arg| arg == "--saved");
+        if saved && template.is_none() {
+            return Err(LaunchError::NeedsTemplate("--saved"));
+        }
+        Ok(Launch {
+            section,
+            client,
+            demo,
+            open,
+            appearance,
+            design,
+            font,
+            color_scheme,
+            setup,
+            setup_if_open,
+            template,
+            saved,
+        })
     }
 }
 
@@ -913,7 +957,33 @@ pub fn demo_data() -> Data {
         apps: Some(apps),
         approvals: demo_approvals(now),
         engines: demo_engines(),
+        screens: demo_screens(),
         error: None,
+    }
+}
+
+/// The demo's screens (task WS.6): the wide main screen the templates were saved on, and a
+/// second one beside it, in logical pixels.
+pub fn demo_screens() -> Vec<ScreenInfo> {
+    vec![
+        ScreenInfo { name: "DP-1".into(), width: 3840, height: 1080, scale: 2.0, main: true },
+        ScreenInfo { name: "HDMI-A-1".into(), width: 1920, height: 1080, scale: 1.0, main: false },
+    ]
+}
+
+/// The template the demo's "Save workspace…" saves (task WS.6): workspace 3 on the main screen,
+/// named as the core names a template without a name.
+pub fn demo_saved() -> TemplateSummary {
+    let now = Utc::now();
+    TemplateSummary {
+        id: "workspace-3".into(),
+        name: torro_setups::capture::auto_name("3", Local::now()),
+        windows: 5,
+        updated: now,
+        shortcut: None,
+        startup: None,
+        workspace: "3".into(),
+        monitor: Some("DP-1".into()),
     }
 }
 
@@ -1207,6 +1277,13 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             Some(Response::Account { account: ntfy_account(&topics, Utc::now()) })
         }
         Request::SetNtfyTopic { .. } => Some(Response::Ok),
+        // Workspaces (task WS.6): "Save workspace…" saves a sample, so the dialog opens in the mode
+        // `Save`; what the dialog sends is taken without changing anything.
+        Request::SaveTemplate { .. } => Some(Response::Saved { template: demo_saved() }),
+        Request::RenameTemplate { .. }
+        | Request::SetTemplateShortcut { .. }
+        | Request::SetTemplateStartup { .. }
+        | Request::DeleteTemplate { .. } => Some(Response::Ok),
         Request::ConnectMail { password, .. } if password.expose() == "wrong" => Some(refused("IMAP")),
         Request::ConnectMail { password, .. } if password.expose() == "wrong-smtp" => Some(refused("SMTP")),
         // What the CalDAV address offers is what was asked for, as long as an address was given.
@@ -1638,6 +1715,28 @@ mod tests {
         }
         let agents = Launch::parse(&args(&["--section", "agents"])).expect("the old word");
         assert_eq!((agents.section, agents.client), (Section::Mcp, None));
+    }
+
+    /// Task WS.6: `--template=<id>` opens only the template's dialog, `--saved` in the mode `Save`
+    /// and only together with a template; neither needs `--demo`.
+    #[test]
+    fn the_template_dialog_is_named_by_its_id_and_saved_needs_one() {
+        let edit = Launch::parse(&args(&["--template=deep-work"])).expect("an id");
+        assert_eq!((edit.template.as_deref(), edit.saved), (Some("deep-work"), false));
+        let save = Launch::parse(&args(&["--template", "deep-work", "--saved"])).expect("both spellings");
+        assert_eq!((save.template.as_deref(), save.saved), (Some("deep-work"), true));
+        let demo = Launch::parse(&args(&["--demo", "--template=writing", "--appearance", "light"])).expect("with demo");
+        assert_eq!((demo.demo, demo.template.as_deref()), (true, Some("writing")));
+        assert_eq!(Launch::parse(&args(&["--saved"])), Err(LaunchError::NeedsTemplate("--saved")));
+        assert_eq!(Launch::parse(&args(&["--template"])), Err(LaunchError::MissingValue("--template")));
+        assert_eq!(Launch::parse(&args(&["--template="])), Err(LaunchError::MissingValue("--template")));
+        assert_eq!(Launch::parse(&[]).map(|launch| (launch.template, launch.saved)), Ok((None, false)));
+        // What `apps.open_app` starts for the target `template:<id>` is the mode `Edit`.
+        let opened = crate::apps::Opened::Template { id: "deep-work".into() };
+        let words = crate::apps::target_command(AppId::WORKPLACE.binary.into(), &opened);
+        assert_eq!(words[1], "ui");
+        let opened = Launch::parse(&words[2..]).expect("the core's command line");
+        assert_eq!((opened.template.as_deref(), opened.saved), (Some("deep-work"), false));
     }
 
     #[test]

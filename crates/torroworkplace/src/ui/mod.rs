@@ -56,6 +56,8 @@ mod mcp;
 mod overview;
 mod server_fields;
 mod setup;
+// The dialog of a workspace template (task WS.6): over the window and as a window of its own.
+mod template_form;
 mod wizard;
 mod workspaces;
 
@@ -213,6 +215,9 @@ pub struct Data {
     /// chat starts with in the first-run setup (issue #131). What a new chat starts with outside
     /// the setup is set in the assistant's own window (task S.17).
     pub engines: Vec<torro_ipc::assistant::Engine>,
+    /// The screens the window manager has (`workspaces.list_screens`, task WS.6), for Workspaces and
+    /// where a template loads at login; empty without a window manager.
+    pub screens: Vec<torro_ipc::ScreenInfo>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -411,8 +416,12 @@ pub enum Message {
 }
 
 /// Runs the control centre with the start parameters of `torroworkplace ui` ([`Launch::parse`]).
-/// Demo mode does not start the core either.
+/// Demo mode does not start the core either. `--template=<id>` runs only that template's dialog in
+/// a window of its own ([`template_form::run`]).
 pub fn run(launch: Launch) -> iced::Result {
+    if launch.template.is_some() {
+        return template_form::run(launch);
+    }
     let socket = torro_ipc::socket_path().filter(|_| !launch.demo);
     if let Some(socket) = &socket {
         torro_gui::source::ensure_core(socket);
@@ -660,15 +669,36 @@ impl Ui {
                 }
                 messages
             }
-            Open::DeleteTemplate | Open::RenameTemplate => {
+            Open::DeleteTemplate => {
                 let mut messages = vec![Message::Select(Section::Workspaces)];
-                messages.extend(first_template.map(|id| {
-                    Message::Workspaces(match open {
-                        Open::DeleteTemplate => workspaces::Message::AskDelete(id),
-                        _ => workspaces::Message::StartRename(id),
-                    })
-                }));
+                messages.extend(first_template.map(|id| Message::Workspaces(workspaces::Message::AskDelete(id))));
                 messages
+            }
+            // The template without a key, with the key of another one chosen: the hint that it moves.
+            Open::EditTemplate => {
+                let free = self.data.templates.iter().find(|template| template.shortcut.is_none());
+                let taken = self.data.templates.iter().find_map(|template| template.shortcut);
+                let mut messages = vec![Message::Select(Section::Workspaces)];
+                if let Some(template) = free {
+                    messages.push(Message::Workspaces(workspaces::Message::Edit(template.id.clone())));
+                    let key = workspaces::Message::Form(template_form::Message::Key(taken));
+                    messages.push(Message::Workspaces(key));
+                }
+                messages
+            }
+            // "Save workspace…": the demo answers with a saved sample, which opens the dialog.
+            Open::SaveTemplate => {
+                vec![Message::Select(Section::Workspaces), Message::Workspaces(workspaces::Message::SaveWorkspace)]
+            }
+            Open::WorkspacesUnsupported => {
+                if let Some(status) = self.data.status.as_mut() {
+                    status.backend = "unsupported".into();
+                    status.wm_version = None;
+                    status.shortcuts = None;
+                    status.workspace = None;
+                }
+                self.data.screens.clear();
+                vec![Message::Select(Section::Workspaces)]
             }
             // The demo's sample approvals gone, so the page shows its empty state.
             Open::ApprovalsEmpty => {
@@ -998,7 +1028,12 @@ impl Ui {
                 approvals::answered(&mut self.approvals);
                 // "Create key", "Connect client" and the hook switch show their errors themselves,
                 // and may go on with a job. Each section takes only its own answers.
-                let next = [mcp::answered(&mut self.mcp, &result), api::answered(&mut self.api, &result)];
+                let next = [
+                    mcp::answered(&mut self.mcp, &result),
+                    api::answered(&mut self.api, &result),
+                    // The template dialog shows its errors itself; "Save workspace…" opens it.
+                    workspaces::answered(&mut self.workspaces, &result, &self.data),
+                ];
                 // A refused part (the core checks it too) goes back to the stored one with the next
                 // reload; the notice says why.
                 if result.is_err() {
@@ -1409,6 +1444,7 @@ impl Ui {
             Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
             Section::Api => api::header(&self.api, &self.data, class).map(Message::Api),
             Section::Mcp => mcp::header(&self.mcp, &self.data, class).map(Message::Mcp),
+            Section::Workspaces => workspaces::header(&self.workspaces, &self.data, class).map(Message::Workspaces),
             _ => Header::default(),
         }
     }
@@ -1417,9 +1453,8 @@ impl Ui {
     fn page_overlay(&self) -> Option<Element<'_, Message>> {
         match self.section {
             Section::Accounts => accounts::overlay(&self.accounts, &self.data).map(|e| e.map(Message::Accounts)),
-            Section::Workspaces => {
-                workspaces::overlay(&self.workspaces, &self.data).map(|e| e.map(Message::Workspaces))
-            }
+            Section::Workspaces => workspaces::overlay(&self.workspaces, &self.data, layout::of(self.size))
+                .map(|e| e.map(Message::Workspaces)),
             Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
             Section::Mcp => mcp::overlay(&self.mcp, &self.data).map(|e| e.map(Message::Mcp)),
             _ => None,
@@ -1471,7 +1506,7 @@ impl Ui {
         let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
             Section::Accounts => accounts::view(&self.accounts, &self.data, class, &palette).map(Message::Accounts),
-            Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
+            Section::Workspaces => workspaces::view(&self.workspaces, &self.data, class).map(Message::Workspaces),
             Section::Api => api::view(&self.api, &self.data).map(Message::Api),
             Section::Mcp => mcp::view(&self.mcp, &self.data).map(Message::Mcp),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
@@ -1537,7 +1572,7 @@ fn crumb<'a>(section: Section, name: String) -> Element<'a, Message> {
 // the apps and of the control centre look and behave the same; the control centre uses only these,
 // never the library's host.
 pub(crate) use torro_settings_ui::parts::{
-    chevron, confirm, dialog, notice, one_line, pressable, row_frame, setting_row,
+    chevron, confirm, dialog, field, notice, one_line, picker, pressable, row_frame, setting_row, switch,
 };
 
 /// Escape, wherever the focus is (a text input keeps it to itself otherwise), and `[` for the
@@ -1579,6 +1614,10 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Templates { templates }) = client::call(&socket, &Request::ListTemplates).await {
                 data.templates = templates;
+            }
+            // `unsupported` without a window manager: no screens then.
+            if let Ok(Response::Screens { screens }) = client::call(&socket, &Request::ListScreens).await {
+                data.screens = screens;
             }
             if let Ok(Response::Settings { settings }) = client::call(&socket, &Request::Settings).await {
                 data.settings = settings;
@@ -2481,10 +2520,22 @@ mod tests {
         assert!(matches!(workspaces::escape(&delete.workspaces), Some(workspaces::Message::CancelDelete)));
         assert!(delete.page_overlay().is_some());
 
-        let rename = started(&["--demo", "--open", "rename-template"]);
-        assert_eq!(rename.section, Section::Workspaces);
-        assert!(matches!(workspaces::escape(&rename.workspaces), Some(workspaces::Message::CancelRename)));
-        assert!(rename.page_overlay().is_none(), "renaming is in the row, not in a dialog");
+        // Task WS.6: the template dialog with a key that moves, after "Save workspace…", and the
+        // page without a window manager.
+        let edit = started(&["--demo", "--open", "edit-template"]);
+        assert_eq!(edit.section, Section::Workspaces);
+        let cancel = workspaces::Message::Form(template_form::Message::Cancel);
+        assert!(
+            matches!(workspaces::escape(&edit.workspaces), Some(ref m) if format!("{m:?}") == format!("{cancel:?}"))
+        );
+        assert!(edit.page_overlay().is_some(), "the dialog lies over the window");
+        let mut save = started(&["--demo", "--open", "save-template"]);
+        assert!(save.page_overlay().is_some(), "the demo's save opens the dialog in the mode Save");
+        let _ = save.update(Message::Escape);
+        assert!(save.page_overlay().is_none(), "Escape cancels it; the demo deletes nothing");
+        let unsupported = started(&["--demo", "--open", "workspaces-unsupported"]);
+        assert_eq!(unsupported.data.status.as_ref().map(|s| s.backend.as_str()), Some("unsupported"));
+        assert!(unsupported.data.screens.is_empty());
 
         let menu = started(&["--demo", "--open", "menu", "--section", "workspaces"]);
         assert_eq!((menu.section, menu.menu, menu.drawer), (Section::Workspaces, Some(Menu::Nav), false));

@@ -1,26 +1,36 @@
-//! Workspace templates (task S.7): a settings group with a row per template (name, windows,
-//! last updated). A row shows one action, "Load" (into the active workspace, mode Add); rename
-//! (inline) and delete (with confirmation, a dialog over the whole window, [`overlay`]) sit in the
-//! "…" menu of the row, which is a layer over the window like the dialog. Requests:
-//! `RenameTemplate`, `DeleteTemplate`, `LoadTemplate { mode: Add }`. Empty: one sentence explaining
-//! how to save a workspace from the tray menu.
+//! Workspaces (tasks S.7 and WS.6, draft `docs/prototypes/workspaces/entwurf.html`): the group
+//! "Window manager" – which one runs, its version and screens, and the row "Shortcuts" with the
+//! choice of modifiers (`settings.set_setting workspace_shortcuts`) and whether the keys work
+//! (`Status::shortcuts`); without a window manager it says which one is expected and what to do.
+//!
+//! Then the templates, sorted by key (1 … 9, 0, then those without a key by name): the key as a
+//! `kbd`, the name, windows and age, "At startup · DP-1" when it loads at login, one visible
+//! action, "Load" (into the active workspace, mode Add), and the "…" menu with "Edit…" (the
+//! template dialog, [`super::template_form`]), "Update from current workspace" and "Delete…" (with
+//! confirmation). The header's primary button "Save workspace…" saves the active workspace
+//! (`SaveTemplate`) and opens the dialog in the mode `Save` for the new template once the core
+//! answers ([`answered`]). Menu, dialog and confirmation are layers over the whole window
+//! ([`overlay`]).
 
 use chrono::{DateTime, Utc};
-use iced::widget::{row, text_input};
-use iced::{Alignment, Element, Fill};
+use iced::widget::{container, row};
+use iced::{Alignment, Element};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::ShortcutModifiers;
 use torro_gui::datetime;
 use torro_gui::icon::Icon;
-use torro_gui::theme::space;
+use torro_gui::layout::SizeClass;
+use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, empty_state};
 use torro_gui::{style, typo};
-use torro_ipc::Request;
+use torro_ipc::{Request, Response, SettingKey};
 use torro_setups::{LoadMode, TemplateSummary};
 
-use super::{Action, Data, confirm, row_frame, setting_row};
+use super::template_form::{self, Facts, Form, Mode, Step};
+use super::{Action, Data, Header, confirm, dialog, picker, setting_row};
+use crate::workspace_keys;
 
-/// Page-local state: at most one row has its menu open, at most one is being renamed, at most one
-/// deletion is confirmed.
+/// Page-local state: at most one row has its menu open, at most one dialog or confirmation is open.
 #[derive(Debug, Default)]
 pub struct State {
     /// Id of the template whose "…" menu is open.
@@ -28,17 +38,12 @@ pub struct State {
     /// Where the "…" button of the open menu is, for the layer that floats next to it. Only that
     /// one button registers, so a single anchor serves all rows.
     anchor: Anchor,
-    renaming: Option<Rename>,
+    /// The template dialog, from "Edit…" or after "Save workspace…".
+    form: Option<Form>,
+    /// "Save workspace…" was sent; its answer opens the dialog in the mode `Save`.
+    saving: bool,
     /// Id of the template whose delete dialog is open.
     confirm_delete: Option<String>,
-}
-
-/// A row in rename mode: the text typed so far and the name it started with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Rename {
-    id: String,
-    original: String,
-    name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -47,32 +52,35 @@ pub enum Message {
     ToggleMenu(String),
     /// A click next to the menu, or Escape.
     CloseMenu,
-    /// "Rename" in the menu.
-    StartRename(String),
-    RenameChanged(String),
-    /// "Save" or Enter.
-    SaveRename,
-    /// "Cancel": the row goes back to showing the name it had.
-    CancelRename,
+    /// "Edit…" in the menu: the template dialog in the mode `Edit`.
+    Edit(String),
+    /// "Update from current workspace" in the menu: captures the active workspace into it again.
+    Update(String),
     /// "Load" in a row.
     Load(String),
-    /// "Delete" in the menu: opens the confirmation.
+    /// "Delete…" in the menu: opens the confirmation.
     AskDelete(String),
     /// "Cancel" in the dialog, or a click next to it.
     CancelDelete,
     /// "Delete template" in the dialog.
     ConfirmDelete,
+    /// The header's "Save workspace…".
+    SaveWorkspace,
+    /// The template dialog.
+    Form(template_form::Message),
+    /// The modifiers of the template keys, chosen in the row "Shortcuts".
+    Modifiers(ShortcutModifiers),
 }
 
-/// What Escape means on this page right now: close the delete dialog, else the menu, else stop
-/// renaming.
+/// What Escape means on this page right now: close the delete confirmation, else cancel the
+/// dialog, else close the menu.
 pub fn escape(state: &State) -> Option<Message> {
     if state.confirm_delete.is_some() {
         Some(Message::CancelDelete)
+    } else if state.form.is_some() {
+        Some(Message::Form(template_form::Message::Cancel))
     } else if state.menu.is_some() {
         Some(Message::CloseMenu)
-    } else if state.renaming.is_some() {
-        Some(Message::CancelRename)
     } else {
         None
     }
@@ -88,28 +96,15 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.menu = None;
             Action::None
         }
-        Message::StartRename(id) => {
+        Message::Edit(id) => {
             state.menu = None;
-            state.renaming = find(data, &id).map(|template| Rename {
-                id: template.id.clone(),
-                original: template.name.clone(),
-                name: template.name.clone(),
-            });
+            state.form =
+                find(data, &id).map(|template| Form::new(Mode::Edit, template, &data.templates, &data.screens));
             Action::None
         }
-        Message::RenameChanged(name) => {
-            if let Some(rename) = state.renaming.as_mut() {
-                rename.name = name;
-            }
-            Action::None
-        }
-        Message::SaveRename => match save_rename(state) {
-            Some(request) => Action::Send(request),
-            None => Action::None,
-        },
-        Message::CancelRename => {
-            state.renaming = None;
-            Action::None
+        Message::Update(id) => {
+            state.menu = None;
+            Action::Send(Request::UpdateTemplate { id })
         }
         Message::Load(id) => Action::Send(Request::LoadTemplate { id, mode: LoadMode::Add }),
         Message::AskDelete(id) => {
@@ -125,39 +120,221 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Some(id) => Action::Send(Request::DeleteTemplate { id }),
             None => Action::None,
         },
+        Message::SaveWorkspace if state.saving || state.form.is_some() || !supported(data) => Action::None,
+        Message::SaveWorkspace => {
+            state.saving = true;
+            Action::Send(Request::SaveTemplate { name: None })
+        }
+        Message::Form(message) => match state.form.as_mut() {
+            Some(form) => {
+                let step = form.update(message);
+                step_action(state, step)
+            }
+            None => Action::None,
+        },
+        Message::Modifiers(modifiers) => {
+            let value = serde_json::to_value(modifiers).unwrap_or_default();
+            Action::Send(Request::SetSetting { key: SettingKey::WorkspaceShortcuts, value })
+        }
     }
 }
 
-/// Ends the rename and returns the request for it. An empty name keeps the row open; an
-/// unchanged name closes it without a request.
-fn save_rename(state: &mut State) -> Option<Request> {
-    let rename = state.renaming.as_ref()?;
-    let name = rename.name.trim();
-    if name.is_empty() {
+/// What the shell does for a [`Step`] of the dialog; closing drops it.
+fn step_action(state: &mut State, step: Step) -> Action {
+    match step {
+        Step::Stay => Action::None,
+        Step::Send(request) => Action::Send(request),
+        Step::Close => {
+            state.form = None;
+            Action::None
+        }
+    }
+}
+
+/// The core's answer to a request of this page, if it is one the page waits for: the dialog's
+/// requests, and "Save workspace…", whose `Saved` opens the dialog in the mode `Save`. `None` for
+/// any other answer; a failed save is `None` too, so the shell shows its notice.
+pub fn answered(state: &mut State, result: &Result<Response, String>, data: &Data) -> Option<Action> {
+    if let Some(step) = state.form.as_mut().and_then(|form| form.answered(result)) {
+        return Some(step_action(state, step));
+    }
+    if !state.saving {
         return None;
     }
-    let request =
-        (name != rename.original).then(|| Request::RenameTemplate { id: rename.id.clone(), name: name.to_string() });
-    state.renaming = None;
-    request
-}
-
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    if data.templates.is_empty() {
-        return empty_state(
-            tr("No templates yet"),
-            tr("Arrange a workspace, then choose Save workspace in the tray menu."),
-        );
+    state.saving = false;
+    match result {
+        Ok(Response::Saved { template }) => {
+            state.form = Some(Form::new(Mode::Save, template, &data.templates, &data.screens));
+            Some(Action::None)
+        }
+        _ => None,
     }
-    let now = Utc::now();
-    let rows = data.templates.iter().map(|template| template_row(state, template, now)).collect();
-    let footer = tr("Save the active workspace from the tray menu: Save workspace.");
-    widgets::group(tr("Templates"), rows, Some(footer.to_string()))
 }
 
-/// The page's layer over the whole window: the delete confirmation while it is open, else the
-/// "…" menu of a row.
-pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+/// A window manager runs that Torro can work with.
+fn supported(data: &Data) -> bool {
+    data.status.as_ref().is_some_and(|status| status.backend != "unsupported")
+}
+
+/// The header's primary button "Save workspace…" (icon only in narrow windows); off without a window
+/// manager, waiting while the save is on its way.
+pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    let label = tr("Save workspace…");
+    let on = (supported(data) && state.form.is_none()).then_some(Message::SaveWorkspace);
+    let button = match class {
+        _ if state.saving => widgets::busy_button(tr("Saving…"), style::button::primary),
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Plus), label, style::button::primary, on)
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Plus, label, style::button::primary, on)
+        }
+    };
+    Header { sub_page: None, actions: vec![button] }
+}
+
+pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
+    let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
+    let manager = window_manager(data);
+    let templates: Element<'a, Message> = if data.templates.is_empty() {
+        empty_state(tr("No templates yet"), tr("Arrange the windows of a workspace, then choose Save workspace…."))
+    } else {
+        let now = Utc::now();
+        let supported = supported(data);
+        let rows = sorted(&data.templates)
+            .into_iter()
+            .map(|template| template_row(state, template, now, supported, narrow))
+            .collect();
+        let footer = tr(
+            "Load adds the windows to the workspace you are on. Edit a template to give it a key or load it at startup.",
+        );
+        widgets::group(tr("Templates"), rows, Some(footer.to_string()))
+    };
+    iced::widget::column![manager, templates].spacing(space::xl()).into()
+}
+
+/// The templates in the order of their keys on the keyboard (1 … 9, 0), then those without a key
+/// by name.
+pub fn sorted(templates: &[TemplateSummary]) -> Vec<&TemplateSummary> {
+    let mut sorted: Vec<&TemplateSummary> = templates.iter().collect();
+    sorted.sort_by_cached_key(|template| {
+        // 1 … 9 first, 0 after 9, no key last.
+        let place = template.shortcut.map_or(u8::MAX, |key| if key == 0 { 10 } else { key });
+        (place, template.name.to_lowercase())
+    });
+    sorted
+}
+
+/// The group "Window manager": the window manager with its version and screens, and the row
+/// "Shortcuts".
+fn window_manager<'a>(data: &'a Data) -> Element<'a, Message> {
+    let Some(status) = data.status.as_ref().filter(|_| supported(data)) else {
+        return unsupported();
+    };
+    let mut detail = Vec::new();
+    if let Some(version) = &status.wm_version {
+        detail.push(trf("Version {version}", &[("version", version)]));
+    }
+    if !data.screens.is_empty() {
+        detail.push(screens_text(data));
+    }
+    let detail = (!detail.is_empty()).then(|| detail.join(" · "));
+    let manager =
+        setting_row(None, manager_name(&status.backend), detail, state_word(widgets::Status::Ok, tr("Detected")));
+    let rows = vec![manager, shortcuts_row(data)];
+    widgets::group(tr("Window manager"), rows, Some(tr("Torro registers the keys while it runs.").to_string()))
+}
+
+/// "2 screens: DP-1 (main), HDMI-A-1".
+fn screens_text(data: &Data) -> String {
+    let names: Vec<String> = data
+        .screens
+        .iter()
+        .map(|screen| match screen.main {
+            true => trf("{screen} (main)", &[("screen", &screen.name)]),
+            false => screen.name.clone(),
+        })
+        .collect();
+    let count = match data.screens.len() {
+        1 => tr("1 screen").to_string(),
+        n => trf("{n} screens", &[("n", &n)]),
+    };
+    format!("{count}: {}", names.join(", "))
+}
+
+/// The row "Shortcuts": what the keys do or why they do not work, and the choice of modifiers.
+fn shortcuts_row<'a>(data: &'a Data) -> Element<'a, Message> {
+    let modifiers = data.settings.workspaces.modifiers;
+    let keys = format!("{} … 0", workspace_keys::label(modifiers, 1));
+    let problem =
+        data.status.as_ref().and_then(|status| status.shortcuts.as_ref()).and_then(|keys| keys.problem.clone());
+    let (mark, detail) = match problem {
+        Some(problem) => (Some(widgets::status_dot(widgets::Status::Attention)), problem),
+        None => (None, trf("{keys} load the template on that key", &[("keys", &keys)])),
+    };
+    let choices: Vec<Modifiers> = ShortcutModifiers::ALL.into_iter().map(Modifiers).collect();
+    let choice = picker(choices, Modifiers(modifiers), |chosen: Modifiers| Message::Modifiers(chosen.0));
+    setting_row(mark, tr("Shortcuts"), Some(detail), choice)
+}
+
+/// The group without a window manager: which one this system needs, and what to do.
+fn unsupported<'a>() -> Element<'a, Message> {
+    let (name, system) = expected();
+    let manager = setting_row(
+        None,
+        trf("{name} not found", &[("name", &name)]),
+        Some(trf("Workspaces on {system} need {name}", &[("system", &system), ("name", &name)])),
+        state_word(widgets::Status::Attention, tr("Not running")),
+    );
+    let off = Some(tr("Off until a window manager is found").to_string());
+    let keys = setting_row(None, tr("Shortcuts"), off, iced::widget::Space::new());
+    let footer = trf("Install and start {name}, then Torro finds it on its own.", &[("name", &name)]);
+    widgets::group(tr("Window manager"), vec![manager, keys], Some(footer))
+}
+
+/// A row's state as a dot and a word ("● Detected"): the colour only in the dot.
+fn state_word<'a>(status: widgets::Status, word: &'a str) -> Element<'a, Message> {
+    row![widgets::status_dot(status), typo::text(typo::meta(), word).style(theme::text_2)]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The window manager this system works with, and the system's name: Hyprland on Linux, AeroSpace on
+/// macOS, GlazeWM on Windows. Names, not translated.
+fn expected() -> (&'static str, &'static str) {
+    if cfg!(target_os = "macos") {
+        ("AeroSpace", "macOS")
+    } else if cfg!(windows) {
+        ("GlazeWM", "Windows")
+    } else {
+        ("Hyprland", "Linux")
+    }
+}
+
+/// The name of the backend the core reports (`hyprland`) as people write it.
+fn manager_name(backend: &str) -> String {
+    match backend {
+        "hyprland" => "Hyprland".into(),
+        "aerospace" => "AeroSpace".into(),
+        "glazewm" => "GlazeWM".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A choice of modifiers in the picker, written as this system's keyboard names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Modifiers(ShortcutModifiers);
+
+impl std::fmt::Display for Modifiers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&workspace_keys::modifiers_label(self.0))
+    }
+}
+
+/// The page's layer over the whole window: the delete confirmation, else the template dialog, else
+/// the "…" menu of a row.
+pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option<Element<'a, Message>> {
     if let Some(template) = state.confirm_delete.as_ref().and_then(|id| find(data, id)) {
         return Some(confirm(
             tr("Delete this template?"),
@@ -167,65 +344,84 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
             Message::CancelDelete,
         ));
     }
-    let template = state.menu.as_ref().and_then(|id| find(data, id))?;
-    Some(widgets::floating(&state.anchor, Placement::Below(Align::End), row_menu(template), Message::CloseMenu))
-}
-
-/// The "…" menu of a row: rename and delete, the actions a row does not show.
-fn row_menu(template: &TemplateSummary) -> Element<'_, Message> {
-    let id = &template.id;
-    widgets::menu(vec![MenuSection::new(vec![
-        MenuItem::new(Icon::SquarePen, tr("Rename"), Message::StartRename(id.clone())),
-        MenuItem::new(Icon::X, tr("Delete"), Message::AskDelete(id.clone())),
-    ])])
-}
-
-/// One template: name, meta line, "Load" and the "…" menu button; in rename mode the row becomes
-/// an input.
-fn template_row<'a>(state: &'a State, template: &'a TemplateSummary, now: DateTime<Utc>) -> Element<'a, Message> {
-    if let Some(rename) = state.renaming.as_ref().filter(|rename| rename.id == template.id) {
-        return rename_row(rename);
+    if let Some(form) = &state.form {
+        let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
+        let facts = Facts {
+            templates: &data.templates,
+            screens: &data.screens,
+            modifiers: data.settings.workspaces.modifiers,
+            narrow,
+        };
+        let content = template_form::view(form, facts).map(Message::Form);
+        return Some(dialog(content, size::form_max(), Message::Form(template_form::Message::Dismiss)));
     }
-    let meta = format!(
-        "{} · {}",
-        if template.windows == 1 {
-            tr("1 window").to_string()
-        } else {
-            trf("{n} windows", &[("n", &template.windows)])
-        },
-        trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
-    );
+    let template = state.menu.as_ref().and_then(|id| find(data, id))?;
+    Some(widgets::floating(
+        &state.anchor,
+        Placement::Below(Align::End),
+        row_menu(template, supported(data)),
+        Message::CloseMenu,
+    ))
+}
+
+/// The "…" menu of a row: what a row does not show. Updating needs the window manager.
+fn row_menu(template: &TemplateSummary, supported: bool) -> Element<'_, Message> {
+    let id = &template.id;
+    let mut edit = vec![MenuItem::new(Icon::SquarePen, tr("Edit…"), Message::Edit(id.clone()))];
+    if supported {
+        edit.push(MenuItem::new(Icon::RefreshCw, tr("Update from current workspace"), Message::Update(id.clone())));
+    }
+    widgets::menu(vec![
+        MenuSection::new(edit),
+        MenuSection::new(vec![MenuItem::new(Icon::Trash2, tr("Delete…"), Message::AskDelete(id.clone()))]),
+    ])
+}
+
+/// "1 window", "3 windows".
+pub fn windows_text(windows: usize) -> String {
+    match windows {
+        1 => tr("1 window").to_string(),
+        n => trf("{n} windows", &[("n", &n)]),
+    }
+}
+
+/// "At startup · DP-1" for a template that loads at login.
+fn startup_text(template: &TemplateSummary) -> Option<String> {
+    let startup = template.startup.as_ref()?;
+    Some(trf("At startup · {screen}", &[("screen", &startup.screen)]))
+}
+
+/// One template: its key, name, meta line, "At startup · DP-1", "Load" and the "…" menu button. In
+/// narrow windows the startup takes the age's place in the meta line, so the name keeps its room and
+/// the startup is not cut off.
+fn template_row<'a>(
+    state: &'a State,
+    template: &'a TemplateSummary,
+    now: DateTime<Utc>,
+    supported: bool,
+    narrow: bool,
+) -> Element<'a, Message> {
+    let startup = startup_text(template);
+    let second = match (&startup, narrow) {
+        (Some(startup), true) => startup.clone(),
+        _ => trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
+    };
+    let meta = [windows_text(template.windows), second];
     let id = &template.id;
     let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(id.clone())));
     // Only the button of the open menu registers its place; the menu floats next to it.
     let more = if state.menu.as_deref() == Some(id.as_str()) { widgets::anchored(&state.anchor, more) } else { more };
-    let actions =
-        row![widgets::text_button(None, tr("Load"), style::button::secondary, Some(Message::Load(id.clone()))), more]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-    setting_row(None, template.name.as_str(), Some(meta), actions)
-}
-
-/// The rename row: the input (Enter saves), "Cancel" and "Save" next to it.
-fn rename_row(rename: &Rename) -> Element<'_, Message> {
-    let can_save = !rename.name.trim().is_empty();
-    let input = text_input(tr("Name"), &rename.name)
-        .size(typo::body().size)
-        .line_height(typo::body().line_height)
-        .font(typo::body().font)
-        .padding(style::INPUT_PADDING)
-        .width(Fill)
-        .style(style::text_input)
-        .on_input(Message::RenameChanged)
-        .on_submit(Message::SaveRename);
-    let content = row![
-        input,
-        widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelRename)),
-        widgets::text_button(None, tr("Save"), style::button::primary, can_save.then_some(Message::SaveRename)),
-    ]
-    .spacing(space::s())
-    .align_y(Alignment::Center);
-    row_frame(content, true)
+    let load =
+        widgets::text_button(None, tr("Load"), style::button::secondary, supported.then(|| Message::Load(id.clone())));
+    let mut actions = row![].spacing(space::s()).align_y(Alignment::Center);
+    if !narrow && let Some(startup) = startup {
+        actions = actions.push(widgets::state_pill(Icon::Clock, startup));
+    }
+    let actions = actions.push(load).push(more);
+    // The keys in one column, so the names stand under each other with and without a key.
+    let key = template.shortcut.map(|key| widgets::kbd(key.to_string()));
+    let key = container(iced::widget::row![].push(key)).center_x(size::control_sm());
+    setting_row(Some(key.into()), template.name.as_str(), Some(meta.join(" · ")), actions)
 }
 
 fn find<'a>(data: &'a Data, id: &str) -> Option<&'a TemplateSummary> {
@@ -255,25 +451,43 @@ pub fn relative_time(updated: DateTime<Utc>, now: DateTime<Utc>) -> String {
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, TimeZone};
+    use torro_ipc::{ScreenInfo, ShortcutStatus, Status};
 
     use super::*;
 
-    fn template(id: &str, name: &str) -> TemplateSummary {
+    fn template(id: &str, name: &str, key: Option<u8>) -> TemplateSummary {
         let updated = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).unwrap();
         TemplateSummary {
             id: id.into(),
             name: name.into(),
             windows: 3,
             updated,
-            shortcut: None,
+            shortcut: key,
             startup: None,
             workspace: "1".into(),
             monitor: None,
         }
     }
 
+    fn status(backend: &str) -> Status {
+        Status {
+            version: "1".into(),
+            backend: backend.into(),
+            workspace: Some("1".into()),
+            templates: 2,
+            busy: false,
+            wm_version: Some("0.56.0".into()),
+            shortcuts: Some(ShortcutStatus { modifiers: ShortcutModifiers::SuperAlt, active: true, problem: None }),
+        }
+    }
+
     fn data() -> Data {
-        Data { templates: vec![template("dev", "Dev"), template("mail", "Mail")], ..Data::default() }
+        Data {
+            templates: vec![template("dev", "Dev", None), template("mail", "Mail", Some(2))],
+            status: Some(status("hyprland")),
+            screens: vec![ScreenInfo { name: "DP-1".into(), width: 2560, height: 1440, scale: 1.0, main: true }],
+            ..Data::default()
+        }
     }
 
     fn sent(action: Action) -> Option<Request> {
@@ -295,47 +509,18 @@ mod tests {
         assert_eq!(relative_time(old, now), datetime::format_date(datetime::to_local(old).date()));
     }
 
+    /// Task WS.6: by key in the order of the keyboard, 0 after 9, then without a key by name.
     #[test]
-    fn rename_saves_trimmed_name_and_closes() {
-        let data = data();
-        let mut state = State::default();
-        update(&mut state, Message::StartRename("dev".into()), &data);
-        update(&mut state, Message::RenameChanged("  Work  ".into()), &data);
-        let request = sent(update(&mut state, Message::SaveRename, &data));
-        assert_eq!(request, Some(Request::RenameTemplate { id: "dev".into(), name: "Work".into() }));
-        assert!(state.renaming.is_none());
-    }
-
-    #[test]
-    fn rename_with_unchanged_or_empty_name_sends_nothing() {
-        let data = data();
-        let mut state = State::default();
-        update(&mut state, Message::StartRename("dev".into()), &data);
-        update(&mut state, Message::RenameChanged("   ".into()), &data);
-        assert!(sent(update(&mut state, Message::SaveRename, &data)).is_none());
-        assert!(state.renaming.is_some(), "an empty name keeps the row open");
-
-        update(&mut state, Message::RenameChanged("Dev ".into()), &data);
-        assert!(sent(update(&mut state, Message::SaveRename, &data)).is_none());
-        assert!(state.renaming.is_none(), "an unchanged name just closes the row");
-    }
-
-    #[test]
-    fn cancel_rename_restores_the_row() {
-        let data = data();
-        let mut state = State::default();
-        update(&mut state, Message::StartRename("dev".into()), &data);
-        update(&mut state, Message::RenameChanged("Changed".into()), &data);
-        assert!(sent(update(&mut state, Message::CancelRename, &data)).is_none());
-        assert!(state.renaming.is_none());
-        assert_eq!(data.templates[0].name, "Dev");
-    }
-
-    #[test]
-    fn starting_rename_for_unknown_template_does_nothing() {
-        let mut state = State::default();
-        update(&mut state, Message::StartRename("gone".into()), &data());
-        assert!(state.renaming.is_none());
+    fn templates_are_sorted_by_key_then_by_name() {
+        let templates = vec![
+            template("z", "zebra", None),
+            template("zero", "Zero", Some(0)),
+            template("a", "Alpha", None),
+            template("nine", "Nine", Some(9)),
+            template("one", "One", Some(1)),
+        ];
+        let ids: Vec<&str> = sorted(&templates).iter().map(|template| template.id.as_str()).collect();
+        assert_eq!(ids, ["one", "nine", "zero", "a", "z"]);
     }
 
     #[test]
@@ -343,6 +528,23 @@ mod tests {
         let mut state = State::default();
         let request = sent(update(&mut state, Message::Load("dev".into()), &data()));
         assert_eq!(request, Some(Request::LoadTemplate { id: "dev".into(), mode: LoadMode::Add }));
+    }
+
+    #[test]
+    fn update_captures_the_workspace_into_the_template() {
+        let mut state = State::default();
+        update(&mut state, Message::ToggleMenu("dev".into()), &data());
+        let request = sent(update(&mut state, Message::Update("dev".into()), &data()));
+        assert_eq!(request, Some(Request::UpdateTemplate { id: "dev".into() }));
+        assert!(state.menu.is_none());
+    }
+
+    #[test]
+    fn the_modifiers_are_a_setting() {
+        let mut state = State::default();
+        let request = sent(update(&mut state, Message::Modifiers(ShortcutModifiers::CtrlShift), &data()));
+        let value = serde_json::json!("ctrl_shift");
+        assert_eq!(request, Some(Request::SetSetting { key: SettingKey::WorkspaceShortcuts, value }));
     }
 
     #[test]
@@ -360,35 +562,67 @@ mod tests {
         assert!(state.menu.is_none());
     }
 
+    /// Task WS.6: "Edit…" opens the dialog; choosing a key another template holds and saving sends
+    /// only the key, and the dialog closes once the core took it.
     #[test]
-    fn the_menu_entries_close_it_and_go_on() {
+    fn edit_opens_the_dialog_and_moving_a_key_sends_only_the_key() {
         let data = data();
         let mut state = State::default();
         update(&mut state, Message::ToggleMenu("dev".into()), &data);
-        update(&mut state, Message::StartRename("dev".into()), &data);
+        update(&mut state, Message::Edit("dev".into()), &data);
         assert!(state.menu.is_none());
-        assert!(state.renaming.is_some());
-
-        update(&mut state, Message::ToggleMenu("mail".into()), &data);
-        update(&mut state, Message::AskDelete("mail".into()), &data);
-        assert!(state.menu.is_none());
-        assert_eq!(state.confirm_delete.as_deref(), Some("mail"));
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some(), "the dialog is a window layer");
+        update(&mut state, Message::Form(template_form::Message::Key(Some(2))), &data);
+        let request = sent(update(&mut state, Message::Form(template_form::Message::Save), &data));
+        assert_eq!(request, Some(Request::SetTemplateShortcut { id: "dev".into(), key: Some(2) }));
+        assert!(matches!(answered(&mut state, &Ok(Response::Ok), &data), Some(Action::None)));
+        assert!(state.form.is_none());
+        assert!(answered(&mut state, &Ok(Response::Ok), &data).is_none(), "nothing waits any more");
     }
 
     #[test]
-    fn escape_closes_the_dialog_then_the_menu_then_the_rename() {
+    fn edit_of_an_unknown_template_opens_nothing() {
+        let mut state = State::default();
+        update(&mut state, Message::Edit("gone".into()), &data());
+        assert!(state.form.is_none());
+    }
+
+    /// Task WS.6: "Save workspace…" saves, and the core's `Saved` opens the dialog in the mode
+    /// `Save`; its Cancel deletes the template, Escape is Cancel.
+    #[test]
+    fn save_workspace_opens_the_dialog_and_its_cancel_deletes() {
         let data = data();
         let mut state = State::default();
-        assert!(escape(&state).is_none());
-        update(&mut state, Message::StartRename("dev".into()), &data);
-        update(&mut state, Message::ToggleMenu("mail".into()), &data);
-        update(&mut state, Message::AskDelete("mail".into()), &data);
-        update(&mut state, Message::ToggleMenu("mail".into()), &data);
-        assert!(matches!(escape(&state), Some(Message::CancelDelete)));
-        update(&mut state, Message::CancelDelete, &data);
-        assert!(matches!(escape(&state), Some(Message::CloseMenu)));
-        update(&mut state, Message::CloseMenu, &data);
-        assert!(matches!(escape(&state), Some(Message::CancelRename)));
+        let request = sent(update(&mut state, Message::SaveWorkspace, &data));
+        assert_eq!(request, Some(Request::SaveTemplate { name: None }));
+        assert!(sent(update(&mut state, Message::SaveWorkspace, &data)).is_none(), "one save at a time");
+        let saved = template("ws-3", "Workspace 3, 20.10. 10:41", None);
+        assert!(answered(&mut state, &Ok(Response::Saved { template: saved }), &data).is_some());
+        let form = state.form.as_ref().expect("the dialog");
+        assert_eq!((form.id(), form.mode()), ("ws-3", Mode::Save));
+        let escape = escape(&state).expect("Escape cancels the dialog");
+        let request = sent(update(&mut state, escape, &data));
+        assert_eq!(request, Some(Request::DeleteTemplate { id: "ws-3".into() }));
+        answered(&mut state, &Ok(Response::Ok), &data);
+        assert!(state.form.is_none());
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_notice_to_the_shell() {
+        let data = data();
+        let mut state = State::default();
+        update(&mut state, Message::SaveWorkspace, &data);
+        assert!(answered(&mut state, &Err("busy".into()), &data).is_none());
+        assert!(!state.saving && state.form.is_none());
+    }
+
+    #[test]
+    fn without_a_window_manager_nothing_saves_or_loads() {
+        let data = Data { status: Some(status("unsupported")), ..data() };
+        let mut state = State::default();
+        assert!(sent(update(&mut state, Message::SaveWorkspace, &data)).is_none());
+        drop(view(&state, &data, SizeClass::Wide));
+        drop(header(&state, &data, SizeClass::Narrow));
     }
 
     #[test]
@@ -407,17 +641,33 @@ mod tests {
     }
 
     #[test]
-    fn views_build_for_empty_and_filled_lists() {
-        let (empty_state, empty_data) = (State::default(), Data::default());
-        let _empty: Element<'_, Message> = view(&empty_state, &empty_data);
+    fn escape_closes_the_confirmation_then_the_dialog_then_the_menu() {
         let data = data();
         let mut state = State::default();
-        update(&mut state, Message::StartRename("dev".into()), &data);
+        assert!(escape(&state).is_none());
+        update(&mut state, Message::ToggleMenu("mail".into()), &data);
+        assert!(matches!(escape(&state), Some(Message::CloseMenu)));
+        update(&mut state, Message::Edit("mail".into()), &data);
+        assert!(matches!(escape(&state), Some(Message::Form(template_form::Message::Cancel))));
         update(&mut state, Message::AskDelete("mail".into()), &data);
-        drop(view(&state, &data));
-        assert!(overlay(&state, &data).is_some(), "the delete confirmation is a window layer");
-        update(&mut state, Message::CancelDelete, &data);
-        assert!(overlay(&state, &data).is_none());
+        assert!(matches!(escape(&state), Some(Message::CancelDelete)));
+    }
+
+    #[test]
+    fn views_build_for_empty_and_filled_lists_in_every_class() {
+        let mut filled = data();
+        filled.templates[1].startup =
+            Some(torro_setups::Startup { screen: "DP-1".into(), fallback: Default::default() });
+        filled.status.as_mut().and_then(|status| status.shortcuts.as_mut()).expect("keys").problem =
+            Some("Super + Alt + 5 could not be registered".into());
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            drop(view(&State::default(), &Data::default(), class));
+            let mut state = State::default();
+            drop(view(&state, &filled, class));
+            update(&mut state, Message::Edit("mail".into()), &filled);
+            assert!(overlay(&state, &filled, class).is_some());
+            drop(header(&state, &filled, class));
+        }
     }
 
     #[test]
@@ -425,9 +675,20 @@ mod tests {
         let data = data();
         let mut state = State::default();
         update(&mut state, Message::ToggleMenu("dev".into()), &data);
-        assert!(overlay(&state, &data).is_some());
-        drop(view(&state, &data));
+        assert!(overlay(&state, &data, SizeClass::Wide).is_some());
         update(&mut state, Message::ToggleMenu("gone".into()), &data);
-        assert!(overlay(&state, &data).is_none(), "a menu for a template that is gone shows nothing");
+        assert!(overlay(&state, &data, SizeClass::Wide).is_none(), "a menu for a template that is gone shows nothing");
+    }
+
+    #[test]
+    fn the_screens_are_counted_and_the_main_one_named() {
+        let mut data = data();
+        assert_eq!(
+            screens_text(&data),
+            format!("{}: {}", tr("1 screen"), trf("{screen} (main)", &[("screen", &"DP-1")]))
+        );
+        data.screens.push(ScreenInfo { name: "HDMI-A-1".into(), width: 1920, height: 1080, scale: 1.0, main: false });
+        assert!(screens_text(&data).ends_with(", HDMI-A-1"));
+        assert_eq!(windows_text(1), tr("1 window"));
     }
 }

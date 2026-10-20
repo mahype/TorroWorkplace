@@ -115,10 +115,15 @@ fn label_on(system: System, modifiers: ShortcutModifiers, key: u8) -> String {
 /// `key` with `modifiers` as people read it on this system: `Super + Alt + 5` on Linux,
 /// `Ctrl + Option + 5` or `Cmd + Option + 5` on macOS, `Win + Alt + 5` on Windows. For messages and
 /// the control centre; Hyprland gets [`hyprland_keys`].
-// On Linux only the tests call it until the control centre shows the keys (task WS.6).
-#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 pub fn label(modifiers: ShortcutModifiers, key: u8) -> String {
     label_on(System::CURRENT, modifiers, key)
+}
+
+/// The modifiers alone as people read them on this system (`Super + Alt`, macOS `Ctrl + Option`): the
+/// control centre's choice of modifiers and the "Shortcut" line of the template dialog (task WS.6).
+pub fn modifiers_label(modifiers: ShortcutModifiers) -> String {
+    let [first, second] = modifier_names(modifiers, System::CURRENT);
+    format!("{first} + {second}")
 }
 
 /// `key` with `modifiers` in Hyprland's spelling: `SUPER + ALT + 5`. [`KeyBind::keys`] keeps it, and
@@ -483,6 +488,10 @@ mod tests {
         assert_eq!(spelled, expected.map(|(h, p)| (h.to_string(), p.to_string())));
         assert_eq!(for_people("CTRL + SHIFT + 0"), "Ctrl + Shift + 0");
         assert_eq!(label(ShortcutModifiers::CtrlAlt, 5), label_on(System::CURRENT, ShortcutModifiers::CtrlAlt, 5));
+        // The modifiers alone are the key's label without its digit (task WS.6).
+        for modifiers in ShortcutModifiers::ALL {
+            assert_eq!(format!("{} + 7", modifiers_label(modifiers)), label(modifiers, 7));
+        }
     }
 
     /// Task WS.4: macOS and Windows name the modifiers as their keyboards do; Hyprland keeps Linux's.

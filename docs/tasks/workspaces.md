@@ -159,7 +159,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   Bildschirm mit `Main`/`Skip`, Reihenfolge, Fokus zurück.
 
 ### WS.6 Oberfläche: Seite Workspaces und Dialog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WS.2 · **Dateien:** `crates/torroworkplace/src/ui/{workspaces,template_form,mod,launch}.rs`
   (`template_form.rs` neu), `crates/torroworkplace/src/main.rs`
 - `template_form`: der Dialog aus dem Entwurf (Name, Tastenreihe „None“ + 1 … 0 mit Name der Inhaberin, Hinweis

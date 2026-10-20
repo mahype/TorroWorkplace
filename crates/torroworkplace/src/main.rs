@@ -10,6 +10,8 @@
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
+//!   `ui --template=<id> [--saved]` shows only the dialog of one workspace template, in a small
+//!   window of its own (the tray and `apps.open_app` start it).
 //! - `mcp`: one MCP server for the whole suite, on stdio, with the agent's key from
 //!   `TORRO_TOKEN`.
 //!
