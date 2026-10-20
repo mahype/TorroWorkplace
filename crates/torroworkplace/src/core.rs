@@ -5650,28 +5650,37 @@ impl Core {
     /// The first start after the switches of the models came (task S.24,
     /// [`AiAccounts::keep_used_models_on`]): the models the suite already uses stay on – the
     /// assistant's default for new chats, the models assigned to functions (`ai.set_assignment`,
-    /// #231: a deciding model has no tools, so the rule alone would turn it off) and the models of
-    /// the bots. Afterwards it does nothing. Always lets the readers of the switches go
-    /// ([`AiAccounts::hold_until_kept`]).
+    /// #231) and the models of the bots. Where one of them names no model ("Automatic", #231), the
+    /// model "Automatic" took there stays on, once its server listed its models
+    /// ([`crate::account::ai::Automatic`]): for chats and bots the one it took before the switches,
+    /// for a function that needs a decision model the one sorting mail took. This is the person's
+    /// own choice kept, no agent's command: nothing is asked for approval. Afterwards it does nothing.
+    /// Always lets the readers of the switches go ([`AiAccounts::hold_until_kept`]).
     pub(crate) async fn keep_used_models_on(&self) {
-        let mut used = Vec::new();
+        use crate::account::ai::Automatic;
+        let chat = Automatic { chat: true, ..Automatic::default() };
+        let (mut used, mut automatic) = (Vec::new(), Vec::new());
         let settings = self.settings.current();
-        if let Some(default) = settings.assistant_default
-            && let Some(model) = default.model
-        {
-            used.push((default.engine, model));
+        if let Some(default) = settings.assistant_default {
+            match default.model {
+                Some(model) => used.push((default.engine, model)),
+                None => automatic.push((default.engine, chat)),
+            }
         }
         for assigned in settings.ai_assignments.into_values() {
-            if let (Some(engine), Some(model)) = (assigned.engine, assigned.model) {
-                used.push((engine, model));
+            let Some(engine) = assigned.engine else { continue };
+            match assigned.model {
+                Some(model) => used.push((engine, model)),
+                None => automatic.push((engine, Automatic::for_function(assigned.function, settings.mail_to_cloud))),
             }
         }
         for bot in self.assistant.bots().list().await {
-            if let Some(model) = bot.model {
-                used.push((bot.engine, model));
+            match bot.model {
+                Some(model) => used.push((bot.engine, model)),
+                None => automatic.push((bot.engine, chat)),
             }
         }
-        if let Err(err) = self.ai.keep_used_models_on(used).await {
+        if let Err(err) = self.ai.keep_used_models_on(used, automatic).await {
             eprintln!("torroworkplace: cannot keep the models in use on: {err}");
         }
     }
@@ -16274,6 +16283,50 @@ mod tests {
         assert_eq!(on_cloud, ["openai/gpt-4o", "qwen/qwen3-14b"]);
     }
 
+    /// #231, the first start after the update: an assistant default and a bot with "Automatic" at
+    /// accounts in the cloud keep the model "Automatic" took on – listed as engines before their
+    /// servers answered, with the model on once they did – so nobody loses the assistant.
+    #[tokio::test]
+    async fn what_automatic_used_stays_on_after_the_update() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (openrouter, anthropic) = (fake_openrouter().await, crate::account::ai::tests::fake_anthropic().await);
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant);
+        let cloud = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let claude = core
+            .ai
+            .connect(
+                AiProvider::Anthropic,
+                Some(&anthropic.url("/v1")),
+                torro_core::account::Secret::new(crate::account::ai::tests::CLAUDE_KEY),
+            )
+            .await
+            .expect("anthropic");
+        let default = serde_json::json!({"engine": claude.id});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(core.handle(set).await, Response::Ok);
+        let mut save = save_bot(None, "Travel planner");
+        if let Request::SaveBot { engine, model, .. } = &mut save {
+            (*engine, *model) = (cloud.id.clone(), None);
+        }
+        bot_of(core.handle(save).await);
+
+        core.keep_used_models_on().await;
+        let Response::Engines { engines } = core.handle(Request::ListEngines).await else { panic!("engines") };
+        for id in [&cloud.id, &claude.id] {
+            assert!(engines.iter().any(|engine| &engine.id == id), "{id} before its list: {engines:?}");
+        }
+        let on =
+            |list: Vec<(String, bool)>| list.into_iter().filter(|(_, on)| *on).map(|(id, _)| id).collect::<Vec<_>>();
+        assert_eq!(on(switched(&core, &cloud.id).await), ["qwen/qwen3-14b"]);
+        assert_eq!(on(switched(&core, &claude.id).await), ["claude-opus-5"]);
+    }
+
     /// Task S.24: no client turns on a model that computes elsewhere, whatever its rights, and
     /// nothing waits for the person then; a model that computes here goes off and on only once the
     /// person allowed it, the approval naming model and place from the core's list. The log names
@@ -16541,7 +16594,7 @@ mod tests {
         // Task S.24: only models that are on count. A model in use before the switches came stays on,
         // also one the list lacks and one that counts as elsewhere; the cloud model the person turns on.
         let used = vec![(told.clone(), "llama3:8b".to_string()), (untold.clone(), "qwen3:8b".to_string())];
-        core.ai.keep_used_models_on(used).await.expect("kept on");
+        core.ai.keep_used_models_on(used, Vec::new()).await.expect("kept on");
         assert_eq!(core.handle(turn_on(&told, "glm-5.3:cloud")).await, Response::Ok);
         assert_eq!(at(told.clone(), None).await, ("qwen3:8b".to_string(), Place::Local), "Automatic: local first");
         assert_eq!(at(told.clone(), Some("glm-5.3:cloud")).await, ("glm-5.3:cloud".to_string(), Place::Remote));

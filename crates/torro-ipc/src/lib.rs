@@ -2007,7 +2007,9 @@ pub enum Request {
     // C.10) live in `<config>/assistant/` (0600).
     /// The engines the assistant can answer with ([`Response::Engines`]): every AI account with at
     /// least one model turned on (task S.24, [`Request::SetModelEnabled`]) in the order they were
-    /// added, then the test engine where the core offers it. Never fails.
+    /// added, then the test engine where the core offers it. After the update that brought the
+    /// switches, an account used with "Automatic" counts as well until its server first lists its
+    /// models; the model "Automatic" took there is on from then (#231). Never fails.
     #[serde(rename = "assistant.list_engines")]
     ListEngines,
     /// Every conversation without its entries, pinned first, then the most recently active

@@ -569,6 +569,72 @@ struct Switches {
     /// on in doubt.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     keep_used: bool,
+    /// Accounts a module used with "Automatic" before the switches came (#231), whose model is still
+    /// to be kept on: at the first start after the update the core may not reach their servers, and
+    /// what "Automatic" took is in the list of the server only. Taken over at the first list that
+    /// loads ([`AiAccounts::take_over`]); until then such an account counts as offering a model
+    /// ([`AiAccounts::offers_a_model`]). A person who switches at the account drops it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    automatic: std::collections::BTreeMap<String, Automatic>,
+}
+
+/// What a module used "Automatic" at an AI account for before the switches came (#231), so the
+/// first start after the update keeps on the model it took ([`AiAccounts::keep_used_models_on`]).
+/// Each mark that is set turns on its own pick ([`Automatic::picks`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Automatic {
+    /// New chats or a bot: the model "Automatic" took then ([`crate::assistant::ModelAccess::automatic`]:
+    /// open weights, on this computer first, with tools).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat: bool,
+    /// A function that needs a decision model, with mail allowed to the cloud: the first model that
+    /// decides, as sorting mail took it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decides: bool,
+    /// The same while mail may not leave this computer: the first model that decides and computes here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decides_here: bool,
+}
+
+impl Automatic {
+    /// What "Automatic" was used for at a function: its decision model for one that needs one
+    /// (only one on this computer for a function that reads mail while `mail_to_cloud` is off), else
+    /// the model a chat takes.
+    pub fn for_function(function: ai::AiFunction, mail_to_cloud: bool) -> Automatic {
+        match function.needs_decision() {
+            true if function.reads_mail() && !mail_to_cloud => Automatic { decides_here: true, ..Automatic::default() },
+            true => Automatic { decides: true, ..Automatic::default() },
+            false => Automatic { chat: true, ..Automatic::default() },
+        }
+    }
+
+    /// Both uses together: every pick of either.
+    fn and(self, other: Automatic) -> Automatic {
+        Automatic {
+            chat: self.chat || other.chat,
+            decides: self.decides || other.decides,
+            decides_here: self.decides_here || other.decides_here,
+        }
+    }
+
+    /// The models of `models` (all of the account's, as its server lists them) that "Automatic"
+    /// took for the uses marked, `place` saying where each computes; none for a use the account
+    /// offers nothing for.
+    pub fn picks(self, models: &[AiModel], place: impl Fn(&AiModel) -> crate::assistant::Place) -> Vec<AiModel> {
+        let here = |model: &AiModel| place(model) == crate::assistant::Place::Local;
+        let decides = |model: &&AiModel| model.decision == Some(true);
+        let mut picks = Vec::new();
+        if self.chat {
+            picks.extend(crate::assistant::ModelAccess::automatic(models.to_vec(), &place).ok());
+        }
+        if self.decides {
+            picks.extend(models.iter().find(decides).cloned());
+        }
+        if self.decides_here {
+            picks.extend(models.iter().filter(decides).find(|model| here(model)).cloned());
+        }
+        picks
+    }
 }
 
 /// Whether `model` of the account at `server` (its kind and base address, `None` when it is gone)
@@ -653,14 +719,19 @@ impl AiAccounts {
     }
 
     /// Loads the stored AI accounts with their keys, in the background. Asks no server: a local one
-    /// may not run now, and that is no problem until it is used. An account that needs a key and
-    /// has none is listed with a problem and can be connected again or removed.
+    /// may not run now, and that is no problem until it is used – except the servers of accounts
+    /// still to take over from "Automatic" (#231, [`AiAccounts::take_over`]), after the core kept
+    /// the models in use on. An account that needs a key and has none is listed with a problem and
+    /// can be connected again or removed.
     pub fn start(self: &Arc<Self>) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
             if let Err(err) = service.load().await {
                 eprintln!("torroworkplace: cannot read the AI accounts: {err}");
             }
+            // What "Automatic" used before the switches (#231): once the core has noted it.
+            service.kept().await;
+            service.take_over_automatic().await;
         });
     }
 
@@ -824,7 +895,49 @@ impl AiAccounts {
             }
         }
         let models = result?;
+        self.take_over(id, &models).await;
         Ok(if all { models } else { ai::open_weights_only(models) })
+    }
+
+    /// Keeps on what "Automatic" took at the account `id` before the switches came (#231,
+    /// [`Switches::automatic`]), now that its server listed `models` (all of them): once, and only
+    /// while it is still to be taken over. A file that cannot be written is only reported; the next
+    /// list tries again. The log names the account and how many models, never which.
+    async fn take_over(&self, id: &str, models: &[AiModel]) {
+        let server = self.server(id).await;
+        let mut held = self.switches().await;
+        let Some(switches) = held.as_mut() else { return };
+        let Some(automatic) = switches.automatic.get(id).copied() else { return };
+        let Some((provider, base)) = server else { return };
+        let place = |model: &AiModel| crate::assistant::place_of(provider, &base, model);
+        let mut changed = switches.clone();
+        changed.automatic.remove(id);
+        let mut kept = 0;
+        for model in automatic.picks(models, place) {
+            if !changed.held.is_on(id, &model, place(&model) == crate::assistant::Place::Local) {
+                changed.held.turn_on(id, &model.id);
+                kept += 1;
+            }
+        }
+        match self.store_switches(&changed).await {
+            Ok(()) => {
+                *switches = changed;
+                eprintln!("torroworkplace: {id}: kept on {kept} model(s) \"Automatic\" used before the switches");
+            }
+            Err(err) => eprintln!("torroworkplace: cannot keep on what \"Automatic\" used at {id}: {err}"),
+        }
+    }
+
+    /// Asks the server of every account still to take over from "Automatic" for its models
+    /// ([`AiAccounts::take_over`], #231). One that does not answer stays marked for its first list.
+    async fn take_over_automatic(&self) {
+        let pending: Vec<String> =
+            self.switches().await.as_ref().map(|held| held.automatic.keys().cloned().collect()).unwrap_or_default();
+        for id in pending {
+            if let Err(err) = self.models(&id, true).await {
+                eprintln!("torroworkplace: {id}: \"Automatic\" is taken over at its first list ({})", err.code());
+            }
+        }
     }
 
     /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
@@ -963,23 +1076,26 @@ impl AiAccounts {
     /// Whether the account `id` has at least one model on, what `assistant.list_engines` lists and
     /// what an answer needs: judged by the account's list as the core last held it, where it holds
     /// one (a model turned on that the server no longer offers does not count). Without one, a model
-    /// turned on by id counts, and the server is asked only where the rule could turn a model on: at
+    /// turned on by id counts, and so does an account still to take over from "Automatic"
+    /// ([`Switches::automatic`]); the server is asked only where the rule could turn a model on: at
     /// an account where nothing was turned off yet, whose models could compute on this computer
     /// ([`AiAccounts::known_models`]). A list that fails then counts as "yes": the answer reports the
     /// server's problem, not the switches. `false` for an id that is no AI account.
     pub async fn offers_a_model(&self, id: &str) -> bool {
         self.kept().await;
         let Some(server) = self.server(id).await else { return false };
-        let (follows_rule, turned_on) = {
+        let (follows_rule, turned_on, automatic) = {
             let held = self.switches().await;
+            let automatic = held.as_ref().is_some_and(|held| held.automatic.contains_key(id));
             let switches = held.as_ref().map(|held| &held.held);
-            (switches.is_none_or(|s| s.follows_rule(id)), switches.is_some_and(|s| s.has_turned_on(id)))
+            (switches.is_none_or(|s| s.follows_rule(id)), switches.is_some_and(|s| s.has_turned_on(id)), automatic)
         };
         // Models turned on by id count while the core has no list to check them against; with one,
-        // only those the server still offers.
+        // only those the server still offers. So does a model "Automatic" took before the switches
+        // came (#231), still to be kept on: nobody loses the assistant while its server is away.
         let listed =
             self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
-        if turned_on && listed.is_none() {
+        if (turned_on || automatic) && listed.is_none() {
             return true;
         }
         if let Some(listed) = listed {
@@ -1023,9 +1139,15 @@ impl AiAccounts {
     /// off at an account whose models could compute here, the models the rule has on are kept on
     /// ([`ModelSwitches::turn_off`]), so the list is needed then ([`AiAccounts::known_models`]).
     /// [`AiError::NotFound`] for an id that is no AI account, [`AiError::Format`] when the file
-    /// cannot be written (nothing changes then).
+    /// cannot be written (nothing changes then). An account still to take over from "Automatic"
+    /// ([`Switches::automatic`], #231) is not any more: the person's switch wins.
     pub async fn set_enabled(&self, id: &str, model: &str, enabled: bool) -> Result<(), AiError> {
         let server = self.server(id).await.ok_or_else(|| no_account(id))?;
+        // Whoever switches at the account decides there (#231): what "Automatic" used before the
+        // switches is not taken over, also not by the list asked for below. Stored with the switch.
+        if let Some(held) = self.switches().await.as_mut() {
+            held.automatic.remove(id);
+        }
         let on_by_rule: Vec<String> = if enabled {
             let models = self.models(id, true).await?;
             if !models.iter().any(|known| known.id == model) {
@@ -1068,14 +1190,22 @@ impl AiAccounts {
     /// module chooses later turns nothing on. Ids that are no AI account (`ai:…`) are left out, and
     /// so are accounts a person switched a model at already (#231): their switch wins. Lets the
     /// readers of the switches go ([`AiAccounts::hold_until_kept`]) whatever came of it.
-    pub async fn keep_used_models_on(&self, used: Vec<(String, String)>) -> Result<(), String> {
-        let kept = self.keep_used(used).await;
+    ///
+    /// `automatic` (#231): the accounts used with "Automatic" (no model named) and what for. The
+    /// model it took is in the server's list only, so they are noted ([`Switches::automatic`]) and
+    /// taken over at the first list that loads ([`AiAccounts::take_over`]); no server is asked here.
+    pub async fn keep_used_models_on(
+        &self,
+        used: Vec<(String, String)>,
+        automatic: Vec<(String, Automatic)>,
+    ) -> Result<(), String> {
+        let kept = self.keep_used(used, automatic).await;
         self.kept.send_replace(true);
         kept
     }
 
     /// [`AiAccounts::keep_used_models_on`] without letting the readers go.
-    async fn keep_used(&self, used: Vec<(String, String)>) -> Result<(), String> {
+    async fn keep_used(&self, used: Vec<(String, String)>, automatic: Vec<(String, Automatic)>) -> Result<(), String> {
         let mut held = self.switches().await;
         let switches = held.get_or_insert_with(Switches::default);
         if !switches.keep_used {
@@ -1089,6 +1219,12 @@ impl AiAccounts {
                 seeded.held.turn_on(account, model);
             }
         }
+        for (account, uses) in automatic.into_iter().filter(|(account, _)| account.starts_with("ai:")) {
+            if !switched.contains(&account) {
+                let noted = seeded.automatic.entry(account).or_default();
+                *noted = noted.and(uses);
+            }
+        }
         seeded.keep_used = false;
         self.store_switches(&seeded).await?;
         *switches = seeded;
@@ -1100,11 +1236,12 @@ impl AiAccounts {
     async fn forget_switches(&self, id: &str) {
         let mut held = self.switches().await;
         let switches = held.get_or_insert_with(Switches::default);
-        if !switches.held.accounts.contains_key(id) {
+        if !switches.held.accounts.contains_key(id) && !switches.automatic.contains_key(id) {
             return;
         }
         let mut changed = switches.clone();
         changed.held.forget(id);
+        changed.automatic.remove(id);
         match self.store_switches(&changed).await {
             Ok(()) => *switches = changed,
             Err(err) => eprintln!("torroworkplace: cannot forget the models of a removed AI account: {err}"),
@@ -1652,10 +1789,10 @@ pub(crate) mod tests {
     }
 
     /// Anthropic's key for the tests; must look like a real one so `scrub` has something to find.
-    const CLAUDE_KEY: &str = "sk-ant-api03-0123456789SECRETabcdef";
+    pub(crate) const CLAUDE_KEY: &str = "sk-ant-api03-0123456789SECRETabcdef";
 
     /// A fake Anthropic whose `/v1/models` answers with two models for the right key.
-    async fn fake_anthropic() -> MockServer {
+    pub(crate) async fn fake_anthropic() -> MockServer {
         let server = MockServer::start_async().await;
         server
             .mock_async(|when, then| {
@@ -1975,7 +2112,7 @@ pub(crate) mod tests {
         again.load().await.expect("loaded");
         assert_eq!(on(&again, &cloud.id).await, ["openai/gpt-4o"], "after a new start");
         assert_eq!(on(&again, &local.id).await, ["qwen3:8b"]);
-        assert!(again.keep_used_models_on(vec![(local.id.clone(), "gemma3:4b".into())]).await.is_ok());
+        assert!(again.keep_used_models_on(vec![(local.id.clone(), "gemma3:4b".into())], Vec::new()).await.is_ok());
         assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "a person switched there: their switch wins");
 
         again.remove(&cloud.id).await.expect("removed");
@@ -1996,12 +2133,12 @@ pub(crate) mod tests {
             .await
             .expect("openrouter");
         let used = vec![(cloud.id.clone(), "qwen/qwen3-14b".to_string()), ("claude-code".into(), "opus".into())];
-        ai.keep_used_models_on(used).await.expect("kept on");
+        ai.keep_used_models_on(used, Vec::new()).await.expect("kept on");
         assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
         assert!(ai.offers_a_model(&cloud.id).await);
         let stored = std::fs::read_to_string(dir.path().join("config").join(ai::MODELS_FILE)).expect("stored");
         assert!(!stored.contains("claude-code"), "{stored}");
-        ai.keep_used_models_on(vec![(cloud.id.clone(), "openai/gpt-4o".into())]).await.expect("once only");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "openai/gpt-4o".into())], Vec::new()).await.expect("once only");
         assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
     }
 
@@ -2026,7 +2163,7 @@ pub(crate) mod tests {
         let again = service(dir.path(), &keys, Vec::new());
         again.load().await.expect("loaded");
         let used = vec![(cloud.id.clone(), "qwen/qwen3-14b".to_string()), (local.id.clone(), "gemma3:4b".into())];
-        again.keep_used_models_on(used).await.expect("kept on");
+        again.keep_used_models_on(used, Vec::new()).await.expect("kept on");
         assert_eq!(on(&again, &cloud.id).await, ["qwen/qwen3-14b"]);
         assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "the person's account stays theirs");
         assert!(!std::fs::read_to_string(&file).expect("stored").contains("keep_used"), "done");
@@ -2042,7 +2179,9 @@ pub(crate) mod tests {
         std::fs::write(&file, r#"{"accounts": {}}"#).expect("an old file");
         let ai = service(old.path(), &keys, Vec::new());
         ai.load().await.expect("loaded");
-        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())]).await.expect("nothing to do");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())], Vec::new())
+            .await
+            .expect("nothing to do");
         assert!(on(&ai, &cloud.id).await.is_empty());
     }
 
@@ -2065,8 +2204,130 @@ pub(crate) mod tests {
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!reader.is_finished(), "it waits");
-        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())]).await.expect("kept on");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())], Vec::new()).await.expect("kept on");
         assert!(reader.await.expect("read"), "and reads the model kept on");
+    }
+
+    /// #231: what "Automatic" took before the switches – for a chat open weights, here first, with
+    /// tools; for sorting mail the first model that decides, here only where mail may not leave.
+    #[test]
+    fn automatic_picks_what_it_took_before_the_switches() {
+        use crate::assistant::Place;
+        let model = |id: &str, tools: bool, open: bool, decides: bool, remote: bool| AiModel {
+            tools: Some(tools),
+            open_weights: Some(open),
+            decision: Some(decides),
+            remote: Some(remote),
+            ..AiModel::named(id)
+        };
+        let models = [
+            model("closed", true, false, false, false),
+            model("cloud-decides", false, true, true, true),
+            model("cloud-tools", true, true, false, true),
+            model("here-decides", false, true, true, false),
+            model("here-tools", true, true, false, false),
+        ];
+        let place = |model: &AiModel| if model.remote == Some(true) { Place::Remote } else { Place::Local };
+        let ids = |uses: Automatic| uses.picks(&models, place).into_iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_eq!(ids(Automatic { chat: true, ..Automatic::default() }), ["here-tools"]);
+        assert_eq!(ids(Automatic { decides: true, ..Automatic::default() }), ["cloud-decides"]);
+        assert_eq!(ids(Automatic { decides_here: true, ..Automatic::default() }), ["here-decides"]);
+        let both = Automatic { chat: true, ..Automatic::default() }
+            .and(Automatic { decides_here: true, ..Automatic::default() });
+        assert_eq!(ids(both), ["here-tools", "here-decides"]);
+        assert!(Automatic::default().picks(&models, place).is_empty());
+        let sorting = ai::AiFunction::InboxCategorize;
+        assert_eq!(Automatic::for_function(sorting, false), Automatic { decides_here: true, ..Automatic::default() });
+        assert_eq!(Automatic::for_function(sorting, true), Automatic { decides: true, ..Automatic::default() });
+    }
+
+    /// #231: an account used with "Automatic" before the switches keeps that model on at its first
+    /// list – OpenRouter and Anthropic compute elsewhere, so the rule alone would leave them off –,
+    /// counts as offering a model until then, and is taken over once.
+    #[tokio::test]
+    async fn what_automatic_used_stays_on_at_the_first_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (openrouter, anthropic) = (fake_openrouter().await, fake_anthropic().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let claude = ai
+            .connect(AiProvider::Anthropic, Some(&anthropic.url("/v1")), Secret::new(CLAUDE_KEY))
+            .await
+            .expect("anthropic");
+        let chat = Automatic { chat: true, ..Automatic::default() };
+        let automatic = vec![(cloud.id.clone(), chat), (claude.id.clone(), chat), ("claude-code".into(), chat)];
+        ai.keep_used_models_on(Vec::new(), automatic).await.expect("noted");
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        let stored = std::fs::read_to_string(&file).expect("stored");
+        assert!(stored.contains("automatic") && !stored.contains("claude-code"), "{stored}");
+        assert!(ai.offers_a_model(&cloud.id).await && ai.offers_a_model(&claude.id).await, "before any list");
+
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"], "open weights first");
+        assert_eq!(on(&ai, &claude.id).await, ["claude-opus-5"]);
+        assert!(!std::fs::read_to_string(&file).expect("stored").contains("automatic"), "taken over");
+        ai.set_enabled(&cloud.id, "qwen/qwen3-14b", false).await.expect("off");
+        assert!(on(&ai, &cloud.id).await.is_empty(), "once only: a list later turns nothing on again");
+    }
+
+    /// #231: a server that does not answer at the first start keeps the account marked, and it
+    /// counts as offering a model; its first list takes it over. A person who switches there first
+    /// wins: nothing is taken over.
+    #[tokio::test]
+    async fn automatic_waits_for_a_server_that_is_away_and_gives_way_to_a_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/v1/key");
+                then.status(200).json_body(json!({"data": {"label": "sk-or-v1-012…def", "limit": null}}));
+            })
+            .await;
+        let away = server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/v1/models");
+                then.status(503);
+            })
+            .await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&server.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("connected");
+        let chat = Automatic { chat: true, ..Automatic::default() };
+        ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
+        ai.take_over_automatic().await;
+        assert!(ai.models(&cloud.id, true).await.is_err(), "the server is away");
+        assert!(ai.offers_a_model(&cloud.id).await, "nobody loses the assistant meanwhile");
+
+        away.delete_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/v1/models");
+                then.status(200).json_body(json!({"data": [
+                    {"id": "qwen/qwen3-14b", "name": "Qwen3 14B", "hugging_face_id": "Qwen/Qwen3-14B",
+                     "supported_parameters": ["tools"]},
+                ]}));
+            })
+            .await;
+        ai.take_over_automatic().await;
+        assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"], "taken over at the first list");
+
+        // Another account, where the person switches before the list loads.
+        let other = tempfile::tempdir().expect("temp dir");
+        let openrouter = fake_openrouter().await;
+        let ai = service(other.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.keep_used_models_on(Vec::new(), vec![(cloud.id.clone(), chat)]).await.expect("noted");
+        ai.set_enabled(&cloud.id, "openai/gpt-4o", true).await.expect("the person's switch");
+        assert_eq!(on(&ai, &cloud.id).await, ["openai/gpt-4o"], "their switch wins");
     }
 
     /// Task S.24: a model turned on that the server no longer offers counts once the core holds the
@@ -2081,7 +2342,7 @@ pub(crate) mod tests {
             .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
             .await
             .expect("openrouter");
-        ai.keep_used_models_on(vec![(cloud.id.clone(), "gone/model".into())]).await.expect("kept on");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "gone/model".into())], Vec::new()).await.expect("kept on");
         assert!(ai.offers_a_model(&cloud.id).await, "without a list the switch counts");
         assert!(on(&ai, &cloud.id).await.is_empty(), "the server does not list it");
         assert!(!ai.offers_a_model(&cloud.id).await, "with the list it does not count");
