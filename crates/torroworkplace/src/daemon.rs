@@ -1308,17 +1308,72 @@ mod tests {
         assert_eq!(describe(&answer), "answer an invitation");
     }
 
-    /// PR #259: `systemctl --user stop` and `kill` send SIGTERM; it must end the service the way
-    /// Ctrl+C does (releasing the template keys), not kill the process before that.
+    /// Set for this test binary as a child of [`a_stop_signal_ends_the_service_like_quit`]: only then
+    /// does [`stop_signals_in_a_child`] wait for a signal.
+    #[cfg(unix)]
+    const STOP_CHILD: &str = "TORRO_TEST_STOP_SIGNALS";
+
+    /// What the child prints once [`stop_signals`] is called.
+    #[cfg(unix)]
+    const STOP_READY: &str = "torro-stop-signals-ready";
+
+    /// PR #259: `systemctl --user stop` and `kill` send SIGTERM, a terminal Ctrl+C sends SIGINT; both
+    /// must end the service the way "Quit" does (releasing the template keys), not kill the process,
+    /// also when they come before anything waits for them.
+    ///
+    /// The signal goes to a child, this test binary running only [`stop_signals_in_a_child`], never to
+    /// the test binary itself: tokio never takes a handler back, so the test binary would ignore SIGTERM
+    /// and Ctrl+C from then on, and `timeout`, the test runner or a person could no longer stop it.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_signal_ends_the_service_like_quit() {
+        use std::io::BufRead;
+        use std::process::{Command, Stdio};
+        let path = module_path!().split_once("::").map_or(module_path!(), |(_, path)| path);
+        let test = format!("{path}::stop_signals_in_a_child");
+        for signal in ["TERM", "INT"] {
+            let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                .args([test.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+                .env(STOP_CHILD, "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("child starts");
+            let mut lines = std::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+            // On the line of the test runner's "test … ", which ends only after the test.
+            let ready = lines.by_ref().map_while(Result::ok).any(|line| line.contains(STOP_READY));
+            if ready {
+                let sent = Command::new("kill")
+                    .args([format!("-{signal}"), child.id().to_string()])
+                    .status()
+                    .expect("kill runs");
+                assert!(sent.success(), "SIG{signal} not sent");
+            }
+            // Read to the end: the child still writes its result, a closed pipe would fail it.
+            let rest: Vec<String> = lines.map_while(Result::ok).collect();
+            let output = child.wait_with_output().expect("child ends");
+            let errors = String::from_utf8_lossy(&output.stderr);
+            assert!(ready, "the child never got ready: {rest:?} {errors}");
+            assert!(
+                output.status.success(),
+                "SIG{signal} did not end it like Quit: {:?} {rest:?} {errors}",
+                output.status
+            );
+        }
+    }
+
+    /// The child of [`a_stop_signal_ends_the_service_like_quit`]; without [`STOP_CHILD`] it does
+    /// nothing. Waits a while before it polls [`stop_signals`]: the signal comes meanwhile and must be
+    /// kept, not end the process.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_sigterm_ends_the_service_like_ctrl_c() {
+    async fn stop_signals_in_a_child() {
+        if std::env::var_os(STOP_CHILD).is_none() {
+            return;
+        }
         let stopped = stop_signals();
-        let sent = std::process::Command::new("kill")
-            .args(["-TERM", &std::process::id().to_string()])
-            .status()
-            .expect("kill runs");
-        assert!(sent.success());
-        assert!(tokio::time::timeout(Duration::from_secs(5), stopped).await.is_ok(), "SIGTERM did not end it");
+        println!("{STOP_READY}");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(tokio::time::timeout(Duration::from_secs(10), stopped).await.is_ok(), "the signal did not end it");
     }
 }
