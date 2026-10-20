@@ -502,19 +502,20 @@ impl InboxClient {
         }
     }
 
-    /// `inbox.suggest_task_from_item` (issue #120, "AI task"): what the AI suggests as a task of the
-    /// entry `id`; nothing is saved. Errors as mapped above: [`InboxError::NotFound`] for an entry
+    /// `inbox.suggest_task_from_item` (issue #120, "Fill in with AI" in the dialog of "Make task"):
+    /// what the AI suggests as a task of the entry `id`, its list one of `lists` (the names the
+    /// dialog offers); nothing is saved. Errors as mapped above: [`InboxError::NotFound`] for an entry
     /// the app may not see, [`InboxError::Offline`] while the core is not running, and
     /// [`InboxError::Other`] with the core's words for everything about the AI (none set up, its
     /// server offline, an answer that is no suggestion).
-    pub async fn suggest_task_from_item(&self, id: String) -> Result<TaskSuggestion, InboxError> {
-        match self.ask(Request::SuggestTaskFromItem { id }).await? {
+    pub async fn suggest_task_from_item(&self, id: String, lists: Vec<String>) -> Result<TaskSuggestion, InboxError> {
+        match self.ask(Request::SuggestTaskFromItem { id, lists }).await? {
             Response::TaskSuggestion { suggestion } => Ok(suggestion),
             other => Err(unexpected(other)),
         }
     }
 
-    /// `inbox.suggest_event_from_item` (issue #120, "AI event"): what the AI suggests as an event of
+    /// `inbox.suggest_event_from_item` (issue #120, "Fill in with AI" in the dialog of "Make event"): what the AI suggests as an event of
     /// the entry `id`; nothing is saved. Errors as for [`InboxClient::suggest_task_from_item`].
     pub async fn suggest_event_from_item(&self, id: String) -> Result<EventSuggestion, InboxError> {
         match self.ask(Request::SuggestEventFromItem { id }).await? {
@@ -994,11 +995,12 @@ mod tests {
                     },
                 ],
             },
-            Request::SuggestTaskFromItem { id } if id == "i1" => Response::TaskSuggestion {
+            Request::SuggestTaskFromItem { id, lists } if id == "i1" => Response::TaskSuggestion {
                 suggestion: TaskSuggestion {
                     title: "Send the report".into(),
                     notes: None,
                     due: Some(EventTime::Date(day(16))),
+                    list: lists.into_iter().next(),
                     engine: "ai:ollama@localhost:11434".into(),
                     model: "qwen3:8b".into(),
                 },
@@ -1269,11 +1271,12 @@ mod tests {
         let core = start(|request| async move { answer(request) }).await;
         let client = core.client();
         assert!(!client.ai_ready().await, "only an agent and an account with a problem");
-        let task = client.suggest_task_from_item("i1".into()).await.expect("a suggestion");
+        let task = client.suggest_task_from_item("i1".into(), vec!["Work".into()]).await.expect("a suggestion");
         assert_eq!((task.title.as_str(), task.due), ("Send the report", Some(EventTime::Date(day(16)))));
+        assert_eq!(task.list.as_deref(), Some("Work"), "the lists go along");
         let event = client.suggest_event_from_item("i1".into()).await.expect("a suggestion");
         assert_eq!((event.location.as_deref(), event.attendees.len()), (Some("Café"), 1));
-        let none = client.suggest_task_from_item("i9".into()).await;
+        let none = client.suggest_task_from_item("i9".into(), Vec::new()).await;
         assert_eq!(none, Err(InboxError::Other("Set up an AI first.".into())));
         let noted = client.create_task_with("i2".into(), "work".into(), None, None, Some("Bring the slides".into()));
         assert_eq!(noted.await, Ok(()));

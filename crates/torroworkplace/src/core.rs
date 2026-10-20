@@ -3478,8 +3478,12 @@ impl Core {
             }
             // Boxed, as the ntfy commands above: asking each AI account for its models (task S.23)
             // would grow this match's poll frame by a whole suggestion.
-            Request::SuggestTaskFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Task, client)).await,
-            Request::SuggestEventFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Event, client)).await,
+            Request::SuggestTaskFromItem { id, lists } => {
+                Box::pin(self.suggest_from_item(&id, Wanted::Task, lists, client)).await
+            }
+            Request::SuggestEventFromItem { id } => {
+                Box::pin(self.suggest_from_item(&id, Wanted::Event, Vec::new(), client)).await
+            }
             Request::GetQuiet => self.get_quiet(client).await,
             // The catalogue and the backlog need the mail stores, so the core answers them, not
             // the inbox database (task E12.4).
@@ -3698,7 +3702,13 @@ impl Core {
     /// account would answer with, [`Core::suggestion_model`]), then one question to it
     /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
     /// says; the protocol names no text.
-    async fn suggest_from_item(&self, id: &str, wanted: Wanted, client: Option<&torro_ipc::ClientInfo>) -> Response {
+    async fn suggest_from_item(
+        &self,
+        id: &str,
+        wanted: Wanted,
+        lists: Vec<String>,
+        client: Option<&torro_ipc::ClientInfo>,
+    ) -> Response {
         let now = Utc::now();
         let entry = match self.inbox.handle(Request::GetItem { id: id.to_string() }, client, now) {
             Response::Item { item } => item,
@@ -3714,6 +3724,7 @@ impl Core {
             }),
             received: entry.received,
             text: self.text_for_ai(&entry, reach).await,
+            lists: crate::suggest::offered_lists(lists),
         };
         let default = self.settings.current().assistant_default;
         let local_only = crate::assistant::held_back(&entry);
@@ -16317,7 +16328,7 @@ mod tests {
         let core = core_with_ai(dir.path(), &keys, Vec::new());
         let app_key = crate::clients::tests::app_key(dir.path());
         let entry = posted_entry(&core).await;
-        let suggest = |id: &str| Request::SuggestTaskFromItem { id: id.to_string() };
+        let suggest = |id: &str| Request::SuggestTaskFromItem { id: id.to_string(), lists: Vec::new() };
         let none = ask(&core, Some(&app_key), suggest(&entry)).await;
         assert_eq!(code(&none), "not-connected", "no AI yet: {none:?}");
 
@@ -16420,7 +16431,7 @@ mod tests {
         let suggested = |id: String| {
             let (core, app_key) = (&core, &app_key);
             async move {
-                match ask(core, Some(app_key), Request::SuggestTaskFromItem { id }).await {
+                match ask(core, Some(app_key), Request::SuggestTaskFromItem { id, lists: Vec::new() }).await {
                     Response::TaskSuggestion { suggestion } => suggestion.model,
                     other => panic!("a suggestion: {other:?}"),
                 }

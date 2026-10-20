@@ -29,7 +29,7 @@
 //!   Reply all · Forward | Archive · Delete, Flag, read –, what Torro adds in its fixed footer. The
 //!   reader has none of the red (task E11.3): a command bar at the top ([`commands`]: Reply ▾ ·
 //!   Forward · Archive · Delete · Later · "…", the rest in [`reply_menu`] and [`more_menu`]), Torro's
-//!   functions as pills under the sender ([`pills`]: Task · AI task · Event · AI event · Mute…), the
+//!   functions as pills under the sender ([`pills`]: Task · Event · Mute…), the
 //!   attachments as chips ([`attachment_line`]) and the view's switches in a foot ([`foot`]). Which
 //!   bars a mail in the panel has, [`Bars`] says (task E11.4): the hub and the App Feed keep the
 //!   split of E9.4, the mail window's panel in medium and narrow takes the reader's parts – the
@@ -2008,8 +2008,8 @@ pub fn panel_foot<'a>(reading: &Reading<'_>, width: f32) -> Vec<Element<'a, Mess
 /// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
 /// order of the reader's former Torro bar: "Task" (task E8.7b), a line, then the bell
 /// "Mute…" (issue #123: the message's own traits) and the view group ([`view_controls`]) – one row
-/// that wraps in a narrow panel. "Later" joins "Task" with task E9.2; the AI buttons need an entry
-/// (the core suggests from entries only), so a folder's message has none.
+/// that wraps in a narrow panel. "Later" joins "Task" with task E9.2; the AI fills in only the dialogs
+/// of entries (the core suggests from entries only).
 fn folder_footer<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Vec<Element<'a, Message>> {
     let id = reading.id;
     let task = Some(Message::AskMailTask(id.to_owned()));
@@ -2174,16 +2174,13 @@ fn text_level(read: bool) -> typo::Level {
 }
 
 /// The entry a mail in the reader belongs to (task E8.3): Later in the command bar, the pills Task,
-/// AI task, Event, AI event and Mute…, and Done and "Move to …" in "…" act on it, as `s`, `t`, `c`,
+/// Event and Mute…, and Done and "Move to …" in "…" act on it, as `s`, `t`, `c`,
 /// `m`, `e` and `l` do (task E11.3).
 #[derive(Debug, Clone, Copy)]
 pub struct ReaderEntry<'a> {
     pub item: &'a Item,
     /// The entry can be muted (`App::hidable`): the reader shows its pill "Mute…" (issue #123).
     pub hide: bool,
-    /// An AI is set up (issue #120): the pills "AI task" and "AI event" are on; else off, with a
-    /// tooltip that says to set one up first.
-    pub ai: bool,
 }
 
 /// The reader of the wide mail window (task E8.3) beside the list, in four parts from top to bottom
@@ -2410,21 +2407,20 @@ pub struct Pill {
     pub label: String,
     /// What a click sends; `None` shows the pill off.
     pub message: Option<Message>,
-    /// Why it is off – an AI pill without an AI (issue #120) –, as its tooltip; `None` while it is
-    /// on.
+    /// Why it is off, as its tooltip; `None` while it is on.
     pub tip: Option<String>,
 }
 
 /// What Torro adds to the mail in `reading` (task E11.3), as pills in this order: for an `entry`
-/// Task (`AskTask`), AI task, Event (`AskEvent`), AI event (`suggest::ai_buttons`: off without an
-/// AI, the tooltip says why) and – where it can be muted ([`ReaderEntry::hide`]) – Mute…
+/// Task (`AskTask`), Event (`AskEvent`) – their dialogs fill themselves in with the AI on request
+/// (`App::suggest_task`) – and – where it can be muted ([`ReaderEntry::hide`]) – Mute…
 /// (`AskHide`); for a folder's message Task (`AskMailTask`, task E8.7b) and Mute… (`AskMuteMail`,
 /// issue #123) – the core suggests and makes events from entries only. Each sends what its button
 /// sent before (task E9.4), so requests and keys stay the same.
 pub fn pills(reading: &Reading<'_>, entry: Option<ReaderEntry<'_>>) -> Vec<Pill> {
     let deciding = reading.deciding;
     let pill = |icon, label: &str, message| Pill { icon, label: label.to_owned(), message: Some(message), tip: None };
-    let Some(ReaderEntry { item, hide, ai }) = entry else {
+    let Some(ReaderEntry { item, hide }) = entry else {
         let id = || reading.id.to_owned();
         return vec![
             pill(Icon::ListTodo, tr("Task"), Message::AskMailTask(id())),
@@ -2432,17 +2428,9 @@ pub fn pills(reading: &Reading<'_>, entry: Option<ReaderEntry<'_>>) -> Vec<Pill>
         ];
     };
     let id = || item.id.clone();
-    let [ai_task, ai_event] = crate::suggest::ai_buttons(&item.id, ai).map(|(wanted, message, tip)| Pill {
-        icon: Icon::Sparkles,
-        label: wanted.label().to_owned(),
-        tip: message.is_none().then_some(tip),
-        message,
-    });
     let mut pills = vec![
         pill(Icon::ListTodo, tr("Task"), Message::AskTask(id())),
-        ai_task,
         pill(Icon::CalendarPlus, tr("Event"), Message::AskEvent(id())),
-        ai_event,
     ];
     // What the mail is (task E12.8): change it by hand, or let the model look again. Only mail
     // has a category, and only there do the two make sense.
@@ -3220,41 +3208,29 @@ mod tests {
         });
     }
 
-    /// Task E11.3: the pills are exactly Task, AI task, Event, AI event, Mute… for an entry – the AI
-    /// off and saying why without an AI, no Mute… where it cannot be muted – and Task, Mute… for a
+    /// Task E11.3: the pills are exactly Task, Event, Mute… for an entry – no AI pills of their own:
+    /// the dialogs fill themselves in –, no Mute… where it cannot be muted – and Task, Mute… for a
     /// folder's message; each sends what its button sent before.
     #[test]
     fn the_pills_are_what_torro_adds() {
         let item = mail_entry();
         let words = |pills: &[Pill]| pills.iter().map(|pill| pill.label.clone()).collect::<Vec<_>>();
         reading_of("m:w1", MailFormat::Html, true, |reading| {
-            let all = pills(reading, Some(ReaderEntry { item: &item, hide: true, ai: true }));
+            let all = pills(reading, Some(ReaderEntry { item: &item, hide: true }));
             // Task E12.8 adds "Category…" before "Mute…"; "Re-categorize" only with a model
             // set up (`docs/ki.md`, principle 1), and this reading has none.
-            assert_eq!(
-                words(&all),
-                [tr("Task"), tr("AI task"), tr("Event"), tr("AI event"), tr("Category…"), tr("Mute…")]
-            );
+            assert_eq!(words(&all), [tr("Task"), tr("Event"), tr("Category…"), tr("Mute…")]);
             let last = all.len() - 1;
             assert!(matches!(all[last - 1].message.as_ref(), Some(Message::AskCategory(id)) if *id == item.id));
             let sent = |n: usize| all[n].message.as_ref();
             assert!(matches!(sent(0), Some(Message::AskTask(id)) if *id == item.id));
-            assert!(matches!(sent(1), Some(Message::SuggestTask(id)) if *id == item.id));
-            assert!(matches!(sent(2), Some(Message::AskEvent(id)) if *id == item.id));
-            assert!(matches!(sent(3), Some(Message::SuggestEvent(id)) if *id == item.id));
-            assert!(matches!(sent(5), Some(Message::AskHide(id)) if *id == item.id));
+            assert!(matches!(sent(1), Some(Message::AskEvent(id)) if *id == item.id));
+            assert!(matches!(sent(3), Some(Message::AskHide(id)) if *id == item.id));
             assert!(all.iter().all(|pill| pill.tip.is_none()), "on, no tooltip of their own");
             let anchors = detail::Anchors::default();
             let _ = pill_row(all.clone(), &anchors);
-            let quiet = pills(reading, Some(ReaderEntry { item: &item, hide: false, ai: false }));
-            assert_eq!(
-                words(&quiet),
-                [tr("Task"), tr("AI task"), tr("Event"), tr("AI event"), tr("Category…")],
-                "no bell"
-            );
-            let tip = |wanted| Some(crate::suggest::tooltip(wanted, false));
-            assert!(quiet[1].message.is_none() && quiet[1].tip == tip(crate::suggest::Wanted::Task));
-            assert!(quiet[3].message.is_none() && quiet[3].tip == tip(crate::suggest::Wanted::Event));
+            let quiet = pills(reading, Some(ReaderEntry { item: &item, hide: false }));
+            assert_eq!(words(&quiet), [tr("Task"), tr("Event"), tr("Category…")], "no bell");
             let folder = pills(reading, None);
             assert_eq!(words(&folder), [tr("Task"), tr("Mute…")]);
             assert!(matches!(folder[0].message.as_ref(), Some(Message::AskMailTask(id)) if id == "m:w1"));
@@ -3383,7 +3359,7 @@ mod tests {
             assert!(foot_controls(reading.view_tools()).is_empty());
         });
         let item = mail_entry();
-        let entry = ReaderEntry { item: &item, hide: true, ai: true };
+        let entry = ReaderEntry { item: &item, hide: true };
         reading_of("m:w1", MailFormat::Html, true, |reading| {
             let anchors = detail::Anchors::default();
             for width in [width, 480.0, 0.0] {
@@ -3519,7 +3495,7 @@ mod tests {
                     };
                     let anchors = detail::Anchors::default();
                     let _ = panel(&reading, Some(&folder), &anchors, Bars::Split);
-                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true, ai: false })] {
+                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
                         // The mail window's panel (task E11.4), over the medium window and filling a
                         // narrow one.
                         for width in [size::panel(), 480.0] {
@@ -3580,7 +3556,7 @@ mod tests {
     }
 
     /// Task E11.2: a message's strip in the mail window – its buttons and then the bell, in the order
-    /// of `list::edge_actions` – is Archive · Delete · Task (its icon red) · Mute…, an invitation's
+    /// of `list::edge_actions` – is Archive · Delete · Task · Mute… (no icon red), an invitation's
     /// Accept · Maybe · Decline · Later · Task · Mute…: the bell stays last, nothing is lost.
     #[test]
     fn a_messages_strip_files_it_then_task_then_the_bell() {
@@ -3591,8 +3567,7 @@ mod tests {
             let strip = list::edge_actions(buttons);
             let after: Vec<String> = strip.iter().map(|b| format!("{:?}", b.on_press)).collect();
             assert_eq!(after, before, "the order the buttons had already");
-            let red: Vec<String> = strip.iter().filter(|b| b.accent).map(|b| b.label.to_string()).collect();
-            assert_eq!(red, [tr("Task")]);
+            assert!(strip.iter().all(|b| !b.accent), "no red icon, Task's neither");
             strip.iter().map(|b| b.label.to_string()).collect::<Vec<_>>()
         };
         let mut message = demo::mail_sample(now()).remove(0).summary;

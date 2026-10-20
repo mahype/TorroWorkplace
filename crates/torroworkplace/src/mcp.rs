@@ -1996,7 +1996,7 @@ mod tests {
     #[test]
     fn the_suggestions_take_the_entry_and_the_makers_take_note_and_place() {
         for (tool, wanted) in [
-            ("inbox_suggest_task_from_item", Request::SuggestTaskFromItem { id: "i1".into() }),
+            ("inbox_suggest_task_from_item", Request::SuggestTaskFromItem { id: "i1".into(), lists: Vec::new() }),
             ("inbox_suggest_event_from_item", Request::SuggestEventFromItem { id: "i1".into() }),
         ] {
             assert_eq!(request_for(tool, args(json!({"id": "i1"})), &Utc), Ok(wanted));

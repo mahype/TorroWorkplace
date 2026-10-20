@@ -3573,9 +3573,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen in Torro Workplace.",
         "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Werkzeuge, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
     ),
-    // Inbox: AI task and AI event (issue #120)
-    ("AI event", "KI-Termin"),
-    ("AI task", "KI-Aufgabe"),
+    // Inbox: the AI fills in the dialogs of Task and Event (issue #120)
+    ("Fill in with AI", "Mit KI ausfüllen"),
+    ("The AI fills in only what waits in your inbox", "Die KI füllt nur aus, was in deinem Eingang wartet"),
     (
         "Ask your AI for a task from {entry}; nothing is saved",
         "Deine KI um eine Aufgabe aus {entry} bitten; nichts wird gespeichert",
