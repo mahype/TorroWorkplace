@@ -3334,9 +3334,21 @@ impl Core {
             }
             // The switches (task S.24, #231): a model that is off is not assigned, as no module
             // offers it. Only while the assignment is on, so a person can still switch it off.
+            // Without a model named, while mail stays on this computer only the models here count:
+            // one on elsewhere would never be asked, and nothing would say why.
+            let considered: Vec<_> =
+                match wanted.model.is_none() && function.reads_mail() && !self.settings.current().mail_to_cloud {
+                    true => models
+                        .iter()
+                        .filter(|model| crate::assistant::place_of(provider, &server, model) == Place::Local)
+                        .cloned()
+                        .collect(),
+                    false => models.clone(),
+                };
             if wanted.enabled
-                && let Some(refused) =
-                    self.model_off_refusal(engine, wanted.model.as_deref(), function.needs_decision(), &models).await
+                && let Some(refused) = self
+                    .model_off_refusal(engine, wanted.model.as_deref(), function.needs_decision(), &considered)
+                    .await
             {
                 return refused;
             }
@@ -3910,7 +3922,13 @@ impl Core {
             return (at, Some(model));
         }
         let Ok(models) = models else { return (Place::Remote, None) };
-        let on = self.ai.mark_enabled(id, models).await.into_iter().filter(|model| model.enabled);
+        // A model that only decides (nimble) is on for the mail sorting, never asked to suggest.
+        let on = self
+            .ai
+            .mark_enabled(id, models)
+            .await
+            .into_iter()
+            .filter(|model| model.enabled && model.tools != Some(false));
         let (local, elsewhere): (Vec<_>, Vec<_>) = on.partition(|model| place(model) == Place::Local);
         if let Ok(model) = crate::suggest::pick_model(local) {
             return (Place::Local, Some(model));

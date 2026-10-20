@@ -1032,8 +1032,10 @@ impl AiAccounts {
     async fn kept(&self) {
         let mut kept = self.kept.subscribe();
         // Timed out, the switches are read as they are: better a model counted off than a core
-        // that hangs.
-        let _ = tokio::time::timeout(KEPT_WAIT, kept.wait_for(|kept| *kept)).await;
+        // that hangs. Then for good, so a takeover that never came does not hold every reader again.
+        if tokio::time::timeout(KEPT_WAIT, kept.wait_for(|kept| *kept)).await.is_err() {
+            self.kept.send_replace(true);
+        }
     }
 
     /// Writes `switches` to `ai-models.json` on a blocking thread.
@@ -1074,7 +1076,9 @@ impl AiAccounts {
         self.mark_enabled(id, vec![model]).await.first().is_some_and(|model| model.enabled)
     }
 
-    /// Whether the account `id` has at least one model on, what `assistant.list_engines` lists and
+    /// Whether the account `id` has at least one model on that can chat (its tools not ruled out: a
+    /// model that only decides, like nimble, is on for the mail sorting, never for a chat), what
+    /// `assistant.list_engines` lists and
     /// what an answer needs: judged by the account's list as the core last held it, where it holds
     /// one (a model turned on that the server no longer offers does not count). Without one, a model
     /// turned on by id counts, and so does an account still to take over from "Automatic"
@@ -1100,13 +1104,13 @@ impl AiAccounts {
             return true;
         }
         if let Some(listed) = listed {
-            return self.mark_enabled(id, listed).await.iter().any(|model| model.enabled);
+            return self.mark_enabled(id, listed).await.iter().any(chats);
         }
         if !follows_rule || !may_compute_here(Some(&server)) {
             return false;
         }
         match self.known_models(id, None).await {
-            Ok(models) => self.mark_enabled(id, models).await.iter().any(|model| model.enabled),
+            Ok(models) => self.mark_enabled(id, models).await.iter().any(chats),
             Err(_) => true,
         }
     }
@@ -1277,6 +1281,12 @@ impl AiAccounts {
 /// [`AiError::NotFound`] for the id `id` that is no AI account.
 pub(crate) fn no_account(id: &str) -> AiError {
     AiError::NotFound(torro_core::i18n::trf("There is no AI account {id}.", &[("id", &id)]))
+}
+
+/// Whether `model` is on and may answer a chat: its tools are not ruled out (#231). A model that
+/// only decides is on for the mail sorting and counts for nothing else.
+fn chats(model: &AiModel) -> bool {
+    model.enabled && model.tools != Some(false)
 }
 
 #[cfg(test)]
@@ -2092,7 +2102,7 @@ pub(crate) mod tests {
         let ollama = ai.connect(AiProvider::Ollama, Some(&server.url("/v1")), Secret::default()).await.expect("ollama");
         // The fake's tags list only nimble, so qwen3 counts as elsewhere.
         assert_eq!(on(&ai, &ollama.id).await, ["nimble"]);
-        assert!(ai.offers_a_model(&ollama.id).await);
+        assert!(!ai.offers_a_model(&ollama.id).await, "on for the mail sorting, never a chat engine");
     }
 
     /// Task S.24: switching stores `ai-models.json` (0600) and survives a new start; turning on takes
