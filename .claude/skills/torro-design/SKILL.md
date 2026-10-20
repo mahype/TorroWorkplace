@@ -148,8 +148,8 @@ aus einem Guss wirkt:
 | `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
 | `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
 | `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst (die Leiste der gewählten Mail war bis #227 so hoch, sie ist jetzt `control_sm()`) |
-| `size::command()` | 46 | Befehlsleiste oben im Leser des Mail-Fensters (`widgets::command_bar`, E11.1) |
-| `size::pill()` | 42 | Torro-Pillen im Leser (`widgets::pill_button`: Task, Event, Mute…) und Avatar im Kopf des Lesers (E11.1) |
+| `size::command()` | 46 | Bleibt im Paket-Format (E14, Entscheidung 9), kein Baustein nutzt es mehr: die Befehlsleiste des Lesers (E11.1) ist mit #241 entfernt |
+| `size::pill()` | 42 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
 | `size::row_message()` | 92 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen 20, oben und unten 16 (E3.9, E11.1) |
 | `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
@@ -282,25 +282,52 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
   `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
   `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
-- **Befehlsleiste und Leiste der Zeile** (E11.1, Mail-Fenster in allen Größen; Entwurf
-  `docs/prototypes/inbox/mail-buttons.html#d`): **Aktionen sind Zellen bzw. Pillen, Ansicht ist versenkt.**
-  Oben im Leser `widgets::command_bar` (`size::command()` 46, Zellen gleich breit über die ganze Breite,
-  senkrechte `LINE` dazwischen, `LINE` darunter) mit `command_split` (Reply, kräftig, Menü ▾ „More replies“),
-  `command_cell` (Icon 14 und Wort `typo::body()`, ohne Wort Icon 16 mit Tooltip) und `command_more` („…“);
-  Wörter für alle oder keine nach `widgets::command_words`. In der gewählten Zeile der Liste
-  `widgets::row_strip` (`size::control_sm()` 28, von Rand zu Rand, anstelle der Vorschauzeile: die Zeile wächst
-  nicht, Absender und Betreff bleiben stehen, der Kontoname entfällt; `LINE` oben und dazwischen, Tooltip mit Wort
-  und `kbd`; seit #227), Wörter nach `widgets::row_strip_words`. Zellen sind `style::button::cell` (flach, `raised`, ohne
-  Radius und Rand). Was Torro dazugibt, sind **Pillen** (`widgets::pill_button`, `size::pill()` 42, voll rund,
-  `style::button::pill`): Rand und Icon in der Akzentfarbe, Wort in `TEXT`, Fläche neutral – Ausnahme von „Rot
-  nur Primärknopf“ wie die KI-Sparkles; in der Leiste der Zeile nur das Icon rot (`RowAction::accent`). Das
-  Mail-Fenster hat dann keinen roten Primärknopf mehr. Ansicht-Schalter liegen versenkt:
-  `widgets::view_switch` (Spur `style::container::track` auf `BG` mit `LINE_STRONG`, Segmente nur Icon mit
-  Tooltip, `size::control()`). Anhänge als `widgets::file_chip` (32 hoch, Büroklammer in `TEXT_3`, Größe in
-  `typo::meta()`); Suchfeld über der Liste `style::text_input_flat` (ohne Rand, Fokus bleibt sichtbar).
-  Alles anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design plex`).
-- **Standard oben, Torro-Leiste unten** (E9.4, gilt nur noch für Zentrale und App Feed; das Mail-Fenster folgt
-  E11): Was jedes Programm dieser Art kann
+- **Aktionsleiste der Mail** (E14, nur das Mail-Fenster, alle Größen; Entwurf
+  `docs/prototypes/inbox/mail-aktionsleiste.html#d`): Alles, was man mit der geöffneten Mail tun kann, steht in
+  **einer Leiste am rechten Rand der Mail** (`widgets::action_rail`), über die ganze Höhe, Fläche `PANEL`, links eine
+  `LINE`, `space::xs()` Luft zur Scrollleiste davor; die Liste hat keine Knöpfe, über der Mail stehen keine. Gruppen
+  (`widgets::RailGroup`) in fester Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · More
+  (`RailGroup::foot`), jede nur mit dem, was für die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne
+  Nachricht, 40 %, ohne `kbd`). **Feste Gruppen-Icons** (Reply, Check, ListTodo, Flag, BellOff, Ellipsis), egal was
+  das erste Item ist. **Reply** ist die Hauptgruppe (`RailGroup::accent`): eingeklappt eine gefüllte rote Fläche wie
+  der Primärknopf, Icon in `on_accent`; ausgeklappt und im Klappfeld rotes Icon und Wort „Reply“ kräftig
+  (`RailItem::lead`, `typo::body_strong()` in `TEXT`). KI-Sparkles nur als Icon in der Akzentfarbe
+  (`RailItem::accent`). Ein Klick aufs Gruppen-Icon tut das erste Item, das geht – **nie ein destruktives**
+  (`RailItem::danger`, Delete): ist es das, öffnet der Klick das Klappfeld. Mark zeigt eine markierte Mail am Icon
+  (`RailGroup::tinted`, `attention`). More beginnt mit Copy text (ein Klick auf „…“ kopiert).
+  **Eingeklappt** (`RailMode::Collapsed`, `shell::rail()` breit): oben der Umschalter `panel-right` als Icon-Knopf
+  (`size::control_lg()`, `style::button::icon`, Tooltip „Expand actions“ mit `kbd` „]“) `space::s()` vom Rand, darunter
+  `space::s()` und eine `LINE` von Rand zu Rand – in beiden Modi gleich, der Knopf springt beim Umschalten nicht. Ein
+  Icon je Gruppe; `SELECTED`, solange ihr Klappfeld oder ein Menü/Dialog ihrer Items offen ist. Das Klappfeld
+  (`widgets::rail_flyout`) öffnet erst, wenn der Zeiger **ca. 150 ms** auf dem Icon ruht (die App hält Zeitpunkt und
+  Timer, `widgets::RailEvent`); von einem offenen Feld zur Nachbargruppe sofort; Verlassen schließt sofort. Es liegt
+  links neben dem Icon und endet `space::xs()` vor der `LINE` der Leiste; für alle Gruppen gleich breit
+  (`size::sidebar()`), Fläche und Rand wie ein Menü, Gruppenname als Abschnittstitel, Zeilen 30 mit Icon, Wort und
+  `kbd`; die Zeile, die ein Klick aufs Icon auslöst, steht hervorgehoben. Obere Gruppen: erste Zeile auf Höhe des
+  Icons; untere Gruppen unten bündig; am Fensterrand begrenzt. Kein Scrim; es liegt als Ebene über dem ganzen Fenster
+  (`Shell::overlay`), nie in einem schmaleren Teil. **Ausgeklappt** (`RailMode::Expanded`, `size::sidebar()` breit, nur
+  in Breit): Umschalter an derselben Stelle (Tooltip „Collapse actions“), alle Gruppen offen im Rhythmus der linken
+  Seitenleiste – Zeilen `size::row_sidebar()` mit 2 Abstand, Titel wie `widgets::sidebar_group_in`; die erste Gruppe
+  und Gruppen mit nur einem Item ohne Titel (nur dessen Abstand darüber). Die Spalte gehört zum Layout, die Mail rückt
+  nach innen. Oben scrollt, wenn das Fenster zu niedrig ist (Scrollleiste im Rand, die `kbd` bleiben frei),
+  `space::s()` vor dem Fuß, der bleibt. Bekäme der Leser neben der ausgeklappten Leiste weniger als
+  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Umschalter zeigt den
+  echten Zustand, `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
+  (`Panel::side(rail, RailMode::Collapsed.width())`), die Leiste immer eingeklappt und ohne Umschalter; in Mittel ist
+  das Paneel `size::panel()` + Leiste breit, die Mail behält 400. **Umschalten:** Knopf oder Taste `]`
+  (`shell::is_actions_key`, wie `[` für die Seitenleiste), gemerkt je Fensterart und Ausschnitt in `ui.json`
+  (`ui_state::actions_from`, `"collapsed"`/`"expanded"`). Einladungen (Accept, Maybe, Decline) bleiben als Karte im
+  Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design plex`).
+- **Befehlsleiste und Leiste der Zeile** (E11.1, **mit #241 entfernt**): Die Befehlsleiste oben im Leser
+  (`widgets::command_bar` mit `command_split`, `command_cell`, `command_more`, `command_words`), die Leiste der
+  gewählten Zeile (`widgets::row_strip`, `row_strip_words`), die Torro-Pillen (`widgets::pill_button`) und der versenkte
+  Ansicht-Schalter (`widgets::view_switch`) gibt es nicht mehr; das Mail-Fenster hat dafür die Aktionsleiste der Mail
+  (oben). Geblieben sind die Anhänge als `widgets::file_chip` (32 hoch, Büroklammer in `TEXT_3`, Größe in
+  `typo::meta()`) unten im Leser und das Suchfeld über der Liste `style::text_input_flat` (ohne Rand, Fokus bleibt
+  sichtbar). Die Stile `style::button::cell`, `style::button::pill` und `style::container::track` stehen noch in
+  `style.rs`, nutzt aber kein Baustein mehr. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar`.
+- **Standard oben, Torro-Leiste unten** (E9.4, gilt nur noch für Zentrale und App Feed; das Mail-Fenster hat die
+  Aktionsleiste der Mail, E14): Was jedes Programm dieser Art kann
   (Reply, Reply all, Forward | Archive, Delete; Flag, gelesen, Close als Icons), steht **fest oben** über dem
   Scrollbereich, mit Linie darunter; was Torro dazugibt (Erledigen · KI · Ansicht), **schwebt unten** als eigene
   Fläche über dem Inhalt. Knöpfe beider Leisten eine Stufe höher als in Kopfleisten: `widgets::bar_button`

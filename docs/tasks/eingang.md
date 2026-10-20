@@ -2127,6 +2127,147 @@ Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/ap
   die das Wegfallen beschreiben (Nachtrag bei E8.2 und die Aufgaben von E13); die vier Dokumente beschreiben die Dichte
   als Wert des Designs; `scripts/ci-local.sh` grün.
 
+## E14 Mail-Fenster: Aktionsleiste rechts (Issue #241, Plan 2026-10-20)
+
+Maßstab: Entwurf **D** in [`docs/prototypes/inbox/mail-aktionsleiste.html`](../prototypes/inbox/mail-aktionsleiste.html#d)
+und Issue #241. Regeln: Skill `torro-design`, Ablauf je Aufgabe: Skill `torro-task`. Die Liste des Mail-Fensters zeigt
+keine Knöpfe mehr; Befehlsleiste, Pillen und Fuß des Lesers (E11.3) und des Paneels (E11.4) gehen in eine Leiste am
+rechten Rand der Mail. **Nur Oberfläche:** Jede Aktion schickt dieselbe Message wie heute und damit denselben
+Request; keine neuen Requests, keine MCP-Tools, die Tasten in `keys.rs` bleiben, dazu kommt nur `]`. Ob die Leiste
+ausgeklappt ist, ist Fensterzustand in `ui.json` (wie die Seitenleiste, `torro_gui::ui_state`), ohne API.
+
+Entschieden am 2026-10-20 (Planung #241):
+
+1. **Eingeklappt** (`shell::rail()` breit): ein Icon je Gruppe. Ein Klick tut die erste Aktion der Gruppe; Hover
+   öffnet links daneben das Klappfeld der Gruppe, für alle Gruppen gleich breit (`size::sidebar()`), mit Icon, Wort
+   und Taste je Zeile. **Ausgeklappt** (`size::sidebar()` breit): alle Gruppen offen mit Namen, als Spalte im Layout;
+   die Mail rückt nach innen, nichts liegt über ihr. Verworfen: jede Aktion ein eigenes Icon (Entwurf A, 17 Icons) und
+   eine Schublade über der Mail (B als Overlay).
+2. **Gruppen** in dieser Reihenfolge, jede nur mit dem, was für die Mail geht: **Reply** (Reply, Reply all, Forward;
+   Icon in der Akzentfarbe wie die Pillen aus E11), **File** (Done bzw. Reopen, Later…, Move to Info/For me, Archive,
+   Delete), **Torro** (Task, Event, Category…, Re-categorize), **Mark** (Flag/Unflag, Mark read/unread), **Mute**
+   (Mute…), **More** (Show as text/HTML, Light/Dark, Copy text, im Leser Close). Unten abgesetzt: Mute und More.
+3. **Nur das Mail-Fenster** (`Kind::Mail`), in allen Größen. Zentrale und App Feed behalten Zeilenleiste und Paneel aus
+   E9.4 (in der Planung entschieden).
+4. **Kein Rechtsklick-Menü** in der Liste (in der Planung entschieden); dort bleiben die Tasten.
+5. **Ausklappen nur in Breit.** In Mittel und Schmal steht die Mail im Paneel (`size::panel()` bzw. ganze Breite),
+   die Leiste bleibt dort eingeklappt und zeigt keinen Umschalter.
+6. **Umschalten:** Knopf `panel-right` oben in der Leiste („Expand actions“ / „Collapse actions“) und Taste `]` (wie
+   `[` für die Seitenleiste). Gemerkt je Fensterart und Ausschnitt in `ui.json`, Schlüssel wie bei der Breite der
+   Liste (`App::window_key`).
+7. **Einladungen:** Accept, Maybe, Decline bleiben als Karte im Kopf der Mail (`invite_card`), nicht in der Leiste.
+8. **Tastatur:** Iced-Knöpfe lassen sich nicht per Tab fokussieren; jede Aktion der Leiste hat weiter ihre Taste,
+   im Klappfeld als `kbd` sichtbar.
+9. **Maße `command` und `pill`** bleiben im Paket-Format (`torro_core::design::Size`), auch wenn kein Baustein sie mehr
+   braucht: das Format ändert sich nicht.
+
+```
+E14.1 ── E14.2 (Liste) ── E14.3 (Leser und Paneel)
+```
+
+Nicht parallel: E14.2 und E14.3 ändern beide `crates/torroinbox/src/{list,mail,app}.rs`.
+
+### E14.1 Bausteine: Aktionsleiste, Klappfeld, gemerkter Zustand
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{widgets,panel,ui_state,icon,shell}.rs`,
+  `crates/torro-gui/assets/icons/panel-right.svg` (neu), `crates/torro-gui/examples/gallery.rs`,
+  `.claude/skills/torro-design/SKILL.md`
+- **Typen** (`widgets`): `RailItem { icon, label, key, on_press: Option<M>, accent }` (aus = 40 % Deckkraft wie
+  `bar_button`), `RailGroup { icon, label, items, accent }` (Klick auf das Gruppen-Icon schickt das erste Item, das
+  geht), `RailMode { Collapsed, Expanded }` mit `toggled()`.
+- **`widgets::action_rail(groups, mode, open, on_open, on_toggle)`**: `open: Option<usize>` ist die Gruppe, deren
+  Klappfeld offen ist; `on_open(Option<usize>)` meldet Hover. Eingeklappt: Spalte `shell::rail()` breit, oben der
+  Umschalter (`Icon::PanelRight`, Tooltip „Expand actions“; fehlt `on_toggle`, kein Umschalter), Linie, die Gruppen-Icons
+  als `style::button::icon` in `size::control_lg()`, die letzten zwei Gruppen unten. Ausgeklappt: Spalte
+  `size::sidebar()` breit, oben Umschalter mit Wort („Collapse actions“), je Gruppe Titel in `typo::caption()`/`TEXT_3`
+  und Zeilen wie Menüeinträge (Icon, Wort, `kbd` rechts), die erste Gruppe ohne Titel. Fläche `PANEL` wie der Leser, links eine
+  `LINE` (wie die Eigenschaften-Spalte).
+- **Icon:** `Icon::PanelRight` (Lucide 0.469.0 `panel-right`, Strich 1.75) mit Eintrag in `Icon::ALL`.
+- **Klappfeld** `widgets::rail_flyout(group, anchor, on_close)`: eine Ebene wie `widgets::floating`, links neben dem
+  Gruppen-Icon, oben bündig (die unteren Gruppen unten bündig), `size::sidebar()` breit, Fläche und Rand wie
+  `widgets::menu` mit dem Gruppennamen als Abschnittstitel. Die Ebene deckt das Gruppen-Icon mit ab (ein Klick dort
+  schickt weiter das erste Item); verlässt der Zeiger Klappfeld und Icon zusammen (`mouse_area::on_exit`), kommt
+  `on_close`. Ein Klick auf ein Item schließt es. Kein Scrim, kein Fangen der Klicks daneben.
+- **`Panel::side(element)`** (`panel.rs`): eine feste Spalte rechts neben Titel und Körper, unter dem Kopf bis zum
+  Fuß, scrollt nicht mit.
+- **`ui_state`:** `actions_from`/`save_actions_to`/`load_actions_task`/`save_actions_task` wie `split_from`/… mit einem
+  Schlüssel je Fenster; gespeichert wird `"collapsed"`/`"expanded"`, alles andere liest sich als `None`.
+- **Taste:** `shell::is_actions_key(key, modifiers)` wie `shell::is_sidebar_key`, aber für `]`: Strg und Alt erlaubt
+  (deutsches Layout: AltGr+9 bzw. Option+6), die Logo-Taste nicht.
+- **Galerie** `--mailbar`: Leiste eingeklappt, ausgeklappt, mit offenem Klappfeld (oben und unten bündig), mit einem
+  Item aus; hell und dunkel, `--design plex`.
+- **Skill `torro-design`:** neuer Eintrag „Aktionsleiste der Mail (E14)“ in Abschnitt 5 mit Maßen und Regeln aus den
+  Entscheidungen 1, 5, 6; der Eintrag „Befehlsleiste und Leiste der Zeile (E11)“ sagt, dass das Mail-Fenster sie mit
+  E14 nicht mehr hat.
+- **Oberfläche:** nur Bausteine. **API/MCP:** keine.
+- **Abnahme:** Tests: `RailMode` hin und zurück; `ui_state` liest geschriebene Werte, `None` bei fehlendem oder fremdem
+  Wert, andere Schlüssel bleiben erhalten; Klappfelder aller Gruppen gleich breit; Gruppen-Icon schickt das erste Item,
+  das geht; ein Item ohne `on_press` schickt nichts. Galerie angesehen (Bilder im Bericht). `scripts/design-check.sh`
+  sauber. Übersetzungen im Bericht.
+
+### E14.2 Liste des Mail-Fensters ohne Knöpfe
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E14.1 · **Dateien:** `crates/torroinbox/src/{list,mail,app,detail}.rs`,
+  `crates/torro-gui/src/{widgets,theme}.rs` und `crates/torro-gui/examples/gallery.rs` (nur Entfernen)
+- **Zeilen:** Im Mail-Fenster (`Rows::edge_strip`) hat die gewählte Zeile keine Leiste mehr und zeigt wie jede andere
+  ihre Vorschau; Höhe wie ungewählt. `edge_strip` wird zu `Rows::bare` (bzw. `MailList::bare`): Zeilen ohne Knöpfe.
+  Was nur der Leiste diente, entfällt: `list::{with_row_strip, edge_actions, strip_words, edge_strip_height,
+  edge_strip_extra, edge_strip_extra_for}` und der Zweig in `strip_row`/`sized_row`; `strip_height_in` und
+  `row_span_in` rechnen für `bare` ohne Leiste. In `mail::message_row` fällt die Leiste weg.
+- **Karten** (Design mit `comfortable`): `mail::message_card` und `list::entry_card` zeichnen im Mail-Fenster keine
+  Knopfreihe und kein „…“; `mail_card_height`/`entry_card_height` rechnen ohne sie. Die Zentrale behält ihre Karten
+  mit Knöpfen.
+- **Dialoge über Tasten** (`t`, `s`, `m`, `l`, `c` an der Zeile): Ihr Anker war der Knopf der Leiste. Jetzt öffnen sie
+  an der Zeile (`Anchors::row`); `detail::Anchors::of` bzw. die Stelle, die bei `Act` den Anker wählt, entsprechend.
+- **Aufräumen:** `mail::message_buttons`, `list::entry_actions` und `list::entry_card_buttons` nur behalten, wo sie die
+  Zentrale braucht (nachsehen); `widgets::row_strip`, `row_strip_words`, `row_strip_height` samt Galerie-Teil entfernen,
+  wenn sie nichts mehr nutzt.
+- **Oberfläche:** Liste des Mail-Fensters. **API/MCP:** keine.
+- **Abnahme:** Tests: gewählte Zeile im Mail-Fenster ohne Leiste, mit Vorschau, so hoch wie ungewählt (Eintrag,
+  Ordnermail, Einladung); Karten im Mail-Fenster ohne Knöpfe, in der Zentrale mit; `t` an der Zeile öffnet den Dialog
+  an der Zeile; Zentrale und App Feed unverändert (bestehende Tests). Sichtprüfung Mail-Fenster breit, mittel,
+  schmal, hell und dunkel. Übersetzungen im Bericht (voraussichtlich keine).
+
+### E14.3 Leser und Paneel mit der Aktionsleiste
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E14.2 · **Dateien:** `crates/torroinbox/src/{mail,app,detail,keys}.rs`,
+  `crates/torro-gui/src/widgets.rs` und `crates/torro-gui/examples/gallery.rs` (nur Entfernen),
+  `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`
+- **Gruppen** (`mail::action_groups(reading, entry, folders, deciding) -> Vec<RailGroup<Message>>`) nach Entscheidung
+  2, jedes Item mit der Message von heute: Reply/Reply all/Forward `Message::Mail(MailAction::…)`; Done/Reopen
+  `SetDone`; Later `AskSnooze` (nur Eintrag, nicht erledigt); Move to `AskLane`; Archive/Delete nach den Regeln von
+  `mail::filing_actions` (Archiv- bzw. Papierkorb-Ordner im Konto, Mail nicht schon darin); Task `AskTask` bzw.
+  `AskMailTask`; Event `AskEvent` (nur Eintrag); Category… `AskCategory` und Re-categorize `Reclassify` (nur
+  Mail-Eintrag, Re-categorize nur mit Entscheidungsmodell, wie heute in `mail::pills`); Flag/Mark read wie
+  `more_menu`; Mute… `AskHide` (Eintrag, wenn `hide`) bzw. `AskMuteMail`; More: `ShowMailAs`, `MailColors`,
+  `CopyText` nach `Reading::view_tools`, Close `CloseDetail` nur im Leser. Leere Gruppen fallen weg.
+- **Leser** (`mail::reader`): Befehlsleiste und Fuß entfallen; Kopf ohne Pillen; Anhänge bleiben fest unten
+  (`attachment_line`). Rechts die Leiste (`widgets::action_rail`) über die ganze Höhe, im gemerkten Modus.
+- **Paneel** (Mittel/Schmal, `mail::panel` mit `Bars::Command`, `mail::entry_panel`): `Panel::bar` (Befehlsleiste)
+  entfällt, die Leiste kommt per `Panel::side`, immer eingeklappt, ohne Umschalter. Im Fuß bleiben nur die Anhänge
+  (`panel_foot` ohne `foot_controls`). Zentrale und App Feed (`Bars::Split`) unverändert.
+- **Zustand in `App`:** Feld für `RailMode`, geladen mit `ui_state::load_actions_task(INBOX, window_key)` neben
+  `load_split_task` für `Kind::Mail`, gespeichert bei jedem Umschalten; offene Gruppe als Feld (Hover), geschlossen bei
+  Auswahlwechsel, Escape und jedem Klick auf ein Item. Neue Messages für Umschalten und Hover. Taste `]` in `keys.rs`
+  über `shell::is_actions_key` vor dem Abbruch bei Modifiern in `key_on` (wie `Key::Sidebar`), wirkt nur im
+  Mail-Fenster in Breit und nicht, solange ein Textfeld die Taste nimmt.
+- **Anker:** Dialoge und Menüs der Items (`task`, `event`, `snooze`, `lane`, `hide`) öffnen am Icon ihrer Gruppe,
+  ausgeklappt an ihrer Zeile; `anchors.reply`/`anchors.more` entfallen.
+- **Entfällt:** `mail::{commands, command_cells, CommandCell, reply_menu, more_menu, pills, pill_row, Pill, panel_bar,
+  foot, foot_controls}` (soweit die Zentrale sie nicht nutzt, nachsehen), `Menu::Reply`/`Menu::More`,
+  `Message::AskReplyMenu`/`AskMore`, `App::mail_menu`/`mail_menu_sections`, Demo-Zustände `mail-reply`/`mail-more`;
+  neu `--open mail-actions` (ausgeklappt) und `--open mail-group` (Klappfeld „File“ offen). `widgets::command_*`,
+  `pill_button`, `view_switch` samt Galerie entfernen, wenn nichts sie mehr nutzt.
+- **Texte** (englisch, `tr`): „Expand actions“, „Collapse actions“, Gruppennamen „File“, „Mark“, „More“ (Reply, Torro,
+  Mute… gibt es), „Show as text“, „Show as HTML“, „Light colours“, „Dark colours“; Deutsch in `de.rs`.
+- **`docs/eingang.md`:** Abschnitt zum Leser des Mail-Fensters beschreibt die Leiste statt Befehlsleiste und Pillen.
+- **Oberfläche:** Leser und Paneel des Mail-Fensters. **API/MCP:** keine.
+- **Abnahme:** Tests: Gruppen und Items für Eintrag, erledigten Eintrag, Ordnermail, Mail im Papierkorb, Konto ohne
+  Archiv, Mail ohne HTML, ohne Entscheidungsmodell; jede Message wie vorher; Gruppen-Klick schickt das erste Item;
+  `]` schaltet in Breit um und wird gespeichert, in Mittel/Schmal bleibt die Leiste eingeklappt; Leser ohne
+  Befehlsleiste und Pillen; Zentrale unverändert. Sichtprüfung (`torro-design-review`) Mail-Fenster breit (beide
+  Zustände, Klappfeld oben und unten), mittel, schmal, hell und dunkel, `--design plex`. Übersetzungen im Bericht.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
