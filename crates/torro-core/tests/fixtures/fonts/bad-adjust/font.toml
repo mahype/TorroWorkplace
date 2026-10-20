@@ -1,0 +1,12 @@
+# Broken: a size adjustment below 0.85.
+format = 1
+license = "OFL-1.1"
+size_adjust = 0.8
+
+[about]
+name = "Bad adjustment"
+version = "1.0.0"
+
+[fonts.text]
+family = "Inter"
+regular = "Inter-Regular.ttf"

@@ -1,0 +1,8 @@
+# Broken: the suggested font is no id.
+format = 1
+
+[about]
+name = "Bad suggestion"
+version = "1.0.0"
+font = "IBM Plex"
+color_scheme = "nord"

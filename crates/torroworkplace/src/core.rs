@@ -6754,7 +6754,7 @@ mod tests {
         let designs = settings_file(dir.path()).with_file_name("designs");
         for (id, toml) in [
             ("teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.2.0\"\nauthor = \"Anna\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[size]\nrow = 20\n"),
         ] {
             std::fs::create_dir_all(designs.join(id)).expect("pack folder");
             std::fs::write(designs.join(id).join("design.toml"), toml).expect("design.toml");
@@ -6770,7 +6770,7 @@ mod tests {
         assert_eq!(ids, ["torro", "pale", "teal"], "the standard first, then by folder name");
         assert!(listed[0].standard && listed[0].valid && listed[0].active);
         assert!(!listed[1].valid && !listed[1].problems.is_empty(), "{:?}", listed[1]);
-        assert!(listed[1].problems.iter().any(|problem| problem.contains("colors.dark.text")));
+        assert!(listed[1].problems.iter().any(|problem| problem.contains("size.row")));
         assert_eq!((listed[2].name.as_str(), listed[2].version.as_str()), ("Teal", "1.2.0"));
         assert_eq!(listed[2].author.as_deref(), Some("Anna"));
         assert!(listed[2].valid && listed[2].problems.is_empty() && !listed[2].standard);

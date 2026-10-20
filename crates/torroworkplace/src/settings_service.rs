@@ -1042,7 +1042,7 @@ mod tests {
         pack(
             &store,
             "teal",
-            "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[colors.dark]\naccent = \"#0E7C7B\"\n",
+            "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[radius]\nscale = [3, 5, 7, 9]\n",
         );
         assert_eq!(store.current().design, "torro", "the standard until one is chosen");
         store.set(SettingKey::Design, &json!("teal")).expect("a valid pack");
@@ -1054,14 +1054,10 @@ mod tests {
     #[test]
     fn a_missing_or_broken_design_is_refused_with_its_reasons() {
         let (_dir, store) = store();
-        pack(
-            &store,
-            "pale",
-            "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n",
-        );
-        let broken = store.set(SettingKey::Design, &json!("pale")).expect_err("too little contrast");
+        pack(&store, "pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[size]\nrow = 20\n");
+        let broken = store.set(SettingKey::Design, &json!("pale")).expect_err("rows too low");
         assert!(broken.contains("\"pale\" can't be used"), "{broken}");
-        assert!(broken.contains("colors.dark.text"), "names the broken key: {broken}");
+        assert!(broken.contains("size.row"), "names the broken key: {broken}");
         let missing = store.set(SettingKey::Design, &json!("plex")).expect_err("no such pack");
         assert!(missing.contains("\"plex\""), "{missing}");
         assert!(store.set(SettingKey::Design, &json!(7)).is_err(), "an id is a string");

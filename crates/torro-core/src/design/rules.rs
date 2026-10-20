@@ -1,5 +1,8 @@
-//! The value rules of the concept (`docs/design-pakete.md`, "Regeln"): contrasts, type, scales,
-//! layout gaps and sizes. Pure checks on a merged [`Design`]; the file rules live in `files.rs`.
+//! The value rules of the concept (`docs/design-pakete.md`, "Regeln"), one set per part (task L.19):
+//! [`design`] checks type, scales, layout gaps and sizes, [`colors`] the contrasts, [`font`] the size
+//! adjustment and the width of the figures. No rule looks at two parts, so every combination of valid
+//! parts is valid; where two meet (the figures on the time axis), each is held to the fixed bound
+//! [`DIGIT_MAX_EM`]. Pure checks on merged values; the file rules live in `files.rs`.
 //!
 //! Two rules differ from the table on purpose, because the standard design must pass its own
 //! rules and its values are fixed (task L.1):
@@ -24,25 +27,67 @@
 //! `layout.density` itself has no rule here (task E13.1): it is a word, not a number, so there is
 //! no range to hold it to. Anything but `compact` or `comfortable` is already refused while
 //! `design.toml` is read, with its line (`pack.rs`), as `type.*.font` and `weight` are.
+//!
+//! Weights have no rule in a design any more (task L.19): a font without a weight draws the nearest
+//! ([`super::Font::nearest`]); only the text font's regular face is required, when the font is read.
 
-use super::{Design, DesignError, Mode, Palette, Rgba};
+use super::{Colors, DIGIT_MAX_EM, Design, DesignError, Mode, Palette, Rgba};
 
 /// Text contrast on every surface (WCAG AA).
 const TEXT_MIN: f32 = 4.5;
 /// Contrast of graphics and controls (WCAG 1.4.11).
 const CONTROL_MIN: f32 = 3.0;
 
-/// Every value rule `design` breaks, in a stable order.
-pub(super) fn check(design: &Design) -> Vec<DesignError> {
+/// The size adjustment a font may set itself (`size_adjust`).
+pub(super) const SIZE_ADJUST: (f32, f32) = (0.85, 1.25);
+/// The bounds of the size adjustment computed from the x-height.
+pub(super) const SIZE_ADJUST_AUTO: (f32, f32) = (0.90, 1.15);
+/// "00:00" on the time axis counts as this many figures: four, and a colon of at most half a figure
+/// (every sample's colon is: at most 0.35 em after adjustment, half of [`DIGIT_MAX_EM`] is 0.36).
+const TIME_FIGURES: f32 = 4.5;
+
+/// Every value rule of the form `design` breaks, in a stable order.
+pub(super) fn design(design: &Design) -> Vec<DesignError> {
     let mut problems = Vec::new();
-    for mode in [Mode::Dark, Mode::Light] {
-        colours(mode, design.colors.get(mode), &mut problems);
-    }
     typo(design, &mut problems);
     scales(design, &mut problems);
     layout(design, &mut problems);
     sizes(design, &mut problems);
     problems
+}
+
+/// Every value rule the colours of both modes break, in a stable order.
+pub(super) fn colors(colors: &Colors) -> Vec<DesignError> {
+    let mut problems = Vec::new();
+    for mode in [Mode::Dark, Mode::Light] {
+        colours(mode, colors.get(mode), &mut problems);
+    }
+    problems
+}
+
+/// The value rules of a font: `given`, the `size_adjust` it sets, within [`SIZE_ADJUST`]; its widest
+/// figure in `numbers` (`widest_figure` in em, plain) after the adjustment `factor` within
+/// [`DIGIT_MAX_EM`]. A factor below 1 counts as 1 there, because the time axis is drawn in the smallest
+/// size, which is never made smaller ([`super::MIN_TEXT_SIZE`]).
+pub(super) fn font(given: Option<f32>, factor: f32, numbers: &str, widest_figure: Option<f32>) -> Vec<DesignError> {
+    let mut problems = Vec::new();
+    if let Some(value) = given {
+        range("size_adjust", value, SIZE_ADJUST.0, SIZE_ADJUST.1, &mut problems);
+    }
+    if let Some(widest) = widest_figure {
+        let width = widest * factor.max(1.0);
+        if width > DIGIT_MAX_EM {
+            problems.push(DesignError::DigitsTooWide { family: numbers.to_string(), width, max: DIGIT_MAX_EM });
+        }
+    }
+    problems
+}
+
+/// The narrowest a time axis (`size.axis`, `size.axis_narrow`) may be in `design`: "00:00" in figures
+/// of [`DIGIT_MAX_EM`] at the size of `micro`, with `space.xs` on either side (the now label of the
+/// calendar's week view sits there), in whole pixels.
+pub(super) fn axis_min(design: &Design) -> f32 {
+    (TIME_FIGURES * DIGIT_MAX_EM * design.typo.micro.size + 2.0 * design.space.xs).ceil()
 }
 
 fn colours(mode: Mode, p: &Palette, problems: &mut Vec<DesignError>) {
@@ -171,10 +216,7 @@ fn typo(design: &Design, problems: &mut Vec<DesignError>) {
         };
         range(&format!("{key}.size"), level.size, min, max, problems);
         if !(level.size..=2.0 * level.size).contains(&level.line) {
-            problems.push(DesignError::LineHeight { key: key.clone(), line: level.line, size: level.size });
-        }
-        if design.fonts.get(level.font).face(level.weight).is_none() {
-            problems.push(DesignError::MissingWeight { key, font: level.font, weight: level.weight });
+            problems.push(DesignError::LineHeight { key, line: level.line, size: level.size });
         }
     }
 }
@@ -244,7 +286,11 @@ fn size_range(key: &str) -> (f32, f32) {
 
 fn sizes(design: &Design, problems: &mut Vec<DesignError>) {
     for (name, value) in design.size.entries() {
-        let (min, max) = size_range(name);
+        let (mut min, max) = size_range(name);
+        // The figures of any valid font fit the time axis (task L.19).
+        if name == "axis" || name == "axis_narrow" {
+            min = min.max(axis_min(design));
+        }
         range(&format!("size.{name}"), value, min, max, problems);
     }
     let s = design.size;
@@ -269,15 +315,59 @@ fn range(key: &str, value: f32, min: f32, max: f32, problems: &mut Vec<DesignErr
 mod tests {
     use super::*;
 
+    use crate::design::ColorScheme;
+
+    /// The colour rules of a colour scheme.
+    fn check(scheme: &ColorScheme) -> Vec<DesignError> {
+        colors(&scheme.colors)
+    }
+
     #[test]
     fn the_standard_passes_its_own_rules() {
-        assert_eq!(check(&Design::standard()), Vec::new());
+        assert_eq!(design(&Design::standard()), Vec::new());
+        assert_eq!(colors(&ColorScheme::standard().colors), Vec::new());
+        assert_eq!(font(None, 1.0, "Inter Tabular", Some(1328.0 / 2048.0)), Vec::new());
+    }
+
+    /// Task L.19: the time axis holds "00:00" in the widest figures any font may have; the standard's
+    /// narrow axis (44) just does.
+    #[test]
+    fn the_time_axis_fits_the_widest_figures() {
+        let standard = Design::standard();
+        assert_eq!(axis_min(&standard), 44.0, "4.5 × 0.72 × 11 + 2 × 4 = 43.64");
+        let mut d = standard.clone();
+        d.size.axis_narrow = 43.0;
+        d.typo.micro = super::super::Level { size: 12.0, line: 16.0, ..d.typo.micro };
+        assert_eq!(
+            design(&d),
+            [DesignError::OutOfRange { key: "size.axis_narrow".into(), value: 43.0, min: 47.0, max: 120.0 },],
+            "axis 52 still fits micro 12 (needs 47)"
+        );
+    }
+
+    /// Task L.19: a font's own size adjustment stays in 0.85–1.25, and its figures stay within the
+    /// bound after it.
+    #[test]
+    fn font_rules_hold_the_adjustment_and_the_figures() {
+        assert_eq!(
+            font(Some(1.3), 1.3, "Sample", None),
+            [DesignError::OutOfRange { key: "size_adjust".into(), value: 1.3, min: 0.85, max: 1.25 }]
+        );
+        let inter_tabular = 1328.0 / 2048.0;
+        assert_eq!(font(Some(1.1), 1.1, "Inter Tabular", Some(inter_tabular)), Vec::new(), "0.713");
+        assert!(matches!(&font(Some(1.2), 1.2, "Inter Tabular", Some(inter_tabular))[..],
+            [DesignError::DigitsTooWide { family, width, max: DIGIT_MAX_EM }]
+            if family == "Inter Tabular" && (*width - 0.778).abs() < 0.001));
+        assert!(
+            !font(Some(0.85), 0.85, "Wide", Some(0.75)).is_empty(),
+            "a factor below 1 does not narrow the figures: the axis is drawn at the floor of 11"
+        );
     }
 
     #[test]
     fn the_standard_has_the_measured_text_contrasts() {
         // The skill's measured minimums (section 4), 0.05 below for the rounding there.
-        let d = Design::standard();
+        let d = ColorScheme::standard();
         for (mode, floors) in [(Mode::Dark, [14.4, 8.4, 5.1]), (Mode::Light, [14.6, 6.4, 4.8])] {
             let p = d.colors.get(mode);
             for (fg, floor) in [p.text, p.text_2, p.text_3].into_iter().zip(floors) {
@@ -289,7 +379,7 @@ mod tests {
 
     #[test]
     fn low_text_contrast_is_refused() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         d.colors.dark.text_3 = Rgba::hex(0x3A3A3A);
         let problems = check(&d);
         assert!(!problems.is_empty());
@@ -300,7 +390,7 @@ mod tests {
 
     #[test]
     fn a_sidebar_of_its_own_holds_text_and_graphics_to_it() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         let p = &mut d.colors.light;
         (p.sidebar, p.sidebar_hover, p.sidebar_selected) =
             (Rgba::hex(0x24292F), Rgba::hex(0x2F353C), Rgba::hex(0x3A4149));
@@ -322,7 +412,7 @@ mod tests {
 
     #[test]
     fn without_a_sidebar_of_its_own_only_its_text_is_checked() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         d.colors.dark.sidebar_text_3 = Rgba::hex(0x3A3A3A);
         assert!(matches!(&check(&d)[..], [DesignError::TextContrast { fg, on, .. }, ..]
             if fg == "colors.dark.sidebar_text_3" && on == "colors.dark.sidebar"));
@@ -331,7 +421,7 @@ mod tests {
 
     #[test]
     fn a_weak_on_accent_is_refused() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         d.colors.light.on_accent = Rgba::hex(0x000000);
         assert!(matches!(check(&d)[..], [DesignError::AccentContrast { mode: Mode::Light, .. }]));
     }
@@ -339,7 +429,7 @@ mod tests {
     /// Task E8.8b: a chart colour or the grey of "Other" below 3:1 on `panel` is refused.
     #[test]
     fn a_faint_chart_colour_is_refused() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         d.colors.dark.chart[1] = Rgba::hex(0x202020);
         d.colors.light.chart_other = Rgba::hex(0xEEEEEE);
         let keys: Vec<String> = check(&d)
@@ -354,7 +444,7 @@ mod tests {
 
     #[test]
     fn a_faint_focus_ring_and_calendar_colour_are_refused() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         d.colors.dark.focus_ring = Rgba::white(0.1);
         d.colors.light.calendar[2] = Rgba::hex(0xF0F0F0);
         let keys: Vec<String> = check(&d)
@@ -369,7 +459,7 @@ mod tests {
 
     #[test]
     fn a_chosen_edge_like_a_frame_is_refused() {
-        let mut d = Design::standard();
+        let mut d = ColorScheme::standard();
         d.colors.dark.line_selected = d.colors.dark.line_strong;
         assert!(check(&d).contains(&DesignError::ChosenEdge { mode: Mode::Dark }));
     }
@@ -382,7 +472,7 @@ mod tests {
         d.typo.body.line = 20.0;
         d.typo.meta.line = 40.0;
         d.typo.title.weight = super::super::Weight::Bold;
-        let problems = check(&d);
+        let problems = design(&d);
         assert!(problems.contains(&DesignError::OutOfRange {
             key: "type.caption.size".into(),
             value: 9.0,
@@ -396,8 +486,7 @@ mod tests {
             max: 18.0
         }));
         assert!(problems.contains(&DesignError::LineHeight { key: "type.meta".into(), line: 40.0, size: 12.0 }));
-        assert!(problems.iter().any(|p| matches!(p, DesignError::MissingWeight { key, .. } if key == "type.title")));
-        assert_eq!(problems.len(), 4, "{problems:?}");
+        assert_eq!(problems.len(), 3, "a weight is no rule of a design any more (task L.19): {problems:?}");
     }
 
     #[test]
@@ -405,7 +494,7 @@ mod tests {
         let mut d = Design::standard();
         d.space.m = 6.0;
         d.radius.lg = 20.0;
-        let problems = check(&d);
+        let problems = design(&d);
         assert!(problems.contains(&DesignError::NotAscending { key: "space.scale".into() }));
         assert!(problems.contains(&DesignError::OutOfRange {
             key: "radius.scale[4]".into(),
@@ -423,7 +512,7 @@ mod tests {
         d.size.row = 20.0;
         d.size.control_sm = 20.0;
         d.size.sidebar = f32::NAN;
-        let keys: Vec<String> = check(&d)
+        let keys: Vec<String> = design(&d)
             .into_iter()
             .map(|p| match p {
                 DesignError::OutOfRange { key, .. } => key,
@@ -443,7 +532,7 @@ mod tests {
         d.size.card_gap = 2.0;
         d.size.tile = 40.0;
         d.size.avatar_lg = 30.0;
-        let problems = check(&d);
+        let problems = design(&d);
         assert!(problems.contains(&DesignError::OutOfRange {
             key: "type.read.size".into(),
             value: 12.0,
@@ -464,11 +553,11 @@ mod tests {
     /// Task E11.1: the command bar and the pills stay in their ranges.
     #[test]
     fn the_mail_sizes_stay_in_range() {
-        assert!(check(&Design::standard()).is_empty(), "the standard is valid");
+        assert!(design(&Design::standard()).is_empty(), "the standard is valid");
         let mut d = Design::standard();
         d.size.command = 30.0;
         d.size.pill = 70.0;
-        let keys: Vec<(String, f32, f32)> = check(&d)
+        let keys: Vec<(String, f32, f32)> = design(&d)
             .into_iter()
             .map(|p| match p {
                 DesignError::OutOfRange { key, min, max, .. } => (key, min, max),

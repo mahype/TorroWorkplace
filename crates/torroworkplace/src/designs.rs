@@ -382,10 +382,6 @@ mod tests {
             ("channelr", "Channelr", "Lato", "Lato"),
             ("guildr", "Guildr", "Figtree", "Figtree Tabular"),
             ("quattro", "Quattro", "Roboto Flex", "Roboto Flex"),
-            ("nord", "Nord", "Inter", "Inter Tabular"),
-            ("solarized", "Solarized", "Inter", "Inter Tabular"),
-            ("catppuccin", "Catppuccin", "Inter", "Inter Tabular"),
-            ("gruvbox", "Gruvbox", "Inter", "Inter Tabular"),
             ("dracula", "Dracula", "Inter", "Inter Tabular"),
             ("everforest", "Everforest", "Inter", "Inter Tabular"),
             // further packs
@@ -429,20 +425,7 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in [
-            "plex",
-            "commitr",
-            "ribbon",
-            "channelr",
-            "guildr",
-            "quattro",
-            "nord",
-            "solarized",
-            "catppuccin",
-            "gruvbox",
-            "dracula",
-            "everforest",
-        ] {
+        for id in ["plex", "commitr", "ribbon", "channelr", "guildr", "quattro", "dracula", "everforest"] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();

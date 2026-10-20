@@ -1,0 +1,105 @@
+# Every key the format knows since task L.19, with valid values: the form only.
+format = 1
+
+[about]
+name = "Form"
+version = "2.1.0"
+author = "Torro tests"
+description = "Every key set once"
+font = "plex"
+color_scheme = "torro"
+
+[type.micro]
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+[type.caption]
+size = 12
+line = 16
+weight = "medium"
+[type.meta]
+size = 12
+line = 16
+[type.body]
+size = 13
+line = 21
+[type.body_strong]
+size = 13
+line = 21
+weight = "medium"
+[type.read]
+size = 14
+line = 23
+[type.title]
+font = "heading"
+size = 16
+line = 22
+weight = "semibold"
+[type.headline]
+font = "heading"
+size = 22
+line = 28
+weight = "semibold"
+[type.display]
+font = "text"
+size = 28
+line = 34
+weight = "semibold"
+[type.hero]
+font = "heading"
+size = 44
+line = 52
+weight = "bold"
+[type.countdown]
+font = "numbers"
+size = 26
+line = 30
+weight = "medium"
+
+[space]
+scale = [4, 8, 12, 16, 24, 32]
+
+[radius]
+scale = [3, 5, 7, 9]
+
+[layout]
+inset = 10
+page_padding = [24, 32]
+panel_padding = [16, 16]
+row_padding = [8, 16]
+control_padding = [0, 12]
+section_gap = 28
+item_gap = 10
+density = "comfortable"
+
+[size]
+control_sm = 28
+control = 32
+control_lg = 36
+control_xl = 44
+row = 44
+row_two = 56
+row_message = 92
+row_notice = 64
+row_sidebar = 30
+row_group = 34
+header = 48
+sidebar = 248
+props = 300
+panel = 400
+list = 460
+list_medium = 380
+hour = 52
+axis = 56
+axis_narrow = 44
+content_max = 760
+form_max = 640
+card_gap = 12
+avatar = 36
+avatar_lg = 40
+tile_sm = 20
+tile = 28
+tile_lg = 36
+command = 46
+pill = 42

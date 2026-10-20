@@ -1,0 +1,9 @@
+# Broken: a narrow time axis that "00:00" in the widest allowed figures does not fit.
+format = 1
+
+[about]
+name = "Narrow axis"
+version = "1.0.0"
+
+[size]
+axis_narrow = 40

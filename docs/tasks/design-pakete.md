@@ -355,9 +355,12 @@ eine neue Schrift vorschlagen, warten auf L.24.
   (`torro-design-review`).
 
 ### L.19 Kern: drei Ordner, drei Teile, Größenausgleich, Ersatz der Gewichte
-- [ ] erledigt
+- [x] erledigt (2026-10-20: Ziffern-Grenze 0,72 em, gemessen an Figtree Tabular; Zeilenhöhe mindestens 1,2 × wirksame
+  Größe, aber nie lockerer als das Design selbst, damit Torro exakt bleibt; `Design::fonts`/`colors`/`logo` bleiben als
+  Brücke bis L.21/L.22)
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/**`,
-  `crates/torro-core/tests/fixtures/designs/`, neu `crates/torro-core/tests/fixtures/{fonts,color-schemes}/`
+  `crates/torro-core/tests/fixtures/designs/`, neu `crates/torro-core/tests/fixtures/{fonts,color-schemes}/`,
+  `crates/torroworkplace/src/{settings_service,core,designs}.rs` (nur Tests)
 - **Schnittstelle (mit dem Plan freigegeben):** `Design` verliert `fonts`, `colors`, `logo`; `About` verliert
   `font_license`. Neu `FontSet { id, about, license, fonts: Fonts, size_adjust: f32 }` und
   `ColorScheme { id, about, colors: Colors, logo: Logo }`, je mit `standard()`. Neben `dir()` (bleibt `designs/`) neu

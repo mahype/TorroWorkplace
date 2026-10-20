@@ -1,25 +1,42 @@
-//! Design packs: what the suite looks like, as data (concept `docs/design-pakete.md`, task L.1).
+//! The look of the suite as data, in three parts (concept `docs/design-pakete.md`, tasks L.1 and L.19).
 //!
-//! A [`Design`] holds every value the look is built from: fonts, the type scale, spacing, radii,
-//! layout gaps, sizes, the colours of both modes and the logo. [`Design::standard`] is the look
-//! the suite ships ("Torro", after Linear) – exactly the values `torro_gui::theme`, `torro_gui::typo`
-//! and [`crate::theme`] had as constants; `torro_gui` reads them from here (task L.2).
+//! - A [`Design`] is the form: the type scale (role, size, line height and weight of each level, sizes
+//!   meant for Inter), spacing, radii, layout gaps and sizes. Folder `designs/<id>/design.toml` ([`dir`],
+//!   [`load`], [`list`]), with an optional `preview.png`.
+//! - A [`FontSet`] is the font: the families of the three roles text, heading and numbers, and the size
+//!   adjustment that makes its lowercase look as large as Inter's. Folder `fonts/<id>/font.toml`
+//!   ([`font_dir`], [`load_font`], [`list_fonts`]) with the font files and `LICENSE.txt`.
+//! - A [`ColorScheme`] is the colour of both modes and the logo. Folder
+//!   `color-schemes/<id>/color-scheme.toml` ([`color_scheme_dir`], [`load_color_scheme`],
+//!   [`list_color_schemes`]) with an optional `logo.svg`.
 //!
-//! Further designs are packs: a folder `<data>/designs/<id>/` with a `design.toml` and optional
-//! SVG, PNG and font files ([`dir`]). [`load`] reads one, fills everything it leaves out from the
-//! standard and checks it against the rules of the concept; [`list`] does that for every pack.
-//! A pack that breaks a rule is refused as a whole, with every reason ([`DesignError`]).
+//! `torro` ([`STANDARD_ID`]) is all three, built in: exactly the values `torro_gui::theme`,
+//! `torro_gui::typo` and [`crate::theme`] had as constants. The parts meet only through fixed roles (the
+//! three font roles and four weights, the colour roles of [`Palette`]), and every rule checks one part
+//! only, so any valid design, font and colour scheme go together. [`Selection`] puts them together and
+//! gives a text level as it is drawn ([`Selection::level`]: size adjustment, nearest weight).
 //!
-//! Nothing here runs anything from a pack: only `design.toml`, SVG, PNG and TTF/OTF files are
-//! read, each only after its size was checked, and paths never leave the pack's folder.
+//! Each part fills what it leaves out from the standard and is checked against the rules of the concept;
+//! one that breaks a rule is refused as a whole, with every reason ([`DesignError`]). Nothing here runs
+//! anything from a folder: only the TOML file, SVG, PNG and TTF/OTF files are read, each only after its
+//! size was checked, and paths never leave the part's folder.
+//!
+//! **Bridge until L.21/L.22, removed there:** [`Design`] still carries `fonts`, `colors` and `logo`, so
+//! the apps, the control centre and the PDF tool keep drawing with one design id until they take the three
+//! parts. [`load`] fills them from the old sections of a complete pack in `designs/` (as before L.19),
+//! else from `fonts/<id>/` and `color-schemes/<id>/` beside the designs folder, else from the standard.
 //!
 //! No Iced in here: colours are [`Rgba`] with `f32` channels in 0–1, built the way Iced builds a
 //! `Color` from 8-bit values, so `torro_gui` converts them 1:1 (`Color { r, g, b, a }`).
 
 mod error;
 mod files;
+mod font;
 mod pack;
 mod rules;
+mod scheme;
+#[cfg(test)]
+mod testdata;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -30,31 +47,85 @@ use crate::paths::AppPaths;
 use crate::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_INACTIVE, STATUS_OK, TORRO_RED};
 
 pub use error::DesignError;
+pub use font::{list_fonts, load_font};
 pub use pack::{Listed, list, load};
+pub use scheme::{list_color_schemes, load_color_scheme};
 
 /// The id of the standard design. It has no folder; [`load`] answers it without touching the disk,
 /// and a folder of that name under [`dir`] is refused ([`DesignError::BadId`]).
 pub const STANDARD_ID: &str = "torro";
 
-/// The folder that holds the design packs: `designs/` in the core's data directory
-/// (`TORRO_DATA_HOME` overrides the root). `None` when no home directory is known.
+/// The folder that holds the designs: `designs/` in the core's data directory (`TORRO_DATA_HOME`
+/// overrides the root). `None` when no home directory is known.
 ///
 /// Callers pass it to [`list`] and [`load`]; tests pass a temporary folder instead.
 pub fn dir() -> Option<PathBuf> {
-    AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.data.join("designs"))
+    data_folder(Part::Design)
 }
 
-/// One look of the whole suite: the standard or a pack, already merged with the standard and
+/// The folder that holds the fonts: `fonts/` beside [`dir`]. `None` when no home directory is known.
+///
+/// Callers pass it to [`list_fonts`] and [`load_font`].
+pub fn font_dir() -> Option<PathBuf> {
+    data_folder(Part::Font)
+}
+
+/// The folder that holds the colour schemes: `color-schemes/` beside [`dir`]. `None` when no home
+/// directory is known.
+///
+/// Callers pass it to [`list_color_schemes`] and [`load_color_scheme`].
+pub fn color_scheme_dir() -> Option<PathBuf> {
+    data_folder(Part::ColorScheme)
+}
+
+fn data_folder(part: Part) -> Option<PathBuf> {
+    AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.data.join(part.folder()))
+}
+
+/// The three parts of the look, for messages that name the folder a file belongs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// `designs/<id>/design.toml`.
+    Design,
+    /// `fonts/<id>/font.toml`.
+    Font,
+    /// `color-schemes/<id>/color-scheme.toml`.
+    ColorScheme,
+}
+
+impl Part {
+    /// The folder's name in the data directory.
+    pub(crate) fn folder(self) -> &'static str {
+        match self {
+            Part::Design => "designs",
+            Part::Font => "fonts",
+            Part::ColorScheme => "color-schemes",
+        }
+    }
+
+    /// The file each entry of the folder must have.
+    pub(crate) fn file(self) -> &'static str {
+        match self {
+            Part::Design => "design.toml",
+            Part::Font => "font.toml",
+            Part::ColorScheme => "color-scheme.toml",
+        }
+    }
+}
+
+/// The form of the suite: the standard or one from [`dir`], already merged with the standard and
 /// checked. Every field is set; there is nothing optional left to fill in.
+///
+/// The sizes of [`Design::typo`] are meant for Inter; [`Selection::level`] adjusts them to the chosen
+/// font.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Design {
-    /// [`STANDARD_ID`] or the pack's folder name.
+    /// [`STANDARD_ID`] or the folder name.
     pub id: String,
-    /// Name, version and author, for the list in the control centre.
+    /// Name, version and author, for the list in the control centre; with the font and colour scheme
+    /// the design suggests.
     pub about: About,
-    /// The (up to) three font families.
-    pub fonts: Fonts,
-    /// The nine text levels (`torro_gui::typo`).
+    /// The eleven text levels (`torro_gui::typo`), sizes for Inter.
     pub typo: TypeScale,
     /// The spacing scale (`torro_gui::theme::space`).
     pub space: Space,
@@ -64,26 +135,39 @@ pub struct Design {
     pub layout: Layout,
     /// Fixed sizes of controls, rows and regions (`torro_gui::theme::size`).
     pub size: Size,
-    /// The colours of both modes.
-    pub colors: Colors,
-    /// Own logo and tray symbol, if the pack brings them.
-    pub logo: Logo,
-    /// `preview.png` in the pack (at most 1200 × 800), for the control centre; `None` shows a
-    /// swatch built from the colours.
+    /// `preview.png` in the folder (at most 1200 × 800), for the control centre; `None` shows a
+    /// swatch.
     pub preview: Option<PathBuf>,
+    /// **Bridge until L.21/L.22, removed there** (use [`FontSet::fonts`]): the fonts drawn with this
+    /// design. [`load`] takes them from the old `[fonts.*]` of a complete pack, else from `fonts/<id>/`
+    /// beside the designs folder, else the standard's; a source that breaks a font rule is skipped.
+    pub fonts: Fonts,
+    /// **Bridge until L.21/L.22, removed there** (use [`ColorScheme::colors`]): the colours drawn with
+    /// this design, from the old `[colors.*]` of a complete pack, else `color-schemes/<id>/`, else the
+    /// standard's, as [`Design::fonts`].
+    pub colors: Colors,
+    /// **Bridge until L.21/L.22, removed there** (use [`ColorScheme::logo`]): taken together with
+    /// [`Design::colors`].
+    pub logo: Logo,
 }
 
-/// What a design says about itself (`[about]`). Pack data: shown as written, never translated.
+/// What a design, a font or a colour scheme says about itself (`[about]`). Folder data: shown as
+/// written, never translated.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct About {
-    /// Required in a pack.
+    /// Required in a folder.
     pub name: String,
-    /// Required in a pack.
+    /// Required in a folder.
     pub version: String,
     pub author: Option<String>,
     pub description: Option<String>,
-    /// SPDX id of the fonts' licence ("OFL-1.1"); required as soon as a pack brings fonts.
-    pub font_license: Option<String>,
+    /// Designs only (`[about] font`): the id of the font the design is meant for, a suggestion that
+    /// chooses nothing. A valid id or [`STANDARD_ID`]; whether that font exists is not checked (each
+    /// part is checked on its own). Always `None` for fonts and colour schemes.
+    pub font: Option<String>,
+    /// Designs only (`[about] color_scheme`): the id of the colour scheme the design is meant for, as
+    /// [`About::font`].
+    pub color_scheme: Option<String>,
 }
 
 /// The three font roles a text level can use.
@@ -114,8 +198,8 @@ impl Fonts {
 pub struct Font {
     /// The family name as the files carry it; Iced selects the font by it.
     pub family: String,
-    /// Weight 400. Always there for `text`; `heading` and `numbers` may bring only the weights their
-    /// levels use.
+    /// Weight 400. Always there for `text`; `heading` and `numbers` may bring only some weights, and
+    /// a missing one is drawn in the nearest ([`Font::nearest`]).
     pub regular: Option<Face>,
     /// Weight 500.
     pub medium: Option<Face>,
@@ -135,15 +219,30 @@ impl Font {
             Weight::Bold => self.bold.as_ref(),
         }
     }
+
+    /// The weight drawn when a level asks for `wanted` (task L.19, "Ersatz der Gewichte"): `wanted`
+    /// itself when the family has a face for it, else the next in the concept's order – medium →
+    /// semibold → regular, semibold → bold → medium, bold → semibold – continued until every weight was
+    /// tried, so there is always an answer. Only a family without any face gives `wanted` back, and
+    /// reading never builds one.
+    pub fn nearest(&self, wanted: Weight) -> Weight {
+        let order = match wanted {
+            Weight::Regular => [Weight::Regular, Weight::Medium, Weight::Semibold, Weight::Bold],
+            Weight::Medium => [Weight::Medium, Weight::Semibold, Weight::Regular, Weight::Bold],
+            Weight::Semibold => [Weight::Semibold, Weight::Bold, Weight::Medium, Weight::Regular],
+            Weight::Bold => [Weight::Bold, Weight::Semibold, Weight::Medium, Weight::Regular],
+        };
+        order.into_iter().find(|weight| self.face(*weight).is_some()).unwrap_or(wanted)
+    }
 }
 
 /// Where the bytes of one weight come from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Face {
     /// Embedded in `torro_gui` (Inter and "Inter Tabular"); `torro_gui` picks the file by family
-    /// and weight. Only the standard design uses it.
+    /// and weight. Only the standard font uses it.
     Builtin,
-    /// A TTF/OTF file inside the pack, absolute, checked to carry [`Font::family`].
+    /// A TTF/OTF file inside the font's folder, absolute, checked to carry [`Font::family`].
     File(PathBuf),
 }
 
@@ -191,7 +290,8 @@ impl fmt::Display for Weight {
     }
 }
 
-/// One text level: font role, weight, size and absolute line height (logical pixels).
+/// One text level: font role, weight, size and absolute line height (logical pixels). In a [`Design`]
+/// the size is meant for Inter; [`Selection::level`] gives the level as drawn in the chosen font.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Level {
     pub font: FontRole,
@@ -200,7 +300,57 @@ pub struct Level {
     pub line: f32,
 }
 
-/// The nine text levels, named as in `torro_gui::typo` (lowercase).
+/// The name of one text level of a [`TypeScale`], for [`Selection::level`] and [`TypeScale::get`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelName {
+    Micro,
+    Caption,
+    Meta,
+    Body,
+    BodyStrong,
+    Read,
+    Title,
+    Headline,
+    Display,
+    Hero,
+    Countdown,
+}
+
+impl LevelName {
+    /// Every level, smallest first (the order of [`TypeScale::levels`]).
+    pub const ALL: [LevelName; 11] = [
+        LevelName::Micro,
+        LevelName::Caption,
+        LevelName::Meta,
+        LevelName::Body,
+        LevelName::BodyStrong,
+        LevelName::Read,
+        LevelName::Title,
+        LevelName::Headline,
+        LevelName::Display,
+        LevelName::Hero,
+        LevelName::Countdown,
+    ];
+
+    /// The key in `design.toml` (`[type.body_strong]`).
+    pub fn key(self) -> &'static str {
+        match self {
+            LevelName::Micro => "micro",
+            LevelName::Caption => "caption",
+            LevelName::Meta => "meta",
+            LevelName::Body => "body",
+            LevelName::BodyStrong => "body_strong",
+            LevelName::Read => "read",
+            LevelName::Title => "title",
+            LevelName::Headline => "headline",
+            LevelName::Display => "display",
+            LevelName::Hero => "hero",
+            LevelName::Countdown => "countdown",
+        }
+    }
+}
+
+/// The eleven text levels, named as in `torro_gui::typo` (lowercase).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TypeScale {
     /// Time axis, times in events, weekday letters. Uses `numbers` in the standard.
@@ -229,21 +379,26 @@ pub struct TypeScale {
 }
 
 impl TypeScale {
+    /// The level `name`, as the design sets it (sizes for Inter).
+    pub fn get(&self, name: LevelName) -> Level {
+        match name {
+            LevelName::Micro => self.micro,
+            LevelName::Caption => self.caption,
+            LevelName::Meta => self.meta,
+            LevelName::Body => self.body,
+            LevelName::BodyStrong => self.body_strong,
+            LevelName::Read => self.read,
+            LevelName::Title => self.title,
+            LevelName::Headline => self.headline,
+            LevelName::Display => self.display,
+            LevelName::Hero => self.hero,
+            LevelName::Countdown => self.countdown,
+        }
+    }
+
     /// Every level with its key (`"body"`), smallest first.
     pub fn levels(&self) -> [(&'static str, Level); 11] {
-        [
-            ("micro", self.micro),
-            ("caption", self.caption),
-            ("meta", self.meta),
-            ("body", self.body),
-            ("body_strong", self.body_strong),
-            ("read", self.read),
-            ("title", self.title),
-            ("headline", self.headline),
-            ("display", self.display),
-            ("hero", self.hero),
-            ("countdown", self.countdown),
-        ]
+        LevelName::ALL.map(|name| (name.key(), self.get(name)))
     }
 }
 
@@ -667,13 +822,14 @@ impl Palette {
     }
 }
 
-/// Own logo files of a pack, absolute; `None` draws the suite's own in the accent colour.
+/// The logo of a colour scheme, absolute; `None` draws the suite's own in the accent colour.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Logo {
     /// The mark in the app switcher and the rail (SVG). `None`: the "T" on `accent`.
     pub mark: Option<PathBuf>,
-    /// A tray symbol (SVG), still checked so older packs stay valid, but no longer shown: the tray
-    /// always draws the four red squares, whatever the design (issue #114).
+    /// **Bridge until L.21/L.22, removed there:** the tray symbol of an old complete pack in `designs/`,
+    /// still checked, never shown (the tray always draws the four red squares, issue #114).
+    /// `color-scheme.toml` has no tray, so a colour scheme never sets it.
     pub tray: Option<PathBuf>,
 }
 
@@ -751,17 +907,10 @@ impl Rgba {
 }
 
 impl Design {
-    /// The standard design "Torro": exactly the values the suite had as constants before design
-    /// packs (`torro_gui::theme`, `torro_gui::typo`, [`crate::theme`]), with the embedded Inter
-    /// and the suite's own logo and tray symbol.
+    /// The standard design "Torro": exactly the form the suite had as constants before design packs
+    /// (`torro_gui::theme`, `torro_gui::typo`). The bridge fields hold the standard font and colour
+    /// scheme.
     pub fn standard() -> Design {
-        let inter = |family: &str, semibold: bool| Font {
-            family: family.to_string(),
-            regular: Some(Face::Builtin),
-            medium: Some(Face::Builtin),
-            semibold: semibold.then_some(Face::Builtin),
-            bold: None,
-        };
         let level = |font, weight, size, line| Level { font, weight, size, line };
         Design {
             id: STANDARD_ID.to_string(),
@@ -770,12 +919,8 @@ impl Design {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 author: Some("Torro".to_string()),
                 description: Some(tr("Inter, quiet surfaces, Torro red").to_string()),
-                font_license: Some("OFL-1.1".to_string()),
-            },
-            fonts: Fonts {
-                text: inter("Inter", true),
-                heading: inter("Inter", true),
-                numbers: inter("Inter Tabular", false),
+                font: None,
+                color_scheme: None,
             },
             typo: TypeScale {
                 micro: level(FontRole::Numbers, Weight::Regular, 11.0, 14.0),
@@ -803,9 +948,10 @@ impl Design {
                 density: Density::Compact,
             },
             size: STANDARD_SIZE,
-            colors: Colors { dark: STANDARD_DARK, light: STANDARD_LIGHT },
-            logo: Logo::default(),
             preview: None,
+            fonts: inter(),
+            colors: STANDARD_COLORS,
+            logo: Logo::default(),
         }
     }
 
@@ -814,6 +960,167 @@ impl Design {
         self.id == STANDARD_ID
     }
 }
+
+/// The families of a font with their faces, its licence and its size adjustment: the standard or one
+/// from [`font_dir`], merged with the standard and checked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontSet {
+    /// [`STANDARD_ID`] or the folder name.
+    pub id: String,
+    /// Name, version and author from `font.toml`. The control centre names a font by the family of
+    /// its text font ([`Font::family`] of [`Fonts::text`]) and shows this name in the tooltip.
+    pub about: About,
+    /// SPDX id of the licence of the font files (`license = "OFL-1.1"`), required as soon as the font
+    /// brings files; the standard's ("OFL-1.1", Inter) when it brings none.
+    pub license: String,
+    /// The families of the three roles. A role `font.toml` leaves out is the text font; without
+    /// `[fonts.text]` the roles left out are the standard's.
+    pub fonts: Fonts,
+    /// The factor every size of a design is multiplied by in this font (as `font-size-adjust` in CSS),
+    /// so its lowercase looks as large as Inter's: `size_adjust` from `font.toml` when set (allowed
+    /// 0.85–1.25), else Inter's x-height divided by the x-height of the text font's regular face
+    /// ([`INTER_X_HEIGHT`], OS/2 `sxHeight`, else the height of its "x"), held to 0.90–1.15. Exactly 1
+    /// for Inter. [`FontSet::apply`] uses it.
+    pub size_adjust: f32,
+}
+
+impl FontSet {
+    /// The standard font "Torro": Inter for text and headings, Inter Tabular for figures, embedded in
+    /// `torro_gui`, size adjustment 1.
+    pub fn standard() -> FontSet {
+        FontSet {
+            id: STANDARD_ID.to_string(),
+            about: About {
+                name: "Torro".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                author: Some("Torro".to_string()),
+                ..About::default()
+            },
+            license: "OFL-1.1".to_string(),
+            fonts: inter(),
+            size_adjust: 1.0,
+        }
+    }
+
+    /// Whether this is the standard font.
+    pub fn is_standard(&self) -> bool {
+        self.id == STANDARD_ID
+    }
+
+    /// `level` of a design (size meant for Inter) as drawn in this font (task L.19):
+    ///
+    /// - **size** = size × [`FontSet::size_adjust`], rounded to 0.5, never below [`MIN_TEXT_SIZE`];
+    /// - **line height** = the design's, but at least [`LINE_FLOOR`] × the new size – never more than
+    ///   the design's own ratio of line to size, so a tight display level (Torro: 28/32) stays tight
+    ///   and Inter gives exactly the design's values;
+    /// - **weight** = the nearest the role's family has ([`Font::nearest`]);
+    /// - the role stays.
+    pub fn apply(&self, level: Level) -> Level {
+        let size = ((level.size * self.size_adjust * 2.0).round() / 2.0).max(MIN_TEXT_SIZE);
+        let ratio = if level.size > 0.0 { (level.line / level.size).min(LINE_FLOOR) } else { LINE_FLOOR };
+        Level {
+            font: level.font,
+            weight: self.fonts.get(level.font).nearest(level.weight),
+            size,
+            line: level.line.max(size * ratio),
+        }
+    }
+}
+
+/// The colours of both modes and the logo: the standard or one from [`color_scheme_dir`], merged
+/// with the standard and checked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorScheme {
+    /// [`STANDARD_ID`] or the folder name.
+    pub id: String,
+    /// Name, version, author and description from `color-scheme.toml`.
+    pub about: About,
+    /// The colours of both modes.
+    pub colors: Colors,
+    /// Its own logo, if it brings one.
+    pub logo: Logo,
+}
+
+impl ColorScheme {
+    /// The standard colour scheme "Torro": quiet surfaces, Torro red, the suite's own logo.
+    pub fn standard() -> ColorScheme {
+        ColorScheme {
+            id: STANDARD_ID.to_string(),
+            about: About {
+                name: "Torro".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                author: Some("Torro".to_string()),
+                ..About::default()
+            },
+            colors: STANDARD_COLORS,
+            logo: Logo::default(),
+        }
+    }
+
+    /// Whether this is the standard colour scheme.
+    pub fn is_standard(&self) -> bool {
+        self.id == STANDARD_ID
+    }
+}
+
+/// The look as chosen: a design, a font and a colour scheme, each valid on its own, so every
+/// combination is valid too (concept: "Die Schnittstellen zwischen den Teilen").
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    pub design: Design,
+    pub font: FontSet,
+    pub scheme: ColorScheme,
+}
+
+impl Selection {
+    /// Torro, Torro, Torro: exactly the look of the suite before design packs.
+    pub fn standard() -> Selection {
+        Selection { design: Design::standard(), font: FontSet::standard(), scheme: ColorScheme::standard() }
+    }
+
+    /// The text level `name` as drawn: the design's level with the font's size adjustment and nearest
+    /// weight ([`FontSet::apply`]). The family is `self.font.fonts.get(level.font)`.
+    pub fn level(&self, name: LevelName) -> Level {
+        self.font.apply(self.design.typo.get(name))
+    }
+}
+
+/// The smallest text the suite draws (`typo::micro()`); a size adjustment never goes below it.
+pub const MIN_TEXT_SIZE: f32 = 11.0;
+
+/// A level's line height is at least this times its size after the size adjustment, as far as the
+/// design's own ratio goes ([`FontSet::apply`]).
+pub const LINE_FLOOR: f32 = 1.2;
+
+/// Inter's x-height in em: `sxHeight` 1118 of 2048 units, the same in every cut of Inter 4 (measured
+/// 2026-10-20). The sizes of every design are meant for Inter; a font's size adjustment is this divided
+/// by its own x-height.
+pub const INTER_X_HEIGHT: f32 = 1118.0 / 2048.0;
+
+/// The widest a figure may be in the `numbers` font, in em of the design's size, after the size
+/// adjustment (and never less than the plain width, because sizes below [`MIN_TEXT_SIZE`] are raised
+/// to it): what the time axis of a design is made to hold (`size.axis`, `size.axis_narrow`).
+///
+/// Measured 2026-10-20 on the figures fonts of the samples (widest figure of any cut × adjustment):
+/// Inter Tabular 0.648 × 1 = 0.648, IBM Plex Sans 0.600 × 1.058 = 0.635, Commitr Figures (Mona Sans)
+/// 0.590 × 1.038 = 0.612, Lato 0.580 × 1.078 = 0.625, Figtree Tabular 0.626 × 1.092 = 0.684, Roboto
+/// Flex 0.565 × 1.063 = 0.600, Selawik 0.575 × 1.092 = 0.628. The widest, Figtree Tabular, plus 5 %:
+/// 0.718, rounded up to 0.72.
+pub const DIGIT_MAX_EM: f32 = 0.72;
+
+/// Inter for text and headings, Inter Tabular (400 and 500) for figures, all embedded.
+fn inter() -> Fonts {
+    let inter = |family: &str, semibold: bool| Font {
+        family: family.to_string(),
+        regular: Some(Face::Builtin),
+        medium: Some(Face::Builtin),
+        semibold: semibold.then_some(Face::Builtin),
+        bold: None,
+    };
+    Fonts { text: inter("Inter", true), heading: inter("Inter", true), numbers: inter("Inter Tabular", false) }
+}
+
+const STANDARD_COLORS: Colors = Colors { dark: STANDARD_DARK, light: STANDARD_LIGHT };
 
 /// The sizes of the standard design (also the list of valid `[size]` keys).
 pub(crate) const STANDARD_SIZE: Size = Size {
@@ -981,19 +1288,24 @@ mod tests {
     #[test]
     fn standard_keeps_the_values_of_the_design_skill() {
         let d = Design::standard();
+        let c = ColorScheme::standard().colors;
+        let f = FontSet::standard();
         assert_eq!(d.id, STANDARD_ID);
-        assert!(d.is_standard());
-        assert_eq!(d.colors.dark.bg, Rgba::hex(0x08090A));
-        assert_eq!(d.colors.light.text_3, Rgba::hex(0x62666D));
-        assert_eq!(d.colors.dark.accent, d.colors.light.accent);
-        assert_eq!((d.colors.dark.line.a, d.colors.dark.focus_ring.a), (0.06, 0.35));
-        assert_eq!((d.colors.light.line_selected.a, d.colors.light.focus_ring.a), (0.32, 0.5));
-        assert_eq!((d.colors.dark.tint, d.colors.light.tint), (0.18, 0.14));
+        assert!(d.is_standard() && f.is_standard() && ColorScheme::standard().is_standard());
+        assert_eq!(c.dark.bg, Rgba::hex(0x08090A));
+        assert_eq!(c.light.text_3, Rgba::hex(0x62666D));
+        assert_eq!(c.dark.accent, c.light.accent);
+        assert_eq!((c.dark.line.a, c.dark.focus_ring.a), (0.06, 0.35));
+        assert_eq!((c.light.line_selected.a, c.light.focus_ring.a), (0.32, 0.5));
+        assert_eq!((c.dark.tint, c.light.tint), (0.18, 0.14));
         assert_eq!(d.typo.body, Level { font: FontRole::Text, weight: Weight::Regular, size: 13.0, line: 20.0 });
         assert_eq!(d.typo.micro.font, FontRole::Numbers);
-        assert_eq!(d.fonts.text.family, "Inter");
-        assert_eq!(d.fonts.numbers.family, "Inter Tabular");
-        assert_eq!(d.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
+        assert_eq!(f.fonts.text.family, "Inter");
+        assert_eq!(f.fonts.numbers.family, "Inter Tabular");
+        assert_eq!(f.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
+        assert_eq!((f.size_adjust, f.license.as_str()), (1.0, "OFL-1.1"));
+        // The bridge until L.21/L.22 holds the same parts.
+        assert_eq!((&d.fonts, &d.colors, &d.logo), (&f.fonts, &c, &Logo::default()));
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
         assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
         assert_eq!([d.size.row_message, d.size.row_notice], [92.0, 64.0], "the inbox's rows (tasks E3.9, E11.1)");
@@ -1010,11 +1322,11 @@ mod tests {
         assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
         // The mail window's large buttons (task E11.1).
         assert_eq!([d.size.command, d.size.pill], [46.0, 42.0]);
-        assert_eq!(d.logo, Logo::default());
+        assert_eq!(ColorScheme::standard().logo, Logo::default());
         // The chart colours as the dataviz validator checked them (task E8.8b).
-        assert_eq!(d.colors.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);
-        assert_eq!(d.colors.light.chart.map(hex), [0x2F6BC9, 0xB8621A, 0x2A9466, 0xA8448C]);
-        assert_eq!((hex(d.colors.dark.chart_other), hex(d.colors.light.chart_other)), (0x5C6068, 0x50545B));
+        assert_eq!(c.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);
+        assert_eq!(c.light.chart.map(hex), [0x2F6BC9, 0xB8621A, 0x2A9466, 0xA8448C]);
+        assert_eq!((hex(c.dark.chart_other), hex(c.light.chart_other)), (0x5C6068, 0x50545B));
     }
 
     /// `colour` as `0xRRGGBB`.
@@ -1026,8 +1338,8 @@ mod tests {
     /// Task E8.8b: chart colours are never the accent or a status colour, in either mode.
     #[test]
     fn chart_colours_are_neither_accent_nor_status() {
-        let d = Design::standard();
-        for p in [d.colors.dark, d.colors.light] {
+        let c = ColorScheme::standard().colors;
+        for p in [c.dark, c.light] {
             let reserved = [p.accent, p.ok, p.attention, p.error, p.inactive, p.merged];
             for colour in p.chart.iter().chain([&p.chart_other]) {
                 assert!(!reserved.contains(colour), "{colour:?}");
@@ -1057,12 +1369,9 @@ mod tests {
 
     #[test]
     fn derived_text_colours_follow_torro_gui() {
-        let d = Design::standard();
-        assert_eq!(d.colors.dark.attention_text(Mode::Dark), d.colors.dark.attention);
-        assert_eq!(
-            d.colors.light.error_text(Mode::Light),
-            Rgba::mix(Rgba::from_rgb(STATUS_ERROR), Rgba::hex(0x18191B), 0.3)
-        );
+        let c = ColorScheme::standard().colors;
+        assert_eq!(c.dark.attention_text(Mode::Dark), c.dark.attention);
+        assert_eq!(c.light.error_text(Mode::Light), Rgba::mix(Rgba::from_rgb(STATUS_ERROR), Rgba::hex(0x18191B), 0.3));
     }
 
     #[test]
@@ -1072,6 +1381,98 @@ mod tests {
         }
         for bad in ["", "Plex", "my_design", "../x", "torro", "x".repeat(33).as_str(), "plex.d"] {
             assert!(!is_valid_id(bad), "{bad}");
+        }
+    }
+
+    /// Task L.19: Torro, Torro, Torro draws every level exactly as the design sets it.
+    #[test]
+    fn the_standard_selection_draws_the_designs_levels_unchanged() {
+        let selection = Selection::standard();
+        for name in LevelName::ALL {
+            assert_eq!(selection.level(name), selection.design.typo.get(name), "{}", name.key());
+        }
+        let keys: Vec<&str> = Design::standard().typo.levels().iter().map(|(key, _)| *key).collect();
+        assert_eq!(keys, LevelName::ALL.map(LevelName::key), "one name per level, in the same order");
+    }
+
+    /// Task L.19: the size adjustment rounds to 0.5, never goes below 11 and keeps at least 1.2 × the
+    /// size as line height, up to the design's own ratio.
+    #[test]
+    fn the_size_adjustment_rounds_and_keeps_room() {
+        let font = |size_adjust: f32| FontSet { size_adjust, ..FontSet::standard() };
+        let level = |size: f32, line: f32| Level { font: FontRole::Text, weight: Weight::Regular, size, line };
+        let plex = font(1.058);
+        assert_eq!(plex.apply(level(13.0, 20.0)), level(14.0, 20.0), "13.75 → 14, the line still has room");
+        assert_eq!(plex.apply(level(12.0, 14.0)).size, 12.5, "12.7 → 12.5");
+        let tight = plex.apply(level(28.0, 32.0));
+        assert_eq!(tight.size, 29.5);
+        assert!((tight.line - 29.5 * 32.0 / 28.0).abs() < 1e-4, "as tight as the design meant: {}", tight.line);
+        let roomy = font(1.15).apply(level(20.0, 22.0));
+        assert_eq!((roomy.size, roomy.line), (23.0, 23.0 * 1.1), "the design's 1.1, not 1.2");
+        let open = font(1.15).apply(level(16.0, 17.0));
+        assert_eq!(open.size, 18.5);
+        assert!((open.line - 18.5 * 17.0 / 16.0).abs() < 1e-4);
+        assert_eq!(font(0.85).apply(level(11.0, 14.0)), level(11.0, 14.0), "never below 11");
+        let bodies = font(1.25).apply(level(13.0, 14.0));
+        assert_eq!(bodies.size, 16.5, "16.25 → 16.5");
+        assert!((bodies.line - 16.5 * 14.0 / 13.0).abs() < 1e-4, "{}", bodies.line);
+    }
+
+    /// Task L.19: a missing weight is drawn in the nearest, in the concept's order.
+    #[test]
+    fn missing_weights_are_replaced_in_the_concepts_order() {
+        let file = || Some(Face::File(PathBuf::from("/x.ttf")));
+        let font = |regular: bool, medium: bool, semibold: bool, bold: bool| Font {
+            family: "Sample".into(),
+            regular: regular.then(file).flatten(),
+            medium: medium.then(file).flatten(),
+            semibold: semibold.then(file).flatten(),
+            bold: bold.then(file).flatten(),
+        };
+        let lato = font(true, false, false, true);
+        assert_eq!(lato.nearest(Weight::Medium), Weight::Regular, "medium → (semibold) → regular");
+        assert_eq!(lato.nearest(Weight::Semibold), Weight::Bold, "semibold → bold");
+        let selawik = font(true, false, true, true);
+        assert_eq!(selawik.nearest(Weight::Medium), Weight::Semibold, "medium → semibold");
+        let no_bold = font(true, true, false, false);
+        assert_eq!(no_bold.nearest(Weight::Bold), Weight::Medium, "bold → (semibold) → medium");
+        assert_eq!(no_bold.nearest(Weight::Semibold), Weight::Medium, "semibold → (bold) → medium");
+        let only_semibold = font(false, false, true, false);
+        for wanted in [Weight::Regular, Weight::Medium, Weight::Bold] {
+            assert_eq!(only_semibold.nearest(wanted), Weight::Semibold, "{wanted}");
+        }
+        assert_eq!(font(false, false, false, false).nearest(Weight::Bold), Weight::Bold, "nothing to choose");
+        let standard = FontSet::standard();
+        let countdown = standard.apply(Design::standard().typo.countdown);
+        assert_eq!(countdown.weight, Weight::Medium, "Inter Tabular has Medium");
+    }
+
+    /// Task L.19: every design × every font × every colour scheme of the test data gives text levels
+    /// that can be drawn – at least 11, with a line at least as high as the text. No combination is
+    /// checked on its own; this holds because each part is checked on its own.
+    #[test]
+    fn every_valid_design_font_and_colour_scheme_go_together() {
+        let data = testdata::Data::all();
+        fn valid<T>(listed: Vec<Listed<T>>) -> Vec<T> {
+            listed.into_iter().filter_map(|entry| entry.result.ok()).collect()
+        }
+        let designs: Vec<Design> = valid(list(&data.dir(Part::Design)));
+        let fonts: Vec<FontSet> = valid(list_fonts(&data.dir(Part::Font)));
+        let schemes: Vec<ColorScheme> = valid(list_color_schemes(&data.dir(Part::ColorScheme)));
+        assert!(designs.len() >= 3 && fonts.len() >= 5 && schemes.len() >= 4, "the test data has choices");
+        for design in &designs {
+            for font in &fonts {
+                for scheme in &schemes {
+                    let selection = Selection { design: design.clone(), font: font.clone(), scheme: scheme.clone() };
+                    for name in LevelName::ALL {
+                        let level = selection.level(name);
+                        let which = format!("{} × {} × {}: {}", design.id, font.id, scheme.id, name.key());
+                        assert!(level.size >= MIN_TEXT_SIZE, "{which}: {level:?}");
+                        assert!(level.line >= level.size, "{which}: {level:?}");
+                        assert!(selection.font.fonts.get(level.font).face(level.weight).is_some(), "{which}: a face");
+                    }
+                }
+            }
         }
     }
 }

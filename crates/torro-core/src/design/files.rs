@@ -1,7 +1,8 @@
-//! The file rules of a design pack: paths stay inside the pack's folder (also through `..` and
-//! links), sizes are checked before anything is read, SVGs hold no references and no scripts,
-//! logos are square, fonts are TrueType/OpenType of the named family, `preview.png` is a PNG of at
-//! most 1200 × 800. Nothing here interprets more of a file than these checks need.
+//! The file rules of a design, a font and a colour scheme: paths stay inside the part's folder (also
+//! through `..` and links), sizes are checked before anything is read, SVGs hold no references and no
+//! scripts, logos are square, fonts are TrueType/OpenType of the named family, `preview.png` is a PNG
+//! of at most 1200 × 800. Nothing here interprets more of a file than these checks need; of a font
+//! only its family names, its x-height and the advance of its figures are read ([`FontInfo`]).
 
 use std::fs;
 use std::io::Read;
@@ -10,18 +11,18 @@ use std::path::{Component, Path, PathBuf};
 use super::{DesignError, shown};
 use crate::i18n::tr;
 
-/// `design.toml`.
+/// `design.toml`, `font.toml`, `color-scheme.toml`.
 pub(super) const TOML_LIMIT: u64 = 64 * 1024;
 const SVG_LIMIT: u64 = 256 * 1024;
 const PNG_LIMIT: u64 = 2 * 1024 * 1024;
 const FONT_LIMIT: u64 = 5 * 1024 * 1024;
 const PACK_LIMIT: u64 = 20 * 1024 * 1024;
-/// More entries than any pack needs; a folder with more is treated as too large, so walking it
+/// More entries than any folder needs; a folder with more is treated as too large, so walking it
 /// stays cheap.
 const PACK_ENTRIES: usize = 1000;
 const PREVIEW_MAX: (u32, u32) = (1200, 800);
 
-/// The kinds of files a pack may name.
+/// The kinds of files a TOML file may name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
     Svg,
@@ -48,7 +49,8 @@ impl Kind {
     }
 }
 
-/// A pack's folder, canonical, so links and `..` can be compared against it.
+/// The folder of one design, font or colour scheme, canonical, so links and `..` can be compared
+/// against it.
 pub(super) struct Root {
     pub(super) path: PathBuf,
 }
@@ -60,9 +62,9 @@ impl Root {
         path.is_dir().then_some(Root { path })
     }
 
-    /// The file `rel` (as written under `key` in `design.toml`), absolute, after checking that it
+    /// The file `rel` (as written under `key` in the TOML file), absolute, after checking that it
     /// stays inside the folder, exists and is a file with the extension of `kind`. The content is
-    /// checked separately ([`Root::check_logo`], [`Root::font_families`]).
+    /// checked separately ([`Root::check_logo`], [`Root::font_info`]).
     pub(super) fn named(&self, key: &str, rel: &str, kind: Kind) -> Result<PathBuf, Vec<DesignError>> {
         let outside = || vec![DesignError::PathOutside { key: key.to_string(), path: rel.to_string() }];
         let relative = Path::new(rel);
@@ -95,15 +97,14 @@ impl Root {
         shown(&self.path, path)
     }
 
-    /// `design.toml` as text, at most [`TOML_LIMIT`].
-    pub(super) fn design_toml(&self) -> Result<String, DesignError> {
-        let path = self.path.join("design.toml");
+    /// The TOML file `name` (`design.toml` …) as text, at most [`TOML_LIMIT`].
+    pub(super) fn toml(&self, name: &str) -> Result<String, DesignError> {
+        let path = self.path.join(name);
         if !path.is_file() {
-            return Err(DesignError::MissingFile { key: "design.toml".into(), path: "design.toml".into() });
+            return Err(DesignError::MissingFile { key: name.into(), path: name.into() });
         }
         let bytes = self.read(&path, TOML_LIMIT)?;
-        String::from_utf8(bytes)
-            .map_err(|err| DesignError::Unreadable { file: "design.toml".into(), reason: err.to_string() })
+        String::from_utf8(bytes).map_err(|err| DesignError::Unreadable { file: name.into(), reason: err.to_string() })
     }
 
     /// The bytes of `path`, refused before reading when the file is larger than `limit`, and
@@ -161,22 +162,10 @@ impl Root {
         svg_problems(&file, &text)
     }
 
-    /// The family names of the font at `path`, after its size and format were checked.
-    pub(super) fn font_families(&self, path: &Path) -> Result<Vec<String>, DesignError> {
+    /// What the rules need of the font at `path`, after its size and format were checked.
+    pub(super) fn font_info(&self, path: &Path) -> Result<FontInfo, DesignError> {
         let bytes = self.read(path, FONT_LIMIT)?;
-        let face =
-            ttf_parser::Face::parse(&bytes, 0).map_err(|_| DesignError::FontUnreadable { file: self.show(path) })?;
-        let ids =
-            [ttf_parser::name_id::FAMILY, ttf_parser::name_id::TYPOGRAPHIC_FAMILY, ttf_parser::name_id::WWS_FAMILY];
-        let mut families: Vec<String> = face
-            .names()
-            .into_iter()
-            .filter(|name| ids.contains(&name.name_id))
-            .filter_map(|name| name.to_string())
-            .collect();
-        families.sort();
-        families.dedup();
-        Ok(families)
+        font_info(&bytes).ok_or_else(|| DesignError::FontUnreadable { file: self.show(path) })
     }
 
     /// `preview.png` if the pack has one: a PNG of at most 2 MB and 1200 × 800.
@@ -197,10 +186,49 @@ impl Root {
     }
 }
 
-/// `fonts/LICENSE.txt` exists inside the folder.
-pub(super) fn has_font_license(root: &Root) -> bool {
-    fs::canonicalize(root.path.join("fonts").join("LICENSE.txt"))
-        .is_ok_and(|path| path.starts_with(&root.path) && path.is_file())
+/// What the rules need of one font file.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct FontInfo {
+    /// Family, typographic family and WWS family names, sorted, without doubles.
+    pub(super) families: Vec<String>,
+    /// The x-height in em: OS/2 `sxHeight`, else the top of the "x"; `None` when the font has neither.
+    pub(super) x_height: Option<f32>,
+    /// The advance of its widest figure 0–9 in em; `None` without figures.
+    pub(super) widest_figure: Option<f32>,
+}
+
+/// [`FontInfo`] of the font `bytes`; `None` when they are no TrueType/OpenType font.
+pub(super) fn font_info(bytes: &[u8]) -> Option<FontInfo> {
+    let face = ttf_parser::Face::parse(bytes, 0).ok()?;
+    let ids = [ttf_parser::name_id::FAMILY, ttf_parser::name_id::TYPOGRAPHIC_FAMILY, ttf_parser::name_id::WWS_FAMILY];
+    let mut families: Vec<String> = face
+        .names()
+        .into_iter()
+        .filter(|name| ids.contains(&name.name_id))
+        .filter_map(|name| name.to_string())
+        .collect();
+    families.sort();
+    families.dedup();
+    let em = f32::from(face.units_per_em());
+    let glyph = |c: char| face.glyph_index(c);
+    let x_height = face
+        .x_height()
+        .filter(|height| *height > 0)
+        .or_else(|| {
+            glyph('x').and_then(|g| face.glyph_bounding_box(g)).map(|bounds| bounds.y_max).filter(|top| *top > 0)
+        })
+        .map(|height| f32::from(height) / em);
+    let widest_figure = ('0'..='9')
+        .filter_map(|c| glyph(c).and_then(|g| face.glyph_hor_advance(g)))
+        .max()
+        .map(|advance| f32::from(advance) / em);
+    Some(FontInfo { families, x_height, widest_figure })
+}
+
+/// The licence file `rel` (`LICENSE.txt`, or `fonts/LICENSE.txt` in an old complete pack) exists
+/// inside the folder.
+pub(super) fn has_license(root: &Root, rel: &str) -> bool {
+    fs::canonicalize(root.path.join(rel)).is_ok_and(|path| path.starts_with(&root.path) && path.is_file())
 }
 
 /// "64 KB", "20 MB".

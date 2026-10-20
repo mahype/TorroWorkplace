@@ -1,0 +1,16 @@
+# Broken: Inter Tabular's figures, made 1.2 times as large, no longer fit the time axis.
+format = 1
+license = "OFL-1.1"
+size_adjust = 1.2
+
+[about]
+name = "Wide figures"
+version = "1.0.0"
+
+[fonts.text]
+family = "Inter"
+regular = "Inter-Regular.ttf"
+
+[fonts.numbers]
+family = "Inter Tabular"
+regular = "InterTabular-Regular.ttf"

@@ -1,0 +1,12 @@
+# IBM Plex Sans with a size adjustment of its own, which wins over the x-height.
+format = 1
+license = "OFL-1.1"
+size_adjust = 1.2
+
+[about]
+name = "Plex, set"
+version = "1.0.0"
+
+[fonts.text]
+family = "IBM Plex Sans"
+regular = "IBMPlexSans-Regular.ttf"

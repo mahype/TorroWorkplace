@@ -1,0 +1,50 @@
+# Every key the format knows, with valid values: colours of both modes and the logo.
+format = 1
+
+[about]
+name = "Full"
+version = "2.1.0"
+author = "Torro tests"
+description = "Every key set once"
+
+[colors.dark]
+bg = "#08090A"
+panel = "#0F1011"
+raised = "#141518"
+hover = "#16171A"
+selected = "#1C1E22"
+menu = "#17181B"
+text = "#EDEEF0"
+text_2 = "#B4B8BF"
+text_3 = "#8A8F98"
+line = "#FFFFFF0F"
+line_strong = "#FFFFFF1A"
+line_selected = "#FFFFFF47"
+focus_ring = "#FFFFFF59"
+accent = "#0E7C7B"
+on_accent = "#FFFFFF"
+ok = "#28CD41"
+attention = "#FF9500"
+error = "#FF3B30"
+inactive = "#8E8E93"
+merged = "#A78BFA"
+calendar = ["#5B8CFF", "#3FB984", "#E8A33D", "#D96CA8", "#A78BFA"]
+tint = 0.18
+chart = ["#3B78D8", "#C9701E", "#2E9E6B", "#B5509A"]
+chart_other = "#5C6068"
+shadow = "#00000080"
+scrim = "#0000009E"
+night = "#121626"
+sidebar = "#08090A"
+sidebar_hover = "#16171A"
+sidebar_selected = "#1C1E22"
+sidebar_text = "#EDEEF0"
+sidebar_text_2 = "#B4B8BF"
+sidebar_text_3 = "#8A8F98"
+sidebar_line = "#FFFFFF0F"
+
+[colors.light]
+accent = "#0B6B6A"
+
+[logo]
+mark = "logo.svg"
