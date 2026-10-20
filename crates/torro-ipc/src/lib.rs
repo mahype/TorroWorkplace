@@ -1560,7 +1560,8 @@ pub enum Request {
     /// ([`Response::AiAssignments`], task E12.5). `not-found` for a function this version does
     /// not know or an account that does not exist; `error` for a model the account does not
     /// offer, for a function that needs a decision model and a model that does not decide, and –
-    /// while mail may not leave this computer – for a model that runs elsewhere.
+    /// while mail may not leave this computer – for a model that runs elsewhere; `unsupported` for
+    /// a model that is turned off (`ai.set_model_enabled`, task S.24, #231).
     #[serde(rename = "ai.set_assignment")]
     SetAiAssignment {
         /// The function's key: `inbox.categorize`.
