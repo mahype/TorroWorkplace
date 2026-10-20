@@ -329,7 +329,7 @@ L.24–L.30 sind unabhängig voneinander; jedes Design und jede Schrift wird ers
 eine neue Schrift vorschlagen, warten auf L.24.
 
 ### L.18 Steuerzentrale: kompakte Seite Appearance
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torro-gui/src/{icon,widgets,style}.rs`,
   `crates/torro-gui/assets/icons/monitor.svg` (Lucide 0.469.0), `crates/torro-gui/examples/gallery.rs`,
   `crates/torroworkplace/src/ui/general.rs`

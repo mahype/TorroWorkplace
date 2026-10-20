@@ -3,7 +3,9 @@
 //!
 //! `cargo run -p torro-gui --example gallery` shows the styles (dark), `-- --light` in light mode,
 //! `-- --blocks` the building blocks, `-- --parts` the states and feedback of everything that answers
-//! a click (choice chips, label choices, segments, the busy primary button; task G.10), the small
+//! a click (choice chips, label choices, segments, the busy primary button; task G.10), the blocks of
+//! the compact Appearance page (task L.18: the segment with symbols, the heading with quiet actions,
+//! the preview tiles in every state and a live grid), the small
 //! parts of the tasks redesign (property
 //! lines, label chips, state pills, progress bars) and every bundled icon, `-- --cards` the blocks of the
 //! inbox's comfortable density (task E8.2: cards, card heads, chips, source tiles, avatars and
@@ -174,6 +176,11 @@ struct Gallery {
     busy: bool,
     /// The cards page (task E8.2): the card under the "cursor".
     card: usize,
+    /// The Appearance blocks (task L.18): the chosen colour mode, the chosen tile and whether the
+    /// reasons of the unusable tile are shown.
+    mode: usize,
+    tile: usize,
+    reasons: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -203,6 +210,9 @@ enum Msg {
     State(usize),
     Busy(bool),
     Card(usize),
+    Mode(usize),
+    Tile(usize),
+    Reasons,
 }
 
 const SECTIONS: [&str; 5] = ["Buttons", "Rows", "Inputs", "Checks", "Surfaces"];
@@ -236,6 +246,9 @@ impl Gallery {
             state: 0,
             busy: false,
             card: 0,
+            mode: 0,
+            tile: 0,
+            reasons: true,
         }
     }
 
@@ -299,6 +312,12 @@ impl Gallery {
             Msg::State(i) => self.state = i,
             Msg::Busy(busy) => self.busy = busy,
             Msg::Card(i) => self.card = i,
+            Msg::Mode(i) => self.mode = i,
+            Msg::Tile(i) => {
+                self.tile = i;
+                self.reasons = false;
+            }
+            Msg::Reasons => self.reasons = !self.reasons,
         }
     }
 
@@ -2010,7 +2029,11 @@ impl Gallery {
         let icons = container(every_icon).width(1000);
 
         row![
-            section("States and feedback", self.feedback()),
+            column![
+                section("States and feedback", self.feedback()),
+                section("Appearance page (task L.18)", self.appearance()),
+            ]
+            .spacing(space::xxl()),
             section("Properties column", props.into()),
             small,
             section("Every bundled icon (Lucide 0.469.0, stroke 1.75)", icons.into())
@@ -2018,6 +2041,129 @@ impl Gallery {
         .spacing(space::xxl())
         .padding(space::xl())
         .into()
+    }
+
+    /// The blocks of the compact Appearance page (task L.18): the tile forced into every state, then
+    /// live the segment with symbols (with and without words), the heading with quiet actions and a
+    /// grid of tiles – a click on the unusable one shows or hides its reasons under the grid.
+    fn appearance(&self) -> Element<'_, Msg> {
+        let area = widgets::preview_size();
+        let swatch = move |colour: fn(&Palette) -> Color| -> Element<'static, Msg> {
+            container(Space::new())
+                .width(area.width)
+                .height(area.height)
+                .style(move |t: &Theme| container::Style {
+                    background: Some(Background::Color(colour(&palette(t)))),
+                    border: border::rounded(theme::radius::xs()),
+                    ..container::Style::default()
+                })
+                .into()
+        };
+        let looks: [(&str, bool, bool); 4] = [
+            ("preview_tile", false, true),
+            ("preview_tile (chosen)", true, true),
+            ("preview_tile (unusable)", false, false),
+            ("preview_tile (unusable, open)", true, false),
+        ];
+        let forced_tiles = column(looks.into_iter().map(|(name, on, usable)| {
+            let cells = BUTTON_STATES
+                .iter()
+                .map(|&(state, status)| {
+                    let top: Element<'static, Msg> = if usable {
+                        swatch(|p| p.calendar[0])
+                    } else {
+                        container(quiet(Icon::CircleAlert, icon::SIZE))
+                            .center_x(area.width)
+                            .center_y(area.height)
+                            .into()
+                    };
+                    // Not `label`: its centring fills the height, which a tile of its own height must not.
+                    let content = column![top, typo::text(typo::caption(), "Harbor")].spacing(space::xs());
+                    cell(
+                        state,
+                        forced(content, style::button::preview_tile(on, usable), status)
+                            .width(widgets::preview_tile_width())
+                            .padding(space::xs()),
+                    )
+                })
+                .collect();
+            line(name, cells)
+        }))
+        .spacing(space::l());
+
+        let modes = |words: bool| {
+            let parts = [
+                (Icon::Monitor, "System", Msg::Mode(0)),
+                (Icon::Sun, "Light", Msg::Mode(1)),
+                (Icon::Moon, "Dark", Msg::Mode(2)),
+            ];
+            widgets::icon_segmented(parts, self.mode, words)
+        };
+        let heading = widgets::group_heading(
+            "Design",
+            vec![
+                widgets::icon_button(Icon::RefreshCw, "Reload", Some(Msg::Noop)),
+                widgets::text_button(Some(Icon::Folder), "Open designs folder", style::button::ghost, Some(Msg::Noop)),
+            ],
+        );
+        let names = ["Torro", "Harbor", "Paper", "Commitr Dark Extended", "Neon", "Plex", "Nord", "Dracula"];
+        let colours: [fn(&Palette) -> Color; 8] = [
+            |p| p.bg,
+            |p| p.calendar[0],
+            |p| p.raised,
+            |p| p.calendar[4],
+            |p| p.bg,
+            |p| p.calendar[1],
+            |p| p.calendar[2],
+            |p| p.calendar[3],
+        ];
+        let tiles = names
+            .iter()
+            .zip(colours)
+            .enumerate()
+            .map(|(i, (name, colour))| {
+                if *name == "Neon" {
+                    let state = widgets::PreviewState::Unusable { open: self.reasons };
+                    return widgets::preview_tile(
+                        None,
+                        name,
+                        Some("0.1 · Torro samples".into()),
+                        state,
+                        Some(Msg::Reasons),
+                    );
+                }
+                let state = if i == self.tile { widgets::PreviewState::Chosen } else { widgets::PreviewState::Plain };
+                widgets::preview_tile(
+                    Some(swatch(colour)),
+                    name,
+                    Some("1.0 · Torro samples".into()),
+                    state,
+                    Some(Msg::Tile(i)),
+                )
+            })
+            .collect();
+        let mut grid = column![widgets::preview_grid(tiles)].spacing(layout::item_gap());
+        if self.reasons {
+            let reasons = column![
+                typo::text(typo::body_strong(), "Neon"),
+                typo::text(typo::meta(), "Can't be used:").style(theme::text_2),
+                typo::text(typo::meta(), "colors.dark.text: contrast 2.1:1 on panel, at least 4.5:1")
+                    .style(theme::text_2),
+            ]
+            .spacing(space::xs());
+            grid = grid
+                .push(container(reasons).width(Fill).padding(layout::panel_padding()).style(style::container::group));
+        }
+        let live = column![
+            labelled("Segment with symbols and words", modes(true)),
+            labelled("Without words (tooltips)", modes(false)),
+            column![heading, grid].spacing(layout::item_gap()),
+        ]
+        .spacing(space::l());
+        column![forced_tiles, rule::horizontal(1).style(style::rule), live]
+            .spacing(space::xl())
+            .width(size::content_max())
+            .into()
     }
 
     /// Everything that answers a click in the filter list dialog (task G.10): first every state

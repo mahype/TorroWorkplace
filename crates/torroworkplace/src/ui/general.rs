@@ -7,9 +7,9 @@
 //!   its window class under the name (for window rules) and "Open", the App Feed among them;
 //!   "Startup" has the "Start at login" switch; "Setup" runs the first-run setup again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
-//!   glance): "Appearance" (System, Light, Dark) as a list of choices like the language; "Design"
-//!   lists the design packs (task L.4, below); "Interface" has the zoom of the suite with −, the
-//!   value, + and "Reset" (task Z.1).
+//!   glance; compact since L.18): "Color mode" is one row with a segment of three parts, each with
+//!   its symbol and word (System, Light, Dark); "Design" is a grid of small tiles (below);
+//!   "Interface" has the zoom of the suite with −, the value, + and "Reset" (task Z.1).
 //!
 //! What a single app or window shows and how it behaves is set in that window, behind its gear
 //! (task S.21): the calendar's night and reminders, how mail is read, the sources of the
@@ -20,16 +20,23 @@
 //! The zoom goes through the window's own zoom instead (`Action::Zoom`), which saves it and
 //! applies it at once, also in the demo. The page shows `data.settings`, so it follows the daemon.
 //!
-//! # Design (task L.4, concept `docs/design-pakete.md`)
+//! # Design (tasks L.4 and L.18, concept `docs/design-pakete.md`)
 //!
-//! One row per pack as the core lists them (`settings.list_designs`, asked by the shell when the
-//! page opens and on "Reload"): a sample – the pack's `preview.png`, or a swatch of its `bg`,
-//! `panel`, `accent` and `text` with "Aa" in its text font, in the window's light or dark mode –
-//! then name, version and author, and a check mark at the one the windows draw with. A pack that
-//! breaks a rule is greyed out and says "Can't be used:" with every reason. Choosing one is
-//! [`Action::Design`]: the shell draws its own window with it at once and saves it
-//! (`settings.set_setting design`); no question first. The last row opens the designs folder
-//! (created if it is missing) and lists the packs again.
+//! One tile per pack as the core lists them (`settings.list_designs`, asked by the shell when the
+//! page opens and on "Reload"), in a grid that takes as many as fit the width
+//! (`widgets::preview_grid`): on top a sample – the pack's `preview.png`, or a swatch of its `bg`,
+//! `panel`, `accent` and `text` with "Aa" in its text font, in the window's light or dark mode, at
+//! the tile's size –, under it the name, "version · author" as tooltip, and a frame with a check
+//! mark at the one the windows draw with. Choosing one is [`Action::Design`]: the shell draws its
+//! own window with it at once and saves it (`settings.set_setting design`); no question first.
+//!
+//! A pack that breaks a rule is a greyed-out tile with an alert mark in place of the sample. A
+//! click on it shows, under the grid, its name, "Can't be used:" and every reason in full,
+//! wrapping – a list of reasons is too long for a tooltip and must be readable without a mouse
+//! over it. A second click, or a click on another tile, closes or swaps that ([`Message::Problems`]).
+//!
+//! "Reload" and "Open designs folder" (created if it is missing, its path as tooltip) are quiet
+//! actions at the right of the heading.
 //!
 //! The list comes from the core; the sample's colours, font and picture come from the pack's
 //! folder, read here the way every window reads the design it draws with
@@ -37,8 +44,8 @@
 
 use std::sync::Arc;
 
-use iced::widget::{column, container, row, space as blank, svg, text};
-use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Padding, Theme};
+use iced::widget::{column, container, responsive, row, space as blank, svg, text};
+use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Length, Padding, Size, Theme};
 use torro_core::AppId;
 use torro_core::design::{Design, FontRole, Mode, STANDARD_ID, Weight};
 use torro_core::i18n::{tr, trf};
@@ -46,22 +53,26 @@ use torro_core::settings::{Component, ComponentSwitch, Language, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
+use torro_gui::widgets::PreviewState;
 use torro_gui::zoom::{self, Step};
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{DesignInfo, Request, SettingKey};
 use torro_settings_ui::parts::{choice, switch};
 
 use super::setup::component_name;
-use super::{Action, Data, Section, one_line, pressable, row_frame, setting_row};
+use super::{Action, Data, Section, setting_row};
 
 #[derive(Debug, Default)]
 pub struct State {
     /// The design packs as the core listed them last, the standard first; `Err` when it did not
     /// answer, `None` until the first answer.
     designs: Option<Result<Vec<Pack>, String>>,
+    /// The pack that can't be used whose reasons are shown under the grid (its id), after a click
+    /// on its tile; `None` while no reasons are shown.
+    problems: Option<String>,
 }
 
-/// One design pack of the list: what the core says about it and what its row shows of its look.
+/// One design pack of the list: what the core says about it and what its tile shows of its look.
 #[derive(Debug, Clone)]
 pub struct Pack {
     pub info: DesignInfo,
@@ -117,8 +128,12 @@ pub enum Message {
     OpenApp(String),
     /// "Open" of Workspaces, which has no window of its own: the Workspaces page.
     OpenWorkspaces,
-    /// A design pack's row: draw every window with this pack (its id).
+    /// A design pack's tile: draw every window with this pack (its id). Closes the reasons of a
+    /// pack that can't be used, if they are shown.
     Design(String),
+    /// The tile of a pack that can't be used (its id): show its reasons under the grid, or hide
+    /// them if they are shown already. Asks nothing of the shell.
+    Problems(String),
     /// "Reload": list the packs again, after one was added to or changed in the folder.
     ReloadDesigns,
     /// "Open designs folder".
@@ -127,7 +142,7 @@ pub enum Message {
     RunSetup,
 }
 
-pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
+pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
     // The core takes the same names the settings file uses (`"german"`, `"dark"`, `true`), so the
     // values come from the enums' own serialisation. A value that cannot serialise (none here)
     // would become `null`, which the core refuses.
@@ -144,7 +159,14 @@ pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
         Message::OpenApp(app) => return Action::Send(Request::OpenApp { app, target: None }),
         Message::OpenWorkspaces => return Action::Select(Section::Workspaces),
         // The shell draws its own window with it at once, then saves it.
-        Message::Design(id) => return Action::Design(id),
+        Message::Design(id) => {
+            state.problems = None;
+            return Action::Design(id);
+        }
+        Message::Problems(id) => {
+            state.problems = if state.problems.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+            return Action::None;
+        }
         Message::ReloadDesigns => return Action::ListDesigns,
         Message::OpenDesignsFolder => return Action::OpenDesignsFolder,
         Message::RunSetup => return Action::OpenSetup,
@@ -294,23 +316,9 @@ fn installed(data: &Data, app: AppId) -> bool {
         .any(|listed| listed.window_class == app.window_class && listed.installed)
 }
 
-/// The page Appearance: light or dark, the design pack, the zoom, how mail shows.
+/// The page Appearance: light or dark, the design pack, the zoom.
 pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings;
-    // The control centre itself follows at once: it reloads the settings after every change.
-    let appearance = |label: &'static str, appearance: Appearance| {
-        choice(label, settings.appearance == appearance, Message::Appearance(appearance))
-    };
-    let appearance = widgets::group(
-        tr("Color mode"),
-        vec![
-            appearance(tr("System"), Appearance::System),
-            appearance(tr("Light"), Appearance::Light),
-            appearance(tr("Dark"), Appearance::Dark),
-        ],
-        Some(tr("Light or dark colors for all Torro apps. “System” follows your desktop.").to_string()),
-    );
-
     let interface = widgets::group(
         tr("Interface"),
         vec![setting_row(None, tr("Zoom"), None, zoom_control(settings.zoom))],
@@ -319,40 +327,86 @@ pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
                 .to_string(),
         ),
     );
-
-    let design = designs(state, data);
-    column![appearance, design, interface].spacing(layout::section_gap()).into()
+    column![color_mode(settings.appearance), designs(state, data), interface].spacing(layout::section_gap()).into()
 }
 
-/// The group "Design": a row per pack, then the row of the designs folder.
+/// The three colour modes in the order of the segment, each with its symbol and word.
+fn modes() -> [(Icon, &'static str, Appearance); 3] {
+    [
+        (Icon::Monitor, tr("System"), Appearance::System),
+        (Icon::Sun, tr("Light"), Appearance::Light),
+        (Icon::Moon, tr("Dark"), Appearance::Dark),
+    ]
+}
+
+/// "Color mode": one row of a settings group, the label at the left and the segment at the right,
+/// with the sentence that explains it under the card. The control centre itself follows at once:
+/// it reloads the settings after every change. Where the words do not fit beside the label (a
+/// narrow window, a long translation) the segment shows its symbols alone, the words as tooltips.
+fn color_mode<'a>(chosen: Appearance) -> Element<'a, Message> {
+    let active = modes().iter().position(|(_, _, mode)| *mode == chosen).unwrap_or_default();
+    let line = responsive(move |room: Size| {
+        let words = room.width >= mode_words_need();
+        let parts = modes().map(|(which, label, mode)| (which, label, Message::Appearance(mode)));
+        setting_row(None, tr("Color mode"), None, widgets::icon_segmented(parts, active, words))
+    })
+    .height(Length::Shrink);
+    let footer = tr("Light or dark colors for all Torro apps. “System” follows your desktop.");
+    column![
+        container(line).width(Fill).style(style::container::group),
+        typo::text(typo::meta(), footer).style(torro_gui::theme::text_2),
+    ]
+    .spacing(layout::item_gap())
+    .into()
+}
+
+/// How wide the colour mode's row must be for the segment's words: 16 at both sides and between
+/// label and segment (a settings row), the label, the segment with its words.
+fn mode_words_need() -> f32 {
+    let labels = modes().map(|(_, label, _)| label);
+    3.0 * space::l() + typo::text_width(tr("Color mode"), typo::body()) + widgets::icon_segmented_width(&labels, true)
+}
+
+/// The block "Design": the heading with "Reload" and "Open designs folder", the grid of packs, the
+/// reasons of the one opened, and the sentence that explains it.
 fn designs<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let mut rows: Vec<Element<'a, Message>> = match &state.designs {
+    let body: Element<'a, Message> = match &state.designs {
         // Quiet until the core answers, which takes a moment at most.
-        None => vec![row_frame(typo::text(typo::body(), tr("Loading …")).style(torro_gui::theme::text_3), false)],
+        None => typo::text(typo::body(), tr("Loading …")).style(torro_gui::theme::text_3).into(),
         Some(Err(problem)) => {
             let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
                 .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
-            vec![setting_row(
+            let row = setting_row(
                 Some(alert.into()),
                 tr("The designs can't be listed."),
                 Some(problem.clone()),
                 None::<Element<'a, Message>>,
-            )]
+            );
+            container(row).width(Fill).style(style::container::group).into()
         }
         Some(Ok(packs)) => {
             let drawn = drawn(packs, &data.settings.design);
-            packs.iter().map(|pack| pack_row(pack, pack.info.id == drawn)).collect()
+            let open = opened(packs, state.problems.as_deref());
+            let tiles = packs
+                .iter()
+                .map(|pack| pack_tile(pack, pack.info.id == drawn, open.is_some_and(|o| o.info.id == pack.info.id)));
+            let grid = widgets::preview_grid(tiles.collect());
+            match open {
+                Some(pack) => column![grid, problems(pack)].spacing(layout::item_gap()).into(),
+                None => grid,
+            }
         }
     };
-    rows.push(folder_row());
-    widgets::group(
-        tr("Design"),
-        rows,
-        Some(
-            tr("Colors, fonts and spacing of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.")
-                .to_string(),
-        ),
-    )
+    let footer = tr(
+        "Colors, fonts and spacing of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
+    );
+    column![
+        widgets::group_heading(tr("Design"), folder_actions()),
+        body,
+        typo::text(typo::meta(), footer).style(torro_gui::theme::text_2),
+    ]
+    .spacing(layout::item_gap())
+    .into()
 }
 
 /// The id of the pack the windows draw with: the chosen one (`Settings::design`) if it can be
@@ -361,56 +415,60 @@ fn drawn<'a>(packs: &'a [Pack], chosen: &'a str) -> &'a str {
     if packs.iter().any(|pack| pack.info.id == chosen && pack.info.valid) { chosen } else { STANDARD_ID }
 }
 
-/// One pack: the sample, its name, "version · author", and the check mark at the one drawn with.
-/// A pack that can't be used is a disabled row – its name greyed out – that says why, in full.
-fn pack_row<'a>(pack: &'a Pack, drawn: bool) -> Element<'a, Message> {
+/// The pack whose reasons are shown: the one `open` names, while it is listed and can't be used.
+/// After "Reload" a pack that was fixed shows its sample again, and nothing is left open for it.
+fn opened<'a>(packs: &'a [Pack], open: Option<&str>) -> Option<&'a Pack> {
+    let open = open?;
+    packs.iter().find(|pack| pack.info.id == open && !pack.info.valid)
+}
+
+/// "version · author" of a pack, the tooltip of its tile; `None` when it names neither.
+fn byline(info: &DesignInfo) -> Option<String> {
+    let parts: Vec<&str> =
+        [Some(info.version.as_str()), info.author.as_deref()].into_iter().flatten().filter(|p| !p.is_empty()).collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// One pack as a tile: its sample, its name and the check mark at the one `drawn` with. One that
+/// can't be used is greyed out; its click shows or hides its reasons (`open`: they are shown).
+fn pack_tile<'a>(pack: &'a Pack, drawn: bool, open: bool) -> Element<'a, Message> {
     let info = &pack.info;
-    let byline = [Some(info.version.as_str()), info.author.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ");
     if !info.valid {
-        let mut lines = column![one_line(typo::text(typo::body(), info.name.as_str()))];
-        if !byline.is_empty() {
-            lines = lines.push(one_line(typo::text(typo::meta(), byline)));
-        }
-        // The reasons stay readable at full strength and wrap: they say what to fix, one per line,
-        // so a pack with many can be worked through like a list.
-        lines = lines.push(typo::text(typo::meta(), tr("Can't be used:")).style(torro_gui::theme::text_2));
-        for reason in &info.problems {
-            lines = lines.push(typo::text(typo::meta(), reason.as_str()).style(torro_gui::theme::text_2));
-        }
-        let content = row![unusable(), lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
-        let frame = container(content).width(Fill).padding([space::m(), space::l()]);
-        return pressable(frame.into(), None);
+        let state = PreviewState::Unusable { open };
+        return widgets::preview_tile(None, &info.name, byline(info), state, Some(Message::Problems(info.id.clone())));
     }
-    let check: Option<Element<'a, Message>> = drawn.then(|| {
-        icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) }).into()
-    });
-    let detail = (!byline.is_empty()).then_some(byline);
-    let row = setting_row(Some(sample(pack)), info.name.as_str(), detail, check);
-    pressable(row, Some(Message::Design(info.id.clone())))
+    let state = if drawn { PreviewState::Chosen } else { PreviewState::Plain };
+    widgets::preview_tile(Some(sample(pack)), &info.name, byline(info), state, Some(Message::Design(info.id.clone())))
 }
 
-/// The width of a pack's sample: 3 : 2 like the largest `preview.png` (1200 × 800), at the height
-/// of a large control.
-fn sample_width() -> f32 {
-    size::control_lg() * 3.0 / 2.0
+/// Under the grid, for the pack that can't be used whose tile was clicked: its name, "Can't be
+/// used:" and every reason, at full strength and wrapping – they say what to fix, one per line, so
+/// a pack with many can be worked through like a list.
+fn problems<'a>(pack: &'a Pack) -> Element<'a, Message> {
+    let mark =
+        icon::icon(Icon::CircleAlert, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let name = row![mark, typo::text(typo::body_strong(), pack.info.name.as_str())]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let mut lines = column![name, typo::text(typo::meta(), tr("Can't be used:")).style(torro_gui::theme::text_2)]
+        .spacing(space::xs());
+    for reason in &pack.info.problems {
+        lines = lines.push(typo::text(typo::meta(), reason.as_str()).style(torro_gui::theme::text_2));
+    }
+    container(lines).width(Fill).padding(layout::panel_padding()).style(style::container::group).into()
 }
 
-/// A pack's sample: its `preview.png`, or a swatch – the pack's `bg` as the window with its
-/// `panel` set in (like the suite's frame), on it "Aa" in the pack's text font and `text` colour
-/// and a dot in its `accent` – in the mode the window is in.
+/// A pack's sample at the tile's preview size (`widgets::preview_size`): its `preview.png`, or a
+/// swatch – the pack's `bg` as the window with its `panel` set in (like the suite's frame), on it
+/// "Aa" in the pack's text font and `text` colour and a dot in its `accent` – in the mode the window
+/// is in.
 fn sample<'a>(pack: &Pack) -> Element<'a, Message> {
+    let area = widgets::preview_size();
     let frame = |content: Element<'a, Message>, ground: Option<Arc<Design>>| {
-        container(content).width(sample_width()).height(size::control_lg()).clip(true).style(move |t: &Theme| {
-            container::Style {
-                background: ground.as_ref().map(|d| Background::Color(colors(d, t).bg)),
-                border: Border { color: palette(t).line_strong, width: size::HAIRLINE, radius: radius::xs().into() },
-                ..container::Style::default()
-            }
+        container(content).width(area.width).height(area.height).clip(true).style(move |t: &Theme| container::Style {
+            background: ground.as_ref().map(|d| Background::Color(colors(d, t).bg)),
+            border: Border { color: palette(t).line, width: size::HAIRLINE, radius: radius::xs().into() },
+            ..container::Style::default()
         })
     };
     let Some(design) = pack.design.clone() else {
@@ -446,41 +504,26 @@ fn sample<'a>(pack: &Pack) -> Element<'a, Message> {
     frame(container(panel).padding(inset).into(), Some(design)).into()
 }
 
-/// The sample place of a pack that can't be used: an empty frame with an alert mark, quiet.
-fn unusable<'a>() -> Element<'a, Message> {
-    let mark =
-        icon::icon(Icon::CircleAlert, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
-    container(mark)
-        .center_x(sample_width())
-        .center_y(size::control_lg())
-        .style(|t: &Theme| container::Style {
-            border: Border { color: palette(t).line_strong, width: size::HAIRLINE, radius: radius::xs().into() },
-            ..container::Style::default()
-        })
-        .into()
-}
-
 /// The colours of `design` in the mode of `theme` (the window's light or dark).
 fn colors(design: &Design, theme: &Theme) -> Palette {
     let mode = if theme.extended_palette().is_dark { Mode::Dark } else { Mode::Light };
     Palette::of(design, mode)
 }
 
-/// The last row: where packs go, "Reload" and "Open designs folder".
-fn folder_row<'a>() -> Element<'a, Message> {
-    let path = torro_core::design::dir().map(|dir| home_relative(&dir));
-    let controls = row![
-        widgets::icon_button(Icon::RefreshCw, tr("Reload"), Some(Message::ReloadDesigns)),
-        widgets::text_button(
-            Some(Icon::Folder),
-            tr("Open designs folder"),
-            style::button::secondary,
-            Some(Message::OpenDesignsFolder)
-        ),
-    ]
-    .spacing(space::xs())
-    .align_y(Alignment::Center);
-    setting_row(None, tr("Designs folder"), path, controls)
+/// The quiet actions of the heading "Design": "Reload" and "Open designs folder", which names the
+/// folder (from home, as `~/…`) in its tooltip.
+fn folder_actions<'a>() -> Vec<Element<'a, Message>> {
+    let open = widgets::text_button(
+        Some(Icon::Folder),
+        tr("Open designs folder"),
+        style::button::ghost,
+        Some(Message::OpenDesignsFolder),
+    );
+    let open = match torro_core::design::dir() {
+        Some(dir) => widgets::with_tooltip(open, home_relative(&dir)),
+        None => open,
+    };
+    vec![widgets::icon_button(Icon::RefreshCw, tr("Reload"), Some(Message::ReloadDesigns)), open]
 }
 
 /// `path` with the home directory written as `~`, so the part that matters fits the row.
@@ -593,14 +636,76 @@ mod tests {
         }
     }
 
+    /// Task L.18: a tile draws with its pack, the heading's actions list the packs again and open
+    /// the folder – each without a question first.
     #[test]
-    fn a_design_row_draws_with_it_and_the_folder_row_lists_and_opens() {
+    fn a_design_tile_draws_with_it_and_the_heading_lists_and_opens() {
         let choose = update(&mut State::default(), Message::Design("harbor".into()), &Data::default());
         assert!(matches!(choose, Action::Design(ref id) if id == "harbor"), "{choose:?}: no question first");
         let reload = update(&mut State::default(), Message::ReloadDesigns, &Data::default());
         assert!(matches!(reload, Action::ListDesigns), "{reload:?}");
         let open = update(&mut State::default(), Message::OpenDesignsFolder, &Data::default());
         assert!(matches!(open, Action::OpenDesignsFolder), "{open:?}");
+    }
+
+    /// Task L.18: the colour mode's segment sets the appearance, one segment per mode in the order
+    /// System, Light, Dark, with the monitor, the sun and the moon.
+    #[test]
+    fn each_segment_of_the_colour_mode_sets_its_mode() {
+        let symbols = modes().map(|(which, _, mode)| (which, mode));
+        assert_eq!(
+            symbols,
+            [(Icon::Monitor, Appearance::System), (Icon::Sun, Appearance::Light), (Icon::Moon, Appearance::Dark)]
+        );
+        for (_, _, mode) in modes() {
+            let action = update(&mut State::default(), Message::Appearance(mode), &Data::default());
+            assert_eq!(sent(action).0, SettingKey::Appearance, "{mode:?}");
+        }
+        assert!(mode_words_need() < size::content_max(), "a wide page shows the words");
+        for mode in [Appearance::System, Appearance::Light, Appearance::Dark] {
+            let _: Element<'_, Message> = color_mode(mode);
+        }
+    }
+
+    /// Task L.18: a click on a tile that can't be used shows its reasons, a second click hides them,
+    /// a click on another one swaps them; choosing a pack closes them. None of it asks the shell.
+    #[test]
+    fn an_unusable_tile_opens_and_closes_its_reasons() {
+        let data = Data::default();
+        let mut state = State::default();
+        listed(&mut state, Ok(super::super::launch::demo_designs()));
+        let packs = match &state.designs {
+            Some(Ok(packs)) => packs.clone(),
+            other => panic!("listed: {other:?}"),
+        };
+        assert!(opened(&packs, None).is_none());
+
+        let action = update(&mut state, Message::Problems("neon".into()), &data);
+        assert!(matches!(action, Action::None), "{action:?}");
+        assert_eq!(opened(&packs, state.problems.as_deref()).map(|p| p.info.id.as_str()), Some("neon"));
+        let _: Element<'_, Message> = appearance(&state, &data);
+
+        let _ = update(&mut state, Message::Problems("neon".into()), &data);
+        assert_eq!(state.problems, None, "a second click hides them");
+
+        let _ = update(&mut state, Message::Problems("neon".into()), &data);
+        let _ = update(&mut state, Message::Problems("other".into()), &data);
+        assert_eq!(state.problems.as_deref(), Some("other"), "another tile swaps them");
+        assert!(opened(&packs, Some("other")).is_none(), "an id that is not an unusable pack shows nothing");
+        assert!(opened(&packs, Some("harbor")).is_none(), "nor does a pack that can be used");
+
+        let _ = update(&mut state, Message::Problems("neon".into()), &data);
+        let _ = update(&mut state, Message::Design("harbor".into()), &data);
+        assert_eq!(state.problems, None, "choosing a pack closes them");
+    }
+
+    #[test]
+    fn the_tooltip_of_a_tile_names_version_and_author() {
+        let packs = super::super::launch::demo_designs();
+        let harbor = packs.iter().find(|p| p.info.id == "harbor").expect("harbor");
+        assert_eq!(byline(&harbor.info).as_deref(), Some("1.2.0 · Torro samples"));
+        let bare = DesignInfo { version: String::new(), author: None, ..harbor.info.clone() };
+        assert_eq!(byline(&bare), None);
     }
 
     #[test]
@@ -633,6 +738,7 @@ mod tests {
         listed(&mut failed, Err("core is not running".into()));
         for state in [&loading, &packs, &failed] {
             let _page: Element<'_, Message> = view(state, &data);
+            let _page: Element<'_, Message> = appearance(state, &data);
         }
     }
 

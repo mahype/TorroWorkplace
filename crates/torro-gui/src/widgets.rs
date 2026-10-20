@@ -11,7 +11,10 @@
 //! mail window (task E11.1) the chips of attachments ([`file_chip`]); for the mail's actions at its
 //! right edge (task E14.1):
 //! the action rail ([`action_rail`] with [`RailGroup`]s of [`RailItem`]s, collapsed or expanded,
-//! [`RailMode`]) and the layer of an open group ([`rail_flyout`]).
+//! [`RailMode`]) and the layer of an open group ([`rail_flyout`]). For the compact Appearance page
+//! (task L.18): a segment with a symbol and a word in each part ([`icon_segmented`]), a heading with
+//! quiet actions at its right ([`group_heading`]) and a grid of tiles with a preview to pick from
+//! ([`preview_tile`], [`preview_grid`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -480,6 +483,69 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
             .into()
     });
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
+}
+
+/// The height of a segment inside a [`segmented`] frame: the control's height less the frame's
+/// inset and border.
+fn segment_height() -> f32 {
+    size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE
+}
+
+/// A [`segmented`] control whose segments carry a symbol and a word (task L.18, the colour mode:
+/// [`Icon::Monitor`] "System", [`Icon::Sun`] "Light", [`Icon::Moon`] "Dark"): one segment per
+/// `(icon, label, message)`, the one at index `active` chosen. Frame, height (28) and states are
+/// those of [`segmented`] – `bg`, the active segment `selected` with a `line_selected` edge –; in
+/// each segment the icon (14) in the segment's text colour, 6 before the label in `CAPTION`.
+///
+/// Without `words` each segment is a square with the icon alone and `label` as its tooltip, for a
+/// row where the words do not fit; decide with [`icon_segmented_width`] against the room the row
+/// leaves, so a longer translation holds too. The caller keeps which one is active.
+///
+/// ```ignore
+/// let modes = [(Icon::Monitor, tr("System"), Message::Mode(System)), (Icon::Sun, tr("Light"), …), (Icon::Moon, tr("Dark"), …)];
+/// widgets::icon_segmented(modes, active, room >= widgets::icon_segmented_width(&[tr("System"), …], true))
+/// ```
+pub fn icon_segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
+    options: impl IntoIterator<Item = (Icon, L, M)>,
+    active: usize,
+    words: bool,
+) -> Element<'a, M> {
+    let inner = segment_height();
+    let segments = options.into_iter().enumerate().map(|(i, (which, label, message))| {
+        let style = style::button::segment(i == active);
+        let mark: Element<'a, M> = icon(which, icon::SIZE_SM)
+            .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+            .into();
+        if words {
+            let content = row![mark, typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+                .spacing(ICON_GAP)
+                .align_y(Alignment::Center);
+            button(container(content).center_y(Fill))
+                .height(inner)
+                .padding(style::button_padding())
+                .style(style)
+                .on_press(message)
+                .into()
+        } else {
+            let square = button(center(mark)).width(inner).height(inner).padding(0).style(style).on_press(message);
+            with_tooltip(square, label)
+        }
+    });
+    container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
+}
+
+/// The estimated width of an [`icon_segmented`] control with `labels`: with `words` each segment
+/// is its icon, the gap and the label in `CAPTION` with the button padding, without them a square;
+/// plus the frame's inset and border. `typo::text_width` estimates generously, so the control fits.
+pub fn icon_segmented_width(labels: &[&str], words: bool) -> f32 {
+    let frame = 2.0 * (style::SEGMENT_INSET + LINE);
+    if !words {
+        return labels.len() as f32 * segment_height() + frame;
+    }
+    let padding = style::button_padding().left + style::button_padding().right;
+    let segments: f32 =
+        labels.iter().map(|label| typo::text_width(label, typo::caption()) + icon::SIZE_SM + ICON_GAP + padding).sum();
+    segments + frame
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3288,6 +3354,142 @@ pub fn group_row<'a, M: 'a>(
         .into()
 }
 
+/// A heading over a block of a settings page with quiet actions at its right (task L.18: "Design"
+/// with "Reload" and "Open designs folder"): `title` in the look of a [`group`] title (`CAPTION` in
+/// `text_3`), the `actions` right-aligned, [`space::xs()`] apart and centred on the title. Pass
+/// quiet buttons – [`icon_button`] or a [`text_button`] in `style::button::ghost` –, never a
+/// primary one: they belong to the block, not to the page. With actions the heading is as high as
+/// they are (28), without it is the title alone. Put the block's content under it with
+/// [`layout::item_gap()`], as [`group`] does.
+pub fn group_heading<'a, M: 'a>(title: impl IntoFragment<'a>, actions: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let title = typo::text(typo::caption(), title).style(theme::text_3);
+    if actions.is_empty() {
+        return title.into();
+    }
+    let actions = row(actions).spacing(space::xs()).align_y(Alignment::Center);
+    row![container(title).width(Fill).clip(true), actions].spacing(space::s()).align_y(Alignment::Center).into()
+}
+
+/// How a [`preview_tile`] stands among the others of its grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewState {
+    /// Can be chosen, is not.
+    Plain,
+    /// The current choice: `line_selected` frame and a check mark at the top right.
+    Chosen,
+    /// Can't be chosen (a design pack that breaks a rule): greyed out, [`Icon::CircleAlert`] in
+    /// place of the preview. `open` while the page shows its reasons (under the grid), then it looks
+    /// pressed.
+    Unusable { open: bool },
+}
+
+/// The width of a [`preview_tile`]: three [`size::control()`]s (96 in the standard), so a page of
+/// [`size::content_max()`] takes seven in a row and a narrow window still four.
+pub fn preview_tile_width() -> f32 {
+    3.0 * size::control()
+}
+
+/// The size of the preview inside a [`preview_tile`]: the tile's width less its inner margin
+/// ([`space::xs()`]) and frame, [`size::control_sm()`] high (86 × 28 in the standard) – wide and
+/// flat, so a row of tiles stays low. Draw the preview at this size; a picture is cut to it
+/// (`ContentFit::Cover`).
+pub fn preview_size() -> Size {
+    Size::new(preview_tile_width() - 2.0 * (space::xs() + LINE), size::control_sm())
+}
+
+/// A tile of a grid to pick from (task L.18: the design packs under Appearance; later the fonts and
+/// colour schemes): `preview` on top at [`preview_size`] (`None` leaves the place empty), `name`
+/// under it on one line in `CAPTION`, cut with "…" to the tile's width. The whole tile is the
+/// button (`style::button::preview_tile`), [`preview_tile_width`] wide, [`space::xs()`] inside, the
+/// name [`space::xs()`] under the preview.
+///
+/// - [`PreviewState::Chosen`]: `selected` with a `line_selected` frame and a round check mark at
+///   the top right of the preview (`style::container::tile_mark`), so the choice does not rest on
+///   the frame alone.
+/// - [`PreviewState::Unusable`]: greyed out – no surface, a quiet frame, the name in `text_3` – and
+///   [`Icon::CircleAlert`] in `text_3` on an empty frame in place of `preview`, so it is told by a
+///   symbol, not by colour alone. It stays pressable: a click is for showing its reasons.
+/// - Hover lays `hover` under it and strengthens the frame; `None` for `on_press` fades it (40 %).
+///   Buttons have no keyboard focus in Iced 0.14 (`crate::style`), so there is no focus ring yet.
+///
+/// `tip` is the tooltip ("1.2 · Anna Berg"); a name that had to be cut is put in front of it
+/// ("Commitr Dark Extended · 1.2 · Anna Berg"), so it is never cut silently. Lay tiles out with
+/// [`preview_grid`].
+///
+/// ```ignore
+/// let state = if pack.id == chosen { PreviewState::Chosen } else { PreviewState::Plain };
+/// widgets::preview_tile(Some(sample(pack)), &pack.name, Some(byline), state, Some(Message::Design(pack.id.clone())))
+/// ```
+pub fn preview_tile<'a, M: Clone + 'a>(
+    preview: Option<Element<'a, M>>,
+    name: &str,
+    tip: Option<String>,
+    state: PreviewState,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let area = preview_size();
+    let (on, usable) = match state {
+        PreviewState::Plain => (false, true),
+        PreviewState::Chosen => (true, true),
+        PreviewState::Unusable { open } => (open, false),
+    };
+    let picture: Element<'a, M> = if usable {
+        container(preview.unwrap_or_else(|| blank().into())).width(area.width).height(area.height).clip(true).into()
+    } else {
+        container(toned(Icon::CircleAlert, icon::SIZE, Tone::Text3))
+            .center_x(area.width)
+            .center_y(area.height)
+            .style(|t: &Theme| container::Style {
+                border: border::rounded(radius::xs()).color(palette(t).line).width(LINE),
+                ..container::Style::default()
+            })
+            .into()
+    };
+    let picture = match state {
+        PreviewState::Chosen => {
+            stack![picture, container(tile_check()).align_right(area.width).padding(space::xs())].into()
+        }
+        _ => picture,
+    };
+    let shown = typo::ellipsize(name, typo::caption(), area.width);
+    let cut = shown != name;
+    // No colour of its own: the name takes the tile's text colour, so it follows hover and state.
+    let label = container(typo::text(typo::caption(), shown).wrapping(Wrapping::None)).width(area.width).clip(true);
+    let tile = button(column![picture, label].spacing(space::xs()))
+        .width(preview_tile_width())
+        .padding(space::xs())
+        .style(style::button::preview_tile(on, usable))
+        .on_press_maybe(on_press);
+    match preview_tip(name, cut, tip) {
+        Some(tip) => with_tooltip(tile, tip),
+        None => tile.into(),
+    }
+}
+
+/// The tooltip of a [`preview_tile`]: `tip`, with the whole `name` in front when it was `cut`.
+fn preview_tip(name: &str, cut: bool, tip: Option<String>) -> Option<String> {
+    match (cut, tip) {
+        (true, Some(tip)) => Some(format!("{name} · {tip}")),
+        (true, None) => Some(name.to_owned()),
+        (false, tip) => tip,
+    }
+}
+
+/// The check mark of a chosen [`preview_tile`]: the check (12) in `panel` on a round badge in
+/// `text` ([`icon::SIZE`] across).
+fn tile_check<'a, M: 'a>() -> Element<'a, M> {
+    let check: Element<'a, M> =
+        icon(Icon::Check, space::m()).style(|t, _| svg::Style { color: Some(palette(t).panel) }).into();
+    container(check).center(icon::SIZE).style(style::container::tile_mark).into()
+}
+
+/// [`preview_tile`]s in rows that take as many as fit the width and wrap the rest, 6 apart both
+/// ways (the gap of [`chip_row`]). Nothing stretches: a wide page shows more tiles in a row, not
+/// wider ones.
+pub fn preview_grid<'a, M: 'a>(tiles: Vec<Element<'a, M>>) -> Element<'a, M> {
+    row(tiles).spacing(ICON_GAP).wrap().vertical_spacing(ICON_GAP).into()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Rows with a segmented control (rights)
 // ---------------------------------------------------------------------------------------------
@@ -4706,5 +4908,52 @@ mod tests {
         let edges = [TileSize::Small, TileSize::Medium, TileSize::Large].map(TileSize::edge);
         assert_eq!(edges, [size::tile_sm(), size::tile(), size::tile_lg()]);
         assert_eq!(edges, [20.0, 28.0, 36.0], "the standard's tiles");
+    }
+
+    /// Task L.18: the colour mode's segment is as wide as its icons and words, or squares without
+    /// the words – and with them it still leaves room for a short label in a narrow window.
+    #[test]
+    fn an_icon_segment_is_wider_with_its_words() {
+        let labels = [tr("System"), tr("Light"), tr("Dark")];
+        let words = icon_segmented_width(&labels, true);
+        let icons = icon_segmented_width(&labels, false);
+        assert!(words > segmented_width(&labels), "the icons take room too");
+        assert_eq!(icons, 3.0 * segment_height() + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE));
+        assert!(icons < words);
+        assert!(words < size::content_max() / 2.0, "leaves room for a label");
+        for words in [true, false] {
+            let modes =
+                [(Icon::Monitor, "System", Msg::Go), (Icon::Sun, "Light", Msg::Go), (Icon::Moon, "Dark", Msg::Go)];
+            let _: Element<'_, Msg> = icon_segmented(modes, 1, words);
+        }
+    }
+
+    /// Task L.18: tiles are made from the tokens – seven fit a page of `content_max`, four a narrow
+    /// window –, every state builds, and a name cut to the tile is never cut silently.
+    #[test]
+    fn preview_tiles_take_their_size_from_the_tokens_and_build_in_every_state() {
+        assert_eq!(preview_tile_width(), 3.0 * size::control());
+        assert_eq!(preview_size(), Size::new(preview_tile_width() - 2.0 * (space::xs() + LINE), size::control_sm()));
+        assert_eq!((preview_tile_width(), preview_size().height), (96.0, 28.0), "the standard's tile");
+        let fit = |room: f32| ((room + ICON_GAP) / (preview_tile_width() + ICON_GAP)).floor();
+        assert_eq!(fit(size::content_max()), 7.0);
+        assert!(fit(size::form_max() - size::sidebar()) >= 4.0);
+        let states = [PreviewState::Plain, PreviewState::Chosen, PreviewState::Unusable { open: false }];
+        let tiles: Vec<Element<'_, Msg>> = states
+            .into_iter()
+            .chain([PreviewState::Unusable { open: true }])
+            .map(|state| {
+                preview_tile(None, "Commitr Dark Extended Edition", Some("1.2 · Anna".into()), state, Some(Msg::Go))
+            })
+            .chain([preview_tile(Some(blank().into()), "Torro", None, PreviewState::Plain, None)])
+            .collect();
+        let _: Element<'_, Msg> = preview_grid(tiles);
+        assert_eq!(preview_tip("Torro", false, None), None);
+        assert_eq!(preview_tip("Torro", false, Some("1.0 · Torro".into())).as_deref(), Some("1.0 · Torro"));
+        assert_eq!(preview_tip("Long name", true, Some("1.0".into())).as_deref(), Some("Long name · 1.0"));
+        assert_eq!(preview_tip("Long name", true, None).as_deref(), Some("Long name"));
+        let quiet = vec![icon_button(Icon::RefreshCw, "Reload", Some(Msg::Go))];
+        let _: Element<'_, Msg> = group_heading("Design", quiet);
+        let _: Element<'_, Msg> = group_heading("Design", Vec::new());
     }
 }

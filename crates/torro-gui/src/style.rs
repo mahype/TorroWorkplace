@@ -28,7 +28,7 @@
 //! those have a focus state here; buttons, checkboxes and pick lists cannot be focused yet.
 //!
 //! Framed controls on `raised` ([`button::secondary`], [`button::boxed`], [`button::chip`],
-//! [`button::choice_chip`] and [`pick_list`]) also draw their border in `line_selected` while hovered,
+//! [`button::choice_chip`], [`button::preview_tile`] and [`pick_list`]) also draw their border in `line_selected` while hovered,
 //! pressed or open: in dark mode `hover` is almost the colour of `raised` (#16171A on #141518), so the
 //! surface alone would give no feedback. A *chosen* chip or segment is `selected` with the same
 //! `line_selected` border; the fill (and a chip's check mark) tells it from a hovered one.
@@ -289,6 +289,47 @@ pub mod button {
         }
     }
 
+    /// A tile of a grid to pick from (task L.18, `widgets::preview_tile`: the design packs under
+    /// Appearance), radius [`radius::sm()`], name `CAPTION`. `usable` and `on` (chosen) give four looks:
+    ///
+    /// - usable, not chosen: `raised`, `line_strong` frame, name in `text_2`; hover `hover` and
+    ///   `text`, pressed `selected` and `text`, both with a `line_selected` frame (like
+    ///   [`choice_chip`]).
+    /// - usable and chosen: `selected`, `line_selected` frame and `text` in every state – hovering
+    ///   must not make the choice look undone; the widget adds a check mark, so the choice does not
+    ///   rest on the frame alone.
+    /// - not usable ("greyed out"): no surface, a `line` frame, name in `text_3` (still ≥ 4.5:1, so
+    ///   it can be read); hover `hover` with a `line_selected` frame, because a click shows its
+    ///   reasons. `on` means here that its reasons are shown: `selected` with a `line_selected`
+    ///   frame and the name in `text_2`, in every state.
+    ///
+    /// Disabled (no message): the normal look at 40 %. Neutral, never red.
+    pub fn preview_tile(on: bool, usable: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
+        move |theme, status| {
+            let p = palette(theme);
+            match (usable, on) {
+                (true, true) => chosen(
+                    status,
+                    Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::sm() },
+                ),
+                (true, false) => {
+                    let rest =
+                        Rest { background: p.raised, text: p.text_2, border: p.line_strong, radius: radius::sm() };
+                    framed(&p, status, rest, p.text)
+                }
+                (false, true) => chosen(
+                    status,
+                    Rest { background: p.selected, text: p.text_2, border: p.line_selected, radius: radius::sm() },
+                ),
+                (false, false) => {
+                    let rest =
+                        Rest { background: Color::TRANSPARENT, text: p.text_3, border: p.line, radius: radius::sm() };
+                    framed(&p, status, rest, p.text_3)
+                }
+            }
+        }
+    }
+
     /// A cell of a bar that fills its width (task E11.1: the mail reader's command bar
     /// `widgets::command_bar` and the strip under the chosen mail `widgets::row_strip`): flat, no
     /// radius and no frame – the lines between the cells are the bar's –, `raised` with `text`; hover
@@ -484,6 +525,14 @@ pub mod container {
     pub fn kbd(theme: &Theme) -> Style {
         let p = palette(theme);
         Style { text_color: Some(p.text_3), border: outline(p.line_strong, radius::xs()), ..Style::default() }
+    }
+
+    /// The mark on a chosen tile (task L.18, `widgets::preview_tile`): a round badge in `text` that
+    /// carries the check in `panel` – the colours swapped, so it stands out on any preview, light or
+    /// dark, without a colour of its own (selection is neutral, never red).
+    pub fn tile_mark(theme: &Theme) -> Style {
+        let p = palette(theme);
+        Style { border: iced::border::rounded(super::ROUND as f32), ..surface(p.text) }
     }
 
     /// The frame of a segmented control: `bg`, 1-px `line` border, radius [`radius::sm()`], padding
@@ -848,6 +897,10 @@ mod tests {
             ("choice_chip(on)", Box::new(button::choice_chip(true))),
             ("cell", Box::new(button::cell)),
             ("pill", Box::new(button::pill)),
+            ("preview_tile", Box::new(button::preview_tile(false, true))),
+            ("preview_tile(on)", Box::new(button::preview_tile(true, true))),
+            ("preview_tile(unusable)", Box::new(button::preview_tile(false, false))),
+            ("preview_tile(unusable, open)", Box::new(button::preview_tile(true, false))),
         ]
     }
 
@@ -937,11 +990,12 @@ mod tests {
     #[test]
     fn framed_controls_strengthen_their_border_on_hover_and_press() {
         for (mode, theme, p) in modes() {
-            let framed: [(&str, ButtonStyle); 4] = [
+            let framed: [(&str, ButtonStyle); 5] = [
                 ("secondary", Box::new(button::secondary)),
                 ("boxed", Box::new(button::boxed)),
                 ("chip", Box::new(button::chip)),
                 ("choice_chip", Box::new(button::choice_chip(false))),
+                ("preview_tile", Box::new(button::preview_tile(false, true))),
             ];
             for (name, style) in framed {
                 assert_eq!(style(&theme, Status::Active).border.color, p.line_strong, "{mode}: {name} at rest");
@@ -958,9 +1012,10 @@ mod tests {
     #[test]
     fn a_choice_reads_as_chosen_in_every_state() {
         for (mode, theme, p) in modes() {
-            let chosen: [(&str, ButtonStyle); 2] = [
+            let chosen: [(&str, ButtonStyle); 3] = [
                 ("choice_chip(on)", Box::new(button::choice_chip(true))),
                 ("segment(active)", Box::new(button::segment(true))),
+                ("preview_tile(on)", Box::new(button::preview_tile(true, true))),
             ];
             for (name, style) in chosen {
                 for status in [Status::Active, Status::Hovered, Status::Pressed] {
@@ -975,6 +1030,32 @@ mod tests {
             assert_eq!(off(&theme, Status::Active).text_color, p.text_2, "{mode}");
             assert_eq!(off(&theme, Status::Hovered).text_color, p.text, "{mode}");
             assert_eq!(button::choice_chip(true)(&theme, Status::Active).border.radius, radius::sm().into());
+        }
+    }
+
+    /// Task L.18: a tile that can't be used is greyed out – no surface, a quiet frame, its name in
+    /// `text_3`, which still reads at 4.5:1 – yet answers the pointer, because a click shows its
+    /// reasons; while they are shown it looks pressed in every state. The chosen tile's badge swaps
+    /// text and panel, so its check stands out on every preview.
+    #[test]
+    fn an_unusable_tile_is_quiet_but_answers_and_shows_when_open() {
+        for (mode, theme, p) in modes() {
+            let off = button::preview_tile(false, false);
+            let rest = off(&theme, Status::Active);
+            assert_eq!(bg(&rest), Color::TRANSPARENT, "{mode}: no surface");
+            assert_eq!((rest.text_color, rest.border.color), (p.text_3, p.line), "{mode}: greyed out");
+            assert!(p.text_3.relative_contrast(p.panel) >= 4.5, "{mode}: the name still reads");
+            let hovered = off(&theme, Status::Hovered);
+            assert!(same(bg(&hovered), p.hover), "{mode}: hover");
+            assert_eq!(hovered.border.color, p.line_selected, "{mode}: hover frame");
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let open = button::preview_tile(true, false)(&theme, status);
+                assert!(same(bg(&open), p.selected), "{mode}: open {status:?}");
+                assert_eq!((open.text_color, open.border.color), (p.text_2, p.line_selected), "{mode}: open");
+            }
+            let mark = container::tile_mark(&theme);
+            assert_eq!(mark.background, Some(Background::Color(p.text)), "{mode}: badge");
+            assert!(p.panel.relative_contrast(p.text) >= 4.5, "{mode}: the check on the badge");
         }
     }
 
