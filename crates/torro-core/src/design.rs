@@ -294,6 +294,19 @@ pub struct Pad {
     pub horizontal: f32,
 }
 
+/// How close the inbox's entries stand (`density = "compact"`), a value of the design and not a
+/// choice made per window: `Compact` draws one row per entry, `Comfortable` draws cards with a
+/// preview, chips and buttons (`torro_gui::widgets::card`, task E8.2). The whole suite shows the
+/// density of the design that is active, so every window agrees (task E13.1, issue #226).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Density {
+    /// One row per entry; what the standard design "Torro" shows.
+    Compact,
+    /// Cards with a preview and their buttons shown; only a pack switches it on.
+    Comfortable,
+}
+
 /// Margins, paddings and gaps by role (`[layout]`), the same for every element of that role.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
@@ -316,6 +329,9 @@ pub struct Layout {
     pub section_gap: f32,
     /// Between elements inside a group. Standard 8: `torro_gui::widgets::group`.
     pub item_gap: f32,
+    /// Rows or cards in the inbox ([`Density`]). Standard [`Density::Compact`]:
+    /// `torro_gui::layout::density`.
+    pub density: Density,
 }
 
 /// Fixed sizes (`torro_gui::theme::size`, lowercase). `INSET` moved to [`Layout::inset`];
@@ -784,6 +800,7 @@ impl Design {
                 control_padding: Pad { vertical: 0.0, horizontal: 10.0 },
                 section_gap: 24.0,
                 item_gap: 8.0,
+                density: Density::Compact,
             },
             size: STANDARD_SIZE,
             colors: Colors { dark: STANDARD_DARK, light: STANDARD_LIGHT },
@@ -982,6 +999,9 @@ mod tests {
         assert_eq!([d.size.row_message, d.size.row_notice], [92.0, 64.0], "the inbox's rows (tasks E3.9, E11.1)");
         // The comfortable density of the inbox (task E8.2).
         assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
+        // The standard shows rows, not cards (task E13.1): the density is the design's, and "Torro"
+        // is compact. Only a pack switches the cards on.
+        assert_eq!(d.layout.density, Density::Compact);
         // A reminder over the whole screen (task ER1.5).
         assert_eq!(d.typo.hero, Level { font: FontRole::Heading, weight: Weight::Semibold, size: 48.0, line: 56.0 });
         assert_eq!(d.typo.countdown, Level { font: FontRole::Numbers, weight: Weight::Medium, size: 28.0, line: 32.0 });

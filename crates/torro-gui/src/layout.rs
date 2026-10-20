@@ -11,7 +11,8 @@
 //! padding of pages, panels, list rows and controls, and the gaps between and inside groups. They
 //! come from the active design (`[layout]` in a pack, concept `docs/design-pakete.md`), so a pack
 //! can give the whole suite more or less room in one place. Use them exactly where the role fits;
-//! everything else stays on [`crate::theme::space`].
+//! everything else stays on [`crate::theme::space`]. [`density`] belongs to the same `[layout]`
+//! table but is a word, not a measure: it says whether the inbox draws a row per entry or cards.
 //!
 //! ```ignore
 //! container(page).padding(layout::page_padding());            // a settings page
@@ -20,7 +21,7 @@
 //! ```
 
 use iced::Padding;
-use torro_core::design::Pad;
+use torro_core::design::{Density, Pad};
 
 use crate::design;
 
@@ -129,6 +130,14 @@ pub fn section_gap() -> f32 {
 /// standard design.
 pub fn item_gap() -> f32 {
     design::with(|t| t.design.layout.item_gap)
+}
+
+/// How close the inbox's entries stand: [`Density::Compact`] in the standard design, one row per
+/// entry. This is the density of the *design*, not of a window – every window of the suite shows
+/// the same one, and only a pack with `layout.density = "comfortable"` asks for cards (task E13.2,
+/// issue #226).
+pub fn density() -> Density {
+    design::with(|t| t.design.layout.density)
 }
 
 fn padding(pad: Pad) -> Padding {
