@@ -5,7 +5,8 @@
 //! of the inbox lists by arrival
 //! (task E8.15, [`order_from`]), how wide the list beside the reader is (issue #130,
 //! [`split_from`]), the mail searches last made (issue #136, [`searches_from`]) and whether the
-//! action rail of a mail is expanded (task E14.1, [`actions_from`]). `ui.json` in
+//! action rail of a mail is expanded (task E14.1, [`actions_from`]), which mail accounts are
+//! selected ([`mail_accounts_from`]) and which folders are pinned ([`pinned_mail_folders_from`]). `ui.json` in
 //! the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
@@ -50,6 +51,12 @@ const UNFOLDED: &str = "unfolded";
 /// The key of the orders chosen ([`order_from`]): an object from a window's key to its
 /// [`Order`] word.
 const ORDER: &str = "order";
+
+/// Mail accounts selected in each mail window. A missing value means every account.
+const MAIL_ACCOUNTS: &str = "mailAccounts";
+
+/// Folder ids pinned below the mail window's smart views.
+const PINNED_MAIL_FOLDERS: &str = "pinnedMailFolders";
 
 /// The key of the split widths chosen ([`split_from`]): an object from a window's key to the width
 /// of its first pane in layout units.
@@ -275,6 +282,84 @@ pub fn load_order_task(app: AppId, key: String) -> Task<Option<Order>> {
 pub fn save_order_task<T: Send + 'static>(app: AppId, key: String, order: Order) -> Task<T> {
     Task::future(async move {
         let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_order_to(&path, &key, order));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
+/// The selected mail account ids for `key`; `None` means all accounts.
+pub fn mail_accounts_from(path: &Path, key: &str) -> Option<Vec<String>> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let accounts = value.get(MAIL_ACCOUNTS)?.get(key)?.as_array()?;
+    Some(accounts.iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect())
+}
+
+/// Remembers a subset, or removes `key` to mean all accounts.
+pub fn save_mail_accounts_to(path: &Path, key: &str, accounts: Option<&[String]>) -> Result<(), Error> {
+    let mut saved = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(MAIL_ACCOUNTS).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    if let Some(accounts) = accounts {
+        saved.insert(key.to_owned(), serde_json::json!(accounts));
+    } else {
+        saved.remove(key);
+    }
+    let mut fields = serde_json::Map::new();
+    fields.insert(MAIL_ACCOUNTS.into(), serde_json::Value::Object(saved));
+    merge_into(path, fields)
+}
+
+pub fn load_mail_accounts_task(app: AppId, key: String) -> Task<Option<Vec<String>>> {
+    Task::perform(async move { file(app).and_then(|path| mail_accounts_from(&path, &key)) }, |accounts| accounts)
+}
+
+pub fn save_mail_accounts_task<T: Send + 'static>(app: AppId, key: String, accounts: Option<Vec<String>>) -> Task<T> {
+    Task::future(async move {
+        let saved =
+            file(app).ok_or(Error::NoHome).and_then(|path| save_mail_accounts_to(&path, &key, accounts.as_deref()));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
+pub fn pinned_mail_folders_from(path: &Path) -> Vec<String> {
+    let Some(value) =
+        fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    value
+        .get(PINNED_MAIL_FOLDERS)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+pub fn save_pinned_mail_folders_to(path: &Path, folders: &[String]) -> Result<(), Error> {
+    let mut fields = serde_json::Map::new();
+    fields.insert(PINNED_MAIL_FOLDERS.into(), serde_json::json!(folders));
+    merge_into(path, fields)
+}
+
+pub fn load_pinned_mail_folders_task(app: AppId) -> Task<Vec<String>> {
+    Task::perform(async move { file(app).map(|path| pinned_mail_folders_from(&path)).unwrap_or_default() }, |folders| {
+        folders
+    })
+}
+
+pub fn save_pinned_mail_folders_task<T: Send + 'static>(app: AppId, folders: Vec<String>) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_pinned_mail_folders_to(&path, &folders));
         if let Err(err) = saved {
             eprintln!("{}: {err}", app.binary);
         }
@@ -588,6 +673,24 @@ mod tests {
             fs::write(&path, content).expect("write");
             assert_eq!(order_from(&path, "mail"), None, "{content}");
         }
+    }
+
+    #[test]
+    fn mail_accounts_and_pinned_folders_are_remembered_independently() {
+        let dir = TempDir::new("mail-navigation");
+        let path = dir.0.join(FILE);
+        let account = vec!["mail:anna@example.org".to_owned()];
+        let folders = vec!["f:private-inbox".to_owned(), "f:work-projects".to_owned()];
+        save_order_to(&path, "mail", Order::OldestFirst).expect("save order");
+        save_mail_accounts_to(&path, "mail", Some(&account)).expect("select one account");
+        save_pinned_mail_folders_to(&path, &folders).expect("pin folders");
+        assert_eq!(mail_accounts_from(&path, "mail"), Some(account));
+        assert_eq!(mail_accounts_from(&path, "hub"), None);
+        assert_eq!(pinned_mail_folders_from(&path), folders);
+        save_mail_accounts_to(&path, "mail", None).expect("select all accounts");
+        assert_eq!(mail_accounts_from(&path, "mail"), None);
+        assert_eq!(pinned_mail_folders_from(&path), folders);
+        assert_eq!(order_from(&path, "mail"), Some(Order::OldestFirst));
     }
 
     /// Task E13.3: `density` is no key of `ui.json` any more. An old file that still has one loads

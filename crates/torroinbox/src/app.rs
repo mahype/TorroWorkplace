@@ -15,13 +15,14 @@
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
 //! Its sidebar lists For me (the overview's one column: the mail for the user by day, "Info"
 //! folded at the end), Info, Later and Done ([`Kind::view_name`]), the group "Smart views" with
-//! "With attachments" ([`View::Attachments`]) and the folders of every account; no sources. In the
+//! "With attachments" ([`View::Attachments`]), pinned folders and an on-demand folder browser
+//! grouped by account; no sources. The mail header filters combined views by account. In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
 //! `list::Look`); in the wide layout an open mail stands in the reader beside the list
 //! ([`App::wide_reader`], `mail::reader`) instead of in the panel; every action on it stands in the
 //! mail's action rail at its right (task E14.3, [`App::rail_groups`]), collapsed or expanded as the
-//! window remembers ([`App::actions`], `]`). The narrow layout's menu lists no
-//! folders (the drawer still does), and its comfortable "For me" starts with how many mails are new
+//! window remembers ([`App::actions`], `]`). The narrow layout opens the same grouped folder
+//! browser on demand, and its comfortable "For me" starts with how many mails are new
 //! for the user ([`App::lead`]). Nothing is dismissed in the mail window: mail is done, snoozed or
 //! hidden.
 //!
@@ -195,7 +196,7 @@ use torro_inbox::{
     InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef, State,
     StateFilter, rules,
 };
-use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields};
+use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields, MailFound};
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
@@ -1155,6 +1156,10 @@ pub enum Menu {
     Nav,
     /// Actions of the message selected by right-click in the mail list.
     MailContext,
+    /// The account checkboxes beside the mail list's sorting control.
+    MailAccounts,
+    /// The on-demand folder browser, grouped by mail account.
+    Folders,
     /// The snooze menu of `App::subject`: Later today, Tomorrow, Next week, Pick….
     Snooze,
     /// The date and time picker of "Pick…".
@@ -1828,7 +1833,7 @@ pub struct Loaded {
     /// sources count (open entries, both lanes), so the sidebar's numbers add up.
     pub info: usize,
     pub sources: Vec<SourceInfo>,
-    /// The folders of the mail accounts, for the sidebar (task E4.2); empty without mail, and
+    /// The folders of the mail accounts, for the on-demand browser (task E4.2); empty without mail, and
     /// when they could not be read – the entries still show then.
     pub folders: Vec<Folder>,
     /// The catalogue of mail categories with their unread counts (task E12.8); empty outside the
@@ -2012,6 +2017,7 @@ fn shows_entries(message: &Message) -> bool {
             | Message::SearchScope(_)
             | Message::SearchSort(_)
             | Message::MoreMail
+            | Message::OpenFolders
             | Message::DismissAll
             | Message::Switcher(_)
     )
@@ -2167,10 +2173,16 @@ pub struct App<S> {
     found: Found,
     /// Where the words of the search shown matched, per message.
     highlights: Vec<MailHighlight>,
-    /// The accounts folded away or unfolded by the person (`true`: unfolded), also as `ui.json`
-    /// kept them (issue #121, [`account_key`]); the others follow [`App::account_open`].
+    /// The accounts folded or unfolded in the temporary folder browser (`true`: unfolded).
+    /// Old unfolded account keys in `ui.json` are still read for compatibility.
     folds: Vec<(String, bool)>,
-    /// A window of mail only (`--source mail`): the sidebar lists the folders alone.
+    /// Selected mail account ids in combined views; `None` means all accounts.
+    mail_accounts: Option<Vec<String>>,
+    accounts_chosen: bool,
+    /// Folder ids pinned under Smart views, shared between mail windows.
+    pinned_folders: Vec<String>,
+    pins_chosen: bool,
+    /// A window of mail only (`--source mail`): it still offers the on-demand folder browser.
     mail_only: bool,
     /// The sources the window shows (task E8.4): `--source` at start, then the sidebar's checks and
     /// the chips. Window state, kept while it runs.
@@ -2269,6 +2281,8 @@ pub enum Message {
     Resized(Size),
     /// The source's answer for the view it was asked for; answers for another view are dropped.
     Loaded(View, Result<Loaded, String>),
+    /// A normal load with the account selection that was active when it started.
+    LoadedAccounts(View, Option<Vec<String>>, Result<Loaded, String>),
     /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
     /// load follows either way.
     CoreReady,
@@ -2527,6 +2541,7 @@ pub enum Message {
     MoreMail,
     /// The next page of the folder's view it was asked for.
     MoreLoaded(View, Order, Result<MailPage, String>),
+    MoreLoadedAccounts(View, Order, Option<Vec<String>>, Result<MailPage, String>),
     /// What is typed into the search field: it is searched for [`search::DEBOUNCE`] later.
     SearchInput(String),
     /// `Enter` in the search field: search now and remember the search.
@@ -2556,8 +2571,15 @@ pub enum Message {
     Text(text_editor::Action),
     /// "Copy text": the whole text in the panel or the reader to the clipboard, with "Copied".
     CopyText,
-    /// The title of an account's group: fold its folders away or show them, and remember it.
+    /// The title of an account's browser group: fold its folders away or show them this session.
     ToggleAccount(String),
+    ToggleMailAccounts,
+    SelectAllMailAccounts,
+    ToggleMailAccount(String),
+    StoredMailAccounts(Option<Vec<String>>),
+    OpenFolders,
+    ToggleFolderPin(String),
+    StoredPinnedFolders(Vec<String>),
     /// The title of the sidebar's "Sources": fold them away or show them, and remember it (issue #121).
     ToggleSources,
     /// The compose window could not be started.
@@ -2672,13 +2694,14 @@ fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSumm
 /// What `view` lists, asked of `inbox`: its entries and, in a view of mail, the first `limit`
 /// messages, both in `order` (task E8.15); beside them what the sidebar, the glance and the hub need
 /// – "For me" always newest first, as the glance shows it.
-pub async fn fetch<S: InboxSource + MailSource + HubSource>(
+async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
     inbox: Arc<S>,
     view: View,
     empty: bool,
     (limit, order): (u32, Order),
     (kind, shown): (Kind, Shown),
     demo: Option<DateTime<Utc>>,
+    mail_accounts: Option<Vec<String>>,
 ) -> Result<Loaded, String> {
     if empty {
         let none = Loaded {
@@ -2710,7 +2733,15 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
                 }
                 item
             })
-            .filter(|item| kind.keeps(item) && shown.shows(&item.source))
+            .filter(|item| {
+                kind.keeps(item)
+                    && shown.shows(&item.source)
+                    && (kind != Kind::Mail
+                        || item.source.kind != SourceKind::Mail
+                        || mail_accounts.as_ref().is_none_or(|accounts| {
+                            accounts.iter().any(|account| mail::address(account) == item.source.name)
+                        }))
+            })
             .collect::<Vec<_>>()
     };
     // One source shown: ask for it alone, unless the view names a source of its own.
@@ -2741,7 +2772,24 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     let folders = inbox.mail_folders().await.unwrap_or_default();
     // The catalogue for the sidebar's group "Categories" (task E12.8); only the mail window
     // shows it, and a core that cannot answer simply leaves the group out.
-    let categories = if folders.is_empty() { Vec::new() } else { inbox.list_categories().await.unwrap_or_default() };
+    let categories = if folders.is_empty() {
+        Vec::new()
+    } else if let Some(accounts) = &mail_accounts {
+        let mut counts = Vec::<CategoryInfo>::new();
+        for account in accounts {
+            for held in inbox.list_categories(Some(account.clone())).await.unwrap_or_default() {
+                if let Some(total) = counts.iter_mut().find(|total| total.category == held.category) {
+                    total.unread = total.unread.saturating_add(held.unread);
+                    total.messages = total.messages.saturating_add(held.messages);
+                } else {
+                    counts.push(held);
+                }
+            }
+        }
+        counts
+    } else {
+        inbox.list_categories(None).await.unwrap_or_default()
+    };
     // Whether a decision model is set up, so the reader offers "Re-categorize" only then.
     let model_ready = !folders.is_empty() && inbox.categorization_ready().await.unwrap_or(false);
     let mut found = None;
@@ -2752,16 +2800,39 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         // Nothing typed yet: nothing to ask.
         View::Search(search) if search.query.is_empty() => Some(MailPage::of(Vec::new(), None)),
         View::Search(search) => {
-            let page = inbox.find_mail(search.find(order, limit.max(search::PAGE), None)).await.map_err(failed)?;
+            let page = find_selected(
+                &*inbox,
+                search,
+                limit.max(search::PAGE),
+                None,
+                order,
+                matches!(&search.scope, Scope::All).then_some(mail_accounts.as_deref()).flatten(),
+            )
+            .await?;
             // How far the index is, only while matches may be missing; without an answer the line
             // still says that some may be.
-            let index = if page.complete { Vec::new() } else { inbox.mail_index_status().await.unwrap_or_default() };
+            let index = if page.complete {
+                Vec::new()
+            } else {
+                inbox
+                    .mail_index_status()
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|progress| {
+                        mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&progress.account))
+                    })
+                    .collect()
+            };
             found = Some(Box::new(Found { complete: page.complete, total: page.total, index }));
             Some(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
         }
         View::Attachments => {
             let mut pages = Vec::new();
-            for inbox_folder in folders.iter().filter(|folder| folder.role == Some(Role::Inbox)) {
+            for inbox_folder in folders.iter().filter(|folder| {
+                folder.role == Some(Role::Inbox)
+                    && mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account))
+            }) {
                 let page =
                     inbox.search_mail(inbox_folder.id.clone(), None, limit, None, order).await.map_err(failed)?;
                 pages.push(page.messages);
@@ -2771,7 +2842,10 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         // The smart view "Invitations" (task E8.3b) the same way, from what the summaries say.
         View::Invitations => {
             let mut pages = Vec::new();
-            for inbox_folder in folders.iter().filter(|folder| folder.role == Some(Role::Inbox)) {
+            for inbox_folder in folders.iter().filter(|folder| {
+                folder.role == Some(Role::Inbox)
+                    && mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&folder.account))
+            }) {
                 // The soonest event first: the order of arrival does not apply.
                 let newest = Order::NewestFirst;
                 let page =
@@ -2783,7 +2857,8 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         // A group of categories or one of them (task E12.8): the mail of every account that is
         // of one of them, newest first – the core filters, the window only names them.
         View::Category(view) => {
-            let page = inbox.search_by_category(view.categories(), limit, None, order).await.map_err(failed)?;
+            let page =
+                category_selected(&*inbox, view.categories(), limit, None, order, mail_accounts.as_deref()).await?;
             Some(page)
         }
         _ => None,
@@ -2812,6 +2887,94 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         quiet,
         found,
     })
+}
+
+/// Walk global category pages until the requested number of messages from the selected accounts
+/// is filled. The returned cursor remains the core's global cursor, so "Load more" cannot skip
+/// matches from a selected account when other accounts have newer mail.
+async fn category_selected<S: MailSource>(
+    inbox: &S,
+    categories: Vec<torro_mail::Category>,
+    limit: u32,
+    cursor: Option<String>,
+    order: Order,
+    accounts: Option<&[String]>,
+) -> Result<MailPage, String> {
+    let Some(accounts) = accounts else {
+        return inbox.search_by_category(categories, limit, cursor, order).await.map_err(|err| err.to_string());
+    };
+    if accounts.is_empty() {
+        return Ok(MailPage::of(Vec::new(), None));
+    }
+    let mut messages = Vec::new();
+    let mut next = cursor;
+    loop {
+        let page = inbox
+            .search_by_category(
+                categories.clone(),
+                limit.saturating_sub(messages.len() as u32).max(1),
+                next.clone(),
+                order,
+            )
+            .await
+            .map_err(|err| err.to_string())?;
+        messages.extend(page.messages.into_iter().filter(|message| accounts.contains(&message.account)));
+        if messages.len() >= limit as usize || page.next.is_none() || page.next == next {
+            return Ok(MailPage::of(messages, page.next.filter(|after| Some(after) != next.as_ref())));
+        }
+        next = page.next;
+    }
+}
+
+/// The same cursor walk for a search whose scope is "All mail". Explicit account and folder
+/// search scopes are already precise and bypass this filter.
+async fn find_selected<S: MailSource>(
+    inbox: &S,
+    search: &SearchView,
+    limit: u32,
+    cursor: Option<String>,
+    order: Order,
+    accounts: Option<&[String]>,
+) -> Result<MailFound, String> {
+    let Some(accounts) = accounts else {
+        return inbox.find_mail(search.find(order, limit, cursor)).await.map_err(|err| err.to_string());
+    };
+    if accounts.is_empty() {
+        return Ok(MailFound {
+            messages: Vec::new(),
+            cursor: None,
+            complete: true,
+            highlights: Vec::new(),
+            total: Some(0),
+        });
+    }
+    let mut messages = Vec::new();
+    let mut highlights = Vec::new();
+    let mut next = cursor;
+    let mut complete = true;
+    loop {
+        let page = inbox
+            .find_mail(search.find(order, limit.saturating_sub(messages.len() as u32).max(1), next.clone()))
+            .await
+            .map_err(|err| err.to_string())?;
+        complete &= page.complete;
+        let kept: Vec<MessageSummary> =
+            page.messages.into_iter().filter(|message| accounts.contains(&message.account)).collect();
+        highlights.extend(
+            page.highlights.into_iter().filter(|highlight| kept.iter().any(|message| message.id == highlight.id)),
+        );
+        messages.extend(kept);
+        if messages.len() >= limit as usize || page.cursor.is_none() || page.cursor == next {
+            return Ok(MailFound {
+                messages,
+                cursor: page.cursor.filter(|after| Some(after) != next.as_ref()),
+                complete,
+                highlights,
+                total: None,
+            });
+        }
+        next = page.cursor;
+    }
 }
 
 impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static> App<S> {
@@ -2913,6 +3076,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             found: Found::default(),
             highlights: Vec::new(),
             folds: Vec::new(),
+            mail_accounts: None,
+            accounts_chosen: false,
+            pinned_folders: Vec::new(),
+            pins_chosen: false,
             mail_only: launch.view == Some(View::Mail),
             shown: launch.shown.clone(),
             arrange: if open == Some(Open::ByTime) { Arrange::ByTime } else { Arrange::default() },
@@ -2977,6 +3144,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
             ui_state::load_searches_task(INBOX).map(Message::RecentSearches),
+            ui_state::load_mail_accounts_task(INBOX, app.launch.window_key()).map(Message::StoredMailAccounts),
+            ui_state::load_pinned_mail_folders_task(INBOX).map(Message::StoredPinnedFolders),
             order,
             split,
             // The first load waits for a core that is still starting (issue #206).
@@ -3196,6 +3365,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 // An answer for a view the user has left since would show the wrong entries; one in
                 // the order before the last turn (task E8.15) the wrong way round.
                 if view != self.view || result.as_ref().is_ok_and(|loaded| loaded.order != self.order) {
+                    return Task::none();
+                }
+                match result {
+                    Ok(loaded) => return self.take(loaded),
+                    Err(err) => self.error = Some(load_failed(&err)),
+                }
+            }
+            Message::LoadedAccounts(view, accounts, result) => {
+                if view != self.view
+                    || accounts != self.mail_accounts
+                    || result.as_ref().is_ok_and(|loaded| loaded.order != self.order)
+                {
                     return Task::none();
                 }
                 match result {
@@ -3709,6 +3890,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Err(err) => self.error = Some(Failure::new(tr("Couldn't load more messages."), err)),
                 }
             }
+            Message::MoreLoadedAccounts(view, order, accounts, result) => {
+                if view != self.view || order != self.order || accounts != self.mail_accounts {
+                    return Task::none();
+                }
+                return self.handle(Message::MoreLoaded(view, order, result));
+            }
             Message::SearchInput(text) => return self.type_search(text),
             Message::Search => {
                 self.suggesting = false;
@@ -3772,7 +3959,65 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let open = !self.account_open(&account);
                 self.folds.retain(|(folded, _)| *folded != account);
                 self.folds.push((account, open));
-                return self.save_unfolded();
+            }
+            Message::ToggleMailAccounts => self.toggle_menu(Menu::MailAccounts),
+            Message::SelectAllMailAccounts => {
+                self.mail_accounts = None;
+                self.accounts_chosen = true;
+                self.more = None;
+                if self.launch.demo {
+                    return self.load();
+                }
+                let save = ui_state::save_mail_accounts_task(INBOX, self.launch.window_key(), None);
+                return Task::batch([save, self.load()]);
+            }
+            Message::ToggleMailAccount(account) => {
+                let all: Vec<String> =
+                    mail::by_account(&self.folders).into_iter().map(|group| group.account.to_owned()).collect();
+                let mut chosen = self.mail_accounts.clone().unwrap_or_else(|| all.clone());
+                chosen.retain(|held| all.contains(held));
+                if chosen.contains(&account) {
+                    chosen.retain(|held| held != &account);
+                } else {
+                    chosen.push(account);
+                }
+                self.mail_accounts = (chosen.len() != all.len()).then_some(chosen);
+                self.accounts_chosen = true;
+                self.more = None;
+                if self.launch.demo {
+                    return self.load();
+                }
+                let save =
+                    ui_state::save_mail_accounts_task(INBOX, self.launch.window_key(), self.mail_accounts.clone());
+                return Task::batch([save, self.load()]);
+            }
+            Message::StoredMailAccounts(accounts) => {
+                if !self.accounts_chosen && self.mail_accounts != accounts {
+                    self.mail_accounts = accounts;
+                    self.more = None;
+                    return self.load();
+                }
+            }
+            Message::OpenFolders => {
+                self.drawer = false;
+                self.toggle_menu(Menu::Folders);
+            }
+            Message::ToggleFolderPin(folder) => {
+                if self.pinned_folders.contains(&folder) {
+                    self.pinned_folders.retain(|pinned| pinned != &folder);
+                } else {
+                    self.pinned_folders.push(folder);
+                }
+                self.pins_chosen = true;
+                if self.launch.demo {
+                    return Task::none();
+                }
+                return ui_state::save_pinned_mail_folders_task(INBOX, self.pinned_folders.clone());
+            }
+            Message::StoredPinnedFolders(folders) => {
+                if !self.pins_chosen {
+                    self.pinned_folders = folders;
+                }
             }
             Message::ToggleSources => {
                 self.sources_open = !self.sources_open;
@@ -4654,6 +4899,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn more_mail(&mut self) -> Task<Message> {
         let Some(cursor) = self.more.clone() else { return Task::none() };
         let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
+        let accounts = self.mail_accounts.clone();
         let next: std::pin::Pin<Box<dyn std::future::Future<Output = Result<MailPage, String>> + Send>> = match &view {
             View::Folder(folder) => {
                 let folder = folder.id.clone();
@@ -4666,28 +4912,29 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 })
             }
             View::Search(shown) => {
-                let find = shown.find(order, search::PAGE, Some(cursor.clone()));
+                let (search, selected) = (shown.clone(), accounts.clone());
+                let cursor = cursor.clone();
                 Box::pin(async move {
-                    let page = inbox.find_mail(find).await.map_err(|err| err.to_string())?;
+                    let account_filter = if matches!(&search.scope, Scope::All) { selected.as_deref() } else { None };
+                    let page =
+                        find_selected(&*inbox, &search, search::PAGE, Some(cursor), order, account_filter).await?;
                     Ok(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
                 })
             }
             // A group of categories or one of them (task E12.8): the next page of the same
             // categories, as the first one was asked for.
             View::Category(shown) => {
-                let (categories, cursor) = (shown.categories(), cursor.clone());
+                let (categories, selected) = (shown.categories(), accounts.clone());
+                let cursor = cursor.clone();
                 Box::pin(async move {
-                    inbox
-                        .search_by_category(categories, mail::PAGE, Some(cursor), order)
-                        .await
-                        .map_err(|err| err.to_string())
+                    category_selected(&*inbox, categories, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
             _ => return Task::none(),
         };
         #[cfg(test)]
         self.sent.push(Sent::More(cursor));
-        Task::perform(next, move |result| Message::MoreLoaded(view.clone(), order, result))
+        Task::perform(next, move |result| Message::MoreLoadedAccounts(view.clone(), order, accounts, result))
     }
 
     /// Opens the entry `id` if it is the one in the panel: a message can outlive the entry it came
@@ -5101,7 +5348,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
-            Some(Menu::Nav | Menu::Switcher | Menu::MailContext) => Focus::Elsewhere,
+            Some(Menu::Nav | Menu::Switcher | Menu::MailContext | Menu::MailAccounts | Menu::Folders) => {
+                Focus::Elsewhere
+            }
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
             None if self.is_insights() => Focus::Elsewhere,
@@ -6923,10 +7172,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// shows entries again ([`shows_entries`]), so the only layer over the settings is the host's
     /// own section menu.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, nav) = (Anchor::new(), Anchor::new());
-        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
+        let (switcher, nav, accounts, folders) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
+        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher, &folders);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
-            .then(|| self.sidebar(SidebarMode::Rail, &switcher));
+            .then(|| self.sidebar(SidebarMode::Rail, &switcher, &folders));
         if let Some(pane) = &self.settings {
             let frame = self.settings_frame(pane, class);
             // The one layer here is the host's own section menu (the medium layout's "Sources ▾").
@@ -6939,7 +7188,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 .overlay(frame.overlay)
                 .into();
         }
-        let header = self.header(class, &nav);
+        let header = self.header(class, &nav, &accounts);
         // Two sets (issue #122): the buttons of the panel or the reader (`anchors`), and the row or
         // card under the cursor with its buttons (`rows`). A menu hangs at the button that opened it.
         // In the mail window that button is an item of the action rail, or its group's icon while the
@@ -6980,6 +7229,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Nav) => {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
+            Some(Menu::MailAccounts) => Some(widgets::floating(
+                &accounts,
+                Placement::Below(Align::End),
+                self.mail_accounts_menu(),
+                Message::CloseMenu,
+            )),
+            Some(Menu::Folders) => Some(widgets::floating(
+                &folders.or(&nav),
+                if matches!(class, SizeClass::Wide | SizeClass::Medium) {
+                    Placement::Beside
+                } else {
+                    Placement::Below(Align::Start)
+                },
+                self.folder_browser(),
+                Message::CloseMenu,
+            )),
             Some(Menu::Snooze) => {
                 Some(widgets::floating(&snooze_at, below, self.choice_menu(tr("Later until")), Message::CloseMenu))
             }
@@ -7084,7 +7349,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The header: the view's title (wide with the full sidebar) or the navigation menu (with the
     /// rail, medium, narrow), its count, and
     /// "Refresh". The inbox creates nothing, so there is no primary button.
-    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
+    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, accounts: &Anchor) -> Element<'a, Message> {
         if self.is_insights() {
             return self.insights_header(class, nav);
         }
@@ -7122,6 +7387,39 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // "Newest first | Oldest first" (task E8.15) where the window lists by arrival.
         if self.orderable() {
             trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
+        }
+        if kind == Kind::Mail && !self.folders.is_empty() {
+            let fixed_account = self.view.folder().map(|folder| folder.account.as_str()).or_else(|| {
+                self.view.search().and_then(|search| match &search.scope {
+                    Scope::All => None,
+                    Scope::Account(account) => Some(account.as_str()),
+                    Scope::Folder(folder) => Some(folder.account.as_str()),
+                })
+            });
+            if let Some(account) = fixed_account {
+                if matches!(class, SizeClass::Wide | SizeClass::Medium) {
+                    trailing.push(widgets::text_button(
+                        Some(Icon::Folder),
+                        mail::address(account).to_owned(),
+                        style::button::ghost,
+                        None,
+                    ));
+                }
+            } else {
+                let label = self.mail_accounts_label();
+                trailing.push(if class == SizeClass::Wide {
+                    widgets::menu_button(accounts, Some(Icon::ListFilter), label, Message::ToggleMailAccounts)
+                } else {
+                    widgets::anchored(
+                        accounts,
+                        widgets::icon_button(
+                            if self.mail_accounts.is_some() { Icon::ListFilter } else { Icon::List },
+                            label,
+                            Some(Message::ToggleMailAccounts),
+                        ),
+                    )
+                });
+            }
         }
         // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
         // layout; off while nothing can be dismissed.
@@ -7661,19 +7959,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         palette(&self.theme()).category[at.min(3)]
     }
 
-    /// The folders of the mail accounts by account (task E4.2), for the sidebar and the menu: one
-    /// group titled "Mail" with a single account, else one per account titled with its address,
-    /// as the calendars group by account. A folder counts its unread messages where that is news
+    /// The folders of the mail accounts by account for the on-demand folder browser. Every group
+    /// is titled with its full address, including when there is just one account. A folder counts its unread messages where that is news
     /// ([`mail::counts_unread`]); no "0".
     fn mail_groups(&self) -> Vec<MailGroup> {
         let groups = mail::by_account(&self.folders);
-        let single = groups.len() == 1;
         groups
             .into_iter()
             .map(|group| MailGroup {
-                title: if single { tr("Mail").to_owned() } else { mail::address(group.account).to_owned() },
+                title: mail::address(group.account).to_owned(),
                 account: group.account.to_owned(),
-                open: single || self.account_open(group.account),
+                open: self.account_open(group.account),
                 rows: group
                     .folders
                     .into_iter()
@@ -7695,23 +7991,118 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
-    /// Whether the folders of `account` show: as the person folded or unfolded it (now or at an
-    /// earlier start, `ui.json`), else only the account of the folder shown. Folded by default
-    /// (issue #121): two accounts with all their folders would push the rest of the sidebar out of a
-    /// window of ordinary height, and a first start stays calm.
+    fn pinned_entries(&self) -> Vec<NavEntry> {
+        if self.launch.kind != Kind::Mail && !self.mail_only {
+            return Vec::new();
+        }
+        self.pinned_folders
+            .iter()
+            .filter_map(|id| self.folders.iter().find(|folder| &folder.id == id))
+            .map(|folder| {
+                let view = View::Folder(FolderView::of(folder));
+                NavEntry {
+                    mark: Mark::Icon(mail::folder_icon(folder.role)),
+                    label: format!("{} · {}", mail::folder_name(folder), mail::address(&folder.account)),
+                    count: usize::try_from(folder.unread)
+                        .ok()
+                        .filter(|&unread| unread > 0 && mail::counts_unread(folder.role)),
+                    active: self.view == view,
+                    view,
+                    target: Target::View,
+                }
+            })
+            .collect()
+    }
+
+    fn mail_accounts_label(&self) -> String {
+        match &self.mail_accounts {
+            None => tr("All accounts").to_owned(),
+            Some(accounts) if accounts.is_empty() => tr("No accounts").to_owned(),
+            Some(accounts) if accounts.len() == 1 => mail::address(&accounts[0]).to_owned(),
+            Some(accounts) => trf("{count} accounts", &[("count", &accounts.len().to_string())]),
+        }
+    }
+
+    fn mail_accounts_menu(&self) -> Element<'_, Message> {
+        let groups = self.mail_groups();
+        let mut list = column![menu_caption(tr("Shown mail accounts"))];
+        let colour = palette(&self.theme()).accent;
+        let all = MenuItem::new(
+            Mark::Check(colour, self.mail_accounts.is_none()),
+            tr("All accounts"),
+            Message::SelectAllMailAccounts,
+        );
+        list = list.push(widgets::menu_item(all)).push(menu_line());
+        for group in groups {
+            let selected = self.mail_accounts.as_ref().is_none_or(|accounts| accounts.contains(&group.account));
+            let item =
+                MenuItem::new(Mark::Check(colour, selected), group.title, Message::ToggleMailAccount(group.account));
+            list = list.push(widgets::menu_item(item));
+        }
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::list_medium());
+        let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
+        container(iced::widget::container(body).max_height(tallest))
+            .width(width)
+            .padding(style::MENU_INSET)
+            .style(style::container::menu)
+            .into()
+    }
+
+    fn folder_browser(&self) -> Element<'_, Message> {
+        let mut list = column![menu_caption(tr("Folders"))];
+        let groups = self.mail_groups();
+        for (index, group) in groups.into_iter().enumerate() {
+            if index > 0 {
+                list = list.push(menu_line());
+            }
+            let icon = if group.open { Icon::ChevronDown } else { Icon::ChevronRight };
+            let unread = group.rows.iter().find(|entry| entry.is_inbox()).and_then(|entry| entry.count);
+            let header = MenuItem::new(icon, group.title, Message::ToggleAccount(group.account))
+                .trail(unread.map_or(Trail::None, Trail::Count));
+            list = list.push(widgets::menu_item(header));
+            if group.open {
+                for entry in group.rows {
+                    let Some(folder) = entry.view.folder() else { continue };
+                    let pinned = self.pinned_folders.contains(&folder.id);
+                    let pin = widgets::icon_button(
+                        if pinned { Icon::PinOff } else { Icon::Pin },
+                        if pinned { tr("Unpin folder") } else { tr("Pin folder") },
+                        Some(Message::ToggleFolderPin(folder.id.clone())),
+                    );
+                    let message = entry.message();
+                    let trail = entry.trail();
+                    let open = widgets::menu_item(
+                        MenuItem::new(entry.mark, entry.label, message).trail(trail).current(entry.active),
+                    );
+                    list = list.push(
+                        row![Space::new().width(space::m()), open, pin].spacing(space::xs()).align_y(Alignment::Center),
+                    );
+                }
+            }
+        }
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+        let body = iced::widget::scrollable(list).height(iced::Length::Shrink).width(Fill);
+        container(iced::widget::container(body).max_height(tallest))
+            .width(width)
+            .padding(style::MENU_INSET)
+            .style(style::container::menu)
+            .into()
+    }
+
+    /// Whether the account's folders show in the temporary browser; accounts start expanded so
+    /// each postbox and its folder hierarchy are immediately visible.
     fn account_open(&self, account: &str) -> bool {
         if let Some(&(_, open)) = self.folds.iter().find(|(folded, _)| folded == account) {
             return open;
         }
-        self.view.folder().is_some_and(|folder| folder.account == account)
+        true
     }
 
-    /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. The rail leaves the
-    /// sources out: all agents share one icon and all scripts another, so as bare icons they
-    /// could not be told apart; the navigation menu and the drawer still list them. The same goes
-    /// for the folders of the mail accounts, except in a window of mail only, whose rail would be
-    /// empty without them (their names are the tooltips).
-    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
+    /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. Account folders
+    /// are available through "Open folders"; only chosen pins remain in this navigation.
+    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor, folders: &Anchor) -> Element<'a, Message> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
@@ -7720,17 +8111,33 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         };
         let mut items: Vec<Element<'a, Message>> =
             if self.mail_only { Vec::new() } else { views.into_iter().map(row).collect() };
-        let smart = self.smart_entries();
-        if !smart.is_empty() {
-            items.push(widgets::sidebar_group_in(mode, tr("Smart views"), None));
-            items.extend(smart.into_iter().map(row));
-        }
         // What the mail is (task E12.8): the four groups, with the categories of an open one
         // under it. The group appears only once at least one mail has a category.
         let categories = self.category_entries();
         if !categories.is_empty() {
             items.push(widgets::sidebar_group_in(mode, tr("Categories"), None));
             items.extend(categories.into_iter().map(row));
+        }
+        let smart = self.smart_entries();
+        if !smart.is_empty() {
+            items.push(widgets::sidebar_group_in(mode, tr("Smart views"), None));
+            items.extend(smart.into_iter().map(row));
+        }
+        let pinned = self.pinned_entries();
+        if !pinned.is_empty() {
+            items.push(widgets::sidebar_group_in(mode, tr("Pinned folders"), None));
+            items.extend(pinned.into_iter().map(row));
+        }
+        if (self.launch.kind == Kind::Mail || self.mail_only) && !self.folders.is_empty() {
+            let browse = widgets::sidebar_item_in(
+                mode,
+                Icon::Folder,
+                tr("Open folders"),
+                Trail::None,
+                self.menu == Some(Menu::Folders),
+                Message::OpenFolders,
+            );
+            items.push(widgets::anchored(folders, browse));
         }
         // The notifications window lists no mail (task E8.4), but "This window shows": its sources
         // to switch on and off, expanded only (the rail has no room for names; the chips stand in).
@@ -7740,23 +8147,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let colour = palette(&self.theme()).text_2;
                 items.push(widgets::sidebar_group_in(mode, tr("This window shows"), None));
                 items.extend(notifications::source_rows(mode, &listed, &self.shown, &self.sources, colour));
-            }
-        } else if (mode == SidebarMode::Expanded && self.launch.kind != Kind::Hub) || self.mail_only {
-            // The hub acts and does not read (task E8.5): no folders, unless it is a window of mail
-            // only (`--source mail`).
-            let groups = self.mail_groups();
-            let single = groups.len() == 1;
-            for group in groups {
-                let toggle = (!single).then(|| (group.open, Message::ToggleAccount(group.account.clone())));
-                items.push(widgets::sidebar_group_in(mode, group.title, toggle));
-                match (group.open, mode) {
-                    (true, _) => items.extend(group.rows.into_iter().map(row)),
-                    // The rail has no title to unfold with: a folded account keeps its inbox there.
-                    (false, SidebarMode::Rail) => {
-                        items.extend(group.rows.into_iter().filter(NavEntry::is_inbox).map(row))
-                    }
-                    (false, SidebarMode::Expanded) => {}
-                }
             }
         }
         if !sources.is_empty() && mode == SidebarMode::Expanded && !self.mail_only {
@@ -7798,29 +8188,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !self.mail_only {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
-        let smart = self.smart_entries();
-        if !smart.is_empty() {
-            sections.push(MenuSection::titled(tr("Smart views"), smart.into_iter().map(item).collect()));
-        }
         let categories = self.category_entries();
         if !categories.is_empty() {
             sections.push(MenuSection::titled(tr("Categories"), categories.into_iter().map(item).collect()));
         }
-        // A menu has no folding: every account is a section named after it, with all its folders
-        // only while one of them is shown (or for a single account), else its inbox alone – the
-        // drawer unfolds the rest. So the menu fits a window of ordinary height. The narrow mail
-        // window lists no folders (task E8.3): there it is about what is new; the drawer has them.
-        let narrow_mail = self.launch.kind == Kind::Mail && self.class() == SizeClass::Narrow && !self.mail_only;
-        // The notifications window has no mail at all (task E8.4); its sources are the chips.
-        // Nor has the hub, which acts and does not read (task E8.5), unless it is a window of mail only.
-        let hub = self.launch.kind == Kind::Hub && !self.mail_only;
-        let no_mail = narrow_mail || hub || self.launch.kind == Kind::Notifications;
-        let groups = if no_mail { Vec::new() } else { self.mail_groups() };
-        let single = groups.len() == 1;
-        for group in groups {
-            let open = single || self.view.folder().is_some_and(|folder| folder.account == group.account);
-            let rows = group.rows.into_iter().filter(|row| open || row.is_inbox()).map(item).collect();
-            sections.push(MenuSection::titled(group.title, rows));
+        let smart = self.smart_entries();
+        if !smart.is_empty() {
+            sections.push(MenuSection::titled(tr("Smart views"), smart.into_iter().map(item).collect()));
+        }
+        let pinned = self.pinned_entries();
+        if !pinned.is_empty() {
+            sections.push(MenuSection::titled(tr("Pinned folders"), pinned.into_iter().map(item).collect()));
+        }
+        if (self.launch.kind == Kind::Mail || self.mail_only) && !self.folders.is_empty() {
+            sections.push(MenuSection::new(vec![MenuItem::new(
+                Icon::Folder,
+                tr("Open folders"),
+                Message::OpenFolders,
+            )]));
         }
         if !sources.is_empty() && !self.mail_only {
             sections.push(MenuSection::titled(tr("Sources"), sources.into_iter().map(item).collect()));
@@ -8289,10 +8674,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let asked = (limit, self.order);
         // How long the core took to answer, with `TORRO_TIMING` (issue #206).
         let started = Instant::now();
-        let entries = Task::perform(fetch(inbox, view.clone(), empty, asked, window, demo), move |result| {
-            timing::took("load", started);
-            Message::Loaded(view.clone(), result)
-        });
+        let accounts = self.mail_accounts.clone();
+        let entries = Task::perform(
+            fetch_with_accounts(inbox, view.clone(), empty, asked, window, demo, accounts.clone()),
+            move |result| {
+                timing::took("load", started);
+                Message::LoadedAccounts(view.clone(), accounts, result)
+            },
+        );
         // Insights asks for its numbers with every load (task E8.8b): after muting, after an undo, on
         // the timer – so a suggestion that was taken goes away.
         if self.is_insights() { Task::batch([entries, self.load_stats()]) } else { entries }
@@ -8307,13 +8696,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 }
 
-/// The folders of one mail account in the sidebar and the navigation menu ([`App::mail_groups`]).
+/// The folders of one mail account in the on-demand browser ([`App::mail_groups`]).
 struct MailGroup {
-    /// "Mail", or the account's address when there are several.
+    /// The account's full address.
     title: String,
     /// `mail:<address>`, for folding.
     account: String,
-    /// Its folders show ([`App::account_open`]); always with a single account.
+    /// Its folders show in the browser ([`App::account_open`]).
     open: bool,
     rows: Vec<NavEntry>,
 }
@@ -8814,8 +9203,17 @@ mod tests {
         let window = (app.launch.kind, app.shown.clone());
         let demo = app.launch.demo.then_some(app.now);
         let asked = (app.page_limit(), app.order);
-        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, asked, window, demo));
-        let _ = app.update(Message::Loaded(app.view.clone(), result));
+        let accounts = app.mail_accounts.clone();
+        let result = block_on(fetch_with_accounts(
+            app.inbox.clone(),
+            app.view.clone(),
+            empty,
+            asked,
+            window,
+            demo,
+            accounts.clone(),
+        ));
+        let _ = app.update(Message::LoadedAccounts(app.view.clone(), accounts, result));
     }
 
     /// A demo app at the demo's fixed time, loaded – on "For me" unless `words` choose a view (the
@@ -9284,12 +9682,13 @@ mod tests {
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
         let mut app = loaded_late(&[]);
-        let for_me = block_on(fetch(
+        let for_me = block_on(fetch_with_accounts(
             app.inbox.clone(),
             View::ForMe,
             false,
             (mail::PAGE, Order::NewestFirst),
             (app.launch.kind, Shown::Everything),
+            None,
             None,
         ));
         let _ = app.update(Message::Show(View::Done));
@@ -10913,39 +11312,38 @@ mod tests {
         assert!(!none.sent.iter().any(|sent| matches!(sent, Sent::Compose(_))), "no account, no window");
     }
 
-    /// Issue #121: "Sources" and the mail accounts start folded; unfolded, `ui.json` keeps them and
-    /// the next start shows them unfolded; folded again, they are forgotten.
+    /// Sources remain a persistent sidebar fold; mail accounts now fold only inside the temporary
+    /// folder browser and start expanded so the mailbox split is immediately visible.
     #[test]
-    fn sources_and_accounts_start_folded_and_come_back_as_left() {
+    fn sources_persist_and_folder_browser_accounts_start_expanded() {
         let account = "mail:anna@example.org";
         let mut app = loaded(&[]);
         let _ = app.update(Message::Resized(WIDE));
         assert!(!app.sources_open, "a new start: Sources folded");
-        assert!(app.mail_groups().iter().all(|group| !group.open), "a new start: accounts folded");
+        assert!(app.mail_groups().iter().all(|group| group.open), "browser accounts start expanded");
         assert!(app.unfolded().is_empty());
         let _ = app.update(Message::ToggleSources);
         let _ = app.update(Message::ToggleAccount(account.into()));
         let _ = app.view();
         let names = app.unfolded();
-        assert_eq!(names, [SOURCES_KEY.to_owned(), account_key(account)], "what ui.json keeps");
+        assert_eq!(names, [SOURCES_KEY.to_owned()], "only Sources is persisted");
         assert_eq!(app.unfolded_names, names, "saved as it is");
 
         let mut next = loaded(&[]);
         let _ = next.update(Message::Unfolded(names));
         assert!(next.sources_open, "the next start: Sources unfolded");
-        assert_eq!(next.mail_groups().iter().map(|group| group.open).collect::<Vec<_>>(), [false, true]);
-        let _ = next.update(Message::ToggleAccount(account.into()));
+        assert!(next.mail_groups().iter().all(|group| group.open));
         let _ = next.update(Message::ToggleSources);
         assert!(next.unfolded().is_empty(), "folded again: forgotten");
     }
 
     #[test]
-    fn the_sidebar_groups_the_folders_by_account() {
+    fn the_folder_browser_groups_the_folders_by_account() {
         let mut app = loaded(&[]);
         let groups = app.mail_groups();
         let titles: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
         assert_eq!(titles, ["anna@work.example.org", "anna@example.org"], "two accounts: one group each");
-        assert_eq!(groups.iter().map(|group| group.open).collect::<Vec<_>>(), [false, false], "folded (issue #121)");
+        assert_eq!(groups.iter().map(|group| group.open).collect::<Vec<_>>(), [true, true], "expanded on opening");
         let work: Vec<(&str, Option<usize>)> =
             groups[0].rows.iter().map(|row| (row.label.as_str(), row.count)).collect();
         assert_eq!(
@@ -10962,15 +11360,15 @@ mod tests {
             "unread counted where it is news, no 0"
         );
         let _ = app.update(Message::ToggleAccount("mail:anna@work.example.org".into()));
-        assert!(app.mail_groups()[0].open, "unfolded by hand");
+        assert!(!app.mail_groups()[0].open, "folded by hand");
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.view();
         let _ = app.update(Message::ToggleAccount("mail:anna@work.example.org".into()));
-        assert!(!app.mail_groups()[0].open, "folded again");
+        assert!(app.mail_groups()[0].open, "expanded again");
         let view = folder_view(&app, "f:private-inbox");
         let _ = app.update(Message::Show(view));
         let groups = app.mail_groups();
-        assert!(groups[1].open, "the account of the folder shown unfolds");
+        assert!(groups[1].open, "the account of the folder shown is visible");
         assert!(groups[1].rows[0].active, "the folder shown is the active row");
     }
 
@@ -12176,12 +12574,69 @@ mod tests {
         let smart: Vec<String> = app.smart_entries().into_iter().map(|entry| entry.label).collect();
         assert_eq!(smart, [tr("Invitations"), tr("With attachments")]);
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
+        assert!(app.pinned_entries().is_empty(), "folders are hidden until pinned");
         assert!(overview_at(&["--view", "hub"]).smart_entries().is_empty(), "smart views are the mail window's");
         for size in SIZES {
             let mut app = mail_window(Density::Comfortable, &["--open", "menu"]);
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
+    }
+
+    #[test]
+    fn mail_account_selection_filters_combined_views_and_keeps_folders_independent() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let excluded = "mail:anna@work.example.org";
+        let _ = app.update(Message::ToggleMailAccounts);
+        let _ = app.mail_accounts_menu();
+        let _ = app.view();
+        let _ = app.update(Message::ToggleMailAccount(excluded.into()));
+        load(&mut app);
+        assert!(app.items.iter().all(|item| item.source.name != mail::address(excluded)));
+        assert_eq!(app.mail_accounts.as_deref(), Some(&["mail:anna@example.org".to_owned()][..]));
+        assert_eq!(app.categories, block_on(app.inbox.list_categories(Some("mail:anna@example.org".into()))).unwrap());
+
+        let category = app.categories.iter().find(|held| held.messages > 0).map(|held| held.group);
+        if let Some(group) = category {
+            let _ = app.update(Message::Show(View::Category(mail::CategoryView { group, only: None })));
+            load(&mut app);
+            assert!(app.messages.iter().all(|message| message.account != excluded));
+        }
+        let _ = app.update(Message::Show(View::Attachments));
+        load(&mut app);
+        assert!(app.messages.iter().all(|message| message.account != excluded));
+        let _ = app.update(Message::Show(View::Search(SearchView::new("budget", Scope::All, Sort::Relevance))));
+        load(&mut app);
+        assert!(app.messages.iter().all(|message| message.account != excluded));
+        let folder = folder_view(&app, "f:work-inbox");
+        let _ = app.update(Message::Show(folder));
+        load(&mut app);
+        assert!(app.messages.iter().all(|message| message.account == excluded), "a folder names its own account");
+        let _ = app.update(Message::Show(View::Overview));
+        let _ = app.update(Message::ToggleMailAccount("mail:anna@example.org".into()));
+        load(&mut app);
+        assert!(app.items.is_empty(), "an empty selection shows no combined mail");
+        let _ = app.update(Message::SelectAllMailAccounts);
+        assert!(app.mail_accounts.is_none());
+    }
+
+    #[test]
+    fn folders_can_be_pinned_from_the_grouped_browser() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let id = "f:work-inbox".to_owned();
+        assert_eq!(app.mail_groups().len(), 2);
+        let _ = app.update(Message::OpenFolders);
+        assert_eq!(app.menu, Some(Menu::Folders));
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        let _ = app.update(Message::ToggleFolderPin(id.clone()));
+        assert_eq!(app.pinned_folders.as_slice(), std::slice::from_ref(&id));
+        assert_eq!(app.pinned_entries().len(), 1);
+        assert!(app.pinned_entries()[0].label.contains("work.example.org"));
+        let _ = app.update(Message::ToggleFolderPin(id));
+        assert!(app.pinned_entries().is_empty());
     }
 
     /// Task E8.3: cards in the comfortable mail window, rows elsewhere; task E8.11: the same cards in
