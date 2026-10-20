@@ -1822,11 +1822,6 @@ impl Core {
         {
             return Ok(refused);
         }
-        // A tool of the assistant that is switched off (issue #225) runs for nobody, and nobody is
-        // asked to approve it; more rights would not help.
-        if let Some(refused) = self.tool_off(&request) {
-            return Err(refused);
-        }
         // Changing mail (task M3.2): message and folder ids in reachable accounts only, a client's
         // own drafts and files from the managed folder (or its own files of the tools' register,
         // issue #225) only; a move into a trash folder is deleting, and the rights are checked
@@ -1868,10 +1863,12 @@ impl Core {
         if matches!(request, Request::MyAccess) {
             return Ok(my_access(&rights, &via.origin, &self.settings.current().tools));
         }
-        // A tool of the assistant outside the client's selection (issue #225), and what the tool
-        // would refuse anyway: a title or text beyond the limits, a file the client did not make.
+        // A tool of the assistant (issue #225) the rights allow: switched off it runs for nobody, and
+        // more rights would not help; then outside the client's selection, and what the tool would
+        // refuse anyway: a title or text beyond the limits, a file the client did not make. After the
+        // rights, so a client without them hears of those, not of a switch it cannot change anyway.
         // Nobody is asked to approve any of it.
-        if let Some(refused) = tool_unselected(&rights, &request) {
+        if let Some(refused) = self.tool_off(&request).or_else(|| tool_unselected(&rights, &request)) {
             return Err(refused);
         }
         if let Some(refused) = self.tool_request_refusal(&request, Maker::Client(&id)).await {
@@ -4590,7 +4587,9 @@ impl Core {
 
     /// `forbidden` with [`torro_ipc::api::Lack::ToolOff`] for a command of one of the assistant's
     /// own tools while a person has it switched off (issue #225, setting `tool_enabled`): for every
-    /// client and the app key, whatever the rights say. `None` for every other request.
+    /// client and the app key, whatever the rights say. A client's rights are checked before it, so
+    /// one without them hears of those ([`Core::handle_client`], [`Core::run_approved`]). `None` for
+    /// every other request.
     fn tool_off(&self, request: &Request) -> Option<Refused> {
         let command = request.operation().name();
         let tool = torro_core::settings::ToolId::of_command(command)?;
@@ -6866,6 +6865,40 @@ mod tests {
         let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
         assert_eq!(code(&response), "forbidden");
         assert_eq!(std::fs::read_dir(room.desktop()).expect("listed").count(), 1, "only the allowed one");
+    }
+
+    /// Issue #225 (review): a client whose rights do not cover a tool's command hears of its rights,
+    /// not of the switch, also while the tool is switched off; only with the rights does the switch
+    /// count, and then the selection. Nobody is asked to approve any of it.
+    #[tokio::test]
+    async fn a_tool_refuses_for_the_rights_before_the_switch() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let room = crate::tools::tests::Room::new();
+        let core = core(dir.path()).with_tools(room.tools());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.remove(&Area::Tools);
+        let (id, key) = client(&core, rights.clone()).await;
+        let pdf = torro_core::settings::ToolId::Pdf;
+        let (core, key) = (&core, &key);
+        let refused_for = |lack: Lack| async move {
+            let refused = ask(core, Some(key), make_pdf("Offer")).await;
+            assert_eq!(code(&refused), "forbidden");
+            assert!(message(&refused).contains(&lack.message()), "{lack:?}: {refused:?}");
+        };
+
+        // Off, and no access to `tools` at all, then only read access: the rights say why.
+        refused_for(Lack::Area { area: Area::Tools }).await;
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        refused_for(Lack::Level { area: Area::Tools, needs: Access::Write }).await;
+        // Allowed by the rights: the switch, then (switched on) the selection.
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(Vec::new());
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        refused_for(Lack::ToolOff { tool: pdf }).await;
+        switch_pdf(core, true).await;
+        refused_for(Lack::Tool { tool: pdf }).await;
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 
     /// Issue #225, task WZ.4: a client reaches only the files it made, the person all of them; only
@@ -15657,6 +15690,44 @@ mod tests {
         let named = crate::audit::delegation_ids(&bot.id, &client.id);
         assert!(named.iter().all(|id| line.ids.contains(id)), "{:?}", line.ids);
         assert!(line.ids.contains(&crate::audit::engine_id("claude-code")));
+    }
+
+    /// Issue #225 (review): a bot that runs for the assistant has what both may; when the assistant
+    /// lacks `tools`, a tool's command is refused for that lack, not for the switch, also while the
+    /// tool is switched off.
+    #[tokio::test]
+    async fn a_bot_for_the_assistant_hears_of_the_rights_before_the_tools_switch() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let (client, _) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar]))
+            .await
+            .expect("the assistant");
+        let mut theirs = reading(&[Area::Calendar]);
+        theirs.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        let bot = bot_with(&core, "Writer", torro_ipc::assistant::TEST_ENGINE, theirs).await;
+        let named = said(&core, "Ask the writer").await;
+        let lent = Host::lend_in(&core, &crate::assistant::Actor::Assistant, &named, "claude-code", &[]);
+        let Response::Conversation { conversation, .. } =
+            ask(&core, Some(lent.expect("lent").key()), ask_bot(&bot.id)).await
+        else {
+            panic!("the bot ran")
+        };
+        let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
+            bot: bot.id.clone(),
+            client: bot.client.clone(),
+            assistant: client.id.clone(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+        });
+        let lent = Host::lend_in(&core, &actor, &conversation.id, "claude-code", &[]).expect("lent");
+
+        let refused = ask(&core, Some(lent.key()), make_pdf("Offer")).await;
+        let lack = Lack::Area { area: Area::Tools };
+        assert!(code(&refused) == "forbidden" && message(&refused).contains(&lack.message()), "{refused:?}");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 
     /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere, for the data rule.
