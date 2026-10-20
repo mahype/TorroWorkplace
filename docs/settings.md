@@ -265,11 +265,12 @@ models“ (vorher in den Rechten des Assistenten).
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
   Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › Accounts“.
-- **Am Anfang an:** alle Modelle mit Werkzeugen, die **auf diesem Rechner rechnen** (Ollama ohne
+- **Am Anfang an:** alle nutzbaren Modelle (mit Werkzeugen oder entscheidend, #231), die **auf diesem Rechner rechnen** (Ollama ohne
   `:cloud`, LM Studio, OpenAI-kompatible Server an einer Adresse dieses Rechners). Modelle, die anderswo
   rechnen (Ollama Cloud, OpenRouter, Anthropic, Server im Netz), sind aus, bis man sie anschaltet:
   Open First, und so geht ohne Zutun nichts in die Cloud. Ausnahme: Ein Modell, das ein Modul schon
-  nutzt (gespeicherter Standard, ein Bot), ist an. Neue Modelle, die hier rechnen, kommen an dazu,
+  nutzt (gespeicherter Standard, ein Bot, eine Zuordnung wie die Mail-Sortierung), ist an; steht das Modul auf
+  „Automatic“, bleibt das Modell an, das „Automatic“ dort vorher gewählt hätte. Neue Modelle, die hier rechnen, kommen an dazu,
   solange der Mensch an diesem Anbieter noch nichts ausgeschaltet hat.
 - **Ein Modell anschalten, das anderswo rechnet, kann nur ein Mensch** (wie der Schalter
   `mail_to_cloud`, [api.md](api.md) Punkt 6). Abschalten dürfen auch Agenten, mit Freigabe.
