@@ -1858,8 +1858,11 @@ pub enum Request {
     /// The core remembers who wrote a draft: a client key replaces and sends only its own drafts,
     /// any other (also one the person wrote) is `not-found` (security rule 2). Files
     /// (`DraftAttachment::File`) are taken from the app key anywhere, from a client key only out of
-    /// the core's attachment folder, never through a symbolic link and at most 25 MiB each; any
-    /// other path is `forbidden` (security rule 1). A draft with `html` (issue #125) is stored
+    /// the core's attachment folder or, while it reaches the tools' files (issue #225: the PDF tool
+    /// switched on, read access to `tools`, `pdf` in its selection), a PDF it made itself with
+    /// [`Request::CreatePdf`] (the path from its answer) as the core wrote it; never through a
+    /// symbolic link and at most 25 MiB each; any other path is `forbidden` (security rule 1). A
+    /// draft with `html` (issue #125) is stored
     /// cleaned (`torro_mail::html::sanitize`) with the plain text made from it; the answer carries
     /// both as stored.
     #[serde(rename = "mail.save_draft")]

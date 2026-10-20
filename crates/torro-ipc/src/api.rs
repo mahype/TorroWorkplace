@@ -3056,8 +3056,11 @@ static SAVE_DRAFT: Command = Command {
                   http, https and mailto links), the plain text is made from it, and the signature goes above a \
                   `<div class=\"torro-quote\">` holding the quoted history. Passing \
                   the id of your own saved draft replaces it, which needs delete access; drafts of others are \
-                  `not-found`. Attach parts of messages with `{\"kind\": \"mail_part\"}`; files only from Torro \
-                  Workplace's attachment folder (else `forbidden`). Nothing is sent: use send_draft.",
+                  `not-found`. Attach parts of messages with `{\"kind\": \"mail_part\"}`, files with \
+                  `{\"kind\": \"file\"}`: from Torro Workplace's attachment folder, or a PDF you made yourself \
+                  with tools_create_pdf (the `path` from its answer) while that tool is switched on, you may read \
+                  `tools` and `pdf` is among your tools; any other file is `forbidden`. Nothing is sent: use \
+                  send_draft.",
 };
 
 static SEND_DRAFT: Command = Command {
@@ -5604,6 +5607,20 @@ mod tests {
             SAVE_FILE_AS.input_schema().expect("schema").get("required"),
             Some(&serde_json::json!(["file", "path"]))
         );
+    }
+
+    /// Issue #225 (review): an agent learns from `mail.save_draft` that it may attach a PDF it made
+    /// with `tools.create_pdf` (the path from its answer), and on which conditions; other files
+    /// still only from the attachment folder.
+    #[test]
+    fn a_draft_may_attach_the_agents_own_pdfs() {
+        let description = SAVE_DRAFT.description;
+        assert!(description.contains("tools_create_pdf") && description.contains("`path`"), "{description}");
+        for condition in ["switched on", "read `tools`", "`pdf`", "attachment folder"] {
+            assert!(description.contains(condition), "{condition}: {description}");
+        }
+        let schema = SAVE_DRAFT.input_schema().expect("schema").as_value().to_string();
+        assert!(schema.contains("tools.create_pdf"), "the file's field says so too: {schema}");
     }
 
     #[test]
