@@ -74,7 +74,8 @@ const NO_ROLE_FOLDER: &str = "The account has no folder with this role.";
 const NO_ATTACHMENT: &str = "The message has no such attachment.";
 const NO_FILE: &str = "The file to attach does not exist.";
 const ONE_ACCOUNT: &str = "Messages can only be moved within one account.";
-const FILE_OUTSIDE: &str = "Only files from the attachment folder of Torro Workplace can be attached.";
+const FILE_OUTSIDE: &str = "Only files from the attachment folder of Torro Workplace, or PDFs this client made with its \
+                            own tools and that are unchanged, can be attached.";
 const NO_LINKS: &str = "A file behind a symbolic link cannot be attached.";
 const CHANGED: &str = "The folder changed on the server. Try again after the next sync.";
 const BOTH_WAYS: &str = "A flag cannot be added and removed at once.";

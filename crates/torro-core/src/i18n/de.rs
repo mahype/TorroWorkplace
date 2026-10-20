@@ -2275,8 +2275,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No such draft.", "Diesen Entwurf gibt es nicht."),
     ("Only files can be attached.", "Anhängen lassen sich nur Dateien."),
     (
-        "Only files from the attachment folder of Torro Workplace can be attached.",
-        "Anhängen lassen sich nur Dateien aus dem Anhangsordner von Torro Workplace.",
+        "Only files from the attachment folder of Torro Workplace, or PDFs this client made with its own tools and \
+         that are unchanged, can be attached.",
+        "Anhängen lassen sich nur Dateien aus dem Anhangsordner von Torro Workplace oder unveränderte PDFs, die \
+         dieser Client mit seinen eigenen Werkzeugen erstellt hat.",
     ),
     (
         "Only messages in the trash can be deleted for good.",
