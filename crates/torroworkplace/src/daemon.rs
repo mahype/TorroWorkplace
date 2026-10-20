@@ -544,7 +544,7 @@ fn describe(request: &Request) -> String {
             format!("make an event in {collection} of inbox item {id}")
         }
         // Never what the AI suggested (issue #120).
-        Request::SuggestTaskFromItem { id } => format!("suggest a task of inbox item {id}"),
+        Request::SuggestTaskFromItem { id, .. } => format!("suggest a task of inbox item {id}"),
         Request::SuggestEventFromItem { id } => format!("suggest an event of inbox item {id}"),
         Request::ListSources => "inbox sources".into(),
         Request::PostItem { .. } => "post to inbox".into(),

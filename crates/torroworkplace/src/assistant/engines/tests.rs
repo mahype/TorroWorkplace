@@ -305,7 +305,8 @@ fn send_to_claude() -> Request {
 }
 
 /// Issue #225: a command of one of the assistant's own tools refused with `forbidden` says why on
-/// its tool line, as in engine A: the tool switched off, else not in the client's selection.
+/// its tool line, as in engine A: the rights first, then the tool switched off, else not in the
+/// client's selection.
 #[tokio::test]
 async fn a_refused_tool_says_whether_it_is_off_or_not_granted() {
     use torro_core::settings::ToolId;
@@ -331,6 +332,11 @@ async fn a_refused_tool_says_whether_it_is_off_or_not_granted() {
         error: Some("forbidden".into()),
         lack: Some(lack),
     };
+
+    // Not granted and switched off: the rights say why, not the switch.
+    let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
+    let entries = contents(&finished(&setup.assistant, &id).await);
+    assert!(entries.contains(&line_of(Lack::Area { area: Area::Tools })), "{entries:?}");
 
     // Granted, but no person switched it on.
     setup.host.clients.update(&client.id, with_tools(Selection::All)).await.expect("rights");

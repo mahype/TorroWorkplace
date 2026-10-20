@@ -8,9 +8,9 @@
 //!
 //! Three windows (task E8.1, [`Kind`], `--view mail|notifications|hub`): each with its own window
 //! class, title and entry in the app switcher. They keep different entries ([`Kind::keeps`]: mail,
-//! everything else, all) and draw their overviews in their own way (below). Each has "Compact |
-//! Comfortable" in its header bar (task E8.2, [`App::density`]), remembered per window and slice in
-//! `ui.json` ([`Launch::density_key`]), `--density` winning.
+//! everything else, all) and draw their overviews in their own way (below). How close their entries
+//! stand is not theirs to choose: the density comes from the active design (task E13.2,
+//! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
 //! Its sidebar lists For me (the overview's one column: the mail for the user by day, "Info"
@@ -121,12 +121,13 @@
 //! marks the entry done; the hint says in which list. There is no undo: taking the task back
 //! would delete it, and deleting is for the tasks app.
 //!
-//! AI task and AI event (issue #120, `suggest.rs`): beside "Make task" and "Make event" in the panel
-//! and after "Task" in the reader, off with a tooltip until an AI is set up ([`App::ai_ready`], asked
-//! with every tick). They open the same dialogs at once, with a quiet line while the AI is asked
-//! ([`Suggesting`]); its suggestion fills in title, due day and a note, or day, start, length, place
-//! and who takes part. Nothing is saved before "Create"; the note and place go along
-//! (`inbox.create_task_from_item` / `inbox.create_event_from_item`).
+//! The AI fills in (issue #120, `suggest.rs`): the dialogs of "Make task" and "Make event" carry
+//! "Fill in with AI" (sparkles) in their head, off with a tooltip until an AI is set up
+//! ([`App::ai_ready`], asked with every tick) – there is no AI button of its own beside "Task" any
+//! more. A quiet line says while the AI is asked ([`Suggesting`]); its suggestion fills in title, a
+//! note, the list (one of those the dialog offers) and the due day – only when the text names one –,
+//! or day, start, length, place and who takes part. Nothing is saved before "Create"; the note and
+//! place go along (`inbox.create_task_from_item` / `inbox.create_event_from_item`).
 //!
 //! Make event (task E8.5b): `c`, "Event" in the hub's To sort and the panel's "Make event" open the
 //! same kind of dialog ([`App::ask_event`]) – the title, the calendar (from
@@ -164,6 +165,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
+use torro_core::design::Density;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
 use torro_core::shortcuts;
@@ -178,7 +180,7 @@ use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons
 use torro_gui::source::Source;
 use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::ui_state::{self, Density, UiState};
+use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -477,10 +479,12 @@ pub struct TaskDraft {
     pub notes: String,
 }
 
-/// What the AI does for the open dialog of "Make task" or "Make event" (issue #120, "AI task" and
-/// "AI event"): the dialog shows it in a quiet line under the title.
+/// What the AI does for the open dialog of "Make task" or "Make event" (issue #120, "Fill in with
+/// AI"): the dialog shows it in a quiet line under the title.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Suggesting {
+    /// To ask for the entry with this id once the task lists are in: the AI picks one of them.
+    Waiting(String),
     /// Asked for the entry with this id; the dialog fills in once the answer is in.
     Asking(String),
     /// The dialog holds the AI's suggestion: to check before creating.
@@ -1262,12 +1266,12 @@ pub enum Open {
     Insights,
     /// Insights with "Table view" on.
     InsightsTable,
-    /// The panel of the first entry that is no approval, with the dialog of "Make task" that "AI
-    /// task" opens, filled in by the demo's AI (issue #120).
+    /// The panel of the first entry that is no approval, with the dialog of "Make task" filled in by
+    /// the demo's AI, as "Fill in with AI" does (issue #120).
     AiTask,
-    /// That entry with the dialog of "Make event" that "AI event" opens (issue #120).
+    /// That entry with the dialog of "Make event", filled in alike (issue #120).
     AiEvent,
-    /// That entry in the panel without an AI: the AI buttons are off (issue #120).
+    /// That entry in the panel without an AI: "Fill in with AI" is off (issue #120).
     NoAi,
     /// The first account's inbox with its newest message in the reader and "Move to folder" open for
     /// it (task E10.1).
@@ -1343,10 +1347,6 @@ impl Open {
 /// - `--view mail|notifications|hub`: which of the three windows this is (task E8.1, [`Kind`]);
 ///   without it the hub. Works without `--demo`; the core starts each kind with it
 ///   ([`torro_core::AppId::args`]) and a workspace template stores it with the command line.
-/// - `--density compact|comfortable`: the density the window starts in (task E8.2, [`Density`]).
-///   It wins over the density remembered for the window in `ui.json`, so a workspace template that
-///   stores it brings the window back as it was; a switch in the header bar changes it (and is
-///   remembered) as usual. Works without `--demo`.
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
 ///   on that lane or source, for one window per slice of the inbox (E3.6), inside the window's
 ///   kind. Works without `--demo`;
@@ -1375,8 +1375,6 @@ pub struct Launch {
     pub design: Option<String>,
     /// The window of `--view`; the hub without it.
     pub kind: Kind,
-    /// The density of `--density`; `None` takes the one remembered for the window (task E8.2).
-    pub density: Option<Density>,
     /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
     /// The sources the window shows (task E8.4): in the notifications window those of `--source`
@@ -1660,13 +1658,6 @@ impl Launch {
             }
         };
         let kind = Kind::parse(args)?;
-        let density = match flag_value(args, "--density")? {
-            None => None,
-            Some(word) => match Density::parse(word) {
-                Some(density) => Some(density),
-                None => return Err(unknown("--density", word, Density::ALL.map(|(name, _)| name).to_vec())),
-            },
-        };
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         let settings = match flag_value(args, "--settings")? {
             None => None,
@@ -1686,7 +1677,6 @@ impl Launch {
             now,
             design,
             kind,
-            density,
             view,
             shown,
             compose,
@@ -1704,14 +1694,15 @@ impl Launch {
         }
     }
 
-    /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
-    /// kind's word of `--view`, and after a "/" the slice of `--lane` or `--source` – `mail`,
-    /// `hub/lane:info`, `notifications/source:agent:claude-code`. So every window kind and every
-    /// window per slice keeps a density of its own, though all of them share one state directory.
+    /// The name of this window in `ui.json` (task E13.2, `ui_state::order_from`): the kind's word
+    /// of `--view`, and after a "/" the slice of `--lane` or `--source` – `mail`, `hub/lane:info`,
+    /// `notifications/source:agent:claude-code`. It names the window and the slice it shows, so
+    /// every window kind and every window per slice keeps its own order and split, though all of
+    /// them share one state directory.
     ///
     /// The notifications window names the sources it was started with (task E8.4,
     /// [`Shown::slice`]): `notifications/source:script:ci+script:deploy`.
-    pub fn density_key(&self) -> String {
+    pub fn window_key(&self) -> String {
         let kind = self.kind.word();
         let lane = match &self.view {
             Some(View::ForMe) => Some("lane:for-me".to_owned()),
@@ -2059,7 +2050,7 @@ pub struct App<S> {
     calendars: Option<Result<Vec<TaskList>, String>>,
     /// The id of the calendar the last event went into; the dialog chooses it first next time.
     last_calendar: Option<String>,
-    /// An AI is set up for "AI task" and "AI event" (issue #120): asked at start and on every tick
+    /// An AI is set up for "Fill in with AI" (issue #120): asked at start and on every tick
     /// ([`SuggestSource::ai_ready`]); off until the answer is in.
     ai_ready: bool,
     /// What the AI does for the open dialog (issue #120); `None` for a dialog opened without it.
@@ -2204,11 +2195,11 @@ pub struct App<S> {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
-    /// The density chosen for this window (task E8.2): `--density`, else the one remembered in
-    /// `ui.json`, else `None` – then the layout decides ([`App::density`]).
-    density: Option<Density>,
+    /// The density of the active design (task E13.2): read at start and again when another design
+    /// arrives, the only two moments it can change in a process ([`App::density`]).
+    density: Density,
     /// Newest or oldest first in this window's lists (task E8.15): remembered in `ui.json` under
-    /// the density's key ([`Launch::density_key`]), newest first until chosen.
+    /// the window's key ([`Launch::window_key`]), newest first until chosen.
     order: Order,
     /// The order was turned in this window before `ui.json` answered: what it remembers is late.
     order_chosen: bool,
@@ -2392,10 +2383,10 @@ pub enum Message {
     EventConfirm,
     /// The source's answer to `inbox.create_event_from_item`, with the calendar's name for the hint.
     EventCreated(Result<(), String>, String),
-    /// "AI task" (issue #120): the dialog of "Make task" for the entry with this id, filled in by the
-    /// AI's suggestion once it is in.
+    /// "Fill in with AI" in the open dialog of "Make task" for the entry with this id (issue #120):
+    /// the AI's suggestion fills it in once it is in.
     SuggestTask(String),
-    /// "AI event" (issue #120): the dialog of "Make event", filled in alike.
+    /// "Fill in with AI" in the open dialog of "Make event", alike.
     SuggestEvent(String),
     /// Whether an AI is set up ([`SuggestSource::ai_ready`]).
     AiReady(bool),
@@ -2432,10 +2423,6 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
-    /// "Compact | Comfortable" in the header bar (task E8.2): show the entries so, and remember it.
-    SetDensity(Density),
-    /// The density remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
-    StoredDensity(Option<Density>),
     /// "Newest first | Oldest first" in the header bar (task E8.15): turn the order, remember it and
     /// list anew.
     ToggleOrder,
@@ -2906,7 +2893,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
-            density: launch.density,
+            density: layout::density(),
             order: Order::default(),
             order_chosen: false,
             split: Split::default(),
@@ -2917,22 +2904,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
-        // `--density` wins over what `ui.json` remembers, so with it nothing is asked.
-        let density = match app.launch.density {
-            Some(_) => Task::none(),
-            None => ui_state::load_density_task(INBOX, app.launch.density_key()).map(Message::StoredDensity),
-        };
-        let order = ui_state::load_order_task(INBOX, app.launch.density_key()).map(Message::StoredOrder);
+        let order = ui_state::load_order_task(INBOX, app.launch.window_key()).map(Message::StoredOrder);
         // Only the mail window has a divider (issue #130).
         let split = match app.launch.kind {
-            Kind::Mail => ui_state::load_split_task(INBOX, app.launch.density_key()).map(Message::StoredSplit),
+            Kind::Mail => ui_state::load_split_task(INBOX, app.launch.window_key()).map(Message::StoredSplit),
             _ => Task::none(),
         };
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
             ui_state::load_searches_task(INBOX).map(Message::RecentSearches),
-            density,
             order,
             split,
             // The first load waits for a core that is still starting (issue #206).
@@ -3369,7 +3350,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.menu_at = MenuAt::Panel;
                 return self.ask_task(&id);
             }
-            Message::TaskLists(result) => self.take_lists(result),
+            Message::TaskLists(result) => return self.take_lists(result),
             Message::TaskTitle(title) => self.task.title = title,
             Message::TaskList(list) => self.task.list = Some(list),
             Message::TaskDue(due) => self.task.due = due,
@@ -3399,14 +3380,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::EventCreated(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't create the event."), err));
             }
-            Message::SuggestTask(id) => {
-                self.menu_at = MenuAt::Panel;
-                return self.suggest_task(&id);
-            }
-            Message::SuggestEvent(id) => {
-                self.menu_at = MenuAt::Panel;
-                return self.suggest_event(&id);
-            }
+            Message::SuggestTask(id) => return self.suggest_task(&id),
+            Message::SuggestEvent(id) => return self.suggest_event(&id),
             // `--open no-ai` keeps the buttons off, to see them so in the demo.
             Message::AiReady(ready) => self.ai_ready = ready && self.launch.open != Some(Open::NoAi),
             Message::TaskSuggested(id, result) => self.take_task_suggestion(&id, result),
@@ -3439,7 +3414,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // No canvas keeps a cache: the next frame draws with the new design, the task loads its
             // fonts.
             Message::Design(message) => {
-                if let Some(task) = self.design.update(message) {
+                let task = self.design.update(message);
+                // A new design brings its own density (task E13.2). This and the start are the only
+                // two moments it changes in a process, so the field stays current.
+                self.density = layout::density();
+                if let Some(task) = task {
                     return task.map(Message::Design);
                 }
             }
@@ -3474,17 +3453,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
-            Message::SetDensity(density) => return self.set_density(density),
-            Message::StoredDensity(stored) => {
-                // `--density` wins; a choice made before the file answered as well.
-                if self.density.is_none() {
-                    self.density = stored;
-                }
-            }
             Message::ToggleOrder => return self.set_order(self.order.toggled()),
             Message::Split(event) => {
                 if self.split.update(event, self.split_limits()) {
-                    return ui_state::save_split_task(INBOX, self.launch.density_key(), self.split.chosen);
+                    return ui_state::save_split_task(INBOX, self.launch.window_key(), self.split.chosen);
                 }
             }
             Message::StoredSplit(stored) => {
@@ -4583,6 +4555,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Ok(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
                 })
             }
+            // A group of categories or one of them (task E12.8): the next page of the same
+            // categories, as the first one was asked for.
+            View::Category(shown) => {
+                let (categories, cursor) = (shown.categories(), cursor.clone());
+                Box::pin(async move {
+                    inbox
+                        .search_by_category(categories, mail::PAGE, Some(cursor), order)
+                        .await
+                        .map_err(|err| err.to_string())
+                })
+            }
             _ => return Task::none(),
         };
         #[cfg(test)]
@@ -5128,6 +5111,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::Confirm if self.menu == Some(Menu::Task) => self.create_task(),
             Command::Confirm if self.menu == Some(Menu::Event) => self.create_event(),
             Command::Confirm if self.menu == Some(Menu::DeleteForGood) => self.delete_for_good(),
+            // "Open anyway" of a fraudulent mail (task E12.9): without its own arm `Enter` would
+            // fall through to the picker and act on whatever entry was last touched.
+            Command::Confirm if self.menu == Some(Menu::PhishingLink) => self.update(Message::OpenLinkAnyway),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
         }
@@ -5568,16 +5554,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Task::batch([Task::perform(lists, Message::TaskLists), operation::focus(TASK_TITLE)])
     }
 
-    /// The task lists for the open dialog: the list chosen is the one used last, else the first.
-    fn take_lists(&mut self, result: Result<Vec<TaskList>, String>) {
+    /// The task lists for the open dialog: the list chosen is the one used last, else the first. An
+    /// AI that waited for them ([`Suggesting::Waiting`]) is asked now.
+    fn take_lists(&mut self, result: Result<Vec<TaskList>, String>) -> Task<Message> {
         if self.menu != Some(Menu::Task) {
-            return;
+            return Task::none();
         }
         if let Ok(lists) = &result {
             let last = lists.iter().find(|list| Some(&list.id) == self.last_list.as_ref());
             self.task.list = last.or(lists.first()).cloned();
         }
         self.lists = Some(result);
+        match self.ai_suggesting.clone() {
+            Some(Suggesting::Waiting(id)) => self.ask_for_task(&id),
+            _ => Task::none(),
+        }
     }
 
     /// "Create task": sends `inbox.create_task_from_item` for the dialog's entry, list, title
@@ -5825,55 +5816,98 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         )
     }
 
-    /// Asks whether an AI is set up (issue #120, [`SuggestSource::ai_ready`]), for the AI buttons.
+    /// Asks whether an AI is set up (issue #120, [`SuggestSource::ai_ready`]), for "Fill in with AI".
     fn fetch_ai_ready(&self) -> Task<Message> {
         let inbox = self.inbox.clone();
         Task::perform(async move { inbox.ai_ready().await }, Message::AiReady)
     }
 
-    /// "AI task" (issue #120): the dialog of "Make task" for the entry `id`, as `t` opens it, and the
-    /// AI asked for its suggestion, which fills it in once it is in ([`App::take_task_suggestion`]).
-    /// Without an AI only a hint says to set one up (the buttons are off then anyway).
+    /// Whether "Fill in with AI" can ask for the dialog `menu` now ([`App::ai_fill_button`]): an AI
+    /// is set up, the dialog is open for an entry – the core suggests from entries only, a folder's
+    /// message without one has none – and nothing is asked yet. The entry's id, or why not.
+    fn ai_fill(&self, menu: Menu) -> Result<String, Option<&'static str>> {
+        if !self.ai_ready {
+            return Err(Some(tr("Set up an AI first")));
+        }
+        let Some(item) = self.subject.as_ref().filter(|_| self.menu == Some(menu)) else {
+            return Err(Some(tr("The AI fills in only what waits in your inbox")));
+        };
+        match self.ai_suggesting {
+            Some(Suggesting::Waiting(_) | Suggesting::Asking(_)) => Err(None),
+            _ => Ok(item.id.clone()),
+        }
+    }
+
+    /// "Fill in with AI" in the dialog of "Make task" (issue #120): the AI asked for the entry `id`
+    /// the dialog is open for, with the names of the lists it offers; its suggestion fills the dialog
+    /// in once it is in ([`App::take_task_suggestion`]). While the lists load it waits for them
+    /// ([`Suggesting::Waiting`], [`App::take_lists`]). Without an AI only a hint says to set one up
+    /// (the sparkles are off then anyway); for another entry, or while it asks, nothing.
     fn suggest_task(&mut self, id: &str) -> Task<Message> {
         if !self.ai_ready {
             self.note(tr("Set up an AI first").to_owned());
             return Task::none();
         }
-        let dialog = self.ask_task(id);
-        if self.menu != Some(Menu::Task) {
-            return dialog;
+        if self.ai_fill(Menu::Task).ok().as_deref() != Some(id) {
+            return Task::none();
         }
+        if self.lists.is_none() {
+            self.ai_suggesting = Some(Suggesting::Waiting(id.to_owned()));
+            return Task::none();
+        }
+        self.ask_for_task(id)
+    }
+
+    /// Asks the AI for a task of the entry `id`, offering it the names of the dialog's lists (none
+    /// when they could not be read).
+    fn ask_for_task(&mut self, id: &str) -> Task<Message> {
+        let lists: Vec<String> = match &self.lists {
+            Some(Ok(lists)) => lists.iter().map(|list| list.name.clone()).collect(),
+            _ => Vec::new(),
+        };
         self.ai_suggesting = Some(Suggesting::Asking(id.to_owned()));
         #[cfg(test)]
         self.sent.push(Sent::SuggestTask(id.to_owned()));
         let (inbox, asked, id) = (self.inbox.clone(), id.to_owned(), id.to_owned());
-        let suggested = Task::perform(
-            async move { inbox.suggest_task(asked).await.map_err(|err| err.to_string()) },
+        Task::perform(
+            async move { inbox.suggest_task(asked, lists).await.map_err(|err| err.to_string()) },
             move |result| Message::TaskSuggested(id.clone(), result),
-        );
-        Task::batch([dialog, suggested])
+        )
     }
 
-    /// "AI event" (issue #120): the dialog of "Make event" for the entry `id` and the AI asked, as
-    /// [`App::suggest_task`] does.
+    /// "Fill in with AI" in the dialog of "Make event" (issue #120): the AI asked for the entry `id`,
+    /// as [`App::suggest_task`] does.
     fn suggest_event(&mut self, id: &str) -> Task<Message> {
         if !self.ai_ready {
             self.note(tr("Set up an AI first").to_owned());
             return Task::none();
         }
-        let dialog = self.ask_event(id);
-        if self.menu != Some(Menu::Event) {
-            return dialog;
+        if self.ai_fill(Menu::Event).ok().as_deref() != Some(id) {
+            return Task::none();
         }
         self.ai_suggesting = Some(Suggesting::Asking(id.to_owned()));
         #[cfg(test)]
         self.sent.push(Sent::SuggestEvent(id.to_owned()));
         let (inbox, asked, id) = (self.inbox.clone(), id.to_owned(), id.to_owned());
-        let suggested = Task::perform(
-            async move { inbox.suggest_event(asked).await.map_err(|err| err.to_string()) },
-            move |result| Message::EventSuggested(id.clone(), result),
-        );
-        Task::batch([dialog, suggested])
+        Task::perform(async move { inbox.suggest_event(asked).await.map_err(|err| err.to_string()) }, move |result| {
+            Message::EventSuggested(id.clone(), result)
+        })
+    }
+
+    /// "Fill in with AI" in the head of the dialog `menu` (issue #120): the sparkles with their word,
+    /// sending what [`App::suggest_task`] / [`App::suggest_event`] takes; off while it cannot ask
+    /// ([`App::ai_fill`]), with the reason as tooltip where there is one.
+    fn ai_fill_button(&self, menu: Menu) -> Element<'_, Message> {
+        let fill = self.ai_fill(menu);
+        let press = fill.as_ref().ok().map(|id| match menu {
+            Menu::Event => Message::SuggestEvent(id.clone()),
+            _ => Message::SuggestTask(id.clone()),
+        });
+        let button = widgets::text_button(Some(Icon::Sparkles), tr("Fill in with AI"), style::button::ghost, press);
+        match fill {
+            Err(Some(why)) => widgets::with_tooltip(button, why),
+            _ => button,
+        }
     }
 
     /// Whether the AI's answer for the entry `id` still has its dialog: the one asked for is open.
@@ -5881,8 +5915,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.menu == Some(menu) && self.ai_suggesting == Some(Suggesting::Asking(id.to_owned()))
     }
 
-    /// The AI's task for the entry `id` into the open dialog (issue #120): title, due day and note;
-    /// the line under the title says to check it. An answer for a dialog closed or opened anew
+    /// The AI's task for the entry `id` into the open dialog (issue #120): title, due day (none when
+    /// the text names none), note and – when it named one of the dialog's lists – that list; the
+    /// line under the title says to check it. An answer for a dialog closed or opened anew
     /// meanwhile is dropped. Without one, the line says why and the dialog stays as it is.
     fn take_task_suggestion(&mut self, id: &str, result: Result<TaskSuggestion, String>) {
         if !self.awaits(id, Menu::Task) {
@@ -5893,6 +5928,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.task.title = suggestion.title;
                 self.task.due = ai::due_of(suggestion.due).map_or(Due::None, |day| Due::of_day(day, self.now));
                 self.task.notes = suggestion.notes.unwrap_or_default();
+                let named = |list: &&TaskList| suggestion.list.as_ref() == Some(&list.name);
+                if let Some(Ok(lists)) = &self.lists
+                    && let Some(list) = lists.iter().find(named)
+                {
+                    self.task.list = Some(list.clone());
+                }
                 self.ai_suggesting = Some(Suggesting::Done);
             }
             Err(err) => self.ai_suggesting = Some(Suggesting::Failed(err)),
@@ -5926,7 +5967,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// check –, or why it gave nothing. `None` for a dialog opened without it.
     fn suggesting_line(&self) -> Option<Element<'_, Message>> {
         let (text, error) = match self.ai_suggesting.as_ref()? {
-            Suggesting::Asking(_) => (tr("Asking your AI…").to_owned(), false),
+            Suggesting::Waiting(_) | Suggesting::Asking(_) => (tr("Asking your AI…").to_owned(), false),
             Suggesting::Done => (tr("Suggested by your AI. Check it before you create it.").to_owned(), false),
             Suggesting::Failed(why) => (trf("No suggestion: {why}", &[("why", why)]), true),
         };
@@ -6279,20 +6320,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         ui_state::save_task(INBOX, UiState { sidebar: self.sidebar })
     }
 
-    /// "Compact | Comfortable" (task E8.2): the window shows its entries in `density` from now on,
-    /// and remembers it for its key ([`Launch::density_key`]) for the next start – not in the
-    /// demo, which stores nothing.
-    fn set_density(&mut self, density: Density) -> Task<Message> {
-        self.density = Some(density);
-        if self.launch.demo {
-            return Task::none();
-        }
-        ui_state::save_density_task(INBOX, self.launch.density_key(), density)
-    }
-
     /// "Newest first | Oldest first" (task E8.15): the window lists in `order` from now on – asked
     /// anew, since a folder's next pages and an entry list's `limit` follow the order –, and
-    /// remembers it for its key ([`Launch::density_key`]) – not in the demo, which stores nothing.
+    /// remembers it for its key ([`Launch::window_key`]) – not in the demo, which stores nothing.
     fn set_order(&mut self, order: Order) -> Task<Message> {
         self.order = order;
         self.order_chosen = true;
@@ -6301,7 +6331,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.launch.demo {
             return load;
         }
-        Task::batch([load, ui_state::save_order_task(INBOX, self.launch.density_key(), order)])
+        Task::batch([load, ui_state::save_order_task(INBOX, self.launch.window_key(), order)])
     }
 
     /// Whether the header offers "Newest first | Oldest first" (task E8.15): where the window lists
@@ -6311,11 +6341,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         !self.is_hub() && self.view != View::Invitations
     }
 
-    /// The density the window shows its entries in (task E8.2): the one chosen (`--density`, the
-    /// switch, `ui.json`), else the layout's ([`Density::default_for`]: compact when narrow).
-    /// Mini and strip are glances and ignore it.
+    /// The density the window shows its entries in (task E13.2): the active design's, the same in
+    /// every window of the suite and in every size class. Mini and strip are glances and ignore it.
     pub fn density(&self) -> Density {
-        self.density.unwrap_or_else(|| Density::default_for(self.class()))
+        self.density
     }
 
     /// How the lists draw mail (task E8.3): cards in the comfortable density of the mail window –
@@ -6408,7 +6437,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// message, which the reader shows without its entry.
     fn reader_entry(&self) -> Option<mail::ReaderEntry<'_>> {
         let item = self.detail.as_ref().filter(|_| !self.view.is_mail())?;
-        Some(mail::ReaderEntry { item, hide: self.hidable(item), ai: self.ai_ready })
+        Some(mail::ReaderEntry { item, hide: self.hidable(item) })
     }
 
     /// Which bars a mail in the panel has in `class` (task E11.4, [`mail::Bars`]): the mail window's
@@ -6755,7 +6784,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     deciding: self.deciding.is_some(),
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
-                    ai: self.ai_ready,
                     // A mail's switches and "Copy text" in the footer, as in the reader's foot
                     // (task E9.4).
                     view: self.reading().map(|reading| reading.view_tools()),
@@ -6817,16 +6845,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 chosen,
             ));
         }
-        // "Compact | Comfortable" in every window kind (task E8.2), with its words where there is
-        // room: wide, and medium unless "Mail | Notifications" or "By app | By time" takes the room;
-        // narrow icons only.
-        let words = class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange);
-        // "Newest first | Oldest first" (task E8.15) where the window lists by arrival, with its word
-        // where the density switch has its words.
+        // "Newest first | Oldest first" (task E8.15) where the window lists by arrival.
         if self.orderable() {
-            trailing.push(order_button(self.order, words));
+            trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
         }
-        trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
         // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
         // layout; off while nothing can be dismissed.
         if self.is_board() && self.view == View::Overview {
@@ -7111,7 +7133,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             hidable: self.items.iter().filter(|item| self.hidable(item)).map(|item| item.id.as_str()).collect(),
             look: self.look(),
             folders: &self.folders,
-            ai: self.ai_ready,
             edge_strip: self.edge_strip(),
         }
     }
@@ -7684,11 +7705,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         widgets::popover(widgets::section_title(tr("Later until")), title, rows, actions)
     }
 
-    /// The dialog of "Make task" as a floating card at the entry (the shape of `widgets::popover`,
-    /// whose title is text only; here the title is the field): "Make task" over the title field,
-    /// the list and the due day as properties, and at the right "Cancel" and "Create task" (off
-    /// until a list is chosen). The list row says so while the lists load, when there are none and
-    /// when they could not be read.
+    /// The dialog of "Make task" as a floating card at the entry, [`DIALOG_WIDTH`] wide (the shape of
+    /// `widgets::popover`, whose title is text only; here the title is the field): "Make task" with
+    /// "Fill in with AI" at the right ([`App::ai_fill_button`]) over the title field, the list, the
+    /// due day and the note as properties, and at the right "Cancel" and "Create task" (off until a
+    /// list is chosen). The list row says so while the lists load, when there are none and when they
+    /// could not be read.
     fn task_dialog(&self) -> Element<'_, Message> {
         let inset = Padding::new(0.0).left(space::s()).right(space::s());
         let title = text_input(tr("Task title"), &self.task.title)
@@ -7709,15 +7731,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         };
         // A folder's message asks for its due day as an entry does (task E8.1b).
         let due = choice(self.task.due.offered(), Some(self.task.due), Message::TaskDue);
-        let mut rows = column![
+        // The note always (issue #120): the AI writes one there, the person may too.
+        let notes = dialog_field(tr("Notes"), &self.task.notes, Message::TaskNotes);
+        let rows = column![
             widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None),
             widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None),
+            widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None),
         ];
-        // The AI's note (issue #120), only where it filled in the dialog or one is kept.
-        if self.ai_suggesting.is_some() || !self.task.notes.is_empty() {
-            let notes = dialog_field(tr("Notes"), &self.task.notes, Message::TaskNotes);
-            rows = rows.push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
-        }
         let create = self.task.list.is_some().then_some(Message::TaskConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -7729,23 +7749,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The field inside the same inset as the rows and the line (task E8.12, finding 7): its
         // edges in line with theirs.
         let card = column![
-            container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::xs())),
-            container(title).padding(inset.bottom(space::s())),
+            container(dialog_head(tr("Make task"), self.ai_fill_button(Menu::Task))).padding(inset.bottom(space::s())),
+            container(title).padding(inset.bottom(space::m())),
             self.suggesting_line().map(|line| container(line).padding(inset.bottom(space::s()))),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
                 .padding(inset.top(space::m())),
         ];
-        container(card)
-            .width(widgets::POPOVER_WIDTH)
-            .padding([space::l(), space::s()])
-            .style(style::container::popover)
-            .into()
+        container(card).width(DIALOG_WIDTH).padding([space::l(), space::m()]).style(style::container::popover).into()
     }
 
     /// The dialog of "Make event" (task E8.5b) as a floating card at the entry, built as the one of
-    /// "Make task": "Make event" over the title field, the calendar, the day (with previous / next,
+    /// "Make task" – "Fill in with AI" in its head too –: "Make event" over the title field, the calendar, the day (with previous / next,
     /// as the picker), the start and the duration as properties, and at the right "Cancel" and
     /// "Create event" (off until a calendar is chosen). The calendar row says so while the calendars
     /// load, when there are none and when they could not be read.
@@ -7785,15 +7801,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             widgets::prop_line(tr("Starts"), Some(Mark::Icon(Icon::CalendarClock)), start, None),
             widgets::prop_line(tr("Duration"), Some(Mark::Icon(Icon::Clock)), length, None),
         ];
-        // The AI's place and who takes part (issue #120), only where it filled in the dialog or one
-        // is kept.
-        if self.ai_suggesting.is_some() || !self.event.location.is_empty() || !self.event.notes.is_empty() {
-            let place = dialog_field(tr("Location"), &self.event.location, Message::EventLocation);
-            let notes = dialog_field(tr("Notes"), &self.event.notes, Message::EventNotes);
-            rows = rows
-                .push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), place, None))
-                .push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
-        }
+        // Place and note always (issue #120): the AI fills them in, the person may too.
+        let place = dialog_field(tr("Location"), &self.event.location, Message::EventLocation);
+        let notes = dialog_field(tr("Notes"), &self.event.notes, Message::EventNotes);
+        rows = rows
+            .push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), place, None))
+            .push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
         let create = self.event.calendar.is_some().then_some(Message::EventConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -7804,19 +7817,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         .align_y(Alignment::Center);
         // The field inside the same inset as the rows and the line (task E8.12, finding 7).
         let card = column![
-            container(widgets::section_title(tr("Make event"))).padding(inset.bottom(space::xs())),
-            container(title).padding(inset.bottom(space::s())),
+            container(dialog_head(tr("Make event"), self.ai_fill_button(Menu::Event)))
+                .padding(inset.bottom(space::s())),
+            container(title).padding(inset.bottom(space::m())),
             self.suggesting_line().map(|line| container(line).padding(inset.bottom(space::s()))),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
                 .padding(inset.top(space::m())),
         ];
-        container(card)
-            .width(widgets::POPOVER_WIDTH)
-            .padding([space::l(), space::s()])
-            .style(style::container::popover)
-            .into()
+        container(card).width(DIALOG_WIDTH).padding([space::l(), space::m()]).style(style::container::popover).into()
     }
 
     fn toggle_menu(&mut self, menu: Menu) {
@@ -7892,8 +7902,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     // The demo has an AI; its answer to "is one set up?" may come after this.
                     self.ai_ready = self.launch.open != Some(Open::NoAi);
                     match self.launch.open {
-                        Some(Open::AiTask) => return self.suggest_task(&item.id),
-                        Some(Open::AiEvent) => return self.suggest_event(&item.id),
+                        Some(Open::AiTask) => {
+                            let dialog = self.ask_task(&item.id);
+                            return Task::batch([dialog, self.suggest_task(&item.id)]);
+                        }
+                        Some(Open::AiEvent) => {
+                            let dialog = self.ask_event(&item.id);
+                            return Task::batch([dialog, self.suggest_event(&item.id)]);
+                        }
                         _ => {}
                     }
                 }
@@ -8146,6 +8162,16 @@ fn mute_menu_width(choices: &[Choice], leaves: bool) -> f32 {
     choice_menu_width(choices).max(segments.ceil()).max(rules).min(size::panel())
 }
 
+/// Whether the order button carries its word beside its icon (task E13.2): in the wide layout, and
+/// in the medium one unless "Mail | Notifications" (`choose_column`) or "By app | By time"
+/// (`arrange`) already takes that room; narrower headers show the icon with a tooltip.
+///
+/// This was the rule of the density switch beside it (task E8.2); with the switch gone (task E13.2)
+/// the order button owns it.
+fn order_words(class: SizeClass, choose_column: bool, arrange: bool) -> bool {
+    class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange)
+}
+
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
 /// now ("Newest first", "Oldest first"), the word beside the icon with `words`, else as tooltip; a
 /// click turns it.
@@ -8294,6 +8320,19 @@ fn filled(text: &str) -> Option<String> {
     Some(text.trim().to_owned()).filter(|text| !text.is_empty())
 }
 
+/// How wide the dialogs of "Make task" and "Make event" are: wider than a popover
+/// (`widgets::POPOVER_WIDTH`), so the title, the note and the head with "Fill in with AI" have room.
+const DIALOG_WIDTH: f32 = 440.0;
+
+/// The head of a dialog of "Make task" or "Make event": its `title` at the left, `action` ("Fill in
+/// with AI") at the right.
+fn dialog_head<'a>(title: &str, action: Element<'a, Message>) -> Element<'a, Message> {
+    row![widgets::section_title(title), iced::widget::space::horizontal(), action]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
 /// A one-line field of a dialog in the suite's look: placeholder `hint`, `value`, `on_input`.
 fn dialog_field<'a>(hint: &'a str, value: &'a str, on_input: fn(String) -> Message) -> Element<'a, Message> {
     text_input(hint, value)
@@ -8427,6 +8466,8 @@ fn failure_line(failure: &Failure) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use chrono::TimeZone;
     use iced::futures::executor::block_on;
     use torro_inbox::demo::DemoSource;
@@ -8447,7 +8488,16 @@ mod tests {
     fn demo(words: &[&str]) -> App<DemoSource> {
         let launch = Launch::parse(&args(words)).expect("valid parameters");
         let inbox = Arc::new(DemoSource::new(launch.start()));
-        App::new(inbox, Source::from_args(args(&["--demo"])), launch).0
+        pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0)
+    }
+
+    /// `app` with its density pinned to `Compact` (task E13.2). The density comes from the design,
+    /// and all tests of this binary share the one design of the process, so a test that switches it
+    /// (see `the_density_follows_the_design`) would otherwise reach the tests beside it. Every
+    /// helper that builds an app goes through here; a test that wants cards sets the field itself.
+    fn pinned<S>(mut app: App<S>) -> App<S> {
+        app.density = Density::Compact;
+        app
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
@@ -8523,10 +8573,17 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
     }
 
+    /// The design of a process is one global (`torro_gui::design::set`) and Rust runs the tests of
+    /// a binary in threads of one process, so two tests that switch it would overwrite each other's
+    /// pack. Every test that switches the design takes this lock first (task E13.2). A poisoned
+    /// lock is taken anyway: the panic of another test is reported by that test, not by this one.
+    static DESIGN: Mutex<()> = Mutex::new(());
+
     /// The message "design changed" (task L.3): the stored setting arrives and the window draws
     /// with that pack from the next frame; a broken one gives the standard.
     #[test]
     fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("temp dir");
         // The standard's values under another id, so the tests beside this one see the same tokens.
         for (id, toml) in [
@@ -8544,6 +8601,38 @@ mod tests {
         let _ = app.view();
         let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
         assert!(design::active().is_standard(), "a broken pack is never drawn");
+    }
+
+    /// Task E13.2: the window takes its density from the active design – at start, and again when
+    /// another design arrives. Holds [`DESIGN`] while a pack with cards is active and puts the
+    /// standard back at the end, because every other test expects "Torro".
+    #[test]
+    fn the_density_follows_the_design() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[layout]\ndensity = \"comfortable\"\n";
+        std::fs::create_dir_all(dir.path().join("roomy")).expect("pack folder");
+        std::fs::write(dir.path().join("roomy").join("design.toml"), toml).expect("design.toml");
+
+        let mut app = loaded(&["--view", "mail"]);
+        assert_eq!(app.density(), Density::Compact, "the standard design \"Torro\" shows rows");
+        app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        let _ = app.update(Message::Design(design::Message::Stored(Ok("roomy".into()))));
+        assert_eq!(design::active().id, "roomy");
+        assert_eq!(app.density(), Density::Comfortable, "the pack asks for cards, so the window draws cards");
+        assert_eq!(app.look(), Look::Cards);
+        let _ = app.view();
+
+        // A window that starts while the pack is active comes up with cards: this is the only
+        // proof that `App::new` reads `layout::density()`, since `demo` pins the field afterwards.
+        let launch = Launch::parse(&args(&["--demo", "--view", "mail"])).expect("valid parameters");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let fresh = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        assert_eq!(fresh.density(), Density::Comfortable, "the start reads the design, not a default");
+
+        // Back to the standard: the tests of this binary share the one design of the process.
+        design::set(torro_core::design::Design::standard());
+        assert_eq!(layout::density(), Density::Compact);
     }
 
     #[test]
@@ -8596,25 +8685,22 @@ mod tests {
         assert_eq!((launch.kind, launch.view), (Kind::Mail, Some(View::Info)));
     }
 
-    /// Task E8.2: `--density` is read, an unknown one refused with the valid ones (exit 64).
+    /// Task E13.2: `--density` is gone. An old workspace template that still stores it starts the
+    /// window as if it were not there – `Launch::parse` leaves words it does not know alone, so a
+    /// stored command line never keeps a window from opening.
     #[test]
-    fn density_is_read_from_the_command_line() {
-        let density = |words: &[&str]| Launch::parse(&args(words)).map(|launch| launch.density);
-        assert_eq!(density(&[]), Ok(None), "without it the window takes what it remembers");
-        assert_eq!(density(&["--density", "compact"]), Ok(Some(Density::Compact)));
-        assert_eq!(density(&["--view", "mail", "--density=comfortable"]), Ok(Some(Density::Comfortable)));
-        assert_eq!(density(&["--density"]), Err(LaunchError::MissingValue("--density")));
-        let refused = density(&["--density", "cozy"]).expect_err("not a density");
-        assert_eq!(
-            refused,
-            LaunchError::UnknownValue { flag: "--density", value: "cozy".into(), valid: "compact, comfortable".into() }
-        );
+    fn an_old_density_flag_is_ignored() {
+        let launch = Launch::parse(&args(&["--density", "comfortable", "--view", "mail"])).expect("valid");
+        assert_eq!((launch.kind, launch.window_key()), (Kind::Mail, "mail".to_owned()));
+        let launch = Launch::parse(&args(&["--density=cozy"])).expect("not a word of ours, so not ours to refuse");
+        assert_eq!(launch.kind, Kind::Hub);
     }
 
-    /// Task E8.2: every window kind and every window per slice has a key of its own in `ui.json`.
+    /// Task E8.2, renamed in E13.2: every window kind and every window per slice has a key of its
+    /// own in `ui.json` – for its order and its divider, since the density left (task E13.2).
     #[test]
-    fn every_window_remembers_its_density_under_its_own_key() {
-        let key = |words: &[&str]| Launch::parse(&args(words)).expect("valid").density_key();
+    fn every_window_remembers_its_state_under_its_own_key() {
+        let key = |words: &[&str]| Launch::parse(&args(words)).expect("valid").window_key();
         assert_eq!(key(&[]), "hub");
         assert_eq!(key(&["--view", "mail"]), "mail");
         assert_eq!(key(&["--view", "notifications"]), "notifications");
@@ -8625,43 +8711,34 @@ mod tests {
             key(&["--view", "notifications", "--source", "agent:claude-code"]),
             "notifications/source:agent:claude-code"
         );
-        assert_eq!(key(&["--density", "compact", "--view", "mail"]), "mail", "the density is no part of its key");
     }
 
-    /// Task E8.2: `--density` wins over `ui.json`, which wins over the layout's default; the switch
-    /// changes it in any case.
+    /// Task E13.2: the density is the design's in every size class – the old rule "compact when
+    /// narrow" is gone, because a design decides as plainly as a person did. The header bar of
+    /// every window kind draws without the switch; that no view can ask for it any more is the
+    /// compiler's doing (`Message` has no `SetDensity`).
     #[test]
-    fn density_follows_the_command_line_then_ui_json_then_the_layout() {
-        let mut app = demo(&["--demo", "--view", "mail", "--density", "compact"]);
-        let _ = app.update(Message::Resized(WIDE));
-        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
-        assert_eq!(app.density(), Density::Compact, "the command line wins over ui.json");
-        let _ = app.update(Message::SetDensity(Density::Comfortable));
-        assert_eq!(app.density(), Density::Comfortable, "the switch changes it");
-
-        let mut app = demo(&["--demo", "--view", "mail"]);
-        let _ = app.update(Message::Resized(WIDE));
-        assert_eq!(app.density(), Density::Comfortable, "nothing chosen: comfortable in the wide layout");
-        let _ = app.update(Message::Resized(NARROW));
-        assert_eq!(app.density(), Density::Compact, "nothing chosen: compact in the narrow one");
-        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
-        assert_eq!(app.density(), Density::Comfortable, "what ui.json remembers wins over the layout");
-        let _ = app.update(Message::SetDensity(Density::Compact));
-        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
-        assert_eq!(app.density(), Density::Compact, "a late answer of ui.json does not undo a choice");
-    }
-
-    /// Task E8.2: the switch is in the header bar of every window kind, in every size with a header.
-    #[test]
-    fn every_window_kind_draws_the_density_switch() {
+    fn every_window_kind_draws_in_the_density_of_the_design() {
         for kind in ["mail", "notifications", "hub"] {
-            for density in ["compact", "comfortable"] {
-                let mut app = demo(&["--demo", "--view", kind, "--density", density]);
-                for size in SIZES {
-                    let _ = app.update(Message::Resized(size));
-                    let _: Element<'_, Message> = app.view();
-                }
+            let mut app = demo(&["--demo", "--view", kind]);
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                assert_eq!(app.density(), Density::Compact, "{kind} at {size:?}: the standard design is compact");
+                let _: Element<'_, Message> = app.view();
             }
+        }
+    }
+
+    /// Task E13.2: the word of the order button follows the room left in the header – the rule the
+    /// density switch had beside it from E8.2 until E13.2 took the switch away.
+    #[test]
+    fn the_order_button_keeps_its_word_where_there_is_room() {
+        assert!(order_words(SizeClass::Wide, true, true), "the wide header always has room");
+        assert!(order_words(SizeClass::Medium, false, false));
+        assert!(!order_words(SizeClass::Medium, true, false), "\"Mail | Notifications\" takes it");
+        assert!(!order_words(SizeClass::Medium, false, true), "\"By app | By time\" takes it");
+        for class in [SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+            assert!(!order_words(class, false, false), "{class:?}: the icon with a tooltip");
         }
     }
 
@@ -8686,7 +8763,7 @@ mod tests {
     fn a_restored_mail_window_is_a_mail_window_again() {
         let stored = AppId::INBOX_MAIL.command("/usr/bin/torroinbox");
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.launch.kind.app().window_class, "torro-inbox-mail");
         assert_eq!((app.view.clone(), app.column), (View::Overview, Column::Mail));
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("For me"))]), "its overview is \"For me\"");
@@ -8698,13 +8775,13 @@ mod tests {
     fn a_restored_command_line_starts_on_its_view() {
         let stored = args(&["/usr/bin/torroinbox", "--lane", "info"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.view, View::Info);
         assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Info"))]));
 
         let stored = args(&["/usr/bin/torroinbox", "--source", "agent:claude-code"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.view, View::Source(SourceRef::agent("claude-code")));
     }
 
@@ -9020,7 +9097,7 @@ mod tests {
     #[test]
     fn without_the_demo_the_inbox_is_empty() {
         let launch = Launch::default();
-        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         assert!(app.loaded && app.items.is_empty() && app.for_me.is_empty());
         assert_eq!(app.nav_entries().0[0].trail(), Trail::None, "no 0 beside For me");
@@ -10121,28 +10198,51 @@ mod tests {
     // ----- Make event and quiet (task E8.5b) --------------------------------------------------
 
     /// The demo's calendars, handed to `update` as the task of the dialog would.
-    /// Issue #120: "AI task" opens the dialog of "Make task" while the AI is asked, fills it in with
-    /// the suggestion, and "Create task" sends its note too; nothing is saved before.
+    /// Issue #120: "Task" opens the dialog of "Make task"; its "Fill in with AI" asks the AI once the
+    /// lists are in, with their names, fills in title, due day, note and the list it picked, and
+    /// "Create task" sends the note too; nothing is saved before.
     #[test]
-    fn ai_task_fills_the_dialog_and_creates_the_task_with_its_note() {
+    fn fill_in_with_ai_fills_the_dialog_and_creates_the_task_with_its_note() {
         let mut app = at("demo-6");
         let _ = app.update(Message::AiReady(true));
+        let _ = press(&mut app, Key::T);
+        assert_eq!((app.menu, app.ai_suggesting.clone()), (Some(Menu::Task), None), "Task opens it plain");
+        assert!(app.sent.contains(&Sent::Lists), "the lists are asked for");
         let _ = app.update(Message::SuggestTask("demo-6".into()));
-        assert_eq!(
-            (app.menu, app.ai_suggesting.clone()),
-            (Some(Menu::Task), Some(Suggesting::Asking("demo-6".into())))
-        );
-        assert_eq!(app.sent.last(), Some(&Sent::SuggestTask("demo-6".into())));
-        assert!(app.sent.contains(&Sent::Lists), "the lists are asked for as for Make task");
+        assert_eq!(app.ai_suggesting, Some(Suggesting::Waiting("demo-6".into())), "it waits for the lists");
+        assert!(!app.sent.contains(&Sent::SuggestTask("demo-6".into())));
         let lists = block_on(app.inbox.list_task_lists()).map_err(|err| err.to_string());
+        let names: Vec<String> = lists.iter().flatten().map(|list| list.name.clone()).collect();
         let _ = app.update(Message::TaskLists(lists));
-        let suggestion = block_on(app.inbox.suggest_task("demo-6".into())).expect("the demo's AI");
+        assert_eq!(app.ai_suggesting, Some(Suggesting::Asking("demo-6".into())));
+        assert_eq!(app.sent.last(), Some(&Sent::SuggestTask("demo-6".into())));
+        let _ = app.update(Message::SuggestTask("demo-6".into()));
+        assert_eq!(app.sent.iter().filter(|sent| matches!(sent, Sent::SuggestTask(_))).count(), 1, "asked once");
+        let suggestion = block_on(app.inbox.suggest_task("demo-6".into(), names.clone())).expect("the demo's AI");
         let due = ai::due_of(suggestion.due).expect("a day");
+        let picked = suggestion.list.clone().expect("the demo picks a list");
         let _ = app.update(Message::TaskSuggested("demo-6".into(), Ok(suggestion.clone())));
         assert_eq!(app.ai_suggesting, Some(Suggesting::Done));
         assert_eq!(app.task.title, suggestion.title);
         assert_eq!(app.task.due.day(app.now), Some(due), "the date the AI read");
         assert!(!app.task.notes.is_empty(), "the demo's note");
+        assert_eq!(app.task.list.as_ref().map(|list| list.name.clone()), Some(picked), "the list the AI picked");
+        let _ = app.view();
+        // A list it made up is none: the dialog keeps its own.
+        let kept = app.task.list.clone();
+        let mut made_up = suggestion.clone();
+        made_up.list = Some("Plumbing".into());
+        app.ai_suggesting = Some(Suggesting::Asking("demo-6".into()));
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Ok(made_up)));
+        assert_eq!(app.task.list, kept);
+        // No date in the text, no due day.
+        let mut undated = suggestion.clone();
+        undated.due = None;
+        app.ai_suggesting = Some(Suggesting::Asking("demo-6".into()));
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Ok(undated)));
+        assert_eq!(app.task.due, Due::None);
+        app.ai_suggesting = Some(Suggesting::Asking("demo-6".into()));
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Ok(suggestion.clone())));
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Task { .. })), "nothing saved yet");
         let _ = app.update(Message::TaskNotes("Bring the logs".into()));
         let _ = press(&mut app, Key::Enter);
@@ -10154,19 +10254,28 @@ mod tests {
         assert_eq!(app.ai_suggesting, None, "the dialog closed");
     }
 
-    /// Issue #120: without an AI the buttons are off; their message only says to set one up, and an
-    /// answer that comes after its dialog closed changes nothing.
+    /// Issue #120: without an AI "Fill in with AI" is off and says why; its message only says to set
+    /// one up, and an answer that comes after its dialog closed changes nothing. Without a dialog
+    /// open for the entry nothing is asked.
     #[test]
     fn without_an_ai_nothing_is_asked_and_late_answers_are_dropped() {
         let mut app = at("demo-6");
         let _ = app.update(Message::AiReady(false));
+        let _ = press(&mut app, Key::C);
+        assert_eq!(app.ai_fill(Menu::Event), Err(Some(tr("Set up an AI first"))));
+        let _ = app.view();
         let _ = app.update(Message::SuggestEvent("demo-6".into()));
-        assert_eq!(app.menu, None);
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Set up an AI first")));
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::SuggestEvent(_))));
+        let _ = app.update(Message::CloseMenu);
 
         let _ = app.update(Message::AiReady(true));
         let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        assert_eq!((app.menu, app.ai_suggesting.clone()), (None, None), "no dialog: nothing asked");
+        let _ = press(&mut app, Key::C);
+        assert_eq!(app.ai_fill(Menu::Event), Ok("demo-6".into()));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        assert_eq!(app.ai_fill(Menu::Event), Err(None), "off while it asks");
         let _ = app.update(Message::CloseMenu);
         let late = block_on(app.inbox.suggest_event("demo-6".into())).map_err(|err| err.to_string());
         let _ = app.update(Message::EventSuggested("demo-6".into(), late));
@@ -10179,20 +10288,24 @@ mod tests {
         assert_eq!((app.ai_suggesting.clone(), app.event.title.clone()), (None, title));
         // An AI that fails says why in the dialog, which stays.
         let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::T);
+        let lists = block_on(app.inbox.list_task_lists()).map_err(|err| err.to_string());
+        let _ = app.update(Message::TaskLists(lists));
         let _ = app.update(Message::SuggestTask("demo-6".into()));
         let _ = app.update(Message::TaskSuggested("demo-6".into(), Err("The AI server could not be reached.".into())));
         assert_eq!(app.ai_suggesting, Some(Suggesting::Failed("The AI server could not be reached.".into())));
         assert_eq!(app.menu, Some(Menu::Task));
     }
 
-    /// Issue #120: "AI event" fills in the day, start and length the AI read, the place and who
-    /// takes part, and "Create event" sends place and note.
+    /// Issue #120: "Fill in with AI" in the dialog of "Make event" fills in the day, start and length
+    /// the AI read, the place and who takes part, and "Create event" sends place and note.
     #[test]
-    fn ai_event_fills_the_dialog_with_its_time_and_place() {
+    fn fill_in_with_ai_fills_the_event_with_its_time_and_place() {
         let mut app = at("demo-6");
         let _ = app.update(Message::AiReady(true));
+        let _ = press(&mut app, Key::C);
         let _ = app.update(Message::SuggestEvent("demo-6".into()));
-        assert_eq!(app.menu, Some(Menu::Event));
+        assert_eq!((app.menu, app.sent.last()), (Some(Menu::Event), Some(&Sent::SuggestEvent("demo-6".into()))));
         let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
         let _ = app.update(Message::Calendars(calendars));
         let suggestion = block_on(app.inbox.suggest_event("demo-6".into())).expect("the demo's AI");
@@ -10211,15 +10324,15 @@ mod tests {
         assert_eq!((location.as_deref(), end - from), (Some("Room 2"), TimeDelta::minutes(45)));
     }
 
-    /// Issue #120: `--open ai-task` opens the dialog the AI fills in, `--open no-ai` keeps the AI
-    /// buttons off whatever the demo answers.
+    /// Issue #120: `--open ai-task` opens the dialog the AI fills in, `--open no-ai` keeps "Fill in
+    /// with AI" off whatever the demo answers.
     #[test]
     fn the_ai_states_open_with_the_demo() {
         let mut app = demo(&["--demo", "--open", "ai-task", "--now", "2026-10-13T10:30"]);
         load(&mut app);
         assert!(app.ai_ready);
         assert_eq!(app.menu, Some(Menu::Task));
-        assert!(matches!(app.ai_suggesting, Some(Suggesting::Asking(_))));
+        assert!(matches!(app.ai_suggesting, Some(Suggesting::Waiting(_))), "until the lists are in");
         let mut off = demo(&["--demo", "--open", "no-ai", "--now", "2026-10-13T10:30"]);
         load(&mut off);
         let _ = off.update(Message::AiReady(true));
@@ -10442,7 +10555,7 @@ mod tests {
     #[test]
     fn without_a_mail_account_the_window_of_mail_says_so() {
         let launch = Launch::parse(&args(&["--source", "mail"])).expect("valid parameters");
-        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         assert_eq!(app.view, View::Mail, "nothing to start on");
         assert!(app.loaded && app.folders.is_empty());
@@ -11537,9 +11650,12 @@ mod tests {
         assert_eq!(ids(&notices), ["demo-11"], "other windows keep all of Done");
     }
 
+    /// Task E13.2: with cards, because the heights this walks through are the cards' – under the
+    /// standard design the hub draws rows, so the card geometry needs asking for.
     #[test]
     fn moving_in_act_now_scrolls_it() {
         let mut app = overview_at(&[]);
+        app.density = Density::Comfortable;
         let sections = hub::Sections::of(&app.items, None);
         let tiles = hub::tiles(&app.items).len();
         let (_, first) = hub::span(&sections, tiles, app.hub_layout(), "demo-3").expect("the approval");
@@ -11640,34 +11756,44 @@ mod tests {
         assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-14")), "the first card");
     }
 
+    /// Task E13.2: both densities, since the hub's overview draws cards in the comfortable one
+    /// (`hub::layout`) and rows in the compact one – the standard design gives every other test
+    /// the compact path, so the cards need asking for here.
     #[test]
     fn the_overview_builds_in_every_size_with_panel_menus_and_cards() {
         for open in
             [&["--open", "overview"][..], &["--open", "overview-info"], &["--open", "detail"], &["--open", "empty"]]
         {
-            let mut app = overview_at(open);
-            for size in SIZES {
-                let _ = app.update(Message::Resized(size));
-                let _ = app.view();
-                let _ = press(&mut app, Key::Down);
-                let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
-                let _ = app.view();
-                let _ = app.update(Message::CloseMenu);
-                let _ = app.update(Message::ShowDrawer);
-                let _ = app.view();
-                let _ = app.update(Message::CloseMenu);
-                let _ = app.update(Message::Select("demo-3".into()));
-                let _ = app.view();
-                let _ = app.update(Message::CloseDetail);
+            for density in [Density::Compact, Density::Comfortable] {
+                let mut app = overview_at(open);
+                app.density = density;
+                for size in SIZES {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.view();
+                    let _ = press(&mut app, Key::Down);
+                    let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseMenu);
+                    let _ = app.update(Message::ShowDrawer);
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseMenu);
+                    let _ = app.update(Message::Select("demo-3".into()));
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseDetail);
+                }
             }
         }
     }
 
     /// The mail window at the demo's fixed time in `density`, loaded on its start view ("For me").
-    fn mail_window(density: &str, more: &[&str]) -> App<DemoSource> {
-        let mut words = vec!["--view", "mail", "--density", density];
+    /// Task E13.2: the density is no longer a parameter of the window, so it is set on the built
+    /// app instead of passed as `--density`.
+    fn mail_window(density: Density, more: &[&str]) -> App<DemoSource> {
+        let mut words = vec!["--view", "mail"];
         words.extend_from_slice(more);
-        overview_at(&words)
+        let mut app = overview_at(&words);
+        app.density = density;
+        app
     }
 
     /// Task E11.2: the mail window's rows carry the strip from edge to edge, its search field spans
@@ -11676,7 +11802,7 @@ mod tests {
     #[test]
     fn the_mail_window_has_the_edge_strip_and_the_hub_its_buttons() {
         let anchors = detail::Anchors::default();
-        let mut mail = mail_window("compact", &[]);
+        let mut mail = mail_window(Density::Compact, &[]);
         assert!(mail.rows_data(&anchors).edge_strip && mail.edge_strip());
         assert!(!mail.sidebar_search(), "the field over the list is the search");
         let hub = overview_at(&["--view", "hub"]);
@@ -11694,7 +11820,7 @@ mod tests {
     /// Task E8.3: the mail window lists, counts and walks mail alone, in every view of its sidebar.
     #[test]
     fn the_mail_window_shows_mail_only() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         assert!(!app.items.is_empty());
         for view in [View::Overview, View::Info, View::Snoozed, View::Done] {
             let _ = app.update(Message::Show(view.clone()));
@@ -11711,7 +11837,7 @@ mod tests {
     /// "For me" is the window's overview.
     #[test]
     fn the_mail_windows_sidebar_lists_its_views_smart_views_and_folders() {
-        let app = mail_window("comfortable", &[]);
+        let app = mail_window(Density::Comfortable, &[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
         assert_eq!(labels, [tr("For me"), tr("Info"), tr("Later"), tr("Done")]);
@@ -11722,7 +11848,7 @@ mod tests {
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
         assert!(overview_at(&["--view", "hub"]).smart_entries().is_empty(), "smart views are the mail window's");
         for size in SIZES {
-            let mut app = mail_window("comfortable", &["--open", "menu"]);
+            let mut app = mail_window(Density::Comfortable, &["--open", "menu"]);
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
@@ -11732,16 +11858,17 @@ mod tests {
     /// every layout (their words follow the room, `list::spoken`), the wide cards beside the reader.
     #[test]
     fn comfortable_mail_is_cards_and_everything_else_rows() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Resized(WIDE));
         assert_eq!(app.look(), Look::Cards);
         assert_eq!(app.card_width(), size::list() - list::cards_side(), "the list beside the reader");
         let _ = app.update(Message::Resized(NARROW));
         assert_eq!(app.look(), Look::Cards);
         assert_eq!(app.card_width(), NARROW.width - list::cards_side(), "the window's width");
-        let compact = mail_window("compact", &[]);
+        let compact = mail_window(Density::Compact, &[]);
         assert_eq!(compact.look(), Look::Rows);
-        let hub = overview_at(&["--view", "hub", "--density", "comfortable"]);
+        let mut hub = overview_at(&["--view", "hub"]);
+        hub.density = Density::Comfortable;
         assert_eq!(hub.look(), Look::Rows, "the hub's cards come with E8.5");
     }
 
@@ -11751,14 +11878,14 @@ mod tests {
     fn the_mail_list_fills_the_window_without_a_reader() {
         let medium = Size::new(1000.0, 700.0);
         let room = medium.width - shell::rail() - layout::inset();
-        for density in ["comfortable", "compact"] {
+        for density in [Density::Comfortable, Density::Compact] {
             let mut app = mail_window(density, &[]);
             let _ = app.update(Message::Resized(medium));
-            assert_eq!(app.list_cap(1), None, "{density}");
+            assert_eq!(app.list_cap(1), None, "{density:?}");
             assert!(room > overview::width(1), "a window where the cap would show");
             let _ = app.view();
         }
-        let mut cards = mail_window("comfortable", &[]);
+        let mut cards = mail_window(Density::Comfortable, &[]);
         let _ = cards.update(Message::Resized(medium));
         assert_eq!(cards.card_width(), room - list::cards_side(), "the cards take the whole room");
         let hub = overview_at(&["--view", "hub"]);
@@ -11770,7 +11897,7 @@ mod tests {
     /// default, and what `ui.json` remembers counts only until the person drags.
     #[test]
     fn the_divider_drags_the_list_width() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Resized(WIDE));
         let limits = app.split_limits();
         assert_eq!(app.split.width(limits), size::list(), "the default");
@@ -11799,7 +11926,7 @@ mod tests {
     /// Task E8.3: the narrow comfortable "For me" leads with how many mails are new for the user.
     #[test]
     fn the_narrow_mail_window_says_how_many_are_new_for_you() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Resized(WIDE));
         assert_eq!(app.lead(), None, "only narrow");
         let _ = app.update(Message::Resized(NARROW));
@@ -11807,7 +11934,7 @@ mod tests {
         assert_eq!(count, app.for_me.len());
         assert!(senders.starts_with(tr("From {senders}").trim_end_matches("{senders}")), "{senders}");
         // Task E8.11 (finding 7): in both densities.
-        let mut compact = mail_window("compact", &[]);
+        let mut compact = mail_window(Density::Compact, &[]);
         let _ = compact.update(Message::Resized(NARROW));
         assert_eq!(compact.lead(), app.lead(), "compact leads the same");
         let _ = compact.update(Message::Resized(WIDE));
@@ -11822,15 +11949,15 @@ mod tests {
     /// with the empty state, so the list keeps its width; the panel and the other layouts have none.
     #[test]
     fn the_wide_mail_window_keeps_an_empty_reader() {
-        for density in ["comfortable", "compact"] {
+        for density in [Density::Comfortable, Density::Compact] {
             let mut app = mail_window(density, &[]);
             let _ = app.update(Message::Resized(WIDE));
             assert!(!app.panel_open());
-            assert!(app.empty_reader(SizeClass::Wide).is_some(), "{density}: the empty reader");
-            assert!(app.empty_reader(SizeClass::Medium).is_none(), "{density}: medium has no reader");
+            assert!(app.empty_reader(SizeClass::Wide).is_some(), "{density:?}: the empty reader");
+            assert!(app.empty_reader(SizeClass::Medium).is_none(), "{density:?}: medium has no reader");
             let _ = app.view();
         }
-        let mut open = mail_window("comfortable", &["--open", "mail-entry"]);
+        let mut open = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let _ = open.update(Message::Resized(WIDE));
         assert!(open.empty_reader(SizeClass::Wide).is_none(), "a mail is open");
         let hub = overview_at(&["--view", "hub"]);
@@ -11842,30 +11969,30 @@ mod tests {
     /// open, else at the row. Keys inside the open menu leave it where it is.
     #[test]
     fn a_menu_hangs_at_the_button_clicked() {
-        for density in ["compact", "comfortable"] {
+        for density in [Density::Compact, Density::Comfortable] {
             let mut app = mail_window(density, &["--open", "mail-entry"]);
             let _ = app.update(Message::Resized(WIDE));
             let entry = app.detail.as_ref().expect("the entry in the reader").id.clone();
             let _ = app.update(Message::Act(entry.clone(), Command::Snooze));
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density}: the row's");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density:?}: the row's");
             let _ = app.view();
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::AskSnooze(entry.clone()));
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: the reader's");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density:?}: the reader's");
             let _ = app.view();
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::Act(entry.clone(), Command::Hide));
             let _ = press(&mut app, Key::Down);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), false), "{density}: keys in the menu");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), false), "{density:?}: keys in the menu");
             let _ = app.update(Message::CloseMenu);
             let _ = press(&mut app, Key::S);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: s, reader open");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density:?}: s, reader open");
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::CloseDetail);
             let _ = app.update(Message::Select(entry.clone()));
             let _ = app.update(Message::CloseDetail);
             let _ = press(&mut app, Key::S);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density}: s at the row");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density:?}: s at the row");
             for size in SIZES {
                 let _ = app.update(Message::Resized(size));
                 let _ = app.view();
@@ -11878,7 +12005,7 @@ mod tests {
     /// Escape closes them as any menu, and no key acts behind them.
     #[test]
     fn the_readers_menus_open_at_their_cells_and_close_on_a_click() {
-        let mut app = mail_window("comfortable", &["--open", "mail-entry"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let _ = app.update(Message::Resized(WIDE));
         let entry = app.detail.as_ref().expect("the entry in the reader").id.clone();
         let id = app.wanted_letter().expect("its mail");
@@ -11913,7 +12040,7 @@ mod tests {
         assert!(app.menu.is_none() && app.detail.is_none(), "Close closes the reader");
         assert!(app.mail_menu(Menu::More).is_none(), "nothing to show without the mail");
         // The demo's states for pictures.
-        let more = mail_window("comfortable", &["--open", "mail-more"]);
+        let more = mail_window(Density::Comfortable, &["--open", "mail-more"]);
         assert_eq!((more.menu, more.menu_mail.as_deref()), (Some(Menu::More), Some("m:w1")));
         let mut reply = loaded(&["--open", "mail-reply"]);
         load(&mut reply);
@@ -11926,7 +12053,7 @@ mod tests {
     /// the ✕ stands in the panel's head. The hub and the App Feed keep the split of task E9.4.
     #[test]
     fn the_mail_windows_panel_has_the_readers_bars_and_the_hubs_its_own() {
-        let mut app = mail_window("compact", &["--open", "mail-entry"]);
+        let mut app = mail_window(Density::Compact, &["--open", "mail-entry"]);
         let entry = app.detail.as_ref().expect("a mail entry in the panel").id.clone();
         let id = app.wanted_letter().expect("its mail");
         deliver_letter(&mut app, &id);
@@ -11957,7 +12084,7 @@ mod tests {
         let words = app.mail_menu_sections(Menu::More).expect("the reader's \"…\"");
         assert!(words.iter().any(|s| s.items.iter().any(|i| i.label == tr("Close"))), "the reader closes from \"…\"");
         // A folder's message: the reader's bars without an entry.
-        let mut folder = mail_window("compact", &[]);
+        let mut folder = mail_window(Density::Compact, &[]);
         let inbox = folder_view(&folder, "f:work-inbox");
         let _ = folder.update(Message::Show(inbox));
         load(&mut folder);
@@ -12006,7 +12133,7 @@ mod tests {
     /// "For me", and `s` does the same on the message under the cursor.
     #[test]
     fn an_invitation_card_puts_off_and_hides_its_entry() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Show(View::Invitations));
         load(&mut app);
         let (message, entry) = app
@@ -12036,7 +12163,7 @@ mod tests {
     /// other layouts and windows keep the panel.
     #[test]
     fn the_wide_mail_window_reads_beside_the_list() {
-        let mut app = mail_window("comfortable", &["--open", "mail-entry"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let id = app.detail.as_ref().map(|item| item.id.clone()).expect("a mail entry in the panel");
         let _ = app.update(Message::Resized(WIDE));
         let anchors = detail::Anchors::default();
@@ -12048,7 +12175,7 @@ mod tests {
         let mut hub = overview_at(&["--view", "hub", "--open", "mail-entry"]);
         let _ = hub.update(Message::Resized(WIDE));
         assert!(hub.wide_reader(SizeClass::Wide, &anchors).is_none(), "the hub keeps its panel");
-        for density in ["comfortable", "compact"] {
+        for density in [Density::Comfortable, Density::Compact] {
             for open in ["mail-entry", "mail", "attachments", "overview"] {
                 let mut app = mail_window(density, &["--open", open]);
                 for size in SIZES {
@@ -12062,7 +12189,7 @@ mod tests {
     /// Task E8.3: the keys work in the mail window as before – on cards as on rows.
     #[test]
     fn the_keys_of_the_list_work_on_the_mail_windows_cards() {
-        let mut app = mail_window("comfortable", &["--open", "overview"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "overview"]);
         let first = cursor(&app).map(str::to_owned).expect("the cursor on the first mail");
         let _ = press(&mut app, Key::R);
         assert!(matches!(app.sent.last(), Some(Sent::Compose(args)) if args.contains(&"--reply".to_owned())), "r");
@@ -12085,7 +12212,7 @@ mod tests {
     /// Task E8.3: the smart view lists the messages with attachments of every account.
     #[test]
     fn with_attachments_lists_the_mail_with_attachments_of_every_account() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Show(View::Attachments));
         load(&mut app);
         assert!(!app.messages.is_empty());
@@ -12103,7 +12230,7 @@ mod tests {
     /// card and in the reader, also over later loads.
     #[test]
     fn invitations_are_listed_and_answered_once_at_a_time() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Show(View::Invitations));
         load(&mut app);
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Invitations"))]));
@@ -12141,10 +12268,10 @@ mod tests {
         let shown = app.messages.iter().find(|m| m.id == first.id).and_then(|m| m.invite.clone());
         assert_eq!(shown.and_then(|invite| invite.answered), Some(InvitationAnswer::Accept), "a failed answer is none");
         for size in SIZES {
-            let mut app = mail_window("comfortable", &["--open", "invitation"]);
+            let mut app = mail_window(Density::Comfortable, &["--open", "invitation"]);
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
-            let mut compact = mail_window("compact", &["--open", "invitation"]);
+            let mut compact = mail_window(Density::Compact, &["--open", "invitation"]);
             let _ = compact.update(Message::Resized(size));
             let _ = compact.view();
         }
@@ -12155,7 +12282,7 @@ mod tests {
     /// out leaves it open.
     #[test]
     fn answering_an_invitation_marks_its_entry_done() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let hike = app.items.iter().find(|item| item.id == "demo-mail-4").cloned().expect("Paul's mail");
         assert!(hike.invite.as_ref().is_some_and(|invite| invite.all_day), "the hike, all Saturday");
         let Some(Link::Mail { message }) = hike.link.clone() else { panic!("a mail entry links its mail") };
@@ -12175,7 +12302,7 @@ mod tests {
         let done = Sent::Edit(Edit::Done { id: hike.id.clone(), done: true }, Some(After { text, undo }));
         assert_eq!(app.sent.last(), Some(&done));
 
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::AnswerInvitation(hike.source.key(), message.clone(), InvitationAnswer::Tentative));
         let before = app.sent.len();
         let _ = app.update(Message::InvitationAnswered(message, InvitationAnswer::Tentative, Ok(Delivery::Unknown)));
@@ -12192,7 +12319,7 @@ mod tests {
     /// pick, none while the calendars are not in (the core chooses then).
     #[test]
     fn the_calendar_picked_goes_with_the_answer() {
-        let mut app = mail_window("comfortable", &["--open", "invitation"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "invitation"]);
         let summary = app.messages.first().cloned().expect("the first invitation");
         let invite = summary.invite.clone().expect("an invitation");
         assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some(summary.id.as_str()), "read at once");
@@ -12274,8 +12401,8 @@ mod tests {
         let key =
             Launch::parse(&args(&["--view", "notifications", "--source", "script:ci", "--source", "script:deploy"]))
                 .expect("valid")
-                .density_key();
-        assert_eq!(key, "notifications/source:script:ci+script:deploy", "each window its own density");
+                .window_key();
+        assert_eq!(key, "notifications/source:script:ci+script:deploy", "each window its own key");
     }
 
     /// Task E8.4: two notifications windows with different sources show only theirs – in the list,
@@ -12353,7 +12480,7 @@ mod tests {
         let mut suite = notifications_window(&["--source", "suite"]);
         let _ = suite.update(Message::Act("demo-3".into(), Command::Dismiss));
         assert!(suite.sent.is_empty(), "an approval waits for yes or no");
-        let mut mail = mail_window("comfortable", &[]);
+        let mut mail = mail_window(Density::Comfortable, &[]);
         let _ = press(&mut mail, Key::Down);
         let _ = press(&mut mail, Key::X);
         assert!(mail.sent.is_empty(), "the mail window dismisses nothing");
@@ -12575,7 +12702,7 @@ mod tests {
             matches!(opens, Some(Message::OpenApp(ref app)) if app == AppId::INBOX.window_class),
             "the mail window asks the core for the Notification Hub, not the control centre: {opens:?}"
         );
-        let mut mail = mail_window("compact", &[]);
+        let mut mail = mail_window(Density::Compact, &[]);
         let _ = mail.update(Message::OpenRules);
         assert!(mail.settings.is_none(), "the mail window opens no section of its own");
     }
@@ -12727,9 +12854,10 @@ mod tests {
         assert_eq!(lane_icon(Lane::Info), Icon::Info, "Info is for your information");
         assert!(![Icon::Bell, Icon::BellOff].contains(&lane_icon(Lane::Info)), "the bells notify and mute");
         assert_eq!(Kind::Notifications.view_icon(&View::Overview), Icon::Bell, "the bell stays for notifications");
-        for density in ["compact", "comfortable"] {
+        for density in [Density::Compact, Density::Comfortable] {
             for open in ["mute-menu", "mute-panel"] {
-                let mut app = notifications_window(&["--density", density, "--open", open]);
+                let mut app = notifications_window(&["--open", open]);
+                app.density = density;
                 assert_eq!(app.menu, Some(Menu::Mute), "{open}");
                 assert_eq!(app.detail.is_some(), open == "mute-panel");
                 deliver(&mut app);
@@ -12751,14 +12879,8 @@ mod tests {
     /// go across; "By time" walks newest first, the narrow window "For me", then "Info".
     #[test]
     fn the_keys_walk_the_board_as_it_is_drawn() {
-        let mut app = notifications_window(&[
-            "--source",
-            "script:deploy",
-            "--source",
-            "agent:claude-code",
-            "--density",
-            "comfortable",
-        ]);
+        let mut app = notifications_window(&["--source", "script:deploy", "--source", "agent:claude-code"]);
+        app.density = Density::Comfortable;
         let _ = app.update(Message::Resized(WIDE));
         assert!(matches!(app.board(), Board::Columns(_)), "{:?}", app.board());
         let columns = notifications::app_columns(&app.items, 3);
@@ -12786,7 +12908,8 @@ mod tests {
     /// Task E8.4: moving the cursor scrolls the board, which scrolls as one.
     #[test]
     fn moving_on_the_board_scrolls_it() {
-        let mut app = notifications_window(&["--density", "comfortable"]);
+        let mut app = notifications_window(&[]);
+        app.density = Density::Comfortable;
         let _ = app.update(Message::Resized(NARROW));
         let first = app.rows()[0].id.clone();
         let (_, bottom) =
@@ -12801,16 +12924,15 @@ mod tests {
     /// time, with the panel, the menus, the drawer and the toast, in every view of its sidebar.
     #[test]
     fn the_notifications_window_builds_in_every_size() {
-        for density in ["compact", "comfortable"] {
+        for density in [Density::Compact, Density::Comfortable] {
             for open in [
                 &[][..],
                 &["--open", "by-time"],
                 &["--open", "empty"],
                 &["--source", "suite", "--source", "agent:claude-code"],
             ] {
-                let mut words = vec!["--density", density];
-                words.extend_from_slice(open);
-                let mut app = notifications_window(&words);
+                let mut app = notifications_window(open);
+                app.density = density;
                 for view in [View::Overview, View::Snoozed, View::Done] {
                     let _ = app.update(Message::Show(view));
                     load(&mut app);
@@ -12850,7 +12972,7 @@ mod tests {
             Launch::parse(&args(&["--demo", "--now", "2026-10-13T10:30", "--view", "mail"])).expect("valid parameters");
         launch.message = Some(message.into());
         let inbox = Arc::new(DemoSource::new(launch.start()));
-        let mut app = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         app
     }
@@ -12893,8 +13015,7 @@ mod tests {
         let mut app = notifications_window(&["--source", "suite", "--source", "script:uptime"]);
         let question = app.find("demo-9").cloned().expect("the suite's question");
         assert!(hub::is_follow_up(&question));
-        let words: Vec<String> =
-            notifications::card_buttons(&question, false, false).into_iter().map(|b| b.label).collect();
+        let words: Vec<String> = notifications::card_buttons(&question, false).into_iter().map(|b| b.label).collect();
         assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
@@ -12975,7 +13096,7 @@ mod tests {
         let mut launch = Launch::parse(&args(&["--demo", "--view", "hub"])).expect("valid");
         launch.message = Some("m:w9".into());
         let mut hub =
-            App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0;
+            pinned(App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
     }

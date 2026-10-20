@@ -1,6 +1,6 @@
 //! An AI's suggestion of a task or an event made of an inbox entry (issue #120,
-//! `inbox.suggest_task_from_item`, `inbox.suggest_event_from_item`; "AI task" and "AI event" in the
-//! inbox app). The core reads the entry ([`Content`]), picks the AI ([`choose`]), asks it once
+//! `inbox.suggest_task_from_item`, `inbox.suggest_event_from_item`; "Fill in with AI" in the inbox
+//! app's dialogs of "Make task" and "Make event"). The core reads the entry ([`Content`]), picks the AI ([`choose`]), asks it once
 //! without tools for one JSON object ([`messages`]) and reads that answer ([`read_task`],
 //! [`read_event`]). Nothing is saved: the person checks the suggestion in the app and makes the
 //! task or event with `inbox.create_task_from_item` / `inbox.create_event_from_item`.
@@ -30,7 +30,8 @@ use torro_core::ai::{AiError, AiModel, ChatMessage, ChatRequest, Effort, Provide
 use torro_core::i18n::tr;
 use torro_core::settings::AssistantDefault;
 use torro_ipc::{
-    EventSuggestion, Response, SUGGESTION_LOCATION_MAX, SUGGESTION_NOTES_MAX, SUGGESTION_TITLE_MAX, TaskSuggestion,
+    EventSuggestion, Response, SUGGESTION_LISTS_MAX, SUGGESTION_LOCATION_MAX, SUGGESTION_NOTES_MAX,
+    SUGGESTION_TITLE_MAX, TaskSuggestion,
 };
 use torro_pim::EventTime;
 
@@ -64,6 +65,26 @@ pub struct Content {
     pub received: DateTime<Utc>,
     /// The text: a mail's whole text where the core has it, else the entry's; may be empty.
     pub text: String,
+    /// The names of the task lists a task may go to ([`offered_lists`]); empty: the model picks
+    /// none. Only read for a task.
+    pub lists: Vec<String>,
+}
+
+/// The task lists the model may choose from, of the names the caller sent: blank ones and those
+/// longer than [`SUGGESTION_TITLE_MAX`] passed over, each name once, at most
+/// [`SUGGESTION_LISTS_MAX`].
+pub fn offered_lists(names: Vec<String>) -> Vec<String> {
+    let mut lists: Vec<String> = Vec::new();
+    for name in names {
+        let name = one_line(&name);
+        if !name.is_empty() && name.chars().count() <= SUGGESTION_TITLE_MAX && !lists.contains(&name) {
+            lists.push(name);
+        }
+        if lists.len() == SUGGESTION_LISTS_MAX {
+            break;
+        }
+    }
+    lists
 }
 
 /// An AI account that could be asked, in the order of the account list.
@@ -187,6 +208,10 @@ where
     if let Some(from) = content.from.as_deref().filter(|from| !from.trim().is_empty()) {
         user.push_str(&format!("It is from: {}\n", one_line(from)));
     }
+    if wanted == Wanted::Task && !content.lists.is_empty() {
+        let names: Vec<String> = content.lists.iter().map(|name| format!("- {}", fenced(name))).collect();
+        user.push_str(&format!("The person's task lists:\n{}\n", names.join("\n")));
+    }
     let text: String = content.text.chars().take(TEXT_MAX).collect();
     user.push_str(&format!(
         "\n<message>\nTitle: {}\n\n{}\n</message>",
@@ -200,9 +225,12 @@ where
 const TASK_RULES: &str = "You turn one message into a task for the person who received it: what they are asked to \
 do. Answer with exactly one JSON object and nothing else:\n\
 {\"title\": \"what to do, in the imperative, at most 80 characters\", \"notes\": \"one or two sentences with details \
-that help to do it, or null\", \"due\": \"YYYY-MM-DD, or YYYY-MM-DDTHH:MM when a time is named, or null\"}\n\
+that help to do it, or null\", \"due\": \"YYYY-MM-DD, or YYYY-MM-DDTHH:MM when a time is named, or null\", \
+\"list\": \"the name of the task list it belongs in, or null\"}\n\
 `due` is the date the message names for it (a deadline, \"by Friday\", \"tomorrow\"), counted from the day it was \
-received; null when it names none. Write title and notes in the language of the message.";
+received; null when it names none – never guess a date. `list` is one of the person's task lists, written exactly as \
+listed, the one the task clearly belongs in; null when none is listed or none fits. Write title and notes in the \
+language of the message.";
 
 /// What the model is told to do for an event, with the JSON it answers.
 const EVENT_RULES: &str = "You turn one message into a calendar event for the person who received it: the meeting, \
@@ -276,14 +304,25 @@ fn time_of<Tz: TimeZone>(text: &str, tz: &Tz) -> Option<EventTime> {
     Some(EventTime::DateTime(at.with_timezone(&Utc)))
 }
 
+/// The one of `lists` the model named with `name`: the same name, also in another case; `None` for
+/// any other – the model may only pick, never make up a list.
+fn list_of(name: &str, lists: &[String]) -> Option<String> {
+    let name = one_line(name);
+    lists
+        .iter()
+        .find(|list| **list == name)
+        .or_else(|| lists.iter().find(|list| list.to_lowercase() == name.to_lowercase()))
+        .cloned()
+}
+
 /// The title of `object`, on one line and cut; `fallback` (the entry's title) when it has none.
 fn title_of(object: &serde_json::Map<String, Value>, fallback: &str) -> String {
     let title = text_of(object, "title").map(|title| one_line(&title)).filter(|title| !title.is_empty());
     cut(&title.unwrap_or_else(|| one_line(fallback)), SUGGESTION_TITLE_MAX)
 }
 
-/// The task in the model's answer `reply` (module docs): its title (else `content`'s), its notes
-/// and due date in `tz`. [`SuggestError::Unreadable`] when the answer holds no JSON object.
+/// The task in the model's answer `reply` (module docs): its title (else `content`'s), its notes,
+/// its due date in `tz` and its list, one of `content`'s ([`list_of`]). [`SuggestError::Unreadable`] when the answer holds no JSON object.
 pub fn read_task<Tz: TimeZone>(
     reply: &str,
     content: &Content,
@@ -296,6 +335,7 @@ pub fn read_task<Tz: TimeZone>(
         title: title_of(&object, &content.title),
         notes: text_of(&object, "notes").map(|notes| cut(&notes, SUGGESTION_NOTES_MAX)),
         due: text_of(&object, "due").and_then(|due| time_of(&due, tz)),
+        list: text_of(&object, "list").and_then(|list| list_of(&list, &content.lists)),
         engine: engine.to_string(),
         model: model.to_string(),
     })
@@ -462,6 +502,7 @@ mod tests {
             from: Some("Anna Berg <anna@example.org>".into()),
             received: utc("2026-10-13T07:00:00Z"),
             text: text.into(),
+            lists: Vec::new(),
         }
     }
 
@@ -548,6 +589,31 @@ mod tests {
             Err(SuggestError::Unreadable)
         );
         assert_eq!(read_task("[1, 2]", &content(""), &berlin(), "e", "m"), Err(SuggestError::Unreadable));
+    }
+
+    /// The model picks one of the person's task lists, as they are written; a list it makes up, or
+    /// one it was not offered, is no list. Without lists the prompt names none.
+    #[test]
+    fn the_list_is_one_of_those_offered() {
+        let lists = offered_lists(vec!["Work".into(), " ".into(), "Home".into(), "Work".into(), "x".repeat(201)]);
+        assert_eq!(lists, ["Work", "Home"], "blank, twice and too long are passed over");
+        let entry = Content { lists, ..content("Please fix the leaking tap at home.") };
+        let read = |reply: &str| read_task(reply, &entry, &berlin(), "e", "m").expect("a task").list;
+        assert_eq!(read(r#"{"title": "Fix the tap", "list": "Home"}"#).as_deref(), Some("Home"));
+        assert_eq!(read(r#"{"title": "Fix the tap", "list": "home"}"#).as_deref(), Some("Home"), "as listed");
+        assert_eq!(read(r#"{"title": "Fix the tap", "list": "Plumbing"}"#), None, "never a list made up");
+        assert_eq!(read(r#"{"title": "Fix the tap", "list": null}"#), None);
+        let none = read_task(r#"{"title": "Fix", "list": "Home"}"#, &content(""), &berlin(), "e", "m");
+        assert_eq!(none.expect("a task").list, None, "no lists offered: none picked");
+        let asked = messages(Wanted::Task, &entry, utc("2026-10-14T08:30:00Z"), &berlin());
+        assert!(asked[1].content.contains("The person's task lists:\n- Work\n- Home\n"), "{}", asked[1].content);
+        assert!(asked[0].content.contains("never guess a date"), "a date only when the message names one");
+        let plain = messages(Wanted::Task, &content("x"), utc("2026-10-14T08:30:00Z"), &berlin());
+        assert!(!plain[1].content.contains("task lists"));
+        let event = messages(Wanted::Event, &entry, utc("2026-10-14T08:30:00Z"), &berlin());
+        assert!(!event[1].content.contains("task lists"), "an event has no list");
+        let many: Vec<String> = (0..80).map(|n| format!("List {n}")).collect();
+        assert_eq!(offered_lists(many).len(), SUGGESTION_LISTS_MAX);
     }
 
     #[test]

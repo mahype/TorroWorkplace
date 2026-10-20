@@ -2,8 +2,9 @@
 //! heads, the action bar of a row ([`row_actions`]), the toast with "Undo" ([`toast`]), menus, floating cards, chips (also to choose), property rows (also with the name in
 //! front), label chips, state pills, progress bars, settings groups and the empty, loading and
 //! error states. For the comfortable density of the inbox (task E8.2): cards ([`card`],
-//! [`card_head`]), source tiles ([`source_tile`]) and the switch between the densities
-//! ([`density_switch`]). For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
+//! [`card_head`]) and source tiles ([`source_tile`]) – which density a window draws in is the
+//! design's to say (task E13.3, `crate::layout::density`), so there is no switch for it.
+//! For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
 //! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
@@ -73,7 +74,6 @@ use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
 use crate::theme::{self, ChartColor, Palette, palette, radius, size, space};
 use crate::typo;
-use crate::ui_state::Density;
 
 /// A button style from [`crate::style::button`] (`style::button::primary`, `ghost` …).
 pub type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
@@ -478,59 +478,6 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
             .style(style::button::segment(i == active))
             .on_press(message)
             .into()
-    });
-    container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
-}
-
-/// The switch "Compact | Comfortable" in the header bar of every inbox window (task E8.2): a
-/// [`segmented`] control whose segments carry an icon ([`Icon::List`] for rows, [`Icon::LayoutGrid`]
-/// for cards) and, with `words`, the word after it. Without `words` (the narrow layout) the
-/// segments are square icons with the word as tooltip. The segment of `density` is chosen; a press
-/// sends `on_press` with the density of the segment.
-///
-/// The app keeps the density (`Option<Density>`, `None` until the person picks one, then
-/// [`Density::default_for`] the layout), shows it and remembers a choice in `ui.json`
-/// (`ui_state::save_density_task`); see [`Density`].
-///
-/// ```ignore
-/// let words = class != SizeClass::Narrow;
-/// trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
-/// ```
-pub fn density_switch<'a, M: Clone + 'a>(
-    density: Density,
-    words: bool,
-    on_press: impl Fn(Density) -> M,
-) -> Element<'a, M> {
-    let inner = size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
-    let options =
-        [(Density::Compact, Icon::List, tr("Compact")), (Density::Comfortable, Icon::LayoutGrid, tr("Comfortable"))];
-    let segments = options.into_iter().map(|(choice, which, label)| {
-        let active = choice == density;
-        let style = style::button::segment(active);
-        let mark: Element<'a, M> = icon(which, icon::SIZE_SM)
-            .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
-            .into();
-        let segment: Element<'a, M> = if words {
-            let content = row![mark, typo::text(typo::caption(), label).wrapping(Wrapping::None)]
-                .spacing(ICON_GAP)
-                .align_y(Alignment::Center);
-            button(container(content).center_y(Fill))
-                .height(inner)
-                .padding(style::button_padding())
-                .style(style)
-                .on_press(on_press(choice))
-                .into()
-        } else {
-            let square: Element<'a, M> = button(center(mark))
-                .width(inner)
-                .height(inner)
-                .padding(0)
-                .style(style)
-                .on_press(on_press(choice))
-                .into();
-            with_tooltip(square, label)
-        };
-        segment
     });
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
 }
@@ -2214,8 +2161,8 @@ pub fn popover<'a, M: 'a>(
 // Cards and source tiles (task E8.2, the comfortable density of the inbox)
 // ---------------------------------------------------------------------------------------------
 
-/// A card: one entry in the comfortable density of the inbox (task E8.2, `docs/eingang.md` "Zwei
-/// Dichten"; Canary Mail for mail, the columns of the notifications window for the rest). Surface
+/// A card: one entry in the comfortable density of the inbox (task E8.2, `docs/eingang.md`
+/// "Dichte"; Canary Mail for mail, the columns of the notifications window for the rest). Surface
 /// `raised`, frame `line_strong`, radius [`radius::lg()`], padding [`layout::panel_padding()`] (16),
 /// its `parts` stacked with [`size::card_gap()`] (12) between them, as wide as its column. Lay
 /// several out with the same gap: `column(cards).spacing(size::card_gap())`.
@@ -4430,16 +4377,13 @@ mod tests {
     /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take
     /// their sizes and letters from the tokens.
     #[test]
-    fn cards_tiles_and_the_density_switch_build() {
+    fn cards_and_tiles_build() {
         let tile = source_tile(TileFace::letter("slack"), TileSize::Medium, None);
         let head = card_head(Some(tile), "#dev", "10:12", Some(Msg::Close));
         let chips = chip_row(vec![state_pill(Icon::Paperclip, "Angebot_v2.pdf")]);
         let _: Element<'_, Msg> = card(vec![head, chips], true, Some(Msg::Go));
         let _: Element<'_, Msg> = card(vec![card_head(None, "Jonas Brandt", "", None)], false, None);
         let _: Element<'_, Msg> = source_tile(TileFace::Icon(Icon::Github), TileSize::Large, Some(Color::WHITE));
-        for words in [true, false] {
-            let _: Element<'_, Msg> = density_switch(Density::Compact, words, |_| Msg::Go);
-        }
         assert_eq!(TileFace::letter("slack"), TileFace::Letter('S'));
         assert_eq!(TileFace::letter("#dev-torro"), TileFace::Letter('D'), "the first letter, not the #");
         assert_eq!(TileFace::letter("#!"), TileFace::Letter('?'));

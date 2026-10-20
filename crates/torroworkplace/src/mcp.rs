@@ -874,6 +874,10 @@ struct ItemsInput {
     /// `false` leaves out the entries the person dismissed without doing anything ("✕"), `true`
     /// lists only those. Leave out for both.
     dismissed: Option<bool>,
+    /// Only entries whose mail is one of these categories, as inbox_list_categories names them
+    /// (`invoice`, `shipping`, `promotion` …). Leave out for every category; entries without one
+    /// (everything that is no mail) are left out as soon as this is given.
+    categories: Option<Vec<torro_mail::Category>>,
 }
 
 /// The lane `inbox_list_items` lists.
@@ -940,7 +944,7 @@ fn ask_permission(input: AskInput) -> Request {
 }
 
 fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, ToolError> {
-    let ItemsInput { lane, source, state, since, limit, order, dismissed } = input;
+    let ItemsInput { lane, source, state, since, limit, order, dismissed, categories } = input;
     let lane = match lane.unwrap_or(LaneChoice::ForMe) {
         LaneChoice::ForMe => Some(Lane::ForMe),
         LaneChoice::Info => Some(Lane::Info),
@@ -961,8 +965,7 @@ fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, Too
         limit: Some(limit.unwrap_or(INBOX_LIMIT)),
         order,
         dismissed,
-        // The short form of the tool does not filter by category; the full request does.
-        categories: Vec::new(),
+        categories: categories.unwrap_or_default(),
     })
 }
 
@@ -2004,7 +2007,7 @@ mod tests {
     #[test]
     fn the_suggestions_take_the_entry_and_the_makers_take_note_and_place() {
         for (tool, wanted) in [
-            ("inbox_suggest_task_from_item", Request::SuggestTaskFromItem { id: "i1".into() }),
+            ("inbox_suggest_task_from_item", Request::SuggestTaskFromItem { id: "i1".into(), lists: Vec::new() }),
             ("inbox_suggest_event_from_item", Request::SuggestEventFromItem { id: "i1".into() }),
         ] {
             assert_eq!(request_for(tool, args(json!({"id": "i1"})), &Utc), Ok(wanted));

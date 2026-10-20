@@ -702,8 +702,7 @@ E8.9   unabhängig (torro-wm, core.rs)
 
 1. **E8.1:** `torro_core::app::AppId` bekommt Startargumente (z. B. `args: &'static [&'static str]`), und es gibt
    drei Einträge `INBOX_MAIL`, `INBOX_NOTIFICATIONS`, `INBOX` mit den Fensterklassen `torro-inbox-mail`,
-   `torro-inbox-notifications` und `torro-inbox`. Startargumente `--view mail|notifications|hub` und
-   `--density compact|comfortable`.
+   `torro-inbox-notifications` und `torro-inbox`. Startargument `--view mail|notifications|hub`.
 2. **E8.6a:** `Item` bekommt Merkmale (`facets`, optional, `#[serde(default)]`), `Rule` bekommt Merkmal, Ablauf
    (`until`) und Wirkung (`NoPopup | Info | Hide`); neue Requests `inbox.list_mute_options` und `inbox.mute_item`
    mit `scope: conversation | facet { key }`; `inbox.set_item_done` bekommt das optionale Feld `dismissed`.
@@ -784,6 +783,8 @@ E8.9   unabhängig (torro-wm, core.rs)
   schon, Karten nutzen ihn mit `state_pill`; `typo::all()` bleibt bei acht Stufen; Galerie `-- --cards`, auch
   `--design <id>`; Sichtprüfung am Mac: Galerie dunkel, hell, Plex; Inbox nur Breit, Mittel/Schmal ließ sich ohne
   Hyprland nicht einstellen)
+- **Nachtrag E13 (Issue #226, 2026-10-19):** Umschalter, `--density` und `density` in `ui.json` sind weggefallen –
+  die Dichte gehört zum Design (`torro_core::design::Density`, `layout.density` im Paket); die Bausteine bleiben.
 - **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{design.rs,design/rules.rs}`,
   `crates/torro-gui/src/{typo,theme,widgets,ui_state}.rs`, `crates/torro-gui/examples/gallery.rs`,
   `crates/torroinbox/src/{main,app}.rs`, `.claude/skills/torro-design/SKILL.md`, `docs/design-pakete.md`
@@ -1589,6 +1590,29 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: gesperrte Knöpfe blenden das Icon ab; `RowAction::blocked` ohne Klick, mit Grund; KI-Knöpfe
   an Zeilen und Karten, ohne KI gesperrt mit Tooltip, mit KI schicken sie den Vorschlag; „To sort“ behält die Wörter.
 
+### E8.28 „Task“ füllt sich mit der KI, keine eigenen KI-Knöpfe, Task nicht mehr rot (Issue #234)
+- [x] erledigt (2026-10-19: Wunsch der Person: In der Leiste der gewählten Zeile (Archive · Delete · Later ·
+  Task · Mute…) ist Task nicht mehr rot (`list::edge_actions` setzt kein `RowAction::accent` mehr). „AI task“ und
+  „AI event“ gibt es nirgends mehr als eigene Knöpfe – nicht in Zeilen, Karten, Hub, Benachrichtigungen, Paneel
+  und Leser (E8.27 zurückgenommen, die gedimmten Knöpfe in `torro-gui` bleiben). Stattdessen trägt der Dialog von
+  „Make task“ und „Make event“ im Kopf „Fill in with AI“ (`Sparkles`, `App::ai_fill_button`): ohne KI aus mit
+  „Set up an AI first“, bei einer Ordnermail ohne Eintrag aus mit „The AI fills in only what waits in your inbox“.
+  Die KI benennt die Aufgabe, schreibt eine Notiz, schlägt eine der Listen des Dialogs vor und setzt ein Datum nur,
+  wenn die Mail eins nennt. Dafür bekommt `inbox.suggest_task_from_item` das optionale Feld `lists` (Namen aus
+  `tasks.list_lists`, höchstens 50) und `TaskSuggestion` das optionale `list` – nur ein angebotener Name, nie ein
+  erfundener (`suggest::list_of`). Der Dialog wartet mit der Frage, bis die Listen da sind
+  (`Suggesting::Waiting`). Die Dialoge sind 440 breit (statt 320), Notiz und Ort stehen immer da. Unterstrichene
+  Anfangsbuchstaben als Kürzel: verworfen, die Kürzel bleiben, wie sie sind)
+- **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{suggest,core,inbox,audit,daemon,mcp}.rs`,
+  `crates/torroworkplace/src/assistant/data_rule.rs`, `crates/torroinbox/src/{app,suggest,list,hub,notifications,overview,detail,mail}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`
+- **Oberfläche:** Dialoge „Make task“ / „Make event“. **API:** `inbox.suggest_task_from_item` mit `lists`.
+  **MCP:** `inbox_suggest_task_from_item` (neues Feld `lists`).
+- **Abnahme:** Tests: Leiste ohne rotes Icon und ohne KI-Knopf; der Dialog fragt die KI erst auf Knopfdruck, mit
+  den Listennamen, übernimmt eine angebotene Liste und keine erfundene, kein Datum ohne Datum; der Kern bietet die
+  Listen im Prompt an (`the_list_is_one_of_those_offered`). Übersetzungen: „Fill in with AI“ → „Mit KI ausfüllen“,
+  „The AI fills in only what waits in your inbox“ → „Die KI füllt nur aus, was in deinem Eingang wartet“.
+
 ## E9 Mail-Fenster: Posteingang (Plan 2026-10-15, Branch `feat/mail-inbox`)
 
 Die Seitenleiste des Mail-Fensters ist zu unklar: „Übersicht“ und „Info“ zeigen Einträge, nicht Mails, und nur
@@ -1932,6 +1956,176 @@ Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und L
 - **Abnahme:** Tests: Paneel des Mail-Fensters mit Befehlsleiste, Pillen und Fuß aus E11.3 für Eintrag und Ordnermail;
   Paneel der Zentrale (`Kind::Hub`) unverändert wie in E9.4. Sichtprüfung (`torro-design-review`) Mail-Fenster in
   Schmal (480×900) und Mittel (800×600), hell und dunkel, und die Zentrale zum Vergleich. Übersetzungen im Bericht.
+
+## E13 Dichte kommt vom Design (Issue #226, Plan 2026-10-19)
+
+Wie dicht die Einträge stehen, ist kein Fensterzustand mehr, sondern ein Wert des Designs
+(`torro_core::design::Design`). Der Umschalter „Compact | Comfortable“ aus E8.2, der Startschalter `--density` und der
+Schlüssel `density` in `ui.json` fallen weg. Die Bausteine bleiben: `widgets::card`, `card_head`, `source_tile`,
+`chip_row`, `typo::read()`, die Maße der Karten und alle Comfortable-Pfade in Mail, App Feed und Zentrale. Regeln:
+[CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`.
+
+**Keine Funktion des Dienstes** (wie E8.2): Die Dichte ist Darstellung, kein Request und kein MCP-Tool. Als Teil des
+Designs ist sie über den bestehenden Weg erreichbar – Oberfläche: Appearance › Design in der Steuerzentrale, API:
+`settings.set_setting design` und `settings.list_designs`, MCP: dieselben Tools.
+
+Entschieden am 2026-10-19 (Planung #226):
+
+1. **Schlüssel `layout.density`**, kein eigener Abschnitt: `[layout]` trägt schon Ränder und Lücken, und `Design::layout`
+   ist das Feld dazu. Verworfen: `[inbox]` oder `[density]` – ein Abschnitt für einen einzigen Wert, der zudem nach einer
+   App statt nach einer Rolle hieße.
+2. **Beide Werte bleiben** in `Density` (`Compact`, `Comfortable`), obwohl kein mitgeliefertes Paket `comfortable` setzt:
+   sonst wäre der ganze Kartencode unerreichbar und müsste mit weg. Das Entfernen der Karten ist ein eigenes Thema.
+3. **Kein mitgeliefertes Paket zeigt Karten** (in der Planung entschieden): torro, plex, ribbon, quattro … bleiben
+   kompakt, keines bekommt `layout.density`. Comfortable zeigt nur ein selbst gebautes Paket; Tests und Sichtprüfung
+   nehmen dafür ein Temp-Paket (`TORRO_DATA_HOME=<tmp>`, Paket unter `<tmp>/torroworkplace/designs/<id>/design.toml`,
+   Start mit `--demo --design <id>`). Verworfen: Plex auf `comfortable` – Plex sähe dann anders aus als sein
+   `preview.png`, und jede Sichtprüfung mit Plex zeigte etwas anderes als bisher.
+4. **Keine neue Regel in `design/rules.rs`:** Ein Wort, das nicht `compact` oder `comfortable` ist, lehnt schon der
+   dritte Lesedurchgang ab (`DesignError::Syntax` mit Zeile), wie bei `type.*.font` und `weight`. Einen Bereich wie bei
+   Zahlen gibt es hier nicht; `rules.rs` bekommt nur einen Satz im Modul-Kommentar.
+5. **Das Design entscheidet in jeder Größenklasse:** `ui_state::Density::default_for` (Schmal immer kompakt) entfällt.
+   Bisher galt eine Wahl des Menschen in jeder Größe und die Größe entschied nur, solange niemand gewählt hatte; die
+   Wahl des Designs gilt genauso. Mini und Leiste bleiben Anzeigen ohne Dichte.
+6. **Das Fenster hält die Dichte als Feld** (`App::density`), gesetzt beim Start aus dem aktiven Design und neu gelesen,
+   wenn `Message::Design` ein anderes Design bringt – der einzige Weg, auf dem sich das Design in einem App-Prozess
+   ändert (`design::start_for` läuft vor dem ersten Fenster). Verworfen: in jedem Frame `layout::density()` lesen – dann
+   hinge jeder Test an dem einen Design, das alle Tests eines Binärprogramms teilen, und ein Test, der auf Karten
+   umschaltet, würde die Tests neben sich verfälschen.
+
+```
+E13.1 ── E13.2 ─┬─ E13.3
+                └─ E13.4
+```
+
+Nicht parallel zu E9.2, E9.3b und E11.x: E13.2 ändert `crates/torroinbox/src/app.rs` an vielen Stellen.
+
+### E13.1 Dichte als Wert des Designs und Schlüssel des Paket-Formats
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
+  `crates/torro-core/src/design/{pack,rules}.rs`, `crates/torro-ipc/src/api.rs` (nur Beschreibungen),
+  `docs/api-reference.md` (erzeugt), `docs/design-pakete.md`
+- **`Density`** in `torro_core::design`: `Compact`, `Comfortable`, mit `Debug, Clone, Copy, PartialEq, Eq,
+  serde::Deserialize` und `#[serde(rename_all = "lowercase")]`, wie `FontRole` und `Weight` daneben; kein `Display`,
+  weil niemand die Dichte ausgibt. Doc-Kommentar: was die beiden Werte im Eingang bedeuten (eine Zeile je
+  Eintrag / Karten mit Vorschau und Knöpfen) und dass die Wahl zum Design gehört, nicht zum Fenster.
+- **Feld:** `Layout::density: Density` (`Layout` bleibt `Copy`), `Design::standard()` setzt `Density::Compact`.
+- **Paket-Format** (`design/pack.rs`): `LayoutFile` bekommt `density: Option<Density>`, `LAYOUT_KEYS` wächst auf 8 mit
+  `"density"` (damit `known()` den Schlüssel kennt und ein Tippfehler `UnknownKey` bleibt), `merge_layout` setzt
+  `l.density = file.density.unwrap_or(l.density)`. Fehlt der Schlüssel, gilt `compact` aus dem Standard.
+- **`design/rules.rs`:** keine Prüfung (Entscheidung 4); im Modul-Kommentar ein Satz, warum die Dichte keine hat.
+- **`docs/design-pakete.md`:** im `[layout]`-Beispiel `density = "compact"` mit Kommentar („Zeilen oder Karten im
+  Eingang, E8.2/#226“); in der Regel-Tabelle die Zeile „Layout-Abstände“ um `density` nur `compact` oder `comfortable`
+  ergänzen; der Absatz „Layout-Abstände sind zuerst allgemein“ nennt die Dichte; im Ausblick auf Stufe 2 die Sätze
+  streichen, die die Dichte dort noch erwarten (Kandidat „Dichte“, „Listen als Zeilen oder Karten“).
+- **Befehlskatalog** (aus der API-Prüfung des Plans, `crates/torro-ipc/src/api.rs`): kein neuer Eintrag, aber zwei
+  Beschreibungen nennen die Nebenwirkung – `LIST_DESIGNS` zählt auf, was ein Paket setzt („colours, fonts, spacing,
+  logo“) und bekommt die Dichte des Eingangs dazu (Zeilen oder Karten); bei `SET_SETTING` der Halbsatz zu `design`
+  ebenso. Danach `TORRO_BLESS=1 cargo test -p torro-ipc` und das erzeugte `docs/api-reference.md` mitcommitten.
+- **Oberfläche:** keine. **API/MCP:** kein neuer Request und kein neues Tool (die Dichte kommt mit dem Design,
+  `settings.set_setting design`, `settings.list_designs`).
+- **Abnahme:** Tests in `design.rs` und `design/pack.rs`: `Design::standard().layout.density == Density::Compact`;
+  ein Temp-Paket mit `[layout]\ndensity = "comfortable"` lädt und liefert `Comfortable`; ein Paket ohne den Schlüssel
+  liefert `Compact`; `density = "roomy"` wird mit `DesignError::Syntax` abgelehnt (Zeile gesetzt); `layout.dense` bleibt
+  `DesignError::UnknownKey`. Die vorhandenen Tests der mitgelieferten Pakete (`torroworkplace/src/designs.rs`) bleiben
+  grün; einer davon prüft zusätzlich, dass das Paket kompakt bleibt. `cargo fmt`, `clippy -D warnings`, `cargo test`,
+  `TORRO_LANG=de cargo test`.
+
+### E13.2 Der Eingang zeichnet in der Dichte des Designs
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E13.1 · **Dateien:** `crates/torro-gui/src/layout.rs`,
+  `crates/torroinbox/src/{app,hub,notifications,main}.rs`
+- **Token:** `torro_gui::layout::density()` → `design::with(|t| t.design.layout.density)`, Doc-Kommentar wie die anderen
+  Rollen dieses Moduls (Standard: kompakt). Dichte des Designs, nicht des Fensters.
+- **`Density` kommt aus dem Kern:** In `app.rs`, `hub.rs` und `notifications.rs` `use torro_core::design::Density`
+  statt `torro_gui::ui_state::Density`. Die Signaturen von `hub::layout`, `notifications::{board, height, span}`,
+  `notifications::BoardData::density` und `hub::Layout::cards` bleiben unverändert – sie nehmen die Dichte weiter als
+  Parameter, nur ihre Quelle ändert sich.
+- **`App`:** Feld `density: Density` (kein `Option` mehr), in `App::new` aus `layout::density()`, im Arm
+  `Message::Design` nach `self.design.update(message)` neu gelesen (vor dem `return` des Tasks). `App::density()` gibt
+  das Feld zurück. Weg: `Launch::density`, der Schalter `--density` in `Launch::parse`, `Message::SetDensity`,
+  `Message::StoredDensity`, `App::set_density`, der `load_density_task`-Zweig in `App::new` und
+  `Density::default_for`.
+- **`Launch::density_key()` → `Launch::window_key()`:** gleicher Wert, neuer Name; Aufrufer sind `order` und `split`
+  (`load_order_task`, `save_order_task`, `load_split_task`, `save_split_task`) und die Tests. Doc-Kommentar ohne
+  Dichte: der Schlüssel benennt das Fenster und seinen Ausschnitt.
+- **Kopfleiste** (`App::header`): die Zeile mit `widgets::density_switch` entfällt. Die Regel für `words`
+  (Breit, oder Mittel ohne „Mail | Notifications“ und ohne „By app | By time“) bleibt und gehört jetzt dem
+  Knopf „Newest first | Oldest first“ (`order_button`); Kommentar nachziehen.
+- **Doc-Kommentare** oben in `app.rs` und `main.rs`: kein Umschalter, kein `--density`, kein Merken; die Dichte kommt
+  vom Design.
+- **Oberfläche:** ja – Kopfleiste aller drei Fensterarten, Zeilen statt Karten im Design „Torro“.
+  **API/MCP:** keine.
+- **Abnahme:** Tests in `app.rs`. Weg: `density_is_read_from_the_command_line`,
+  `density_follows_the_command_line_then_ui_json_then_the_layout`, `every_window_kind_draws_the_density_switch`. Neu
+  bzw. umgebaut:
+  - Je Fensterart (`hub`, `mail`, `notifications`) zeigt die Kopfleiste keinen Dichte-Umschalter mehr, in allen
+    Größenklassen; der Knopf der Reihenfolge behält sein Wort in Breit und Mittel.
+  - `Launch::parse(&["--density", "comfortable", "--view", "mail"])` ist `Ok` und ignoriert den Schalter (unbekannte
+    Wörter lässt `parse` liegen), `window_key()` bleibt `mail`.
+  - `App::density()` ist `Compact`, solange das Design „Torro“ aktiv ist; nach einem Wechsel auf ein Temp-Paket mit
+    `layout.density = "comfortable"` (wie in `the_stored_design_is_drawn_and_a_broken_one_gives_the_standard`:
+    `Follow::new(None).in_dir(…)` und `Message::Design(design::Message::Stored(…))`) ist sie `Comfortable`. Dieser
+    Test – der einzige, der das Design des Prozesses umschaltet – stellt am Ende `design::set(Design::standard())`
+    wieder her.
+  - Damit kein anderer Test am Design des Prozesses hängt, setzen die Helfer `demo`/`loaded`/`overview_at` die Dichte
+    nach dem Bau ausdrücklich auf `Density::Compact`; `mail_window` nimmt statt des Wortes ein `Density` und setzt das
+    Feld, `notifications_window` und die Tests, die bisher `--density comfortable` übergaben, setzen es ebenso.
+  - Tests, die bisher ohne `--density` liefen, bekamen in Breit Comfortable und bekommen jetzt Compact: Wo eine Abnahme
+    Karten prüft, im Test die Dichte auf `Comfortable` setzen – keine Abnahme abschwächen. In `hub.rs` und
+    `notifications.rs` bleiben die Tests, die die Dichte als Parameter übergeben, unverändert.
+  - `cargo fmt`, `clippy -D warnings`, `cargo test`, `TORRO_LANG=de cargo test`, `scripts/design-check.sh --strict`.
+  - Sichtprüfung (`torro-design-review`): die drei Fensterarten (`--view hub|mail|notifications --demo`) in allen
+    Größen, hell und dunkel – Zeilen, keine Kopfleiste mit „Compact | Comfortable“; dazu dieselben Fenster comfortable
+    über ein Temp-Paket (`TORRO_DATA_HOME=<tmp>`, `--demo --design <id>`), damit die Karten nachweislich noch zeichnen.
+
+### E13.3 Umschalter, `Density` und `density` in `ui.json` entfernen
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** E13.2 · **Dateien:** `crates/torro-gui/src/{ui_state,widgets}.rs`,
+  `crates/torro-gui/examples/gallery.rs`, `crates/torro-core/src/i18n/de.rs`
+- **`ui_state.rs`:** weg sind `Density`, die Konstante `DENSITY`, `density_from`, `save_density_to`,
+  `load_density_task`, `save_density_task` und der dann ungenutzte `use crate::layout::SizeClass`. Der Modul-Kommentar
+  nennt die Dichte nicht mehr; die Doc-Verweise „Windows are keyed as for `density_from`“ in `order_from` und
+  `split_from` zeigen auf `order_from`. `order` und `split` bleiben unverändert – ein `ui.json` mit altem `density`
+  lädt weiter, der Schlüssel wird nur nicht mehr gelesen oder geschrieben (keine Migration).
+- **Tests in `ui_state.rs`:** `densities_are_kept_per_window_beside_the_rest` und `density_words_and_defaults` weg;
+  `orders_are_kept_per_window_beside_the_rest` beweist „beside the rest“ mit `save_to`/`save_unfolded_to` statt mit
+  der Dichte. Neu oder ergänzt: Ein `ui.json`, das `density` enthält, verliert weder `order` noch `split`, und eine
+  Schreiboperation fügt `density` nicht hinzu.
+- **`widgets.rs`:** `density_switch` und `use crate::ui_state::Density` weg, der Verweis im Modul-Kommentar ebenso;
+  der Test `cards_tiles_and_the_density_switch_build` prüft nur noch Karten und Kacheln (Name nachziehen).
+- **`examples/gallery.rs`:** Import, Feld `density`, `Msg::Density` und der Abschnitt „Compact | Comfortable“ der
+  Karten-Seite (`--cards`) weg.
+- **`i18n/de.rs`:** die Einträge `("Compact", "Kompakt")` und `("Comfortable", "Komfortabel")` samt Gruppenkommentar
+  weg (kein `tr()` verweist mehr darauf).
+- **Oberfläche:** Galerie. **API/MCP:** keine.
+- **Abnahme:** `grep -rniI "density" crates/torro-gui crates/torro-core/src/i18n` findet nur noch die Dichte des
+  Designs (`layout::density`); `cargo fmt`, `clippy --all-targets -D warnings` (kein ungenutzter Import),
+  `cargo test`, `TORRO_LANG=de cargo test`; `cargo run --example gallery -- --cards` baut und zeigt die Karten-Seite
+  ohne den Umschalter.
+
+### E13.4 Dokumente und Skill: die Dichte gehört zum Design
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** E13.2 · **Dateien:** `docs/eingang.md`, `docs/settings.md`,
+  `docs/tasks/eingang.md`, `.claude/skills/torro-design/SKILL.md`
+- **`docs/eingang.md`:** Abschnitt „Zwei Dichten“ wird „Dichte“: ein Wert des Designs für die ganze Suite, „Torro“
+  zeigt eine Zeile je Eintrag, Karten zeigt ein Paket mit `layout.density = "comfortable"`; kein Umschalter, kein
+  `--density`, nichts Gemerktes. Die Bausteine der Karten bleiben beschrieben. In den Tabellen weiter unten („E8 Drei
+  Fenster“, Punkt 13 „Dichte“) die Wahl je Fenster streichen.
+- **`docs/settings.md`:** in der Liste des Fensterzustands die Dichte streichen (Seitenleiste, Breite, Reihenfolge
+  bleiben); in der Tabelle der Startschalter `--density` entfernen; bei den Schlüsseln von `ui.json` `density`
+  entfernen und den Satz dazu nachziehen.
+- **`docs/tasks/eingang.md`:** bei E8.2 ein Nachtrag in einer Zeile, dass Umschalter, `--density` und `density` in
+  `ui.json` mit E13 (Issue #226) weggefallen sind und die Dichte zum Design gehört; in der Liste der Startschalter bei
+  der alten Aufgabe `--density` streichen. Abgehakte Abnahmen nicht umschreiben.
+- **`.claude/skills/torro-design/SKILL.md`:** der Abschnitt „Zwei Dichten im Eingang“ beschreibt die Dichte als Wert
+  des Designs (`torro_core::design::Density`, `torro_gui::layout::density()`, `layout.density` im Paket), Standard
+  kompakt, Karten nur mit einem Paket; Umschalter, `--density` und `Density::default_for` streichen. Der Hinweis, alle
+  Bausteine beider Dichten anzuschauen, bleibt.
+- **Oberfläche:** keine. **API/MCP:** keine.
+- **Abnahme:** `grep -rniI -- "--density|ui_state::Density|density_switch" docs .claude` findet nur noch die Stellen,
+  die das Wegfallen beschreiben (Nachtrag bei E8.2 und die Aufgaben von E13); die vier Dokumente beschreiben die Dichte
+  als Wert des Designs; `scripts/ci-local.sh` grün.
 
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
@@ -2838,6 +3032,10 @@ E12.10 braucht E12.5 und E12.6
   Satz, dass `source: model` ein Vorschlag ist; Freigabe-Satz in `approvals.rs`, Protokollzeile in
   `audit.rs` (nur die Kennung, nie die Kategorie) und Beschriftung in `daemon.rs`.
   `inbox.classify_item` und `inbox.catch_up_categories` antworten bis E12.6 `not-connected`.
+  Nach dem PR-Review: Die Zähler prüfen das Leserecht auf `mail` selbst (`MailService::reachable`)
+  – die Befehle liegen im Bereich `inbox`, also wiegt es sonst niemand für sie; `inbox.list_items`
+  wendet seinen Kategorie-Filter wirklich an (nach dem Lesen, damit die Grenze die Treffer zählt),
+  und das MCP-Tool kennt das Feld jetzt auch.
   Abweichung: `docs/api.md` hat keine Befehlstabelle für den Eingang – die Liste steht in der
   erzeugten `docs/api-reference.md`, die mitcommittet ist.
 - **Modell:** Opus · **Braucht:** E12.2, E12.3 · **Dateien:**
@@ -2966,6 +3164,13 @@ E12.10 braucht E12.5 und E12.6
   der Feed bekommt den Modellaufruf als `inbox_feed::Decider` hereingereicht, damit er von
   KI-Konten, Zuordnungen und Datenregel nichts wissen muss. Fixtures unter
   `crates/torroworkplace/tests/fixtures/categories/`.
+  Nach dem PR-Review: Mail, die schon eine Kategorie hat, wird beim Eintreffen nicht noch einmal
+  eingeordnet (`MailStore::categorised`) – nach einer Lücke im Änderungsstrom und auf dem Rückweg
+  aus „Später" lief der Pfad sonst erneut und schrieb über die Wahl des Menschen. Der
+  Altbestandslauf hat dieselbe Zeitgrenze wie der Eintreff-Pfad (60 s), und seine Läufe sind
+  nummeriert, damit ein „Anhalten" zwischen Start und Flag nicht verlorengeht. Tests: ein Lauf
+  gegen ein falsches Ollama (`fake_deciding_ollama`) von der Zuordnung bis zur Kategorie am
+  Eintrag, dazu die Nummerierung als eigener Test.
   Nach dem Korrektheits-Review: Neue Mail wird **erst abgelegt, dann gefragt** – der Modellaufruf
   läuft in einer eigenen Aufgabe mit Zeitgrenze (60 s) und Pause (250 ms), und die Kategorie
   kommt danach auch auf den Eintrag; vorher hing jede Zustellung an einer Reihe ungedrosselter
@@ -3088,6 +3293,10 @@ E12.10 braucht E12.5 und E12.6
   (`SearchQuery::in_inbox`) – Papierkorb, Spam und Gesendet tragen ihre Kategorie weiter, gehören
   aber unter keine. `inbox.set_item_category` und `inbox.classify_item` nehmen jetzt wirklich ein
   `m:…` für Mail ohne Eintrag, wie der Katalog es verspricht.
+  Nach dem PR-Review: „Load more" lädt auch in einer Kategorie-Ansicht die nächste Seite,
+  `Enter` in der Betrugs-Rückfrage öffnet den Link, statt auf den Picker durchzufallen und einen
+  fremden Eintrag zurückzustellen, und eine von Hand gesetzte Kategorie überlebt die nächste
+  Mail der Unterhaltung (`rules::merge` wägt die Quellen ab, statt die neue blind zu nehmen).
 - **Modell:** Opus · **Braucht:** E12.4, E12.7 · **Dateien:**
   `crates/torroinbox/src/{app,list,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Skill `torro-design` laden. Nicht parallel zu E9.2, E9.3b oder E12.9.

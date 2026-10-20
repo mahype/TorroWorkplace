@@ -1237,9 +1237,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("only Info", "nur Info"),
     ("hidden", "ausgeblendet"),
     ("{source}: no popups", "{source}: keine Popups"),
-    // Density of the inbox windows (E8.2)
-    ("Compact", "Kompakt"),
-    ("Comfortable", "Komfortabel"),
     ("Newest first", "Neueste zuerst"),
     ("Oldest first", "Älteste zuerst"),
     // The mail window's large buttons (E11.1)
@@ -2246,8 +2243,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No such draft.", "Diesen Entwurf gibt es nicht."),
     ("Only files can be attached.", "Anhängen lassen sich nur Dateien."),
     (
-        "Only files from the attachment folder of Torro Workplace can be attached.",
-        "Anhängen lassen sich nur Dateien aus dem Anhangsordner von Torro Workplace.",
+        "Only files from the attachment folder of Torro Workplace, or PDFs this client made with its own tools and \
+         that are unchanged, can be attached.",
+        "Anhängen lassen sich nur Dateien aus dem Anhangsordner von Torro Workplace oder unveränderte PDFs, die \
+         dieser Client mit seinen eigenen Werkzeugen erstellt hat.",
     ),
     (
         "Only messages in the trash can be deleted for good.",
@@ -3527,6 +3526,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox: AI task and AI event (issue #120)
     ("AI event", "KI-Termin"),
     ("AI task", "KI-Aufgabe"),
+    // Inbox: the AI fills in the dialogs of Task and Event (issue #120)
+    ("Fill in with AI", "Mit KI ausfüllen"),
+    ("The AI fills in only what waits in your inbox", "Die KI füllt nur aus, was in deinem Eingang wartet"),
     (
         "Ask your AI for a task from {entry}; nothing is saved",
         "Deine KI um eine Aufgabe aus {entry} bitten; nichts wird gespeichert",
@@ -3867,6 +3869,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Antwort des KI-Servers ist keine Entscheidung. Versuch es noch einmal oder nimm ein anderes Modell.",
     ),
     ("There is no mail account {id}.", "Es gibt kein E-Mail-Konto {id}."),
+    ("A decision takes 1 to {most} questions, not {n}.", "Eine Entscheidung nimmt 1 bis {most} Fragen, nicht {n}."),
+    (
+        "No decision model is set up for mail. Choose one in the mail window, under Categorization.",
+        "Für E-Mails ist kein Entscheidermodell eingerichtet. Wähle eines im E-Mail-Fenster unter \
+         Kategorisierung.",
+    ),
     ("This AI account offers no model {id}.", "Dieses KI-Konto bietet kein Modell {id}."),
     (
         "This model does not decide. Pick one that does, like nimble on Ollama.",
@@ -4120,8 +4128,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The PDF cannot be made: {reason}", "Die PDF kann nicht erstellt werden: {reason}"),
     ("The file cannot be written: {reason}", "Die Datei kann nicht geschrieben werden: {reason}"),
     (
-        "The PDF cannot be kept: Torro Workplace cannot write its list of files.",
-        "Die PDF kann nicht behalten werden: Torro Workplace kann seine Dateiliste nicht schreiben.",
+        "The PDF cannot be kept: Torro Workplace cannot read or write its list of files.",
+        "Die PDF kann nicht behalten werden: Torro Workplace kann seine Dateiliste nicht lesen oder schreiben.",
     ),
     (
         "The file cannot be opened: no program for it started.",

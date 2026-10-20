@@ -1811,7 +1811,8 @@ pub(crate) mod tests {
     }
 
     /// Issue #133: a refused tool line says why – the area not granted, a level too low, the area
-    /// switched off here – and the model reads the reason too.
+    /// switched off here – and the model reads the reason too. Issue #225: one of the assistant's
+    /// own tools without the rights for it says so, not that the tool is switched off.
     #[tokio::test]
     async fn a_refused_tool_says_what_is_missing() {
         fn refuses(request: &Request) -> Response {
@@ -1823,6 +1824,7 @@ pub(crate) mod tests {
             calls("workspaces_delete_template", json!({"id": "old-plans"})),
             calls("accounts_list_accounts", json!({})),
             calls("calendar_list_calendars", json!({})),
+            calls("tools_create_pdf", json!({"title": "Offer", "markdown": "# Offer"})),
             says("I may not."),
         ]);
         let mut rights = reader();
@@ -1851,6 +1853,7 @@ pub(crate) mod tests {
                     Some(Lack::SwitchedOff { area: Area::Calendar }),
                     named("{area} is off in this conversation", "Calendar")
                 ),
+                (Some(Lack::Area { area: Area::Tools }), named("No access to {area}", "Tools")),
             ]
         );
         assert!(

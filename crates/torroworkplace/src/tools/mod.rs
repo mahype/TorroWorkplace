@@ -287,9 +287,10 @@ impl ToolError {
             ToolError::NoFolder => ("error", tr("There is no folder to save the PDF in.").to_string()),
             ToolError::Pdf(err) => ("error", trf("The PDF cannot be made: {reason}", &[("reason", err)])),
             ToolError::Write(reason) => ("error", trf("The file cannot be written: {reason}", &[("reason", reason)])),
-            ToolError::Register => {
-                ("error", tr("The PDF cannot be kept: Torro Workplace cannot write its list of files.").to_string())
-            }
+            ToolError::Register => (
+                "error",
+                tr("The PDF cannot be kept: Torro Workplace cannot read or write its list of files.").to_string(),
+            ),
             ToolError::Open => ("error", tr("The file cannot be opened: no program for it started.").to_string()),
         };
         Response::Error { code: code.into(), message }

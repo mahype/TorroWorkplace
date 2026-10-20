@@ -72,6 +72,7 @@ row_padding = [8, 16]
 control_padding = [0, 12]
 section_gap = 28
 item_gap = 10
+density = "comfortable"
 
 [size]
 control_sm = 28

@@ -50,11 +50,11 @@ use chrono::{DateTime, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, responsive, row, rule, scrollable};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
+use torro_core::design::Density;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::ui_state::Density;
 use torro_gui::widgets::{self, BarWords, ButtonStyle, Mark, RowAction, TileFace, TileSize};
 use torro_gui::{style, typo};
 use torro_inbox::demo::DemoSource;
@@ -67,7 +67,6 @@ use torro_ipc::inbox::InboxClient;
 use crate::app::Message;
 use crate::keys::Command;
 use crate::list::{self, Rows};
-use crate::suggest::{self, Wanted};
 use crate::{detail, glance, notifications};
 
 /// How many lines of its text a card of Decide or Agents shows, as the notifications window's cards.
@@ -496,14 +495,8 @@ pub enum Act {
     Open,
     /// Make a task of the entry (`t`, `inbox.create_task_from_item`).
     Task,
-    /// Ask the AI for a task of the entry (issue #168, `inbox.suggest_task_from_item`): the dialog of
-    /// "Make task" opens filled in. No key; off without an AI ([`card_button`]).
-    AiTask,
     /// Make an event of the entry (`c`, `inbox.create_event_from_item`, task E8.5b).
     Event,
-    /// Ask the AI for an event of the entry (issue #168, `inbox.suggest_event_from_item`), as
-    /// [`Act::AiTask`].
-    AiEvent,
     /// Put it off (`s`, `inbox.snooze_item`).
     Later,
     /// Mark it done (`e`, `inbox.set_item_done`).
@@ -533,12 +526,11 @@ fn is_agent(item: &Item) -> bool {
 ///   Later, no Done**: it waits for yes or no;
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
-/// - mail: Task · AI task · Event · AI event · Later · Done – mail is done or hidden, never dismissed
-///   (each AI button right after its plain one, issue #168);
+/// - mail: Task · Event · Later · Done – mail is done or hidden, never dismissed;
 /// - the suite's "You finished a task from a mail" ([`is_follow_up`], task E8.7b): Reply · Mark mail
 ///   done · Not now;
-/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · AI task ·
-///   Event · AI event · Later · ✕ ([`notifications::dismissable`], else Done).
+/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Event ·
+///   Later · ✕ ([`notifications::dismissable`], else Done).
 pub fn acts(item: &Item) -> Vec<Act> {
     if is_follow_up(item) && item.state.is_open() {
         return vec![Act::Reply, Act::MarkMailDone, Act::NotNow];
@@ -566,7 +558,7 @@ pub fn acts(item: &Item) -> Vec<Act> {
         return lead.into_iter().chain([Act::Later, Act::Done]).collect();
     }
     if item.source.kind == SourceKind::Mail {
-        return vec![Act::Task, Act::AiTask, Act::Event, Act::AiEvent, Act::Later, Act::Done];
+        return vec![Act::Task, Act::Event, Act::Later, Act::Done];
     }
     let mut acts = Vec::new();
     match detail::openable(item) {
@@ -574,7 +566,7 @@ pub fn acts(item: &Item) -> Vec<Act> {
         Some(Link::Window) => acts.push(Act::GoToWindow),
         Some(Link::Mail { .. }) | None => {}
     }
-    acts.extend([Act::Task, Act::AiTask, Act::Event, Act::AiEvent, Act::Later]);
+    acts.extend([Act::Task, Act::Event, Act::Later]);
     acts.push(if notifications::dismissable(item) { Act::Dismiss } else { Act::Done });
     acts
 }
@@ -589,7 +581,6 @@ impl Act {
             Act::Open => Icon::ArrowUpRight,
             Act::Task => Icon::ListTodo,
             Act::Event => Icon::CalendarPlus,
-            Act::AiTask | Act::AiEvent => Icon::Sparkles,
             Act::Later => Icon::Clock,
             Act::Reopen => Icon::Inbox,
             Act::Reply => Icon::Reply,
@@ -605,8 +596,6 @@ impl Act {
             Act::Open => tr("Open"),
             Act::Task => tr("Task"),
             Act::Event => tr("Event"),
-            Act::AiTask => Wanted::Task.label(),
-            Act::AiEvent => Wanted::Event.label(),
             Act::Later => tr("Later"),
             Act::Done => tr("Done"),
             Act::Dismiss => tr("Dismiss"),
@@ -621,7 +610,7 @@ impl Act {
     /// none (they stand on cards, never in an action bar).
     fn key(&self) -> &'static str {
         match self {
-            Act::Allow(_) | Act::Deny(_) | Act::MarkMailDone | Act::AiTask | Act::AiEvent => "",
+            Act::Allow(_) | Act::Deny(_) | Act::MarkMailDone => "",
             Act::GoToWindow | Act::Open => "Enter",
             Act::Task => "T",
             Act::Event => "C",
@@ -645,8 +634,6 @@ impl Act {
             Act::GoToWindow | Act::Open => Some(Message::OpenRow(item.id.clone())),
             Act::Task => act(Command::MakeTask),
             Act::Event => act(Command::MakeEvent),
-            Act::AiTask => Some(Wanted::Task.message(&item.id)),
-            Act::AiEvent => Some(Wanted::Event.message(&item.id)),
             Act::Later => act(Command::Snooze),
             Act::Done | Act::Reopen | Act::NotNow => act(Command::Done),
             Act::Dismiss => act(Command::Dismiss),
@@ -673,34 +660,12 @@ impl Act {
             | Act::GoToWindow
             | Act::Open
             | Act::Task
-            | Act::AiTask
             | Act::Event
-            | Act::AiEvent
             | Act::Later
             | Act::Reopen
             | Act::Reply
             | Act::MarkMailDone => false,
         }
-    }
-
-    /// The suggestion an AI button asks for; `None` for every other act.
-    fn wanted(&self) -> Option<Wanted> {
-        match self {
-            Act::AiTask => Some(Wanted::Task),
-            Act::AiEvent => Some(Wanted::Event),
-            _ => None,
-        }
-    }
-
-    /// The act as a button of a row's action bar for `item`, with its key; an AI button off while no
-    /// AI is set up (`ai` false, issue #168). `None` where it sends nothing (Allow and Deny while
-    /// deciding).
-    fn row_action<'a>(&self, item: &Item, deciding: bool, ai: bool) -> Option<RowAction<'a, Message>> {
-        if let Some(wanted) = self.wanted() {
-            return Some(suggest::row_action(wanted, &item.id, ai));
-        }
-        let message = self.message(item, deciding)?;
-        Some(RowAction::new(self.icon(), self.label(), self.key(), message))
     }
 
     /// Whether the button is the action the entry is about – Open, Go to window, Reply –, which as
@@ -711,18 +676,14 @@ impl Act {
 }
 
 /// The card button of `act` for `item` (its icon, word, message, look and whether it leads), as the
-/// hub's cards and the notifications window's draw it. An AI button is off while no AI is set up
-/// (`ai` false, issue #168) and says why in its tooltip.
-pub fn card_button(act: &Act, item: &Item, deciding: bool, ai: bool) -> notifications::CardButton {
-    let off = act.wanted().filter(|_| !ai);
+/// hub's cards and the notifications window's draw it.
+pub fn card_button(act: &Act, item: &Item, deciding: bool) -> notifications::CardButton {
     notifications::CardButton {
         icon: act.icon(),
         label: act.label().to_owned(),
-        on_press: if off.is_some() { None } else { act.message(item, deciding) },
+        on_press: act.message(item, deciding),
         lead: act.leads(),
         look: act.style(),
-        tip: off.map(|wanted| suggest::tooltip(wanted, false)),
-        companion: act.wanted().is_some(),
     }
 }
 
@@ -1230,7 +1191,7 @@ fn card<'a>(item: &'a Item, data: &HubData<'a>) -> Element<'a, Message> {
     if data.layout.narrow && detail::is_approval(item) {
         parts.push(big_decide(item, &acts, data.deciding));
     } else {
-        parts.push(buttons(item, acts, (data.deciding, data.rows.ai), (data.rows.anchors.clone(), selected)));
+        parts.push(buttons(item, acts, data.deciding, (data.rows.anchors.clone(), selected)));
     }
     let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
     if selected { widgets::anchored(&data.rows.anchors.row, card) } else { card }
@@ -1240,11 +1201,8 @@ fn card<'a>(item: &'a Item, data: &HubData<'a>) -> Element<'a, Message> {
 /// icons with the word as tooltip – only the lead (what the entry is about) may keep its word alone
 /// (`notifications::worded`, task E8.12). Under the cursor (the `bool` of `at`) each button that
 /// opens a menu registers its anchor (issue #122, `detail::Anchors::wrap`).
-///
-/// `off` is whether a decision is on its way and whether an AI is set up ([`card_button`]).
-fn buttons<'a>(item: &Item, acts: Vec<Act>, off: (bool, bool), at: (detail::Anchors, bool)) -> Element<'a, Message> {
-    let (deciding, ai) = off;
-    let pressed: Vec<notifications::CardButton> = acts.iter().map(|act| card_button(act, item, deciding, ai)).collect();
+fn buttons<'a>(item: &Item, acts: Vec<Act>, deciding: bool, at: (detail::Anchors, bool)) -> Element<'a, Message> {
+    let pressed: Vec<notifications::CardButton> = acts.iter().map(|act| card_button(act, item, deciding)).collect();
     let (anchors, shown) = at;
     let line = responsive(move |bounds| {
         let words = notifications::worded(&pressed, false, bounds.width);
@@ -1318,16 +1276,13 @@ fn lead<'a>(item: &Item, rows: &Rows<'_>, attention: Color) -> Element<'a, Messa
 }
 
 /// Where an act of To sort stands in the fixed columns of its buttons ([`SortSlots`]): what the
-/// entry is about (Open, Go to window), Task, AI task, Event, AI event, Later, and what lets it go
-/// (Done, Dismiss).
+/// entry is about (Open, Go to window), Task, Event, Later, and what lets it go (Done, Dismiss).
 fn sort_slot(act: &Act) -> usize {
     match act {
         Act::Open | Act::GoToWindow => 0,
         Act::Task => 1,
-        Act::AiTask => 2,
-        Act::Event => 3,
-        Act::AiEvent => 4,
-        Act::Later => 5,
+        Act::Event => 2,
+        Act::Later => 3,
         Act::Allow(_)
         | Act::Deny(_)
         | Act::Done
@@ -1335,12 +1290,12 @@ fn sort_slot(act: &Act) -> usize {
         | Act::Reopen
         | Act::Reply
         | Act::MarkMailDone
-        | Act::NotNow => 6,
+        | Act::NotNow => 4,
     }
 }
 
 /// How many fixed columns the buttons of To sort have ([`sort_slot`]).
-const SORT_SLOTS: usize = 7;
+const SORT_SLOTS: usize = 5;
 
 /// The fixed columns of the buttons of To sort in the one-line cards (task E8.12, finding 8): every
 /// card puts Task under Task and Later under Later, whatever else it offers. A column is there when
@@ -1359,18 +1314,9 @@ impl SortSlots {
     /// column fit beside the lead and at least half the properties column for title and meta, else
     /// icons ([`sort_buttons_room`]). The `narrow` layout has no columns: its buttons stand under
     /// the card's head.
-    ///
-    /// The AI buttons' columns (issue #168) are icons always, 28 wide: companions of Task and Event
-    /// (`notifications::CardButton::companion`). Where the words fit only without them they are left
-    /// out (`None`), so a reading width keeps its words in every language.
     pub fn of(items: &[&Item], narrow: bool, width: f32) -> SortSlots {
         let mut widest: [Option<&'static str>; SORT_SLOTS] = [None; SORT_SLOTS];
-        let mut companions = [false; SORT_SLOTS];
         for act in items.iter().flat_map(|item| acts(item)) {
-            if act.wanted().is_some() {
-                companions[sort_slot(&act)] = true;
-                continue;
-            }
             let slot = &mut widest[sort_slot(&act)];
             let label = act.label();
             let wider = slot
@@ -1380,24 +1326,10 @@ impl SortSlots {
             }
         }
         let labels: Vec<&str> = widest.iter().flatten().copied().collect();
-        let icons = companions.iter().filter(|&&there| there).count();
-        let fits = |icons| widgets::bar_words(&labels, false, icons, sort_buttons_room(width)) == BarWords::All;
-        // The words come first: where they fit only without the AI's icons, those step aside (the
-        // panel and the row's bar still have them); where nothing has its word, the icons stay.
-        let (words, ai) = match (narrow, fits(icons), fits(0)) {
-            (true, ..) => (false, true),
-            (false, true, _) => (true, true),
-            (false, false, true) => (true, false),
-            (false, false, false) => (false, true),
-        };
-        let mut widths = widest.map(|label| {
+        let words = !narrow && widgets::bar_words(&labels, false, 0, sort_buttons_room(width)) == BarWords::All;
+        let widths = widest.map(|label| {
             label.map(|label| if words { widgets::text_button_width(true, label) } else { size::control_sm() })
         });
-        for (width, &there) in widths.iter_mut().zip(&companions) {
-            if there && ai {
-                *width = Some(size::control_sm());
-            }
-        }
         SortSlots { widths, words }
     }
 }
@@ -1422,7 +1354,7 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
     let pad = layout::panel_padding();
     let inner = (width - pad.left - pad.right).max(0.0);
     let pressed: Vec<(usize, notifications::CardButton)> =
-        acts(item).iter().map(|act| (sort_slot(act), card_button(act, item, data.deciding, data.rows.ai))).collect();
+        acts(item).iter().map(|act| (sort_slot(act), card_button(act, item, data.deciding))).collect();
     let parts: Vec<Element<'a, Message>> = if data.layout.narrow {
         let buttons: Vec<notifications::CardButton> = pressed.into_iter().map(|(_, button)| button).collect();
         let words = notifications::worded(&buttons, false, inner);
@@ -1470,8 +1402,13 @@ fn entry_row<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, 
         list::notice_content(item, &data.rows, width)
     };
     let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions: Vec<RowAction<'a, Message>> =
-        acts(item).into_iter().filter_map(|act| act.row_action(item, data.deciding, data.rows.ai)).collect();
+    let actions: Vec<RowAction<'a, Message>> = acts(item)
+        .into_iter()
+        .filter_map(|act| {
+            let message = act.message(item, data.deciding)?;
+            Some(RowAction::new(act.icon(), act.label(), act.key(), message))
+        })
+        .collect();
     let actions = data.rows.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
     let middle = list::first_line_middle(height, list::line_count(item));
@@ -1652,14 +1589,13 @@ mod tests {
         }
         assert_eq!(acts(&find(&items, "demo-1")), [Act::GoToWindow, Act::Later, Act::Done], "an agent");
         let mail = items.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
-        let plain = [Act::Task, Act::AiTask, Act::Event, Act::AiEvent, Act::Later];
-        assert_eq!(acts(mail), [&plain[..], &[Act::Done]].concat(), "mail is never dismissed");
+        assert_eq!(acts(mail), [Act::Task, Act::Event, Act::Later, Act::Done], "mail is never dismissed");
         assert_eq!(
             acts(&find(&items, "demo-6")),
-            [Act::Open, Act::Task, Act::AiTask, Act::Event, Act::AiEvent, Act::Later, Act::Dismiss],
+            [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss],
             "a notice"
         );
-        assert_eq!(acts(&find(&items, "demo-12")), [&plain[..], &[Act::Dismiss]].concat(), "no link");
+        assert_eq!(acts(&find(&items, "demo-12")), [Act::Task, Act::Event, Act::Later, Act::Dismiss], "no link");
         assert!(!acts_of.contains(&Act::Event), "an approval becomes no event either");
         let done = entries(StateFilter::Done);
         assert_eq!(acts(&find(&done, "demo-11")), [Act::Reopen]);
@@ -1784,7 +1720,6 @@ mod tests {
             hidable: Vec::new(),
             look: list::Look::Rows,
             folders: &[],
-            ai: false,
             edge_strip: false,
         };
         let review = find(&items, "demo-14");
@@ -1795,9 +1730,8 @@ mod tests {
         );
         let alert = find(&items, "demo-18");
         assert!(sort_meta(&alert, &rows).contains(tr("Urgent")), "an alert says it is urgent");
-        let service = [Act::Open, Act::Task, Act::AiTask, Act::Event, Act::AiEvent, Act::Later, Act::Dismiss];
-        assert_eq!(acts(&alert), service);
-        assert_eq!(acts(&find(&items, "demo-17")), service);
+        assert_eq!(acts(&alert), [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss]);
+        assert_eq!(acts(&find(&items, "demo-17")), [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss]);
     }
 
     #[test]
@@ -1902,40 +1836,12 @@ mod tests {
         let items = entries(StateFilter::Open);
         let agent = find(&items, "demo-1");
         let buttons: Vec<notifications::CardButton> =
-            acts(&agent).iter().map(|act| card_button(act, &agent, false, false)).collect();
+            acts(&agent).iter().map(|act| card_button(act, &agent, false)).collect();
         assert_eq!(buttons.iter().map(|button| button.lead).collect::<Vec<_>>(), [true, false, false]);
         let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_str()).collect();
         let lead = widgets::bar_width(&labels, BarWords::Lead, 0);
         assert_eq!(notifications::worded(&buttons, false, lead), BarWords::Lead, "Go to window keeps its word");
         assert_eq!(notifications::worded(&buttons, false, lead - 1.0), BarWords::None, "else none – never mixed");
-    }
-
-    /// Issue #168: "AI task" and "AI event" stand right after Task and Event on cards and rows, as
-    /// icons beside the words (companions); without an AI they send nothing and say why, with one
-    /// they ask the AI.
-    #[test]
-    fn ai_buttons_are_companions_that_say_why_they_are_off() {
-        let items = entries(StateFilter::Open);
-        let notice = find(&items, "demo-6");
-        for (act, wanted) in [(Act::AiTask, Wanted::Task), (Act::AiEvent, Wanted::Event)] {
-            let off = card_button(&act, &notice, false, false);
-            assert!(off.on_press.is_none() && off.companion, "{act:?}");
-            assert_eq!(off.tip, Some(suggest::tooltip(wanted, false)));
-            let on = card_button(&act, &notice, false, true);
-            assert!(on.on_press.as_ref().is_some_and(suggest::is_ai) && on.tip.is_none(), "{act:?}");
-            let row = act.row_action(&notice, false, false).expect("stands in the bar while off");
-            assert!(row.press().is_none() && row.key.is_empty());
-        }
-        assert!(!card_button(&Act::Task, &notice, false, false).companion, "Task keeps its word");
-        let sections = Sections::of(&items, None);
-        let wide = SortSlots::of(&sections.to_sort, false, 2.0 * size::content_max());
-        assert!(wide.words);
-        assert_eq!(wide.widths[sort_slot(&Act::AiTask)], Some(size::control_sm()), "an icon's column");
-        assert_eq!(wide.widths[sort_slot(&Act::AiEvent)], Some(size::control_sm()));
-        let tight = SortSlots::of(&sections.to_sort, false, 300.0);
-        assert!(!tight.words && tight.widths[sort_slot(&Act::AiTask)].is_some(), "icons: the AI's too");
-        let reading = SortSlots::of(&sections.to_sort, false, size::content_max());
-        assert!(reading.words, "the words come first");
     }
 
     /// Task E8.12 (finding 8): To sort's buttons stand in fixed columns – Task under Task, whatever
@@ -1946,8 +1852,7 @@ mod tests {
         let sections = Sections::of(&items, None);
         let slots = SortSlots::of(&sections.to_sort, false, size::content_max());
         assert!(slots.words, "a reading width has room for the words");
-        let plain = [Act::Open, Act::Task, Act::Event, Act::Later, Act::Done];
-        assert!(plain.iter().all(|act| slots.widths[sort_slot(act)].is_some()), "mail and notices: every column");
+        assert!(slots.widths.iter().all(Option::is_some), "mail and notices: every column");
         let task = slots.widths[sort_slot(&Act::Task)].expect("Task");
         assert_eq!(task, widgets::text_button_width(true, tr("Task")));
         let end = slots.widths[sort_slot(&Act::Done)].expect("Done or Dismiss");

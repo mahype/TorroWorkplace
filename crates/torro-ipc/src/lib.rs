@@ -1397,10 +1397,10 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         notes: Option<String>,
     },
-    /// Asks an AI what task the entry `id` asks for (issue #120, "AI task" in the inbox app):
-    /// answered with [`Response::TaskSuggestion`] – a title, a note and the due date when the text
-    /// names one. Nothing is saved: the person checks the suggestion and makes the task with
-    /// `inbox.create_task_from_item`.
+    /// Asks an AI what task the entry `id` asks for (issue #120, the sparkles in the inbox app's
+    /// dialog of "Make task"): answered with [`Response::TaskSuggestion`] – a title, a note, the due
+    /// date when the text names one, and the fitting one of `lists` when given. Nothing is saved:
+    /// the person checks the suggestion and makes the task with `inbox.create_task_from_item`.
     ///
     /// The AI is the person's default of the assistant (`settings` › `assistant_default`, issue
     /// #131) when that is an AI account, else the first AI account (`accounts.list_accounts`, kind
@@ -1417,8 +1417,15 @@ pub enum Request {
     SuggestTaskFromItem {
         /// The entry's id from `inbox.list_items`.
         id: String,
+        /// The names of the task lists the task may go to (`tasks.list_lists`), for the AI to pick
+        /// the one that fits; left out or empty: it picks none. The first [`SUGGESTION_LISTS_MAX`]
+        /// count, each of at most [`SUGGESTION_TITLE_MAX`] characters (longer ones are passed
+        /// over). They go to the AI with the entry.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lists: Vec<String>,
     },
-    /// Asks an AI what event the entry `id` names (issue #120, "AI event" in the inbox app):
+    /// Asks an AI what event the entry `id` names (issue #120, "Fill in with AI" in the inbox app's
+    /// dialog of "Make event"):
     /// answered with [`Response::EventSuggestion`] – a title, when it starts and ends, where, and
     /// who takes part. Nothing is saved: the person checks the suggestion and makes the event with
     /// `inbox.create_event_from_item`. The AI, the data rule and the errors as for
@@ -1938,8 +1945,11 @@ pub enum Request {
     /// The core remembers who wrote a draft: a client key replaces and sends only its own drafts,
     /// any other (also one the person wrote) is `not-found` (security rule 2). Files
     /// (`DraftAttachment::File`) are taken from the app key anywhere, from a client key only out of
-    /// the core's attachment folder, never through a symbolic link and at most 25 MiB each; any
-    /// other path is `forbidden` (security rule 1). A draft with `html` (issue #125) is stored
+    /// the core's attachment folder or, while it reaches the tools' files (issue #225: the PDF tool
+    /// switched on, read access to `tools`, `pdf` in its selection), a PDF it made itself with
+    /// [`Request::CreatePdf`] (the path from its answer) as the core wrote it; never through a
+    /// symbolic link and at most 25 MiB each; any other path is `forbidden` (security rule 1). A
+    /// draft with `html` (issue #125) is stored
     /// cleaned (`torro_mail::html::sanitize`) with the plain text made from it; the answer carries
     /// both as stored.
     #[serde(rename = "mail.save_draft")]
@@ -3458,6 +3468,10 @@ pub const SUGGESTION_LOCATION_MAX: usize = 200;
 /// The longest title an AI's suggestion carries (issue #120), in characters: as an inbox entry's.
 pub const SUGGESTION_TITLE_MAX: usize = 200;
 
+/// The most task lists `inbox.suggest_task_from_item` offers the AI to choose from; more are passed
+/// over.
+pub const SUGGESTION_LISTS_MAX: usize = 50;
+
 /// The task an AI suggests for an inbox entry (`inbox.suggest_task_from_item`, issue #120). Made of
 /// text from outside the suite: data to show and check, never instructions. Nothing is saved yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3471,6 +3485,10 @@ pub struct TaskSuggestion {
     /// When it is due, when the text names a day: a day, or an instant when it names a time too.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<EventTime>,
+    /// The task list it fits, exactly as one of the `lists` it was asked with; `None` when it was
+    /// asked with none or none fits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<String>,
     /// The AI account that suggested it (`ai:…`, an engine of `assistant.list_engines`).
     pub engine: String,
     /// The model it asked.

@@ -10,8 +10,8 @@ use serde::Deserialize;
 
 use super::files::{Kind, Root, has_font_license};
 use super::{
-    About, Design, DesignError, Face, Font, FontRole, Fonts, Level, Mode, Pad, Palette, Radius, Rgba, SIDEBAR_FALLBACK,
-    STANDARD_ID, STANDARD_SIZE, Space, Weight, is_valid_id, rules,
+    About, Density, Design, DesignError, Face, Font, FontRole, Fonts, Level, Mode, Pad, Palette, Radius, Rgba,
+    SIDEBAR_FALLBACK, STANDARD_ID, STANDARD_SIZE, Space, Weight, is_valid_id, rules,
 };
 
 /// One entry of [`list`]: a design and whether it can be used.
@@ -191,6 +191,9 @@ struct LayoutFile {
     control_padding: Option<[f32; 2]>,
     section_gap: Option<f32>,
     item_gap: Option<f32>,
+    /// A word, so a pack that writes anything but `compact` or `comfortable` fails in the third
+    /// pass with its line, as `type.*.font` and `weight` do.
+    density: Option<Density>,
 }
 
 /// Colours stay loose values here, so each bad one is reported with its key.
@@ -249,8 +252,8 @@ const PALETTE_KEYS: [&str; 34] = [
 ];
 const LEVEL_KEYS: [&str; 11] =
     ["micro", "caption", "meta", "body", "body_strong", "read", "title", "headline", "display", "hero", "countdown"];
-const LAYOUT_KEYS: [&str; 7] =
-    ["inset", "page_padding", "panel_padding", "row_padding", "control_padding", "section_gap", "item_gap"];
+const LAYOUT_KEYS: [&str; 8] =
+    ["inset", "page_padding", "panel_padding", "row_padding", "control_padding", "section_gap", "item_gap", "density"];
 
 /// What `key` is in the table at `path` (`""`, `"colors.dark"` …): a value, a table to look
 /// into, or unknown (`None`).
@@ -479,6 +482,7 @@ fn merge_layout(design: &mut Design, file: LayoutFile) {
     l.control_padding = pad(file.control_padding, l.control_padding);
     l.section_gap = file.section_gap.unwrap_or(l.section_gap);
     l.item_gap = file.item_gap.unwrap_or(l.item_gap);
+    l.density = file.density.unwrap_or(l.density);
 }
 
 fn merge_palette(
@@ -649,6 +653,34 @@ mod tests {
         );
     }
 
+    /// Task E13.1: `layout.density` is a key of the format. A pack that leaves it out keeps the
+    /// standard's `compact`, and a word the format does not know is refused with its line – the
+    /// density has no range rule of its own (`rules.rs`).
+    #[test]
+    fn the_density_is_read_from_a_pack() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let pack = |id: &str, layout: &str| {
+            fs::create_dir_all(tmp.path().join(id)).expect("pack folder");
+            let toml = format!("format = 1\n[about]\nname = \"{id}\"\nversion = \"1.0.0\"\n{layout}");
+            write(tmp.path().join(id).join("design.toml"), &toml);
+        };
+
+        pack("cards", "[layout]\ndensity = \"comfortable\"\n");
+        assert_eq!(load(tmp.path(), "cards").expect("valid").layout.density, Density::Comfortable);
+
+        pack("rows", "[layout]\nitem_gap = 10\n");
+        let rows = load(tmp.path(), "rows").expect("valid");
+        assert_eq!(rows.layout.density, Density::Compact, "left out: the standard's density stands");
+        assert_eq!(rows.layout.item_gap, 10.0, "the rest of the table is still read");
+
+        pack("roomy", "[layout]\ndensity = \"roomy\"\n");
+        let refused = problems(tmp.path(), "roomy");
+        assert!(matches!(&refused[..], [DesignError::Syntax { line: Some(6), .. }]), "{refused:?}");
+
+        pack("misspelt", "[layout]\ndense = \"compact\"\n");
+        assert_eq!(problems(tmp.path(), "misspelt"), [DesignError::UnknownKey { key: "layout.dense".into() }]);
+    }
+
     #[test]
     fn a_pack_with_every_key_loads() {
         let tmp = designs(&["full"]);
@@ -668,6 +700,7 @@ mod tests {
         assert_eq!(design.radius, Radius { xs: 3.0, sm: 5.0, md: 7.0, lg: 9.0 });
         assert_eq!(design.layout.page_padding, Pad { vertical: 24.0, horizontal: 32.0 });
         assert_eq!((design.layout.inset, design.layout.item_gap), (10.0, 10.0));
+        assert_eq!(design.layout.density, Density::Comfortable, "`density` is one of the keys too (task E13.1)");
         assert_eq!((design.size.row, design.size.sidebar), (44.0, 248.0));
         assert_eq!(design.colors.dark.shadow, Rgba { a: 128.0 / 255.0, ..Rgba::hex(0) });
         assert_eq!(design.colors.light.accent, Rgba::hex(0x0B6B6A));
@@ -944,14 +977,17 @@ mod tests {
     }
 
     /// Task E8.8b: the packs in the repository's `designs/` stay valid with the chart rules – the
-    /// chart keys they leave out follow their own colours.
+    /// chart keys they leave out follow their own colours. Task E13.1: none of them sets
+    /// `layout.density`, so every shipped pack shows rows – a pack that switched to cards would
+    /// look unlike its own `preview.png`.
     #[test]
     fn the_shipped_packs_stay_valid() {
         let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../designs");
         let listed = list(&shipped);
         assert!(listed.len() > 1, "the packs are there");
         for pack in listed {
-            assert!(pack.result.is_ok(), "{}: {:?}", pack.id, pack.result.err());
+            let Ok(design) = &pack.result else { panic!("{}: {:?}", pack.id, pack.result.err()) };
+            assert_eq!(design.layout.density, Density::Compact, "{} ships cards", pack.id);
         }
     }
 

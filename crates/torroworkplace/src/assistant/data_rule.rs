@@ -660,11 +660,12 @@ mod tests {
     /// it was withheld, or the error.
     #[test]
     fn a_suggestion_of_an_entry_is_withheld_from_remote_models() {
-        let asked = Request::SuggestTaskFromItem { id: "a1".into() };
+        let asked = Request::SuggestTaskFromItem { id: "a1".into(), lists: Vec::new() };
         let suggestion = torro_ipc::TaskSuggestion {
             title: "Reply to the secret offer".into(),
             notes: None,
             due: None,
+            list: None,
             engine: "ai:ollama@localhost:11434".into(),
             model: "qwen3:8b".into(),
         };
