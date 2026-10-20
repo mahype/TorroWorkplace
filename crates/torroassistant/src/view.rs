@@ -573,7 +573,7 @@ impl App {
         if self.no_model_on() {
             return prompt_state(
                 tr("No model is turned on"),
-                tr("Turn on models in Settings › Accounts."),
+                tr("Turn on models in Settings › AI."),
                 Some((tr("Manage models…"), Message::ManageModels)),
             );
         }
@@ -942,7 +942,7 @@ impl App {
     /// an engine whose models did not come is offered as it is, and the engine picks its model.
     /// `chosen` has the check, a pick sends `pick` (the composer's choice, or the bot editor's
     /// engine). A chosen model that is turned off stands on top of its engine with why "Automatic"
-    /// answers; "Manage models…" at the end opens the control centre's accounts.
+    /// answers; "Manage models…" at the end opens the control centre's AI section.
     fn picker_menu(&self, chosen: Option<&Choice>, pick_message: fn(Choice) -> Message) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
         let mut sections: Vec<MenuSection<Message>> = self
@@ -964,11 +964,7 @@ impl App {
                                 let name = choice.model.as_deref().map(|id| self.model_name(&engine.id, id));
                                 [
                                     item(name.unwrap_or_default(), choice.clone()),
-                                    MenuItem::new(
-                                        Icon::Info,
-                                        tr("Turned off in Settings › Accounts"),
-                                        Message::CloseMenu,
-                                    ),
+                                    MenuItem::new(Icon::Info, tr("Turned off in Settings › AI"), Message::CloseMenu),
                                 ]
                             })
                             .collect();

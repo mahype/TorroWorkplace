@@ -4,6 +4,10 @@ Konzept: [settings.md](../settings.md). Regeln: [CLAUDE.md](../../CLAUDE.md), De
 `torro-design`. Die Steuerzentrale ist `torroworkplace ui` (auch ohne Befehl), Code in
 `crates/torroworkplace/src/ui/`.
 
+Aktueller Navigationsstand (2026-10-20): **AI** ist ein dauerhafter Abschnitt direkt nach
+**Accounts**. KI-Konten, Modelle und die Datenregel stehen dort; die älteren Aufgaben unten
+beschreiben teilweise noch die frühere Einordnung unter Accounts.
+
 Gemeinsam für alle Seiten-Aufgaben:
 - Jede Seite hat dieselbe Form (`State`, `Message`, `update(..) -> Action`, `view(..)`), siehe
   Doc-Kommentar in `ui/mod.rs`. Seiten sprechen nie selbst mit dem Dienst, sie geben eine

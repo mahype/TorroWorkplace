@@ -15,8 +15,8 @@
 //!
 //! **Only models turned on** (task S.26): "Model" offers an AI account's models that are turned on
 //! for the suite (`AiModel::enabled`) and ends with "Manage models…", which leads to the control
-//! centre's accounts, where they are switched. A stored model that is off stands on top with
-//! "Turned off in Settings › Accounts", because a new chat answers with "Automatic" then. With AI
+//! centre's AI section, where they are switched. A stored model that is off stands on top with
+//! "Turned off in Settings › AI", because a new chat answers with "Automatic" then. With AI
 //! accounts but no model on anywhere – the core lists no engine then – the group says so
 //! ([`super::no_model_on`]).
 
@@ -44,9 +44,9 @@ pub enum Message {
     /// A row of "New chats", "Model" or "Effort": the whole default as it is to be stored, so two
     /// windows never leave half of it behind; `None` for the one used last.
     Default(Option<AssistantDefault>),
-    /// "No AI account yet", "No model is turned on" and "Manage models…": the accounts of the
+    /// "No AI account yet", "No model is turned on" and "Manage models…": the AI section of the
     /// control centre ([`AI_SECTION`]), where AI accounts are added and their models switched.
-    Accounts,
+    ManageAi,
 }
 
 pub fn update(message: Message, _data: &Data) -> Action {
@@ -56,7 +56,7 @@ pub fn update(message: Message, _data: &Data) -> Action {
             key: SettingKey::AssistantDefault,
             value: AssistantDefault::to_value(default.as_ref()),
         }),
-        Message::Accounts => Action::ControlCentre(AI_SECTION.to_string()),
+        Message::ManageAi => Action::ControlCentre(AI_SECTION.to_string()),
     }
 }
 
@@ -124,8 +124,8 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
             false => choice(model.name, chosen, message),
         }
     });
-    // Which models are offered is set where the accounts are (task S.26), the whole suite at once.
-    let manage = pressable(setting_row(None, tr("Manage models…"), None, arrow()), Some(Message::Accounts));
+    // Which models are offered is set in AI (task S.26), the whole suite at once.
+    let manage = pressable(setting_row(None, tr("Manage models…"), None, arrow()), Some(Message::ManageAi));
     let rows = std::iter::once(automatic).chain(rows).chain([manage]).collect();
     groups.push(widgets::group(tr("Model"), rows, None));
     if takes_effort(default, data) {
@@ -144,24 +144,24 @@ fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
 
 /// The row of "New chats" without any engine: where an AI account is added.
 fn no_engine_row<'a>() -> Element<'a, Message> {
-    let detail = tr("Add Ollama on this computer or OpenRouter under Accounts");
+    let detail = tr("Add Ollama on this computer or OpenRouter under AI");
     let row = setting_row(None, tr("No AI account yet"), Some(detail.to_string()), arrow());
-    pressable(row, Some(Message::Accounts))
+    pressable(row, Some(Message::ManageAi))
 }
 
 /// The row of "New chats" with AI accounts but no model on at any (task S.26): where models are
 /// turned on.
 fn no_model_row<'a>() -> Element<'a, Message> {
-    let detail = tr("Turn on models in Settings › Accounts.");
+    let detail = tr("Turn on models in Settings › AI.");
     let row = setting_row(None, tr("No model is turned on"), Some(detail.to_string()), arrow());
-    pressable(row, Some(Message::Accounts))
+    pressable(row, Some(Message::ManageAi))
 }
 
 /// The stored model that is turned off (task S.26), as a row of "Model": its name, why a new chat
 /// answers with "Automatic" instead, and the check of the stored choice.
 fn off_choice<'a>(name: String, on_press: Message) -> Element<'a, Message> {
     let check = icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) });
-    let detail = tr("Turned off in Settings › Accounts").to_string();
+    let detail = tr("Turned off in Settings › AI").to_string();
     pressable(setting_row(None, name, Some(detail), check), Some(on_press))
 }
 
@@ -301,14 +301,13 @@ mod tests {
         assert_eq!(effort_label(None), tr("Automatic"));
     }
 
-    /// Without any engine the group says where an AI account is added (there is no section `ai`,
-    /// issue #231).
+    /// Without any engine the group says where an AI account is added (it has its own section).
     #[tokio::test]
-    async fn without_an_engine_it_points_at_the_accounts() {
+    async fn without_an_engine_it_points_at_ai() {
         let data = Data { engines: Vec::new(), accounts: Vec::new(), ..data().await };
         assert!(!super::super::no_model_on(&data), "no AI account at all");
-        let action = update(Message::Accounts, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "accounts"), "{action:?}");
+        let action = update(Message::ManageAi, &data);
+        assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "{action:?}");
         let _ = view(&data);
     }
 
@@ -332,8 +331,8 @@ mod tests {
         assert!(default_turned_off(&unknown, &data), "a model the account no longer lists is not on either");
         data.settings.assistant_default = Some(off);
         let _ = view(&data);
-        let action = update(Message::Accounts, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "accounts"), "Manage models…");
+        let action = update(Message::ManageAi, &data);
+        assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "Manage models…");
 
         // Nothing known about the account's models yet: no claim that the model is off.
         let unknown_list = Data { default_models: Vec::new(), ..data.clone() };
@@ -341,7 +340,7 @@ mod tests {
     }
 
     /// Task S.26: AI accounts but no model on at any – the core lists no engine – reads "No model
-    /// is turned on", not "No AI account yet", and leads to the accounts all the same.
+    /// is turned on", not "No AI account yet", and leads to AI all the same.
     #[tokio::test]
     async fn with_ai_accounts_but_no_model_on_it_says_so() {
         let data = Data { engines: Vec::new(), ..data().await };
@@ -349,7 +348,7 @@ mod tests {
         assert!(super::super::no_model_on(&data));
         assert!(!super::super::no_model_on(&super::super::tests::data().await), "an engine: models are on");
         let _ = view(&data);
-        let action = update(Message::Accounts, &data);
-        assert!(matches!(action, Act::ControlCentre(ref section) if section == "accounts"), "{action:?}");
+        let action = update(Message::ManageAi, &data);
+        assert!(matches!(action, Act::ControlCentre(ref section) if section == "ai"), "{action:?}");
     }
 }

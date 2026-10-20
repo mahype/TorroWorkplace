@@ -1,6 +1,6 @@
 # KI in der Suite: Konten, Modelle, Zuordnung
 
-Stand: 2026-10-11. **Diskussionsgrundlage.** Entstanden aus den Entscheidungen 8 und 9 in
+Stand: 2026-10-20. **Diskussionsgrundlage.** Entstanden aus den Entscheidungen 8 und 9 in
 [eingang.md](eingang.md). Ergänzt den Eintrag „KI-Anbieter“ in [settings.md](settings.md).
 
 ## Zwei verschiedene Richtungen
@@ -11,7 +11,7 @@ Codex …), Rechte in Steuerzentrale › MCP ([api.md](api.md), seit #231). Neu 
 | Richtung | Wer ruft wen | Wo eingestellt | Beispiel |
 |---|---|---|---|
 | **Agenten** | ein Agent ruft die Suite | Steuerzentrale › MCP (Skripte: › API) | Claude Code liest den Eingang |
-| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › Accounts › AI (Anbieter einrichten; auf der Kontoseite Modelle an/aus, seit #231); welches Modell wofür: in den Einstellungen des Moduls | Der Eingang lässt eine Spur vorschlagen |
+| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › AI (Anbieter einrichten; auf der Kontoseite Modelle an/aus, seit #231); welches Modell wofür: in den Einstellungen des Moduls | Der Eingang lässt eine Spur vorschlagen |
 
 Beides bleibt getrennt. Ein Agent bekommt nie Zugriff auf die KI-Konten der Suite, und die Suite
 benutzt nie den Schlüssel eines Agenten.
@@ -29,9 +29,8 @@ benutzt nie den Schlüssel eines Agenten.
 4. **Daten nur dahin, wo du es erlaubt hast.** Je Quelle des Eingangs lässt sich festlegen, dass ihre
    Inhalte nur an **lokale** Modelle gehen (z. B. Mail und Messenger ja nur lokal, GitHub darf in die
    Cloud). Standard für Mail: nur lokal. Bis die Regeln je Quelle kommen (KI.1), gibt es dafür einen
-   Schalter (Aufgabe C.17, Einstellung `mail_to_cloud`): „Mail an Cloud-Modelle“ unter
-   Mail in den Rechten des Assistenten und seiner Bots. Einschalten kann nur die Person selbst in der
-   Steuerzentrale; dann lesen auch Modelle außerhalb der eigenen Rechner Mail, soweit
+   Schalter (Aufgabe C.17, Einstellung `mail_to_cloud`): „Mail to cloud models“ unter AI in der
+   Steuerzentrale. Einschalten kann nur die Person selbst; dann lesen auch Modelle außerhalb der eigenen Rechner Mail, soweit
    die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
    Der Schalter hieß bis Issue #219 „Mail an Claude Code und Cloud-Modelle“; Agenten als Antrieb
    (Antrieb B in [assistent.md](assistent.md)) werden nicht mehr angeboten, die Sperre gilt aber
@@ -63,8 +62,7 @@ damit niemand Modellnamen tippen muss.
 ## Zuordnung je Funktion
 
 **Umgeplant am 2026-10-15** ([settings.md › KI](settings.md#ki)): Die Steuerzentrale richtet nur Anbieter ein und
-schaltet Modelle an und ab (seit #231 unter Accounts, auf der Kontoseite des KI-Kontos; ein eigener Abschnitt „AI“
-entfällt). **Welches Modell eine Funktion nimmt, stellt man im Modul ein**, zu dem sie gehört (die
+schaltet Modelle an und ab (seit 2026-10-20 im eigenen Abschnitt AI, auf der Kontoseite des KI-Kontos). **Welches Modell eine Funktion nimmt, stellt man im Modul ein**, zu dem sie gehört (die
 Inbox für „suggest lane“ und „summarize item“, in den Einstellungen der Inbox), und zur Wahl stehen nur angeschaltete
 Modelle. Die Tabelle unten bleibt die Übersicht aller Funktionen; die Befehle `ai.list_assignments` und
 `ai.set_assignment` bleiben, nur ihre Oberfläche wandert in die Module.

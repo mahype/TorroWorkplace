@@ -1640,7 +1640,7 @@ mod tests {
     }
 
     /// Task S.30: the data rule left the rights; the access group of the assistant with mail builds
-    /// without it (it stands under Accounts › AI now).
+    /// without it (it stands under AI now).
     #[test]
     fn the_rights_have_no_data_rule_any_more() {
         let mut rights = Rights::assistant();

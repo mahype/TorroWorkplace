@@ -909,8 +909,8 @@ mod tests {
 /// (task E12.5), so the rule holds even if this list were wrong.
 ///
 /// **A model turned off** (PR review #242): only models turned on in the control centre's
-/// accounts are offered (task S.26). The assigned one turned off since stands on top of "Model"
-/// with "Turned off in Settings › Accounts" and an alert in the attention colour – the core sorts
+/// AI section are offered (task S.26). The assigned one turned off since stands on top of "Model"
+/// with "Turned off in Settings › AI" and an alert in the attention colour – the core sorts
 /// nothing then ([`assigned_off`]) –, and "Manage models…" ends the group, the way to turn it on.
 pub mod categorization {
     use iced::Theme;
@@ -1088,8 +1088,8 @@ pub mod categorization {
             off.iter().map(|(engine, name)| off_row(label(engine, name))).collect();
         if offered.is_empty() && off.is_none() {
             let detail = match deciders(data).is_empty() {
-                true => tr("Add a local AI such as Ollama under Accounts and load a model that decides."),
-                false => tr("Turn on models in Settings › Accounts."),
+                true => tr("Add a local AI such as Ollama under AI and load a model that decides."),
+                false => tr("Turn on models in Settings › AI."),
             };
             let none = iced::widget::space().width(0);
             rows.push(setting_row(None, tr("No model that can sort mail"), Some(detail.to_owned()), none));
@@ -1115,7 +1115,7 @@ pub mod categorization {
             .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
         let check =
             icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) });
-        let detail = tr("Turned off in Settings › Accounts").to_string();
+        let detail = tr("Turned off in Settings › AI").to_string();
         setting_row(Some(alert.into()), label, Some(detail), check)
     }
 
