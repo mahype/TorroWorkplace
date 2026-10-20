@@ -11,9 +11,12 @@
 //! 3. loads the templates in the order of their keys, then by name ([`in_order`]): each onto its
 //!    screen, else as its [`torro_setups::ScreenFallback`] says
 //!    ([`torro_setups::Startup::monitor_in`]), by focusing the screen and loading as the menu's "Add"
-//!    does; a load that finds another save or load running (`busy`) is tried again for a while
-//!    ([`load_on`]), a failing template does not stop the others ([`load_all`]);
+//!    does; a failing template does not stop the others ([`load_all`]);
 //! 4. gives the focus back to the screen that had it and writes the marker.
+//!
+//! The core runs the pass holding the turn of saves and loads (`Core::load_at_login`), after any one
+//! that runs is over: no other save or load moves the focus between focusing a screen and loading onto
+//! it, and the pass moves none while another one runs.
 //!
 //! The marker is written once the pass ran, also when single templates failed: a failure is reported
 //! (stderr and a notification, [`report`]) and would only fail again, so trying anew at every restart
@@ -42,8 +45,7 @@ pub const SAME_IN_A_ROW: usize = 3;
 /// second boot within a minute of the first, with templates loaded in between, does not happen.
 const BOOT_SLACK: u64 = 60;
 
-/// How [`settled_monitors`] asks for the screens, and how [`load_on`] tries a `busy` load again: every
-/// `every`, `tries` times at most.
+/// How [`settled_monitors`] asks for the screens: every `every`, `tries` times at most.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pace {
     pub every: Duration,
@@ -51,8 +53,7 @@ pub struct Pace {
 }
 
 impl Pace {
-    /// At login: once a second, for a minute at most. A save or load the person started meanwhile (or
-    /// the tray's "Add") is over by then.
+    /// At login: once a second, for a minute at most.
     pub const LOGIN: Pace = Pace { every: Duration::from_secs(1), tries: 60 };
 }
 
@@ -170,7 +171,7 @@ pub fn in_order(templates: Vec<Template>) -> Vec<Template> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// The load ran, or its screen could not be focused (then an `error`): the answer, as the menu's
-    /// "Add" gets it (`Response::Loaded`, or an error such as `busy`). Boxed: an answer is large.
+    /// "Add" gets it (`Response::Loaded`, or an error such as `not-found`). Boxed: an answer is large.
     Ran(Box<Response>),
     /// Its screen is missing and its [`ScreenFallback::Skip`](torro_setups::ScreenFallback::Skip) says
     /// not to load it elsewhere.
@@ -191,10 +192,10 @@ pub struct Done {
 
 /// Loads each of `templates` (in this order) onto its screen among `monitors`: focuses the screen
 /// [`torro_setups::Startup::monitor_in`] picks, then `load` with the template's id, which must load it
-/// like `Request::LoadTemplate { mode: Add }` does (the core passes exactly that request). A template with
-/// no screen is [`Outcome::Skipped`], one whose screen cannot be focused fails without loading, so it
-/// never lands on the wrong screen; neither stops the others. A load answered with `busy` is tried
-/// again as [`load_on`] says, with `pace`.
+/// like `Request::LoadTemplate { mode: Add }` does (the core loads it the same way, `Core::load_template`).
+/// A template with no screen is [`Outcome::Skipped`], one whose screen cannot be focused fails without
+/// loading, so it never lands on the wrong screen; neither stops the others. The caller holds the turn
+/// of saves and loads, so `load` never answers `busy` and nothing else moves the focus in between.
 ///
 /// Afterwards the screen that showed the active workspace before gets the focus back, so the person
 /// finds the screen they were on; when none did, the focus stays where the last load left it.
@@ -203,7 +204,6 @@ pub async fn load_all<L, Fut>(
     wm: &impl WindowManager,
     templates: &[Template],
     monitors: &[Monitor],
-    pace: Pace,
     mut load: L,
 ) -> Vec<Done>
 where
@@ -220,7 +220,16 @@ where
         let Some(startup) = &template.startup else { continue };
         let outcome = match startup.monitor_in(monitors) {
             None => Outcome::Skipped,
-            Some(monitor) => Outcome::Ran(Box::new(load_on(wm, &monitor.name, &template.id, &mut load, pace).await)),
+            Some(monitor) => match wm.focus_monitor(&monitor.name).await {
+                Ok(()) => Outcome::Ran(Box::new(load(template.id.clone()).await)),
+                Err(err) => Outcome::Ran(Box::new(Response::Error {
+                    code: "error".into(),
+                    message: trf(
+                        "Screen {screen} could not be focused: {error}",
+                        &[("screen", &monitor.name as &dyn std::fmt::Display), ("error", &err)],
+                    ),
+                })),
+            },
         };
         done.push(Done {
             id: template.id.clone(),
@@ -237,39 +246,6 @@ where
     done
 }
 
-/// Focuses `screen`, then loads template `id` with `load` and gives its answer. While the answer is
-/// `busy` (another save or load holds the core, `Core::exclusive`), waits `pace.every` and tries both
-/// again, `pace.tries` times in all (at least once); the focus is set anew each time, since the other
-/// load may have moved it. When it stays `busy`, the last `busy` is the answer. Any other answer, and a
-/// screen that cannot be focused (an `error`, nothing loaded), ends it at once.
-async fn load_on<L, Fut>(wm: &impl WindowManager, screen: &str, id: &str, load: &mut L, pace: Pace) -> Response
-where
-    L: FnMut(String) -> Fut,
-    Fut: Future<Output = Response>,
-{
-    let mut answer = None;
-    for attempt in 0..pace.tries.max(1) {
-        if attempt > 0 {
-            tokio::time::sleep(pace.every).await;
-        }
-        if let Err(err) = wm.focus_monitor(screen).await {
-            return Response::Error {
-                code: "error".into(),
-                message: trf(
-                    "Screen {screen} could not be focused: {error}",
-                    &[("screen", &screen as &dyn std::fmt::Display), ("error", &err)],
-                ),
-            };
-        }
-        let response = load(id.to_string()).await;
-        if !matches!(&response, Response::Error { code, .. } if code == "busy") {
-            return response;
-        }
-        answer = Some(response);
-    }
-    answer.unwrap_or_else(|| Response::Error { code: "busy".into(), message: "another save or load is running".into() })
-}
-
 /// Where [`run`] keeps its marker and which session it runs in.
 #[derive(Debug, Clone)]
 pub struct Marking<'a> {
@@ -280,8 +256,8 @@ pub struct Marking<'a> {
 
 /// The whole pass at the daemon's start (see the module): nothing when `marking` says this session
 /// loaded already; else waits for the screens ([`settled_monitors`] with `pace`), loads the templates
-/// that load at login ([`in_order`], [`load_all`] with `load`, a `busy` one tried again with `pace`) and
-/// writes the marker.
+/// that load at login ([`in_order`], [`load_all`] with `load`) and writes the marker. The caller holds
+/// the turn of saves and loads for the whole pass (see the module).
 ///
 /// `templates` is what the store listed. Returns what was done, `None` when the pass did not run:
 /// loaded already in this session, the templates unreadable, or no screens. Without templates to load
@@ -315,7 +291,7 @@ where
                 eprintln!("torroworkplace: no screens to load the templates onto at login");
                 return None;
             };
-            load_all(wm, &templates, &monitors, pace, load).await
+            load_all(wm, &templates, &monitors, load).await
         }
     };
     if let Some(file) = marking.file
@@ -483,7 +459,7 @@ mod tests {
         ];
         let monitors = wm.monitors().await.expect("monitors");
 
-        let done = load_all(&wm, &templates, &monitors, QUICK, |id| loads.load(id)).await;
+        let done = load_all(&wm, &templates, &monitors, |id| loads.load(id)).await;
 
         let outcomes: Vec<(&str, &Outcome)> = done.iter().map(|one| (one.id.as_str(), &one.outcome)).collect();
         assert_eq!(
@@ -538,7 +514,7 @@ mod tests {
         let templates = vec![template("dev", None, Some(("DP-1", ScreenFallback::Main)))];
         let monitors = wm.monitors().await.expect("monitors");
 
-        load_all(&wm, &templates, &monitors, QUICK, |id| loads.load(id)).await;
+        load_all(&wm, &templates, &monitors, |id| loads.load(id)).await;
 
         assert_eq!(wm.calls(), vec![Call::FocusMonitor("DP-1".into()), Call::FocusMonitor("HDMI-A-1".into())]);
         assert_eq!(wm.active_workspace().await, Ok(ws("7")));
@@ -558,7 +534,7 @@ mod tests {
         ];
         let monitors = wm.monitors().await.expect("monitors");
 
-        let done = load_all(&wm, &templates, &monitors, QUICK, |id| loads.load(id)).await;
+        let done = load_all(&wm, &templates, &monitors, |id| loads.load(id)).await;
 
         assert!(
             matches!(&done[0].outcome, Outcome::Ran(answer) if matches!(**answer, Response::Error { ref code, .. } if code == "error")),
@@ -593,55 +569,8 @@ mod tests {
 
         assert_eq!(done[0].outcome, Outcome::Ran(Box::new(broken)));
         assert_eq!(done[1].outcome, Outcome::Ran(Box::new(loaded())));
-        assert_eq!(*seen.lock().expect("seen"), ["first", "second"], "an error other than busy is not tried again");
+        assert_eq!(*seen.lock().expect("seen"), ["first", "second"], "one failing does not stop the next");
         assert!(already_loaded(&file, &session));
-    }
-
-    /// PR #259: at login another save or load may hold the core; a `busy` load is tried again, on its
-    /// screen again, until it runs.
-    #[tokio::test]
-    async fn a_busy_load_is_tried_again_on_its_screen() {
-        let wm = two_screens();
-        let busy = Response::Error { code: "busy".into(), message: "another save or load is running".into() };
-        let templates = vec![template("dev", Some(1), Some(("HDMI-A-1", ScreenFallback::Main)))];
-        let monitors = wm.monitors().await.expect("monitors");
-        let tries = Mutex::new(0);
-        let load = |_id: String| {
-            let mut tries = tries.lock().expect("tries");
-            *tries += 1;
-            // The other load moves the focus while it runs.
-            wm.focus_workspace("1");
-            let answer = if *tries < 3 { busy.clone() } else { loaded() };
-            async move { answer }
-        };
-
-        let done = load_all(&wm, &templates, &monitors, QUICK, load).await;
-
-        assert_eq!(done[0].outcome, Outcome::Ran(Box::new(loaded())));
-        assert_eq!(*tries.lock().expect("tries"), 3);
-        let focused = wm.calls().iter().filter(|call| **call == Call::FocusMonitor("HDMI-A-1".into())).count();
-        assert_eq!(focused, 3, "the screen is focused before each try");
-    }
-
-    /// A core that stays `busy` is given up after `pace.tries`; the template reports `busy`.
-    #[tokio::test]
-    async fn a_load_that_stays_busy_gives_up_after_the_pace() {
-        let wm = two_screens();
-        let busy = Response::Error { code: "busy".into(), message: "another save or load is running".into() };
-        let templates = vec![template("dev", Some(1), Some(("DP-1", ScreenFallback::Main)))];
-        let monitors = wm.monitors().await.expect("monitors");
-        let tries = Mutex::new(0);
-        let load = |_id: String| {
-            *tries.lock().expect("tries") += 1;
-            let answer = busy.clone();
-            async move { answer }
-        };
-        let pace = Pace { every: Duration::ZERO, tries: 4 };
-
-        let done = load_all(&wm, &templates, &monitors, pace, load).await;
-
-        assert_eq!(done[0].outcome, Outcome::Ran(Box::new(busy)));
-        assert_eq!(*tries.lock().expect("tries"), 4);
     }
 
     /// Without screens nothing loads and nothing is marked, so the next start may try again.
