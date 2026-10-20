@@ -6,7 +6,10 @@
 //!
 //! Two modes ([`Mode`]): `Edit` changes a template that exists; `Save` follows "Save workspace…",
 //! which saved the active workspace already – its title is "Save workspace", it says what was
-//! captured, and "Cancel" deletes the template again.
+//! captured, and "Cancel" deletes the template again. In the dialog's own window every way out but
+//! "Save" is "Cancel": Escape, and closing the window by the window manager or the macOS close
+//! button; in the mode `Save` they delete the template, also before it was loaded (by the id the
+//! window started with), and a template that is gone already counts as deleted.
 //!
 //! Two hosts, one [`Form`]: the control centre lays [`view`] over its window (Workspaces ›
 //! Edit… and Save workspace…), and `torroworkplace ui --template=<id> [--saved]` shows [`window_view`]
@@ -211,10 +214,12 @@ impl Form {
     /// The core's answer to the request the dialog sent. `None` when the dialog waits for none:
     /// the answer is not its own. An error ends the round and stays in the dialog in words for
     /// people ([`refusal`]: by its code when the answer has one, `Err` has none); what was taken
-    /// before it counts as stored, so the next "Save" does not send it again.
+    /// before it counts as stored, so the next "Save" does not send it again. `not-found` for the
+    /// delete of "Cancel" is no error: the template is gone, as Cancel wants, and the dialog closes.
     pub fn answered(&mut self, result: &Result<Response, String>) -> Option<Step> {
         let sent = self.sending.take()?;
         let refused = match result {
+            Ok(Response::Error { code, .. }) if gone(code, &sent) => None,
             Ok(Response::Error { code, message }) => Some(refusal(Some(code), message)),
             Err(detail) => Some(refusal(None, detail)),
             Ok(_) => None,
@@ -312,6 +317,11 @@ impl Form {
         }
         requests
     }
+}
+
+/// Whether the refusal `code` of `sent` means the template is gone, which is what deleting it wants.
+fn gone(code: &str, sent: &Request) -> bool {
+    code == "not-found" && matches!(sent, Request::DeleteTemplate { .. })
 }
 
 /// What the dialog says when the core refused one of its requests (`code`, as `Response::Error`
@@ -829,22 +839,27 @@ struct Window {
     mode: Mode,
     loaded: Option<Result<Loaded, String>>,
     form: Option<Form>,
+    /// The mode `Save` was cancelled before the form was there: the delete by [`Window::id`] is on its
+    /// way, and a load that arrives now opens no form.
+    cancelling: bool,
+    /// What the core refused about that delete, in words for people; the window stays and shows it.
+    refused: Option<String>,
     system_mode: SystemMode,
     zoom: Zoom,
     size: Size,
 }
 
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "an answer is handled once; boxing would only add an allocation, as in the control centre"
-)]
 enum Event {
     Loaded(Result<Box<Loaded>, String>),
     Form(Message),
     Sent(Result<Response, String>),
+    /// The answer to the delete of a cancel without the form ([`Window::cancelling`]).
+    Cancelled(Result<Response, String>),
     Retry,
     Escape,
+    /// The window manager or the window's close button asks the window to close: like Escape.
+    CloseRequested,
     /// Tab: the name's focus goes or comes back.
     Tab,
     SystemMode(SystemMode),
@@ -855,8 +870,9 @@ enum Event {
 
 /// Runs the dialog of the template `launch.template` as a window of its own: the class
 /// `torro_core::app::WORKPLACE_DIALOG_CLASS` (Hyprland floats it, captures leave it out), [`size::form_max`]
-/// wide. It ends after "Save" or "Cancel" went through. With `--demo` it shows the demo's template
-/// and sends nothing.
+/// wide. It ends after "Save" or "Cancel" went through; Escape and closing the window are "Cancel"
+/// ([`Window::cancel`]), so in the mode `Save` no way out leaves the template behind. With `--demo` it
+/// shows the demo's template and sends nothing.
 pub fn run(launch: Launch) -> iced::Result {
     let socket = torro_ipc::socket_path().filter(|_| !launch.demo);
     if let Some(socket) = &socket {
@@ -876,10 +892,13 @@ pub fn run(launch: Launch) -> iced::Result {
         .run()
 }
 
-/// The window: [`size::form_max`] square, with the dialog's class as app id on Linux.
+/// The window: [`size::form_max`] square, with the dialog's class as app id on Linux. It does not
+/// close by itself when asked to: in the mode `Save` closing deletes the template first
+/// ([`Event::CloseRequested`]).
 pub fn window_settings() -> iced::window::Settings {
     let mut settings = torro_gui::window(AppId::WORKPLACE);
     settings.size = Size::new(size::form_max(), size::form_max());
+    settings.exit_on_close_request = false;
     // The class is Linux's app id; elsewhere windows have none that a capture or a rule would read.
     #[cfg(target_os = "linux")]
     {
@@ -899,6 +918,8 @@ impl Window {
             mode,
             loaded: None,
             form: None,
+            cancelling: false,
+            refused: None,
             system_mode: SystemMode::None,
             zoom: Zoom::new(torro_ipc::socket_path().filter(|_| !demo)),
             size: window_settings().size,
@@ -919,9 +940,11 @@ impl Window {
         (window, tasks)
     }
 
-    /// Takes what was loaded and opens the form; the template's name takes the focus.
+    /// Takes what was loaded and opens the form; the template's name takes the focus. Not while a
+    /// cancel deletes the template: the window ends instead.
     fn loaded_with(&mut self, loaded: Result<Loaded, String>) -> Task<Event> {
         if self.form.is_none()
+            && !self.cancelling
             && let Ok(loaded) = &loaded
             && let Some(template) = loaded.templates.iter().find(|template| template.id == self.id)
         {
@@ -944,6 +967,7 @@ impl Window {
             iced::system::theme_changes().map(Event::SystemMode),
             iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Event::Resized(size)),
+            iced::window::close_requests().map(|_| Event::CloseRequested),
             self.zoom.subscription().map(Event::Zoom),
         ])
     }
@@ -954,6 +978,7 @@ impl Window {
             Event::Loaded(loaded) => self.loaded_with(loaded.map(|loaded| *loaded)),
             Event::Retry => {
                 self.loaded = None;
+                self.refused = None;
                 load()
             }
             Event::Form(message) => match self.form.as_mut() {
@@ -963,13 +988,8 @@ impl Window {
                 }
                 None => Task::none(),
             },
-            Event::Escape => match self.form.as_mut() {
-                Some(form) => {
-                    let step = form.update(Message::Cancel);
-                    self.step(step)
-                }
-                None => iced::exit(),
-            },
+            Event::Escape | Event::CloseRequested => self.cancel(),
+            Event::Cancelled(result) => self.cancelled(&result),
             // The name is the only field: moving on from it leaves the focus nowhere, so the
             // keys of the dialog work ([`key_message`]); from nowhere it goes back to the name.
             Event::Tab => operation::focus_next(),
@@ -992,6 +1012,47 @@ impl Window {
         task
     }
 
+    /// "Cancel" by Escape or by closing the window. With the form, the form decides: the mode `Edit`
+    /// closes, the mode `Save` deletes the template and ends once that went through (a refusal stays in
+    /// the dialog), and nothing happens while one of its requests is on its way – a save under way is
+    /// not undone half-way, the person cancels again once it answered. Without the form (still loading,
+    /// not loaded, the template gone) the mode `Edit` ends at once and the mode `Save` deletes the
+    /// template by the id the window started with, then ends ([`Window::cancelled`]).
+    fn cancel(&mut self) -> Task<Event> {
+        if let Some(form) = self.form.as_mut() {
+            let step = form.update(Message::Cancel);
+            return self.step(step);
+        }
+        match self.mode {
+            Mode::Edit => iced::exit(),
+            Mode::Save if self.cancelling => Task::none(),
+            Mode::Save if self.id.is_empty() => iced::exit(),
+            Mode::Save => {
+                self.cancelling = true;
+                self.refused = None;
+                if self.launch.demo {
+                    return self.update(Event::Cancelled(Ok(Response::Ok)));
+                }
+                send(Request::DeleteTemplate { id: self.id.clone() }, Event::Cancelled)
+            }
+        }
+    }
+
+    /// The answer to the delete of [`Window::cancel`] without the form: deleted, or gone already,
+    /// ends the window; a refusal stays in it in words for people ([`refusal`]), with "Retry", which
+    /// loads the dialog again.
+    fn cancelled(&mut self, result: &Result<Response, String>) -> Task<Event> {
+        self.cancelling = false;
+        let delete = Request::DeleteTemplate { id: self.id.clone() };
+        self.refused = match result {
+            Ok(Response::Error { code, .. }) if gone(code, &delete) => None,
+            Ok(Response::Error { code, message }) => Some(refusal(Some(code), message)),
+            Err(detail) => Some(refusal(None, detail)),
+            Ok(_) => None,
+        };
+        if self.refused.is_some() { Task::none() } else { iced::exit() }
+    }
+
     /// Does what the form asks for: sends (the demo answers itself and changes nothing), or ends.
     fn step(&mut self, step: Step) -> Task<Event> {
         match step {
@@ -1002,12 +1063,16 @@ impl Window {
                 let answer = super::launch::demo_answer(&request, &data).unwrap_or(Response::Ok);
                 self.update(Event::Sent(Ok(answer)))
             }
-            Step::Send(request) => send(request),
+            Step::Send(request) => send(request, Event::Sent),
         }
     }
 
     fn view(&self) -> Element<'_, Event> {
         let body: Element<'_, Event> = match (&self.form, &self.loaded) {
+            (None, _) if self.cancelling => widgets::loading(),
+            (None, _) if self.refused.is_some() => {
+                widgets::error_state(self.refused.clone().unwrap_or_default(), Event::Retry)
+            }
             (Some(form), Some(Ok(loaded))) => {
                 let narrow = matches!(layout::of(self.size), SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
                 let facts = Facts {
@@ -1087,15 +1152,16 @@ fn load() -> Task<Event> {
     )
 }
 
-/// Sends one request. The core's answer comes back as it is, a refusal with its code, so the form
-/// can say what it means ([`refusal`]); `Err` only when no answer came, with why for stderr.
-fn send(request: Request) -> Task<Event> {
+/// Sends one request; its answer comes as `answer` (the form's [`Event::Sent`], or [`Event::Cancelled`]).
+/// The core's answer comes back as it is, a refusal with its code, so the form can say what it means
+/// ([`refusal`]); `Err` only when no answer came, with why for stderr.
+fn send(request: Request, answer: fn(Result<Response, String>) -> Event) -> Task<Event> {
     Task::perform(
         async move {
             let socket = torro_ipc::socket_path().ok_or_else(|| "no home directory".to_string())?;
             client::call(&socket, &request).await.map_err(|err| err.to_string())
         },
-        Event::Sent,
+        answer,
     )
 }
 
@@ -1258,6 +1324,28 @@ mod tests {
         assert_eq!(save.answered(&Ok(Response::Ok)), Some(Step::Close));
     }
 
+    /// Review fix: Cancel's delete finding the template gone is what Cancel wants: the dialog closes.
+    /// Another refusal stays, and `not-found` of a rename stays too.
+    #[test]
+    fn a_template_gone_already_counts_as_deleted() {
+        let new = template("ws-3", "Workspace 3", None);
+        let not_found = || Ok(Response::Error { code: "not-found".into(), message: "no template ws-3".into() });
+        let mut save = Form::new(Mode::Save, &new, &templates(), &screens());
+        save.update(Message::Cancel);
+        assert_eq!(save.answered(&not_found()), Some(Step::Close));
+
+        let mut save = Form::new(Mode::Save, &new, &templates(), &screens());
+        save.update(Message::Cancel);
+        let busy = Ok(Response::Error { code: "busy".into(), message: "a load runs".into() });
+        assert_eq!(save.answered(&busy), Some(Step::Stay));
+        assert!(save.error.is_some());
+
+        let mut edit = edit("dev");
+        edit.update(Message::Name("Development".into()));
+        edit.update(Message::Save);
+        assert_eq!(edit.answered(&not_found()), Some(Step::Stay), "a rename of a template gone is an error");
+    }
+
     #[test]
     fn the_mode_save_suggests_the_next_free_key() {
         let all = templates();
@@ -1320,6 +1408,7 @@ mod tests {
     fn the_window_is_the_dialog_class_and_a_form_wide() {
         let settings = window_settings();
         assert_eq!(settings.size.width, size::form_max());
+        assert!(!settings.exit_on_close_request, "closing goes through Cancel");
         #[cfg(target_os = "linux")]
         assert_eq!(settings.platform_specific.application_id, torro_core::app::WORKPLACE_DIALOG_CLASS);
     }
@@ -1340,6 +1429,59 @@ mod tests {
         let (window, _) = Window::new(gone);
         assert!(window.form.is_none());
         drop(window.view());
+    }
+
+    fn demo_window(words: &[&str]) -> Window {
+        let mut args = vec!["--demo".to_string()];
+        args.extend(words.iter().map(|word| word.to_string()));
+        Window::new(Launch::parse(&args).expect("valid")).0
+    }
+
+    /// Review fix: closing the window by the window manager or its close button is Cancel. In the mode
+    /// `Save` the template is deleted, then the window ends; in the mode `Edit` it just ends.
+    #[test]
+    fn closing_the_window_cancels() {
+        let mut save = demo_window(&["--template=writing", "--saved"]);
+        assert_eq!(save.form.as_ref().map(Form::mode), Some(Mode::Save));
+        assert!(save.update(Event::CloseRequested).units() > 0, "the window ends");
+        assert!(!save.form.as_ref().expect("the form").waits(), "the demo took the delete");
+        let mut edit = demo_window(&["--template=writing"]);
+        assert!(edit.update(Event::CloseRequested).units() > 0);
+        // While a request of the dialog is on its way, closing waits for it.
+        let mut busy = demo_window(&["--template=writing", "--saved"]);
+        busy.form.as_mut().expect("the form").sending = Some(Request::DeleteTemplate { id: "writing".into() });
+        assert_eq!(busy.update(Event::CloseRequested).units(), 0);
+    }
+
+    /// Review fix: Escape (or closing) before the template is there deletes it in the mode `Save` by
+    /// the id the window started with, and no load opens the form after that; a refusal stays in the
+    /// window with "Retry". The mode `Edit` just ends.
+    #[test]
+    fn cancelling_before_the_template_is_there_deletes_it_by_its_id() {
+        let mut save = demo_window(&["--template=nope", "--saved"]);
+        assert!(save.form.is_none());
+        assert!(save.update(Event::Escape).units() > 0, "deleted at once by the demo, then the window ends");
+
+        // The delete on its way: a load opens nothing, a second Escape sends nothing more.
+        save.cancelling = true;
+        let data = crate::ui::launch::demo_data();
+        let loaded = Loaded { templates: data.templates, screens: data.screens, settings: data.settings };
+        save.id = "writing".into();
+        drop(save.loaded_with(Ok(loaded)));
+        assert!(save.form.is_none(), "no form while the cancel deletes");
+        assert_eq!(save.update(Event::Escape).units(), 0);
+        drop(save.view());
+
+        let busy = Ok(Response::Error { code: "busy".into(), message: "a load runs".into() });
+        assert_eq!(save.update(Event::Cancelled(busy)).units(), 0, "the window stays");
+        assert_eq!(save.refused.as_deref(), Some(tr("A template is being loaded or saved. Try again in a moment.")));
+        drop(save.view());
+        let gone = Ok(Response::Error { code: "not-found".into(), message: "no template".into() });
+        assert!(save.update(Event::Cancelled(gone)).units() > 0, "gone already: the window ends");
+
+        let mut edit = demo_window(&["--template=nope"]);
+        assert!(edit.update(Event::Escape).units() > 0);
+        assert!(!edit.cancelling, "nothing to delete in the mode Edit");
     }
 
     /// Review fix D1: while no field has the focus, the keyboard reaches every choice of the dialog;
