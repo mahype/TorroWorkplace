@@ -49,6 +49,8 @@ mod pim;
 mod reminders;
 mod settings_service;
 mod sources;
+// Loading templates at login (issue #243, task WS.5).
+mod startup_templates;
 mod suggest;
 // The assistant's own tools (issue #225): the PDF tool, its register and its commands.
 mod tools;

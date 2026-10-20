@@ -1312,6 +1312,33 @@ impl Core {
         });
     }
 
+    /// Loads the templates that load at login, once per session, in the background
+    /// ([`crate::startup_templates::run`], task WS.5): each the way `workspaces.load_template` in the
+    /// mode `add` does, through [`Core::handle`], so it takes its turn with the other saves and loads
+    /// (`busy` while one runs). Without a window manager nothing. Part of [`Core::start`].
+    fn load_templates_at_login(self: &Arc<Self>) {
+        if matches!(self.backend, Backend::Unsupported { .. }) {
+            return;
+        }
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let file = torro_core::paths::AppPaths::for_app(AppId::WORKPLACE)
+                .map(|paths| paths.state.join(crate::startup_templates::FILE));
+            let marking = crate::startup_templates::Marking {
+                file: file.as_deref(),
+                session: crate::startup_templates::Session::current(),
+            };
+            let core = &core;
+            let load = |id: String| core.handle(Request::LoadTemplate { id, mode: torro_setups::LoadMode::Add });
+            let pace = crate::startup_templates::Pace::LOGIN;
+            if let Some(done) =
+                crate::startup_templates::run(&core.backend, core.store.list(), marking, pace, load).await
+            {
+                crate::startup_templates::report(&done);
+            }
+        });
+    }
+
     /// The template keys as [`Core::report_shortcuts`] last told, with the modifiers the settings
     /// name now; `None` before any report.
     fn shortcut_status(&self) -> Option<torro_ipc::ShortcutStatus> {
@@ -1583,6 +1610,8 @@ impl Core {
         self.follow_voice();
         // The template keys on Hyprland (task WS.3).
         self.follow_template_keys();
+        // The templates that load at login, once per session (task WS.5).
+        self.load_templates_at_login();
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
         let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {

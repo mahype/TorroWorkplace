@@ -144,7 +144,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   als nicht geprüft nennen (`scripts/ci-local.sh` prüft Windows nicht). Echte Tasten: von Hand.
 
 ### WS.5 Laden beim Start
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WS.2 · **Dateien:** `crates/torroworkplace/src/startup_templates.rs` (neu),
   `crates/torroworkplace/src/{core,main}.rs`
 - Beim Start des Dienstes, im Hintergrund: Merker `startup.json` im State-Verzeichnis mit Sitzungskennung
