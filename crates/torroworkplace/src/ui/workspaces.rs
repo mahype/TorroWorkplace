@@ -10,7 +10,8 @@
 //! template dialog, [`super::template_form`]), "Update from current workspace" and "Delete…" (with
 //! confirmation). The header's primary button "Save workspace…" saves the active workspace
 //! (`SaveTemplate`) and opens the dialog in the mode `Save` for the new template once the core
-//! answers ([`answered`]). Menu, dialog and confirmation are layers over the whole window
+//! answers ([`answered`]). Every request of the page goes out as [`Action::Ask`] with what it is for
+//! ([`Asked`]), so each answer reaches only what sent it. Menu, dialog and confirmation are layers over the whole window
 //! ([`overlay`]). Without a window manager nothing loads: the startup stands in the meta line instead
 //! of a pill, and the group's note says when the templates load again.
 
@@ -48,13 +49,28 @@ pub struct State {
     confirm_delete: Option<String>,
 }
 
+/// What a request of the page is for ([`Action::Ask`]), so its answer acts only for it: the `Saved`
+/// of "Update from current workspace" opens no dialog, the `Loaded` of a "Load" is no answer to the
+/// dialog's rename.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// "Save workspace…": its `Saved` opens the dialog in the mode `Save`.
+    Save,
+    /// A request of the template dialog ([`Form::answered`]), which shows its refusals itself.
+    Form,
+    /// Every other request of the page (Load, Update, Delete, the modifiers): a refusal is the
+    /// shell's notice, nothing else follows.
+    Other,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The "…" button of a row: opens its menu, or closes it when it is open.
     ToggleMenu(String),
     /// A click next to the menu, or Escape.
     CloseMenu,
-    /// "Edit…" in the menu: the template dialog in the mode `Edit`.
+    /// "Edit…" in the menu: the template dialog in the mode `Edit`. Not while "Save workspace…" waits
+    /// for its answer, which opens the dialog in the mode `Save`.
     Edit(String),
     /// "Update from current workspace" in the menu: captures the active workspace into it again.
     Update(String),
@@ -100,15 +116,17 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::Edit(id) => {
             state.menu = None;
-            state.form =
-                find(data, &id).map(|template| Form::new(Mode::Edit, template, &data.templates, &data.screens));
+            if !state.saving {
+                state.form =
+                    find(data, &id).map(|template| Form::new(Mode::Edit, template, &data.templates, &data.screens));
+            }
             Action::None
         }
         Message::Update(id) => {
             state.menu = None;
-            Action::Send(Request::UpdateTemplate { id })
+            Action::Ask(Asked::Other, Request::UpdateTemplate { id })
         }
-        Message::Load(id) => Action::Send(Request::LoadTemplate { id, mode: LoadMode::Add }),
+        Message::Load(id) => Action::Ask(Asked::Other, Request::LoadTemplate { id, mode: LoadMode::Add }),
         Message::AskDelete(id) => {
             state.menu = None;
             state.confirm_delete = Some(id);
@@ -119,13 +137,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::ConfirmDelete => match state.confirm_delete.take() {
-            Some(id) => Action::Send(Request::DeleteTemplate { id }),
+            Some(id) => Action::Ask(Asked::Other, Request::DeleteTemplate { id }),
             None => Action::None,
         },
         Message::SaveWorkspace if state.saving || state.form.is_some() || !supported(data) => Action::None,
         Message::SaveWorkspace => {
             state.saving = true;
-            Action::Send(Request::SaveTemplate { name: None })
+            Action::Ask(Asked::Save, Request::SaveTemplate { name: None })
         }
         Message::Form(message) => match state.form.as_mut() {
             Some(form) => {
@@ -136,7 +154,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         },
         Message::Modifiers(modifiers) => {
             let value = serde_json::to_value(modifiers).unwrap_or_default();
-            Action::Send(Request::SetSetting { key: SettingKey::WorkspaceShortcuts, value })
+            Action::Ask(Asked::Other, Request::SetSetting { key: SettingKey::WorkspaceShortcuts, value })
         }
     }
 }
@@ -145,7 +163,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 fn step_action(state: &mut State, step: Step) -> Action {
     match step {
         Step::Stay => Action::None,
-        Step::Send(request) => Action::Send(request),
+        Step::Send(request) => Action::Ask(Asked::Form, request),
         Step::Close => {
             state.form = None;
             Action::None
@@ -153,23 +171,28 @@ fn step_action(state: &mut State, step: Step) -> Action {
     }
 }
 
-/// The core's answer to a request of this page, if it is one the page waits for: the dialog's
-/// requests, and "Save workspace…", whose `Saved` opens the dialog in the mode `Save`. `None` for
-/// any other answer; a failed save is `None` too, so the shell shows its notice.
-pub fn answered(state: &mut State, result: &Result<Response, String>, data: &Data) -> Option<Action> {
-    if let Some(step) = state.form.as_mut().and_then(|form| form.answered(result)) {
-        return Some(step_action(state, step));
-    }
-    if !state.saving {
-        return None;
-    }
-    state.saving = false;
-    match result {
-        Ok(Response::Saved { template }) => {
-            state.form = Some(Form::new(Mode::Save, template, &data.templates, &data.screens));
-            Some(Action::None)
+/// The core's answer to the request of this page that `asked` names, as the core gave it (a refusal
+/// is `Ok(Response::Error)` with its code; `Err` when no answer came). The dialog's answers go to the
+/// dialog, which shows its refusals itself; only the `Saved` of "Save workspace…" opens the dialog in
+/// the mode `Save`. `Some` when the page took the answer, `None` when the shell shows a refusal as its
+/// notice: a failed save, and every refusal of [`Asked::Other`].
+pub fn answered(state: &mut State, asked: Asked, result: &Result<Response, String>, data: &Data) -> Option<Action> {
+    match asked {
+        Asked::Form => {
+            let step = state.form.as_mut()?.answered(result)?;
+            Some(step_action(state, step))
         }
-        _ => None,
+        Asked::Save => {
+            state.saving = false;
+            match result {
+                Ok(Response::Saved { template }) => {
+                    state.form = Some(Form::new(Mode::Save, template, &data.templates, &data.screens));
+                    Some(Action::None)
+                }
+                _ => None,
+            }
+        }
+        Asked::Other => None,
     }
 }
 
@@ -356,22 +379,26 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option
     Some(widgets::floating(
         &state.anchor,
         Placement::Below(Align::End),
-        row_menu(template, supported(data)),
+        row_menu(template, supported(data), !state.saving),
         Message::CloseMenu,
     ))
 }
 
-/// The "…" menu of a row: what a row does not show. Updating needs the window manager.
-fn row_menu(template: &TemplateSummary, supported: bool) -> Element<'_, Message> {
+/// The "…" menu of a row: what a row does not show. Updating needs the window manager; "Edit…" waits
+/// while "Save workspace…" does, since its answer opens the dialog.
+fn row_menu(template: &TemplateSummary, supported: bool, editable: bool) -> Element<'_, Message> {
     let id = &template.id;
-    let mut edit = vec![MenuItem::new(Icon::SquarePen, tr("Edit…"), Message::Edit(id.clone()))];
+    let mut edit = Vec::new();
+    if editable {
+        edit.push(MenuItem::new(Icon::SquarePen, tr("Edit…"), Message::Edit(id.clone())));
+    }
     if supported {
         edit.push(MenuItem::new(Icon::RefreshCw, tr("Update from current workspace"), Message::Update(id.clone())));
     }
-    widgets::menu(vec![
-        MenuSection::new(edit),
-        MenuSection::new(vec![MenuItem::new(Icon::Trash2, tr("Delete…"), Message::AskDelete(id.clone()))]),
-    ])
+    let delete = MenuSection::new(vec![MenuItem::new(Icon::Trash2, tr("Delete…"), Message::AskDelete(id.clone()))]);
+    // An empty section would draw a line above "Delete…" with nothing over it.
+    let sections = if edit.is_empty() { vec![delete] } else { vec![MenuSection::new(edit), delete] };
+    widgets::menu(sections)
 }
 
 /// "1 window", "3 windows".
@@ -493,8 +520,13 @@ mod tests {
     }
 
     fn sent(action: Action) -> Option<Request> {
+        asked(action).map(|(_, request)| request)
+    }
+
+    /// The request an action sends, with what it is for.
+    fn asked(action: Action) -> Option<(Asked, Request)> {
         match action {
-            Action::Send(request) => Some(request),
+            Action::Ask(asked, request) => Some((asked, request)),
             _ => None,
         }
     }
@@ -577,9 +609,9 @@ mod tests {
         update(&mut state, Message::Form(template_form::Message::Key(Some(2))), &data);
         let request = sent(update(&mut state, Message::Form(template_form::Message::Save), &data));
         assert_eq!(request, Some(Request::SetTemplateShortcut { id: "dev".into(), key: Some(2) }));
-        assert!(matches!(answered(&mut state, &Ok(Response::Ok), &data), Some(Action::None)));
+        assert!(matches!(answered(&mut state, Asked::Form, &Ok(Response::Ok), &data), Some(Action::None)));
         assert!(state.form.is_none());
-        assert!(answered(&mut state, &Ok(Response::Ok), &data).is_none(), "nothing waits any more");
+        assert!(answered(&mut state, Asked::Form, &Ok(Response::Ok), &data).is_none(), "nothing waits any more");
     }
 
     #[test]
@@ -595,17 +627,17 @@ mod tests {
     fn save_workspace_opens_the_dialog_and_its_cancel_deletes() {
         let data = data();
         let mut state = State::default();
-        let request = sent(update(&mut state, Message::SaveWorkspace, &data));
-        assert_eq!(request, Some(Request::SaveTemplate { name: None }));
+        let request = asked(update(&mut state, Message::SaveWorkspace, &data));
+        assert_eq!(request, Some((Asked::Save, Request::SaveTemplate { name: None })));
         assert!(sent(update(&mut state, Message::SaveWorkspace, &data)).is_none(), "one save at a time");
         let saved = template("ws-3", "Workspace 3, 20.10. 10:41", None);
-        assert!(answered(&mut state, &Ok(Response::Saved { template: saved }), &data).is_some());
+        assert!(answered(&mut state, Asked::Save, &Ok(Response::Saved { template: saved }), &data).is_some());
         let form = state.form.as_ref().expect("the dialog");
         assert_eq!((form.id(), form.mode()), ("ws-3", Mode::Save));
         let escape = escape(&state).expect("Escape cancels the dialog");
-        let request = sent(update(&mut state, escape, &data));
-        assert_eq!(request, Some(Request::DeleteTemplate { id: "ws-3".into() }));
-        answered(&mut state, &Ok(Response::Ok), &data);
+        let request = asked(update(&mut state, escape, &data));
+        assert_eq!(request, Some((Asked::Form, Request::DeleteTemplate { id: "ws-3".into() })));
+        answered(&mut state, Asked::Form, &Ok(Response::Ok), &data);
         assert!(state.form.is_none());
     }
 
@@ -614,8 +646,55 @@ mod tests {
         let data = data();
         let mut state = State::default();
         update(&mut state, Message::SaveWorkspace, &data);
-        assert!(answered(&mut state, &Err("busy".into()), &data).is_none());
+        let busy = Ok(Response::Error { code: "busy".into(), message: "a load runs".into() });
+        assert!(answered(&mut state, Asked::Save, &busy, &data).is_none());
         assert!(!state.saving && state.form.is_none());
+    }
+
+    /// Review fix: "Update from current workspace" runs, then "Save workspace…"; the update's `Saved`
+    /// opens no dialog (its Cancel would delete the old template), only the save's own does.
+    #[test]
+    fn only_the_save_s_own_answer_opens_the_dialog_in_the_mode_save() {
+        let data = data();
+        let mut state = State::default();
+        let (update_for, _) = asked(update(&mut state, Message::Update("mail".into()), &data)).expect("sent");
+        assert_eq!(update_for, Asked::Other);
+        update(&mut state, Message::SaveWorkspace, &data);
+        let updated = Ok(Response::Saved { template: template("mail", "Mail", Some(2)) });
+        assert!(answered(&mut state, update_for, &updated, &data).is_none());
+        assert!(state.form.is_none() && state.saving, "still waiting for the save");
+        // While it waits, "Edit…" opens nothing: the save's answer will open the dialog.
+        update(&mut state, Message::Edit("dev".into()), &data);
+        assert!(state.form.is_none());
+        let saved = Ok(Response::Saved { template: template("ws-3", "Workspace 3", None) });
+        assert!(answered(&mut state, Asked::Save, &saved, &data).is_some());
+        assert_eq!(state.form.as_ref().map(|form| (form.id(), form.mode())), Some(("ws-3", Mode::Save)));
+    }
+
+    /// Review fix: the `Loaded` of a "Load" is no answer to the dialog's rename, and the dialog hears
+    /// the core's code (`busy`), not only its message.
+    #[test]
+    fn a_load_s_answer_is_not_the_dialog_s_and_refusals_keep_their_code() {
+        let data = data();
+        let mut state = State::default();
+        let (load_for, _) = asked(update(&mut state, Message::Load("mail".into()), &data)).expect("sent");
+        update(&mut state, Message::Edit("dev".into()), &data);
+        update(&mut state, Message::Form(template_form::Message::Name("Development".into())), &data);
+        let rename = asked(update(&mut state, Message::Form(template_form::Message::Save), &data));
+        assert_eq!(
+            rename,
+            Some((Asked::Form, Request::RenameTemplate { id: "dev".into(), name: "Development".into() }))
+        );
+        let loaded = Ok(Response::Loaded { restored: 3, failed: Vec::new() });
+        assert!(answered(&mut state, load_for, &loaded, &data).is_none());
+        assert!(state.form.as_ref().is_some_and(Form::waits), "the dialog still waits for its rename");
+        let busy = Ok(Response::Error { code: "busy".into(), message: "a load runs".into() });
+        assert!(matches!(answered(&mut state, Asked::Form, &busy, &data), Some(Action::None)));
+        let form = state.form.as_ref().expect("the dialog stays");
+        assert!(!form.waits());
+        drop(view(&state, &data, SizeClass::Wide));
+        // The refusal in the dialog's words for `busy`, which the shell's plain text could not give.
+        assert_eq!(form.error(), Some(tr("A template is being loaded or saved. Try again in a moment.")));
     }
 
     #[test]

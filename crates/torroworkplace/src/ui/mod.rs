@@ -224,14 +224,16 @@ pub struct Data {
 
 /// What a page wants the shell to do.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a request can carry a whole task and is handled once; boxing would only add an allocation"
-)]
 pub enum Action {
     None,
     /// Send this request to the daemon, then reload.
     Send(Request),
+    /// Send this request for the page Workspaces (issue #243) and hand the answer back to that page
+    /// only, with what it was for ([`workspaces::Asked`]), so it never takes the answer to another of
+    /// its requests for this one. The answer comes as the core gave it: a refusal stays a
+    /// `Response::Error` with its code, so the template dialog can tell `busy` from `not-found`
+    /// ([`template_form::refusal`]). Then reload, as for [`Action::Send`].
+    Ask(workspaces::Asked, Request),
     /// Send these requests to the daemon, then reload: for the one place where a change is two
     /// requests (the setup's mail source, task S.21). They are independent of each other, so they
     /// go at once.
@@ -362,10 +364,6 @@ pub struct Ui {
 }
 
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "an answer can carry a whole task and is handled once; boxing would only add an allocation"
-)]
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
@@ -390,6 +388,8 @@ pub enum Message {
     Switcher(Switcher),
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
+    /// The answer to an [`Action::Ask`], with what it was for; `Err` only when no answer came.
+    Answered(workspaces::Asked, Result<Response, String>),
     /// The desktop's light/dark preference (once at start, then whenever it changes).
     SystemMode(Mode),
     /// Reload everything (every few seconds, and "Retry" when the core does not answer).
@@ -1028,12 +1028,7 @@ impl Ui {
                 approvals::answered(&mut self.approvals);
                 // "Create key", "Connect client" and the hook switch show their errors themselves,
                 // and may go on with a job. Each section takes only its own answers.
-                let next = [
-                    mcp::answered(&mut self.mcp, &result),
-                    api::answered(&mut self.api, &result),
-                    // The template dialog shows its errors itself; "Save workspace…" opens it.
-                    workspaces::answered(&mut self.workspaces, &result, &self.data),
-                ];
+                let next = [mcp::answered(&mut self.mcp, &result), api::answered(&mut self.api, &result)];
                 // A refused part (the core checks it too) goes back to the stored one with the next
                 // reload; the notice says why.
                 if result.is_err() {
@@ -1042,6 +1037,18 @@ impl Ui {
                 self.notice = if in_dialog || next.iter().any(Option::is_some) { None } else { result.err() };
                 let mut tasks: Vec<Task<Message>> =
                     next.into_iter().flatten().map(|action| self.perform(action)).collect();
+                tasks.push(self.reload());
+                return Task::batch(tasks);
+            }
+            // Only the page that asked gets the answer: the template dialog shows its errors itself,
+            // the `Saved` of "Save workspace…" opens it; every other refusal is the notice.
+            Message::Answered(asked, result) => {
+                let next = workspaces::answered(&mut self.workspaces, asked, &result, &self.data);
+                self.notice = match next {
+                    Some(_) => None,
+                    None => refused(&result),
+                };
+                let mut tasks: Vec<Task<Message>> = next.into_iter().map(|action| self.perform(action)).collect();
                 tasks.push(self.reload());
                 return Task::batch(tasks);
             }
@@ -1184,6 +1191,11 @@ impl Ui {
                 self.update(Message::Mcp(mcp::Message::Setup(outcome)))
             }
             Action::Send(request) => send(request),
+            Action::Ask(asked, request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
+                Some(response) => self.update(Message::Answered(asked, Ok(response))),
+                None => Task::none(),
+            },
+            Action::Ask(asked, request) => ask(asked, request),
             Action::SendAll(requests) if self.launch.demo => {
                 let answers: Vec<Response> =
                     requests.iter().filter_map(|request| launch::demo_answer(request, &self.data)).collect();
@@ -1817,6 +1829,27 @@ fn send(request: Request) -> Task<Message> {
     )
 }
 
+/// Sends one request for the page that will match its answer ([`Action::Ask`]). The core's answer
+/// comes back as it is, a refusal with its code; `Err` only when no answer came.
+fn ask(asked: workspaces::Asked, request: Request) -> Task<Message> {
+    Task::perform(
+        async move {
+            let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
+            client::call(&socket, &request).await.map_err(|err| err.to_string())
+        },
+        move |result| Message::Answered(asked, result),
+    )
+}
+
+/// What a refused or failed answer says, for the notice; `None` for an answer that went through.
+fn refused(result: &Result<Response, String>) -> Option<String> {
+    match result {
+        Ok(Response::Error { message, .. }) => Some(message.clone()),
+        Ok(_) => None,
+        Err(message) => Some(message.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1980,6 +2013,27 @@ mod tests {
         assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
         assert!(real.update(Message::Select(Section::Workspaces)).units() == 0, "other pages do not");
         assert!(real.update(Message::Select(Section::Accounts)).units() > 0, "Accounts asks for TorroMail's accounts");
+    }
+
+    /// Review fix of issue #243: an answer the page Workspaces asked for goes only to it. A refusal of
+    /// one of its plain requests is the notice; one of the dialog's stays in the dialog; a success
+    /// clears the notice. Answers for other pages (`Sent`) no longer reach the dialog.
+    #[test]
+    fn workspaces_answers_go_to_the_request_that_asked() {
+        let mut ui = ui(Section::Workspaces);
+        let busy = || Ok(Response::Error { code: "busy".into(), message: "another save or load is running".into() });
+        let _ = ui.update(Message::Answered(workspaces::Asked::Other, busy()));
+        assert_eq!(ui.notice.as_deref(), Some("another save or load is running"));
+        let _ = ui.update(Message::Answered(workspaces::Asked::Other, Ok(Response::Ok)));
+        assert!(ui.notice.is_none());
+
+        let mut demo = started(&["--demo", "--open", "save-template"]);
+        assert!(demo.page_overlay().is_some(), "the dialog in the mode Save");
+        // Another page's answer (an `Ok` like the delete's) does not close it.
+        let _ = demo.update(Message::Sent(Ok(Response::Ok)));
+        assert!(demo.page_overlay().is_some());
+        let _ = demo.update(Message::Answered(workspaces::Asked::Other, Ok(Response::Ok)));
+        assert!(demo.page_overlay().is_some());
     }
 
     /// A design chosen on the Appearance page is drawn in this window at once and saved; a reload that

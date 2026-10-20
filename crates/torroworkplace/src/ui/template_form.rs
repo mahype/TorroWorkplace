@@ -173,6 +173,12 @@ impl Form {
         self.mode
     }
 
+    /// What the core refused, as the dialog says it; the hosts show it with [`view`], the tests ask.
+    #[cfg(test)]
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
     /// The template's id.
     pub fn id(&self) -> &str {
         &self.stored.id
