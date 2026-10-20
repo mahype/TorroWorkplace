@@ -22,9 +22,9 @@
 //!
 //! The workspace templates (task WS.7, [`templates_section`]): a line naming the window manager,
 //! the templates in the first level in the order of their keys, each named with its key ("Deep work ·
-//! 1", tray menus know no hints on the right) and opening "Load here", "Add", "Replace" and "Edit…",
-//! then "Save workspace…" and "Manage workspaces…". Updating and deleting a template is on the
-//! workspaces page of the control centre.
+//! 1", tray menus know no hints on the right) and opening "Load", "Replace windows" and "Edit…"
+//! (draft `docs/prototypes/workspaces/entwurf.html`), then "Save workspace…" and "Manage
+//! workspaces…". Updating and deleting a template is on the workspaces page of the control centre.
 //!
 //! The reminders (task ER2.5, [`reminder_section`]): "Next: 10:00 Weekly sync" opens the calendar,
 //! "Pause reminders" offers an hour or until tomorrow morning, worked out when clicked
@@ -107,8 +107,8 @@ impl Action {
 /// One line of the menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
-    /// A clickable line. Without an action it is greyed out: an information line, or a command
-    /// that does not fit the moment ("Load here" on a workspace with windows).
+    /// A clickable line. Without an action it is greyed out: an information line ("Workspaces ·
+    /// Hyprland"), or a command that does not fit the moment.
     Entry { label: String, action: Option<Action> },
     /// A line that opens further items.
     Submenu { label: String, items: Vec<Item> },
@@ -178,19 +178,21 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
 /// The workspace templates (task WS.7): "Workspaces · Hyprland", one submenu per template in the
 /// order of their keys ([`crate::workspace_keys::in_key_order`], as on the workspaces page) named
 /// with its key ([`template_label`]), or "No templates yet"; then a separator, "Save workspace…" and
-/// "Manage workspaces…". Without a window manager only why ("AeroSpace (macOS) not supported yet")
-/// and "Manage workspaces…", whose page says what to do: nothing could be loaded or saved.
+/// "Manage workspaces…". Without a window manager only why ("AeroSpace (macOS) not found", the
+/// words of the workspaces page) and "Manage workspaces…", whose page says what to do: nothing could
+/// be loaded or saved.
 fn templates_section(snapshot: &Snapshot) -> Vec<Item> {
     let manage = Item::Entry { label: tr("Manage workspaces…").into(), action: Some(Action::ManageWorkspaces) };
     if let Some(name) = &snapshot.unsupported {
-        return vec![info(trf("{name} not supported yet", &[("name", name)])), manage];
+        return vec![info(trf("{name} not found", &[("name", name)])), manage];
     }
-    let mut section = vec![info(trf("Workspaces · {manager}", &[("manager", &manager_name(&snapshot.backend))]))];
+    let manager = crate::workspace_keys::manager_name(&snapshot.backend);
+    let mut section = vec![info(trf("Workspaces · {manager}", &[("manager", &manager)]))];
     if snapshot.templates.is_empty() {
         section.push(info(tr("No templates yet").into()));
     }
     for template in crate::workspace_keys::in_key_order(&snapshot.templates) {
-        section.push(submenu(&template_label(template), template_items(snapshot, &template.id)));
+        section.push(submenu(&template_label(template), template_items(&template.id)));
     }
     section.push(Item::Separator);
     section.push(Item::Entry { label: tr("Save workspace…").into(), action: Some(Action::SaveWorkspace) });
@@ -199,7 +201,9 @@ fn templates_section(snapshot: &Snapshot) -> Vec<Item> {
 }
 
 /// A template's line: its name with its key behind ("Deep work · 1", "Writing · 0"), or the name
-/// alone. The name is cut like a title ([`plain`]): an agent may have named it
+/// alone. The digit stands without its modifiers on purpose: the bar draws the menu about 232 px
+/// wide, and "Super + Alt + 1" behind every name would cut the names; the workspaces page and the
+/// dialog name the whole key. The name is cut like a title ([`plain`]): an agent may have named it
 /// (`workspaces.rename_template`).
 fn template_label(template: &TemplateSummary) -> String {
     let name = plain(&template.name, TITLE_IN_MENU);
@@ -209,29 +213,20 @@ fn template_label(template: &TemplateSummary) -> String {
     }
 }
 
-/// The submenu of the template `id`: "Load here" (only on an empty workspace), "Add", "Replace", and
-/// apart from them "Edit…", which opens the template's dialog in its mode "Edit" (`apps.open_app` on
-/// the target `template:<id>`).
-fn template_items(snapshot: &Snapshot, id: &str) -> Vec<Item> {
+/// The submenu of the template `id`, as in the draft: "Load" (mode `add`, the windows join those on
+/// the workspace, like "Load" on the workspaces page and the template's key), "Replace windows"
+/// (mode `replace`, closes those first), and apart from them "Edit…", which opens the template's
+/// dialog in its mode "Edit" (`apps.open_app` on the target `template:<id>`). There is no "Load
+/// here" (mode `empty`): on an empty workspace "Load" does the same.
+fn template_items(id: &str) -> Vec<Item> {
     let load = |mode| Request::LoadTemplate { id: id.to_string(), mode };
     let edit = Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: Some(format!("template:{id}")) };
     vec![
-        entry_if(tr("Load here"), snapshot.workspace_windows == 0, load(LoadMode::Empty)),
-        entry(tr("Add"), load(LoadMode::Add)),
-        entry(tr("Replace"), load(LoadMode::Replace)),
+        entry(tr("Load"), load(LoadMode::Add)),
+        entry(tr("Replace windows"), load(LoadMode::Replace)),
         Item::Separator,
         entry(tr("Edit…"), edit),
     ]
-}
-
-/// The name of the window manager the core reports (`hyprland`) as people write it.
-fn manager_name(backend: &str) -> String {
-    match backend {
-        "hyprland" => "Hyprland".into(),
-        "aerospace" => "AeroSpace".into(),
-        "glazewm" => "GlazeWM".into(),
-        other => other.to_string(),
-    }
 }
 
 /// What the voice listener does, for the tooltip and the menu; empty while voice is off.
@@ -537,15 +532,16 @@ mod tests {
         assert_eq!(action_of(&menu, tr("Quit")), Some(Action::Run(Box::new(Request::Quit))));
     }
 
-    /// Task WS.7: a template's submenu loads in the three modes and opens its dialog to edit it, the
-    /// target `template:<id>` of `apps.open_app`; updating and deleting is on the workspaces page.
+    /// Task WS.7: a template's submenu loads (mode `add`), replaces the windows (mode `replace`) and
+    /// opens its dialog to edit it, the target `template:<id>` of `apps.open_app`; updating and
+    /// deleting is on the workspaces page.
     #[test]
     fn a_template_loads_or_opens_its_dialog_and_nothing_updates_or_deletes() {
         let menu = build(&snapshot());
         let items = submenu_of(&menu, "Entwicklung");
         let load = |mode| Some(Action::Run(Box::new(Request::LoadTemplate { id: "dev".into(), mode })));
-        assert_eq!(action_of(items, tr("Add")), load(LoadMode::Add));
-        assert_eq!(action_of(items, tr("Replace")), load(LoadMode::Replace));
+        assert_eq!(action_of(items, tr("Load")), load(LoadMode::Add));
+        assert_eq!(action_of(items, tr("Replace windows")), load(LoadMode::Replace));
         let edit = Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: Some("template:dev".into()) };
         assert_eq!(action_of(items, tr("Edit…")), Some(Action::Run(Box::new(edit))));
         // The target is one `apps.open_app` takes, in the mode "Edit".
@@ -556,17 +552,14 @@ mod tests {
         )));
     }
 
+    /// Review fix T1: the submenu as in the draft – "Load", "Replace windows", a line, "Edit…" – the
+    /// same on an empty workspace and on one with windows: there "Load" does what "Load here" did.
     #[test]
-    fn load_here_only_on_an_empty_workspace() {
+    fn a_template_offers_load_and_replace_windows_on_any_workspace() {
         let template = |snapshot: &Snapshot| labels(submenu_of(&build(snapshot), "Entwicklung"));
-        let (here, add, replace) = (tr("Load here"), tr("Add").to_string(), tr("Replace").to_string());
-        let edit = tr("Edit…").to_string();
-        assert_eq!(
-            template(&snapshot()),
-            [format!("({here})"), add.clone(), replace.clone(), "-".into(), edit.clone()]
-        );
-        let empty = Snapshot { workspace_windows: 0, ..snapshot() };
-        assert_eq!(template(&empty), [here.to_string(), add, replace, "-".into(), edit]);
+        let expected = [tr("Load").to_string(), tr("Replace windows").to_string(), "-".into(), tr("Edit…").to_string()];
+        assert_eq!(template(&snapshot()), expected);
+        assert_eq!(template(&Snapshot { workspace_windows: 0, ..snapshot() }), expected);
     }
 
     #[test]
@@ -593,7 +586,7 @@ mod tests {
         assert_eq!(
             shown[TEMPLATES..TEMPLATES + 3],
             [
-                format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])),
+                format!("({})", trf("{name} not found", &[("name", &"AeroSpace (macOS)")])),
                 tr("Manage workspaces…").to_string(),
                 "-".to_string(),
             ]

@@ -13,6 +13,9 @@
 //!   the menu, [`hotkey`] maps a key to the system's, and [`DesktopKeys`] registers only the
 //!   difference and says which template a pressed key loads.
 //!
+//! Next to them, [`in_key_order`] and [`manager_name`] keep the workspaces page and the tray menu
+//! in step: the same order of templates, the same name of the window manager.
+//!
 //! The core decides when on Hyprland ([`crate::core::Core`]): at its start, after a template was
 //! saved, captured again or deleted, a key was set and the modifiers changed ([`rebinds_after`]).
 //! On macOS and Windows the same requests refresh the menu (`crate::daemon`), and the new snapshot
@@ -73,6 +76,18 @@ pub fn in_key_order(templates: &[TemplateSummary]) -> Vec<&TemplateSummary> {
         (place, template.name.to_lowercase())
     });
     sorted
+}
+
+/// The name of the window manager the core reports (`Status::backend`, `Snapshot::backend`:
+/// `hyprland`) as people write it, for the workspaces page and the tray alike. Names, not
+/// translated; one this version does not know stays as reported.
+pub fn manager_name(backend: &str) -> String {
+    match backend {
+        "hyprland" => "Hyprland".into(),
+        "aerospace" => "AeroSpace".into(),
+        "glazewm" => "GlazeWM".into(),
+        other => other.to_string(),
+    }
 }
 
 /// Where `key` stands on the keyboard's row of digits: 1 first, 0 last.
@@ -470,6 +485,15 @@ mod tests {
 
     fn bind(keys: &str, id: &str) -> KeyBind {
         KeyBind { keys: keys.into(), command: load_command(PROGRAM, id) }
+    }
+
+    /// The page and the tray name the window manager alike; an unknown one stays as reported.
+    #[test]
+    fn the_window_manager_is_named_as_people_write_it() {
+        assert_eq!(manager_name("hyprland"), "Hyprland");
+        assert_eq!(manager_name("aerospace"), "AeroSpace");
+        assert_eq!(manager_name("glazewm"), "GlazeWM");
+        assert_eq!(manager_name("sway"), "sway");
     }
 
     #[test]

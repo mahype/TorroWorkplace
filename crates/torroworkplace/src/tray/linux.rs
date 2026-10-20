@@ -216,31 +216,24 @@ mod tests {
     }
 
     #[test]
-    fn load_here_only_on_an_empty_workspace() {
+    fn a_template_offers_load_and_replace_windows_on_any_workspace() {
         let load_items = |snapshot: &Snapshot| {
             let menu = build_menu(snapshot);
             // The templates follow the line that names the window manager (task WS.7).
             let MenuItem::SubMenu(template) = &menu[TEMPLATES + 1] else { panic!("template submenu") };
             labels(&template.submenu)
         };
-        let (here, add, replace) = (tr("Load here"), tr("Add").to_string(), tr("Replace").to_string());
-        let edit = tr("Edit…").to_string();
-        assert_eq!(
-            load_items(&snapshot()),
-            [format!("({here})"), add.clone(), replace.clone(), "-".into(), edit.clone()]
-        );
+        let expected = [tr("Load").to_string(), tr("Replace windows").to_string(), "-".into(), tr("Edit…").to_string()];
+        assert_eq!(load_items(&snapshot()), expected);
         let empty = Snapshot { workspace_windows: 0, ..snapshot() };
-        assert_eq!(load_items(&empty), [here.to_string(), add, replace, "-".into(), edit]);
+        assert_eq!(load_items(&empty), expected);
     }
 
     #[test]
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
         let menu = labels(&build_menu(&snapshot));
-        assert_eq!(
-            menu[TEMPLATES],
-            format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")]))
-        );
+        assert_eq!(menu[TEMPLATES], format!("({})", trf("{name} not found", &[("name", &"AeroSpace (macOS)")])));
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 

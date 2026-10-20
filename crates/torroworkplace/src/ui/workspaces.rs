@@ -4,13 +4,15 @@
 //! (`Status::shortcuts`); without a window manager it says which one is expected and what to do.
 //!
 //! Then the templates, sorted by key (1 … 9, 0, then those without a key by name): the key as a
-//! `kbd`, the name, windows and age, "At startup · DP-1" when it loads at login, one visible
+//! `kbd` (a quiet "–" without one; the rows of both groups keep this column, so their words stand
+//! on one axis), the name, windows and age, "At startup · DP-1" when it loads at login, one visible
 //! action, "Load" (into the active workspace, mode Add), and the "…" menu with "Edit…" (the
 //! template dialog, [`super::template_form`]), "Update from current workspace" and "Delete…" (with
 //! confirmation). The header's primary button "Save workspace…" saves the active workspace
 //! (`SaveTemplate`) and opens the dialog in the mode `Save` for the new template once the core
 //! answers ([`answered`]). Menu, dialog and confirmation are layers over the whole window
-//! ([`overlay`]).
+//! ([`overlay`]). Without a window manager nothing loads: the startup stands in the meta line instead
+//! of a pill, and the group's note says when the templates load again.
 
 use chrono::{DateTime, Utc};
 use iced::widget::{container, row};
@@ -197,7 +199,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
     let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
     let manager = window_manager(data);
     let templates: Element<'a, Message> = if data.templates.is_empty() {
-        empty_state(tr("No templates yet"), tr("Arrange the windows of a workspace, then choose \"Save workspace…\"."))
+        empty_state(tr("No templates yet"), tr("Arrange the windows of a workspace, then choose “Save workspace…”."))
     } else {
         let now = Utc::now();
         let supported = supported(data);
@@ -205,10 +207,14 @@ pub fn view<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
             .into_iter()
             .map(|template| template_row(state, template, now, supported, narrow))
             .collect();
-        let footer = tr(
-            "Load adds the windows to the workspace you are on. Edit a template to give it a key or load it at startup.",
-        );
-        widgets::group(tr("Templates"), rows, Some(footer.to_string()))
+        let footer = match supported {
+            true => tr(
+                "Load adds the windows to the workspace you are on. Edit a template to give it a key or load it at startup.",
+            )
+            .to_string(),
+            false => trf("Templates load once {name} runs.", &[("name", &expected().0)]),
+        };
+        widgets::group(tr("Templates"), rows, Some(footer))
     };
     iced::widget::column![manager, templates].spacing(space::xl()).into()
 }
@@ -234,8 +240,8 @@ fn window_manager<'a>(data: &'a Data) -> Element<'a, Message> {
         detail.push(screens_text(data));
     }
     let detail = (!detail.is_empty()).then(|| detail.join(" · "));
-    let manager =
-        setting_row(None, manager_name(&status.backend), detail, state_word(widgets::Status::Ok, tr("Detected")));
+    let name = workspace_keys::manager_name(&status.backend);
+    let manager = setting_row(Some(lead(None)), name, detail, state_word(widgets::Status::Ok, tr("Detected")));
     let rows = vec![manager, shortcuts_row(data)];
     widgets::group(tr("Window manager"), rows, Some(tr("Torro registers the keys while it runs.").to_string()))
 }
@@ -265,24 +271,24 @@ fn shortcuts_row<'a>(data: &'a Data) -> Element<'a, Message> {
         data.status.as_ref().and_then(|status| status.shortcuts.as_ref()).and_then(|keys| keys.problem.clone());
     let (mark, detail) = match problem {
         Some(problem) => (Some(widgets::status_dot(widgets::Status::Attention)), problem),
-        None => (None, trf("{keys} load the template on that key", &[("keys", &keys)])),
+        None => (None, trf("{keys} load a template", &[("keys", &keys)])),
     };
     let choices: Vec<Modifiers> = ShortcutModifiers::ALL.into_iter().map(Modifiers).collect();
     let choice = picker(choices, Modifiers(modifiers), |chosen: Modifiers| Message::Modifiers(chosen.0));
-    setting_row(mark, tr("Shortcuts"), Some(detail), choice)
+    setting_row(Some(lead(mark)), tr("Shortcuts"), Some(detail), choice)
 }
 
 /// The group without a window manager: which one this system needs, and what to do.
 fn unsupported<'a>() -> Element<'a, Message> {
     let (name, system) = expected();
     let manager = setting_row(
-        None,
+        Some(lead(None)),
         trf("{name} not found", &[("name", &name)]),
         Some(trf("Workspaces on {system} need {name}", &[("system", &system), ("name", &name)])),
         state_word(widgets::Status::Attention, tr("Not running")),
     );
     let off = Some(tr("Off until a window manager is found").to_string());
-    let keys = setting_row(None, tr("Shortcuts"), off, iced::widget::Space::new());
+    let keys = setting_row(Some(lead(None)), tr("Shortcuts"), off, iced::widget::Space::new());
     let footer = trf("Install and start {name}, then Torro finds it on its own.", &[("name", &name)]);
     widgets::group(tr("Window manager"), vec![manager, keys], Some(footer))
 }
@@ -307,14 +313,10 @@ fn expected() -> (&'static str, &'static str) {
     }
 }
 
-/// The name of the backend the core reports (`hyprland`) as people write it.
-fn manager_name(backend: &str) -> String {
-    match backend {
-        "hyprland" => "Hyprland".into(),
-        "aerospace" => "AeroSpace".into(),
-        "glazewm" => "GlazeWM".into(),
-        other => other.to_string(),
-    }
+/// The column in front of every row of both groups, as wide as a key's `kbd` (`size::control_sm()`):
+/// the key, its placeholder, a status dot or nothing, so the names of all rows stand on one axis.
+fn lead<'a>(content: Option<Element<'a, Message>>) -> Element<'a, Message> {
+    container(row![].push(content)).center_x(size::control_sm()).into()
 }
 
 /// A choice of modifiers in the picker, written as this system's keyboard names them.
@@ -333,7 +335,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Option
     if let Some(template) = state.confirm_delete.as_ref().and_then(|id| find(data, id)) {
         return Some(confirm(
             tr("Delete this template?"),
-            trf("\"{name}\" will be deleted. Saved backups stay in the data folder.", &[("name", &template.name)]),
+            trf("“{name}” will be deleted. Saved backups stay in the data folder.", &[("name", &template.name)]),
             tr("Delete template"),
             Message::ConfirmDelete,
             Message::CancelDelete,
@@ -388,7 +390,8 @@ fn startup_text(template: &TemplateSummary) -> Option<String> {
 
 /// One template: its key, name, meta line, "At startup · DP-1", "Load" and the "…" menu button. In
 /// narrow windows the startup takes the age's place in the meta line, so the name keeps its room and
-/// the startup is not cut off.
+/// the startup is not cut off; without a window manager too, since a pill there would read as if it
+/// loaded now.
 fn template_row<'a>(
     state: &'a State,
     template: &'a TemplateSummary,
@@ -397,7 +400,8 @@ fn template_row<'a>(
     narrow: bool,
 ) -> Element<'a, Message> {
     let startup = startup_text(template);
-    let second = match (&startup, narrow) {
+    let in_meta = narrow || !supported;
+    let second = match (&startup, in_meta) {
         (Some(startup), true) => startup.clone(),
         _ => trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
     };
@@ -409,14 +413,17 @@ fn template_row<'a>(
     let load =
         widgets::text_button(None, tr("Load"), style::button::secondary, supported.then(|| Message::Load(id.clone())));
     let mut actions = row![].spacing(space::s()).align_y(Alignment::Center);
-    if !narrow && let Some(startup) = startup {
+    if !in_meta && let Some(startup) = startup {
         actions = actions.push(widgets::state_pill(Icon::Clock, startup));
     }
     let actions = actions.push(load).push(more);
-    // The keys in one column, so the names stand under each other with and without a key.
-    let key = template.shortcut.map(|key| widgets::kbd(key.to_string()));
-    let key = container(iced::widget::row![].push(key)).center_x(size::control_sm());
-    setting_row(Some(key.into()), template.name.as_str(), Some(meta.join(" · ")), actions)
+    // The keys in one column, so the names stand under each other with and without a key; without
+    // one a quiet dash says so.
+    let key = match template.shortcut {
+        Some(key) => widgets::kbd(key.to_string()),
+        None => typo::text(typo::caption(), "–").style(theme::text_3).into(),
+    };
+    setting_row(Some(lead(Some(key))), template.name.as_str(), Some(meta.join(" · ")), actions)
 }
 
 fn find<'a>(data: &'a Data, id: &str) -> Option<&'a TemplateSummary> {
