@@ -3926,7 +3926,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen under Settings › Access.",
         "Kalender, Listen, Repositories, Quellen, Mail-Konten, Werkzeuge, Senden und Admin-Befehle wählst du unter Einstellungen › Zugriff.",
     ),
-    ("Can't use tools", "Kann keine Werkzeuge nutzen"),
     ("Change under Access", "Unter Zugriff ändern"),
     (
         "Choose the client that should use Torro Workplace through MCP.",
@@ -4212,4 +4211,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{model}” of {provider} is turned off. Turn it on in Settings › Accounts.",
         "„{model}“ von {provider} ist abgeschaltet. Schalte es unter Einstellungen › Konten an.",
     ),
+    // Code review #231
+    ("Decides", "Entscheidet"),
+    ("Can't use tools or decide", "Kann weder Werkzeuge nutzen noch entscheiden"),
 ];

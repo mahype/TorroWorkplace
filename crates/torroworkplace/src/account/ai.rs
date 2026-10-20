@@ -1878,6 +1878,20 @@ pub(crate) mod tests {
         assert!(!dir.path().join("config").join(ai::MODELS_FILE).exists(), "nothing stored by reading");
     }
 
+    /// #231: a decision model on this computer starts on, although it has no tools – sorting mail
+    /// needs it.
+    #[tokio::test]
+    async fn a_decision_model_here_starts_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = fake_deciding_ollama().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let ollama = ai.connect(AiProvider::Ollama, Some(&server.url("/v1")), Secret::default()).await.expect("ollama");
+        // The fake's tags list only nimble, so qwen3 counts as elsewhere.
+        assert_eq!(on(&ai, &ollama.id).await, ["nimble"]);
+        assert!(ai.offers_a_model(&ollama.id).await);
+    }
+
     /// Task S.24: switching stores `ai-models.json` (0600) and survives a new start; turning on takes
     /// only a model the server offers, turning off any; the first model turned off keeps the others
     /// the rule had on, and new ones stay off from then on; a removed account forgets its switches.

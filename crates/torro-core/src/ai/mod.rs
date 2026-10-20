@@ -330,6 +330,14 @@ impl AiModel {
             enabled: false,
         }
     }
+
+    /// A module of the suite can use the model (#231): it can use tools (`tools` is not `false`,
+    /// the assistant and its bots) or it decides ([`AiModel::decision`] is `true`, sorting mail).
+    /// Only such a model has a switch and starts on ([`ModelSwitches::starts_on`]); one that can do
+    /// neither is of no use to any module.
+    pub fn is_usable(&self) -> bool {
+        self.tools != Some(false) || self.decision == Some(true)
+    }
 }
 
 /// The name of the file the core keeps [`ModelSwitches`] in, next to `accounts.json` in the
@@ -342,8 +350,8 @@ pub const MODELS_FILE: &str = "ai-models.json";
 /// as `ai-models.json` holds them: per account (`ai:…`) the models turned on and whether the person
 /// ever turned one off there.
 ///
-/// **The rule at the start** ([`ModelSwitches::starts_on`]): on is every model that can use tools
-/// and computes on this computer; models that compute elsewhere (Ollama's cloud models, OpenRouter,
+/// **The rule at the start** ([`ModelSwitches::starts_on`]): on is every model a module can use
+/// ([`AiModel::is_usable`]: it can use tools or decides) that computes on this computer; models that compute elsewhere (Ollama's cloud models, OpenRouter,
 /// Anthropic, servers on the network) are off until someone turns them on. New models that compute
 /// here join while nothing was turned off at their account ([`AccountSwitches::turned_off`]).
 /// Whether a model computes here is the caller's to say (the core's data rule,
@@ -369,10 +377,10 @@ pub struct AccountSwitches {
 }
 
 impl ModelSwitches {
-    /// The rule at the start for `model`: on when it may use tools (`tools` is not `false`) and
-    /// computes on this computer (`here`).
+    /// The rule at the start for `model`: on when a module can use it ([`AiModel::is_usable`]: it
+    /// may use tools, or it decides, #231) and it computes on this computer (`here`).
     pub fn starts_on(model: &AiModel, here: bool) -> bool {
-        here && model.tools != Some(false)
+        here && model.is_usable()
     }
 
     /// Whether `model` of the account `account` is on: turned on, or on by the rule while nothing
@@ -942,7 +950,7 @@ mod tests {
         assert_eq!(AiProvider::LmStudio.name(), "LM Studio");
     }
 
-    /// Task S.24: at the start the models with tools that compute here are on; a model turned on
+    /// Task S.24: at the start the models with tools (or deciding ones, #231) that compute here are on; a model turned on
     /// stays on, and the first one turned off keeps the others the rule had on, while new ones
     /// stay off from then on.
     #[test]
@@ -954,7 +962,12 @@ mod tests {
         let mut switches = ModelSwitches::default();
         let account = "ai:ollama@localhost:11434";
         assert!(switches.is_on(account, &local, true) && switches.is_on(account, &unsure, true));
-        assert!(!switches.is_on(account, &toolless, true), "no tools, no module can use it");
+        assert!(!switches.is_on(account, &toolless, true), "no tools, no decisions: no module can use it");
+        // #231: a decision model has no tools, but sorting mail uses it.
+        let nimble = AiModel { decision: Some(true), ..with_tools("nimble", Some(false)) };
+        assert!(nimble.is_usable() && !toolless.is_usable() && unsure.is_usable());
+        assert!(switches.is_on(account, &nimble, true), "a decision model here starts on");
+        assert!(!switches.is_on(account, &nimble, false), "elsewhere it is off like any other");
         assert!(!switches.is_on(account, &cloud, false), "elsewhere: off until someone turns it on");
         assert!(switches.follows_rule(account) && !switches.has_turned_on(account));
 

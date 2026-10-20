@@ -257,8 +257,10 @@ models“ (vorher in den Rechten des Assistenten).
   Claude Code unter „MCP“ ist etwas anderes: Dort ruft der Agent die Suite über MCP.
 - **Die Kontoseite eines KI-Kontos** („‹ Accounts › Ollama“): Status und Verbindung, darunter
   **„Models“**: eine Zeile je Modell mit Name, Merkmalen (Tools, Thinking, Context), dem Ort, an dem es
-  rechnet („On this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle ohne
-  Werkzeuge stehen blass mit „Can't use tools“ und ohne Schalter, weil kein Modul sie nutzen kann.
+  rechnet („On this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle, die
+  weder Werkzeuge nutzen noch entscheiden, stehen blass mit „Can't use tools or decide“ und ohne Schalter, weil
+  kein Modul sie nutzen kann; ein Entscheidungsmodell (nimble) hat das Merkmal „Decides“ und einen Schalter, weil
+  die Mail-Sortierung es braucht (#231).
   OpenRouter: Suche und „Show closed models“, weil es Hunderte sind. Ganz unten „Remove account…“.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.

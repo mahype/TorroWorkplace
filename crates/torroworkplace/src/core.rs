@@ -14662,9 +14662,7 @@ mod tests {
         };
         assert_eq!(code(&core.handle(unknown).await), "not-found");
 
-        // The decision model is taken once it is on (#231), and the list says so.
-        assert_eq!(code(&core.handle(set(Some("nimble"))).await), "unsupported", "off by the rule");
-        assert_eq!(core.handle(turn_on(&engine, "nimble")).await, Response::Ok);
+        // The decision model here is on by the rule (#231) and taken, and the list says so.
         let Response::AiAssignments { assignments } = core.handle(set(Some("nimble"))).await else {
             panic!("assignments")
         };
@@ -14719,8 +14717,11 @@ mod tests {
             effort: None,
             enabled,
         };
-        // A deciding model has no tools, so the rule leaves it off; this server does not say that
-        // qwen3 runs here, so it counts as elsewhere and is off too.
+        // A deciding model here starts on although it has no tools (#231); this server does not say
+        // that qwen3 runs here, so it counts as elsewhere and is off. The person turns nimble off.
+        assert_eq!(switched(&core, &engine).await, [("nimble".to_string(), true), ("qwen3:8b".to_string(), false)]);
+        let turn_off = Request::SetModelEnabled { account: engine.clone(), model: "nimble".into(), enabled: false };
+        assert_eq!(ask(&core, Some(&app_key), turn_off.clone()).await, Response::Ok);
         assert_eq!(switched(&core, &engine).await, [("nimble".to_string(), false), ("qwen3:8b".to_string(), false)]);
         let provider = core.ai.label_of(&engine).await.expect("label");
         let off = Response::Error {
@@ -14752,7 +14753,6 @@ mod tests {
         assert_eq!(decider_of(&core.settings, &core.ai).await, Ok((engine.clone(), "nimble".to_string())));
 
         // Turned off afterwards: nothing is asked, and no other model stands in for it.
-        let turn_off = Request::SetModelEnabled { account: engine.clone(), model: "nimble".into(), enabled: false };
         assert_eq!(ask(&core, Some(&app_key), turn_off).await, Response::Ok);
         assert_eq!(decider_of(&core.settings, &core.ai).await, Err(categorize::Refusal::NoModel));
 

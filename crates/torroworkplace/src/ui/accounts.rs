@@ -1815,10 +1815,11 @@ pub fn model_place(provider: Option<AiProvider>, server: &str, model: &AiModel) 
     }
 }
 
-/// A model has a switch: it can use tools or does not say. One known to lack them stands faded with
-/// "Can't use tools", because no module of the suite can use it.
+/// A model has a switch when a module can use it ([`AiModel::is_usable`], #231): it can use tools
+/// (or does not say), or it decides, as sorting mail needs. One that can do neither stands faded
+/// with "Can't use tools or decide", because no module of the suite can use it.
 pub fn has_switch(model: &AiModel) -> bool {
-    model.tools != Some(false)
+    model.is_usable()
 }
 
 /// "131K context", "1M context": how much fits into one conversation, rounded to thousands or, from
@@ -1830,14 +1831,19 @@ fn context_text(tokens: u64) -> String {
     }
 }
 
-/// The line under a model's name: what it can (tools, thinking, its context) and where it computes,
-/// "Tools · Thinking · 131K context · Cloud"; a model without tools starts with "Can't use tools".
+/// The line under a model's name: what it can (tools, deciding, thinking, its context) and where it
+/// computes, "Tools · Thinking · 131K context · Cloud"; a decision model says "Decides", so one sees
+/// what it is for (#231), and a model that can do neither starts with "Can't use tools or decide".
 pub fn model_detail(model: &AiModel, place: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
-    match model.tools {
-        Some(true) => parts.push(tr("Tools").to_string()),
-        Some(false) => parts.push(tr("Can't use tools").to_string()),
-        None => {}
+    if model.tools == Some(true) {
+        parts.push(tr("Tools").to_string());
+    }
+    if model.decision == Some(true) {
+        parts.push(tr("Decides").to_string());
+    }
+    if !model.is_usable() {
+        parts.push(tr("Can't use tools or decide").to_string());
     }
     if model.reasoning == Some(true) {
         parts.push(tr("Thinking").to_string());
@@ -1924,8 +1930,8 @@ fn model_filters(page: &ModelsPage) -> Element<'_, Message> {
     row_frame(row![search, closed].spacing(space::s()).align_y(Alignment::Center), false)
 }
 
-/// One model: its name, what it can and where it computes, and its switch. A model that can't use
-/// tools stands faded (`text_3`) without a switch.
+/// One model: its name, what it can and where it computes, and its switch. A model no module can
+/// use ([`has_switch`]) stands faded (`text_3`) without a switch.
 fn model_row<'a>(model: &'a AiModel, place: &str) -> Element<'a, Message> {
     let detail = model_detail(model, place);
     if !has_switch(model) {
@@ -3074,14 +3080,21 @@ mod tests {
         assert!(matches!(update(&mut state, Message::SetModel("nobody/none".into(), true), &data), Action::None));
     }
 
-    /// A model that can't use tools stands without a switch, and pressing one anyway sends nothing.
+    /// A model that can neither use tools nor decide stands without a switch, and pressing one anyway
+    /// sends nothing; a decision model has one and says it decides (#231).
     #[test]
     fn a_model_without_tools_has_no_switch() {
         let (mut state, data) = open_ai();
         let gemma = listed_model(&state, "google/gemma-3-27b-it");
         assert!(!has_switch(gemma));
-        assert!(model_detail(gemma, tr("Cloud")).starts_with(tr("Can't use tools")));
+        assert!(model_detail(gemma, tr("Cloud")).starts_with(tr("Can't use tools or decide")));
         assert!(has_switch(&AiModel::named("unknown")), "a server that does not tell keeps the switch");
+        let nimble = AiModel { tools: Some(false), decision: Some(true), ..AiModel::named("nimble") };
+        assert!(has_switch(&nimble), "sorting mail uses it");
+        let place = tr("On this computer");
+        assert_eq!(model_detail(&nimble, place), format!("{} · {place}", tr("Decides")));
+        let deciding = listed_model(&state, "nimble");
+        assert!(has_switch(deciding) && !deciding.enabled, "the demo's decision model has a switch");
         let action = update(&mut state, Message::SetModel("google/gemma-3-27b-it".into(), true), &data);
         assert!(matches!(action, Action::None));
         assert!(!listed_model(&state, "google/gemma-3-27b-it").enabled);

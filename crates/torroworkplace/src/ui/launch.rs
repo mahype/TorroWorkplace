@@ -1134,8 +1134,9 @@ pub const DEMO_CLAUDE: &str = "3fa9c1d2";
 pub const DEMO_HOOKS: &str = "c41d9e06";
 
 /// The models the demo's AI account offers (task S.31), as OpenRouter lists them: open models with
-/// tools and thinking, one on, one that can't use tools, and two with closed weights, which the page
-/// shows only with "Show closed models".
+/// tools and thinking, one on, one that can neither use tools nor decide, a decision model (#231:
+/// it has a switch and says "Decides"), and two with closed weights, which the page shows only with
+/// "Show closed models".
 pub fn demo_models() -> Vec<AiModel> {
     let model = |id: &str, name: &str, context: u64, reasoning: bool, enabled: bool| AiModel {
         name: name.into(),
@@ -1152,6 +1153,13 @@ pub fn demo_models() -> Vec<AiModel> {
         model("meta-llama/llama-3.3-70b-instruct", "Llama 3.3 70B Instruct", 131_072, false, false),
         model("mistralai/mistral-small-3.2-24b-instruct", "Mistral Small 3.2 24B", 128_000, false, false),
         AiModel { tools: Some(false), ..model("google/gemma-3-27b-it", "Gemma 3 27B", 96_000, false, false) },
+        AiModel {
+            tools: Some(false),
+            decision: Some(true),
+            reasoning: None,
+            context: None,
+            ..model("nimble", "Nimble", 0, false, false)
+        },
         AiModel {
             open_weights: Some(false),
             ..model("anthropic/claude-sonnet-4.5", "Claude Sonnet 4.5", 1_000_000, true, false)
