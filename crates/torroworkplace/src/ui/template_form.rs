@@ -14,14 +14,23 @@
 //! `apps.open_app` with the target `template:<id>` start. Neither host reads or writes anything
 //! itself: "Save" sends only what changed – `RenameTemplate`, `SetTemplateShortcut`,
 //! `SetTemplateStartup`, in this order, each after the core answered the one before ([`Step`]) –
-//! and an error stays in the dialog.
+//! and an error stays in the dialog, in words for people ([`refusal`]); the core's details go to
+//! stderr.
+//!
+//! The keyboard reaches everything ([`key_message`]): while the name has no focus, the digits choose
+//! the key and Backspace or Delete "None", L switches "Load at startup", ← and → choose the screen,
+//! F what happens without it. A layer under the dialog ([`with_keys`]) takes those keys only when no
+//! field took them, so they type into the name while it has the focus. In the dialog's own window,
+//! where the name takes the focus at the start, Tab leaves the name and comes back to it. The keys
+//! stand as `kbd` hints next to what they choose.
 
 use std::collections::VecDeque;
 use std::time::Instant;
 
+use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode as SystemMode;
-use iced::widget::{Space, button, column, container, operation, responsive, row, rule, scrollable, svg, text};
-use iced::{Alignment, Element, Fill, Length, Size, Subscription, Task, Theme};
+use iced::widget::{Space, Stack, button, canvas, column, container, operation, row, rule, scrollable, svg, text};
+use iced::{Alignment, Element, Fill, Length, Rectangle, Size, Subscription, Task, Theme, mouse};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Settings, ShortcutModifiers};
@@ -30,7 +39,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, Surface, TitleButtons};
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::widgets::{self, Mark};
+use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response, ScreenInfo, client};
@@ -194,17 +203,23 @@ impl Form {
     }
 
     /// The core's answer to the request the dialog sent. `None` when the dialog waits for none:
-    /// the answer is not its own. An error ends the round and stays in the dialog; what was taken
+    /// the answer is not its own. An error ends the round and stays in the dialog in words for
+    /// people ([`refusal`]: by its code when the answer has one, `Err` has none); what was taken
     /// before it counts as stored, so the next "Save" does not send it again.
     pub fn answered(&mut self, result: &Result<Response, String>) -> Option<Step> {
         let sent = self.sending.take()?;
-        match result {
-            Ok(Response::Error { message, .. }) | Err(message) => {
+        let refused = match result {
+            Ok(Response::Error { code, message }) => Some(refusal(Some(code), message)),
+            Err(detail) => Some(refusal(None, detail)),
+            Ok(_) => None,
+        };
+        match refused {
+            Some(words) => {
                 self.queue.clear();
-                self.error = Some(message.clone());
+                self.error = Some(words);
                 Some(Step::Stay)
             }
-            Ok(_) => {
+            None => {
                 self.took(&sent);
                 Some(self.next())
             }
@@ -293,6 +308,19 @@ impl Form {
     }
 }
 
+/// What the dialog says when the core refused one of its requests (`code`, as `Response::Error`
+/// has it) or gave no answer (`None`): words for people that say what to do. `detail`, the core's
+/// message or why the call failed, goes to stderr only: it is English for the log, not for people.
+pub fn refusal(code: Option<&str>, detail: &str) -> String {
+    eprintln!("torroworkplace: the template dialog's request failed ({}): {detail}", code.unwrap_or("no answer"));
+    match code {
+        Some("busy") => tr("A template is being loaded or saved. Try again in a moment."),
+        Some("not-found") => tr("This template no longer exists. It may have been deleted."),
+        _ => tr("The change could not be saved. Try again."),
+    }
+    .to_string()
+}
+
 /// The first key in the order of the keyboard (1 … 9, 0) that no template but `id` holds.
 pub fn next_free_key(templates: &[TemplateSummary], id: &str) -> Option<u8> {
     KEYS.into_iter().flatten().find(|key| owner(templates, id, *key).is_none())
@@ -315,27 +343,127 @@ pub fn default_screen(template: &TemplateSummary, screens: &[ScreenInfo]) -> Opt
         .or_else(|| saved_on.map(str::to_string))
 }
 
+// ----- Keyboard ---------------------------------------------------------------------------------
+
+/// What a key press does in the dialog when no field took it (the name has no focus): `1` … `9`,
+/// `0` choose that key, Backspace and Delete "None", `L` switches "Load at startup"; while it is on,
+/// ← and → choose the screen before or after the chosen one in the order the dialog shows them
+/// (`screens`, stopping at either end; without a chosen one → takes the first, ← the last) and `F`
+/// switches what happens without it. `None` for every other key, for a key held with Ctrl, Alt or
+/// Cmd (those are the suite's and the system's: zoom, the template keys themselves) and while a
+/// request is on its way.
+pub fn key_message(
+    form: &Form,
+    screens: &[ScreenInfo],
+    key: &Key,
+    physical: keyboard::key::Physical,
+    modifiers: keyboard::Modifiers,
+) -> Option<Message> {
+    if form.waits() || modifiers.command() || modifiers.control() || modifiers.alt() || modifiers.logo() {
+        return None;
+    }
+    match key {
+        Key::Named(Named::Backspace | Named::Delete) => return Some(Message::Key(None)),
+        Key::Named(Named::ArrowLeft) if form.startup => return neighbour_screen(form, screens, false),
+        Key::Named(Named::ArrowRight) if form.startup => return neighbour_screen(form, screens, true),
+        _ => {}
+    }
+    match key.to_latin(physical)?.to_ascii_lowercase() {
+        digit @ '0'..='9' => {
+            digit.to_digit(10).and_then(|digit| u8::try_from(digit).ok()).map(|key| Message::Key(Some(key)))
+        }
+        'l' => Some(Message::Startup(!form.startup)),
+        'f' if form.startup => Some(Message::Fallback(match form.fallback {
+            ScreenFallback::Main => ScreenFallback::Skip,
+            ScreenFallback::Skip => ScreenFallback::Main,
+        })),
+        _ => None,
+    }
+}
+
+/// The screen after (`forward`) or before the chosen one among `screens`; at the end it stays.
+fn neighbour_screen(form: &Form, screens: &[ScreenInfo], forward: bool) -> Option<Message> {
+    let at = form.screen.as_deref().and_then(|chosen| screens.iter().position(|screen| screen.name == chosen));
+    let next = match (at, forward) {
+        (Some(at), true) => (at + 1).min(screens.len().saturating_sub(1)),
+        (Some(at), false) => at.saturating_sub(1),
+        (None, true) => 0,
+        (None, false) => screens.len().checked_sub(1)?,
+    };
+    screens.get(next).map(|screen| Message::Screen(screen.name.clone()))
+}
+
+/// `content` with the dialog's keys under it ([`key_message`]): a layer that draws nothing and
+/// lies *under* the dialog, so it gets a key press only when no widget above took it – a focused
+/// name keeps its digits, letters, arrows and Backspace. It takes the keys it acts on, so the host
+/// does not act on them too.
+fn with_keys<'a>(form: &'a Form, screens: &'a [ScreenInfo], content: Element<'a, Message>) -> Element<'a, Message> {
+    Stack::with_children([content]).push_under(canvas(KeyLayer { form, screens }).width(Fill).height(Fill)).into()
+}
+
+/// The layer of [`with_keys`].
+struct KeyLayer<'a> {
+    form: &'a Form,
+    screens: &'a [ScreenInfo],
+}
+
+impl canvas::Program<Message> for KeyLayer<'_> {
+    type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        event: &iced::Event,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
+            return None;
+        };
+        key_message(self.form, self.screens, key, *physical_key, *modifiers)
+            .map(|message| canvas::Action::publish(message).and_capture())
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _renderer: &iced::Renderer,
+        _theme: &Theme,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        Vec::new()
+    }
+}
+
 // ----- View -------------------------------------------------------------------------------------
 
 /// The dialog over the control centre: head, body and foot in a [`dialog::frame`], whose body
-/// scrolls when the window is too low. The host lays it into its dialog surface.
+/// scrolls when the window is too low. The host lays it into its dialog surface. The keys work as
+/// [`key_message`] says.
 pub fn view<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
-    let (head, body, foot) = parts(form, facts);
-    dialog::frame(head, body, foot, space::xl())
+    let (head, body, foot) = parts(form, facts, false);
+    with_keys(form, facts.screens, dialog::frame(head, body, foot, space::xl()))
 }
 
 /// The dialog as a window of its own: the foot at the window's bottom, the body scrolling above it.
+/// The name has the focus at first, so the name's label shows that Tab leaves it.
 pub fn window_view<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
-    let (head, body, foot) = parts(form, facts);
+    let (head, body, foot) = parts(form, facts, true);
     let body = scrollable(body)
         .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
         .style(style::scrollable);
-    column![head, container(body).height(Fill), foot].spacing(space::xl()).into()
+    with_keys(form, facts.screens, column![head, container(body).height(Fill), foot].spacing(space::xl()).into())
 }
 
-/// Head (title, what the template holds, ✕ in the mode `Edit`), body and foot of the dialog.
-fn parts<'a>(form: &'a Form, facts: Facts<'a>) -> (Element<'a, Message>, Element<'a, Message>, Element<'a, Message>) {
-    (head(form), body(form, facts), foot(form, facts))
+/// Head (title, what the template holds, ✕ in the mode `Edit`), body and foot of the dialog; `window`
+/// when it is the dialog's own window, where Tab moves the focus.
+fn parts<'a>(
+    form: &'a Form,
+    facts: Facts<'a>,
+    window: bool,
+) -> (Element<'a, Message>, Element<'a, Message>, Element<'a, Message>) {
+    (head(form), body(form, facts, window), foot(form, facts))
 }
 
 fn head<'a>(form: &'a Form) -> Element<'a, Message> {
@@ -366,15 +494,22 @@ fn head<'a>(form: &'a Form) -> Element<'a, Message> {
     row![words].push(close).spacing(space::m()).align_y(Alignment::Start).into()
 }
 
-fn body<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
+/// Name, key and the section "Startup" (its title bound to the switch with `space::s()`), the fields
+/// under the switch, and what the core refused; `section_gap()` between the fields.
+fn body<'a>(form: &'a Form, facts: Facts<'a>, window: bool) -> Element<'a, Message> {
     let submit = (!form.waits()).then_some(Message::Save);
     let name = super::field(tr("Name"), &form.name).id(NAME_INPUT).on_input(Message::Name).on_submit_maybe(submit);
-    let mut name_field = column![label(tr("Name")), name].spacing(space::xs());
+    // Only the window gives the name the focus and moves it with Tab; over the control centre the
+    // name has it only after a click, and leaves it with a click elsewhere.
+    let tab = window.then(|| {
+        widgets::with_tooltip(widgets::kbd("Tab"), tr("Press Tab to leave the name and choose with the keys"))
+    });
+    let mut name_field = column![label_row(tr("Name"), tab)].push(name).spacing(space::xs());
     if form.tried && form.name.trim().is_empty() {
         name_field = name_field.push(error_text(tr("Give the template a name.")));
     }
-    let mut body = column![name_field, shortcut_field(form, facts), section_title(tr("Startup")), startup_switch(form)]
-        .spacing(layout::section_gap());
+    let startup = column![section_title(tr("Startup")), startup_switch(form)].spacing(space::s());
+    let mut body = column![name_field, shortcut_field(form, facts), startup].spacing(layout::section_gap());
     if form.startup {
         body = body.push(container(startup_fields(form, facts)).padding(iced::Padding::ZERO.left(switch_indent())));
     }
@@ -384,17 +519,17 @@ fn body<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
     body.into()
 }
 
-/// "Shortcut · Super + Alt +", the row of keys, and the hint under it: who loses a key, or which key
-/// the mode `Save` chose.
+/// "Shortcut · Super + Alt +" with the digits' hint, the row of keys, and the hint under it: who
+/// loses a key, or which key the mode `Save` chose.
 fn shortcut_field<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
     let keys = workspace_keys::modifiers_label(facts.modifiers);
-    let mut field =
-        column![label(trf("Shortcut · {keys} +", &[("keys", &keys)])), key_slots(form, facts)].spacing(space::xs());
+    let title = trf("Shortcut · {keys} +", &[("keys", &keys)]);
+    let mut field = column![label_row(title, Some(widgets::kbd("0–9"))), key_slots(form, facts)].spacing(space::xs());
     let id = form.id();
     let moves = form.key.and_then(|key| owner(facts.templates, id, key).map(|owner| (key, owner)));
     if let Some((key, owner)) = moves {
         let text = trf(
-            "Key {key} belongs to \"{name}\". Saving moves it here; \"{name}\" keeps no key.",
+            "Key {key} belongs to “{name}”. Saving moves it here; “{name}” keeps no key.",
             &[("key", &key), ("name", &owner.name)],
         );
         field = field.push(warning(text));
@@ -405,7 +540,8 @@ fn shortcut_field<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> 
 }
 
 /// The keys "None", 1 … 9, 0 as one row; in a narrow window two rows of six. A key another template
-/// holds names it under the digit (wide) or carries a dot (narrow), and its tooltip says whose it is.
+/// holds carries a dot, and its tooltip says whose it is (the hint under the row says it too once it
+/// is chosen): a name cut to two letters in the tile would say nothing.
 fn key_slots<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
     let slot = |key: Option<u8>| key_slot(form, facts, key);
     if facts.narrow {
@@ -424,7 +560,8 @@ fn key_slots<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
     }
 }
 
-/// One key of [`key_slots`], chosen like a chip (`style::button::choice_chip`).
+/// One key of [`key_slots`], chosen like a chip (`style::button::choice_chip`), `size::control()`
+/// high: a check when chosen, the digit, a dot when another template holds it.
 fn key_slot<'a>(form: &'a Form, facts: Facts<'a>, key: Option<u8>) -> Element<'a, Message> {
     let on = form.key == key;
     let taken = key.and_then(|key| owner(facts.templates, form.id(), key));
@@ -432,60 +569,43 @@ fn key_slot<'a>(form: &'a Form, facts: Facts<'a>, key: Option<u8>) -> Element<'a
         Some(key) => typo::text(typo::body_strong(), key.to_string()).into(),
         None => typo::text(typo::caption(), tr("None")).wrapping(text::Wrapping::None).into(),
     };
-    // The chosen key carries a check, so the choice does not rest on the fill alone; a key another
-    // template holds a dot where its name has no room.
-    let mut first = row![].spacing(space::xs()).align_y(Alignment::Center);
+    // The chosen key carries a check, so the choice does not rest on the fill alone.
+    let mut content = row![].spacing(space::xs()).align_y(Alignment::Center);
     if on {
-        first = first.push(check());
+        content = content.push(check());
     }
-    first = first.push(digit);
-    if taken.is_some() && facts.narrow {
-        first = first.push(widgets::status_dot(widgets::Status::Inactive));
+    content = content.push(digit);
+    if taken.is_some() {
+        content = content.push(widgets::status_dot(widgets::Status::Inactive));
     }
-    let mut lines = column![first].align_x(Alignment::Center);
-    if let Some(owner) = taken.filter(|_| !facts.narrow) {
-        lines = lines.push(centred_line(owner.name.clone()));
-    }
-    let height = if facts.narrow { size::control() } else { size::row() };
     let width = if key.is_none() && !facts.narrow { Length::Shrink } else { Length::Fill };
-    let slot = button(container(lines).center_x(Fill).center_y(Fill))
+    let slot = button(container(content).center_x(Fill).center_y(Fill))
         .width(width)
-        .height(height)
+        .height(size::control())
         .padding(style::ITEM_PADDING)
         .style(style::button::choice_chip(on))
         .on_press_maybe((!form.waits()).then_some(Message::Key(key)));
-    match (key, taken) {
-        (Some(key), Some(owner)) => {
-            widgets::with_tooltip(slot, format!("{} · {}", workspace_keys::label(facts.modifiers, key), owner.name))
-        }
-        (Some(key), None) => widgets::with_tooltip(slot, workspace_keys::label(facts.modifiers, key)),
-        (None, _) => slot.into(),
-    }
+    let tip = match (key, taken) {
+        (Some(key), Some(owner)) => format!("{} · {}", workspace_keys::label(facts.modifiers, key), owner.name),
+        (Some(key), None) => workspace_keys::label(facts.modifiers, key),
+        // Key names are not translated in the suite.
+        (None, _) => format!("{} · Backspace", tr("No key")),
+    };
+    widgets::with_tooltip(slot, tip)
 }
 
-/// `text` in `META` and `text_3`, centred and cut with "…" to the room it gets.
-fn centred_line<'a>(text: String) -> Element<'a, Message> {
-    responsive(move |room| {
-        let shown = typo::ellipsize(&text, typo::meta(), room.width);
-        container(typo::text(typo::meta(), shown).style(theme::text_3).wrapping(text::Wrapping::None))
-            .center_x(Fill)
-            .into()
-    })
-    .height(Length::Shrink)
-    .into()
-}
-
-/// The switch "Load at startup" with what it means under its label.
+/// The switch "Load at startup" with what it means under its label, and its key.
 fn startup_switch<'a>(form: &'a Form) -> Element<'a, Message> {
     let switch = super::switch(form.startup, Message::Startup);
     let words = column![
         typo::text(typo::body_strong(), tr("Load at startup")),
         typo::text(typo::meta(), tr("When Torro starts after you log in")).style(theme::text_3),
-    ];
-    row![switch, words].spacing(space::m()).align_y(Alignment::Center).into()
+    ]
+    .width(Fill);
+    row![switch, words, widgets::kbd("L")].spacing(space::m()).align_y(Alignment::Center).into()
 }
 
-/// The screen and what happens without it, under the switch.
+/// The screen and what happens without it, under the switch, each label with its keys.
 fn startup_fields<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
     let fallback = widgets::chip_row(vec![
         widgets::choice_chip(
@@ -501,24 +621,25 @@ fn startup_fields<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> 
             Some(Message::Fallback(ScreenFallback::Skip)),
         ),
     ]);
-    let mut screen = column![label(tr("Screen")), screens(form, facts)].spacing(space::xs());
+    let arrows = row![widgets::kbd("←"), widgets::kbd("→")].spacing(space::xs());
+    let mut screen = column![label_row(tr("Screen"), Some(arrows.into())), screens(form, facts)].spacing(space::xs());
     if form.tried && form.screen.is_none() {
         screen = screen.push(error_text(tr("Choose the screen it loads on.")));
     }
-    column![screen, column![label(tr("If the screen is missing")), fallback].spacing(space::xs())]
-        .spacing(layout::section_gap())
-        .into()
+    let missing = label_row(tr("If the screen is missing"), Some(widgets::kbd("F")));
+    column![screen, column![missing, fallback].spacing(space::xs())].spacing(layout::section_gap()).into()
 }
 
 /// The screens to choose from: a sketch of each in true proportions (wide) or a chip each
-/// (narrow), and a chip for the chosen screen when it is not connected now.
+/// (narrow), and a chip for the chosen screen when it is not connected now. Chips carry no icon
+/// (the suite has no screen icon); a chosen one adds the check in front.
 fn screens<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
     let chosen = form.screen.as_deref();
     let missing = chosen.filter(|name| facts.screens.iter().all(|screen| screen.name != *name));
     let missing_chip = missing.map(|name| {
         widgets::choice_chip(
             trf("{screen} · not connected", &[("screen", &name)]),
-            Some(Mark::Icon(Icon::AppWindow)),
+            None,
             true,
             Some(Message::Screen(name.to_string())),
         )
@@ -533,7 +654,7 @@ fn screens<'a>(form: &'a Form, facts: Facts<'a>) -> Element<'a, Message> {
             .map(|screen| {
                 widgets::choice_chip(
                     screen_name(screen),
-                    Some(Mark::Icon(Icon::AppWindow)),
+                    None,
                     chosen == Some(screen.name.as_str()),
                     Some(Message::Screen(screen.name.clone())),
                 )
@@ -647,6 +768,11 @@ fn label<'a>(words: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     typo::text(typo::caption(), words).style(theme::text_2).into()
 }
 
+/// A field's [`label`] with the keys that choose in it at the right (`kbd`), as menus show theirs.
+fn label_row<'a>(words: impl text::IntoFragment<'a>, keys: Option<Element<'a, Message>>) -> Element<'a, Message> {
+    row![container(label(words)).width(Fill)].push(keys).spacing(space::s()).align_y(Alignment::Center).into()
+}
+
 /// A section's title with a line to the right ("Startup ———").
 fn section_title<'a>(title: &'a str) -> Element<'a, Message> {
     row![widgets::section_title(title), rule::horizontal(size::HAIRLINE).style(style::rule)]
@@ -661,14 +787,18 @@ fn hint<'a>(words: String) -> Element<'a, Message> {
 }
 
 /// A note that warns: the alert in the attention colour, the words in `text_2` (colour only in the
-/// icon).
+/// icon). The alert stands in a box as high as the first line, so it is centred on that line, whether
+/// the words take one line or wrap.
 fn warning<'a>(words: String) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE_SM)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention) });
-    row![alert, typo::text(typo::meta(), words).style(theme::text_2)]
-        .spacing(space::s())
-        .align_y(Alignment::Start)
-        .into()
+    row![
+        container(alert).center_y(typo::line_height(typo::meta())),
+        typo::text(typo::meta(), words).style(theme::text_2)
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Start)
+    .into()
 }
 
 /// A sentence in the error colour.
@@ -709,6 +839,8 @@ enum Event {
     Sent(Result<Response, String>),
     Retry,
     Escape,
+    /// Tab: the name's focus goes or comes back.
+    Tab,
     SystemMode(SystemMode),
     Resized(Size),
     Zoom(zoom::Message),
@@ -804,7 +936,7 @@ impl Window {
     fn subscription(&self) -> Subscription<Event> {
         Subscription::batch([
             iced::system::theme_changes().map(Event::SystemMode),
-            iced::event::listen_with(escape),
+            iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Event::Resized(size)),
             self.zoom.subscription().map(Event::Zoom),
         ])
@@ -832,6 +964,9 @@ impl Window {
                 }
                 None => iced::exit(),
             },
+            // The name is the only field: moving on from it leaves the focus nowhere, so the
+            // keys of the dialog work ([`key_message`]); from nowhere it goes back to the name.
+            Event::Tab => operation::focus_next(),
             Event::Sent(result) => match self.form.as_mut().and_then(|form| form.answered(&result)) {
                 Some(step) => self.step(step),
                 None => Task::none(),
@@ -897,10 +1032,14 @@ impl Window {
     }
 }
 
-/// Escape, wherever the focus is.
-fn escape(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Event> {
-    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event else { return None };
-    (key == iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape)).then_some(Event::Escape)
+/// Escape, and Tab or Shift + Tab, wherever the focus is.
+fn keys(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Event> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else { return None };
+    match key {
+        Key::Named(Named::Escape) => Some(Event::Escape),
+        Key::Named(Named::Tab) if modifiers.is_empty() || modifiers == keyboard::Modifiers::SHIFT => Some(Event::Tab),
+        _ => None,
+    }
 }
 
 /// The first load, once the core answers (one started just now does not listen yet).
@@ -915,16 +1054,17 @@ fn first_load() -> Task<Event> {
     }
 }
 
-/// Loads the templates, the screens and the settings (the keys' modifiers, the appearance).
+/// Loads the templates, the screens and the settings (the keys' modifiers, the appearance). What
+/// went wrong shows in words for people ([`unexpected`]).
 fn load() -> Task<Event> {
     Task::perform(
         async {
             let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
             let templates = match client::call(&socket, &Request::ListTemplates).await {
                 Ok(Response::Templates { templates }) => templates,
-                Ok(Response::Error { message, .. }) => return Err(message),
-                Ok(other) => return Err(format!("unexpected answer: {other:?}")),
-                Err(err) => return Err(err.to_string()),
+                Ok(Response::Error { code, message }) => return Err(unexpected(format!("{code}: {message}"))),
+                Ok(other) => return Err(unexpected(format!("{other:?}"))),
+                Err(err) => return Err(unexpected(err)),
             };
             // Without a window manager there are none; the dialog says so at the screens.
             let screens = match client::call(&socket, &Request::ListScreens).await {
@@ -941,19 +1081,22 @@ fn load() -> Task<Event> {
     )
 }
 
-/// Sends one request; an error comes back as its message.
+/// Sends one request. The core's answer comes back as it is, a refusal with its code, so the form
+/// can say what it means ([`refusal`]); `Err` only when no answer came, with why for stderr.
 fn send(request: Request) -> Task<Event> {
     Task::perform(
         async move {
-            let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
-            match client::call(&socket, &request).await {
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(response) => Ok(response),
-                Err(err) => Err(err.to_string()),
-            }
+            let socket = torro_ipc::socket_path().ok_or_else(|| "no home directory".to_string())?;
+            client::call(&socket, &request).await.map_err(|err| err.to_string())
         },
         Event::Sent,
     )
+}
+
+/// The words for a load that went wrong, which the window shows with "Retry"; `detail` goes to stderr.
+fn unexpected(detail: impl std::fmt::Display) -> String {
+    eprintln!("torroworkplace: the template dialog could not load: {detail}");
+    tr("Torro Workplace did not answer as expected. Try again.").to_string()
 }
 
 #[cfg(test)]
@@ -1069,15 +1212,17 @@ mod tests {
         form.update(Message::Key(Some(5)));
         assert!(matches!(form.update(Message::Save), Step::Send(Request::RenameTemplate { .. })));
         assert!(matches!(form.answered(&Ok(Response::Ok)), Some(Step::Send(Request::SetTemplateShortcut { .. }))));
-        assert_eq!(form.answered(&Err("busy".into())), Some(Step::Stay));
-        assert_eq!(form.error.as_deref(), Some("busy"));
+        assert_eq!(form.answered(&Err("connection refused".into())), Some(Step::Stay));
+        assert_eq!(form.error.as_deref(), Some(tr("The change could not be saved. Try again.")), "no raw text");
         assert!(!form.waits());
         assert_eq!(form.requests(), [Request::SetTemplateShortcut { id: "dev".into(), key: Some(5) }]);
-        // The demo answers with `Response::Error` inside `Ok`: the same.
+        // A refusal with a code says what it means; the core's message stays out of the dialog.
         form.update(Message::Save);
-        let refused = Ok(Response::Error { code: "busy".into(), message: "later".into() });
+        let refused = Ok(Response::Error { code: "busy".into(), message: "a save or load runs".into() });
         assert_eq!(form.answered(&refused), Some(Step::Stay));
-        assert_eq!(form.error.as_deref(), Some("later"));
+        assert_eq!(form.error.as_deref(), Some(tr("A template is being loaded or saved. Try again in a moment.")));
+        assert_eq!(refusal(Some("not-found"), "x"), tr("This template no longer exists. It may have been deleted."));
+        assert_eq!(refusal(Some("error"), "a template needs a name"), tr("The change could not be saved. Try again."));
     }
 
     #[test]
@@ -1189,6 +1334,76 @@ mod tests {
         let (window, _) = Window::new(gone);
         assert!(window.form.is_none());
         drop(window.view());
+    }
+
+    /// Review fix D1: while no field has the focus, the keyboard reaches every choice of the dialog;
+    /// keys held with Ctrl, Alt or Cmd stay the suite's, and nothing is taken while it sends.
+    #[test]
+    fn keys_choose_the_key_the_switch_the_screen_and_the_fallback() {
+        use keyboard::Modifiers;
+        use keyboard::key::{Code, Physical};
+        let screens = screens();
+        let with = |form: &Form, key: Key, modifiers: Modifiers| {
+            key_message(form, &screens, &key, Physical::Code(Code::KeyA), modifiers)
+        };
+        let press = |form: &Form, key: Key| with(form, key, Modifiers::empty());
+        let char = |c: &str| Key::Character(c.into());
+        let mut form = edit("dev");
+
+        assert!(matches!(press(&form, char("3")), Some(Message::Key(Some(3)))));
+        assert!(matches!(press(&form, char("0")), Some(Message::Key(Some(0)))));
+        assert!(matches!(press(&form, Key::Named(Named::Backspace)), Some(Message::Key(None))));
+        assert!(matches!(press(&form, Key::Named(Named::Delete)), Some(Message::Key(None))));
+        for held in [Modifiers::CTRL, Modifiers::ALT, Modifiers::LOGO] {
+            assert!(with(&form, char("3"), held).is_none(), "{held:?} + 3 is not the dialog's");
+        }
+        assert!(press(&form, char("x")).is_none());
+        // Off: the screen and the fallback are not shown, so their keys do nothing.
+        assert!(press(&form, Key::Named(Named::ArrowRight)).is_none());
+        assert!(press(&form, char("f")).is_none());
+
+        let switch = press(&form, char("L")).expect("L switches");
+        assert!(matches!(switch, Message::Startup(true)));
+        form.update(switch);
+        // Saved on HDMI-A-1, the second screen: → stays at the end, ← goes to DP-1.
+        assert!(matches!(press(&form, Key::Named(Named::ArrowRight)), Some(Message::Screen(s)) if s == "HDMI-A-1"));
+        let left = press(&form, Key::Named(Named::ArrowLeft)).expect("←");
+        assert!(matches!(&left, Message::Screen(s) if s == "DP-1"));
+        form.update(left);
+        assert!(matches!(press(&form, Key::Named(Named::ArrowLeft)), Some(Message::Screen(s)) if s == "DP-1"));
+        let fallback = press(&form, char("f")).expect("F switches the fallback");
+        assert!(matches!(fallback, Message::Fallback(ScreenFallback::Skip)));
+        form.update(fallback);
+        assert!(matches!(press(&form, char("f")), Some(Message::Fallback(ScreenFallback::Main))));
+        assert!(matches!(press(&form, char("l")), Some(Message::Startup(false))));
+
+        form.update(Message::Key(Some(7)));
+        assert!(matches!(form.update(Message::Save), Step::Send(_)));
+        assert!(press(&form, char("3")).is_none(), "nothing while a request is on its way");
+    }
+
+    /// A screen not among the connected ones: → takes the first, ← the last.
+    #[test]
+    fn arrows_from_a_screen_not_connected_start_at_an_end() {
+        use keyboard::key::{Code, Physical};
+        let mut form = edit("dev");
+        form.update(Message::Startup(true));
+        form.update(Message::Screen("DP-9".into()));
+        let press = |key: Named| {
+            key_message(&form, &screens(), &Key::Named(key), Physical::Code(Code::KeyA), keyboard::Modifiers::empty())
+        };
+        assert!(matches!(press(Named::ArrowRight), Some(Message::Screen(s)) if s == "DP-1"));
+        assert!(matches!(press(Named::ArrowLeft), Some(Message::Screen(s)) if s == "HDMI-A-1"));
+        assert!(
+            key_message(
+                &form,
+                &[],
+                &Key::Named(Named::ArrowLeft),
+                Physical::Code(Code::KeyA),
+                keyboard::Modifiers::empty()
+            )
+            .is_none()
+        );
     }
 
     #[test]
