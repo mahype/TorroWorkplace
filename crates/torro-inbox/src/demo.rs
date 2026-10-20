@@ -1060,12 +1060,19 @@ impl DemoSource {
     /// `inbox.list_categories`. Tuples, not the wire type – `torro-ipc` depends on this crate,
     /// not the other way round.
     pub fn category_counts(&self) -> Vec<(Category, u32, u32)> {
+        self.category_counts_for(None)
+    }
+
+    /// Category counts restricted to one mail account.
+    pub fn category_counts_for(&self, account: Option<&str>) -> Vec<(Category, u32, u32)> {
         let data = self.lock();
         Category::ALL
             .into_iter()
             .map(|category| {
-                let of_category =
-                    data.mail.iter().filter(|m| m.summary.category.is_some_and(|held| held.category == category));
+                let of_category = data.mail.iter().filter(|m| {
+                    account.is_none_or(|account| m.summary.account == account)
+                        && m.summary.category.is_some_and(|held| held.category == category)
+                });
                 let (all, unread) = of_category.fold((0, 0), |(all, unread), m| {
                     (all + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen)))
                 });

@@ -129,6 +129,8 @@ pub enum Icon {
     UserCheck,
     /// A saved search such as "Torro bugs" in the GitHub area.
     Bug,
+    /// Pin a folder in the mail sidebar.
+    Pin,
     /// Unpin an item from its filter list (task G.3b).
     PinOff,
     /// A mail account, an unread message, "Mark unread" (task E4.2).
@@ -253,6 +255,7 @@ impl Icon {
         Icon::AlignLeft,
         Icon::UserCheck,
         Icon::Bug,
+        Icon::Pin,
         Icon::PinOff,
         Icon::Mail,
         Icon::MailOpen,
@@ -366,6 +369,7 @@ impl Icon {
             Icon::AlignLeft => include_bytes!("../assets/icons/align-left.svg"),
             Icon::UserCheck => include_bytes!("../assets/icons/user-check.svg"),
             Icon::Bug => include_bytes!("../assets/icons/bug.svg"),
+            Icon::Pin => include_bytes!("../assets/icons/pin.svg"),
             Icon::PinOff => include_bytes!("../assets/icons/pin-off.svg"),
             Icon::Mail => include_bytes!("../assets/icons/mail.svg"),
             Icon::MailOpen => include_bytes!("../assets/icons/mail-open.svg"),

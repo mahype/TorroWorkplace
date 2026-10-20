@@ -568,7 +568,12 @@ impl InboxClient {
     /// `inbox.list_categories` (task E12.8): the catalogue with how much unread mail each
     /// category holds, over every account this window may read.
     pub async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
-        match self.ask(Request::ListCategories { account: None }).await? {
+        self.list_categories_for(None).await
+    }
+
+    /// Category counts for one mail account, or all accounts when `account` is `None`.
+    pub async fn list_categories_for(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
+        match self.ask(Request::ListCategories { account }).await? {
             Response::Categories { categories } => Ok(categories),
             other => Err(unexpected(other)),
         }

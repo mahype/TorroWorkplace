@@ -111,8 +111,11 @@ pub trait MailSource: Send + Sync {
     ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// `inbox.list_categories`: the catalogue of mail categories with how much unread mail each
-    /// one holds (task E12.8). The sidebar builds its group "Categories" from it.
-    fn list_categories(&self) -> impl Future<Output = Result<Vec<CategoryInfo>, InboxError>> + Send;
+    /// one holds (task E12.8), for one account or all when `account` is `None`.
+    fn list_categories(
+        &self,
+        account: Option<String>,
+    ) -> impl Future<Output = Result<Vec<CategoryInfo>, InboxError>> + Send;
 
     /// `inbox.get_categorization`: whether a decision model is set up for sorting mail (task
     /// E12.8). Only then does the reader offer "Re-categorize".
@@ -258,8 +261,8 @@ impl MailSource for InboxClient {
         InboxClient::mail_folders(self).await
     }
 
-    async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
-        InboxClient::list_categories(self).await
+    async fn list_categories(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
+        InboxClient::list_categories_for(self, account).await
     }
 
     async fn categorization_ready(&self) -> Result<bool, InboxError> {
@@ -374,8 +377,8 @@ impl MailSource for DemoSource {
         DemoSource::mail_folders(self)
     }
 
-    async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
-        Ok(DemoSource::category_counts(self)
+    async fn list_categories(&self, account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
+        Ok(DemoSource::category_counts_for(self, account.as_deref())
             .into_iter()
             .map(|(category, unread, messages)| CategoryInfo {
                 category,
@@ -541,7 +544,7 @@ impl MailSource for crate::empty::EmptySource {
         Ok(Vec::new())
     }
 
-    async fn list_categories(&self) -> Result<Vec<CategoryInfo>, InboxError> {
+    async fn list_categories(&self, _account: Option<String>) -> Result<Vec<CategoryInfo>, InboxError> {
         Ok(Vec::new())
     }
 
