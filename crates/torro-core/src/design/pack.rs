@@ -700,6 +700,7 @@ mod tests {
         assert_eq!(design.radius, Radius { xs: 3.0, sm: 5.0, md: 7.0, lg: 9.0 });
         assert_eq!(design.layout.page_padding, Pad { vertical: 24.0, horizontal: 32.0 });
         assert_eq!((design.layout.inset, design.layout.item_gap), (10.0, 10.0));
+        assert_eq!(design.layout.density, Density::Comfortable, "`density` is one of the keys too (task E13.1)");
         assert_eq!((design.size.row, design.size.sidebar), (44.0, 248.0));
         assert_eq!(design.colors.dark.shadow, Rgba { a: 128.0 / 255.0, ..Rgba::hex(0) });
         assert_eq!(design.colors.light.accent, Rgba::hex(0x0B6B6A));

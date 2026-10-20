@@ -8107,8 +8107,8 @@ fn mute_menu_width(choices: &[Choice], leaves: bool) -> f32 {
 /// in the medium one unless "Mail | Notifications" (`choose_column`) or "By app | By time"
 /// (`arrange`) already takes that room; narrower headers show the icon with a tooltip.
 ///
-/// This was the rule of the density switch beside it (task E8.2); with the switch gone the order
-/// button owns it.
+/// This was the rule of the density switch beside it (task E8.2); with the switch gone (task E13.2)
+/// the order button owns it.
 fn order_words(class: SizeClass, choose_column: bool, arrange: bool) -> bool {
     class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange)
 }
@@ -8394,6 +8394,8 @@ fn failure_line(failure: &Failure) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use chrono::TimeZone;
     use iced::futures::executor::block_on;
     use torro_inbox::demo::DemoSource;
@@ -8414,11 +8416,14 @@ mod tests {
     fn demo(words: &[&str]) -> App<DemoSource> {
         let launch = Launch::parse(&args(words)).expect("valid parameters");
         let inbox = Arc::new(DemoSource::new(launch.start()));
-        let mut app = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
-        // Task E13.2: the density comes from the design, and all tests of this binary share the one
-        // design of the process. Setting it here keeps a test that switches the design (see
-        // `the_density_follows_the_design`) from reaching the tests beside it; a test that wants
-        // cards sets the field itself.
+        pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0)
+    }
+
+    /// `app` with its density pinned to `Compact` (task E13.2). The density comes from the design,
+    /// and all tests of this binary share the one design of the process, so a test that switches it
+    /// (see `the_density_follows_the_design`) would otherwise reach the tests beside it. Every
+    /// helper that builds an app goes through here; a test that wants cards sets the field itself.
+    fn pinned<S>(mut app: App<S>) -> App<S> {
         app.density = Density::Compact;
         app
     }
@@ -8496,10 +8501,17 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
     }
 
+    /// The design of a process is one global (`torro_gui::design::set`) and Rust runs the tests of
+    /// a binary in threads of one process, so two tests that switch it would overwrite each other's
+    /// pack. Every test that switches the design takes this lock first (task E13.2). A poisoned
+    /// lock is taken anyway: the panic of another test is reported by that test, not by this one.
+    static DESIGN: Mutex<()> = Mutex::new(());
+
     /// The message "design changed" (task L.3): the stored setting arrives and the window draws
     /// with that pack from the next frame; a broken one gives the standard.
     #[test]
     fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("temp dir");
         // The standard's values under another id, so the tests beside this one see the same tokens.
         for (id, toml) in [
@@ -8520,10 +8532,11 @@ mod tests {
     }
 
     /// Task E13.2: the window takes its density from the active design – at start, and again when
-    /// another design arrives. The only test that switches the process to a pack with cards, so it
-    /// puts the standard back at the end; every other test gets `Compact` from `demo`.
+    /// another design arrives. Holds [`DESIGN`] while a pack with cards is active and puts the
+    /// standard back at the end, because every other test expects "Torro".
     #[test]
     fn the_density_follows_the_design() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("temp dir");
         let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[layout]\ndensity = \"comfortable\"\n";
         std::fs::create_dir_all(dir.path().join("roomy")).expect("pack folder");
@@ -8537,6 +8550,13 @@ mod tests {
         assert_eq!(app.density(), Density::Comfortable, "the pack asks for cards, so the window draws cards");
         assert_eq!(app.look(), Look::Cards);
         let _ = app.view();
+
+        // A window that starts while the pack is active comes up with cards: this is the only
+        // proof that `App::new` reads `layout::density()`, since `demo` pins the field afterwards.
+        let launch = Launch::parse(&args(&["--demo", "--view", "mail"])).expect("valid parameters");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let fresh = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        assert_eq!(fresh.density(), Density::Comfortable, "the start reads the design, not a default");
 
         // Back to the standard: the tests of this binary share the one design of the process.
         design::set(torro_core::design::Design::standard());
@@ -8638,7 +8658,7 @@ mod tests {
     }
 
     /// Task E13.2: the word of the order button follows the room left in the header – the rule the
-    /// density switch had beside it until E8.2.
+    /// density switch had beside it from E8.2 until E13.2 took the switch away.
     #[test]
     fn the_order_button_keeps_its_word_where_there_is_room() {
         assert!(order_words(SizeClass::Wide, true, true), "the wide header always has room");
@@ -8671,7 +8691,7 @@ mod tests {
     fn a_restored_mail_window_is_a_mail_window_again() {
         let stored = AppId::INBOX_MAIL.command("/usr/bin/torroinbox");
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.launch.kind.app().window_class, "torro-inbox-mail");
         assert_eq!((app.view.clone(), app.column), (View::Overview, Column::Mail));
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("For me"))]), "its overview is \"For me\"");
@@ -8683,13 +8703,13 @@ mod tests {
     fn a_restored_command_line_starts_on_its_view() {
         let stored = args(&["/usr/bin/torroinbox", "--lane", "info"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.view, View::Info);
         assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Info"))]));
 
         let stored = args(&["/usr/bin/torroinbox", "--source", "agent:claude-code"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.view, View::Source(SourceRef::agent("claude-code")));
     }
 
@@ -9005,7 +9025,7 @@ mod tests {
     #[test]
     fn without_the_demo_the_inbox_is_empty() {
         let launch = Launch::default();
-        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         assert!(app.loaded && app.items.is_empty() && app.for_me.is_empty());
         assert_eq!(app.nav_entries().0[0].trail(), Trail::None, "no 0 beside For me");
@@ -10427,7 +10447,7 @@ mod tests {
     #[test]
     fn without_a_mail_account_the_window_of_mail_says_so() {
         let launch = Launch::parse(&args(&["--source", "mail"])).expect("valid parameters");
-        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         assert_eq!(app.view, View::Mail, "nothing to start on");
         assert!(app.loaded && app.folders.is_empty());
@@ -11522,9 +11542,12 @@ mod tests {
         assert_eq!(ids(&notices), ["demo-11"], "other windows keep all of Done");
     }
 
+    /// Task E13.2: with cards, because the heights this walks through are the cards' – under the
+    /// standard design the hub draws rows, so the card geometry needs asking for.
     #[test]
     fn moving_in_act_now_scrolls_it() {
         let mut app = overview_at(&[]);
+        app.density = Density::Comfortable;
         let sections = hub::Sections::of(&app.items, None);
         let tiles = hub::tiles(&app.items).len();
         let (_, first) = hub::span(&sections, tiles, app.hub_layout(), "demo-3").expect("the approval");
@@ -12841,7 +12864,7 @@ mod tests {
             Launch::parse(&args(&["--demo", "--now", "2026-10-13T10:30", "--view", "mail"])).expect("valid parameters");
         launch.message = Some(message.into());
         let inbox = Arc::new(DemoSource::new(launch.start()));
-        let mut app = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         app
     }
@@ -12966,7 +12989,7 @@ mod tests {
         let mut launch = Launch::parse(&args(&["--demo", "--view", "hub"])).expect("valid");
         launch.message = Some("m:w9".into());
         let mut hub =
-            App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0;
+            pinned(App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
     }
