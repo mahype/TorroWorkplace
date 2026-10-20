@@ -89,6 +89,14 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
     }
 }
 
+/// What Escape means in these sections: a page of the categories' editor goes back to its list
+/// (task E15.5), asking first when something typed would go. `None` leaves it to the window,
+/// which closes the settings.
+pub fn escape(state: &State) -> Option<Message> {
+    editor::escape(&state.categorization)
+        .map(|message| Message::Categorization(categorization::Message::Editor(message)))
+}
+
 /// One section's page with its messages wrapped in [`Message`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Message> {
     Page {
@@ -971,8 +979,8 @@ pub mod categorization {
     use torro_gui::icon;
     use torro_gui::theme::palette;
     use torro_gui::{layout, style, theme, typo, widgets};
-    use torro_ipc::{Request, SettingKey};
-    use torro_mail::{Category, CategoryGroup};
+    use torro_ipc::Request;
+    use torro_mail::Category;
 
     use super::*;
     use crate::parts::{choice, pressable, setting_row, switch};
@@ -1033,15 +1041,7 @@ pub mod categorization {
                 enabled: true,
             }),
             Message::CatchUp(cancel) => Action::send(Request::CatchUpCategories { cancel, again: false }),
-            Message::Shown(category, shown) => {
-                let mut hidden = data.settings.hidden_categories.clone();
-                hidden.retain(|held| *held != category);
-                if !shown {
-                    hidden.push(category);
-                }
-                let value = serde_json::to_value(&hidden).unwrap_or_default();
-                Action::send(Request::SetSetting { key: SettingKey::HiddenCategories, value })
-            }
+            Message::Shown(category, shown) => Action::send(super::editor::shown_request(data, category, shown)),
             Message::ManageModels => Action::ControlCentre(crate::assistant::AI_SECTION.to_string()),
         }
     }
@@ -1059,9 +1059,9 @@ pub mod categorization {
     /// "‹ Back" (task E15.5).
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
         match super::editor::page(state, data) {
-            Some((name, body)) => {
+            Some((name, body, save)) => {
                 let back = Message::Editor(super::editor::Message::Back);
-                Page::new(body.map(Message::Editor)).sub_page(name, back)
+                Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)])
             }
             None => Page::new(view(data)),
         }
@@ -1073,19 +1073,22 @@ pub mod categorization {
         let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
         let sorting = widgets::group(
             tr("Categorization"),
-            vec![switch_row, catch_up_row(data)],
+            vec![switch_row, catch_up_row(data), sort_again_row(data)],
             Some(
                 tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.")
                     .to_string(),
             ),
         );
         let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
-        let shown = widgets::group(tr("Show in the sidebar"), category_rows(data), None);
-        let categories = super::editor::categories_group(data).map(Message::Editor);
         let sorting_rules = super::editor::rules_group(data).map(Message::Editor);
         // The rules before the long list of categories: they change more often. "Always for this
         // sender?" keeps its senders among them (task E15.3), so no link to the Notification Hub.
-        column![sorting, models, sorting_rules, categories, shown].spacing(layout::section_gap()).into()
+        // Whether the sidebar shows a category is on its page (task E15.5), not a second list.
+        let mut page = column![sorting, models, sorting_rules].spacing(layout::section_gap());
+        for group in super::editor::categories_groups(data) {
+            page = page.push(group.map(Message::Editor));
+        }
+        page.into()
     }
 
     /// The models that may sort mail: every AI account's models that decide and are turned on for
@@ -1195,6 +1198,26 @@ pub mod categorization {
         }
     }
 
+    /// "Sort again" (task E15.5): the window anew after new rules or descriptions, but what was
+    /// filed by hand. It works with the rules alone, so it is there without a model too; while a
+    /// run goes, "Catch up" shows how far and stops it.
+    fn sort_again_row<'a>(data: &'a Data) -> Element<'a, Message> {
+        let running =
+            data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
+        let button = widgets::text_button(
+            None,
+            tr("Sort again"),
+            style::button::secondary,
+            (!running).then_some(Message::SortAgain),
+        );
+        setting_row(
+            None,
+            tr("Sort everything again"),
+            Some(tr("After new rules or descriptions. What you filed by hand stays.").to_owned()),
+            button,
+        )
+    }
+
     /// "Catch up": how far the backlog has come, and the button to start or stop it.
     fn catch_up_row<'a>(data: &'a Data) -> Element<'a, Message> {
         let (done, total) = data
@@ -1226,14 +1249,6 @@ pub mod categorization {
                 Some(Message::CatchUp(true)),
             ));
         } else {
-            // After new rules or descriptions: everything of the window anew, but what was filed
-            // by hand. It works with the rules alone, so it is there without a model too.
-            value = value.push(widgets::text_button(
-                None,
-                tr("Sort again"),
-                style::button::ghost,
-                Some(Message::SortAgain),
-            ));
             value = value.push(widgets::text_button(
                 None,
                 tr("Catch up now"),
@@ -1247,38 +1262,5 @@ pub mod categorization {
             Some(tr("The inbox of the last 30 days, at most 500 messages per account.").to_owned()),
             value,
         )
-    }
-
-    /// One switch per category, by group, so the sidebar shows only what is wanted. The groups
-    /// and names are the catalogue's (task E15.2); a core that sent none gives the suite's own.
-    fn category_rows(data: &Data) -> Vec<Element<'_, Message>> {
-        let hidden = &data.settings.hidden_categories;
-        let catalogue = catalogue(data);
-        let mut rows = Vec::new();
-        for group in CategoryGroup::ALL {
-            let of_group: Vec<&torro_ipc::inbox::CategoryInfo> =
-                catalogue.iter().filter(|info| info.group == group).collect();
-            for (nth, info) in of_group.into_iter().enumerate() {
-                let category = info.category;
-                let shown = !hidden.contains(&category);
-                let note: Option<String> = (nth == 0).then(|| info.group_label.clone());
-                rows.push(setting_row(
-                    None,
-                    info.label.clone(),
-                    note,
-                    switch(shown, move |on| Message::Shown(category, on)),
-                ));
-            }
-        }
-        rows
-    }
-
-    /// The catalogue as the load brought it, or the suite's own when the core sent none (an
-    /// older core, or a load that failed half-way).
-    pub(crate) fn catalogue(data: &Data) -> Vec<torro_ipc::inbox::CategoryInfo> {
-        if !data.categories.is_empty() {
-            return data.categories.clone();
-        }
-        torro_mail::CategoryDef::defaults().iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()
     }
 }

@@ -1960,6 +1960,15 @@ fn settings_update(
     }
 }
 
+/// What Escape means in the open section before it closes the settings (task E15.5): `None`
+/// lets the settings close.
+fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
+    match &pane.sections {
+        SettingsState::Mail(state) => settings_mail::escape(state).map(SettingsMessage::Mail),
+        SettingsState::Inbox(_) => None,
+    }
+}
+
 /// The page of the open section, as the host takes it.
 fn settings_page<'a>(
     sections: &'a SettingsState,
@@ -3798,10 +3807,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 } else if self.hint.is_some() {
                     // The toast goes first: it lies over everything, and the panel stays.
                     self.hint = None;
+                } else if let Some(message) = self.settings.as_ref().and_then(settings_escape) {
+                    // A page of the categories' editor goes back to its list first (task E15.5).
+                    return self.update(Message::SettingsPage(message));
                 } else if self.settings.is_some() {
                     // The settings cover the content area; Escape gives it back (task S.20). What
-                    // was open behind them – the panel, a search – comes back with it. No section
-                    // of these windows has a dialog of its own that would swallow Escape first.
+                    // was open behind them – the panel, a search – comes back with it.
                     self.settings = None;
                 } else if self.suggesting {
                     self.suggesting = false;
