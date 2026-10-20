@@ -12,7 +12,8 @@
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
 //!
-//! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
+//! and ends on "Quit", Ctrl+C, SIGTERM on Unix (`systemctl --user stop`, `kill`; [`stop_signals`]) or
+//! when the socket server fails. Every command, from the
 //! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
 //! state directory before the core starts ([`claim_service`]), and when it ends it stops the socket
 //! server and releases the template keys it bound on Hyprland ([`Core::release_template_keys`]), after
@@ -327,6 +328,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
     // Before anything starts: two services started at once would both start the core (bind the
     // template keys, load the templates of the login) before one of them failed on the socket.
     let _service = claim_service()?;
+    // Installed this early so a SIGTERM while the core starts waits for the end below, which releases
+    // the template keys, instead of ending the process the default way.
+    let stopped = stop_signals();
     let socket = socket_path().ok_or("no home directory")?;
     // Bounded: a program that holds the socket or pipe name but never answers must not stall
     // the start; the server then fails on the taken name with a clear error instead.
@@ -441,7 +445,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
 
     let result = tokio::select! {
         _ = quit_rx.recv() => Ok(()),
-        _ = tokio::signal::ctrl_c() => Ok(()),
+        () = stopped => Ok(()),
         ended = &mut ipc => match ended {
             Ok(Ok(())) => Ok(()),
             Ok(Err(err)) => Err(err.to_string()),
@@ -498,6 +502,41 @@ async fn once_listening(
     remove_mark(start_mark);
     then.await;
     true
+}
+
+/// Resolves when the service is told from outside to end: Ctrl+C (SIGINT) on every system and, on
+/// Unix, SIGTERM, which `systemctl --user stop` and `kill` send. Both then take the same way out as
+/// "Quit": the socket stops and the template keys are released ([`serve`]).
+///
+/// The SIGTERM handler is installed by the call, not when the future is first polled, so a SIGTERM
+/// that comes before the service waits for it is kept, not lost or deadly. Must be called inside the
+/// runtime. If the handler cannot be installed, that is logged and only Ctrl+C ends the service.
+fn stop_signals() -> impl Future<Output = ()> + Send + 'static {
+    #[cfg(unix)]
+    let terminate = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(signal) => Some(signal),
+        Err(err) => {
+            eprintln!("torroworkplace: cannot listen for SIGTERM: {err}; only Ctrl+C ends the service");
+            None
+        }
+    };
+    async move {
+        #[cfg(unix)]
+        let terminated = async move {
+            match terminate {
+                Some(mut signal) => {
+                    signal.recv().await;
+                }
+                None => std::future::pending().await,
+            }
+        };
+        #[cfg(not(unix))]
+        let terminated = std::future::pending::<()>();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            () = terminated => {}
+        }
+    }
 }
 
 /// Makes this process the one service of the user: locks [`SERVICE_LOCK`] for as long as the
@@ -1239,5 +1278,19 @@ mod tests {
             collection: Some("work".into()),
         };
         assert_eq!(describe(&answer), "answer an invitation");
+    }
+
+    /// PR #259: `systemctl --user stop` and `kill` send SIGTERM; it must end the service the way
+    /// Ctrl+C does (releasing the template keys), not kill the process before that.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sigterm_ends_the_service_like_ctrl_c() {
+        let stopped = stop_signals();
+        let sent = std::process::Command::new("kill")
+            .args(["-TERM", &std::process::id().to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success());
+        assert!(tokio::time::timeout(Duration::from_secs(5), stopped).await.is_ok(), "SIGTERM did not end it");
     }
 }
