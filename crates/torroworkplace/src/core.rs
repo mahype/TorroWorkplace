@@ -3055,10 +3055,15 @@ impl Core {
             },
             Request::SaveTemplate { name } => self.exclusive(self.save(name)).await,
             Request::UpdateTemplate { id } => self.exclusive(self.update(id)).await,
-            Request::DeleteTemplate { id } => match self.store.delete(&id) {
-                Ok(()) => Response::Ok,
-                Err(err) => error(&err),
-            },
+            // In turn with saves and loads (issue #243): an update that captures meanwhile would
+            // write the deleted template back.
+            Request::DeleteTemplate { id } => {
+                self.exclusive(async {
+                    self.store.delete(&id)?;
+                    Ok(Response::Ok)
+                })
+                .await
+            }
             Request::LoadTemplate { id, mode } => {
                 self.exclusive(async {
                     let template = self.store.load(&id)?;
@@ -3216,10 +3221,11 @@ impl Core {
             Request::ListColorSchemes => Response::ColorSchemes { color_schemes: self.list_color_schemes() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
             Request::RemoveAccount { id } => self.remove_account(&id).await,
-            Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
-                Ok(template) => Response::Saved { template },
-                Err(err) => error(&err),
-            },
+            // In turn with saves, loads and keys (issue #243): renaming loads and writes the whole
+            // template, so a key set meanwhile would be written over, and two templates held it.
+            Request::RenameTemplate { id, name } => {
+                self.exclusive(async { Ok(Response::Saved { template: self.rename(&id, &name)? }) }).await
+            }
             // Both files in one round while no save or load runs (issue #243): the key never ends
             // up with two templates, and an update that captures meanwhile cannot drop it.
             Request::SetTemplateShortcut { id, key } => {
@@ -6279,7 +6285,9 @@ impl Core {
         Ok(Response::Saved { template: TemplateSummary::from(&template) })
     }
 
-    /// Runs a save or load unless another one is running.
+    /// Runs a save or load unless another one is running; every command that writes a template runs
+    /// through here (save, update, delete, rename, key, startup), so none writes over another's
+    /// change. `busy` while one runs.
     async fn exclusive(&self, work: impl Future<Output = Result<Response, SetupsError>>) -> Response {
         let Ok(_guard) = self.work.try_lock() else {
             return Response::Error { code: "busy".into(), message: "another save or load is running".into() };
@@ -7307,6 +7315,34 @@ mod tests {
 
         assert_eq!(code(&core.handle(key("gone", Some(2))).await), "not-found");
         assert_eq!(code(&core.handle(key("dev", Some(10))).await), "error");
+    }
+
+    /// Review fix of issue #243: every command that writes a template waits its turn, so a rename or a
+    /// delete cannot write over a key set (or an update) at the same time; `busy` while one runs, and
+    /// nothing changed.
+    #[tokio::test]
+    async fn every_command_that_writes_a_template_takes_its_turn() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        keyed_template(&core, "dev", "Dev", Some(1));
+        let held = core.work.lock().await;
+        let writes = [
+            Request::RenameTemplate { id: "dev".into(), name: "Development".into() },
+            Request::DeleteTemplate { id: "dev".into() },
+            Request::SetTemplateShortcut { id: "dev".into(), key: Some(2) },
+            Request::SetTemplateStartup { id: "dev".into(), startup: None },
+            Request::UpdateTemplate { id: "dev".into() },
+        ];
+        for request in writes.clone() {
+            assert_eq!(code(&core.handle(request.clone()).await), "busy", "{request:?}");
+        }
+        let dev = core.store.load("dev").expect("still there");
+        assert_eq!((dev.name.as_str(), dev.shortcut), ("Dev", Some(1)), "nothing changed");
+        drop(held);
+        let renamed = saved_template(core.handle(writes[0].clone()).await);
+        assert_eq!(renamed.name, "Development");
+        assert_eq!(core.handle(writes[1].clone()).await, Response::Ok);
+        assert_eq!(code(&core.handle(writes[1].clone()).await), "not-found");
     }
 
     /// Issue #243: loading at login is set and cleared; a screen not connected now is allowed.
