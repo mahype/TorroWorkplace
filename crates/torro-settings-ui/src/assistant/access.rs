@@ -5,8 +5,8 @@
 //! Status            the assistant on or off
 //! Start from        while it is off: the starting points of its rights ([`Preset`])
 //! What the assistant may use   the rights editor ([`crate::rights`], tools named as MCP tools)
-//! Turn off assistant…          while it is on, after a question
 //! Bots              a row per bot; it opens the rights editor of the bot's own client
+//! Turn off assistant…          while it is on, after a question; last, as what destroys
 //! ```
 //!
 //! While the assistant has no client the page is its first start: "Start from" and the rights it
@@ -334,7 +334,8 @@ pub fn page<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Page<'a, 
     }
 }
 
-/// The assistant on: its status, the editor, "Turn off assistant…", the bots.
+/// The assistant on: its status, the editor, the bots, and last "Turn off assistant…" – what
+/// undoes the page stands at its end, after everything it would take away.
 fn assistant_page<'a>(state: &'a State, data: &'a Data, client: &'a ClientInfo) -> Element<'a, Message> {
     let rights = rights::shown(&state.rights, client);
     let editor = rights::view(
@@ -346,7 +347,7 @@ fn assistant_page<'a>(state: &'a State, data: &'a Data, client: &'a ClientInfo) 
         tr("What the assistant may use"),
     );
     let off = widgets::text_button(None, tr("Turn off assistant…"), style::button::danger, Some(Message::AskTurnOff));
-    column![status_group(true), editor.map(Message::Rights), on_axis(off), bots_group(state, data)]
+    column![status_group(true), editor.map(Message::Rights), bots_group(state, data), on_axis(off)]
         .spacing(layout::section_gap())
         .into()
 }

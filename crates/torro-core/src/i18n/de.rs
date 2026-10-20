@@ -2983,10 +2983,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Entwirf eine Antwort auf Annas Angebot: Wir nehmen an, Lieferung im November.",
     ),
     ("Focus time", "Fokuszeit"),
-    (
-        "I found five mails from Anna, but I may not create tasks. You can allow it in the control centre.",
-        "Ich habe fünf Mails von Anna gefunden, darf aber keine Aufgaben anlegen. Du kannst es in der Steuerzentrale erlauben.",
-    ),
     ("Input", "Eingabe"),
     (
         "Load the template Writing and block my afternoon in the calendar.",
@@ -4207,4 +4203,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Refused while MCP is off", "Abgelehnt, solange MCP aus ist"),
     ("Create key…", "Schlüssel erstellen…"),
     ("Connect client…", "Client verbinden…"),
+    (
+        "I found five mails from Anna, but I may not create tasks. You can allow it in Settings › Access.",
+        "Ich habe fünf Mails von Anna gefunden, darf aber keine Aufgaben anlegen. Du kannst es unter Einstellungen › Zugriff erlauben.",
+    ),
 ];

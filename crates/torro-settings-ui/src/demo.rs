@@ -86,9 +86,10 @@ impl Demo {
     }
 
     /// The assistant's client, so the sections show the assistant as on, with one command switched
-    /// off, so the rights editor shows what that looks like (task S.33); and the client of the
-    /// sample bot ([`Demo::bots`]), which reads two calendars, so Access has a bot to open (task
-    /// S.34). The demo only pretends to switch or change them.
+    /// off, so the rights editor shows what that looks like (task S.33); and the clients of the
+    /// sample bots ([`Demo::bots`]): the travel planner reads two calendars, so Access has a bot to
+    /// open (task S.34), the release helper may use nothing. The demo only pretends to switch or
+    /// change them.
     fn clients(&self) -> Vec<ClientInfo> {
         let created = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap_or_else(Utc::now);
         let client = |id: &str, name: &str, kind: &str, rights: Rights| ClientInfo {
@@ -111,7 +112,8 @@ impl Demo {
                 ASSISTANT_CLIENT,
                 Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
             ),
-            client("c0000001", "Travel planner", BOT_CLIENT, travel),
+            client("c0000001", tr("Travel planner"), BOT_CLIENT, travel),
+            client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none()),
         ]
     }
 
@@ -344,17 +346,30 @@ impl Demo {
         ]
     }
 
-    /// One sample bot.
+    /// The sample bots of the assistant's demo (`torroassistant::demo`), so Access lists what its
+    /// sidebar does: "Release helper", which may use nothing yet, and "Travel planner".
     fn bots(&self) -> Vec<BotSummary> {
-        vec![BotSummary {
-            id: "b0000001".into(),
-            name: "Travel planner".into(),
-            description: "Plans trips by train".into(),
-            avatar: LETTER_AVATAR.into(),
-            engine: "ai:ollama@localhost:11434".into(),
-            model: None,
-            client: "c0000001".into(),
-        }]
+        let release = BotSummary {
+            id: "b0000002".into(),
+            name: tr("Release helper").into(),
+            description: tr("Writes release notes and checks what is open").into(),
+            avatar: "radar".into(),
+            engine: "ai:openrouter@openrouter.ai".into(),
+            model: Some("qwen/qwen3-32b".into()),
+            client: "c0000002".into(),
+        };
+        vec![
+            release,
+            BotSummary {
+                id: "b0000001".into(),
+                name: tr("Travel planner").into(),
+                description: tr("Plans trips by train").into(),
+                avatar: LETTER_AVATAR.into(),
+                engine: "ai:ollama@localhost:11434".into(),
+                model: None,
+                client: "c0000001".into(),
+            },
+        ]
     }
 
     /// The assistant's own tools as `tools.list_tools` lists them for the app key: switched on as the

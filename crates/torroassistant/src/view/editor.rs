@@ -365,9 +365,14 @@ impl App {
             Some(choice) => {
                 let label = typo::ellipsize(&self.choice_label(choice), typo::caption(), size::sidebar());
                 let picker = widgets::select_button(&anchors.bot_picker, label, Message::ToggleMenu(Menu::BotPicker));
-                let off = self
-                    .turned_off(choice)
-                    .then(|| widgets::ellipsized(typo::meta(), tr("Turned off in Settings › Accounts"), theme::text_3));
+                // An alert in the attention colour before the words: the bot answers with another
+                // model than the one shown, which is worth noticing, not only reading.
+                let off = self.turned_off(choice).then(|| {
+                    let mark = tinted(Icon::CircleAlert, icon::SIZE, |p| p.attention_text);
+                    let words =
+                        widgets::ellipsized(typo::meta(), tr("Turned off in Settings › Accounts"), theme::text_3);
+                    row![mark, words].spacing(space::xs()).align_y(Alignment::Center)
+                });
                 row![picker].push(off).spacing(space::s()).align_y(Alignment::Center).into()
             }
             None if self.no_model_on() => row![

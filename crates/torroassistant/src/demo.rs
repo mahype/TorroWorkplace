@@ -594,7 +594,7 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
                 Lack::Level { area: Area::Tasks, needs: Access::Write },
             ),
             answer(tr(
-                "I found five mails from Anna, but I may not create tasks. You can allow it in the control centre.",
+                "I found five mails from Anna, but I may not create tasks. You can allow it in Settings › Access.",
             )),
         ],
     );
