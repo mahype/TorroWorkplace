@@ -1067,6 +1067,11 @@ impl Ui {
                     }
                 }
             }
+            // Accounts shows one provider (task S.37): "Open accounts" chooses the one in need.
+            Message::Overview(m @ overview::Message::OpenAccounts) => {
+                accounts::show_in_need(&mut self.accounts, &self.data);
+                overview::update(&mut self.overview, m, &self.data)
+            }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),

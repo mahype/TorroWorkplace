@@ -3,8 +3,8 @@
 //! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub, AI,
 //! ntfy ([`Group`]); an account of a kind none of them holds gets a provider of its own at the
 //! end. They stand in a column at the left edge of the content ([`provider_column`]: wide with
-//! names and counts, medium only icons) or as chips above the list (narrow), with the alert icon in
-//! place of the provider's where an account needs the person. The list shows one provider ([`chosen`]): its name and the sentence
+//! names and counts, medium only icons) or as chips above the list (narrow), the icon in a status
+//! colour where an account needs the person. The list shows one provider ([`chosen`]): its name and the sentence
 //! of what belongs there, then its accounts as rows (status dot, label on one line, status and last
 //! sync below, chevron) and its "Add" ([`Message::Add`]), which opens the add-account dialog
 //! (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
@@ -454,13 +454,18 @@ pub fn unlisted(state: &State) -> bool {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         // The AI providers ask for the servers on this computer as they open.
+        // The list then shows that provider, so the new account appears where it was added.
         Message::Add(provider) => {
+            if let Some(group) = Group::ALL.into_iter().find(|group| group.provider() == provider) {
+                state.provider = Some(group.kinds()[0].to_string());
+            }
             let (wizard, ask) = wizard::State::at(provider, data);
             state.wizard = Some(wizard);
             ask
         }
         // The step asks for TorroMail's accounts as it opens (task M7.4).
         Message::ImportTorroMail => {
+            state.provider = Some(Group::Mail.kinds()[0].to_string());
             let (wizard, ask) = wizard::State::torromail();
             state.wizard = Some(wizard);
             ask
@@ -1380,15 +1385,28 @@ fn group_tone(group: Listed<'_>, entries: &[&AccountInfo]) -> Option<Tone> {
     entries.iter().filter(|entry| group.holds(&entry.kind)).map(|entry| status_line(&entry.state).tone).max()
 }
 
-/// The provider's icon; where one of its accounts needs the person or fails, the alert icon in
-/// the colour of that status instead – a form and not only a colour, as the name stays beside it
-/// (and in the tooltip of the medium column). The text colours (`attention_text`, `error_text`)
-/// hold 3:1 for a small icon on light surfaces too; the words stand on the account's row.
+/// The provider's icon, in the colour of a status where one of its accounts needs the person or
+/// fails – the provider stays recognisable by its icon in the medium column, the words stand on
+/// the account's row. The text colours (`attention_text`, `error_text`): the status colours are
+/// too light for a small icon on light surfaces.
 fn provider_mark(group: Listed<'_>, entries: &[&AccountInfo], palette: &Palette) -> Mark {
     match group_tone(group, entries) {
-        Some(Tone::Attention) => Mark::Tinted(Icon::CircleAlert, palette.attention_text),
-        Some(Tone::Error) => Mark::Tinted(Icon::CircleAlert, palette.error_text),
+        Some(Tone::Attention) => Mark::Tinted(group.icon(), palette.attention_text),
+        Some(Tone::Error) => Mark::Tinted(group.icon(), palette.error_text),
         Some(Tone::Ok) | None => Mark::Icon(group.icon()),
+    }
+}
+
+/// The overview's "Open accounts" (task S.37): as the list shows one provider, it shows the first
+/// whose accounts need the person – the one the attention row named, or one before it. Nothing
+/// changes while no account does.
+pub fn show_in_need(state: &mut State, data: &Data) {
+    let entries = entries(data);
+    let in_need = providers(&entries)
+        .into_iter()
+        .find(|&group| matches!(group_tone(group, &entries), Some(Tone::Attention | Tone::Error)));
+    if let Some(group) = in_need {
+        state.provider = Some(group.key().to_string());
     }
 }
 
@@ -2594,7 +2612,7 @@ mod tests {
     }
 
     /// Task S.37: the column counts the accounts of a provider, not the sign-ins in progress, and
-    /// shows the worst way one of them stands as the alert icon in that status's colour.
+    /// tints its icon with the worst way one of them stands, in a colour readable on light surfaces.
     #[test]
     fn a_provider_counts_its_accounts_and_takes_the_worst_tone() {
         let ok = of_kind("nextcloud:a", "nextcloud");
@@ -2609,11 +2627,29 @@ mod tests {
         assert_eq!(group_tone(nextcloud, &[&waiting, &broken, &ok]), Some(Tone::Error));
         let palette = Palette::dark();
         assert_eq!(provider_mark(nextcloud, &[&ok], &palette), Mark::Icon(Icon::Cloud));
-        let alert = |colour| Mark::Tinted(Icon::CircleAlert, colour);
+        let alert = |colour| Mark::Tinted(Icon::Cloud, colour);
         assert_eq!(provider_mark(nextcloud, &[&waiting], &palette), alert(palette.attention_text));
         assert_eq!(provider_mark(nextcloud, &[&broken], &palette), alert(palette.error_text));
         let light = Palette::light();
         assert_eq!(provider_mark(nextcloud, &[&broken], &light), alert(light.error_text), "readable on light");
+    }
+
+    /// Task S.37: the overview's "Open accounts" shows the first provider with an account in need,
+    /// whatever was chosen; "Add" and the import show the provider they add to.
+    #[test]
+    fn the_way_into_the_list_chooses_the_provider_it_is_about() {
+        let broken = AccountInfo { kind: "github".into(), ..account("github:anna", connected(None, Some("Gone"))) };
+        let data = Data { accounts: vec![of_kind("nextcloud:a", "nextcloud"), broken], ..Data::default() };
+        let mut state = State { provider: Some("ntfy".into()), ..State::default() };
+        show_in_need(&mut state, &data);
+        assert_eq!(state.provider.as_deref(), Some("github"));
+        let fine = Data { accounts: vec![of_kind("nextcloud:a", "nextcloud")], ..Data::default() };
+        show_in_need(&mut state, &fine);
+        assert_eq!(state.provider.as_deref(), Some("github"), "nothing in need: the choice stays");
+        update(&mut state, Message::Add(wizard::Provider::Ntfy), &fine);
+        assert_eq!(state.provider.as_deref(), Some("ntfy"));
+        update(&mut state, Message::ImportTorroMail, &fine);
+        assert_eq!(state.provider.as_deref(), Some("mail"));
     }
 
     /// Task S.37: choosing a provider shows it; opening an account chooses its provider, so "Back"
