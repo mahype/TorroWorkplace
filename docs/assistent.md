@@ -86,8 +86,8 @@ Agenten im Terminal.
   Mail-Konten, Kalender, Listen, Quellen des Eingangs, Repositories). Vorlagen wie bei jedem Client
   (*Read only*, *Read and write*, *Full access*); vorausgewählt ist nur *Read only* für
   Kalender, Aufgaben und Eingang.
-- **Ändern jederzeit** in Steuerzentrale › Agents & API beim Assistenten („What the assistant may
-  use“), dieselbe Ansicht wie die Rechte jedes anderen Programms, und aus dem Chat heraus über
+- **Ändern jederzeit** im Assistent-Fenster › Einstellungen › Access (seit #231, vorher in der
+  Steuerzentrale), derselbe Rechte-Editor wie für die Clients unter API und MCP, und aus dem Chat heraus über
   einen Hinweis „The assistant has no access to Mail. Change…“, wenn ein Werkzeug `forbidden` meldet. Wirkt ab der
   nächsten Anfrage, auch mitten in einer Unterhaltung.
 - **Je Unterhaltung enger, nie weiter:** Im Eingabefeld lassen sich Bereiche für diese Unterhaltung
@@ -171,8 +171,8 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
   (Name, Beschreibung, Persönlichkeit, Anweisungen), ein neuer Bot hat aber keine Rechte, bis der
   Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Wer einen Bot selbst anlegt, vergibt
   die Rechte gleich im Bot-Editor (Abschnitt „Access“: Stufe je Bereich und „Ask first“, B.5);
-  welche Kalender, Konten und Repositories, Senden und Admin-Befehle stellt man in der
-  Steuerzentrale unter Agents & API bei diesem Bot ein.
+  welche Kalender, Konten und Repositories, Senden und Admin-Befehle stellt man im Assistent-Fenster
+  unter Einstellungen › Access bei diesem Bot ein.
 - **Später:** Bots als Paket weitergeben (nur Daten: Profil, Anweisungen, Skills, verlangte
   Rechte), passend zu den Erweiterungen ([erweiterungen.md](erweiterungen.md), Punkt 5).
 
@@ -367,17 +367,17 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
 | Unterhaltung löschen | Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
 | Standard-Antrieb, Aufbewahrung | Assistent › Einstellungen › General bzw. History | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |
-| Rechte des Assistenten | Steuerzentrale › Agents & API (beim Assistenten), erster Start | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
+| Rechte des Assistenten | Assistent › Einstellungen › Access (seit #231), erster Start („Turn on assistant“) | `clients.update_client` (gibt es) | **Never** (Punkt 2: kein Agent ändert Rechte) |
 | Bereiche je Unterhaltung abschalten | Eingabefeld | Feld `without` in `assistant.send_message` | ebenso |
 | Profil und Persönlichkeit lesen | Assistent › Einstellungen › Profile | `assistant.get_profile` · Read | `assistant_get_profile` |
 | Profil und Persönlichkeit ändern | ebenda | `assistant.update_profile` · Admin (mit Freigabe) | `assistant_update_profile` |
 | Gedächtnis lesen / ergänzen / löschen | ebenda › Memory; im Chat „Remember …“ | `assistant.list_memories` · Read, `assistant.remember` · Write, `assistant.forget` · Delete | `assistant_list_memories`, `assistant_remember`, `assistant_forget` |
-| Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Agents & API | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
+| Eigene Rechte kennen (Issue #134) | im Chat „Welche Rechte hast du?“ (Prompt-Zusammenfassung); die Person sieht sie in Assistent › Einstellungen › Access | `assistant.my_access` · Read (Assistent und Bots durch ihre Art, andere Clients mit `assistant`) | `assistant_my_access` |
 | **Stufe 2:** Bots auflisten | Seitenleiste „Bots“ | `bots.list_bots` · Read | `bots_list_bots` |
 | **Stufe 2:** Bot anlegen/ändern (ohne Rechte) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
 | **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
-| **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in der Steuerzentrale › Agents & API bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
+| **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in Assistent › Einstellungen › Access bei diesem Bot | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
 | Freigabe im Chat entscheiden | Karte „Allow“/„Deny“, auf Entwurfs- und Eintragskarten „Send“/„Discard“ bzw. „Delete“/„Keep“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Einträge als Karten zeigen | Karten im Verlauf | `assistant.show_items` · Write (nur Kennungen aus dieser Unterhaltung, max. 10) | `assistant_show_items` |
 | Karten einer Unterhaltung auflösen | Karten im Verlauf | `assistant.get_cards` · Read (mit den Rechten des Assistenten) | `assistant_get_cards` |

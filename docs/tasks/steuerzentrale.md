@@ -932,7 +932,10 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   Größen, hell und dunkel; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
 ### S.35 Steuerzentrale: Abschnitte API und MCP, Hooks beim Agenten
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS nicht möglich, `screencapture -l` lieferte ein leeres Bild; Design-Review
+  steht aus. `--section assistant` und `bot:<id>` öffnen das Assistent-Fenster über `apps.open_app`, die Seite
+  zeigt die Übersicht. Der Hook-Schalter nimmt die Hooks heraus, sobald ein Neuladen den Hook-Client nicht mehr
+  zeigt, weil eine Antwort nicht sagt, zu welchem Request sie gehört.)
 - **Modell:** Opus · **Braucht:** S.32, S.33, S.34 · **Dateien:** `crates/torroworkplace/src/ui/api.rs` (neu),
   `crates/torroworkplace/src/ui/mcp.rs` (neu), `crates/torroworkplace/src/ui/agents.rs` (entfällt),
   `crates/torroworkplace/src/ui/agent_wizard.rs`, `crates/torroworkplace/src/ui/mod.rs`,

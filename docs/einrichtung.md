@@ -205,7 +205,7 @@ models only unless you change it.“
 Eine Zeile je gewählter Komponente mit Zustand und Kurzinfo („Calendar · 3 calendars“,
 „Mail · Skipped“, „AI · Ollama, qwen3:8b“), daneben „Open“ für die App. Primär „Finish“ setzt den Stand
 auf `done` und öffnet die Overview. Ein Satz: „Change any of this later in Settings.“
-Agents & API gehört nicht in die Einrichtung; die Fertig-Seite verlinkt es leise („Connect an agent…“).
+API und MCP gehören nicht in die Einrichtung; die Fertig-Seite verlinkt MCP leise („Connect an agent…“).
 
 ## Komponenten an und aus
 

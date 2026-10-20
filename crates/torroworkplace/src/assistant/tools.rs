@@ -401,7 +401,7 @@ pub fn lack_in(
 /// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`,
 /// `Claude Code does not get Mail (data rule)` (`engine` is the name of the engine that answers).
 pub fn lack_summary(lack: Lack, engine: &str) -> String {
-    let area = |area: Area| crate::ui::agents::area_label(area);
+    let area = |area: Area| torro_settings_ui::rights::area_label(area);
     match lack {
         Lack::Area { area: a } => trf("No access to {area}", &[("area", &area(a))]),
         Lack::Level { area: a, needs: Access::Delete } => trf("Needs full access to {area}", &[("area", &area(a))]),
@@ -497,7 +497,7 @@ mod tests {
         let operation = Operation { command: list, access: list.access };
         let lack = lack_in(ASSISTANT_CLIENT, Some(&rights), operation, &[], &[], Mode::Default);
         assert_eq!(lack, Some(Lack::Denied { area: Area::Calendar }));
-        let calendar = crate::ui::agents::area_label(Area::Calendar);
+        let calendar = torro_settings_ui::rights::area_label(Area::Calendar);
         assert_eq!(
             lack_summary(Lack::Denied { area: Area::Calendar }, "Ollama"),
             trf("Turned off in {area}", &[("area", &calendar)])

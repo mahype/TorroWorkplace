@@ -603,7 +603,7 @@ pub fn in_column<'a, M: 'a>(control: impl Into<Element<'a, M>>, column: Option<f
     }
 }
 
-/// The area's name for people, translated: `Calendar`, `Agents & API`. The assistant's tool lines
+/// The area's name for people, translated: `Calendar`, `API and MCP`. The assistant's tool lines
 /// name areas with it too (issue #133).
 pub fn area_label(area: Area) -> &'static str {
     match area {
@@ -620,7 +620,7 @@ pub fn area_label(area: Area) -> &'static str {
         Area::Bots => tr("Bots"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
-        Area::Clients => tr("Agents & API"),
+        Area::Clients => tr("API and MCP"),
         Area::Approvals => tr("Approvals"),
     }
 }

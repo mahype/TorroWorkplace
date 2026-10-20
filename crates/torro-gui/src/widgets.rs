@@ -3100,7 +3100,7 @@ pub fn group_row<'a, M: 'a>(
 // Rows with a segmented control (rights)
 // ---------------------------------------------------------------------------------------------
 //
-// The rights of an agent or a bot (task U.13): the control centre's "Agents & API" and the bot
+// The rights of a client or a bot (task U.13): the control centre's API and MCP and the bot
 // editor of the assistant show them alike – a row per area with a [`segmented`] control of the
 // levels, all controls starting in one column at the right ([`segment_column`]), or, where a name
 // would not fit beside that column, each control on a line of its own under its name.

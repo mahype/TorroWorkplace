@@ -482,9 +482,14 @@ timeline radar night editor editor-new menu drawer switcher error empty loading`
 mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
 switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
-Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
-remove delete-template rename-template design` (`design`: Appearance › Design mit Beispielpaketen, eines
-davon ungültig mit seinen Gründen) und `--section overview|accounts|workspaces|apps|appearance|general`.
+Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-ai wizard-torromail
+account-detail account-detail-ai menu drawer switcher remove delete-template rename-template design
+api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
+mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
+connect-client-rights connect-client-done connect-client-other` (`design`: Appearance › Design mit
+Beispielpaketen, eines davon ungültig mit seinen Gründen; `mcp-hooks`: Seite von Claude Code mit
+„Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
+einem unbekannten) und `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
 Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit

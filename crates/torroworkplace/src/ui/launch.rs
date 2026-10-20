@@ -35,6 +35,7 @@ use super::general::Pack;
 use super::wizard;
 use super::{Appearance, Data, Section};
 use crate::account::ntfy::NtfyAccountError;
+use crate::client_setup::HookNote;
 use torro_ntfy::NtfyError;
 
 /// A state the control centre can start in (`--demo --open <state>`).
@@ -94,47 +95,47 @@ pub enum Open {
     RenameTemplate,
     /// The approvals page without any approvals: its empty state.
     ApprovalsEmpty,
-    /// The detail page of the demo agent with its own rights (levels, admin switch, selections).
-    AgentDetail,
-    /// The detail page of the demo script.
-    ScriptDetail,
-    /// The detail page of the demo hook client: fixed rights, read-only.
-    HookDetail,
+    /// API without any key (task S.35): the group "Keys" with only its sentence.
+    ApiEmpty,
+    /// API with "Allow API keys" off.
+    ApiOff,
+    /// The page of the demo script's key: the rights editor with endpoints, its activity.
+    ApiDetail,
+    /// The dialog with a new key for the demo script, shown once.
+    ApiNewKey,
+    /// The "Revoke this key?" confirmation of the demo script.
+    ApiRevoke,
+    /// "Create key" at its first step: name and template.
+    CreateKey,
+    /// "Create key" done: the key of the new script "nightly-backup", shown once.
+    CreateKeyDone,
+    /// MCP without any client: "Connected clients" with only its sentence.
+    McpEmpty,
+    /// MCP with "Allow MCP" off.
+    McpOff,
+    /// The page of the demo agent Codex with rights of its own (levels, admin switch, selections)
+    /// and its calendar area open with one command switched off (task S.33).
+    McpDetail,
+    /// The page of Claude Code with its hooks on: the group "Notification Hub" with where they are.
+    McpHooks,
     /// The dialog with a new key of the demo agent, shown once.
-    NewKey,
-    /// The "Disconnect this agent?" confirmation.
-    Disconnect,
-    /// The agents page without any clients: its empty state.
-    AgentsEmpty,
-    /// "Connect agent" at its first step: the clients the demo found.
-    AgentWizard,
-    /// "Connect agent" at the rights of Claude Code.
-    AgentWizardRights,
-    /// "Connect agent" done: Claude Code connected (nothing is written).
-    AgentWizardDone,
-    /// "Connect agent" with the key of a new script, shown once.
-    AgentWizardKey,
+    McpNewKey,
+    /// The "Disconnect this client?" confirmation.
+    McpDisconnect,
+    /// The page of Codex with `bots` and `assistant` switched on: both warnings show.
+    McpBots,
+    /// MCP without Claude Code, whose hook client stays: the row "Hooks without an agent".
+    McpOrphans,
+    /// "Connect client" at its first step: the clients the demo found.
+    ConnectClient,
+    /// "Connect client" at the rights of Claude Code.
+    ConnectClientRights,
+    /// "Connect client" done: Claude Code connected (nothing is written).
+    ConnectClientDone,
+    /// "Connect client" with the key of a new "Other MCP client" and its command, shown once.
+    ConnectClientOther,
     /// Appearance › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
     Design,
-    /// Agents & API › Assistant with the demo's assistant (tasks C.6, S.21): its rights, its
-    /// activity and "Turn off assistant…".
-    Assistant,
-    /// Agents & API › Assistant before the assistant has a client: the first start with "Start
-    /// from" and the rights it is offered (`Rights::assistant`).
-    AssistantFirstStart,
-    /// Agents & API › Assistant with the assistant reading only calendars, tasks and the
-    /// Notification Hub, as its first start offers.
-    AssistantReadOnly,
-    /// The "Turn off the assistant?" confirmation.
-    AssistantTurnOff,
-    /// Agents & API › Travel planner (task B.3): the rights of a bot that may read calendars and
-    /// write tasks.
-    AssistantBot,
-    /// Agents & API › Release helper: a bot that may use nothing yet, as every new bot.
-    AssistantBotNew,
-    /// The detail page of the demo agent Codex with `bots` and `assistant` switched on: both
-    /// warnings show.
-    AgentBots,
     /// The first-run setup at this step (task W.4), with the demo's sample data.
     Setup(super::setup::Step),
     /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
@@ -152,7 +153,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 80] = [
+    pub const ALL: [(&'static str, Open); 82] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("wizard-nextcloud", Open::WizardNextcloud),
         ("wizard-ways", Open::WizardGithub),
@@ -201,24 +202,26 @@ impl Open {
         ("delete-template", Open::DeleteTemplate),
         ("rename-template", Open::RenameTemplate),
         ("approvals-empty", Open::ApprovalsEmpty),
-        ("agent-detail", Open::AgentDetail),
-        ("script-detail", Open::ScriptDetail),
-        ("hook-detail", Open::HookDetail),
-        ("new-key", Open::NewKey),
-        ("disconnect", Open::Disconnect),
-        ("agents-empty", Open::AgentsEmpty),
-        ("agent-wizard", Open::AgentWizard),
-        ("agent-wizard-rights", Open::AgentWizardRights),
-        ("agent-wizard-done", Open::AgentWizardDone),
-        ("agent-wizard-key", Open::AgentWizardKey),
+        ("api-empty", Open::ApiEmpty),
+        ("api-off", Open::ApiOff),
+        ("api-detail", Open::ApiDetail),
+        ("api-new-key", Open::ApiNewKey),
+        ("api-revoke", Open::ApiRevoke),
+        ("create-key", Open::CreateKey),
+        ("create-key-done", Open::CreateKeyDone),
+        ("mcp-empty", Open::McpEmpty),
+        ("mcp-off", Open::McpOff),
+        ("mcp-detail", Open::McpDetail),
+        ("mcp-hooks", Open::McpHooks),
+        ("mcp-new-key", Open::McpNewKey),
+        ("mcp-disconnect", Open::McpDisconnect),
+        ("mcp-bots", Open::McpBots),
+        ("mcp-orphans", Open::McpOrphans),
+        ("connect-client", Open::ConnectClient),
+        ("connect-client-rights", Open::ConnectClientRights),
+        ("connect-client-done", Open::ConnectClientDone),
+        ("connect-client-other", Open::ConnectClientOther),
         ("design", Open::Design),
-        ("assistant", Open::Assistant),
-        ("assistant-first-start", Open::AssistantFirstStart),
-        ("assistant-read-only", Open::AssistantReadOnly),
-        ("assistant-turn-off", Open::AssistantTurnOff),
-        ("assistant-bot", Open::AssistantBot),
-        ("assistant-bot-new", Open::AssistantBotNew),
-        ("agent-bots", Open::AgentBots),
         ("setup", Open::Setup(super::setup::Step::Welcome)),
         ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
         ("setup-nextcloud-address", Open::SetupNextcloudAddress),
@@ -238,14 +241,13 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|agents|approvals|workspaces|appearance|general`: the page to
+/// - `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`: the page to
 ///   start on. The states of `--open` that belong to a page choose that page themselves. Other
-///   programs open a page this way (`torroworkplace ui --section assistant` from the assistant's
-///   chat when it may not use something, task C.6). Two words open a page below Agents & API
-///   ([`Launch::client`], task S.21): `assistant` the assistant's, `bot:<id>` the bot `id`'s, what
-///   the assistant app's "Access…" sends. The words of the pages that moved into the apps keep
-///   working: `apps` and `inbox` are General, where the suite's parts are switched on and opened
-///   ([`Section::from_arg`]).
+///   programs open a page this way (`torroworkplace ui --section accounts`). The words of pages
+///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `apps` and
+///   `inbox` are General, where the suite's parts are switched on and opened. `assistant` and
+///   `bot:<id>` ([`Launch::client`]) bring the assistant's window to the front instead of a page:
+///   what the assistant and its bots may use is set there, under Access (task S.34).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
 ///   of the service. Nothing is sent and nothing is stored; [`demo_answer`] answers the few
 ///   requests whose answer is a state of its own.
@@ -262,8 +264,8 @@ impl Open {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
-    /// The program whose page `--section assistant` or `--section bot:<id>` opens (then `section`
-    /// is Agents & API).
+    /// `--section assistant` or `--section bot:<id>`: the assistant's window comes to the front
+    /// ([`ClientTarget::request`]); `section` is then the overview.
     pub client: Option<ClientTarget>,
     pub demo: bool,
     pub open: Option<Open>,
@@ -343,14 +345,14 @@ impl Launch {
         };
         let (section, client) = match flag_value(args, "--section")? {
             None => (Section::Overview, None),
-            // The assistant and a bot are programs under Agents & API (task S.21); their pages
-            // open there.
-            Some("assistant") => (Section::Agents, Some(ClientTarget::Assistant)),
+            // What the assistant and a bot may use is set in the assistant's window (task S.34): the
+            // words bring it to the front, the control centre shows its overview.
+            Some("assistant") => (Section::Overview, Some(ClientTarget::Assistant)),
             Some(word) => match word.strip_prefix("bot:") {
-                Some(id) if is_bot_id(id) => (Section::Agents, Some(ClientTarget::Bot(id.to_owned()))),
+                Some(id) if is_bot_id(id) => (Section::Overview, Some(ClientTarget::Bot(id.to_owned()))),
                 _ => {
                     let mut valid: Vec<&str> = Section::ALL.iter().map(|s| s.arg()).collect();
-                    valid.extend(["assistant", "bot:<id>", "apps", "inbox"]);
+                    valid.extend(["assistant", "bot:<id>", "agents", "apps", "inbox"]);
                     (Section::from_arg(word).ok_or_else(|| unknown("--section", word, valid))?, None)
                 }
             },
@@ -394,29 +396,23 @@ impl Launch {
     }
 }
 
-/// A program whose page `--section` opens below Agents & API (task S.21).
+/// The assistant or one of its bots, named by `--section` (tasks S.21, S.35). Their rights were a
+/// page of the control centre until task S.34 moved them into the assistant's window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientTarget {
-    /// `--section assistant`: the assistant's page, its first start while it has no client.
+    /// `--section assistant`.
     Assistant,
-    /// `--section bot:<id>`: the page of the bot `id`, which is its client's.
+    /// `--section bot:<id>`: the bot `id`.
     Bot(String),
 }
 
 impl ClientTarget {
-    /// What the agents page is told to open, as far as `data` can say. The assistant's page needs
-    /// no data – it opens its first start while there is no client. A bot is named by its own id,
-    /// but its rights live on its client, which only [`Data::bots`] can name: `None` means the
-    /// list of bots does not hold the id, so the window waits for the next load
-    /// (`Ui::open_target`) and leaves the section's own list open once the core answered without
-    /// it.
-    pub fn message(&self, data: &Data) -> Option<super::agents::Message> {
-        match self {
-            ClientTarget::Assistant => Some(super::agents::Message::ShowAssistant),
-            ClientTarget::Bot(id) => {
-                data.bots.iter().find(|bot| bot.id == *id).map(|bot| super::agents::Message::Open(bot.client.clone()))
-            }
-        }
+    /// What the control centre sends for it once the core answers: `apps.open_app` for the
+    /// assistant, which brings its window to the front (or starts it). The window cannot be told
+    /// to open Access there yet – that needs a way from the core to the app, `docs/settings.md` ›
+    /// "Assistent und Bots" –, so a bot's word opens the same window.
+    pub fn request(&self) -> Request {
+        Request::OpenApp { app: AppId::ASSISTANT.binary.to_string(), target: None }
     }
 }
 
@@ -743,38 +739,9 @@ pub fn demo_data() -> Data {
         },
         apps: Some(apps),
         approvals: demo_approvals(now),
-        bots: demo_bots(),
         engines: demo_engines(),
         error: None,
     }
-}
-
-/// The demo's bot "Travel planner" (task B.3), whose client may read calendars and write tasks.
-pub const DEMO_TRAVEL: &str = "b0000001";
-/// The demo's bot "Release helper", whose client may use nothing yet.
-pub const DEMO_RELEASE: &str = "b0000002";
-
-/// The demo's bots, by name; their clients are among [`demo_clients`].
-fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
-    let bot = |id: &str, name: &str, description: &str, avatar: &str, client: &str| torro_ipc::bots::BotSummary {
-        id: id.into(),
-        name: name.into(),
-        description: description.into(),
-        avatar: avatar.into(),
-        engine: "ai:openrouter@openrouter.ai".into(),
-        model: Some("qwen/qwen3-32b".into()),
-        client: client.into(),
-    };
-    vec![
-        bot(
-            DEMO_RELEASE,
-            tr("Release helper"),
-            tr("Writes release notes and checks what is open"),
-            "radar",
-            "c0000002",
-        ),
-        bot(DEMO_TRAVEL, tr("Travel planner"), tr("Plans trips by train"), "letter", "c0000001"),
-    ]
 }
 
 /// The engines of the demo's assistant (issue #131): the one connected AI account, as the core
@@ -944,14 +911,14 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     set(&mut travel, Area::Tasks, Level::Write, false);
     vec![
         client(
-            "3fa9c1d2",
+            DEMO_CLAUDE,
             "Claude Code",
             "claude-code",
             RightsTemplate::ReadAndWrite.rights(),
             Some(now - Duration::minutes(5)),
         ),
         client("7b2e4f10", "Codex", "codex", codex, Some(now - Duration::days(2))),
-        client("c41d9e06", "Claude Code hooks", HOOK_CLIENT, Rights::hook(), Some(now - Duration::minutes(1))),
+        client(DEMO_HOOKS, "Claude Code hooks", HOOK_CLIENT, Rights::hook(), Some(now - Duration::minutes(1))),
         client("e8a07b35", "backup", "script", backup, None),
         client("a51c3e88", "Assistant", ASSISTANT_CLIENT, assistant, Some(now - Duration::hours(3))),
         client("c0000001", tr("Travel planner"), BOT_CLIENT, travel, Some(now - Duration::hours(4))),
@@ -982,10 +949,10 @@ fn demo_voice() -> torro_ipc::VoiceStatus {
     }
 }
 
-/// The sample answer `--demo` gives to a request whose answer is a state of its own: an agent's
-/// activity, a new key and a new client of "Connect agent" (made-up keys, never working ones; the
-/// new client is not added to the list). Every other request gets none and is dropped, so the
-/// demo changes nothing.
+/// The sample answer `--demo` gives to a request whose answer is a state of its own: a client's
+/// activity, a new key and a new client of "Connect client" or "Create key" (made-up keys, never
+/// working ones; the new client is not added to the list). Every other request gets none and is
+/// dropped, so the demo changes nothing.
 pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
     let client_of = |id: &str| data.clients.iter().find(|client| client.id == id);
     match request {
@@ -1096,14 +1063,19 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             let client = client_of(id)?;
             Some(Response::Activity { entries: demo_activity(client, Utc::now()) })
         }
+        // As the core: the assistant and the bots run inside it, which holds their keys (#231).
+        Request::NewClientKey { id } if client_of(id).is_some_and(|client| lent(&client.kind)) => {
+            let message = "the assistant and bots get no key: the core runs their tools itself".into();
+            Some(Response::Error { code: "unsupported".into(), message })
+        }
         Request::NewClientKey { id } => {
             let client = client_of(id)?.clone();
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "5f2c9a1e7b3d4086".repeat(4))));
             Some(Response::ClientKey { client, key })
         }
         Request::CreateClient { name, kind, template, agent, rights } => {
-            // The hook client "Connect agent" creates after the agent (task E2.3) gets an id of
-            // its own, as it would from the core.
+            // The hook client "Connect client" or a page's switch creates for an agent (tasks E2.3,
+            // S.35) gets an id of its own, as it would from the core.
             let id = if kind == HOOK_CLIENT { "4c7a19e3" } else { "9d4b7e21" };
             let client = ClientInfo {
                 id: id.into(),
@@ -1124,6 +1096,28 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         _ => None,
     }
 }
+
+/// Whether a client of `kind` runs inside the core, which holds its key: the assistant and the
+/// bots. The core refuses them a new key (`unsupported`), and so does the demo.
+fn lent(kind: &str) -> bool {
+    kind == ASSISTANT_CLIENT || kind == BOT_CLIENT
+}
+
+/// What the demo's `client_setup.json` notes (task S.35): the hooks of Claude Code, set up with
+/// its client, in Claude Code's settings. Read through [`crate::client_setup::Job::HookNotes`],
+/// which the demo answers with these.
+pub fn demo_hook_notes() -> Vec<HookNote> {
+    vec![HookNote {
+        client: DEMO_HOOKS.into(),
+        owner: Some(DEMO_CLAUDE.into()),
+        agent: AgentKind::ClaudeCode,
+        place: "~/.claude/settings.json".into(),
+    }]
+}
+
+/// The demo's Claude Code client and its hook client.
+pub const DEMO_CLAUDE: &str = "3fa9c1d2";
+pub const DEMO_HOOKS: &str = "c41d9e06";
 
 /// The models the demo's AI account offers (task S.31), as OpenRouter lists them: open models with
 /// tools and thinking, one on, one that can't use tools, and two with closed weights, which the page
@@ -1422,25 +1416,34 @@ mod tests {
         assert_eq!(Launch::parse(&[]), Ok(Launch::default()));
     }
 
-    /// Tasks B.3 and S.21: `--section bot:<id>` and `--section assistant` are Agents & API with
-    /// that program's page open; a bot id that is no id is refused like any unknown section. The
-    /// words of the pages that moved into the apps land on General.
+    /// Tasks S.21 and S.35: `--section bot:<id>` and `--section assistant` name the assistant's
+    /// window, which comes to the front over the overview; a bot id that is no id is refused like
+    /// any unknown section. The words of the pages that moved land where they went: `agents` on
+    /// MCP, `apps` and `inbox` on General.
     #[test]
     fn the_sections_of_a_program_and_of_the_pages_that_moved() {
         let launch = Launch::parse(&args(&["--section", "bot:1a2b3c4d"])).expect("a bot");
         let bot = Some(ClientTarget::Bot("1a2b3c4d".into()));
-        assert_eq!((launch.section, launch.client), (Section::Agents, bot.clone()));
+        assert_eq!((launch.section, launch.client), (Section::Overview, bot.clone()));
         assert_eq!(Launch::parse(&args(&["--section=bot:1a2b3c4d"])).map(|l| l.client), Ok(bot));
         for bad in ["bot:", "bot:../x", "bot:a b", "bots"] {
             let err = Launch::parse(&args(&["--section", bad])).expect_err(bad);
             assert!(err.to_string().contains("bot:<id>"), "{bad}: {err}");
         }
         let assistant = Launch::parse(&args(&["--section", "assistant"])).expect("the assistant");
-        assert_eq!((assistant.section, assistant.client), (Section::Agents, Some(ClientTarget::Assistant)));
+        assert_eq!((assistant.section, assistant.client), (Section::Overview, Some(ClientTarget::Assistant)));
+        for target in [ClientTarget::Assistant, ClientTarget::Bot("1a2b3c4d".into())] {
+            assert!(
+                matches!(target.request(), Request::OpenApp { ref app, target: None } if app == AppId::ASSISTANT.binary),
+                "{target:?}"
+            );
+        }
         for word in ["apps", "inbox"] {
             let launch = Launch::parse(&args(&["--section", word])).expect(word);
             assert_eq!((launch.section, launch.client), (Section::General, None), "{word}");
         }
+        let agents = Launch::parse(&args(&["--section", "agents"])).expect("the old word");
+        assert_eq!((agents.section, agents.client), (Section::Mcp, None));
     }
 
     #[test]
@@ -1449,8 +1452,8 @@ mod tests {
             let launch = Launch::parse(&args(&["--section", section.arg()])).expect("a known section");
             assert_eq!(launch.section, section);
         }
-        let launch = Launch::parse(&args(&["--demo", "--section=agents", "--appearance", "light"])).expect("valid");
-        assert_eq!((launch.section, launch.appearance), (Section::Agents, Some(Appearance::Light)));
+        let launch = Launch::parse(&args(&["--demo", "--section=api", "--appearance", "light"])).expect("valid");
+        assert_eq!((launch.section, launch.appearance), (Section::Api, Some(Appearance::Light)));
         for (word, appearance) in
             [("light", Appearance::Light), ("dark", Appearance::Dark), ("system", Appearance::System)]
         {
@@ -1494,7 +1497,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, agents, approvals, workspaces, appearance, general, assistant, bot:<id>, apps, inbox"
+                "valid values: overview, accounts, api, mcp, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, apps, inbox"
             ),
             "{err}"
         );
@@ -1652,10 +1655,27 @@ mod tests {
         assert_eq!(mail, ["mail:anna@mailbox.org", "mail:anna@work.example.net"]);
         assert!(mail.iter().all(|id| torro_mail::is_account_id(id)), "ids as the core makes them");
         let codex = data.clients.iter().find(|client| client.kind == "codex").expect("Codex");
-        assert!(super::super::agents::sends_freely(&codex.rights));
+        assert!(torro_settings_ui::rights::sends_freely(&codex.rights));
         assert!(codex.rights.reaches_mail_account(mail[0]) && !codex.rights.reaches_mail_account(mail[1]));
         let default = data.clients.iter().find(|client| client.kind == "claude-code").expect("Claude Code");
         assert_eq!(default.rights.outbound, Outbound::WithApproval, "the templates ask");
+    }
+
+    /// Found open after S.34: the demo answers `clients.new_key` for the assistant and a bot as the
+    /// core does, with `unsupported`, and hands out a made-up key only to the others.
+    #[test]
+    fn the_demo_gives_the_assistant_and_bots_no_key() {
+        let data = demo_data();
+        for kind in [ASSISTANT_CLIENT, BOT_CLIENT] {
+            let client = data.clients.iter().find(|client| client.kind == kind).expect("a client of the kind");
+            let answer = demo_answer(&Request::NewClientKey { id: client.id.clone() }, &data);
+            assert!(matches!(answer, Some(Response::Error { ref code, .. }) if code == "unsupported"), "{kind}");
+        }
+        let script = data.clients.iter().find(|client| client.kind == "script").expect("the script");
+        let answer = demo_answer(&Request::NewClientKey { id: script.id.clone() }, &data);
+        assert!(matches!(answer, Some(Response::ClientKey { .. })));
+        let notes = demo_hook_notes();
+        assert!(notes.iter().all(|note| data.clients.iter().any(|client| client.id == note.client)));
     }
 
     #[test]
