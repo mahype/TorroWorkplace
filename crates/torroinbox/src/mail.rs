@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, row, rule, scrollable, svg};
+use iced::widget::{column, container, mouse_area, responsive, row, rule, scrollable, svg};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
@@ -1363,7 +1363,10 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
     let strip = if actions.is_empty() { 0.0 } else { list::strip_height() };
     let content = list::with_strip(list::mail_content(lines, width), actions, width);
-    let row = list::sized_row(content, selected, on_press, list::message_height() + strip);
+    let row: Element<'a, Message> =
+        mouse_area(list::sized_row(content, selected, on_press, list::message_height() + strip))
+            .on_right_press(Message::ContextMail(message.id.clone()))
+            .into();
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
     if selected { widgets::anchored(&data.anchors.row, row) } else { row }
 }
@@ -1416,7 +1419,8 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     };
     let selected = data.selected == Some(message.id.as_str());
     let card = list::MailCard { lines, chips, selected, on_press: Message::SelectMail(message.id.clone()) };
-    let card = list::mail_card(card, width);
+    let card: Element<'a, Message> =
+        mouse_area(list::mail_card(card, width)).on_right_press(Message::ContextMail(message.id.clone())).into();
     if selected { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
