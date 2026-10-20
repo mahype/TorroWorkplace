@@ -259,11 +259,11 @@ mod tests {
         let old = r#"{"schemaVersion":3,"id":"dev","name":"Dev","wm":"hyprland",
             "created":"2026-10-01T09:00:00Z","updated":"2026-10-01T09:00:00Z",
             "source":{"workspace":"3","monitor":"DP-1","monitorRect":null},"tree":null,"windows":[]}"#;
-        let template: Template = serde_json::from_str(old).unwrap();
+        let template: Template = serde_json::from_str(old).expect("valid JSON");
         assert_eq!((template.shortcut, template.startup.clone()), (None, None));
-        let written = serde_json::to_string(&template).unwrap();
+        let written = serde_json::to_string(&template).expect("serialized");
         assert!(!written.contains("shortcut") && !written.contains("startup"), "{written}");
-        assert_eq!(serde_json::from_str::<Template>(&written).unwrap(), template);
+        assert_eq!(serde_json::from_str::<Template>(&written).expect("valid JSON"), template);
 
         let summary = TemplateSummary::from(&template);
         assert_eq!((summary.workspace.as_str(), summary.monitor.as_deref()), ("3", Some("DP-1")));
@@ -271,9 +271,9 @@ mod tests {
 
     #[test]
     fn startup_reads_without_fallback_as_main() {
-        let startup: Startup = serde_json::from_str(r#"{"screen":"DP-1"}"#).unwrap();
+        let startup: Startup = serde_json::from_str(r#"{"screen":"DP-1"}"#).expect("valid JSON");
         assert_eq!(startup, Startup { screen: "DP-1".into(), fallback: ScreenFallback::Main });
-        let skip: Startup = serde_json::from_str(r#"{"screen":"HDMI-A-1","fallback":"skip"}"#).unwrap();
+        let skip: Startup = serde_json::from_str(r#"{"screen":"HDMI-A-1","fallback":"skip"}"#).expect("valid JSON");
         assert_eq!(skip.fallback, ScreenFallback::Skip);
     }
 

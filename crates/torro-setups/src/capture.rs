@@ -244,7 +244,7 @@ mod tests {
         dialog.floating = true;
         wm.add_window(dialog);
 
-        let template = capture(&wm, "tpl-4".into(), |_| Vec::new(), fixed_now()).await.unwrap();
+        let template = capture(&wm, "tpl-4".into(), |_| Vec::new(), fixed_now()).await.expect("captured");
 
         let classes: Vec<&str> = template.windows.iter().map(|w| w.class.as_str()).collect();
         assert_eq!(classes, ["foot"]);
@@ -269,7 +269,7 @@ mod tests {
             wm.add_window(window(id, class, "3", rect));
         }
 
-        let template = capture(&wm, "tpl-5".into(), |_| Vec::new(), fixed_now()).await.unwrap();
+        let template = capture(&wm, "tpl-5".into(), |_| Vec::new(), fixed_now()).await.expect("captured");
 
         let classes: Vec<&str> = template.windows.iter().map(|w| w.class.as_str()).collect();
         assert_eq!(classes, ["com.mitchellh.ghostty", "io.github.mahype.torro-calendar"]);

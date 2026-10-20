@@ -453,48 +453,48 @@ mod tests {
     #[test]
     fn a_key_moves_from_its_holder_to_the_template() {
         let (_dir, store) = store();
-        store.save(&Template { shortcut: Some(1), ..sample("mail", "Mail") }).unwrap();
-        store.save(&sample("dev", "Dev")).unwrap();
+        store.save(&Template { shortcut: Some(1), ..sample("mail", "Mail") }).expect("saved");
+        store.save(&sample("dev", "Dev")).expect("saved");
 
-        assert_eq!(store.shortcut_holder(1, "dev").unwrap().map(|t| t.id), Some("mail".into()));
-        let (dev, taken_from) = store.set_shortcut("dev", Some(1)).unwrap();
+        assert_eq!(store.shortcut_holder(1, "dev").expect("holder read").map(|t| t.id), Some("mail".into()));
+        let (dev, taken_from) = store.set_shortcut("dev", Some(1)).expect("key set");
 
         assert_eq!((dev.shortcut, taken_from.as_deref()), (Some(1), Some("mail")));
-        assert_eq!(store.load("dev").unwrap().shortcut, Some(1));
-        assert_eq!(store.load("mail").unwrap().shortcut, None, "the holder lost it");
-        assert_eq!(store.shortcut_holder(1, "dev").unwrap(), None);
+        assert_eq!(store.load("dev").expect("loaded").shortcut, Some(1));
+        assert_eq!(store.load("mail").expect("loaded").shortcut, None, "the holder lost it");
+        assert_eq!(store.shortcut_holder(1, "dev").expect("holder read"), None);
 
         // Again: nobody else holds it.
-        assert_eq!(store.set_shortcut("dev", Some(1)).unwrap().1, None);
+        assert_eq!(store.set_shortcut("dev", Some(1)).expect("key set").1, None);
     }
 
     #[test]
     fn a_key_is_taken_away_and_checked() {
         let (_dir, store) = store();
-        store.save(&Template { shortcut: Some(0), ..sample("dev", "Dev") }).unwrap();
-        store.save(&Template { shortcut: Some(3), ..sample("mail", "Mail") }).unwrap();
+        store.save(&Template { shortcut: Some(0), ..sample("dev", "Dev") }).expect("saved");
+        store.save(&Template { shortcut: Some(3), ..sample("mail", "Mail") }).expect("saved");
 
-        let (dev, taken_from) = store.set_shortcut("dev", None).unwrap();
+        let (dev, taken_from) = store.set_shortcut("dev", None).expect("key set");
         assert_eq!((dev.shortcut, taken_from), (None, None));
-        assert_eq!(store.load("mail").unwrap().shortcut, Some(3), "others keep theirs");
+        assert_eq!(store.load("mail").expect("loaded").shortcut, Some(3), "others keep theirs");
 
         assert!(matches!(store.set_shortcut("dev", Some(10)), Err(SetupsError::Format(_))));
         assert_eq!(store.set_shortcut("gone", Some(2)), Err(SetupsError::NotFound("gone".into())));
-        assert_eq!(store.load("dev").unwrap().shortcut, None, "nothing written");
+        assert_eq!(store.load("dev").expect("loaded").shortcut, None, "nothing written");
     }
 
     #[test]
     fn startup_is_set_and_cleared() {
         let (_dir, store) = store();
-        store.save(&sample("dev", "Dev")).unwrap();
+        store.save(&sample("dev", "Dev")).expect("saved");
         let startup = Startup { screen: " DP-1 ".into(), fallback: crate::ScreenFallback::Skip };
 
-        let saved = store.set_startup("dev", Some(startup)).unwrap();
+        let saved = store.set_startup("dev", Some(startup)).expect("startup set");
         let expected = Startup { screen: "DP-1".into(), fallback: crate::ScreenFallback::Skip };
         assert_eq!(saved.startup.as_ref(), Some(&expected));
-        assert_eq!(store.load("dev").unwrap().startup, Some(expected));
+        assert_eq!(store.load("dev").expect("loaded").startup, Some(expected));
 
-        assert_eq!(store.set_startup("dev", None).unwrap().startup, None);
+        assert_eq!(store.set_startup("dev", None).expect("startup set").startup, None);
         let nameless = Startup { screen: " ".into(), fallback: crate::ScreenFallback::Main };
         assert!(matches!(store.set_startup("dev", Some(nameless)), Err(SetupsError::Format(_))));
         assert_eq!(store.set_startup("gone", None), Err(SetupsError::NotFound("gone".into())));
@@ -505,16 +505,16 @@ mod tests {
     #[test]
     fn a_screen_name_is_short_and_without_control_characters() {
         let (_dir, store) = store();
-        store.save(&sample("dev", "Dev")).unwrap();
+        store.save(&sample("dev", "Dev")).expect("saved");
         let on = |screen: &str| Startup { screen: screen.into(), fallback: crate::ScreenFallback::Main };
 
         assert!(store.set_startup("dev", Some(on(&"D".repeat(MAX_SCREEN_NAME)))).is_ok(), "100 is allowed");
-        store.set_startup("dev", None).unwrap();
+        store.set_startup("dev", None).expect("startup set");
         for wrong in [String::new(), "D".repeat(MAX_SCREEN_NAME + 1), "DP-1\nrm".into(), "DP\u{1b}[2J".into()] {
             let refused = store.set_startup("dev", Some(on(&wrong)));
             assert!(matches!(refused, Err(SetupsError::Format(_))), "{wrong:?}: {refused:?}");
         }
-        assert_eq!(store.load("dev").unwrap().startup, None, "nothing written");
+        assert_eq!(store.load("dev").expect("loaded").startup, None, "nothing written");
         // Characters, not bytes: 100 umlauts are 200 bytes and still a name.
         assert!(store.set_startup("dev", Some(on(&"Ä".repeat(MAX_SCREEN_NAME)))).is_ok());
     }

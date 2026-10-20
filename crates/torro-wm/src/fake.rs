@@ -272,14 +272,14 @@ mod tests {
     async fn focus_monitor_makes_its_workspace_active() {
         let wm = FakeWm::new("1");
         wm.set_monitors(vec![monitor("DP-1", 0, "1"), monitor("HDMI-A-1", 1920, "7")]);
-        let mut events = wm.events().await.unwrap();
+        let mut events = wm.events().await.expect("events");
 
-        wm.focus_monitor("HDMI-A-1").await.unwrap();
+        wm.focus_monitor("HDMI-A-1").await.expect("focused");
         assert_eq!(wm.active_workspace().await, Ok(WorkspaceId("7".into())));
         assert_eq!(events.recv().await, Some(WmEvent::WorkspaceFocused { workspace: WorkspaceId("7".into()) }));
 
         // Focusing it again changes nothing and sends nothing.
-        wm.focus_monitor("HDMI-A-1").await.unwrap();
+        wm.focus_monitor("HDMI-A-1").await.expect("focused");
         assert!(matches!(wm.focus_monitor("DP-9").await, Err(WmError::NotFound(_))));
         assert_eq!(wm.active_workspace().await, Ok(WorkspaceId("7".into())));
         wm.reload_config();
@@ -298,9 +298,9 @@ mod tests {
     async fn binds_and_rules_are_recorded() {
         let wm = FakeWm::new("1");
         let bind = KeyBind { keys: "SUPER + ALT + 1".into(), command: vec!["torroworkplace".into()] };
-        wm.bind_keys(std::slice::from_ref(&bind)).await.unwrap();
-        wm.unbind_keys(std::slice::from_ref(&bind.keys)).await.unwrap();
-        wm.float_dialogs("torro-dialog").await.unwrap();
+        wm.bind_keys(std::slice::from_ref(&bind)).await.expect("bound");
+        wm.unbind_keys(std::slice::from_ref(&bind.keys)).await.expect("unbound");
+        wm.float_dialogs("torro-dialog").await.expect("floated");
         assert_eq!(
             wm.calls(),
             vec![

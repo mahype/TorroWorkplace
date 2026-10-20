@@ -1182,7 +1182,7 @@ mod tests {
             id: id.into(),
             name: name.into(),
             windows: 3,
-            updated: Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).unwrap(),
+            updated: Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().expect("a valid date"),
             shortcut: key,
             startup: None,
             workspace: "2".into(),
