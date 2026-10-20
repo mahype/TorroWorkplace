@@ -8,8 +8,11 @@ Referenz für Abläufe (nicht übersetzen): `apps/workspace-setups` (Tastenplät
 
 **Entschieden mit dem Plan zu #243:**
 - Tasten 1 … 0 (zehn Plätze), eine Taste gehört höchstens einer Vorlage. Der Modifikator gilt für alle Vorlagen
-  und ist einstellbar; Vorgabe Linux Super + Alt, macOS Ctrl + Option, Windows Ctrl + Alt. Eine Taste lädt wie
+  und ist einstellbar; Vorgabe Linux Super + Alt, macOS Ctrl + Option, Windows Ctrl + Shift. Eine Taste lädt wie
   „Load“ im Modus `add`.
+- Windows Ctrl + Shift statt Ctrl + Alt (entschieden im Review von PR #259): Windows meldet AltGr als Ctrl + Alt, mit
+  Ctrl + Alt + Ziffer wären auf deutscher Tastatur `{ [ ] } ² ³` nicht mehr zu tippen; Win + Ziffer mit Alt, Ctrl oder
+  Shift belegt Windows selbst.
 - Hyprland: Tasten zur Laufzeit über die Lua-Schnittstelle (`eval hl.bind(…)`, `hl.unbind(…)`), nur belegte
   Plätze, nach jedem Neuladen der Konfiguration erneut. macOS und Windows: Crate `global-hotkey` in der
   Ereignisschleife des Trays.

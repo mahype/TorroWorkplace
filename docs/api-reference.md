@@ -2423,8 +2423,8 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | `settings.workingHours` | object | nein, Standard `{"from":"08:00","to":"17:00"}` | When the working day is (task K.33): the calendar draws it as a thin, muted line in day, week, timeline and radar. The same every day, never over midnight. Stored as `{"from": "08:00", "to": "17:00"}`. |
 | `settings.workingHours.from` | string | ja |  |
 | `settings.workingHours.to` | string | ja |  |
-| `settings.workspaces` | object | nein | Workspace templates (issue #243): the modifiers held with the digit keys that load them ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of this system (Linux super_alt, macOS and Windows ctrl_alt). |
-| `settings.workspaces.modifiers` | `"super_alt"` \| `"super_ctrl"` \| `"ctrl_alt"` \| `"ctrl_shift"` | nein | The modifiers held with a digit key `1` … `0` to load the template that has the key, one choice for all templates; default per system: Linux super_alt, macOS and Windows ctrl_alt. |
+| `settings.workspaces` | object | nein | Workspace templates (issue #243): the modifiers held with the digit keys that load them ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of this system (Linux super_alt, macOS ctrl_alt, Windows ctrl_shift). |
+| `settings.workspaces.modifiers` | `"super_alt"` \| `"super_ctrl"` \| `"ctrl_alt"` \| `"ctrl_shift"` | nein | The modifiers held with a digit key `1` … `0` to load the template that has the key, one choice for all templates; default per system: Linux super_alt, macOS ctrl_alt, Windows ctrl_shift. |
 | `settings.zoom` | number | nein, Standard `1.0` | How large every window of the suite draws, like the zoom of a browser (task Z.1). One value for all apps, so tiled windows stay alike; stored as the factor (`1.1`). |
 
 ## `apps`
