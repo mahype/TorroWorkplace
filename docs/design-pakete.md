@@ -4,8 +4,8 @@ Stand: 2026-10-13. **Entschieden:** Stufe 1 jetzt, Stufe 2 später (welche Schal
 Stufe 3 (freie Anordnung über eine Layout-Sprache) nicht. Aufgaben: [tasks/design-pakete.md](tasks/design-pakete.md).
 **Ergänzt 2026-10-13:** eigene Farben für die Seitenleiste ([unten](#seitenleiste-mit-eigenen-farben), L.6), damit
 Pakete wie Commitr und Ribbon (Issue #80) eine farbige Leiste neben hellem Inhalt haben können.
-**Vorgeschlagen 2026-10-15:** Design, Schrift und Farbschema getrennt wählbar
-([unten](#design-schrift-und-farbschema-getrennt), L.18–L.29).
+**Geplant 2026-10-20 (Issue #189):** Design, Schrift und Farbschema getrennt wählbar, jedes aus einem eigenen Ordner
+([unten](#design-schrift-und-farbschema-getrennt), L.18–L.30).
 
 ## Worum es geht
 
@@ -319,9 +319,10 @@ Zeilen 32 bei 760 Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
 
 ## Design, Schrift und Farbschema getrennt
 
-> **Vorschlag 2026-10-15, noch nicht entschieden** (entschieden ist nur: die Schrift ist eine eigene, dritte Wahl,
-> nicht Teil des Designs). Aufgaben L.18–L.29 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
-> Entscheidung gilt alles oben unverändert.
+> **Plan zu Issue #189, Stand 2026-10-20.** Entschieden: die Schrift ist eine eigene, dritte Wahl (2026-10-15); drei
+> Ordner statt eines Pakets mit Abschnitten, alte Komplettpakete werden einmal kopiert, die Seite Appearance wird
+> kompakt mit Kacheln (2026-10-20). Aufgaben L.18–L.30 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
+> Umsetzung gilt alles oben unverändert.
 
 ### Warum
 
@@ -377,7 +378,7 @@ deshalb Text in 14 statt 13. Getrennt übernimmt das der Kern mit drei Regeln:
 
 **Ziffern in der Zeitachse** sind die eine Stelle, an der Breite zählt: `00:00` in `numbers` muss in `axis` passen.
 Darum gilt für jede Schrift eine Höchstbreite der Ziffern (in em, nach Ausgleich), für jedes Design eine Mindestbreite
-der Zeitachse für genau diese Höchstbreite. Die Grenze wird in L.18 an den Beispielschriften gemessen (breiteste plus
+der Zeitachse für genau diese Höchstbreite. Die Grenze wird in L.19 an den Beispielschriften gemessen (breiteste plus
 Spielraum). Breite Schriften kürzen Beschriftungen in Listen eher mit „…“; das ist zu sehen, aber nicht kaputt.
 
 ### Warum das Logo zum Farbschema gehört
@@ -387,41 +388,58 @@ Dracula: violettes Quadrat). Ein violettes Logo über Nord-Farben passt nicht. O
 bisher das „T“ auf dem Akzent des Farbschemas. Die Vorschau `preview.png` zeigt die Form und gehört zum Design;
 Schriften zeigt die Steuerzentrale als Schriftprobe, Farbschemata als Farbmuster.
 
-### Ein Paket
+### Drei Ordner
 
-Ein Paket bleibt ein Ordner unter `designs/<id>/` mit `design.toml`, **`format = 1` bleibt**: Jedes heutige Paket ist
-weiter gültig. Was es mitbringt, ergibt sich aus seinen Abschnitten:
+Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Unterordner mit einer Datei und `format = 1`:
 
-| Das Paket hat … (mindestens einen) | … und bringt damit |
-|---|---|
-| `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | ein **Design** |
-| `[fonts.*]` | eine **Schrift** |
-| `[colors.*]`, `[logo]` | ein **Farbschema** |
-| nur `[about]` | ein Design (gleich Torro) |
+| Ordner | Datei | bringt | dazu |
+|---|---|---|---|
+| `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | ein **Design** | `preview.png` |
+| `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
+| `color-schemes/<id>/` | `color-scheme.toml`: `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg` |
 
-- Mehrere Teile tragen dieselbe id. Torro ist alle drei.
-- Neu und optional in `[about]`: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das Farbschema, die zum
-  Design gedacht sind. Fehlt ein Schlüssel und bringt das Paket den Teil selbst, ist es der eigene. Nur Vorschläge,
-  gewählt wird getrennt.
-- Ein Paket, das eine Regel bricht, wird **ganz** abgelehnt, mit allen Teilen, wie bisher.
-- In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), darunter das Paket („Plex“).
-- **Beispiele aufräumen** (L.22): Dracula und Everforest verlieren `[radius]` und sind reine Farbschemata. Plex,
-  Commitr, Channelr, Guildr, Quattro und Ribbon bleiben alle drei Teile; ihre `[type.*]`-Größen werden auf Inter
+- Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
+  stehen (Commitr in allen dreien). `torro` ist alle drei, eingebaut, ohne Ordner.
+- Neu und optional im `[about]` eines Designs: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das
+  Farbschema, die zum Design gedacht sind. Nur Vorschläge, gewählt wird getrennt.
+- Jeder Teil wird für sich geprüft und für sich abgelehnt.
+- Ein Tray-Symbol gibt es im neuen Format nicht mehr: Der Tray zeichnet immer das rote Raster (Issue #114).
+- In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), im Tooltip der Name aus
+  `[about]` („Plex“).
+- **Beispiele im Repository** liegen genauso in `designs/`, `fonts/` und `color-schemes/` (L.20): Nord, Solarized,
+  Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschemata (Dracula und Everforest verlieren `[radius]`); Plex,
+  Commitr, Channelr, Guildr, Quattro und Ribbon in allen drei Ordnern, ihre `[type.*]`-Größen auf Inter
   zurückgerechnet (geteilt durch den Ausgleich ihrer Schrift), damit sie mit der eigenen Schrift so groß bleiben wie
-  heute. Kopien in Design-Ordnern der Nutzer werden wie immer nicht angefasst; ein altes Plex wirkt dort mit seiner
-  eigenen Schrift eine Spur größer als vorher.
+  heute. Jeder Ordner hat seine eigene `.torro-examples`; in einem neu angelegten Ordner gelten die ids aus
+  `designs/.torro-examples` als schon angeboten, damit ein gelöschtes Beispiel nicht als Farbschema wiederkommt.
+
+### Alte Komplettpakete
+
+Ein `design.toml` von früher in `designs/` kann noch `[fonts.*]`, `[colors.*]`, `[logo]` und `[about] font_license`
+tragen. Darum, einmal beim Start, vor dem Nachlegen der Beispiele:
+
+- Die Suite **kopiert** Farben und Logo nach `color-schemes/<id>/` und die Schrift mit ihren Dateien nach
+  `fonts/<id>/`, nur wenn der Zielordner fehlt. Die Quelle wird nie geändert. Übernommene ids stehen in
+  `designs/.torro-migrated`; ein später gelöschter Zielordner kommt nicht wieder.
+- In `designs/` sind die alten Abschnitte danach kein Fehler, sie werden überlesen. Ein `design.toml` ohne
+  Form-Abschnitt, das Farben oder Schriften hatte (eine alte Kopie von Nord), erscheint nicht mehr als Design.
+- Ein altes Paket, das eine Regel bricht, wird trotzdem kopiert; seine Gründe zeigt dann der neue Ordner.
 
 ### Wählen
 
 - Drei Einstellungen: `design` (gibt es), neu `font` und `color_scheme`, alle mit `torro` als Standard.
-- **Übernahme alter Einstellungen**, einmal beim Lesen, für `font` und `color_scheme` je für sich, wenn es fehlt:
-  Bringt das gewählte Paket den Teil mit, wird er gewählt, sonst `torro`. Commitr → Commitr/Commitr/Commitr (sieht aus wie
-  vorher), Nord → Torro/Torro/Nord.
-- **Steuerzentrale**, General › Appearance, untereinander: Modus · **Design** (`preview.png` oder drei Probezeilen in
-  den Abständen des Designs) · **Font** (je Zeile eine Probe „Aa 09:41 The quick brown fox“ in der Schrift) ·
-  **Colour scheme** (Farbmuster aus `bg`, `panel`, `accent`, `text` im aktuellen Modus und Logo).
+- **Übernahme alter Einstellungen**, einmal beim Lesen im Dienst (nach der Übernahme der Pakete), für `font` und
+  `color_scheme` je für sich, wenn es fehlt: Hat `fonts/` bzw. `color-schemes/` die id des gewählten Designs, wird sie
+  gewählt, sonst `torro`; hat `designs/` sie nicht als Design, wird `design` zu `torro`. Commitr →
+  Commitr/Commitr/Commitr (sieht aus wie vorher), Nord → Torro/Torro/Nord.
+- **Steuerzentrale**, Appearance, kompakt untereinander (Entwurf in Issue #189): **Color mode** als Segment mit
+  Symbolen (Bildschirm, Sonne, Mond) · **Design** · **Font** · **Colour scheme** · Interface. Die drei Wahlen sind
+  Raster kleiner Kacheln: Design mit `preview.png` oder Farbmuster, Font mit „Aa 09“ in der Schrift, Colour scheme mit
+  Streifen aus `bg`, `panel`, `accent`, `text` im aktuellen Modus. Name unter der Kachel, Version und Autor im Tooltip,
+  die gewählte umrandet mit Häkchen. Unbrauchbare sind ausgegraut mit Warnsymbol; ein Klick zeigt ihre Gründe unter dem
+  Raster. Jede Gruppe hat „Open … folder“ rechts in der Überschrift.
 - Ein Design wählen ändert Schrift und Farbschema **nicht**. Schlägt das gewählte Design andere vor als die aktiven,
-  steht in deren Liste „Suggested for Commitr“ (ein Klick wählt sie).
+  trägt deren Kachel die Marke „Suggested“ (Tooltip „Suggested for Commitr“, ein Klick wählt sie).
 - Ungültige Teile, Wechsel ohne Wartezeit und Rückfall auf Torro gelten für alle drei wie unten beschrieben. Ein
   Wechsel der Schrift lädt Schriften (`iced::font::load`), ein Wechsel von Design oder Farbschema nicht.
 
@@ -429,12 +447,13 @@ weiter gültig. Was es mitbringt, ergibt sich aus seinen Abschnitten:
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Designs auflisten | Appearance › Design | `settings.list_designs` · Read (gibt es; listet nur noch Pakete mit Design, neue Felder `font` und `colorScheme` mit den Vorschlägen) | `settings_list_designs` |
+| Designs auflisten | Appearance › Design | `settings.list_designs` · Read (gibt es; listet nur `designs/`, neue Felder `font` und `colorScheme` mit den Vorschlägen) | `settings_list_designs` |
 | Design wählen | Appearance › Design | `settings.set_setting { key: design }` · Admin (gibt es; eine id ohne Design wird mit Hinweis auf `font`/`color_scheme` abgelehnt) | `settings_set_setting` |
 | Schriften auflisten (id, Familie, Paket, Version, Autor, Lizenz, Standard, gültig, Gründe, aktiv) | Appearance › Font | neu `settings.list_fonts` · Read | neu `settings_list_fonts` |
 | Schrift wählen | Appearance › Font | `settings.set_setting { key: font }` · Admin | `settings_set_setting` |
 | Farbschemata auflisten (id, Name, Version, Autor, Beschreibung, Standard, gültig, Gründe, aktiv) | Appearance › Colour scheme | neu `settings.list_color_schemes` · Read | neu `settings_list_color_schemes` |
 | Farbschema wählen | Appearance › Colour scheme | `settings.set_setting { key: color_scheme }` · Admin | `settings_set_setting` |
+| Ordner öffnen | „Open … folder“ je Gruppe | – (lokale Aktion der Steuerzentrale wie heute „Open designs folder“) | – |
 | Gewählte lesen | – | `settings.get_settings` · Read (Felder `design`, `font`, `colorScheme`) | `settings_get_settings` |
 
 Verträglich nach `docs/api.md`: neue Befehle, neue Schlüssel, neue Felder. Dass `list_designs` reine Schriften und
@@ -443,9 +462,10 @@ Fehler, der ihn zu `font` oder `color_scheme` schickt, je nachdem, was das Paket
 
 ### Technik
 
-- **`torro_core::design`:** `Design` verliert `fonts`, `colors` und `logo`. Neu `FontSet { id, about, fonts, size_adjust }`
-  und `ColorScheme { id, about, colors, logo }`, je mit `standard()`. `load` liefert das Design eines Pakets, neu
-  `load_font` und `load_color_scheme`; `list` meldet je Paket seine Teile. Wirksame Stufen (Größenausgleich, Ersatz
+- **`torro_core::design`:** `Design` verliert `fonts`, `colors` und `logo`, `About` verliert `font_license`. Neu
+  `FontSet { id, about, license, fonts, size_adjust }` und `ColorScheme { id, about, colors, logo }`, je mit
+  `standard()`. Neben `dir()` (`designs/`) neu `font_dir()` und `color_scheme_dir()`; je Ordner `load`/`list`,
+  `load_font`/`list_fonts`, `load_color_scheme`/`list_color_schemes`. Wirksame Stufen (Größenausgleich, Ersatz
   der Gewichte) rechnet der Kern: `Selection { design, font, scheme }` mit `level(name)`, damit Kern, Steuerzentrale und
   Tests dasselbe sehen.
 - **`torro_gui`:** drei aktive Teile statt einem (`design::active()`, `font::active()`, `scheme::active()`).
