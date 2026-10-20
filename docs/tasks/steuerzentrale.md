@@ -988,7 +988,7 @@ S.36 (Modelle: Suche überall, alphabetisch) ── S.37 (Accounts: Anbieter lin
 Beide ändern `ui/accounts.rs` und laufen nacheinander, S.36 zuerst.
 
 ### S.36 KI-Konto: Suche bei jedem Anbieter, Modelle alphabetisch
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** S.31 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
 - `shown_models`: Die Suche (Name oder Id, Groß- und Kleinschreibung egal, Leerzeichen außen egal) gilt bei jedem
   KI-Anbieter; nur „Show closed models“ (`open_weights`) bleibt OpenRouter. Der Parameter `filters` heißt danach

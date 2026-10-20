@@ -26,8 +26,8 @@
 //! the status without "Sync now" (nothing of it syncs), the server's address and where the key
 //! lives. Between status and connection stands the group "Models" (task S.31, `docs/settings.md` ›
 //! KI): a row per model with what it can, where it computes ([`model_place`]) and a switch
-//! (`ai.set_model_enabled`), faded and without a switch where it can't use tools; at OpenRouter a
-//! search and "Show closed models". The page asks for the models as it opens (`ai.list_models`
+//! (`ai.set_model_enabled`), faded and without a switch where it can't use tools, by name (task
+//! S.36); a search over them, at OpenRouter with "Show closed models". The page asks for the models as it opens (`ai.list_models`
 //! with `all`), not with every reload; a switch shows at once and turns back when the core
 //! refuses. The account's row counts the models on from the last list ("3 models on").
 //!
@@ -141,7 +141,7 @@ pub struct State {
 
 /// The state of the group "Models" on an AI account's page (task S.31) beside the models
 /// themselves ([`State::models`]): whether they are being asked for, why that failed, why the
-/// core refused the last switch, and the search and "Show closed models" of OpenRouter. A new
+/// core refused the last switch, the search, and "Show closed models" of OpenRouter. A new
 /// page starts with a fresh one.
 #[derive(Debug, Default)]
 pub struct ModelsPage {
@@ -151,7 +151,7 @@ pub struct ModelsPage {
     pub error: Option<String>,
     /// Why the core refused the last switch: a sentence under the group, until the next switch.
     pub refused: Option<String>,
-    /// What the search field of OpenRouter holds; matched against name and id, any case.
+    /// What the search field over the models holds; matched against name and id, any case.
     pub search: String,
     /// OpenRouter lists its models with closed weights too ([`shown_models`]).
     pub show_closed: bool,
@@ -401,7 +401,7 @@ pub enum Message {
     SetModel(String, bool),
     /// "Retry" after the models could not be listed: asks the server again.
     LoadModels,
-    /// The search field over OpenRouter's models was typed in.
+    /// The search field over an AI account's models was typed in.
     ModelSearch(String),
     /// "Show closed models" of OpenRouter, on or off.
     ShowClosed(bool),
@@ -1853,40 +1853,48 @@ pub fn model_detail(model: &AiModel, place: &str) -> String {
     parts.join(" · ")
 }
 
-/// The models a page lists, in the server's order. With `filters` (OpenRouter, hundreds of models)
-/// only those whose name or id holds `search` (any case, spaces around ignored), and those with
-/// closed weights only with `show_closed` (Open First); without, all of them.
-pub fn shown_models<'a>(models: &'a [AiModel], filters: bool, search: &str, show_closed: bool) -> Vec<&'a AiModel> {
+/// The models a page lists: those whose name or id holds `search` (any case, spaces around
+/// ignored), by name in any case and by id where names are the same (task S.36) – a server's own
+/// order says nothing a person looks for. With `closed_filter` (OpenRouter, Open First) those with
+/// closed weights only with `show_closed`. Only the page sorts: `ai.list_models` keeps the server's
+/// order.
+pub fn shown_models<'a>(
+    models: &'a [AiModel],
+    closed_filter: bool,
+    search: &str,
+    show_closed: bool,
+) -> Vec<&'a AiModel> {
     let search = search.trim().to_lowercase();
-    models
+    let mut shown: Vec<&AiModel> = models
         .iter()
-        .filter(|model| !filters || show_closed || model.open_weights != Some(false))
+        .filter(|model| !closed_filter || show_closed || model.open_weights != Some(false))
         .filter(|model| {
-            !filters
-                || search.is_empty()
+            search.is_empty()
                 || model.name.to_lowercase().contains(&search)
                 || model.id.to_lowercase().contains(&search)
         })
-        .collect()
+        .collect();
+    shown.sort_by_cached_key(|model| (model.name.to_lowercase(), model.id.clone()));
+    shown
 }
 
-/// The group "Models" of an AI account's page (`docs/settings.md` › KI): at OpenRouter first the
-/// search and "Show closed models", then one row per model with its name, what it can and where it
+/// The group "Models" of an AI account's page (`docs/settings.md` › KI): first the search, at
+/// OpenRouter with "Show closed models" beside it, then one row per model with its name, what it can and where it
 /// computes, and its switch; a model that can't use tools faded and without one. While the list
 /// is asked for "Loading models…", a failure as a sentence with "Retry". A refused switch is a
 /// sentence under the group.
 fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, Message> {
     let page = &state.models_page;
     let provider = ai_provider(&account.id);
-    let filters = provider == Some(AiProvider::OpenRouter);
+    let closed_filter = provider == Some(AiProvider::OpenRouter);
     let server = match &account.state {
         AccountState::Connected { server, .. } | AccountState::SigningIn { server, .. } => server.as_str(),
         AccountState::NotConnected => "",
     };
     let models = state.models.get(&account.id);
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
-    if filters && models.is_some() {
-        rows.push(model_filters(page));
+    if models.is_some() {
+        rows.push(model_filters(page, closed_filter));
     }
     match (models, &page.error) {
         (_, Some(error)) => rows.push(wrapped_row(
@@ -1897,7 +1905,7 @@ fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, M
         )),
         (None, None) => rows.push(quiet_row(tr("Loading models…"))),
         (Some(models), None) => {
-            let shown = shown_models(models, filters, &page.search, page.show_closed);
+            let shown = shown_models(models, closed_filter, &page.search, page.show_closed);
             if shown.is_empty() {
                 let empty =
                     if models.is_empty() { tr("This server offers no models.") } else { tr("No models match.") };
@@ -1914,20 +1922,22 @@ fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, M
     }
 }
 
-/// The search field and "Show closed models" over OpenRouter's models, in one row. The field is as
-/// high as the chip (28, `size::control_sm()`): 4 above and below its line of text, as a filter
-/// beside chips, not a form field.
-fn model_filters(page: &ModelsPage) -> Element<'_, Message> {
+/// The search field over an AI account's models, at OpenRouter (`closed_filter`) with "Show closed
+/// models" beside it in one row. The field is as high as the chip (28, `size::control_sm()`): 4
+/// above and below its line of text, as a filter, not a form field.
+fn model_filters(page: &ModelsPage, closed_filter: bool) -> Element<'_, Message> {
     let search = wizard::field(tr("Search models"), &page.search)
         .padding([space::xs(), space::s()])
         .on_input(Message::ModelSearch);
-    let closed = widgets::choice_chip(
-        tr("Show closed models"),
-        None,
-        page.show_closed,
-        Some(Message::ShowClosed(!page.show_closed)),
-    );
-    row_frame(row![search, closed].spacing(space::s()).align_y(Alignment::Center), false)
+    let closed = closed_filter.then(|| {
+        widgets::choice_chip(
+            tr("Show closed models"),
+            None,
+            page.show_closed,
+            Some(Message::ShowClosed(!page.show_closed)),
+        )
+    });
+    row_frame(row![search].push(closed).spacing(space::s()).align_y(Alignment::Center), false)
 }
 
 /// One model: its name, what it can and where it computes, and its switch. A model no module can
@@ -3123,8 +3133,8 @@ mod tests {
         assert_eq!(model_place(None, "http://localhost:11434/v1", &local), tr("Cloud"), "unknown: elsewhere");
     }
 
-    /// OpenRouter's page searches name and id and hides closed models until asked; any other page
-    /// lists everything.
+    /// Every AI account's page searches name and id; only OpenRouter's hides closed models until
+    /// asked.
     #[test]
     fn openrouter_searches_and_hides_closed_models() {
         let models = super::super::launch::demo_models();
@@ -3137,7 +3147,8 @@ mod tests {
         assert_eq!(ids(shown_models(&models, true, "gpt", false)), Vec::<String>::new(), "closed: not shown");
         assert_eq!(ids(shown_models(&models, true, "gpt", true)), ["openai/gpt-5"]);
         assert_eq!(ids(shown_models(&models, true, "Mistral Small", false)).len(), 1, "by name");
-        assert_eq!(shown_models(&models, false, "llama", false).len(), models.len(), "no filters elsewhere");
+        assert_eq!(ids(shown_models(&models, false, "llama", false)), ["meta-llama/llama-3.3-70b-instruct"]);
+        assert_eq!(ids(shown_models(&models, false, "", false)).len(), models.len(), "closed ones elsewhere too");
         // The page keeps both, and a new page starts without them.
         let (mut state, data) = open_ai();
         update(&mut state, Message::ModelSearch("qwen".into()), &data);
@@ -3149,6 +3160,25 @@ mod tests {
         update(&mut state, Message::Back, &data);
         assert!(state.models_page.search.is_empty() && !state.models_page.show_closed);
         assert!(state.models.contains_key(OPENROUTER), "the list's row still counts them");
+    }
+
+    /// The models stand by name in any case, those with the same name by id, whatever order the
+    /// server sent them in; searching keeps that order.
+    #[test]
+    fn models_stand_in_alphabetical_order() {
+        let named = |id: &str, name: &str| AiModel { name: name.into(), ..AiModel::named(id) };
+        let models = vec![
+            named("z/qwen", "Qwen3 Coder"),
+            named("b/beta", "beta"),
+            named("a/alpha", "Alpha"),
+            named("y/same", "Same"),
+            named("x/same", "same"),
+        ];
+        let ids = |shown: Vec<&AiModel>| shown.into_iter().map(|model| model.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(shown_models(&models, false, "", false)), ["a/alpha", "b/beta", "z/qwen", "x/same", "y/same"]);
+        assert_eq!(ids(shown_models(&models, true, "", true)), ["a/alpha", "b/beta", "z/qwen", "x/same", "y/same"]);
+        assert_eq!(ids(shown_models(&models, false, "SAME", false)), ["x/same", "y/same"]);
+        assert_eq!(ids(shown_models(&models, false, "z/q", false)), ["z/qwen"], "by id");
     }
 
     /// A refused switch turns back and says why under the group; the next switch clears it.
