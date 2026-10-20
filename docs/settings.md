@@ -319,8 +319,8 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
   eines Mail-Anbieters, Art `caldav`), **GitHub**, **AI**, **ntfy**. Eine leere Gruppe sagt in einem Satz, was
   hierher gehört („Add a Nextcloud for calendars and tasks.“), statt zu verschwinden.
 - **Anbieter links, Konten rechts** (#244, S.37): Die Gruppen stehen als Anbieter in einer Spalte am linken
-  Rand des Inhalts (Breit mit Namen und Zahl, Mittel nur mit Symbolen, Schmal als Chips über der Liste); das
-  Symbol färbt sich, wenn ein Konto Aufmerksamkeit braucht oder einen Fehler hat. Rechts steht nur der gewählte
+  Rand des Inhalts (Breit mit Namen und Zahl, Mittel nur mit Symbolen, Schmal als Chips über der Liste); braucht
+  ein Konto Aufmerksamkeit oder hat einen Fehler, steht statt des Symbols das Warnsymbol in dieser Farbe. Rechts steht nur der gewählte
   Anbieter: Name, darunter der Satz, was hierher gehört, dann seine Konten und „Add“. Ohne Wahl ist der erste
   Anbieter mit Konto gewählt; das Öffnen eines Kontos wählt seinen Anbieter, damit „Back“ dort landet. Entwurf:
   `docs/prototypes/accounts/index.html` (Variante A).

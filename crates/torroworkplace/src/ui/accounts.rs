@@ -3,8 +3,8 @@
 //! without an account – Nextcloud, Mail (with the CalDAV accounts of a mail provider), GitHub, AI,
 //! ntfy ([`Group`]); an account of a kind none of them holds gets a provider of its own at the
 //! end. They stand in a column at the left edge of the content ([`provider_column`]: wide with
-//! names and counts, medium only icons) or as chips above the list (narrow), the icon tinted where
-//! an account needs the person. The list shows one provider ([`chosen`]): its name and the sentence
+//! names and counts, medium only icons) or as chips above the list (narrow), with the alert icon in
+//! place of the provider's where an account needs the person. The list shows one provider ([`chosen`]): its name and the sentence
 //! of what belongs there, then its accounts as rows (status dot, label on one line, status and last
 //! sync below, chevron) and its "Add" ([`Message::Add`]), which opens the add-account dialog
 //! (`wizard.rs`, task S.6) at that provider's first step; the header bar has no button of its own. Mail also offers "Import from TorroMail…" ([`Message::ImportTorroMail`]) while TorroMail
@@ -1380,12 +1380,14 @@ fn group_tone(group: Listed<'_>, entries: &[&AccountInfo]) -> Option<Tone> {
     entries.iter().filter(|entry| group.holds(&entry.kind)).map(|entry| status_line(&entry.state).tone).max()
 }
 
-/// The provider's icon, in the colour of a status where one of its accounts needs the person
-/// (`attention`) or fails (`error`) – the colour only in the icon, the words on the account's row.
+/// The provider's icon; where one of its accounts needs the person or fails, the alert icon in
+/// the colour of that status instead – a form and not only a colour, as the name stays beside it
+/// (and in the tooltip of the medium column). The text colours (`attention_text`, `error_text`)
+/// hold 3:1 for a small icon on light surfaces too; the words stand on the account's row.
 fn provider_mark(group: Listed<'_>, entries: &[&AccountInfo], palette: &Palette) -> Mark {
     match group_tone(group, entries) {
-        Some(Tone::Attention) => Mark::Tinted(group.icon(), palette.attention),
-        Some(Tone::Error) => Mark::Tinted(group.icon(), palette.error),
+        Some(Tone::Attention) => Mark::Tinted(Icon::CircleAlert, palette.attention_text),
+        Some(Tone::Error) => Mark::Tinted(Icon::CircleAlert, palette.error_text),
         Some(Tone::Ok) | None => Mark::Icon(group.icon()),
     }
 }
@@ -2592,7 +2594,7 @@ mod tests {
     }
 
     /// Task S.37: the column counts the accounts of a provider, not the sign-ins in progress, and
-    /// takes the worst way one of them stands for the colour of its icon.
+    /// shows the worst way one of them stands as the alert icon in that status's colour.
     #[test]
     fn a_provider_counts_its_accounts_and_takes_the_worst_tone() {
         let ok = of_kind("nextcloud:a", "nextcloud");
@@ -2607,8 +2609,11 @@ mod tests {
         assert_eq!(group_tone(nextcloud, &[&waiting, &broken, &ok]), Some(Tone::Error));
         let palette = Palette::dark();
         assert_eq!(provider_mark(nextcloud, &[&ok], &palette), Mark::Icon(Icon::Cloud));
-        assert_eq!(provider_mark(nextcloud, &[&waiting], &palette), Mark::Tinted(Icon::Cloud, palette.attention));
-        assert_eq!(provider_mark(nextcloud, &[&broken], &palette), Mark::Tinted(Icon::Cloud, palette.error));
+        let alert = |colour| Mark::Tinted(Icon::CircleAlert, colour);
+        assert_eq!(provider_mark(nextcloud, &[&waiting], &palette), alert(palette.attention_text));
+        assert_eq!(provider_mark(nextcloud, &[&broken], &palette), alert(palette.error_text));
+        let light = Palette::light();
+        assert_eq!(provider_mark(nextcloud, &[&broken], &light), alert(light.error_text), "readable on light");
     }
 
     /// Task S.37: choosing a provider shows it; opening an account chooses its provider, so "Back"

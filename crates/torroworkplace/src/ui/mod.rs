@@ -1447,7 +1447,13 @@ impl Ui {
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
         let page = column(notices).push(page).spacing(space::l());
-        let page = if class == SizeClass::Medium {
+        let providers = match self.section {
+            Section::Accounts => accounts::provider_column(&self.accounts, &self.data, class, &palette),
+            _ => None,
+        };
+        // Beside the providers' column the page starts at it, as beside the sidebar (design skill,
+        // section 6); centred, its distance to the column would grow with the window.
+        let page = if class == SizeClass::Medium || providers.is_some() {
             // Flush with the window: the page starts at the margin (24), where the ink of the header's
             // first symbol starts (16 padding, 6 around the symbol, 2 inside the icon), instead of
             // floating in the middle between header and window edge.
@@ -1459,10 +1465,6 @@ impl Ui {
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .height(Fill);
-        let providers = match self.section {
-            Section::Accounts => accounts::provider_column(&self.accounts, &self.data, class, &palette),
-            _ => None,
-        };
         match providers {
             Some(providers) => {
                 row![providers.map(Message::Accounts), rule::vertical(size::HAIRLINE).style(style::rule), page].into()
