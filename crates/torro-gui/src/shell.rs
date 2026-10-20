@@ -175,6 +175,16 @@ pub fn is_sidebar_key(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bo
     !modifiers.logo() && matches!(key.as_ref(), keyboard::Key::Character("["))
 }
 
+/// Whether a key press is the shortcut `]` of the mail's action rail (task E14.1,
+/// [`widgets::action_rail`]): the app then expands or collapses the rail – the same as the button
+/// `panel-right` at its top –, mirroring `[` for the sidebar ([`is_sidebar_key`]). Ctrl and Alt are
+/// allowed, because some layouts type `]` with AltGr or Option (German: AltGr+9, which Windows
+/// reports as Ctrl+Alt; macOS: Option+6); the logo key is not. Check it, like the sidebar key,
+/// before an app drops keys with modifiers, and only for keys no widget captured.
+pub fn is_actions_key(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
+    !modifiers.logo() && matches!(key.as_ref(), keyboard::Key::Character("]"))
+}
+
 /// Whether `class` shows the sidebar beside the content (only the wide layout). Otherwise the
 /// header carries [`sidebar_toggle`] and a navigation menu ([`widgets::menu_button`]).
 pub fn has_sidebar(class: SizeClass) -> bool {
@@ -1205,6 +1215,20 @@ mod tests {
         assert!(is_sidebar_key(&bracket, Modifiers::CTRL | Modifiers::ALT), "AltGr on Windows");
         assert!(!is_sidebar_key(&bracket, Modifiers::LOGO));
         assert!(!is_sidebar_key(&Key::Character("]".into()), Modifiers::empty()));
+    }
+
+    /// Task E14.1: `]` flips the mail's action rail, also with AltGr (Ctrl+Alt) or Option, never
+    /// with the logo key; `[` stays the sidebar's.
+    #[test]
+    fn the_closing_bracket_is_the_actions_key() {
+        use keyboard::{Key, Modifiers};
+        let bracket = Key::Character("]".into());
+        assert!(is_actions_key(&bracket, Modifiers::empty()));
+        assert!(is_actions_key(&bracket, Modifiers::CTRL | Modifiers::ALT), "AltGr+9 on Windows");
+        assert!(is_actions_key(&bracket, Modifiers::ALT), "Option+6 on macOS");
+        assert!(!is_actions_key(&bracket, Modifiers::LOGO));
+        assert!(!is_actions_key(&Key::Character("[".into()), Modifiers::empty()));
+        assert!(!is_sidebar_key(&bracket, Modifiers::empty()));
     }
 
     /// Task E11.2: the head carries Search and New – without `search` (the mail window, whose field

@@ -7,7 +7,9 @@
 //! parts of the tasks redesign (property
 //! lines, label chips, state pills, progress bars) and every bundled icon, `-- --cards` the blocks of the
 //! inbox's comfortable density (task E8.2: cards, card heads, chips, source tiles, avatars and
-//! reading text), `-- --mailbar` the mail window's large buttons (task
+//! reading text), `-- --mailbar` the mail's action rail (task E14.1: collapsed, with an open group
+//! at the top and one at the foot, without its button as in the panel, expanded; an item off) and
+//! the mail window's large buttons (task
 //! E11.1: the styles `cell`, `pill`, the track and the flat input in every state, the command bar in
 //! three widths, the strip under a row with and without words, the pills, the attachment chips and
 //! the reader's foot), `-- --window` the example "Tasks" window (sample data from
@@ -60,7 +62,7 @@ fn main() -> iced::Result {
         Page::Window => iced::Size::new(1440.0, 900.0),
         Page::Parts => iced::Size::new(3200.0, 840.0),
         Page::Cards => iced::Size::new(1720.0, 1000.0),
-        Page::Mailbar => iced::Size::new(1600.0, 1000.0),
+        Page::Mailbar => iced::Size::new(2160.0, 1180.0),
         _ => iced::Size::new(3700.0, 1060.0),
     };
     iced::application(move || Gallery::new(start), Gallery::update, Gallery::view)
@@ -2325,6 +2327,7 @@ fn mailbar() -> Element<'static, Msg> {
     .width(720);
 
     column![
+        section("Action rail of a mail (E14.1)", action_rails()),
         section("Styles in every state", styles.into()),
         section("Command bar (reader) in three widths", column(bars).spacing(space::l()).into()),
         section("Strip under the chosen row (list)", column(strips).spacing(space::l()).into()),
@@ -2334,6 +2337,135 @@ fn mailbar() -> Element<'static, Msg> {
     .spacing(space::xxl())
     .padding(space::xl())
     .into()
+}
+
+/// The mail's action rail (task E14.1, `docs/prototypes/inbox/mail-aktionsleiste.html#d`) beside a
+/// sample mail: collapsed at rest, with "File" open (top edges in line, "Archive" off), with "More"
+/// open (a foot group, bottom edges in line), without its button as in the panel of medium and
+/// narrow windows, and expanded. The gallery only shows them: every message is `Noop`, so the open
+/// groups stay open.
+fn action_rails() -> Element<'static, Msg> {
+    let frame = |rail: Element<'static, Msg>, wide: bool, height: f32| {
+        let mail = column![
+            typo::text(typo::headline(), "Budget review for Q4"),
+            typo::text(typo::meta(), "Jonas Weber · Tue, 20 Oct · 09:05").style(theme::text_3),
+            typo::text(
+                typo::read(),
+                "Hi Anna, the numbers for Q4 are in. Could you look at the travel budget before Thursday? Two \
+                 things stand out: travel is 12 % over plan, and the software line still carries the old \
+                 licences we cancelled in August.",
+            ),
+        ]
+        .spacing(space::m())
+        .padding(space::xl())
+        .width(Fill);
+        let mode = if wide { widgets::RailMode::Expanded } else { widgets::RailMode::Collapsed };
+        let width = 220.0 + mode.width();
+        Element::from(container(row![mail, rail]).width(width).height(height).style(style::container::panel))
+    };
+    // The open groups are layers over the whole section, as an app lays them over the whole window:
+    // laid out in a frame, a layer wider than the frame would be squeezed.
+    let mut layers = Vec::new();
+    let mut collapsed = |open: Option<usize>, toggle: bool, height: f32| {
+        let anchors: Vec<Anchor> = (0..6).map(|_| Anchor::new()).collect();
+        let groups = rail_groups(&anchors);
+        if let Some((at, group)) = open.and_then(|at| groups.get(at).cloned().map(|group| (at, group))) {
+            layers.push(widgets::rail_flyout(group, &anchors[at], Msg::Noop));
+        }
+        let rail = widgets::action_rail(
+            groups,
+            widgets::RailMode::Collapsed,
+            open,
+            |_| Msg::Noop,
+            toggle.then_some(Msg::Noop),
+        );
+        frame(rail, false, height)
+    };
+    let tall = 760.0;
+    let low = 420.0;
+    let rest = collapsed(None, true, tall);
+    let file = collapsed(Some(1), true, tall);
+    let more = collapsed(Some(5), true, tall);
+    let panel = collapsed(None, false, low);
+    let expanded = |height: f32| {
+        let anchors: Vec<Anchor> = (0..6).map(|_| Anchor::new()).collect();
+        let rail = widgets::action_rail(
+            rail_groups(&anchors),
+            widgets::RailMode::Expanded,
+            None,
+            |_| Msg::Noop,
+            Some(Msg::Noop),
+        );
+        frame(rail, true, height)
+    };
+    let first = row![
+        labelled("Collapsed", rest),
+        labelled("“File” open · Archive off", file),
+        labelled("“More” open · at the foot", more),
+        labelled("Expanded · Archive off", expanded(tall)),
+    ]
+    .spacing(space::l());
+    let second = row![
+        labelled("In the panel · no button", panel),
+        labelled("Expanded in a low window · the top scrolls, the foot stays", expanded(low)),
+    ]
+    .spacing(space::l());
+    let section: Element<'static, Msg> = column![first, second].spacing(space::xl()).into();
+    iced::widget::stack(std::iter::once(section).chain(layers)).into()
+}
+
+/// The groups of the rail in the order of task E14 (decision 2), the icon of each registering its
+/// anchor in `anchors`; "Archive" is off (no archive folder), Reply in the accent.
+fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
+    use widgets::{RailGroup, RailItem};
+    let item = |which: Icon, label: &'static str, key: &'static str| RailItem::new(which, label, key, Some(Msg::Noop));
+    let groups = vec![
+        RailGroup::new(
+            Icon::Reply,
+            "Reply",
+            vec![
+                item(Icon::Reply, "Reply", "R").accent(),
+                item(Icon::ReplyAll, "Reply all", "A"),
+                item(Icon::Forward, "Forward", "F"),
+            ],
+        )
+        .accent(),
+        RailGroup::new(
+            Icon::Check,
+            "File",
+            vec![
+                item(Icon::Check, "Done", "E"),
+                item(Icon::Clock, "Later…", "S"),
+                item(Icon::Info, "Move to Info", "L"),
+                RailItem::new(Icon::Archive, "Archive", "", None),
+                item(Icon::Trash2, "Delete", "#"),
+            ],
+        ),
+        RailGroup::new(
+            Icon::ListTodo,
+            "Torro",
+            vec![
+                item(Icon::ListTodo, "Task", "T"),
+                item(Icon::CalendarPlus, "Event", ""),
+                item(Icon::Tag, "Category…", "C"),
+                item(Icon::Sparkles, "Re-categorize", "").accent(),
+            ],
+        ),
+        RailGroup::new(Icon::Flag, "Mark", vec![item(Icon::Flag, "Flag", ""), item(Icon::Mail, "Mark unread", "U")]),
+        RailGroup::new(Icon::BellOff, "Mute", vec![item(Icon::BellOff, "Mute…", "M")]).foot(),
+        RailGroup::new(
+            Icon::Ellipsis,
+            "More",
+            vec![
+                item(Icon::AlignLeft, "Show as text", ""),
+                item(Icon::Sun, "Light colours", ""),
+                item(Icon::Copy, "Copy text", ""),
+                item(Icon::X, "Close", ""),
+            ],
+        )
+        .foot(),
+    ];
+    groups.into_iter().zip(anchors).map(|(group, anchor)| group.at(anchor)).collect()
 }
 
 /// The view switch HTML | Text of the reader's foot.

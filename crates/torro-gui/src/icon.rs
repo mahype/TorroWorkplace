@@ -53,6 +53,8 @@ pub enum Icon {
     CircleCheck,
     CirclePlus,
     PanelLeft,
+    /// "Expand actions" / "Collapse actions" (task E14.1): the action rail at the right of a mail.
+    PanelRight,
     ArrowUpRight,
     /// "Newest first" (task E8.15): sorted descending by arrival.
     ArrowDownWideNarrow,
@@ -205,6 +207,7 @@ impl Icon {
         Icon::CircleCheck,
         Icon::CirclePlus,
         Icon::PanelLeft,
+        Icon::PanelRight,
         Icon::ArrowUpRight,
         Icon::ArrowDownWideNarrow,
         Icon::ArrowUpNarrowWide,
@@ -317,6 +320,7 @@ impl Icon {
             Icon::CircleCheck => include_bytes!("../assets/icons/circle-check.svg"),
             Icon::CirclePlus => include_bytes!("../assets/icons/circle-plus.svg"),
             Icon::PanelLeft => include_bytes!("../assets/icons/panel-left.svg"),
+            Icon::PanelRight => include_bytes!("../assets/icons/panel-right.svg"),
             Icon::ArrowUpRight => include_bytes!("../assets/icons/arrow-up-right.svg"),
             Icon::ArrowDownWideNarrow => include_bytes!("../assets/icons/arrow-down-wide-narrow.svg"),
             Icon::ArrowUpNarrowWide => include_bytes!("../assets/icons/arrow-up-narrow-wide.svg"),

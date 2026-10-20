@@ -2168,7 +2168,7 @@ E14.1 ── E14.2 (Liste) ── E14.3 (Leser und Paneel)
 Nicht parallel: E14.2 und E14.3 ändern beide `crates/torroinbox/src/{list,mail,app}.rs`.
 
 ### E14.1 Bausteine: Aktionsleiste, Klappfeld, gemerkter Zustand
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{widgets,panel,ui_state,icon,shell}.rs`,
   `crates/torro-gui/assets/icons/panel-right.svg` (neu), `crates/torro-gui/examples/gallery.rs`,
   `.claude/skills/torro-design/SKILL.md`

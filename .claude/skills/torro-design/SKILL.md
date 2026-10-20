@@ -282,7 +282,30 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
   `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
   `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
-- **Befehlsleiste und Leiste der Zeile** (E11.1, Mail-Fenster in allen Größen; Entwurf
+- **Aktionsleiste der Mail** (E14, nur das Mail-Fenster, alle Größen; Entwurf
+  `docs/prototypes/inbox/mail-aktionsleiste.html#d`): Alles, was man mit der geöffneten Mail tun kann, steht in
+  **einer Leiste am rechten Rand der Mail** (`widgets::action_rail`), über die ganze Höhe, Fläche `PANEL`, links eine
+  `LINE`; die Liste hat keine Knöpfe, über der Mail stehen keine. Gruppen (`widgets::RailGroup`) in fester
+  Reihenfolge Reply · File · Torro · Mark, unten abgesetzt Mute · More (`RailGroup::foot`), jede nur mit dem, was für
+  die Mail geht; was gerade nicht geht, steht aus (`RailItem` ohne Nachricht, 40 %, ohne `kbd`). Reply-Icon und
+  KI-Sparkles in der Akzentfarbe (nur das Icon, `accent`). **Eingeklappt** (`RailMode::Collapsed`, `shell::rail()`
+  breit): oben der Umschalter `panel-right` (Tooltip „Expand actions“ mit `kbd` „]“), `LINE`, ein Icon je Gruppe
+  (`size::control_lg()`, `style::button::icon`); ein Klick tut die erste Aktion der Gruppe, die geht, Hover öffnet
+  links daneben das Klappfeld (`widgets::rail_flyout`): für alle Gruppen gleich breit (`size::sidebar()`), Fläche und
+  Rand wie ein Menü, Gruppenname als Abschnittstitel, Zeilen 30 mit Icon, Wort und `kbd`; oben bündig, die Gruppen
+  unten unten bündig; kein Scrim, es geht, wenn der Zeiger Klappfeld und Icon verlässt. Es liegt als Ebene über dem
+  ganzen Fenster (`Shell::overlay`), nie in einem schmaleren Teil. **Ausgeklappt** (`RailMode::Expanded`,
+  `size::sidebar()` breit, nur in Breit): oben der Umschalter mit Wort („Collapse actions“, `kbd` „]“), `LINE`, alle
+  Gruppen offen, die erste ohne Titel, die anderen mit Titel in `typo::caption()`/`TEXT_3`, Zeilen
+  `size::row_sidebar()` hoch mit Icon, Wort und `kbd` rechts (`ghost`); die Spalte gehört zum Layout, die Mail rückt
+  nach innen, nichts liegt über ihr. Oben scrollt, wenn das Fenster zu niedrig ist, unten bleibt. **Mittel und
+  Schmal:** die Mail steht im Paneel (`Panel::side`), die Leiste immer eingeklappt und ohne Umschalter.
+  **Umschalten:** Knopf oder Taste `]` (`shell::is_actions_key`, wie `[` für die Seitenleiste), gemerkt je
+  Fensterart und Ausschnitt in `ui.json` (`ui_state::actions_from`, `"collapsed"`/`"expanded"`). Einladungen
+  (Accept, Maybe, Decline) bleiben als Karte im Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery
+  -- --mailbar` (dazu `--light`, `--design plex`).
+- **Befehlsleiste und Leiste der Zeile** (E11.1; das Mail-Fenster hat sie mit E14 nicht mehr, dort gilt die
+  Aktionsleiste der Mail; Entwurf
   `docs/prototypes/inbox/mail-buttons.html#d`): **Aktionen sind Zellen bzw. Pillen, Ansicht ist versenkt.**
   Oben im Leser `widgets::command_bar` (`size::command()` 46, Zellen gleich breit über die ganze Breite,
   senkrechte `LINE` dazwischen, `LINE` darunter) mit `command_split` (Reply, kräftig, Menü ▾ „More replies“),

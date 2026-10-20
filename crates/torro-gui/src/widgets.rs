@@ -11,7 +11,9 @@
 //! mail window's large buttons (task E11.1): the reader's command bar ([`command_bar`] with
 //! [`command_cell`], [`command_split`], [`command_more`]), the strip in the chosen mail's row
 //! ([`row_strip`]), the Torro pills ([`pill_button`]), the sunken view switch ([`view_switch`]) and
-//! the chips of attachments ([`file_chip`]).
+//! the chips of attachments ([`file_chip`]). For the mail's actions at its right edge (task E14.1):
+//! the action rail ([`action_rail`] with [`RailGroup`]s of [`RailItem`]s, collapsed or expanded,
+//! [`RailMode`]) and the layer of an open group ([`rail_flyout`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -56,8 +58,8 @@ use std::time::Duration;
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{
-    button, canvas, center, column, container, float, mouse_area, opaque, pin, responsive, row, rule, stack, svg,
-    tooltip,
+    button, canvas, center, column, container, float, mouse_area, opaque, pin, responsive, row, rule, scrollable,
+    stack, svg, tooltip,
 };
 use iced::{
     Alignment, Background, Color, Element, Fill, Length, Padding, Point, Rectangle, Size, Subscription, Theme, Vector,
@@ -1903,6 +1905,393 @@ pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragmen
         .style(style::button::secondary)
         .on_press(on_press);
     anchored(anchor, b)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Action rail of a mail (task E14.1)
+// ---------------------------------------------------------------------------------------------
+
+/// How the action rail of a mail ([`action_rail`]) is drawn. The person's choice for the wide
+/// mail window, remembered per window in `ui.json` ([`crate::ui_state::actions_from`]); medium and
+/// narrow windows always draw [`RailMode::Collapsed`] (task E14, decision 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RailMode {
+    /// [`crate::shell::rail()`] wide: one icon per group; hovering an icon opens its group beside it
+    /// ([`rail_flyout`]), a click does the group's first action that goes.
+    #[default]
+    Collapsed,
+    /// [`size::sidebar()`] wide: every group open with its title, every action with icon, word and
+    /// key – a column of the layout that moves the mail inwards, nothing lies over it.
+    Expanded,
+}
+
+impl RailMode {
+    /// The other mode: what the button at the top of the rail and the key `]` switch to
+    /// ([`crate::shell::is_actions_key`]).
+    pub fn toggled(self) -> Self {
+        match self {
+            RailMode::Collapsed => RailMode::Expanded,
+            RailMode::Expanded => RailMode::Collapsed,
+        }
+    }
+
+    /// How wide the rail is in this mode: its column – [`crate::shell::rail()`] collapsed,
+    /// [`size::sidebar()`] expanded – and the line on its left. For apps that work out the room
+    /// left for the mail.
+    pub fn width(self) -> f32 {
+        self.column() + LINE
+    }
+
+    /// The rail's column without its line. Collapsed it holds an icon of [`size::control_lg()`]
+    /// with [`space::s()`] at both sides, as the collapsed sidebar does: the line stands outside,
+    /// so the icons sit on whole pixels.
+    fn column(self) -> f32 {
+        match self {
+            RailMode::Collapsed => crate::shell::rail(),
+            RailMode::Expanded => size::sidebar(),
+        }
+    }
+}
+
+/// One action in the action rail of a mail ([`action_rail`], [`rail_flyout`]): icon, word and the
+/// key that does the same in the window, and the message it sends.
+///
+/// ```ignore
+/// RailItem::new(Icon::Reply, tr("Reply"), "R", Some(Message::Mail(MailAction::Reply))).accent()
+/// RailItem::new(Icon::Archive, tr("Archive"), "", None) // there is no archive folder: off
+/// ```
+#[derive(Debug, Clone)]
+pub struct RailItem<'a, M> {
+    pub icon: Icon,
+    /// The word of the row ("Reply", "Later…"), sentence case through `tr`.
+    pub label: iced::widget::text::Fragment<'a>,
+    /// The key that does the same ("R"), shown as [`kbd`] at the end of the row; `""` for none.
+    /// A row that is off shows no key: the key does nothing then either.
+    pub key: &'static str,
+    /// Sent when the row is pressed; `None` shows it off (faded to [`style::DISABLED_ALPHA`], like a
+    /// [`bar_button`] without a message) and it sends nothing. The app closes an open group
+    /// ([`rail_flyout`]) on every message of an item: a button sends one message only.
+    pub on_press: Option<M>,
+    /// The icon in the accent colour (the Reply group, the AI's sparkles), set with
+    /// [`RailItem::accent`] – an exception to "red only for the primary button", as the pills of
+    /// task E11 were. Only the icon, never the word or the surface.
+    pub accent: bool,
+    /// Registered by the row wherever it is drawn (expanded rail, open group), set with
+    /// [`RailItem::at`]: a dialog the item opens hangs at its row. Chain it with the group's
+    /// anchor (`row_anchor.or(&group_anchor)`, [`Anchor::or`]) so it hangs at the group's icon while the row is
+    /// not on screen (collapsed rail, group closed).
+    pub anchor: Option<Anchor>,
+}
+
+impl<'a, M> RailItem<'a, M> {
+    /// An item with `icon`, `label` and the key hint `key` (`""` for none) that sends `on_press`
+    /// (`None`: off); not in the accent, no anchor.
+    pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: Option<M>) -> Self {
+        Self { icon, label: label.into_fragment(), key, on_press, accent: false, anchor: None }
+    }
+
+    /// The same item with its icon in the accent colour ([`RailItem::accent`]).
+    pub fn accent(self) -> Self {
+        Self { accent: true, ..self }
+    }
+
+    /// The same item registering `anchor` on its row ([`RailItem::anchor`]).
+    pub fn at(self, anchor: &Anchor) -> Self {
+        Self { anchor: Some(anchor.clone()), ..self }
+    }
+
+    /// What a press sends: `on_press`, `None` while the item is off.
+    pub fn press(&self) -> Option<M>
+    where
+        M: Clone,
+    {
+        self.on_press.clone()
+    }
+}
+
+/// A group of the action rail ([`action_rail`]): the icon that stands for it in the collapsed rail,
+/// its title ("File") and its items, top to bottom.
+///
+/// ```ignore
+/// let file = RailGroup::new(Icon::Check, tr("File"), vec![done, later, archive, delete]).at(&anchors.file);
+/// let more = RailGroup::new(Icon::Ellipsis, tr("More"), vec![copy, show_as, colours]).foot();
+/// ```
+#[derive(Debug, Clone)]
+pub struct RailGroup<'a, M> {
+    /// The icon of the group in the collapsed rail; usually the first item's.
+    pub icon: Icon,
+    /// The group's title, in the expanded rail and at the top of its open group ([`rail_flyout`]).
+    pub label: iced::widget::text::Fragment<'a>,
+    /// The actions, top to bottom. Leave out what does not go for the mail; an item that is
+    /// there but cannot be done now is off ([`RailItem::on_press`] `None`).
+    pub items: Vec<RailItem<'a, M>>,
+    /// The group's icon in the accent colour (Reply), set with [`RailGroup::accent`].
+    pub accent: bool,
+    /// The group stands apart at the bottom of the rail (Mute, More), set with
+    /// [`RailGroup::foot`]; its open group lines up with its icon at the bottom, not at the top.
+    /// Groups keep their order within the top and within the foot.
+    pub foot: bool,
+    /// Registered by the group's icon in the collapsed rail, set with [`RailGroup::at`]: pass the
+    /// same anchor to [`rail_flyout`], and use it for the dialogs of the group's items.
+    pub anchor: Option<Anchor>,
+}
+
+impl<'a, M> RailGroup<'a, M> {
+    /// A group with `icon`, `label` and `items`; at the top, not in the accent, no anchor.
+    pub fn new(icon: Icon, label: impl IntoFragment<'a>, items: Vec<RailItem<'a, M>>) -> Self {
+        Self { icon, label: label.into_fragment(), items, accent: false, foot: false, anchor: None }
+    }
+
+    /// The same group with its icon in the accent colour ([`RailGroup::accent`]).
+    pub fn accent(self) -> Self {
+        Self { accent: true, ..self }
+    }
+
+    /// The same group at the bottom of the rail ([`RailGroup::foot`]).
+    pub fn foot(self) -> Self {
+        Self { foot: true, ..self }
+    }
+
+    /// The same group registering `anchor` on its icon ([`RailGroup::anchor`]).
+    pub fn at(self, anchor: &Anchor) -> Self {
+        Self { anchor: Some(anchor.clone()), ..self }
+    }
+
+    /// What a click on the group's icon sends: the message of its first item that goes, `None`
+    /// when none does (the icon is then off).
+    pub fn first_press(&self) -> Option<M>
+    where
+        M: Clone,
+    {
+        self.items.iter().find_map(RailItem::press)
+    }
+}
+
+/// How wide an open group of the collapsed rail is ([`rail_flyout`]): [`size::sidebar()`] for every
+/// group, however long its words, so moving from one group to the next does not make it jump.
+pub fn rail_flyout_width() -> f32 {
+    size::sidebar()
+}
+
+/// The action rail at the right edge of a mail (task E14.1, `docs/prototypes/inbox/mail-aktionsleiste.html#d`):
+/// a column over the mail's whole height on the `panel` surface, a `line` on its left, as wide as
+/// [`RailMode::width`] (the collapsed or expanded sidebar and the line).
+///
+/// - **Collapsed:** at the top the button `panel-right` ("Expand actions", key `]`) and a line,
+///   then one icon per group ([`size::control_lg()`] square, `style::button::icon`); the groups
+///   marked [`RailGroup::foot`] at the bottom. A click on an icon sends the group's first item that
+///   goes ([`RailGroup::first_press`]); the pointer entering it sends `on_open(Some(index))`, the
+///   index into `groups`. The app keeps that index and passes it back as `open` – the icon then
+///   stands `selected` – and draws the group with [`rail_flyout`] as a layer over the window, whose
+///   `on_close` is `on_open(None)`.
+/// - **Expanded:** at the top the button with its word ("Collapse actions", key `]`) and a line,
+///   then every group: the first one without a title, the others under their title in
+///   `typo::caption()`/`text_3`, the items as rows like menu entries (icon, word, [`kbd`] at the
+///   right) as high as sidebar rows ([`size::row_sidebar()`], `style::button::ghost`); foot groups
+///   at the bottom.
+///   `open` and `on_open` are not used.
+///
+/// Without `on_toggle` there is no button and no line under it (medium and narrow windows, which
+/// always show the collapsed rail, task E14 decision 5). The top groups scroll when the window is
+/// too low for them; the foot stays.
+///
+/// ```ignore
+/// let toggle = (class == SizeClass::Wide).then_some(Message::ToggleActions);
+/// let mode = if toggle.is_some() { self.actions } else { RailMode::Collapsed };
+/// let rail = widgets::action_rail(groups.clone(), mode, self.rail_open, Message::RailOpen, toggle);
+/// // the layer, over the window:
+/// let layer = self.rail_open.and_then(|i| groups.get(i).cloned()).map(|group| {
+///     let anchor = group.anchor.clone().unwrap_or_default();
+///     widgets::rail_flyout(group, &anchor, Message::RailOpen(None))
+/// });
+/// ```
+pub fn action_rail<'a, M: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    mode: RailMode,
+    open: Option<usize>,
+    on_open: fn(Option<usize>) -> M,
+    on_toggle: Option<M>,
+) -> Element<'a, M> {
+    let (foot, top): (Vec<_>, Vec<_>) = groups.into_iter().enumerate().partition(|(_, group)| group.foot);
+    let mut rail = column![].width(Fill).height(Fill);
+    let content = match mode {
+        RailMode::Collapsed => {
+            if let Some(on_toggle) = on_toggle {
+                let mark = button_icon(Icon::PanelRight, icon::SIZE, style::button::icon, true);
+                let toggle = button(center(mark))
+                    .width(size::control_lg())
+                    .height(size::control_lg())
+                    .padding(0)
+                    .style(style::button::icon)
+                    .on_press(on_toggle);
+                let hint = row![typo::text(typo::caption(), tr("Expand actions")).style(theme::text_2), kbd("]")]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+                rail = rail.push(tip(toggle, hint, tooltip::Position::Left)).push(rail_line());
+            }
+            let icons = |groups: Vec<(usize, RailGroup<'a, M>)>| {
+                let faces = groups.into_iter().map(|(at, group)| {
+                    let face = mouse_area(rail_face(&group, open == Some(at))).on_enter(on_open(Some(at)));
+                    anchored_if(group.anchor.as_ref(), face)
+                });
+                column(faces).spacing(space::xs())
+            };
+            rail.push(rail_scroll(icons(top))).push(icons(foot)).align_x(Alignment::Center).spacing(space::xs())
+        }
+        RailMode::Expanded => {
+            if let Some(on_toggle) = on_toggle {
+                let toggle = RailItem::new(Icon::PanelRight, tr("Collapse actions"), "]", Some(on_toggle));
+                rail = rail.push(rail_row(toggle, RailPlace::Column)).push(rail_line());
+            }
+            let first = top.first().map(|(at, _)| *at);
+            let sections = |groups: Vec<(usize, RailGroup<'a, M>)>| {
+                column(groups.into_iter().map(|(at, group)| rail_section(group, Some(at) != first)))
+            };
+            rail.push(rail_scroll(sections(top))).push(sections(foot))
+        }
+    };
+    let content = container(content).width(mode.column()).height(Fill).padding(space::s());
+    container(row![rule::vertical(LINE).style(style::rule), content])
+        .width(mode.width())
+        .height(Fill)
+        .style(style::container::panel_flush)
+        .into()
+}
+
+/// An open group of the collapsed rail (task E14.1): a layer over the window like [`floating`] –
+/// pass it to [`crate::shell::Shell::overlay`] (or [`crate::panel::place`]'s `layer`), never into a
+/// narrower part of the window, where it would be squeezed and miss its icon – with the group's
+/// card left of its icon (the one
+/// that registered `anchor`, [`RailGroup::at`]), [`beside_gap`] apart: top edges in line, for a
+/// [`RailGroup::foot`] group bottom edges. The card is [`rail_flyout_width()`] wide whatever the
+/// group, on the menu surface with its frame and shadow (`style::container::menu`), the group's
+/// title on top as in a [`menu`] section and its items as menu entries (icon, word, [`kbd`]).
+///
+/// The layer covers the group's icon with a copy of it, so a click there still sends the group's
+/// first item that goes; when the pointer leaves card and icon together, it sends `on_close`. A
+/// click on an item sends the item's message – the app closes the layer then too. No scrim and no
+/// catcher: a click beside it reaches the window, and the other icons of the rail stay under the
+/// pointer, so moving down the rail opens the next group.
+pub fn rail_flyout<'a, M: Clone + 'a>(group: RailGroup<'a, M>, anchor: &Anchor, on_close: M) -> Element<'a, M> {
+    let face = rail_face(&group, true);
+    let foot = group.foot;
+    let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
+    let rows = group.items.into_iter().map(|item| rail_row(item, RailPlace::Card));
+    let card = container(column![container(title).padding(Padding::new(space::s()).bottom(space::xs()))].extend(rows))
+        .width(rail_flyout_width())
+        .padding(style::MENU_INSET)
+        .style(style::container::menu);
+    // The card is opaque, so the window below it takes no clicks; the room beside the icon is not,
+    // so the rail's other icons keep their hover there.
+    let layer =
+        row![opaque(card), face].spacing(beside_gap()).align_y(if foot { Alignment::End } else { Alignment::Start });
+    let anchor = anchor.clone();
+    float(mouse_area(layer).on_exit(on_close))
+        .translate(move |bounds, viewport| match anchor.get() {
+            Some(target) => flyout_origin(target, bounds.size(), foot) - bounds.position(),
+            None => centre(bounds.size(), viewport) - bounds.position(),
+        })
+        .into()
+}
+
+/// The top-left corner of a [`rail_flyout`] layer of `layer` size whose icon covers `target`: the
+/// right edges in line, the tops – or for a `foot` group the bottoms.
+fn flyout_origin(target: Rectangle, layer: Size, foot: bool) -> Point {
+    let y = if foot { target.y + target.height - layer.height } else { target.y };
+    Point::new(target.x + target.width - layer.width, y)
+}
+
+/// The icon of `group` in the collapsed rail: [`size::control_lg()`] square, icon 16 in `text_2`
+/// (the accent for [`RailGroup::accent`]), `selected` while its group is `open`; it sends the
+/// group's first item that goes and is off when none does.
+fn rail_face<'a, M: Clone + 'a>(group: &RailGroup<'a, M>, open: bool) -> Element<'a, M> {
+    let press = group.first_press();
+    let accent = group.accent;
+    let mark: Element<'a, M> = icon(group.icon, icon::SIZE)
+        .style(move |t, _| {
+            let colour =
+                if accent { palette(t).accent } else { style::button::icon(t, button::Status::Active).text_color };
+            svg::Style { color: Some(colour) }
+        })
+        .opacity(icon_opacity(press.is_some()))
+        .into();
+    button(center(mark))
+        .width(size::control_lg())
+        .height(size::control_lg())
+        .padding(0)
+        .style(
+            move |t, status| {
+                if open { style::button::sidebar_item(true)(t, status) } else { style::button::icon(t, status) }
+            },
+        )
+        .on_press_maybe(press)
+        .into()
+}
+
+/// One row of the rail like a menu entry: the icon (16) in `tone` (the row's text colour at rest)
+/// or the accent, the word in `typo::body()`, the key as [`kbd`] at the end while the item is on.
+/// Expanded it is a row of the sidebar's height in `ghost` ([`RailPlace::Column`]), in an open
+/// group a menu entry ([`RailPlace::Card`]). Registers the item's anchor.
+fn rail_row<'a, M: Clone + 'a>(item: RailItem<'a, M>, place: RailPlace) -> Element<'a, M> {
+    let tone = match place {
+        RailPlace::Column => Tone::Text2,
+        RailPlace::Card => Tone::Text,
+    };
+    let on = item.on_press.is_some();
+    let accent = item.accent;
+    let mark = icon(item.icon, icon::SIZE)
+        .style(move |t, _| {
+            let p = palette(t);
+            svg::Style { color: Some(if accent { p.accent } else { tone.of(&p) }) }
+        })
+        .opacity(icon_opacity(on));
+    let mut content = row![mark, line_label(typo::body(), item.label)].spacing(space::s()).align_y(Alignment::Center);
+    if on && !item.key.is_empty() {
+        content = content.push(kbd(item.key));
+    }
+    let row = button(container(content).center_y(Fill)).width(Fill).padding(style::ITEM_PADDING);
+    let row = match place {
+        RailPlace::Column => row.height(size::row_sidebar()).style(style::button::ghost),
+        RailPlace::Card => row.height(style::MENU_ITEM_HEIGHT).style(style::button::menu_item(false)),
+    };
+    anchored_if(item.anchor.as_ref(), row.on_press_maybe(item.on_press))
+}
+
+/// Where a row of the rail stands ([`rail_row`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RailPlace {
+    /// In the expanded rail on the `panel` surface: as high as a sidebar row (the rail is a column
+    /// as wide as the sidebar, and 17 actions with their titles must fit a window's height), `ghost`
+    /// – `text_2`, on hover `hover` and `text`.
+    Column,
+    /// In an open group on the `menu` surface: a menu entry, [`style::MENU_ITEM_HEIGHT`] high,
+    /// `menu_item` – `text`, on hover `selected`.
+    Card,
+}
+
+/// A group of the expanded rail: its title as in a [`menu`] section when `titled`, then its rows.
+fn rail_section<'a, M: Clone + 'a>(group: RailGroup<'a, M>, titled: bool) -> Element<'a, M> {
+    let mut rows = column![];
+    if titled {
+        let title = typo::text(typo::caption(), group.label).style(theme::text_3).wrapping(Wrapping::None);
+        rows = rows.push(container(title).padding(Padding::new(space::s()).top(space::m()).bottom(space::xs())));
+    }
+    rows.extend(group.items.into_iter().map(|item| rail_row(item, RailPlace::Column))).into()
+}
+
+/// The line under the rail's button, [`space::xs()`] above and below.
+fn rail_line<'a, M: 'a>() -> Element<'a, M> {
+    container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]).into()
+}
+
+/// The top groups of the rail, taking the height the foot leaves; they scroll when it is too low.
+fn rail_scroll<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    scrollable(content)
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
 /// Escape pressed (and not taken by a text input): subscribe while a menu, card or drawer is open
@@ -3769,6 +4158,106 @@ mod tests {
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
         Rectangle { x, y, width, height }
+    }
+
+    /// The groups of a mail's rail as task E14.3 builds them, with an item off in "File".
+    fn rail_groups() -> Vec<RailGroup<'static, Msg>> {
+        vec![
+            RailGroup::new(
+                Icon::Reply,
+                "Reply",
+                vec![RailItem::new(Icon::Reply, "Reply", "R", Some(Msg::Go)).accent()],
+            )
+            .accent(),
+            RailGroup::new(
+                Icon::Check,
+                "File",
+                vec![
+                    RailItem::new(Icon::Check, "Done", "E", Some(Msg::Go)),
+                    RailItem::new(Icon::Clock, "Later…", "S", Some(Msg::Close)),
+                    RailItem::new(Icon::Archive, "Archive", "", None),
+                    RailItem::new(Icon::Trash2, "Delete", "#", Some(Msg::Go)),
+                ],
+            ),
+            RailGroup::new(Icon::BellOff, "Mute", vec![RailItem::new(Icon::BellOff, "Mute…", "M", Some(Msg::Go))])
+                .foot(),
+            RailGroup::new(
+                Icon::Ellipsis,
+                "More",
+                vec![RailItem::new(Icon::Copy, "Copy text and everything else that is long", "", Some(Msg::Go))],
+            )
+            .foot(),
+        ]
+    }
+
+    /// Task E14.1: the rail's mode goes back and forth, starts collapsed and is as wide as the
+    /// collapsed sidebar or the expanded one.
+    #[test]
+    fn the_rail_mode_goes_back_and_forth() {
+        assert_eq!(RailMode::default(), RailMode::Collapsed);
+        assert_eq!(RailMode::Collapsed.toggled(), RailMode::Expanded);
+        assert_eq!(RailMode::Expanded.toggled(), RailMode::Collapsed);
+        assert_eq!(RailMode::Collapsed.toggled().toggled(), RailMode::Collapsed);
+        assert_eq!(RailMode::Collapsed.width(), crate::shell::rail() + LINE);
+        assert_eq!(RailMode::Expanded.width(), size::sidebar() + LINE);
+        assert_eq!(crate::shell::rail(), size::control_lg() + 2.0 * space::s(), "the icons fill the column");
+    }
+
+    /// Task E14.1: a group's icon sends its first item that goes – past an item that is off – and
+    /// nothing when none goes; an item without a message sends nothing.
+    #[test]
+    fn the_group_icon_sends_the_first_item_that_goes() {
+        let off = RailItem::<Msg>::new(Icon::Archive, "Archive", "", None);
+        assert_eq!(off.press(), None, "an item without on_press sends nothing");
+        assert_eq!(RailItem::new(Icon::Clock, "Later…", "S", Some(Msg::Close)).press(), Some(Msg::Close));
+        let group = RailGroup::new(
+            Icon::Archive,
+            "File",
+            vec![
+                off.clone(),
+                RailItem::new(Icon::Clock, "Later…", "S", Some(Msg::Close)),
+                RailItem::new(Icon::Check, "Done", "E", Some(Msg::Go)),
+            ],
+        );
+        assert_eq!(group.first_press(), Some(Msg::Close), "the first that goes, not the first");
+        let dead = RailGroup::new(Icon::Archive, "File", vec![off.clone(), off]);
+        assert_eq!(dead.first_press(), None, "no item goes: the icon is off");
+        assert_eq!(RailGroup::<Msg>::new(Icon::Archive, "File", Vec::new()).first_press(), None);
+    }
+
+    /// Task E14.1: every group opens equally wide – the width depends on no group – and its layer
+    /// lines up with its icon: the top for the groups at the top, the bottom for the foot.
+    #[test]
+    fn open_groups_are_equally_wide_and_line_up_with_their_icon() {
+        assert_eq!(rail_flyout_width(), size::sidebar());
+        let anchor = Anchor::new();
+        for group in rail_groups() {
+            let _: Element<'_, Msg> = rail_flyout(group.at(&anchor), &anchor, Msg::Close);
+        }
+        let icon = rect(1500.0, 120.0, size::control_lg(), size::control_lg());
+        let layer = Size::new(rail_flyout_width() + beside_gap() + size::control_lg(), 160.0);
+        let top = flyout_origin(icon, layer, false);
+        assert_eq!((top.x + layer.width, top.y), (icon.x + icon.width, icon.y), "right edges and tops in line");
+        let low = flyout_origin(icon, layer, true);
+        assert_eq!((low.x + layer.width, low.y + layer.height), (icon.x + icon.width, icon.y + icon.height));
+    }
+
+    /// Task E14.1: the rail builds collapsed and expanded, with and without its button and an open
+    /// group, also without groups.
+    #[test]
+    fn the_action_rail_builds_in_both_modes() {
+        let anchor = Anchor::new();
+        for mode in [RailMode::Collapsed, RailMode::Expanded] {
+            for toggle in [Some(Msg::Go), None] {
+                for open in [None, Some(1), Some(9)] {
+                    let groups = rail_groups().into_iter().map(|g| g.at(&anchor)).collect();
+                    let _: Element<'_, Msg> = action_rail(groups, mode, open, |_| Msg::Close, toggle.clone());
+                }
+            }
+            let _: Element<'_, Msg> = action_rail(Vec::new(), mode, None, |_| Msg::Close, None);
+        }
+        let item = RailItem::new(Icon::ListTodo, "Task", "T", Some(Msg::Go)).at(&anchor).accent();
+        assert!(item.anchor.is_some() && item.accent);
     }
 
     /// Task E9.4: a floating bar is its rows of 32-high controls with the gaps, padding and frame; the

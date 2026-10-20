@@ -4,7 +4,8 @@
 //! columns of the inbox's overview (task E3.11, [`unfolded_from`]), and in which order each window
 //! of the inbox lists by arrival
 //! (task E8.15, [`order_from`]), how wide the list beside the reader is (issue #130,
-//! [`split_from`]), and the mail searches last made (issue #136, [`searches_from`]). `ui.json` in
+//! [`split_from`]), the mail searches last made (issue #136, [`searches_from`]) and whether the
+//! action rail of a mail is expanded (task E14.1, [`actions_from`]). `ui.json` in
 //! the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
@@ -34,6 +35,7 @@ use torro_core::paths::AppPaths;
 use torro_ipc::Order;
 
 use crate::shell::SidebarMode;
+use crate::widgets::RailMode;
 
 /// The name of the file in the app's state directory.
 pub const FILE: &str = "ui.json";
@@ -56,6 +58,10 @@ const SPLIT: &str = "split";
 /// The key of the searches last made ([`searches_from`]): a list of what was searched for, newest
 /// first.
 const SEARCHES: &str = "recentSearches";
+
+/// The key of the action rails chosen ([`actions_from`]): an object from a window's key to
+/// `"collapsed"` or `"expanded"`.
+const ACTIONS: &str = "actions";
 
 /// How many searches [`save_searches_to`] keeps at most.
 pub const SEARCHES_MAX: usize = 8;
@@ -366,6 +372,58 @@ pub fn save_searches_task<T: Send + 'static>(app: AppId, searches: Vec<String>) 
     .discard()
 }
 
+/// Whether the action rail of a mail ([`crate::widgets::action_rail`], task E14.1) is expanded in
+/// the window `key`, as [`save_actions_to`] stored it in `path`: `"collapsed"` or `"expanded"`;
+/// `None` when there is none, the file cannot be read or the value is another one. Windows are
+/// keyed as for [`order_from`]; the app takes its default for `None`.
+pub fn actions_from(path: &Path, key: &str) -> Option<RailMode> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    match value.get(ACTIONS)?.get(key)?.as_str()? {
+        "collapsed" => Some(RailMode::Collapsed),
+        "expanded" => Some(RailMode::Expanded),
+        _ => None,
+    }
+}
+
+/// Stores `mode` for the window `key` in `path`, keeping the rails of the other windows and
+/// everything else in the file.
+pub fn save_actions_to(path: &Path, key: &str, mode: RailMode) -> Result<(), Error> {
+    let mut modes = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(ACTIONS).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    let word = match mode {
+        RailMode::Collapsed => "collapsed",
+        RailMode::Expanded => "expanded",
+    };
+    modes.insert(key.to_string(), serde_json::Value::String(word.to_string()));
+    let mut fields = serde_json::Map::new();
+    fields.insert(ACTIONS.into(), serde_json::Value::Object(modes));
+    merge_into(path, fields)
+}
+
+/// [`actions_from`] for the window `key` of `app` in the background, for the start of a window:
+/// `ui_state::load_actions_task(app, key).map(Message::StoredActions)`. Like [`load_task`], tests
+/// that only build the app never run it.
+pub fn load_actions_task(app: AppId, key: String) -> Task<Option<RailMode>> {
+    Task::perform(async move { file(app).and_then(|path| actions_from(&path, &key)) }, |mode| mode)
+}
+
+/// [`save_actions_to`] for the window `key` of `app` in the background, after the person expanded
+/// or collapsed the rail. A failure is reported on stderr and otherwise ignored, as in
+/// [`save_task`].
+pub fn save_actions_task<T: Send + 'static>(app: AppId, key: String, mode: RailMode) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_actions_to(&path, &key, mode));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -593,6 +651,41 @@ mod tests {
         }
         fs::write(&path, r#"{"recentSearches":["a",3,"b"]}"#).expect("write");
         assert_eq!(searches_from(&path), ["a", "b"], "other entries are skipped");
+    }
+
+    /// Task E14.1: every window keeps whether its action rail is expanded beside the rest; a
+    /// missing or foreign value reads as `None`.
+    #[test]
+    fn action_rails_are_kept_per_window_beside_the_rest() {
+        let dir = TempDir::new("actions");
+        let path = dir.0.join(FILE);
+        assert_eq!(actions_from(&path, "mail"), None, "no file yet");
+        save_to(&path, &UiState { sidebar: SidebarMode::Rail }).expect("save the sidebar");
+        save_split_to(&path, "mail", Some(480.0)).expect("save a split");
+        assert_eq!(actions_from(&path, "mail"), None, "nothing chosen yet");
+        save_actions_to(&path, "mail", RailMode::Expanded).expect("save the mail window");
+        save_actions_to(&path, "mail/folder:archive", RailMode::Collapsed).expect("save a slice");
+        assert_eq!(actions_from(&path, "mail"), Some(RailMode::Expanded));
+        assert_eq!(actions_from(&path, "mail/folder:archive"), Some(RailMode::Collapsed));
+        assert_eq!(actions_from(&path, "hub"), None, "another window chose nothing");
+        assert_eq!(load_from(&path).sidebar, SidebarMode::Rail, "the sidebar stays");
+        assert_eq!(split_from(&path, "mail"), Some(480.0), "the split stays");
+        save_actions_to(&path, "mail", RailMode::Collapsed).expect("collapse again");
+        assert_eq!(actions_from(&path, "mail"), Some(RailMode::Collapsed));
+        assert_eq!(actions_from(&path, "mail/folder:archive"), Some(RailMode::Collapsed), "the slice stays");
+        assert!(fs::read_to_string(&path).expect("read").contains(r#""mail": "collapsed""#));
+        save_to(&path, &UiState::default()).expect("save the sidebar again");
+        assert_eq!(actions_from(&path, "mail"), Some(RailMode::Collapsed), "saving the sidebar keeps it");
+        for content in [
+            "{ not json",
+            r#"{"actions":"expanded"}"#,
+            r#"{"actions":{"mail":"open"}}"#,
+            r#"{"actions":{"mail":true}}"#,
+            r#"{"actions":{"mail":"Expanded"}}"#,
+        ] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(actions_from(&path, "mail"), None, "{content}");
+        }
     }
 
     /// The env var `TORRO_STATE_HOME` cannot be set inside a test without `unsafe`, so this test

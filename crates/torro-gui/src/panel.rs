@@ -23,7 +23,9 @@
 //! The panel itself ([`panel`]): `panel` surface; a 44-high head ([`size::header()`], in line with
 //! the window's header bar) with the path ([`path`]), optional actions and a close button; the
 //! title ([`title`] or the app's own borderless title field); the body, which scrolls together
-//! with the title; and an optional fixed footer for actions below a line.
+//! with the title; and an optional fixed footer for actions below a line. A fixed bar under the
+//! head ([`Panel::bar`]) and a fixed column beside title and body ([`Panel::side`], the mail's
+//! action rail) are optional too.
 //!
 //! # Use
 //!
@@ -141,6 +143,8 @@ pub struct Panel<'a, M> {
     footer: Vec<Element<'a, M>>,
     /// A bar fixed under the head, edge to edge ([`Panel::bar`]).
     bar: Option<Element<'a, M>>,
+    /// A column fixed at the right of title and body ([`Panel::side`]).
+    side: Option<Element<'a, M>>,
     on_close: M,
 }
 
@@ -170,6 +174,7 @@ pub fn panel<'a, M: Clone + 'a>(
         body: body.into(),
         footer: Vec::new(),
         bar: None,
+        side: None,
         on_close,
     }
 }
@@ -198,10 +203,19 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         self
     }
 
+    /// A column fixed at the right of title and body (task E14.1: the mail's action rail,
+    /// `widgets::action_rail`): from under the head – and under a [`Panel::bar`] – down to the
+    /// footer, as wide as `side` makes itself, beside the scrolling title and body, which take the
+    /// width it leaves. It does not scroll with them and brings its own line; the panel adds none.
+    pub fn side(mut self, side: impl Into<Element<'a, M>>) -> Self {
+        self.side = Some(side.into());
+        self
+    }
+
     /// The panel as a column for `class`: the head, the scrolling title and body, the footer, on
     /// the `panel` surface; with the left line unless it fills the window (narrow).
     fn view(self, class: SizeClass) -> Element<'a, M> {
-        let Panel { path, actions, title, body, footer, bar, on_close } = self;
+        let Panel { path, actions, title, body, footer, bar, side, on_close } = self;
         let close = widgets::icon_button(Icon::X, tr("Close"), Some(on_close));
         // The head pads like the header bar (16 left, 12 right), so ✕ lines up with its buttons.
         let head = container(
@@ -223,7 +237,11 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        let mut inner = column![head].push(bar).push(scroll);
+        let middle: Element<'a, M> = match side {
+            Some(side) => row![scroll, side].height(Fill).into(),
+            None => scroll.into(),
+        };
+        let mut inner = column![head].push(bar).push(middle);
         if !footer.is_empty() {
             let actions = row(footer).spacing(space::s()).align_y(Alignment::Center);
             inner = inner
@@ -436,6 +454,20 @@ mod tests {
         assert!(barred.bar.is_some());
         for class in CLASSES {
             let _ = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).bar(blank()).view(class);
+        }
+    }
+
+    /// Task E14.1: a side column is kept beside title and body, in every class, with a bar and a
+    /// footer as well; a panel without one has none.
+    #[test]
+    fn a_side_column_stands_beside_the_body() {
+        let plain = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go);
+        assert!(plain.side.is_none());
+        let sided = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).side(blank());
+        assert!(sided.side.is_some());
+        for class in CLASSES {
+            let rail = widgets::action_rail(Vec::new(), widgets::RailMode::Collapsed, None, |_| Msg::Go, None);
+            let _ = sample().bar(blank()).side(rail).view(class);
         }
     }
 
