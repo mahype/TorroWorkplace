@@ -50,8 +50,8 @@
 //!   `widgets::ctrl_guard` captures ⌘ + letter on macOS, while a text field does not capture Ctrl +
 //!   Shift + letter. So the status says nothing about where the keyboard is, and the app asks Iced
 //!   whether the search field has the focus before it acts (`App::shortcut`); only search and send
-//!   work while it has ([`torro_core::shortcuts::Command::works_in_text_field`]). Ctrl + A is no
-//!   shortcut: it stays "select all".
+//!   work while it has ([`torro_core::shortcuts::Command::works_in_text_field`]). Ctrl + A (⌘ + A
+//!   on macOS) selects the currently loaded mail list; in the search field it selects its text.
 //! - Without Ctrl or ⌘, Delete and Backspace ask the table too ([`key_on`]): plain they delete (as
 //!   since issue #118), Shift + Delete (on macOS also Shift + Backspace) deletes for good after a
 //!   question ([`Key::DeleteForGood`], [`Focus::Question`]: `Enter` confirms, Escape cancels). A
@@ -253,6 +253,37 @@ pub fn shortcut(event: iced::Event, _status: iced::event::Status, _window: iced:
         return None;
     };
     shortcut_on(System::current(), &key, physical_key, modifiers).map(Message::Shortcut)
+}
+
+/// Select the messages currently shown in the mail list. The app checks text-field focus before
+/// acting, so the search field retains its normal Select All behaviour.
+pub fn select_all(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
+        return None;
+    };
+    let command = if cfg!(target_os = "macos") {
+        modifiers.logo() && !modifiers.control()
+    } else {
+        modifiers.control() && !modifiers.logo()
+    };
+    if command
+        && !modifiers.shift()
+        && !modifiers.alt()
+        && table_key(&key, physical_key) == shortcuts::Key::of_char('a')
+    {
+        Some(Message::SelectAllVisible)
+    } else {
+        None
+    }
+}
+
+pub fn modifiers(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+            Some(Message::ModifiersChanged(modifiers))
+        }
+        _ => None,
+    }
 }
 
 /// The command of the system's preset (`Preset::standard`) that `key` held with `modifiers` runs on
@@ -723,6 +754,15 @@ mod tests {
             }
         }
         assert_eq!(shortcut_on(System::Mac, &char("a"), physical, Modifiers::LOGO | Modifiers::SHIFT), None);
+    }
+
+    #[test]
+    fn select_all_is_heard_even_when_the_window_captures_the_shortcut() {
+        let command = if cfg!(target_os = "macos") { Modifiers::LOGO } else { Modifiers::CTRL };
+        let heard = select_all(press(char("a"), command), Status::Captured, iced::window::Id::unique());
+        assert!(matches!(heard, Some(Message::SelectAllVisible)));
+        let plain = select_all(press(char("a"), Modifiers::empty()), Status::Ignored, iced::window::Id::unique());
+        assert!(plain.is_none());
     }
 
     /// The shortcut is heard also when a widget took the key (the guard captures ⌘ + letter on

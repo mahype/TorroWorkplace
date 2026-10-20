@@ -1228,6 +1228,8 @@ pub struct MailList<'a> {
     pub no_accounts: bool,
     /// Id of the message under the cursor.
     pub selected: Option<&'a str>,
+    /// Additional messages chosen with Ctrl/Cmd, Shift or Select All.
+    pub selected_ids: &'a [String],
     pub now: DateTime<Utc>,
     /// Registered by the selected row (`row`) and its buttons that open a menu (issue #122).
     pub anchors: detail::Anchors,
@@ -1357,7 +1359,8 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         account_name: None,
         hits: data.hits(&message.id),
     };
-    let selected = data.selected == Some(message.id.as_str());
+    let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
+        || data.selected_ids.contains(&message.id);
     let on_press = Message::SelectMail(message.id.clone());
     let actions = data.anchors.mark(true, row_buttons(data, message));
     // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
@@ -1368,7 +1371,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
             .on_right_press(Message::ContextMail(message.id.clone()))
             .into();
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
-    if selected { widgets::anchored(&data.anchors.row, row) } else { row }
+    if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
 /// What the strip of `message`'s row holds ([`message_row`]): under the cursor its buttons
@@ -1417,11 +1420,12 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         account_name: several.then(|| account_name(&message.account)),
         hits: data.hits(&message.id),
     };
-    let selected = data.selected == Some(message.id.as_str());
+    let selected = (data.selected_ids.is_empty() && data.selected == Some(message.id.as_str()))
+        || data.selected_ids.contains(&message.id);
     let card = list::MailCard { lines, chips, selected, on_press: Message::SelectMail(message.id.clone()) };
     let card: Element<'a, Message> =
         mouse_area(list::mail_card(card, width)).on_right_press(Message::ContextMail(message.id.clone())).into();
-    if selected { widgets::anchored(&data.anchors.row, card) } else { card }
+    if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
 /// The action bar of the row of `message` at `now` outside the mail window (a search of mail in the
@@ -3514,6 +3518,7 @@ mod tests {
                         view,
                         no_accounts: false,
                         selected: Some("m:w1"),
+                        selected_ids: &[],
                         now: now(),
                         anchors: detail::Anchors::default(),
                         accounts: accounts.clone(),
@@ -3644,6 +3649,7 @@ mod tests {
             view: &view,
             no_accounts: false,
             selected: Some(selected),
+            selected_ids: &[],
             now: now(),
             anchors: detail::Anchors::default(),
             accounts: Vec::new(),

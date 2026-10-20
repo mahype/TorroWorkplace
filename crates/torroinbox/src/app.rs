@@ -144,8 +144,8 @@
 //! ([`View::Folder`]): its messages in the same list, a page at a time ("Load more"), with a search
 //! field above them. The panel shows the whole mail (`mail.get_message`), for a folder's message
 //! and for a mail entry of "For me" or "Info" alike, with Reply, Reply all, Forward, Archive,
-//! Delete, Flag and Mark unread. Opening a folder's message marks it read, as mail apps do; an
-//! entry is read once it is done. Archive (`e` in a folder) and Delete (`#`) move the message and
+//! Delete, Flag and Mark unread. Opening a message marks it read in both the list reader and a
+//! separate mail window. Archive (`e` in a folder) and Delete (`#`) move the message and
 //! offer an undo that moves it back. Reply (`r`), Reply all (`a`) and Forward (`f`) start the
 //! compose window (task E4.3) as its own process. `--source mail` makes a window of mail only: its
 //! sidebar holds the folders alone and it starts on the first account's inbox ([`View::Mail`]
@@ -2137,6 +2137,13 @@ pub struct App<S> {
     model_ready: bool,
     /// The messages of the folder's view, newest first; the cursor and the panel name them by id.
     messages: Vec<MessageSummary>,
+    /// Explicitly selected messages in the current mail list, in list order.
+    selected_mail: Vec<String>,
+    /// The last clicked row is the start of a Shift selection.
+    mail_anchor: Option<String>,
+    modifiers: iced::keyboard::Modifiers,
+    /// Mail read in this window; keeps entry rows from reverting to bold during a reload.
+    seen_mail: std::collections::BTreeSet<String>,
     /// The cursor of the folder's next page; `None` on its last page.
     more: Option<String>,
     /// The panel shows the message under the cursor (a folder's view): the counterpart of `detail`
@@ -2516,6 +2523,11 @@ pub enum Message {
     ContextEntry(String),
     /// An action chosen from the message's context menu.
     ContextAction(Box<Message>),
+    ModifiersChanged(iced::keyboard::Modifiers),
+    SelectAllVisible,
+    SelectAllVisibleChecked(bool),
+    ClearMailSelection,
+    DeleteSelectedMail,
     /// The whole mail for the panel, or why it could not be read.
     LetterLoaded(String, Result<Box<Mail>, String>),
     /// From the panel or a key: do this with the message with this id.
@@ -2869,6 +2881,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             error: None,
             detail: None,
             cursor: None,
+            selected_mail: Vec::new(),
+            mail_anchor: None,
+            modifiers: iced::keyboard::Modifiers::default(),
+            seen_mail: std::collections::BTreeSet::new(),
             scroll: None,
             column: launch.kind.column_or_first(Column::default()),
             info_open: [open == Some(Open::OverviewInfo); 2],
@@ -3034,6 +3050,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let on_entries = self.settings.is_none();
             if on_entries {
                 subscriptions.push(iced::event::listen_with(keys::listen));
+                subscriptions.push(iced::event::listen_with(keys::modifiers));
+                if self.view.is_mail() {
+                    subscriptions.push(iced::event::listen_with(keys::select_all));
+                }
                 // The shortcuts of the system's preset (tasks E10.1, E10.1b; with Ctrl or ⌘, the
                 // function keys and Insert), also when the search field or the window's guard took
                 // them; they all act on mail.
@@ -3049,6 +3069,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 || self.hint.is_some()
                 || self.settings.is_some()
                 || self.view.search().is_some()
+                || !self.selected_mail.is_empty()
             {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
@@ -3205,6 +3226,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Show(view) => {
                 self.close_menus();
+                self.selected_mail.clear();
+                self.mail_anchor = None;
                 self.detail = None;
                 self.reading = false;
                 self.cursor = None;
@@ -3583,6 +3606,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.settings = None;
                 } else if self.suggesting {
                     self.suggesting = false;
+                } else if !self.selected_mail.is_empty() {
+                    self.selected_mail.clear();
+                    self.mail_anchor = None;
                 } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
                 } else {
@@ -3629,6 +3655,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::SelectMail(id) => {
+                if self.select_mail_with_modifiers(&id) {
+                    return Task::none();
+                }
                 if self.select_mail(id) {
                     return self.keep_opened_search();
                 }
@@ -3654,15 +3683,46 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.menu_at = MenuAt::Row;
                 return result;
             }
+            Message::ModifiersChanged(modifiers) => self.modifiers = modifiers,
+            Message::SelectAllVisible => {
+                if !self.view.is_mail() || !matches!(self.focus(), Focus::List | Focus::Overview) {
+                    return Task::none();
+                }
+                if !self.shows_search() {
+                    return self.update(Message::SelectAllVisibleChecked(false));
+                }
+                return operation::is_focused(search::FIELD)
+                    .collect()
+                    .map(|focused| Message::SelectAllVisibleChecked(focused.contains(&true)));
+            }
+            Message::SelectAllVisibleChecked(typing) => {
+                if !typing && self.view.is_mail() && matches!(self.focus(), Focus::List | Focus::Overview) {
+                    self.selected_mail = self.messages.iter().map(|message| message.id.clone()).collect();
+                    self.mail_anchor = self.selected_mail.first().cloned();
+                }
+            }
+            Message::ClearMailSelection => {
+                self.selected_mail.clear();
+                self.mail_anchor = None;
+            }
+            Message::DeleteSelectedMail => return self.delete_selected_mail(),
             Message::LetterLoaded(id, result) => {
                 let mut result = result.map(|mail| *mail);
                 if let Ok(mail) = &mut result {
                     keep_answer(&self.answers, &mut mail.summary);
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
+                let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
+                    && !self.seen_mail.contains(&id);
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
                     letter.loaded = Some(result);
-                    return self.ask_invite_side(&id, invite.as_ref());
+                    let side = self.ask_invite_side(&id, invite.as_ref());
+                    let read = if unread {
+                        self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None)
+                    } else {
+                        Task::none()
+                    };
+                    return Task::batch([side, read]);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -3677,6 +3737,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return self.load();
             }
             Message::MailEdited(Err(err), ids, _) => {
+                // Flag edits report no leaving ids. Drop optimistic read overrides so the reload
+                // reflects the server if marking a message read failed.
+                if ids.is_empty() {
+                    self.seen_mail.clear();
+                }
                 // Not moved: the load brings them back. The load clears the error line, so a
                 // message that comes back says why in the hint as well (issue #205).
                 let before = self.leaving.len();
@@ -4148,6 +4213,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// [`Message::MailEdited`] with `hint`.
     fn mail_edit(&mut self, edit: Option<MailEdit>, hint: Option<Hint>) -> Task<Message> {
         let Some(edit) = edit else { return Task::none() };
+        if let MailEdit::Flags { ids, add, remove } = &edit {
+            if add.contains(&Flag::Seen) {
+                self.seen_mail.extend(ids.iter().cloned());
+                self.apply_seen_entries(ids, true);
+            } else if remove.contains(&Flag::Seen) {
+                for id in ids {
+                    self.seen_mail.remove(id);
+                }
+                self.apply_seen_entries(ids, false);
+            }
+        }
         for message in self.messages.iter_mut().filter(|message| edit.ids().contains(&message.id)) {
             message.flags = mail::flags_after(&message.flags, &edit);
         }
@@ -4166,6 +4242,26 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             MailEdit::Move { ids, .. } | MailEdit::Delete { ids } | MailEdit::DeleteForGood { ids } => ids.clone(),
         };
         Task::perform(edit.apply(inbox), move |result| Message::MailEdited(result, ids.clone(), hint.clone()))
+    }
+
+    fn apply_seen_entries(&mut self, ids: &[String], read: bool) {
+        let update = |item: &mut Item| {
+            if let Some(Link::Mail { message }) = &item.link
+                && ids.contains(message)
+            {
+                item.state = match (read, item.state) {
+                    (true, State::New) => State::Seen,
+                    (false, State::Seen) => State::New,
+                    _ => item.state,
+                };
+            }
+        };
+        for item in self.items.iter_mut().chain(&mut self.for_me).chain(&mut self.snoozed) {
+            update(item);
+        }
+        if let Some(item) = &mut self.detail {
+            update(item);
+        }
     }
 
     /// Takes the message `id` off a folder's list at once (archived, deleted), and its entries
@@ -4299,10 +4395,76 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.close_menus();
         let listed = self.messages.iter().any(|message| message.id == id);
         if listed {
+            self.selected_mail.clear();
+            self.mail_anchor = Some(id.clone());
             self.cursor = Some(id);
             self.reading = true;
         }
         listed
+    }
+
+    /// Modifier clicks select without opening a different message in the reader.
+    fn select_mail_with_modifiers(&mut self, id: &str) -> bool {
+        let Some(clicked) = self.messages.iter().position(|message| message.id == id) else { return false };
+        let extend = self.modifiers.shift();
+        let toggle = self.modifiers.control() || self.modifiers.logo();
+        if !extend && !toggle {
+            return false;
+        }
+        if extend {
+            let anchor = self.mail_anchor.as_deref().or(self.cursor.as_deref()).unwrap_or(id);
+            let start = self.messages.iter().position(|message| message.id == anchor).unwrap_or(clicked);
+            let (first, last) = if start <= clicked { (start, clicked) } else { (clicked, start) };
+            if !toggle {
+                self.selected_mail.clear();
+            }
+            for message in &self.messages[first..=last] {
+                if !self.selected_mail.contains(&message.id) {
+                    self.selected_mail.push(message.id.clone());
+                }
+            }
+            self.mail_anchor = Some(anchor.to_owned());
+        } else {
+            if self.selected_mail.is_empty()
+                && let Some(cursor) = self.cursor.as_ref().filter(|cursor| *cursor != id)
+                && self.messages.iter().any(|message| message.id == *cursor)
+            {
+                self.selected_mail.push(cursor.clone());
+            }
+            if let Some(place) = self.selected_mail.iter().position(|selected| selected == id) {
+                self.selected_mail.remove(place);
+            } else {
+                self.selected_mail.push(id.to_owned());
+            }
+            self.mail_anchor = Some(id.to_owned());
+        }
+        true
+    }
+
+    fn delete_selected_mail(&mut self) -> Task<Message> {
+        let ids: Vec<String> = self
+            .messages
+            .iter()
+            .filter(|message| self.selected_mail.contains(&message.id) && !self.in_trash(&message.id))
+            .map(|message| message.id.clone())
+            .collect();
+        if ids.is_empty() {
+            self.note(tr("This message is in the trash already.").to_owned());
+            return Task::none();
+        }
+        let homes: Vec<_> = ids.iter().map(|id| self.home_of(id)).collect();
+        let undo = homes
+            .iter()
+            .all(|home| *home == homes[0])
+            .then(|| Undo::Mail { edit: MailEdit::Move { ids: ids.clone(), to: homes[0].clone() }, reopen: None });
+        let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now() });
+        for id in &ids {
+            self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(id), answered: None });
+            self.take_out(id);
+        }
+        self.selected_mail.clear();
+        self.mail_anchor = None;
+        self.mail_edit(Some(MailEdit::Delete { ids }), hint)
     }
 
     /// Starts the compose window for a new message ([`compose::new_command`], task E4.3).
@@ -4858,6 +5020,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         for item in &mut self.items {
             keep_entry_answer(&self.answers, item);
         }
+        let read: Vec<String> = self.seen_mail.iter().cloned().collect();
         self.items.sort_by_key(|item| !list::is_waiting(item));
         // The hub's "Done today" (task E8.5): what was done today, local time.
         if self.launch.kind == Kind::Hub && self.view == View::Done {
@@ -4877,7 +5040,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.messages = page.messages;
         for message in &mut self.messages {
             keep_answer(&self.answers, message);
+            if self.seen_mail.contains(&message.id) && !message.flags.contains(&Flag::Seen) {
+                message.flags.push(Flag::Seen);
+            }
         }
+        self.selected_mail.retain(|id| self.messages.iter().any(|message| &message.id == id));
         search::with_passages(&mut self.messages, &page.highlights);
         self.highlights = page.highlights;
         self.found = loaded.found.map(|found| *found).unwrap_or_default();
@@ -4919,6 +5086,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 None => {}
             }
         }
+        self.apply_seen_entries(&read, true);
         let start = self.open_start_mail();
         Task::batch([start, self.open_launched()])
     }
@@ -5129,6 +5297,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::Reply => self.key_mail(MailAction::Reply),
             Command::ReplyAll => self.key_mail(MailAction::ReplyAll),
             Command::Forward => self.key_mail(MailAction::Forward),
+            Command::Delete if !self.selected_mail.is_empty() => self.delete_selected_mail(),
             Command::Delete => self.key_mail(MailAction::Delete),
             // The shortcuts of task E10.1 that have no single key.
             Command::DeleteForGood => self.mail_target().map_or_else(Task::none, |id| self.ask_delete_for_good(id)),
@@ -6211,6 +6380,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.error = Some(Failure::new(tr("Couldn't open the mail."), tr("Its folder is not listed.")));
             return Task::none();
         };
+        let unread = !mail.summary.flags.contains(&Flag::Seen);
         self.view = View::Folder(FolderView::of(folder));
         self.detail = None;
         self.cursor = Some(id.clone());
@@ -6218,8 +6388,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.pinned_mail = Some(id.clone());
         // Its invitation's calendars and overlaps (task E8.3c), as for a mail read from the list.
         let invite = self.ask_invite_side(&id, mail.summary.invite.as_ref());
-        self.letter = Some(Letter { id, loaded: Some(Ok(mail)) });
-        Task::batch([self.load(), invite])
+        self.letter = Some(Letter { id: id.clone(), loaded: Some(Ok(mail)) });
+        let read = if unread { self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None) } else { Task::none() };
+        Task::batch([self.load(), invite, read])
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -7307,6 +7478,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.shows_search() {
             content = content.push(self.search_bar());
         }
+        if self.view.is_mail() && !self.selected_mail.is_empty() {
+            let count = self.selected_mail.len().to_string();
+            let selected = trf("{n} messages selected", &[("n", &count)]);
+            let actions = row![
+                typo::text(typo::body(), selected),
+                widgets::text_button(
+                    Some(Icon::Trash2),
+                    tr("Delete"),
+                    style::button::danger,
+                    Some(Message::DeleteSelectedMail)
+                ),
+                widgets::text_button(
+                    None,
+                    tr("Clear selection"),
+                    style::button::ghost,
+                    Some(Message::ClearMailSelection)
+                ),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            content = content.push(container(actions).padding(Padding::new(space::s()).left(space::l())));
+        }
         if let Some(failure) = &self.error {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
         }
@@ -7321,6 +7514,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     view: &self.view,
                     no_accounts: self.folders.is_empty(),
                     selected: self.cursor.as_deref(),
+                    selected_ids: &self.selected_mail,
                     now: self.now,
                     anchors: rows.clone(),
                     accounts: mail::by_account(&self.folders)
@@ -11461,6 +11655,60 @@ mod tests {
     }
 
     #[test]
+    fn mail_modifier_selection_and_select_all_delete_the_visible_messages() {
+        use iced::keyboard::Modifiers;
+
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        let _ = app.update(Message::ModifiersChanged(Modifiers::CTRL));
+        let _ = app.update(Message::SelectMail("m:w2".into()));
+        assert_eq!(app.selected_mail, ["m:w1", "m:w2"]);
+        assert_eq!(
+            app.letter.as_ref().map(|letter| letter.id.as_str()),
+            Some("m:w1"),
+            "modifier click keeps the reader"
+        );
+
+        let _ = app.update(Message::ModifiersChanged(Modifiers::SHIFT));
+        let _ = app.update(Message::SelectMail("m:w4".into()));
+        assert_eq!(app.selected_mail, ["m:w2", "m:w3", "m:w13", "m:w4"], "Shift selects the whole range");
+
+        let _ = app.update(Message::ModifiersChanged(Modifiers::empty()));
+        let _ = app.update(Message::SelectAllVisibleChecked(false));
+        let selected = message_ids(&app).into_iter().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(app.selected_mail, selected);
+        let _ = app.update(Message::DeleteSelectedMail);
+        assert!(app.selected_mail.is_empty());
+        assert!(app.messages.is_empty());
+        assert!(
+            app.sent.iter().any(|sent| matches!(sent, Sent::Mail(MailEdit::Delete { ids }, _) if ids == &selected))
+        );
+    }
+
+    #[test]
+    fn opening_a_mail_entry_marks_its_message_read_and_unbolds_the_entry() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Select("demo-mail-1".into()));
+        assert_eq!(app.detail.as_ref().map(|item| item.state), Some(State::New));
+        deliver_letter(&mut app, "m:w1");
+        assert!(app.seen_mail.contains("m:w1"));
+        assert_eq!(app.detail.as_ref().map(|item| item.state), Some(State::Seen));
+        assert!(app.sent.iter().any(|sent| matches!(sent, Sent::Mail(MailEdit::Flags { ids, add, .. }, _)
+            if ids.len() == 1 && ids[0] == "m:w1" && add.contains(&Flag::Seen))));
+    }
+
+    #[test]
+    fn a_failed_read_update_restores_the_unread_mail() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        assert!(app.seen_mail.contains("m:w1"));
+        let _ = app.update(Message::MailEdited(Err("offline".into()), Vec::new(), None));
+        load(&mut app);
+        assert!(!app.seen_mail.contains("m:w1"));
+        assert!(!app.messages[0].flags.contains(&Flag::Seen));
+    }
+
+    #[test]
     fn enter_opens_a_mail_entry_in_the_panel_with_its_mail() {
         let mut app = at("demo-mail-1");
         let _ = press(&mut app, Key::Enter);
@@ -13673,6 +13921,16 @@ mod tests {
             pinned(App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
+    }
+
+    #[test]
+    fn an_unread_mail_opened_in_its_own_window_becomes_read() {
+        let mut app = mail_window_on("m:w11");
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w11".into())).map(Box::new);
+        let _ = app.update(Message::StartMail("m:w11".into(), mail.map_err(|err| err.to_string())));
+        assert!(app.seen_mail.contains("m:w11"));
+        assert!(app.sent.iter().any(|sent| matches!(sent, Sent::Mail(MailEdit::Flags { ids, add, .. }, _)
+            if ids.len() == 1 && ids[0] == "m:w11" && add.contains(&Flag::Seen))));
     }
 
     /// The numbers of Insights' span, as the task of [`App::load_stats`] would hand them in.
