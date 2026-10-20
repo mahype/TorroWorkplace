@@ -1,7 +1,6 @@
 //! Reading a font folder `fonts/<id>/font.toml` (task L.19): the families of the three roles with
 //! their files, the licence and the size adjustment. [`load_font`] and [`list_fonts`] are the public
-//! entry points; [`build`] also reads the `[fonts.*]` of an old complete pack for the bridge in
-//! `pack.rs`.
+//! entry points.
 //!
 //! The rules of a font: every file inside the folder, of the right type and size, carrying the family
 //! named; `LICENSE.txt` and `license` as soon as there are files; `regular` of the text font; the size
@@ -49,10 +48,10 @@ struct FontSetFile {
     fonts: Option<FontsFile>,
 }
 
-/// `[fonts]`: the three roles (also of an old complete pack).
+/// `[fonts]`: the three roles.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct FontsFile {
+struct FontsFile {
     text: Option<FontFile>,
     heading: Option<FontFile>,
     numbers: Option<FontFile>,
@@ -93,28 +92,13 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<FontSet, Vec<DesignEr
     *about = file.about.about(id);
     let mut problems = Vec::new();
     header(file.format, &file.about, &mut problems);
-    let source =
-        Source { license: file.license, size_adjust: file.size_adjust, fonts: file.fonts, license_file: "LICENSE.txt" };
-    let set = build(id, about.clone(), &root, source, &mut problems);
+    let set = build(id, about.clone(), &root, file, &mut problems);
     if problems.is_empty() { Ok(set) } else { Err(problems) }
 }
 
-/// The parts of a font as written: in `font.toml`, or in an old complete pack.
-pub(super) struct Source {
-    /// `license` (`[about] font_license` in an old pack).
-    pub(super) license: Option<String>,
-    /// `size_adjust` (never in an old pack).
-    pub(super) size_adjust: Option<f32>,
-    /// `[fonts.*]`.
-    pub(super) fonts: Option<FontsFile>,
-    /// Where the licence must lie, relative to the folder: `LICENSE.txt`; `fonts/LICENSE.txt` in an
-    /// old complete pack, whose font paths start with `fonts/`.
-    pub(super) license_file: &'static str,
-}
-
-/// A font from `source` in the folder `root`, checked; every broken rule goes to `problems`.
-pub(super) fn build(id: &str, about: About, root: &Root, source: Source, problems: &mut Vec<DesignError>) -> FontSet {
-    let Source { license, size_adjust, fonts, license_file } = source;
+/// The font `file` in the folder `root`, checked; every broken rule goes to `problems`.
+fn build(id: &str, about: About, root: &Root, file: FontSetFile, problems: &mut Vec<DesignError>) -> FontSet {
+    let FontSetFile { license, size_adjust, fonts, .. } = file;
     let standard = FontSet::standard();
     let mut infos = BTreeMap::new();
     let fonts = merge_fonts(root, fonts.unwrap_or_default(), &standard.fonts, &mut infos, problems);
@@ -123,7 +107,7 @@ pub(super) fn build(id: &str, about: About, root: &Root, source: Source, problem
         if license.is_none() {
             problems.push(DesignError::MissingKey { key: "license".into() });
         }
-        if !has_license(root, license_file) {
+        if !has_license(root, "LICENSE.txt") {
             problems.push(DesignError::FontLicense);
         }
     }

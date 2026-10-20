@@ -38,16 +38,17 @@
 //! "Reload" and "Open designs folder" (created if it is missing, its path as tooltip) are quiet
 //! actions at the right of the heading.
 //!
-//! The list comes from the core; the sample's colours, font and picture come from the pack's
-//! folder, read here the way every window reads the design it draws with
-//! (`torro_core::design::load`): [`Pack::new`].
+//! The list comes from the core; the sample's picture comes from the design's folder, its font and
+//! colours from the font and colour scheme of the same id (until task L.22 one id names all three),
+//! read here the way every window reads the look it draws with (`torro_gui::design::Folders::look`):
+//! [`Pack::new`].
 
 use std::sync::Arc;
 
 use iced::widget::{column, container, responsive, row, space as blank, svg, text};
 use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Length, Padding, Size, Theme};
 use torro_core::AppId;
-use torro_core::design::{Design, FontRole, Mode, STANDARD_ID, Weight};
+use torro_core::design::{ColorScheme, FontRole, Mode, STANDARD_ID, Selection, Weight};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, Language, Zoom};
 use torro_core::theme::Appearance;
@@ -76,10 +77,10 @@ pub struct State {
 #[derive(Debug, Clone)]
 pub struct Pack {
     pub info: DesignInfo,
-    /// The pack merged with the standard, as read from its folder here: the colours and the font
-    /// of the swatch, and what the window draws with when it is chosen. `None` for a pack that
-    /// can't be used (or whose folder changed since the core listed it).
-    pub design: Option<Arc<Design>>,
+    /// The design as read from its folder here, with the font and colour scheme of the same id: the
+    /// font and the colours of the swatch, and what the window draws with when it is chosen. `None`
+    /// for a design that can't be used (or whose folder changed since the core listed it).
+    pub look: Option<Arc<Selection>>,
     /// `preview.png` as an SVG image: Iced here draws SVG but not PNG (no `image` feature), and
     /// its SVG renderer takes a PNG embedded as a `data:` address. Built once per listing, so Iced
     /// rasterises it once.
@@ -87,12 +88,12 @@ pub struct Pack {
 }
 
 impl Pack {
-    /// The row of `info`, with `design` read from the pack's folder (`None` when it can't be
-    /// used). Reads the pack's `preview.png` if it has one (checked by `design::load`: a PNG of at
+    /// The row of `info`, with `look` read from the folders (`None` when the design can't be
+    /// used). Reads the design's `preview.png` if it has one (checked by `design::load`: a PNG of at
     /// most 2 MB and 1200 × 800); a picture that can't be read gives the swatch.
-    pub fn new(info: DesignInfo, design: Option<Design>) -> Pack {
-        let preview = design.as_ref().and_then(|d| d.preview.as_ref()).and_then(|path| std::fs::read(path).ok());
-        Pack { info, preview: preview.as_deref().and_then(png_as_svg), design: design.map(Arc::new) }
+    pub fn new(info: DesignInfo, look: Option<Selection>) -> Pack {
+        let preview = look.as_ref().and_then(|l| l.design.preview.as_ref()).and_then(|path| std::fs::read(path).ok());
+        Pack { info, preview: preview.as_deref().and_then(png_as_svg), look: look.map(Arc::new) }
     }
 }
 
@@ -106,11 +107,11 @@ pub fn unlisted(state: &State) -> bool {
     state.designs.is_none()
 }
 
-/// The pack `id` as read for its row, for a window that cannot read it from the designs folder
-/// (`--demo`, whose packs live in memory).
-pub fn design_of(state: &State, id: &str) -> Option<Arc<Design>> {
+/// The look of the pack `id` as read for its row, for a window that cannot read it from the
+/// folders (`--demo`, whose packs live in memory).
+pub fn look_of(state: &State, id: &str) -> Option<Arc<Selection>> {
     let packs = state.designs.as_ref()?.as_ref().ok()?;
-    packs.iter().find(|pack| pack.info.id == id)?.design.clone()
+    packs.iter().find(|pack| pack.info.id == id)?.look.clone()
 }
 
 #[derive(Debug, Clone)]
@@ -459,55 +460,55 @@ fn problems<'a>(pack: &'a Pack) -> Element<'a, Message> {
 }
 
 /// A pack's sample at the tile's preview size (`widgets::preview_size`): its `preview.png`, or a
-/// swatch – the pack's `bg` as the window with its `panel` set in (like the suite's frame), on it
-/// "Aa" in the pack's text font and `text` colour and a dot in its `accent` – in the mode the window
-/// is in.
+/// swatch – the colour scheme's `bg` as the window with its `panel` set in (like the suite's frame),
+/// on it "Aa" in the font's text family and the scheme's `text` colour and a dot in its `accent` – in
+/// the mode the window is in.
 fn sample<'a>(pack: &Pack) -> Element<'a, Message> {
     let area = widgets::preview_size();
-    let frame = |content: Element<'a, Message>, ground: Option<Arc<Design>>| {
+    let frame = |content: Element<'a, Message>, ground: Option<Arc<Selection>>| {
         container(content).width(area.width).height(area.height).clip(true).style(move |t: &Theme| container::Style {
-            background: ground.as_ref().map(|d| Background::Color(colors(d, t).bg)),
+            background: ground.as_ref().map(|l| Background::Color(colors(&l.scheme, t).bg)),
             border: Border { color: palette(t).line, width: size::HAIRLINE, radius: radius::xs().into() },
             ..container::Style::default()
         })
     };
-    let Some(design) = pack.design.clone() else {
+    let Some(look) = pack.look.clone() else {
         return frame(blank().into(), None).into();
     };
     if let Some(preview) = &pack.preview {
         return frame(svg(preview.clone()).content_fit(ContentFit::Cover).width(Fill).height(Fill).into(), None).into();
     }
-    let font = torro_gui::design::font_of(&design, FontRole::Text, Weight::Regular);
-    let ink = Arc::clone(&design);
+    let font = torro_gui::design::font_of(&look.font, FontRole::Text, Weight::Regular);
+    let ink = Arc::clone(&look);
     let aa = typo::text(typo::body(), "Aa")
         .font(font)
-        .style(move |t: &Theme| text::Style { color: Some(colors(&ink, t).text) });
-    let tint = Arc::clone(&design);
+        .style(move |t: &Theme| text::Style { color: Some(colors(&ink.scheme, t).text) });
+    let tint = Arc::clone(&look);
     let dot = container(blank().width(space::s()).height(space::s())).style(move |t: &Theme| container::Style {
-        background: Some(Background::Color(colors(&tint, t).accent)),
+        background: Some(Background::Color(colors(&tint.scheme, t).accent)),
         border: Border { radius: (space::s() / 2.0).into(), ..Border::default() },
         ..container::Style::default()
     });
-    let ground = Arc::clone(&design);
+    let ground = Arc::clone(&look);
     let panel = container(row![aa, blank::horizontal(), dot].align_y(Alignment::Center))
         .padding([0.0, space::xs()])
         .width(Fill)
         .height(Fill)
         .center_y(Fill)
         .style(move |t: &Theme| container::Style {
-            background: Some(Background::Color(colors(&ground, t).panel)),
+            background: Some(Background::Color(colors(&ground.scheme, t).panel)),
             border: Border { radius: radius::xs().into(), ..Border::default() },
             ..container::Style::default()
         });
     // The sidebar's strip at the left, the panel set in by the rest: the suite's frame in small.
     let inset = Padding { top: space::xs(), right: space::xs(), bottom: space::xs(), left: space::s() };
-    frame(container(panel).padding(inset).into(), Some(design)).into()
+    frame(container(panel).padding(inset).into(), Some(look)).into()
 }
 
-/// The colours of `design` in the mode of `theme` (the window's light or dark).
-fn colors(design: &Design, theme: &Theme) -> Palette {
+/// The colours of `scheme` in the mode of `theme` (the window's light or dark).
+fn colors(scheme: &ColorScheme, theme: &Theme) -> Palette {
     let mode = if theme.extended_palette().is_dark { Mode::Dark } else { Mode::Light };
-    Palette::of(design, mode)
+    Palette::of(scheme, mode)
 }
 
 /// The quiet actions of the heading "Design": "Reload" and "Open designs folder", which names the
@@ -723,11 +724,11 @@ mod tests {
         assert!(unlisted(&state));
         listed(&mut state, Ok(super::super::launch::demo_designs()));
         assert!(!unlisted(&state));
-        assert!(design_of(&state, "paper").is_some(), "a pack that can be used carries its look");
-        assert!(design_of(&state, "neon").is_none(), "one that can't, none");
-        assert!(design_of(&state, "gone").is_none());
+        assert!(look_of(&state, "paper").is_some(), "a pack that can be used carries its look");
+        assert!(look_of(&state, "neon").is_none(), "one that can't, none");
+        assert!(look_of(&state, "gone").is_none());
         listed(&mut state, Err("core is not running".into()));
-        assert!(design_of(&state, "paper").is_none());
+        assert!(look_of(&state, "paper").is_none());
     }
 
     #[test]

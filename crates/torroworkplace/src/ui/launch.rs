@@ -427,10 +427,11 @@ fn is_bot_id(id: &str) -> bool {
 
 /// The design packs of `--demo` (Appearance › Design, task L.4), in memory like all its data: the
 /// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
-/// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
-/// samples use Inter, the only font the demo has without a folder.
+/// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. Each is
+/// a design with the colour scheme of the same id, as until task L.22 one id names both; the samples
+/// use Inter, the only font the demo has without a folder.
 pub fn demo_designs() -> Vec<Pack> {
-    use torro_core::design::{Design, DesignError, Mode, Rgba};
+    use torro_core::design::{ColorScheme, Design, DesignError, FontSet, Mode, Rgba, Selection};
     let info = |design: &Design| DesignInfo {
         id: design.id.clone(),
         name: design.about.name.clone(),
@@ -449,20 +450,21 @@ pub fn demo_designs() -> Vec<Pack> {
         design.about.version = version.into();
         design.about.author = Some("Torro samples".into());
         design.about.description = Some(description.into());
-        design
+        let scheme = ColorScheme { id: id.into(), about: design.about.clone(), ..ColorScheme::standard() };
+        Selection { design, font: FontSet::standard(), scheme }
     };
     let mut harbor = pack("harbor", "Harbor", "1.2.0", "Teal accent, cool surfaces");
-    let dark = &mut harbor.colors.dark;
+    let dark = &mut harbor.scheme.colors.dark;
     (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x0A0E10), Rgba::hex(0x101518), Rgba::hex(0x151B1F));
     (dark.accent, dark.on_accent) = (Rgba::hex(0x14B8A6), Rgba::hex(0x042F2C));
-    let light = &mut harbor.colors.light;
+    let light = &mut harbor.scheme.colors.light;
     (light.bg, light.panel) = (Rgba::hex(0xEEF3F4), Rgba::hex(0xFFFFFF));
     (light.accent, light.on_accent) = (Rgba::hex(0x0B7A72), Rgba::hex(0xFFFFFF));
     let mut paper = pack("paper", "Paper", "0.9.1", "Warm paper, ink blue");
-    let dark = &mut paper.colors.dark;
+    let dark = &mut paper.scheme.colors.dark;
     (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x12100D), Rgba::hex(0x1A1714), Rgba::hex(0x201C18));
     (dark.accent, dark.on_accent) = (Rgba::hex(0x7C9CF5), Rgba::hex(0x0B1530));
-    let light = &mut paper.colors.light;
+    let light = &mut paper.scheme.colors.light;
     (light.bg, light.panel, light.raised) = (Rgba::hex(0xF3EEE4), Rgba::hex(0xFFFCF6), Rgba::hex(0xF8F4EC));
     (light.accent, light.on_accent) = (Rgba::hex(0x2A4FC4), Rgba::hex(0xFFFFFF));
     let neon = DesignInfo {
@@ -483,8 +485,10 @@ pub fn demo_designs() -> Vec<Pack> {
         .collect(),
         active: false,
     };
-    let mut packs: Vec<Pack> =
-        [Design::standard(), harbor, paper].into_iter().map(|design| Pack::new(info(&design), Some(design))).collect();
+    let mut packs: Vec<Pack> = [Selection::standard(), harbor, paper]
+        .into_iter()
+        .map(|look| Pack::new(info(&look.design), Some(look)))
+        .collect();
     packs.push(Pack::new(neon, None));
     packs
 }

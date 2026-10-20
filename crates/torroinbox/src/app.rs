@@ -9497,9 +9497,9 @@ mod tests {
         }
         let mut app = loaded(&[]);
         app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        let switched = app.update(Message::Design(design::Message::Stored(Ok("twin".into()))));
+        // Only the design changes (there is no font `twin`), so no font is loaded (task L.21).
+        let _ = app.update(Message::Design(design::Message::Stored(Ok("twin".into()))));
         assert_eq!(design::active().id, "twin");
-        assert!(switched.units() > 0, "the fonts of the new design are loaded");
         let _ = app.view();
         let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
         assert!(design::active().is_standard(), "a broken pack is never drawn");

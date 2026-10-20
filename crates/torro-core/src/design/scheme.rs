@@ -1,8 +1,7 @@
 //! Reading a colour scheme folder `color-schemes/<id>/color-scheme.toml` (task L.19): the colours of
 //! both modes, merged into the standard's, with the sidebar and chart keys following the scheme's own
 //! colours where it leaves them out, and the logo. [`load_color_scheme`] and [`list_color_schemes`]
-//! are the public entry points; [`build`] also reads the `[colors.*]` and `[logo]` of an old complete
-//! pack for the bridge in `pack.rs`.
+//! are the public entry points.
 //!
 //! The rules of a colour scheme: the contrasts (`rules::colors`) and the logo (SVG without references
 //! and scripts, square). A tray symbol is not part of the format any more (issue #114).
@@ -51,20 +50,19 @@ struct SchemeFile {
 /// `[colors]`. Colours stay loose values here, so each bad one is reported with its key.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ColorsFile {
+struct ColorsFile {
     #[serde(default)]
     dark: BTreeMap<String, toml::Value>,
     #[serde(default)]
     light: BTreeMap<String, toml::Value>,
 }
 
-/// `[logo]`. `tray` is only read from an old complete pack; [`known`] refuses it in
-/// `color-scheme.toml`.
+/// `[logo]`: the mark only. A tray symbol is no part of the format (issue #114), so [`known`]
+/// refuses `tray`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LogoFile {
+struct LogoFile {
     mark: Option<String>,
-    tray: Option<String>,
 }
 
 /// The keys of `[colors.dark]` and `[colors.light]`: the fields of [`Palette`].
@@ -135,7 +133,7 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<ColorScheme, Vec<Desi
 
 /// A colour scheme from `colors` and `logo` as written in the folder `root`, checked; every broken
 /// rule goes to `problems`.
-pub(super) fn build(
+fn build(
     id: &str,
     about: About,
     root: &Root,
@@ -152,18 +150,17 @@ pub(super) fn build(
 }
 
 fn read_logo(root: &Root, file: LogoFile, problems: &mut Vec<DesignError>) -> Logo {
-    let mut logo = Logo::default();
-    for (key, rel, slot) in [("logo.mark", file.mark, &mut logo.mark), ("logo.tray", file.tray, &mut logo.tray)] {
-        let Some(rel) = rel else { continue };
-        match root.named(key, &rel, Kind::Svg) {
-            Ok(path) => {
-                problems.extend(root.check_logo(&path));
-                *slot = Some(path);
-            }
-            Err(found) => problems.extend(found),
+    let Some(rel) = file.mark else { return Logo::default() };
+    match root.named("logo.mark", &rel, Kind::Svg) {
+        Ok(path) => {
+            problems.extend(root.check_logo(&path));
+            Logo { mark: Some(path) }
+        }
+        Err(found) => {
+            problems.extend(found);
+            Logo::default()
         }
     }
-    logo
 }
 
 pub(super) fn merge_palette(
@@ -280,7 +277,7 @@ mod tests {
         assert_eq!(scheme.colors.dark.shadow, Rgba { a: 128.0 / 255.0, ..Rgba::hex(0) });
         assert_eq!(scheme.colors.light.accent, Rgba::hex(0x0B6B6A));
         assert_eq!(scheme.colors.light.bg, ColorScheme::standard().colors.light.bg);
-        assert_eq!(scheme.logo, Logo { mark: Some(root.join("logo.svg")), tray: None });
+        assert_eq!(scheme.logo, Logo { mark: Some(root.join("logo.svg")) });
     }
 
     #[test]

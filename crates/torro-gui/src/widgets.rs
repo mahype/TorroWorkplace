@@ -4192,7 +4192,7 @@ mod tests {
     /// one another, and there is one per group – no more.
     #[test]
     fn the_category_colours_are_visible_and_distinct() {
-        let standard = torro_core::design::Design::standard();
+        let standard = torro_core::design::ColorScheme::standard();
         for (mode, p) in [("light", &standard.colors.light), ("dark", &standard.colors.dark)] {
             assert_eq!(p.category.len(), 4, "one colour per group, not per category");
             for (at, colour) in p.category.iter().enumerate() {

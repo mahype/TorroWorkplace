@@ -80,13 +80,11 @@ pub(super) fn fixture_names(part: Part) -> Vec<String> {
 }
 
 /// The font file `name` (`Inter-Regular.ttf`, `Lato-Bold.ttf` …) where the suite keeps it: Inter in
-/// `torro-gui`, the samples in the repository's `fonts/<id>/` or, before task L.20, `designs/<id>/fonts/`.
+/// `torro-gui`, the samples in the repository's `fonts/<id>/`.
 pub(super) fn font_file(name: &str) -> PathBuf {
     let mut places = vec![Path::new(REPO).join("crates/torro-gui/assets/fonts")];
-    for (folder, inner) in [("fonts", ""), ("designs", "fonts")] {
-        if let Ok(entries) = fs::read_dir(Path::new(REPO).join(folder)) {
-            places.extend(entries.flatten().map(|entry| entry.path().join(inner)));
-        }
+    if let Ok(entries) = fs::read_dir(Path::new(REPO).join("fonts")) {
+        places.extend(entries.flatten().map(|entry| entry.path()));
     }
     places
         .into_iter()

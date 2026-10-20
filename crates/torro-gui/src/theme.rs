@@ -1,8 +1,10 @@
 //! The Torro theme for Iced: colour tokens in a light and a dark [`Palette`], the Iced
 //! [`Theme`]s built from them, spacing, radius and size tokens, and the fonts.
 //!
-//! The values come from the **active design** ([`crate::design`], concept `docs/design-pakete.md`):
-//! every token is a function that reads it, so a switch of design pack shows on the next frame.
+//! The values come from the **active look** ([`crate::design`], concept `docs/design-pakete.md`): the
+//! colours from the active colour scheme ([`crate::scheme`]), spacing, radii and sizes from the active
+//! design, the fonts from the active font ([`crate::font`]). Every token is a function that reads it,
+//! so a switch shows on the next frame.
 //! The standard design gives the values of the design skill (`.claude/skills/torro-design`,
 //! sections 1–4), after Linear; the reference mock-ups are `docs/prototypes/linear/`
 //! (`torro.css`). Torro red is brand only (primary button, today, the now line, the app logo),
@@ -40,7 +42,7 @@
 //!
 //! # Fonts
 //!
-//! [`font`] and friends name the families of the active design (Inter in the standard, embedded by
+//! [`font`] and friends name the families of the active font (Inter in the standard, embedded by
 //! [`crate::fonts`]). Apps rarely pick a font directly: the levels in [`crate::typo`] carry the
 //! right one.
 //!
@@ -54,7 +56,7 @@ use crate::source::Source;
 use iced::theme::Mode;
 use iced::widget::text::Style as TextStyle;
 use iced::{Color, Font, Shadow, Theme, Vector};
-use torro_core::design::{Design, FontRole, Mode as DesignMode, Rgba, Weight};
+use torro_core::design::{ColorScheme, FontRole, Mode as DesignMode, Rgba, Weight};
 use torro_core::theme::Rgb;
 use torro_ipc::{Request, Response};
 
@@ -78,7 +80,7 @@ pub fn font_semibold() -> Font {
     design::font(FontRole::Text, Weight::Semibold)
 }
 
-/// The figures font at Regular (400) – "Inter Tabular" in the standard design, Inter with tabular
+/// The figures font at Regular (400) – "Inter Tabular" in the standard font, Inter with tabular
 /// figures baked in – for digits that change (clocks, time axes, counters, dates in columns), so
 /// nothing jumps and columns line up.
 ///
@@ -88,7 +90,7 @@ pub fn font_tabular() -> Font {
 }
 
 /// The figures font at Medium (500), the weight of [`font_medium`] (or the nearest lighter one the
-/// design's figures font has).
+/// figures font has).
 pub fn font_tabular_medium() -> Font {
     design::tabular_font(iced::font::Weight::Medium)
 }
@@ -100,13 +102,13 @@ pub const fn color(rgb: Rgb) -> Color {
 
 /// The attention colour (waiting for the user, unchecked, deviating, overdue) as an Iced colour.
 ///
-/// From the dark palette of the active design (the standard has the same in both modes); inside a
+/// From the dark palette of the active colour scheme (the standard has the same in both modes); inside a
 /// style closure prefer `palette(theme).attention`, which follows the mode.
 pub fn attention() -> Color {
     design::with(|t| t.dark.attention)
 }
 
-/// The colour tokens of one mode (light or dark) of the active design. Get it with [`palette`] from
+/// The colour tokens of one mode (light or dark) of the active colour scheme. Get it with [`palette`] from
 /// the `&Theme` a style closure receives; [`Palette::dark`] and [`Palette::light`] are for tests,
 /// galleries and code without a theme. A copy: take it fresh in every style call or `draw`.
 ///
@@ -194,7 +196,7 @@ pub struct Palette {
     /// `text_3` on it stays readable (≥ 4.5:1).
     pub night: Color,
     /// The frame of the window: sidebar, rail, drawer, the margin around the content panel and the
-    /// title band over them. [`Palette::bg`] unless the design gives the sidebar a colour of its own.
+    /// title band over them. [`Palette::bg`] unless the colour scheme gives the sidebar a colour of its own.
     pub sidebar: Color,
     /// A sidebar row under the pointer.
     pub sidebar_hover: Color,
@@ -211,31 +213,31 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// The dark tokens of the active design ("Torro Dark" in the standard).
+    /// The dark tokens of the active colour scheme ("Torro Dark" in the standard).
     pub fn dark() -> Palette {
         design::with(|t| t.dark)
     }
 
-    /// The light tokens of the active design ("Torro Light" in the standard).
+    /// The light tokens of the active colour scheme ("Torro Light" in the standard).
     pub fn light() -> Palette {
         design::with(|t| t.light)
     }
 
-    /// The tokens of `mode` in `design`, with the derived colours (`attention_text`, `error_text`)
+    /// The tokens of `mode` in `scheme`, with the derived colours (`attention_text`, `error_text`)
     /// computed from it and the shadow geometry of the suite (`0 12px 32px`, `torro.css`).
-    pub fn of(design: &Design, mode: DesignMode) -> Palette {
-        Palette::from_tokens(design.colors.get(mode), mode)
+    pub fn of(scheme: &ColorScheme, mode: DesignMode) -> Palette {
+        Palette::from_tokens(scheme.colors.get(mode), mode)
     }
 
-    /// The tokens of `mode` in `design` as the sidebar draws with them
+    /// The tokens of `mode` in `scheme` as the sidebar draws with them
     /// (`torro_core::design::Palette::in_sidebar`): `bg`, `hover`, `selected`, the text colours and
     /// `line` are the sidebar's. Views never ask for it: [`crate::shell`] draws the sidebar with a
     /// theme of its own, and [`palette`] hands this out for it.
     ///
     /// `attention_text` and `error_text` are derived for the sidebar's own brightness, not the
     /// mode's: a dark sidebar in light mode takes the status colours as dark mode does.
-    pub fn of_sidebar(design: &Design, mode: DesignMode) -> Palette {
-        let c = design.colors.get(mode).in_sidebar();
+    pub fn of_sidebar(scheme: &ColorScheme, mode: DesignMode) -> Palette {
+        let c = scheme.colors.get(mode).in_sidebar();
         let dark = c.bg.luminance() < c.text.luminance();
         Palette::from_tokens(&c, if dark { DesignMode::Dark } else { DesignMode::Light })
     }
@@ -301,7 +303,7 @@ impl Palette {
 
 /// Which colour a chart series wears (task E8.8b): a slot of [`Palette::chart`] in their fixed
 /// order, or the grey of "Other". Views keep this, never a colour, and turn it into one with
-/// [`Palette::chart_color`] inside a style closure, so light and dark mode and design packs follow.
+/// [`Palette::chart_color`] inside a style closure, so light and dark mode and colour schemes follow.
 ///
 /// Give slots to series by what they are, not by their rank: the same series keeps its colour when
 /// a filter or another span changes how many there are.
@@ -341,13 +343,13 @@ pub const fn rgba(c: Rgba) -> Color {
     Color { r: c.r, g: c.g, b: c.b, a: c.a }
 }
 
-/// The tokens of the active design in the mode `theme` is in: [`Palette::light`] for a light
+/// The tokens of the active colour scheme in the mode `theme` is in: [`Palette::light`] for a light
 /// theme, otherwise [`Palette::dark`]. Works for any Iced theme (it asks Iced whether the background
 /// is dark), so a stray built-in theme still gets Torro colours.
 ///
 /// The one way views reach colours: call it inside a style closure or a canvas `draw` with the
-/// `&Theme` Iced passes in, never store the result across frames (the mode and the design can
-/// change any time). Returns a copy; pass `&p` where a function wants `&Palette`.
+/// `&Theme` Iced passes in, never store the result across frames (the mode and the colour scheme
+/// can change any time). Returns a copy; pass `&p` where a function wants `&Palette`.
 ///
 /// Inside the sidebar the theme is the sidebar's ([`sidebar_theme`]) and this returns
 /// [`Palette::of_sidebar`]: the same code draws a row in the sidebar's colours there.
@@ -411,7 +413,7 @@ pub async fn stored_appearance(source: &Source) -> Result<Appearance, String> {
 /// matters for [`Appearance::System`], and `Mode::None` counts as dark.
 ///
 /// Use in the app builder: `.theme(|app: &App| theme::for_appearance(app.appearance, app.system_mode))`.
-/// Cheap to call on every frame: the two themes are built once per design and cloned (an `Arc`).
+/// Cheap to call on every frame: the two themes are built once per colour scheme and cloned (an `Arc`).
 pub fn for_appearance(appearance: Appearance, system: Mode) -> Theme {
     match (appearance, system) {
         (Appearance::Light, _) | (Appearance::System, Mode::Light) => light(),
@@ -434,12 +436,12 @@ pub(crate) fn iced_theme(name: Cow<'static, str>, p: &Palette) -> Theme {
     )
 }
 
-/// "Torro Dark": the dark Iced theme of the active design ([`Palette::dark`]).
+/// "Torro Dark": the dark Iced theme of the active colour scheme ([`Palette::dark`]).
 pub fn theme() -> Theme {
     design::with(|t| t.dark_theme.clone())
 }
 
-/// "Torro Light": the light Iced theme of the active design ([`Palette::light`]).
+/// "Torro Light": the light Iced theme of the active colour scheme ([`Palette::light`]).
 pub fn light() -> Theme {
     design::with(|t| t.light_theme.clone())
 }

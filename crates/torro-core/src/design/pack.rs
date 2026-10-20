@@ -5,11 +5,10 @@
 //! the typed values with their positions) and `[about]` ([`AboutFile`]). Fonts are read in `font.rs`,
 //! colour schemes in `scheme.rs`.
 //!
-//! A `design.toml` is merged into [`Design::standard`] and held to the design rules. The old sections
-//! of a complete pack (`[fonts.*]`, `[colors.*]`, `[logo]`, `[about] font_license`) are no error there:
-//! they are read as loose values and skipped, so they never break a design (task L.19). A file that has
-//! them but no form at all is an old pure font or colour pack: [`load`] says where it belongs
-//! ([`DesignError::WrongFolder`]) and [`list`] leaves it out.
+//! A `design.toml` is merged into [`Design::standard`] and held to the design rules. It holds the form
+//! only: fonts and colours have folders of their own, so `[fonts.*]`, `[colors.*]`, `[logo]` and
+//! `[about] font_license` of a pack from before task L.19 are unknown keys like any other (task L.21,
+//! no carry-over of old packs).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,11 +18,9 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use super::files::Root;
-use super::font::{self, FontsFile};
-use super::scheme::{self, ColorsFile, LogoFile};
 use super::{
-    About, ColorScheme, Density, Design, DesignError, FontRole, FontSet, Level, Pad, Part, Radius, STANDARD_ID,
-    STANDARD_SIZE, Space, Weight, is_valid_id, rules,
+    About, Density, Design, DesignError, FontRole, Level, Pad, Part, Radius, STANDARD_ID, STANDARD_SIZE, Space, Weight,
+    is_valid_id, rules,
 };
 
 /// One entry of [`list`], [`super::list_fonts`] or [`super::list_color_schemes`]: a part (`T` is
@@ -54,22 +51,18 @@ impl<T> Listed<T> {
 }
 
 /// Every design: the standard first, then each folder under `dir` (the designs folder, see
-/// [`super::dir`]) by name, valid or with its reasons. Hidden folders (`.git`), folder names that are
-/// not UTF-8 and old pure font or colour packs ([`DesignError::WrongFolder`]) are left out; a missing
-/// `dir` lists only the standard.
+/// [`super::dir`]) by name, valid or with its reasons. Hidden folders (`.git`) and folder names that
+/// are not UTF-8 are left out; a missing `dir` lists only the standard.
 pub fn list(dir: &Path) -> Vec<Listed<Design>> {
     let standard = Design::standard();
-    let mut listed = listing(dir, standard.about.clone(), standard, read);
-    listed.retain(|entry| !entry.problems().iter().any(|p| matches!(p, DesignError::WrongFolder { .. })));
-    listed
+    listing(dir, standard.about.clone(), standard, read)
 }
 
 /// The design `id` from the designs folder `dir`, merged with the standard and checked.
 /// [`STANDARD_ID`] gives [`Design::standard`] without touching the disk.
 ///
 /// `Err` holds every reason the design can't be used (at least one); the caller then keeps the design
-/// it has (the concept: a part is never applied in part). An old pure font or colour pack answers with
-/// [`DesignError::WrongFolder`] alone.
+/// it has (the concept: a part is never applied in part).
 pub fn load(dir: &Path, id: &str) -> Result<Design, Vec<DesignError>> {
     if id == STANDARD_ID {
         return Ok(Design::standard());
@@ -131,8 +124,6 @@ pub(super) struct AboutFile {
     pub(super) font: Option<String>,
     /// Designs only: the suggested colour scheme.
     pub(super) color_scheme: Option<String>,
-    /// Old complete packs in `designs/` only: loose, so a wrong type never breaks the design.
-    pub(super) font_license: Option<toml::Value>,
 }
 
 impl AboutFile {
@@ -215,22 +206,6 @@ struct DesignFile {
     layout: Option<LayoutFile>,
     #[serde(default)]
     size: BTreeMap<String, f32>,
-    /// The old sections of a complete pack, loose: skipped by the design, read by the bridge.
-    fonts: Option<toml::Value>,
-    colors: Option<toml::Value>,
-    logo: Option<toml::Value>,
-}
-
-impl DesignFile {
-    /// Whether the file sets any of the form, so it is a design and not an old pure font or colour
-    /// pack.
-    fn has_form(&self) -> bool {
-        !self.typo.is_empty()
-            || self.space.is_some()
-            || self.radius.is_some()
-            || self.layout.is_some()
-            || !self.size.is_empty()
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -274,20 +249,18 @@ const LEVEL_KEYS: [&str; 11] =
 const LAYOUT_KEYS: [&str; 8] =
     ["inset", "page_padding", "panel_padding", "row_padding", "control_padding", "section_gap", "item_gap", "density"];
 
-/// The keys of `design.toml`. The old sections are values (not looked into), so nothing in them is
-/// ever an unknown key.
+/// The keys of `design.toml`: the form only, so the fonts and colours of an old complete pack are
+/// unknown keys.
 fn known(path: &str, key: &str) -> Option<bool> {
     const TABLE: Option<bool> = Some(true);
     let value = |ok: bool| ok.then_some(false);
     match path {
         "" => match key {
-            "format" | "fonts" | "colors" | "logo" => Some(false),
+            "format" => Some(false),
             "about" | "type" | "space" | "radius" | "layout" | "size" => TABLE,
             _ => None,
         },
-        "about" => {
-            value(["name", "version", "author", "description", "font", "color_scheme", "font_license"].contains(&key))
-        }
+        "about" => value(["name", "version", "author", "description", "font", "color_scheme"].contains(&key)),
         "type" => LEVEL_KEYS.contains(&key).then_some(true),
         p if p.strip_prefix("type.").is_some_and(|level| LEVEL_KEYS.contains(&level)) => {
             value(["font", "size", "line", "weight"].contains(&key))
@@ -304,18 +277,6 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<Design, Vec<DesignErr
     let text = root.toml(Part::Design.file()).map_err(|err| vec![err])?;
     let file: DesignFile = parse(Part::Design.file(), &text, known)?;
     *about = file.about.about(id);
-    if !file.has_form() {
-        let mut wrong = Vec::new();
-        if file.fonts.is_some() {
-            wrong.push(DesignError::WrongFolder { part: Part::Font, id: id.to_string() });
-        }
-        if file.colors.is_some() || file.logo.is_some() {
-            wrong.push(DesignError::WrongFolder { part: Part::ColorScheme, id: id.to_string() });
-        }
-        if !wrong.is_empty() {
-            return Err(wrong);
-        }
-    }
     let mut problems = Vec::new();
     header(file.format, &file.about, &mut problems);
     for (key, suggested) in [("about.font", &file.about.font), ("about.color_scheme", &file.about.color_scheme)] {
@@ -332,11 +293,7 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<Design, Vec<DesignErr
         Err(found) => problems.extend(found),
     }
     problems.extend(rules::design(&design));
-    if !problems.is_empty() {
-        return Err(problems);
-    }
-    bridge(dir, id, &root, &file, &mut design);
-    Ok(design)
+    if problems.is_empty() { Ok(design) } else { Err(problems) }
 }
 
 /// The form of `file` over the standard's.
@@ -392,70 +349,10 @@ fn merge_layout(design: &mut Design, file: &LayoutFile) {
     l.density = file.density.unwrap_or(l.density);
 }
 
-// ---------------------------------------------------------------------------------------------
-// Bridge until L.21/L.22, removed there
-// ---------------------------------------------------------------------------------------------
-
-/// **Bridge until L.21/L.22, removed there:** fills [`Design::fonts`], [`Design::colors`] and
-/// [`Design::logo`] of a valid design, so the apps keep drawing one id as before L.19. Each from the
-/// first source that passes its part's rules, else the standard's (no reason is reported: the design
-/// itself is valid):
-///
-/// 1. the old sections of a complete pack in `file` (fonts under its `fonts/`, the licence in
-///    `fonts/LICENSE.txt`, a `[logo] tray` still allowed), read as `fonts/<id>/` and
-///    `color-schemes/<id>/` would be;
-/// 2. `fonts/<id>/` and `color-schemes/<id>/` beside `dir`, but only when `dir` is a folder named
-///    `designs` (the data folder, the repository's), so a test's folder never looks beside itself.
-fn bridge(dir: &Path, id: &str, root: &Root, file: &DesignFile, design: &mut Design) {
-    let beside = |part: Part| {
-        let parent = dir.parent().filter(|_| dir.file_name().is_some_and(|name| name == Part::Design.folder()))?;
-        Some(parent.join(part.folder()))
-    };
-    let old_font = file.fonts.as_ref().and_then(|fonts| old_font_set(id, root, file, fonts));
-    let font = old_font.or_else(|| beside(Part::Font).and_then(|fonts| font::load_font(&fonts, id).ok()));
-    if let Some(font) = font {
-        design.fonts = font.fonts;
-    }
-    let old_scheme = (file.colors.is_some() || file.logo.is_some()).then(|| old_color_scheme(id, root, file));
-    let scheme = old_scheme
-        .flatten()
-        .or_else(|| beside(Part::ColorScheme).and_then(|schemes| scheme::load_color_scheme(&schemes, id).ok()));
-    if let Some(scheme) = scheme {
-        design.colors = scheme.colors;
-        design.logo = scheme.logo;
-    }
-}
-
-/// The font of an old complete pack, if its `[fonts.*]` pass the font rules.
-fn old_font_set(id: &str, root: &Root, file: &DesignFile, fonts: &toml::Value) -> Option<FontSet> {
-    let fonts: FontsFile = fonts.clone().try_into().ok()?;
-    let license = file.about.font_license.as_ref().and_then(|value| value.as_str().map(str::to_string));
-    let mut problems = Vec::new();
-    let source = font::Source { license, size_adjust: None, fonts: Some(fonts), license_file: "fonts/LICENSE.txt" };
-    let set = font::build(id, About::default(), root, source, &mut problems);
-    problems.is_empty().then_some(set)
-}
-
-/// The colours and logo of an old complete pack, if they pass the colour rules.
-fn old_color_scheme(id: &str, root: &Root, file: &DesignFile) -> Option<ColorScheme> {
-    let colors: ColorsFile = match &file.colors {
-        Some(colors) => colors.clone().try_into().ok()?,
-        None => ColorsFile::default(),
-    };
-    let logo: LogoFile = match &file.logo {
-        Some(logo) => logo.clone().try_into().ok()?,
-        None => LogoFile::default(),
-    };
-    let mut problems = Vec::new();
-    let scheme = scheme::build(id, About::default(), root, &colors, logo, &mut problems);
-    problems.is_empty().then_some(scheme)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::design::testdata::{Data, fixture_names};
-    use crate::design::{FontSet, Logo, Rgba};
 
     fn problems(dir: &Path, id: &str) -> Vec<DesignError> {
         match load(dir, id) {
@@ -508,8 +405,6 @@ mod tests {
         assert_eq!((design.layout.inset, design.layout.item_gap), (10.0, 10.0));
         assert_eq!(design.layout.density, Density::Comfortable);
         assert_eq!((design.size.row, design.size.sidebar, design.size.axis), (44.0, 248.0, 56.0));
-        let standard = Design::standard();
-        assert_eq!((design.fonts, design.colors, design.logo), (standard.fonts, standard.colors, Logo::default()));
     }
 
     /// Task E8.2: the reading level and the sizes of the comfortable density are keys of the format.
@@ -551,83 +446,30 @@ mod tests {
         assert_eq!(problems(&dir, "misspelt"), [DesignError::UnknownKey { key: "layout.dense".into() }]);
     }
 
-    /// Task L.19: an old complete pack loads as a design without a reason; its old sections are not
-    /// part of the design, only the bridge until L.21/L.22 reads them.
+    /// Task L.21: no carry-over of old packs. The fonts, colours and logo of a pack from before task
+    /// L.19 are unknown keys in `design.toml` like any other, so such a pack can't be used and is
+    /// listed with its reasons – a complete one as well as one that held only colours or fonts.
     #[test]
-    fn an_old_complete_pack_loads_as_a_design_without_errors() {
-        let data = Data::with(Part::Design, &["full"]);
-        let design = load(&data.dir(Part::Design), "full").expect("an old pack is still a design");
-        assert_eq!((design.about.name.as_str(), design.about.version.as_str()), ("Full", "2.1.0"));
-        assert_eq!(design.typo.body.size, 14.0);
-        assert_eq!((design.size.row, design.radius.lg), (44.0, 9.0));
-
-        // The bridge: the old fonts, colours and logo, as before L.19.
-        let root = fs::canonicalize(data.entry(Part::Design, "full")).expect("canonical");
-        assert_eq!(design.fonts.text.regular, Some(crate::design::Face::File(root.join("fonts/Inter-Regular.ttf"))));
-        assert_eq!(design.fonts.numbers.family, "Inter Tabular");
-        assert_eq!(design.colors.dark.accent, Rgba::hex(0x0E7C7B));
-        assert_eq!(design.colors.light.accent, Rgba::hex(0x0B6B6A));
-        assert_eq!(design.logo, Logo { mark: Some(root.join("logo.svg")), tray: Some(root.join("tray.svg")) });
-    }
-
-    /// Task L.19: old sections that break their rules or the format never break the design; the
-    /// bridge then keeps the standard's fonts and colours.
-    #[test]
-    fn broken_old_sections_are_skipped() {
-        let data = Data::new();
-        let old = "[size]\nrow = 44\n[colors.dark]\ntext_3 = \"#3A3A3A\"\naccnt = 3\n\
-                   [fonts.text]\nfamily = \"Gone\"\nregular = \"fonts/Gone.ttf\"\n[logo]\nmark = \"../x.svg\"\n";
-        written(&data, "old", old);
-        let toml = fs::read_to_string(data.entry(Part::Design, "old").join("design.toml")).expect("read");
-        data.write(Part::Design, "old", &toml.replace("[about]\n", "[about]\nfont_license = 7\n"));
-        let design = load(&data.dir(Part::Design), "old").expect("valid");
-        let standard = Design::standard();
-        assert_eq!(design.size.row, 44.0);
-        assert_eq!((design.fonts, design.colors, design.logo), (standard.fonts, standard.colors, standard.logo));
-    }
-
-    /// Task L.19: an old pure colour pack is no design any more: `list` leaves it out, `load` says
-    /// where it belongs. The same for an old pure font pack.
-    #[test]
-    fn an_old_pure_colour_or_font_pack_belongs_elsewhere() {
-        let data = Data::with(Part::Design, &["accent-only", "font-only", "form"]);
+    fn the_sections_of_an_old_pack_are_unknown_keys() {
+        let data = Data::with(Part::Design, &["full", "accent-only", "font-only"]);
         let dir = data.dir(Part::Design);
-        let colours = problems(&dir, "accent-only");
-        assert_eq!(colours, [DesignError::WrongFolder { part: Part::ColorScheme, id: "accent-only".into() }]);
-        assert!(colours[0].to_string().contains("color-schemes/"), "{}", colours[0]);
-        let fonts = problems(&dir, "font-only");
-        assert_eq!(fonts, [DesignError::WrongFolder { part: Part::Font, id: "font-only".into() }]);
-        assert!(fonts[0].to_string().contains("fonts/"), "{}", fonts[0]);
-        let ids: Vec<String> = list(&dir).into_iter().map(|entry| entry.id).collect();
-        assert_eq!(ids, [STANDARD_ID, "form"]);
+        let unknown = |keys: &[&str]| -> Vec<DesignError> {
+            keys.iter().map(|key| DesignError::UnknownKey { key: (*key).into() }).collect()
+        };
+        assert_eq!(problems(&dir, "full"), unknown(&["about.font_license", "colors", "fonts", "logo"]));
+        assert_eq!(problems(&dir, "accent-only"), unknown(&["colors"]));
+        assert_eq!(problems(&dir, "font-only"), unknown(&["about.font_license", "fonts"]));
 
-        written(&data, "both", "[fonts.text]\nfamily = \"Inter\"\n[logo]\nmark = \"logo.svg\"\n");
-        assert_eq!(problems(&dir, "both").len(), 2, "one for each folder it belongs in");
-    }
+        written(&data, "dark", "[size]\nrow = 44\n[colors.dark]\naccent = \"#0E7C7B\"\n");
+        let dark = problems(&dir, "dark");
+        assert_eq!(dark, unknown(&["colors"]), "a design with colours is unusable, whatever else it holds");
+        assert_eq!(dark[0].to_string(), DesignError::UnknownKey { key: "colors".into() }.to_string());
 
-    /// The bridge until L.21/L.22: a design without old sections draws the font and colour scheme of
-    /// its id from the folders beside the designs folder, so the apps look as before after task L.20.
-    #[test]
-    fn the_bridge_takes_the_parts_of_the_same_id_beside_the_designs_folder() {
-        let data = Data::with(Part::Font, &["plex"]);
-        data.add(Part::ColorScheme, &["accent-only"]);
-        fs::rename(data.entry(Part::Font, "plex"), data.entry(Part::Font, "accent-only")).expect("rename");
-        written(&data, "accent-only", "[size]\nrow = 44\n");
-        let design = load(&data.dir(Part::Design), "accent-only").expect("valid");
-        assert_eq!(design.fonts.text.family, "IBM Plex Sans");
-        assert_eq!(design.colors.dark.accent, Rgba::hex(0x0E7C7B));
-
-        // A folder that is not called `designs` never looks beside itself.
-        let elsewhere = data.entry(Part::Design, "accent-only");
-        let copy = data.dir(Part::Font).parent().expect("data").join("other");
-        fs::create_dir_all(&copy).expect("other");
-        fs::copy(elsewhere.join("design.toml"), {
-            fs::create_dir_all(copy.join("accent-only")).expect("entry");
-            copy.join("accent-only/design.toml")
-        })
-        .expect("copy");
-        let design = load(&copy, "accent-only").expect("valid");
-        assert_eq!(design.fonts, FontSet::standard().fonts);
+        let listed: Vec<(String, bool)> =
+            list(&dir).into_iter().map(|entry| (entry.id.clone(), entry.valid())).collect();
+        let expected =
+            [(STANDARD_ID, true), ("accent-only", false), ("dark", false), ("font-only", false), ("full", false)];
+        assert_eq!(listed, expected.map(|(id, valid)| (id.to_string(), valid)), "listed, with their reasons");
     }
 
     #[test]
@@ -715,7 +557,7 @@ mod tests {
 
     #[test]
     fn list_shows_valid_and_broken_designs_with_reasons() {
-        let data = Data::with(Part::Design, &["form", "short-row", "unknown-key", "accent-only"]);
+        let data = Data::with(Part::Design, &["form", "short-row", "unknown-key"]);
         let dir = data.dir(Part::Design);
         fs::create_dir(dir.join("Bad_Name")).expect("dir");
         fs::create_dir(dir.join(".hidden")).expect("dir");
@@ -753,7 +595,11 @@ mod tests {
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(keys, ["about.fonts", "colour", "size.rowx", "type.bodyy"], "old sections are not looked into");
+        assert_eq!(
+            keys,
+            ["about.fonts", "colors", "colour", "size.rowx", "type.bodyy"],
+            "an unknown table is one key, not looked into"
+        );
     }
 
     #[test]
@@ -767,7 +613,12 @@ mod tests {
         assert!(matches!(&problems[..], [DesignError::Syntax { line: Some(1), .. }]), "{problems:?}");
         let Err(problems) = parse_only("[space]\nscale = [1, 2]\n") else { panic!("must fail") };
         assert!(matches!(&problems[..], [DesignError::Syntax { .. }]), "{problems:?}");
-        assert!(parse_only("[colors.dark]\naccent = 3\n[fonts]\ntext = 1\n").is_ok(), "old sections are loose");
+        let Err(problems) = parse_only("[colors.dark]\naccent = 3\n[fonts]\ntext = 1\n") else { panic!("must fail") };
+        assert_eq!(
+            problems,
+            [DesignError::UnknownKey { key: "colors".into() }, DesignError::UnknownKey { key: "fonts".into() }],
+            "old sections are unknown keys before their values are read"
+        );
     }
 
     #[test]
@@ -780,8 +631,7 @@ mod tests {
 
     /// Task E8.8b: the designs in the repository's `designs/` stay valid. Task E13.1: none of them
     /// sets `layout.density`, so every shipped design shows rows – a design that switched to cards
-    /// would look unlike its own `preview.png`. Task L.19: the old pure colour packs among them are
-    /// left out of the list until task L.20 moves them.
+    /// would look unlike its own `preview.png`. Since task L.20 they hold the form only.
     #[test]
     fn the_shipped_designs_stay_valid() {
         let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../designs");
@@ -793,14 +643,12 @@ mod tests {
         }
     }
 
-    /// The fixture designs as the table test in `design.rs` sees them: every one listed except the two
-    /// old pure packs.
+    /// The fixture designs as the table test in `design.rs` sees them: every one listed, the old
+    /// packs among them too (task L.21).
     #[test]
-    fn every_fixture_design_is_listed_but_the_old_pure_packs() {
+    fn every_fixture_design_is_listed() {
         let data = Data::all();
         let listed: Vec<String> = list(&data.dir(Part::Design)).into_iter().skip(1).map(|entry| entry.id).collect();
-        let mut expected = fixture_names(Part::Design);
-        expected.retain(|name| name != "accent-only" && name != "font-only");
-        assert_eq!(listed, expected);
+        assert_eq!(listed, fixture_names(Part::Design));
     }
 }

@@ -412,7 +412,10 @@ eine neue Schrift vorschlagen, warten auf L.24.
   seine Beispiele für sich nach, ein gelöschtes Beispiel kommt nicht wieder.
 
 ### L.21 torro-gui: drei aktive Teile, alle Apps umgestellt
-- [ ] erledigt
+- [x] erledigt (2026-10-20: `torro_gui::font` und `torro_gui::scheme` neben `design`; bis L.22 liest
+  `design::Folders::look(id)` alle drei Teile derselben id, `--design` nimmt jede id, die einer der drei Ordner gültig
+  hat, z. B. `nord`; `design::show(Selection)` zeichnet drei Teile auf einmal; das PDF-Werkzeug nimmt die Schrift
+  derselben id aus `fonts/`)
 - **Modell:** Opus · **Braucht:** L.20 · **Dateien:** `crates/torro-gui/src/**` (vor allem `design.rs`, `theme.rs`,
   `typo.rs`, `shell.rs`, `widgets.rs`), die Stellen in `crates/{torrocalendar,torrotasks,torroinbox,torroassistant}/src/**`,
   `crates/torro-settings-ui/src/**` und `crates/torroworkplace/src/ui/**`, die `Design::fonts`, `Design::colors` oder

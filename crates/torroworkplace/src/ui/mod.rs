@@ -1016,12 +1016,12 @@ impl Ui {
                 return self.design.update(message).unwrap_or_else(Task::none).map(Message::Design);
             }
             Message::Designs(designs) => {
-                // The samples write "Aa" in each pack's text font, so those fonts are loaded once.
+                // The samples write "Aa" in each pack's font, so those fonts are loaded once.
                 let fonts = designs
                     .iter()
                     .flatten()
-                    .filter_map(|pack| pack.design.as_deref())
-                    .map(|design| design::load_fonts(design).map(Message::Design))
+                    .filter_map(|pack| pack.look.as_deref())
+                    .map(|look| design::load_fonts(&look.font).map(Message::Design))
                     .collect::<Vec<_>>();
                 general::listed(&mut self.general, designs);
                 return Task::batch(fonts);
@@ -1192,10 +1192,8 @@ impl Ui {
     fn choose_design(&mut self, id: String) -> Task<Message> {
         self.data.settings.design = id.clone();
         if self.launch.demo {
-            let Some(chosen) = general::design_of(&self.general, &id) else { return Task::none() };
-            let fonts = design::load_fonts(&chosen).map(Message::Design);
-            design::set((*chosen).clone());
-            return fonts;
+            let Some(chosen) = general::look_of(&self.general, &id) else { return Task::none() };
+            return design::show((*chosen).clone()).map_or_else(Task::none, |fonts| fonts.map(Message::Design));
         }
         self.pending_design = Some(id.clone());
         let fonts = self.design.apply(&id).unwrap_or_else(Task::none).map(Message::Design);
@@ -1593,7 +1591,8 @@ fn load() -> Task<Message> {
 }
 
 /// Lists the design packs (`settings.list_designs`) and reads the look of each one that can be
-/// used from its folder, the way the windows read the design they draw with.
+/// used from the folders, the way the windows read the look they draw with: the design with the
+/// font and colour scheme of the same id (`Folders::look`, until task L.22).
 async fn list_designs() -> Result<Vec<general::Pack>, String> {
     let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
     let designs = match client::call(&socket, &Request::ListDesigns).await {
@@ -1604,14 +1603,13 @@ async fn list_designs() -> Result<Vec<general::Pack>, String> {
     };
     // Fonts are opened to check them: off the window's thread.
     let read = move || {
-        let dir = torro_core::design::dir();
+        let folders = design::Folders::user();
         designs
             .into_iter()
             .map(|info| {
-                // Without a home directory only the standard exists; it needs no folder.
-                let folder = dir.as_deref().unwrap_or(std::path::Path::new(""));
-                let design = info.valid.then(|| torro_core::design::load(folder, &info.id).ok()).flatten();
-                general::Pack::new(info, design)
+                // A design that can't be read any more gives the standard's: then there is no look.
+                let look = info.valid.then(|| folders.look(&info.id)).filter(|look| look.design.id == info.id);
+                general::Pack::new(info, look)
             })
             .collect()
     };
@@ -1774,7 +1772,8 @@ mod tests {
         };
         let mut ui = ui(Section::General);
         ui.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        assert!(ui.update(with_design("twin", None)).units() > 0, "the new design's fonts are loaded");
+        // Only the design changes (there is no font `twin`), so there is no font to load (task L.21).
+        let _ = ui.update(with_design("twin", None));
         assert_eq!(design::active().id, "twin");
         let _ = ui.update(with_design("torro", Some("core is not running")));
         assert_eq!(design::active().id, "twin", "an empty answer keeps the design");
@@ -1795,7 +1794,7 @@ mod tests {
         assert_eq!(demo.section, Section::Appearance);
         let ids: Vec<&str> = ["torro", "harbor", "paper", "neon"]
             .into_iter()
-            .filter(|id| general::design_of(&demo.general, id).is_some())
+            .filter(|id| general::look_of(&demo.general, id).is_some())
             .collect();
         assert_eq!(ids, ["torro", "harbor", "paper"], "the broken one has no look to draw with");
 
@@ -1830,7 +1829,7 @@ mod tests {
 
         let task = ui.update(Message::General(general::Message::Design("chosen".into())));
         assert_eq!(design::active().id, "chosen", "drawn at once, before the core answers");
-        assert!(task.units() >= 2, "its fonts and the request that saves it");
+        assert!(task.units() >= 1, "the request that saves it; its font is the standard's, nothing to load");
         assert_eq!(ui.data.settings.design, "chosen", "the check mark moves at once");
 
         let _ = ui.update(with_design("torro"));

@@ -31,14 +31,14 @@ use printpdf::{
     XObjectTransform,
 };
 use pulldown_cmark::{Alignment, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
-use torro_core::design::{self, Design, FontRole, Weight};
+use torro_core::design::{self, FontRole, FontSet, Weight};
 use torro_core::i18n::trf;
 use torro_core::settings::{Paper, PdfTemplate};
 
 /// The largest logo a template may bring, in bytes.
 pub const MAX_LOGO_BYTES: u64 = 2 * 1024 * 1024;
 
-/// The faces a PDF is set in: the text and heading font of a design pack, as the bytes of their files.
+/// The faces a PDF is set in: the text and heading family of a font, as the bytes of their files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfFonts {
     /// Running text, lists, tables, header and footer: the text font, Regular.
@@ -50,15 +50,15 @@ pub struct PdfFonts {
 }
 
 impl PdfFonts {
-    /// The faces of `design`. A weight the family lacks becomes the next heavier one it has, else its heaviest
-    /// (Inter has no Bold: bold text is SemiBold). `None` when the text font's Regular file cannot be read any more
-    /// (a pack's folder changed since it was checked) or a face does not parse for printpdf: the pack's check reads
-    /// fonts with another parser, and printpdf refuses some of them, so no PDF could be set.
-    pub fn of(design: &Design) -> Option<PdfFonts> {
+    /// The faces of `font`. A weight the family lacks becomes the next heavier one it has, else its heaviest
+    /// (Inter has no Bold: bold text is SemiBold). `None` when the text family's Regular file cannot be read any
+    /// more (the font's folder changed since it was checked) or a face does not parse for printpdf: the font's
+    /// check reads files with another parser, and printpdf refuses some of them, so no PDF could be set.
+    pub fn of(font: &FontSet) -> Option<PdfFonts> {
         let fonts = PdfFonts {
-            text: face(design, FontRole::Text, Weight::Regular)?,
-            strong: face(design, FontRole::Text, Weight::Bold)?,
-            heading: face(design, FontRole::Heading, Weight::Semibold)?,
+            text: face(font, FontRole::Text, Weight::Regular)?,
+            strong: face(font, FontRole::Text, Weight::Bold)?,
+            heading: face(font, FontRole::Heading, Weight::Semibold)?,
         };
         // The embedded Inter is known to parse; a pack's file is parsed once to see.
         let readable = [&fonts.text, &fonts.strong, &fonts.heading].into_iter().all(|face| match face {
@@ -68,20 +68,20 @@ impl PdfFonts {
         readable.then_some(fonts)
     }
 
-    /// The faces of the design `id` (`Settings::design`) from the designs folder `dir` (`torro_core::design::dir`):
-    /// the standard's when the pack cannot be loaded or printpdf cannot read its files ([`PdfFonts::of`]), so a PDF
-    /// is always set.
-    pub fn of_design(dir: Option<&Path>, id: &str) -> PdfFonts {
-        let pack = dir.and_then(|dir| design::load(dir, id).ok());
-        PdfFonts::of_pack(pack.as_ref())
+    /// The faces of the font `id` from the fonts folder `dir` (`torro_core::design::font_dir`): until task L.22 the
+    /// id of the design (`Settings::design`), whose font has the same id. The standard's when the font cannot be
+    /// loaded or printpdf cannot read its files ([`PdfFonts::of`]), so a PDF is always set.
+    pub fn of_font(dir: Option<&Path>, id: &str) -> PdfFonts {
+        let font = dir.and_then(|dir| design::load_font(dir, id).ok());
+        PdfFonts::of_pack(font.as_ref())
     }
 
-    /// The faces of `pack`, or the standard's when there is none or [`PdfFonts::of`] finds none.
-    fn of_pack(pack: Option<&Design>) -> PdfFonts {
-        pack.and_then(PdfFonts::of).unwrap_or_else(PdfFonts::standard)
+    /// The faces of `font`, or the standard's when there is none or [`PdfFonts::of`] finds none.
+    fn of_pack(font: Option<&FontSet>) -> PdfFonts {
+        font.and_then(PdfFonts::of).unwrap_or_else(PdfFonts::standard)
     }
 
-    /// Inter of the standard design, embedded in the binary: Regular, and SemiBold for bold and headings.
+    /// Inter of the standard font, embedded in the binary: Regular, and SemiBold for bold and headings.
     pub fn standard() -> PdfFonts {
         let [regular, _, semibold, _, _] = torro_gui::fonts();
         PdfFonts { text: Cow::Borrowed(regular), strong: Cow::Borrowed(semibold), heading: Cow::Borrowed(semibold) }
@@ -200,11 +200,11 @@ pub fn read_logo(path: &Path) -> Option<Vec<u8>> {
 const WEIGHTS: [Weight; 4] = [Weight::Regular, Weight::Medium, Weight::Semibold, Weight::Bold];
 
 /// The file of `role` at `wanted`, else at the next heavier weight, else at the heaviest lighter one.
-fn face(design: &Design, role: FontRole, wanted: Weight) -> Option<Cow<'static, [u8]>> {
+fn face(font: &FontSet, role: FontRole, wanted: Weight) -> Option<Cow<'static, [u8]>> {
     let at = WEIGHTS.iter().position(|weight| *weight == wanted).unwrap_or(0);
     let heavier = WEIGHTS[at..].iter();
     let lighter = WEIGHTS[..at].iter().rev();
-    heavier.chain(lighter).find_map(|weight| torro_gui::design::font_file(design, role, *weight))
+    heavier.chain(lighter).find_map(|weight| torro_gui::design::font_file(font, role, *weight))
 }
 
 /// Font map keys the style sheet names. Each face is a family of its own (azul picks no face by `font-weight`).
@@ -1145,11 +1145,11 @@ mod tests {
 
     #[test]
     fn bold_and_headings_take_the_next_heavier_weight() {
-        assert_eq!(PdfFonts::of(&Design::standard()), Some(PdfFonts::standard()), "Inter: SemiBold for bold");
+        assert_eq!(PdfFonts::of(&FontSet::standard()), Some(PdfFonts::standard()), "Inter: SemiBold for bold");
 
-        let designs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../designs");
-        let lato = PdfFonts::of_design(Some(&designs), "channelr");
-        let fonts = designs.join("../fonts/channelr");
+        let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fonts");
+        let lato = PdfFonts::of_font(Some(&folder), "channelr");
+        let fonts = folder.join("channelr");
         let regular = std::fs::read(fonts.join("Lato-Regular.ttf")).expect("Lato");
         let bold = std::fs::read(fonts.join("Lato-Bold.ttf")).expect("Lato Bold");
         assert_eq!(lato.text.as_ref(), regular.as_slice());
@@ -1158,8 +1158,8 @@ mod tests {
         let pdf = read(&render(TITLE, "# Grüße\n\n**fett**", &report(), &lato, None, day()).expect("a PDF"));
         assert!(pdf.all().contains("Grüße"));
 
-        assert_eq!(PdfFonts::of_design(Some(&designs), "no-such-pack"), PdfFonts::standard());
-        assert_eq!(PdfFonts::of_design(None, "channelr"), PdfFonts::standard());
+        assert_eq!(PdfFonts::of_font(Some(&folder), "no-such-pack"), PdfFonts::standard());
+        assert_eq!(PdfFonts::of_font(None, "channelr"), PdfFonts::standard());
     }
 
     #[test]
@@ -1168,23 +1168,23 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("Broken-Regular.ttf");
         std::fs::write(&path, b"\0\x01\0\0 no font").expect("written");
-        let mut design = Design::standard();
+        let mut font = FontSet::standard();
         let face = Some(design::Face::File(path));
-        design.fonts.text =
+        font.fonts.text =
             design::Font { family: "Broken".into(), regular: face, medium: None, semibold: None, bold: None };
         let broken =
-            PdfFonts { text: face_bytes(&design), strong: face_bytes(&design), heading: PdfFonts::standard().heading };
+            PdfFonts { text: face_bytes(&font), strong: face_bytes(&font), heading: PdfFonts::standard().heading };
         assert_eq!(render(TITLE, "Text.", &report(), &broken, None, day()), Err(PdfError::Font), "no PDF in it");
 
-        assert_eq!(PdfFonts::of(&design), None);
-        let fonts = PdfFonts::of_pack(Some(&design));
+        assert_eq!(PdfFonts::of(&font), None);
+        let fonts = PdfFonts::of_pack(Some(&font));
         assert_eq!(fonts, PdfFonts::standard());
         let pdf = read(&render(TITLE, "Trotzdem gesetzt.", &report(), &fonts, None, day()).expect("a PDF"));
         assert!(pdf.all().contains("Trotzdem gesetzt."));
     }
 
-    fn face_bytes(design: &Design) -> Cow<'static, [u8]> {
-        face(design, FontRole::Text, Weight::Regular).expect("the file")
+    fn face_bytes(font: &FontSet) -> Cow<'static, [u8]> {
+        face(font, FontRole::Text, Weight::Regular).expect("the file")
     }
 
     #[test]

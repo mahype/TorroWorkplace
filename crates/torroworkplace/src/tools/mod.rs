@@ -41,8 +41,8 @@ pub struct Roots {
     pub desktop: Option<PathBuf>,
     /// The home folder, where a PDF goes when there is no desktop either. `None`: no PDF can be saved.
     pub home: Option<PathBuf>,
-    /// The folder of the design packs (`torro_core::design::dir`), for the fonts; `None` sets in the standard's.
-    pub designs: Option<PathBuf>,
+    /// The fonts folder (`torro_core::design::font_dir`); `None` sets in the standard's.
+    pub fonts: Option<PathBuf>,
 }
 
 /// The tools' handlers and their register.
@@ -62,7 +62,7 @@ impl Tools {
         let data =
             torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE).map(|paths| paths.data.join("tools"));
         let roots =
-            Roots { data, desktop: dirs::desktop_dir(), home: dirs::home_dir(), designs: torro_core::design::dir() };
+            Roots { data, desktop: dirs::desktop_dir(), home: dirs::home_dir(), fonts: torro_core::design::font_dir() };
         Tools { register: Register::in_dir(roots.data.clone()), roots, open: Arc::new(system_open) }
     }
 
@@ -96,7 +96,7 @@ impl Tools {
     }
 
     /// `tools.create_pdf`: sets `markdown` with the template `template` (`report` when `None`) of `settings`, in
-    /// the fonts of the active design pack, saves it in the folder [`place::folder`] picks under a name
+    /// the font of the chosen design's id, saves it in the folder [`place::folder`] picks under a name
     /// [`place::file_name`] makes, never replacing a file, and keeps it in the register as made by `maker`.
     /// Answers [`Response::File`]; `error` for a title or Markdown beyond the limits ([`limit_refusal`]), no folder
     /// to save in, a PDF that cannot be set or a file that cannot be written. The switch and the rights are the
@@ -120,7 +120,8 @@ impl Tools {
         let (roots, register, client) = (self.roots.clone(), self.register.clone(), maker.client());
         let made = tokio::task::spawn_blocking(move || -> Result<FileEntry, ToolError> {
             let home = roots.home.ok_or(ToolError::NoFolder)?;
-            let fonts = pdf::PdfFonts::of_design(roots.designs.as_deref(), &design);
+            // Until task L.22 the font of the design's id (`Settings::design`), from the fonts folder.
+            let fonts = pdf::PdfFonts::of_font(roots.fonts.as_deref(), &design);
             let logo = page.logo.as_deref().and_then(|logo| pdf::read_logo(Path::new(logo)));
             let date = Local::now().date_naive();
             let bytes = pdf::render(&title, &markdown, &page, &fonts, logo.as_deref(), date).map_err(ToolError::Pdf)?;
@@ -349,7 +350,7 @@ pub(crate) mod tests {
                 data: Some(self.dir.path().join("data").join("tools")),
                 desktop: Some(self.desktop()),
                 home: Some(self.home()),
-                designs: None,
+                fonts: None,
             };
             let opened = Arc::clone(&self.opened);
             Tools::new(roots).with_opener(Arc::new(move |path: &Path| {

@@ -17,10 +17,6 @@ pub enum DesignError {
     BadId { id: String },
     /// There is no folder for this id in the folder of `part`.
     NotFound { part: Part, id: String },
-    /// A `design.toml` that holds only the old sections of `part` (`[fonts.*]`, or `[colors.*]` and
-    /// `[logo]`) and no form at all: an old pure font or colour pack, which belongs in the folder of
-    /// `part` now ([`Part::Font`] or [`Part::ColorScheme`]). [`super::list`] leaves such a folder out.
-    WrongFolder { part: Part, id: String },
     /// `[about] font` or `[about] color_scheme` of a design names something that can't be an id.
     BadSuggestion { key: String, id: String },
     /// The widest figure of the `numbers` font is wider than the time axis of a design is made for
@@ -94,15 +90,6 @@ impl fmt::Display for DesignError {
             DesignError::NotFound { part: Part::ColorScheme, id } => {
                 trf("There is no colour scheme “{id}”.", &[("id", id)])
             }
-            // Never built with `Part::Design` (a design is in its folder); matched here to keep the match whole.
-            DesignError::WrongFolder { part: Part::Font | Part::Design, id } => trf(
-                "“{id}” holds only fonts, no design. Fonts go into the fonts folder: fonts/{id}/font.toml.",
-                &[("id", id)],
-            ),
-            DesignError::WrongFolder { part: Part::ColorScheme, id } => trf(
-                "“{id}” holds only colours, no design. Colour schemes go into the colour schemes folder: color-schemes/{id}/color-scheme.toml.",
-                &[("id", id)],
-            ),
             DesignError::BadSuggestion { key, id } => trf(
                 "“{key}” suggests “{id}”, which can't be an id. Use up to 32 characters a–z, 0–9 and -.",
                 &[("key", key), ("id", id)],
@@ -221,13 +208,9 @@ mod tests {
         assert_eq!(DesignError::FontLicense.to_string(), tr("Fonts need their license in LICENSE.txt."));
     }
 
-    /// Task L.19: an old pure colour or font pack in `designs/` is told where it belongs now.
+    /// Task L.19: a part that is not there is named by its kind.
     #[test]
-    fn a_pack_in_the_wrong_folder_is_told_where_it_belongs() {
-        let colours = DesignError::WrongFolder { part: Part::ColorScheme, id: "nord".into() }.to_string();
-        assert!(colours.contains("color-schemes/nord/color-scheme.toml"), "{colours}");
-        let fonts = DesignError::WrongFolder { part: Part::Font, id: "lato".into() }.to_string();
-        assert!(fonts.contains("fonts/lato/font.toml"), "{fonts}");
+    fn a_missing_part_is_named_by_its_kind() {
         let missing = DesignError::NotFound { part: Part::ColorScheme, id: "nord".into() }.to_string();
         assert_eq!(missing, trf("There is no colour scheme “{id}”.", &[("id", &"nord")]));
         let wide = DesignError::DigitsTooWide { family: "Wide".into(), width: 0.7812, max: 0.72 }.to_string();

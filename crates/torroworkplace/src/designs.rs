@@ -638,7 +638,7 @@ mod tests {
         let body = look.level(LevelName::Body);
         assert_eq!((body.size, body.line, look.design.size.row), (14.0, 22.0, 44.0));
         assert_eq!(look.scheme.colors.dark.accent, Rgba::hex(0x3AA6A0));
-        assert!(look.scheme.logo.mark.is_some() && look.scheme.logo.tray.is_none());
+        assert!(look.scheme.logo.mark.is_some());
     }
 
     #[test]
@@ -703,7 +703,6 @@ mod tests {
         assert!(design::list(&all.designs).iter().all(|entry| entry.valid()), "the copies are valid, the list is none");
         assert!(design::list_fonts(&all.fonts).iter().all(|entry| entry.valid()));
         assert!(design::list_color_schemes(&all.color_schemes).iter().all(|entry| entry.valid()));
-        assert_eq!(design::load(&all.designs, "plex").expect("plex").fonts.text.family, "IBM Plex Sans", "the bridge");
         let before = everything(&all);
         install_all(&all);
         assert_eq!(everything(&all), before, "nothing twice");

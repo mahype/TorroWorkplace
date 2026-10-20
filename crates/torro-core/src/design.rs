@@ -21,11 +21,6 @@
 //! anything from a folder: only the TOML file, SVG, PNG and TTF/OTF files are read, each only after its
 //! size was checked, and paths never leave the part's folder.
 //!
-//! **Bridge until L.21/L.22, removed there:** [`Design`] still carries `fonts`, `colors` and `logo`, so
-//! the apps, the control centre and the PDF tool keep drawing with one design id until they take the three
-//! parts. [`load`] fills them from the old sections of a complete pack in `designs/` (as before L.19),
-//! else from `fonts/<id>/` and `color-schemes/<id>/` beside the designs folder, else from the standard.
-//!
 //! No Iced in here: colours are [`Rgba`] with `f32` channels in 0–1, built the way Iced builds a
 //! `Color` from 8-bit values, so `torro_gui` converts them 1:1 (`Color { r, g, b, a }`).
 
@@ -138,17 +133,6 @@ pub struct Design {
     /// `preview.png` in the folder (at most 1200 × 800), for the control centre; `None` shows a
     /// swatch.
     pub preview: Option<PathBuf>,
-    /// **Bridge until L.21/L.22, removed there** (use [`FontSet::fonts`]): the fonts drawn with this
-    /// design. [`load`] takes them from the old `[fonts.*]` of a complete pack, else from `fonts/<id>/`
-    /// beside the designs folder, else the standard's; a source that breaks a font rule is skipped.
-    pub fonts: Fonts,
-    /// **Bridge until L.21/L.22, removed there** (use [`ColorScheme::colors`]): the colours drawn with
-    /// this design, from the old `[colors.*]` of a complete pack, else `color-schemes/<id>/`, else the
-    /// standard's, as [`Design::fonts`].
-    pub colors: Colors,
-    /// **Bridge until L.21/L.22, removed there** (use [`ColorScheme::logo`]): taken together with
-    /// [`Design::colors`].
-    pub logo: Logo,
 }
 
 /// What a design, a font or a colour scheme says about itself (`[about]`). Folder data: shown as
@@ -825,12 +809,9 @@ impl Palette {
 /// The logo of a colour scheme, absolute; `None` draws the suite's own in the accent colour.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Logo {
-    /// The mark in the app switcher and the rail (SVG). `None`: the "T" on `accent`.
+    /// The mark in the app switcher and the rail (SVG). `None`: the "T" on `accent`. There is no tray
+    /// symbol: the tray always draws the four red squares (issue #114).
     pub mark: Option<PathBuf>,
-    /// **Bridge until L.21/L.22, removed there:** the tray symbol of an old complete pack in `designs/`,
-    /// still checked, never shown (the tray always draws the four red squares, issue #114).
-    /// `color-scheme.toml` has no tray, so a colour scheme never sets it.
-    pub tray: Option<PathBuf>,
 }
 
 /// An sRGB colour with alpha, every channel 0–1 (the layout of Iced's `Color`).
@@ -908,8 +889,8 @@ impl Rgba {
 
 impl Design {
     /// The standard design "Torro": exactly the form the suite had as constants before design packs
-    /// (`torro_gui::theme`, `torro_gui::typo`). The bridge fields hold the standard font and colour
-    /// scheme.
+    /// (`torro_gui::theme`, `torro_gui::typo`); with [`FontSet::standard`] and [`ColorScheme::standard`]
+    /// the whole look of before.
     pub fn standard() -> Design {
         let level = |font, weight, size, line| Level { font, weight, size, line };
         Design {
@@ -949,9 +930,6 @@ impl Design {
             },
             size: STANDARD_SIZE,
             preview: None,
-            fonts: inter(),
-            colors: STANDARD_COLORS,
-            logo: Logo::default(),
         }
     }
 
@@ -1304,8 +1282,6 @@ mod tests {
         assert_eq!(f.fonts.numbers.family, "Inter Tabular");
         assert_eq!(f.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
         assert_eq!((f.size_adjust, f.license.as_str()), (1.0, "OFL-1.1"));
-        // The bridge until L.21/L.22 holds the same parts.
-        assert_eq!((&d.fonts, &d.colors, &d.logo), (&f.fonts, &c, &Logo::default()));
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
         assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
         assert_eq!([d.size.row_message, d.size.row_notice], [92.0, 64.0], "the inbox's rows (tasks E3.9, E11.1)");
@@ -1453,6 +1429,10 @@ mod tests {
     #[test]
     fn every_valid_design_font_and_colour_scheme_go_together() {
         let data = testdata::Data::all();
+        // The old complete pack `full` is no design any more (task L.21): a roomy one in its place.
+        let roomy = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n\
+                     [type.body]\nsize = 14\nline = 22\n[type.title]\nsize = 17\nline = 24\n[size]\nrow = 44\n";
+        data.write(Part::Design, "roomy", roomy);
         fn valid<T>(listed: Vec<Listed<T>>) -> Vec<T> {
             listed.into_iter().filter_map(|entry| entry.result.ok()).collect()
         }
