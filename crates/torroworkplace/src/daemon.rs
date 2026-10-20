@@ -13,8 +13,8 @@
 //!   ([`tend_inbox`]),
 //!
 //! and ends on "Quit", Ctrl+C, SIGTERM on Unix (`systemctl --user stop`, `kill`; [`stop_signals`]) or
-//! when the socket server fails. Every command, from the
-//! tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
+//! when the socket server fails; Ctrl+C and SIGTERM during the start end the process at once. Every
+//! command, from the tray or the socket, goes through [`Core::handle`]. One service per user: it locks a file in its
 //! state directory before the core starts ([`claim_service`]), and when it ends it stops the socket
 //! server and releases the template keys it bound on Hyprland ([`Core::release_template_keys`]), after
 //! which nothing binds them again, and ends the MCP servers it started with their process trees
@@ -328,9 +328,6 @@ async fn serve(shows: Shows) -> Result<(), String> {
     // Before anything starts: two services started at once would both start the core (bind the
     // template keys, load the templates of the login) before one of them failed on the socket.
     let _service = claim_service()?;
-    // Installed this early so a SIGTERM while the core starts waits for the end below, which releases
-    // the template keys, instead of ending the process the default way.
-    let stopped = stop_signals();
     let socket = socket_path().ok_or("no home directory")?;
     // Bounded: a program that holds the socket or pipe name but never answers must not stall
     // the start; the server then fails on the taken name with a clear error instead.
@@ -443,6 +440,10 @@ async fn serve(shows: Shows) -> Result<(), String> {
         Err(err) => eprintln!("torroworkplace: no window manager events: {err}"),
     }
 
+    // Only now, with nothing left to wait for before the `select!`: during the start Ctrl+C and SIGTERM
+    // end the process at once, as without a handler (the keys bound by then are written down, the next
+    // start releases them); a handler installed earlier would hold them until the start is through.
+    let stopped = stop_signals();
     let result = tokio::select! {
         _ = quit_rx.recv() => Ok(()),
         () = stopped => Ok(()),
@@ -504,37 +505,64 @@ async fn once_listening(
     true
 }
 
-/// Resolves when the service is told from outside to end: Ctrl+C (SIGINT) on every system and, on
-/// Unix, SIGTERM, which `systemctl --user stop` and `kill` send. Both then take the same way out as
+/// Resolves when the service is told from outside to end: Ctrl+C (SIGINT on Unix) on every system and,
+/// on Unix, SIGTERM, which `systemctl --user stop` and `kill` send. Both then take the same way out as
 /// "Quit": the socket stops and the template keys are released ([`serve`]).
 ///
-/// The SIGTERM handler is installed by the call, not when the future is first polled, so a SIGTERM
-/// that comes before the service waits for it is kept, not lost or deadly. Must be called inside the
-/// runtime. If the handler cannot be installed, that is logged and only Ctrl+C ends the service.
+/// Both handlers are installed by the call, not when the future is first polled (as
+/// `tokio::signal::ctrl_c` would), so a signal between the call and the first poll is kept, not deadly.
+/// Until the call both signals end the process the default way, at once; tokio never takes a handler
+/// back, so from the call on they no longer do. [`serve`] therefore calls it only once the service
+/// runs, right before it waits. Must be called inside the runtime. A handler that cannot be installed
+/// is logged, and that signal keeps ending the process at once.
 fn stop_signals() -> impl Future<Output = ()> + Send + 'static {
     #[cfg(unix)]
-    let terminate = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-        Ok(signal) => Some(signal),
-        Err(err) => {
-            eprintln!("torroworkplace: cannot listen for SIGTERM: {err}; only Ctrl+C ends the service");
-            None
+    {
+        use tokio::signal::unix::SignalKind;
+        let interrupted = on_signal(SignalKind::interrupt(), "Ctrl+C");
+        let terminated = on_signal(SignalKind::terminate(), "SIGTERM");
+        async move {
+            tokio::select! {
+                () = interrupted => {}
+                () = terminated => {}
+            }
         }
-    };
-    async move {
-        #[cfg(unix)]
-        let terminated = async move {
-            match terminate {
-                Some(mut signal) => {
-                    signal.recv().await;
+    }
+    #[cfg(windows)]
+    {
+        let ctrl_c = tokio::signal::windows::ctrl_c()
+            .inspect_err(|err| {
+                eprintln!("torroworkplace: cannot listen for Ctrl+C: {err}; it ends the service at once")
+            })
+            .ok();
+        async move {
+            match ctrl_c {
+                Some(mut ctrl_c) => {
+                    ctrl_c.recv().await;
                 }
                 None => std::future::pending().await,
             }
-        };
-        #[cfg(not(unix))]
-        let terminated = std::future::pending::<()>();
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {}
-            () = terminated => {}
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        std::future::pending::<()>()
+    }
+}
+
+/// Unix: resolves on the signal `kind` (`name` for the log), with the handler installed by the call;
+/// never when it cannot be installed (logged), so that signal keeps its default ([`stop_signals`]).
+#[cfg(unix)]
+fn on_signal(kind: tokio::signal::unix::SignalKind, name: &str) -> impl Future<Output = ()> + Send + 'static {
+    let signal = tokio::signal::unix::signal(kind)
+        .inspect_err(|err| eprintln!("torroworkplace: cannot listen for {name}: {err}; it ends the service at once"))
+        .ok();
+    async move {
+        match signal {
+            Some(mut signal) => {
+                signal.recv().await;
+            }
+            None => std::future::pending().await,
         }
     }
 }
