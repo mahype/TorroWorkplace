@@ -414,7 +414,7 @@ pub fn run(launch: Launch) -> iced::Result {
         torro_gui::source::ensure_core(socket);
     }
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
-    design::start(socket.as_deref(), launch.design.as_deref());
+    design::start(socket.as_deref(), &launch.forced());
     iced::application(move || Ui::new(launch.clone()), timed_update, timed_view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| {

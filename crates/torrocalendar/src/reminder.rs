@@ -123,6 +123,10 @@ pub struct Launch {
     pub size: Option<Size>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
+    /// `--font` and `--color-scheme` (task L.22), like `--design` passed on unchecked: the core starts
+    /// this window, and a part it cannot read is the standard's.
+    pub font: Option<String>,
+    pub color_scheme: Option<String>,
     /// A window on every screen, not only the main one (`--all-displays`, from the setting).
     pub all_displays: bool,
     /// The monitors by name, main first, as the window manager names them (`--monitors DP-1,HDMI-A-1`;
@@ -133,6 +137,12 @@ pub struct Launch {
 }
 
 impl Launch {
+    /// `--design`, `--font` and `--color-scheme` for `torro_gui::design::start_for` (task L.22).
+    pub fn forced(&self) -> torro_gui::design::Forced {
+        let (design, font, color_scheme) = (self.design.clone(), self.font.clone(), self.color_scheme.clone());
+        torro_gui::design::Forced { design, font, color_scheme }
+    }
+
     /// The window starts in reminder mode: `--reminders`, or a reminder state of `--open`.
     pub fn wanted(args: &[String]) -> bool {
         args.iter().any(|arg| arg == "--reminders")
@@ -182,7 +192,17 @@ impl Launch {
             .map(|names| names.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect())
             .unwrap_or_default();
         let cover = demo.is_some() && args.iter().any(|arg| arg == "--cover");
-        Ok(Launch { demo, size, appearance, design: value("--design"), all_displays, monitors, cover })
+        Ok(Launch {
+            demo,
+            size,
+            appearance,
+            design: value("--design"),
+            font: value("--font"),
+            color_scheme: value("--color-scheme"),
+            all_displays,
+            monitors,
+            cover,
+        })
     }
 }
 
@@ -1272,7 +1292,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Some(_) => Source::Demo(Arc::new(DemoSource::new(Local::now().date_naive()))),
         None => Source::from_args(args.iter().cloned()),
     };
-    torro_gui::design::start_for(&source, launch.design.as_deref());
+    torro_gui::design::start_for(&source, &launch.forced());
     iced::daemon(move || App::new(source.clone(), launch.clone()), App::update, App::view)
         .settings(torro_gui::settings())
         .title(App::title)

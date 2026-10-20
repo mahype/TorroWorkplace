@@ -257,7 +257,7 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
-/// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
+/// - `--design <id>`, `--font <id>`, `--color-scheme <id>`: draw with this design, font or colour scheme (task L.22, each from its own folder) instead of the stored one (task L.3); needs
 ///   `--demo`. An id that is not a valid pack is refused with the valid ones.
 /// - `--setup`: open the first-run setup (task W.4, `docs/einrichtung.md`) instead of a section;
 ///   `--step <step>` starts it at that step (needs `--setup` or `--setup-if-open`). The core opens
@@ -274,6 +274,11 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
+    /// `--font <id>` (task L.22): draw with this font instead of the stored one; needs `--demo`.
+    pub font: Option<String>,
+    /// `--color-scheme <id>` (task L.22): draw with this colour scheme instead of the stored one;
+    /// needs `--demo`.
+    pub color_scheme: Option<String>,
     /// `--setup`: the step the setup starts at; `None` without the setup.
     pub setup: Option<super::setup::Step>,
     /// `--setup-if-open`: [`Launch::setup`] only while the setup is not done (task W.9).
@@ -289,6 +294,8 @@ impl Default for Launch {
             open: None,
             appearance: None,
             design: None,
+            font: None,
+            color_scheme: None,
             setup: None,
             setup_if_open: false,
         }
@@ -338,6 +345,15 @@ fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a s
 }
 
 impl Launch {
+    /// `--design`, `--font` and `--color-scheme` for `torro_gui::design::start` (task L.22).
+    pub fn forced(&self) -> torro_gui::design::Forced {
+        torro_gui::design::Forced {
+            design: self.design.clone(),
+            font: self.font.clone(),
+            color_scheme: self.color_scheme.clone(),
+        }
+    }
+
     /// Reads the start parameters from `args` (the words after `ui`).
     pub fn parse(args: &[String]) -> Result<Launch, LaunchError> {
         let demo = args.iter().any(|arg| arg == "--demo");
@@ -375,15 +391,21 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
-        let design = match flag_value(args, "--design")? {
-            None => None,
-            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
-            Some(id) if torro_gui::design::is_choice(id) => Some(id.to_owned()),
-            Some(id) => {
-                let valid = torro_gui::design::choices();
-                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+        // `--design`, `--font` and `--color-scheme` each take the valid ids of their own folder (task L.22).
+        let part = |flag: &'static str, part: torro_gui::design::Part| -> Result<Option<String>, LaunchError> {
+            match flag_value(args, flag)? {
+                None => Ok(None),
+                Some(_) if !demo => Err(LaunchError::NeedsDemo(flag)),
+                Some(id) if torro_gui::design::is_choice(part, id) => Ok(Some(id.to_owned())),
+                Some(id) => {
+                    let valid = torro_gui::design::choices(part);
+                    Err(unknown(flag, id, valid.iter().map(String::as_str).collect()))
+                }
             }
         };
+        let design = part("--design", torro_gui::design::Part::Design)?;
+        let font = part("--font", torro_gui::design::Part::Font)?;
+        let color_scheme = part("--color-scheme", torro_gui::design::Part::ColorScheme)?;
         let setup_if_open = args.iter().any(|arg| arg == "--setup-if-open");
         let asked = args.iter().any(|arg| arg == "--setup") || setup_if_open;
         let setup = match (asked, flag_value(args, "--step")?) {
@@ -395,7 +417,7 @@ impl Launch {
                     .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
             ),
         };
-        Ok(Launch { section, client, demo, open, appearance, design, setup, setup_if_open })
+        Ok(Launch { section, client, demo, open, appearance, design, font, color_scheme, setup, setup_if_open })
     }
 }
 
@@ -428,7 +450,7 @@ fn is_bot_id(id: &str) -> bool {
 /// The design packs of `--demo` (Appearance › Design, task L.4), in memory like all its data: the
 /// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
 /// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. Each is
-/// a design with the colour scheme of the same id, as until task L.22 one id names both; the samples
+/// a design with the colour scheme of the same id, as the page previews a design until task L.23; the samples
 /// use Inter, the only font the demo has without a folder.
 pub fn demo_designs() -> Vec<Pack> {
     use torro_core::design::{ColorScheme, Design, DesignError, FontSet, Mode, Rgba, Selection};
@@ -442,6 +464,8 @@ pub fn demo_designs() -> Vec<Pack> {
         valid: true,
         problems: Vec::new(),
         active: false,
+        font: None,
+        color_scheme: None,
     };
     let pack = |id: &str, name: &str, version: &str, description: &str| {
         let mut design = Design::standard();
@@ -484,6 +508,8 @@ pub fn demo_designs() -> Vec<Pack> {
         .map(ToString::to_string)
         .collect(),
         active: false,
+        font: None,
+        color_scheme: None,
     };
     let mut packs: Vec<Pack> = [Selection::standard(), harbor, paper]
         .into_iter()
@@ -1538,6 +1564,15 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
         let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
         assert_eq!(launch.design.as_deref(), Some("torro"));
+
+        // Task L.22: a font and a colour scheme of their own, each from its folder, also only with the demo.
+        let parts = Launch::parse(&args(&["--demo", "--font", "torro", "--color-scheme", "torro"])).expect("standards");
+        assert_eq!((parts.font.as_deref(), parts.color_scheme.as_deref()), (Some("torro"), Some("torro")));
+        assert_eq!((parts.forced().design, parts.forced().font.as_deref()), (None, Some("torro")));
+        assert_eq!(Launch::parse(&args(&["--font", "torro"])), Err(LaunchError::NeedsDemo("--font")));
+        assert_eq!(Launch::parse(&args(&["--color-scheme", "torro"])), Err(LaunchError::NeedsDemo("--color-scheme")));
+        let unknown = Launch::parse(&args(&["--demo", "--color-scheme", "no-such-scheme"])).expect_err("unknown");
+        assert!(unknown.to_string().contains("--color-scheme"), "{unknown}");
     }
 
     #[test]

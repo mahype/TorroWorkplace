@@ -1024,7 +1024,8 @@ pub enum Request {
     Settings,
     /// Replaces the settings; the core applies what changed (start at login, hidden
     /// collections; the language applies to processes started afterwards). A hidden collection
-    /// named by a bare URL instead of its id is answered with `error` and nothing changes.
+    /// named by a bare URL instead of its id is answered with `error` and nothing changes. Settings
+    /// without `font` or `colorScheme` keep the stored ones (task L.22).
     #[serde(rename = "settings.update_settings")]
     UpdateSettings { settings: Settings },
     /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
@@ -1041,12 +1042,24 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
-    /// Every design pack: the standard first, then each folder under `<data>/designs/`, valid
-    /// or with the reasons it can't be used, and which one the settings name
-    /// ([`Response::Designs`]). One is chosen with [`Request::SetSetting`] and
-    /// [`SettingKey::Design`]. Reads only; never fails.
+    /// Every design: the standard first, then each folder under `<data>/designs/`, valid
+    /// or with the reasons it can't be used, the font and colour scheme it suggests, and which one
+    /// the settings name ([`Response::Designs`]). One is chosen with [`Request::SetSetting`] and
+    /// [`SettingKey::Design`]. Fonts and colour schemes are listed apart ([`Request::ListFonts`],
+    /// [`Request::ListColorSchemes`]). Reads only; never fails.
     #[serde(rename = "settings.list_designs")]
     ListDesigns,
+    /// Every font (task L.22): the standard first, then each folder under `<data>/fonts/`, valid or
+    /// with the reasons it can't be used, and which one the settings name ([`Response::Fonts`]). One
+    /// is chosen with [`Request::SetSetting`] and [`SettingKey::Font`]. Reads only; never fails.
+    #[serde(rename = "settings.list_fonts")]
+    ListFonts,
+    /// Every colour scheme (task L.22): the standard first, then each folder under
+    /// `<data>/color-schemes/`, valid or with the reasons it can't be used, and which one the
+    /// settings name ([`Response::ColorSchemes`]). One is chosen with [`Request::SetSetting`] and
+    /// [`SettingKey::ColorScheme`]. Reads only; never fails.
+    #[serde(rename = "settings.list_color_schemes")]
+    ListColorSchemes,
     /// All accounts with their state and collections ([`Response::Accounts`]), in the order they
     /// were added; a sign-in that runs is listed last with an empty id.
     #[serde(rename = "accounts.list_accounts")]
@@ -2501,10 +2514,19 @@ pub enum SettingKey {
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.
     QuietWhenBusy,
-    /// The design pack every window draws with: its id from `settings.list_designs`, `"torro"`
-    /// for the standard. A pack that is not there or breaks a rule is refused with `error` and
-    /// its reasons, and nothing changes. Open windows follow.
+    /// The design every window draws with (spacing, sizes, radii, type scale): its id from
+    /// `settings.list_designs`, `"torro"` for the standard. A design that is not there or breaks a
+    /// rule is refused with `error` and its reasons, and nothing changes; an id that is only a font
+    /// or a colour scheme is refused with the key to choose it with. Font and colour scheme stay.
+    /// Open windows follow.
     Design,
+    /// The font every window draws with (task L.22): its id from `settings.list_fonts`, `"torro"`
+    /// for the standard. Refused like [`SettingKey::Design`]. Open windows follow and load its files.
+    Font,
+    /// The colour scheme every window draws with, both modes and the logo (task L.22): its id from
+    /// `settings.list_color_schemes`, `"torro"` for the standard. Refused like
+    /// [`SettingKey::Design`]. Open windows follow.
+    ColorScheme,
     /// How long the assistant keeps a conversation after its last entry: a number of days from 1
     /// to 3650 (30 unless changed), or `"forever"`. Pinned conversations are always kept
     /// (`torro_core::settings::Retention`).
@@ -2724,6 +2746,14 @@ pub enum Response {
     /// The design packs ([`Request::ListDesigns`]), the standard first.
     Designs {
         designs: Vec<DesignInfo>,
+    },
+    /// The fonts ([`Request::ListFonts`]), the standard first.
+    Fonts {
+        fonts: Vec<FontInfo>,
+    },
+    /// The colour schemes ([`Request::ListColorSchemes`]), the standard first.
+    ColorSchemes {
+        color_schemes: Vec<ColorSchemeInfo>,
     },
     Clients {
         clients: Vec<ClientInfo>,
@@ -3698,6 +3728,79 @@ pub struct DesignInfo {
     pub problems: Vec<String>,
     /// The settings name this pack (`Settings::design`). When the active one is not valid, the
     /// windows draw with the standard.
+    pub active: bool,
+    /// The font the design is meant for (`[about] font`, task L.22): an id for
+    /// [`SettingKey::Font`], only a suggestion – choosing the design does not choose it, and the
+    /// font need not exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// The colour scheme the design is meant for (`[about] color_scheme`), a suggestion like
+    /// [`DesignInfo::font`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_scheme: Option<String>,
+}
+
+/// One font as [`Request::ListFonts`] reports it (task L.22). Family, name, version, author,
+/// description, licence and the file names in the problems are the folder's own words, shown as
+/// written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FontInfo {
+    /// The font's folder name, what [`SettingKey::Font`] takes; `torro` for the standard.
+    pub id: String,
+    /// The family of its text font (`IBM Plex Sans`), what the control centre names it by; `None`
+    /// when the font can't be used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// `Plex`, from `[about]`; the id when `font.toml` cannot be read.
+    pub name: String,
+    /// `1.0.0`; empty when the font does not say.
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// SPDX id of the licence of its files (`OFL-1.1`); `None` when the font can't be used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// The standard font the suite ships, Inter (always first, always valid).
+    pub standard: bool,
+    /// Whether the font can be used; one that breaks a rule is refused as a whole.
+    pub valid: bool,
+    /// Why it can't be used, one sentence per broken rule, for people; empty when valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
+    /// The settings name this font (`Settings::font`). When the active one is not valid, the
+    /// windows draw with the standard.
+    pub active: bool,
+}
+
+/// One colour scheme as [`Request::ListColorSchemes`] reports it (task L.22). Name, version,
+/// author, description and the file names in the problems are the folder's own words, shown as
+/// written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorSchemeInfo {
+    /// The colour scheme's folder name, what [`SettingKey::ColorScheme`] takes; `torro` for the
+    /// standard.
+    pub id: String,
+    /// `Nord`; the id when `color-scheme.toml` cannot be read.
+    pub name: String,
+    /// `1.0.0`; empty when the colour scheme does not say.
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The standard colour scheme the suite ships (always first, always valid).
+    pub standard: bool,
+    /// Whether the colour scheme can be used; one that breaks a rule is refused as a whole.
+    pub valid: bool,
+    /// Why it can't be used, one sentence per broken rule, for people; empty when valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
+    /// The settings name this colour scheme (`Settings::color_scheme`). When the active one is not
+    /// valid, the windows draw with the standard.
     pub active: bool,
 }
 

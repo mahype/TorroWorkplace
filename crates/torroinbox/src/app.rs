@@ -1380,7 +1380,7 @@ impl Open {
 /// - `--mail-view html|text` and `--mail-colors app|light|dark`: show mail this way in this process
 ///   instead of the settings `mail_view` and `mail_appearance` (task M9.7, [`Launch::look`]), as the
 ///   switches over a mail start. Nothing is stored.
-/// - `--design <id>`: draw with this design pack instead of the standard (task L.3); needs `--demo`.
+/// - `--design <id>`, `--font <id>`, `--color-scheme <id>`: draw with this design, font or colour scheme (task L.22, each from its own folder) instead of the standard (task L.3); needs `--demo`.
 ///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>` (local time): a fixed "now" and demo data around it, for pictures
 ///   that can be made again; needs `--demo`.
@@ -1413,6 +1413,11 @@ pub struct Launch {
     pub mail_colors: Option<MailAppearance>,
     pub now: Option<NaiveDateTime>,
     pub design: Option<String>,
+    /// `--font <id>` (task L.22): draw with this font instead of the stored one; needs `--demo`.
+    pub font: Option<String>,
+    /// `--color-scheme <id>` (task L.22): draw with this colour scheme instead of the stored one;
+    /// needs `--demo`.
+    pub color_scheme: Option<String>,
     /// The window of `--view`; the hub without it.
     pub kind: Kind,
     /// The view of `--lane` or `--source`; `None` starts on the overview.
@@ -1641,6 +1646,11 @@ pub(crate) fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<O
 }
 
 impl Launch {
+    /// `--design`, `--font` and `--color-scheme` for `design::start` (task L.22).
+    pub fn forced(&self) -> design::Forced {
+        design::Forced { design: self.design.clone(), font: self.font.clone(), color_scheme: self.color_scheme.clone() }
+    }
+
     /// Reads the start parameters from `args` (the words after the program name). Words it does
     /// not know are left alone.
     pub fn parse(args: &[String]) -> Result<Launch, LaunchError> {
@@ -1688,15 +1698,21 @@ impl Launch {
                 NaiveDateTime::parse_from_str(word, "%Y-%m-%dT%H:%M").map_err(|_| LaunchError::BadNow(word.into()))?,
             ),
         };
-        let design = match flag_value(args, "--design")? {
-            None => None,
-            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
-            Some(id) if design::is_choice(id) => Some(id.to_owned()),
-            Some(id) => {
-                let valid = design::choices();
-                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+        // `--design`, `--font` and `--color-scheme` each take the valid ids of their own folder (task L.22).
+        let part = |flag: &'static str, part: design::Part| -> Result<Option<String>, LaunchError> {
+            match flag_value(args, flag)? {
+                None => Ok(None),
+                Some(_) if !demo => Err(LaunchError::NeedsDemo(flag)),
+                Some(id) if design::is_choice(part, id) => Ok(Some(id.to_owned())),
+                Some(id) => {
+                    let valid = design::choices(part);
+                    Err(unknown(flag, id, valid.iter().map(String::as_str).collect()))
+                }
             }
         };
+        let design = part("--design", design::Part::Design)?;
+        let font = part("--font", design::Part::Font)?;
+        let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
         let kind = Kind::parse(args)?;
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         let settings = match flag_value(args, "--settings")? {
@@ -1716,6 +1732,8 @@ impl Launch {
             mail_colors,
             now,
             design,
+            font,
+            color_scheme,
             kind,
             view,
             shown,
@@ -9472,6 +9490,15 @@ mod tests {
         let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
         assert_eq!(launch.design.as_deref(), Some("torro"));
         assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+
+        // Task L.22: a font and a colour scheme of their own, each from its folder, also only with the demo.
+        let parts = Launch::parse(&args(&["--demo", "--font", "torro", "--color-scheme", "torro"])).expect("standards");
+        assert_eq!((parts.font.as_deref(), parts.color_scheme.as_deref()), (Some("torro"), Some("torro")));
+        assert_eq!((parts.forced().design, parts.forced().font.as_deref()), (None, Some("torro")));
+        assert_eq!(Launch::parse(&args(&["--font", "torro"])), Err(LaunchError::NeedsDemo("--font")));
+        assert_eq!(Launch::parse(&args(&["--color-scheme", "torro"])), Err(LaunchError::NeedsDemo("--color-scheme")));
+        let unknown = Launch::parse(&args(&["--demo", "--color-scheme", "no-such-scheme"])).expect_err("unknown");
+        assert!(unknown.to_string().contains("--color-scheme"), "{unknown}");
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
     }
 
@@ -9498,10 +9525,16 @@ mod tests {
         let mut app = loaded(&[]);
         app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
         // Only the design changes (there is no font `twin`), so no font is loaded (task L.21).
-        let _ = app.update(Message::Design(design::Message::Stored(Ok("twin".into()))));
+        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
+            design: "twin".into(),
+            ..design::Chosen::standard()
+        }))));
         assert_eq!(design::active().id, "twin");
         let _ = app.view();
-        let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
+        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
+            design: "pale".into(),
+            ..design::Chosen::standard()
+        }))));
         assert!(design::active().is_standard(), "a broken pack is never drawn");
     }
 
@@ -9519,7 +9552,10 @@ mod tests {
         let mut app = loaded(&["--view", "mail"]);
         assert_eq!(app.density(), Density::Compact, "the standard design \"Torro\" shows rows");
         app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
-        let _ = app.update(Message::Design(design::Message::Stored(Ok("roomy".into()))));
+        let _ = app.update(Message::Design(design::Message::Stored(Ok(design::Chosen {
+            design: "roomy".into(),
+            ..design::Chosen::standard()
+        }))));
         assert_eq!(design::active().id, "roomy");
         assert_eq!(app.density(), Density::Comfortable, "the pack asks for cards, so the window draws cards");
         assert_eq!(app.look(), Look::Cards);

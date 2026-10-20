@@ -436,7 +436,12 @@ eine neue Schrift vorschlagen, warten auf L.24.
   laufen; `scripts/design-check.sh` sauber.
 
 ### L.22 Einstellungen, API, MCP und Wechsel für Schrift und Farbschema
-- [ ] erledigt
+- [x] erledigt (2026-10-20: `FontInfo` hat zusätzlich `description`, `family` und `license` sind optional (unbekannt
+  bei einer kaputten Schrift); ein fehlendes oder leeres `font`/`colorScheme` in `update_settings` behält den
+  gespeicherten Wert (`Settings::fill_unnamed_parts`); torro-gui: `design::Chosen`, `design::Forced`,
+  `Folders::select`, `Follow::follow`, `Follow::apply(id)` wechselt nur noch das Design, `is_choice`/`choices` nehmen
+  den Teil; die Steuerzentrale folgt beim Neuladen bis L.23 nur dem Design (`ui/mod.rs`), `Folders::look(id)` bleibt
+  für ihre Vorschau bis L.23)
 - **Modell:** Opus · **Braucht:** L.21 · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,settings_service,mcp}.rs`,
   `crates/torroworkplace/src/tools/{mod,pdf}.rs`, `crates/torro-gui/src/design.rs` (`Follow`, `start`), die

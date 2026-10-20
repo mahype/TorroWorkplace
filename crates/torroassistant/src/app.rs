@@ -295,8 +295,9 @@ pub enum Message {
     Engines(Result<Vec<Engine>, Refusal>),
     /// The models of an AI account (by engine id).
     Models(String, Result<Vec<AiModel>, Refusal>),
-    /// The suite's settings: the default for new chats (issue #131).
-    Settings(Result<Settings, Refusal>),
+    /// The suite's settings: the default for new chats (issue #131). Boxed: they are by far the
+    /// largest answer, and every other message would carry their size.
+    Settings(Result<Box<Settings>, Refusal>),
     /// The rights of the assistant's own client; `Ok(None)` when there is none.
     Client(Result<Option<Rights>, Refusal>),
     /// The assistant's profile (task C.10): its name and picture for the header and the welcome.
@@ -1166,7 +1167,7 @@ impl App {
         });
         let settings = self.ask(Request::Settings, |result| {
             Message::Settings(result.and_then(|response| match response {
-                Response::Settings { settings } => Ok(settings),
+                Response::Settings { settings } => Ok(Box::new(settings)),
                 other => Err(Refusal::unexpected(&other)),
             }))
         });

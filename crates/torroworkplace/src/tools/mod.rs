@@ -96,7 +96,7 @@ impl Tools {
     }
 
     /// `tools.create_pdf`: sets `markdown` with the template `template` (`report` when `None`) of `settings`, in
-    /// the font of the chosen design's id, saves it in the folder [`place::folder`] picks under a name
+    /// the chosen font (`Settings::font`, task L.22), saves it in the folder [`place::folder`] picks under a name
     /// [`place::file_name`] makes, never replacing a file, and keeps it in the register as made by `maker`.
     /// Answers [`Response::File`]; `error` for a title or Markdown beyond the limits ([`limit_refusal`]), no folder
     /// to save in, a PDF that cannot be set or a file that cannot be written. The switch and the rights are the
@@ -116,12 +116,12 @@ impl Tools {
         let id = template.unwrap_or_default();
         let page = settings.tools.pdf.template(id).clone();
         let set_folder = settings.tools.pdf.folder.clone().map(PathBuf::from);
-        let design = settings.design.clone();
+        let font = settings.font.clone();
         let (roots, register, client) = (self.roots.clone(), self.register.clone(), maker.client());
         let made = tokio::task::spawn_blocking(move || -> Result<FileEntry, ToolError> {
             let home = roots.home.ok_or(ToolError::NoFolder)?;
-            // Until task L.22 the font of the design's id (`Settings::design`), from the fonts folder.
-            let fonts = pdf::PdfFonts::of_font(roots.fonts.as_deref(), &design);
+            // The chosen font from the fonts folder, whatever the design (task L.22).
+            let fonts = pdf::PdfFonts::of_font(roots.fonts.as_deref(), &font);
             let logo = page.logo.as_deref().and_then(|logo| pdf::read_logo(Path::new(logo)));
             let date = Local::now().date_naive();
             let bytes = pdf::render(&title, &markdown, &page, &fonts, logo.as_deref(), date).map_err(ToolError::Pdf)?;
@@ -411,6 +411,29 @@ pub(crate) mod tests {
 
         let none = Tools::new(Roots::default());
         assert_eq!(code(&make(&none, "Nowhere", &settings, Maker::App).await), "error");
+    }
+
+    /// Task L.22: a PDF is set in the chosen font (`Settings::font`), whatever the design: Lato with
+    /// `font = "channelr"`, Inter with the design `channelr` and the standard font.
+    #[tokio::test]
+    async fn a_pdf_is_set_in_the_chosen_font_not_the_designs() {
+        let room = Room::new();
+        let repo_fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fonts");
+        let roots = Roots {
+            data: Some(room.dir.path().join("data").join("tools")),
+            desktop: Some(room.desktop()),
+            home: Some(room.home()),
+            fonts: Some(repo_fonts),
+        };
+        let tools = Tools::new(roots);
+        let contains = |bytes: &[u8], name: &[u8]| bytes.windows(name.len()).any(|window| window == name);
+
+        let lato = Settings { font: "channelr".into(), ..Settings::default() };
+        let pdf = fs::read(file(make(&tools, "In Lato", &lato, Maker::App).await).path).expect("written");
+        assert!(contains(&pdf, b"Lato"), "set in the font channelr");
+        let inter = Settings { design: "channelr".into(), ..Settings::default() };
+        let pdf = fs::read(file(make(&tools, "In Inter", &inter, Maker::App).await).path).expect("written");
+        assert!(!contains(&pdf, b"Lato") && contains(&pdf, b"Inter"), "the design does not choose the font");
     }
 
     #[tokio::test]

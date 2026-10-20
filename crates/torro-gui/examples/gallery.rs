@@ -51,14 +51,23 @@ use torro_gui::widgets::{
 fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().collect();
     let start = Start::from_args(&args);
-    // Before the settings load the fonts, so the first frame has the pack's.
-    if let Some(id) = args.iter().position(|a| a == "--design").and_then(|i| args.get(i + 1)) {
-        if torro_gui::design::is_choice(id) {
-            torro_gui::design::start(None, Some(id));
-        } else {
-            eprintln!("gallery: no valid design {id:?}; valid: {}", torro_gui::design::choices().join(", "));
+    // Before the settings load the fonts, so the first frame has the pack's. `--design`, `--font` and
+    // `--color-scheme` each take an id of their own folder (task L.22).
+    use torro_gui::design::{self, Forced, Part};
+    let part = |flag: &str, part: Part| {
+        let id = args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1))?;
+        if design::is_choice(part, id) {
+            return Some(id.clone());
         }
-    }
+        eprintln!("gallery: no valid {flag} {id:?}; valid: {}", design::choices(part).join(", "));
+        None
+    };
+    let forced = Forced {
+        design: part("--design", Part::Design),
+        font: part("--font", Part::Font),
+        color_scheme: part("--color-scheme", Part::ColorScheme),
+    };
+    design::start(None, &forced);
     let size = match start.page {
         Page::Window => iced::Size::new(1440.0, 900.0),
         Page::Parts => iced::Size::new(3200.0, 840.0),

@@ -82,7 +82,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
-| `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
+| `settings` | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
 | `tools` ²² | `list_tools` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten) | | |
@@ -298,13 +298,23 @@ ermittelt künftig der Dienst, nicht mehr die Steuerzentrale.
 Rückfrage stellen (`ask_permission`), der App-Schlüssel liest alle. Entscheiden kann nur der
 App-Schlüssel.
 
-⁹ `list_designs` (L.3) nennt die Design-Pakete ([design-pakete.md](design-pakete.md)): das Standardpaket
-`torro` zuerst, dann jeden Ordner unter `<data>/designs/` mit `id`, `name`, `version`, `author`,
-`description`, `standard`, `valid`, `problems` (lesbare Gründe, warum ein Paket nicht geht) und
-`active` (das in den Einstellungen gewählte). Gewählt wird mit `set_setting { key: "design", value:
-"<id>" }` (`Admin`); ein fehlendes oder ungültiges Paket lehnt der Dienst mit `error` und allen
-Gründen ab. Pakete enthalten keine Geheimnisse, darum genügt `Read` zum Auflisten. Die Apps folgen
-der Einstellung wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem Takt.
+⁹ `list_designs` (L.3), `list_fonts` und `list_color_schemes` (L.22) nennen die drei Teile des Aussehens
+([design-pakete.md](design-pakete.md), „Design, Schrift und Farbschema getrennt“), jeder aus seinem Ordner: das
+Standardteil `torro` zuerst, dann jeden Ordner unter `<data>/designs/`, `<data>/fonts/` bzw. `<data>/color-schemes/`
+mit `id`, `name`, `version`, `author`, `description`, `standard`, `valid`, `problems` (lesbare Gründe, warum ein Teil
+nicht geht) und `active` (das in den Einstellungen gewählte). Dazu bei Designs `font` und `colorScheme` (die
+Vorschläge aus `[about]`, wählen nichts), bei Schriften `family` (Familie der Textschrift) und `license`. Gewählt
+wird jeder Teil für sich mit `set_setting { key: "design" | "font" | "color_scheme", value: "<id>" }` (`Admin`); ein
+Design zu wählen ändert Schrift und Farbschema nicht. Ein fehlendes oder ungültiges Teil lehnt der Dienst mit
+`error` und allen Gründen ab; liegt die id in einem anderen Ordner, nennt die Meldung den Schlüssel, der sie wählt
+(`design = "nord"` → `color_scheme`). Die Freigabe zeigt Schlüssel und id, nie den Namen aus dem Ordner.
+`update_settings` ohne `font` oder `colorScheme` behält die gespeicherten. Die Teile enthalten keine Geheimnisse,
+darum genügt `Read` zum Auflisten. Name, Familie, Version, Autor, Beschreibung, Lizenz, die vorgeschlagenen ids und
+alles in `problems` (Dateinamen, Schlüssel, Meldungen des Parsers) sind Text aus dem Ordner, ebenso die Gründe in einer
+Ablehnung von `set_setting`: Die Beschreibungen der Tools sagen Agenten, ihn als Daten zu behandeln, nie als
+Anweisung. Die
+Apps folgen den drei Einstellungen wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem Takt und lesen
+nur den Teil neu, der sich geändert hat; nur eine neue Schrift lädt Schriftdateien.
 
 ¹⁰ `hide_sender { id, scope: conversation | sender | domain }` (E3.10, E3.11) hat je Umfang eine
 andere Stufe: `conversation` ist `Write` (nur dieser Eintrag wird erledigt, keine Regel; eine neue

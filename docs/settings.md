@@ -464,19 +464,20 @@ kacheln, etwa „Arbeit · Woche“ und „Familie · Monat“.
 |---|---|
 | Konten (ohne Geheimnisse) | `accounts.json` im Config-Verzeichnis des Kerns (gibt es) |
 | Geheimnisse (App-Passwörter, Tokens, API-Schlüssel) | Schlüsselbund des Systems, Dienst `torroworkplace` (gibt es) |
-| Einstellungen (Sprache, Autostart, ausgeblendete Sammlungen, gewähltes Design `design` …) | `settings.json` im Config-Verzeichnis, atomar geschrieben |
-| Design-Pakete | `designs/<id>/` im Datenverzeichnis; aufgelistet mit `settings.list_designs`, gewählt mit `settings.set_setting { key: "design" }` (L.3) |
+| Einstellungen (Sprache, Autostart, ausgeblendete Sammlungen, gewähltes Design `design`, Schrift `font`, Farbschema `colorScheme` …) | `settings.json` im Config-Verzeichnis, atomar geschrieben |
+| Designs, Schriften, Farbschemata | `designs/<id>/`, `fonts/<id>/`, `color-schemes/<id>/` im Datenverzeichnis; aufgelistet mit `settings.list_designs`, `settings.list_fonts`, `settings.list_color_schemes`, gewählt mit `settings.set_setting { key: "design" \| "font" \| "color_scheme" }` (L.3, L.22) |
 | Vorlagen | wie bisher `templates/` im Datenverzeichnis |
 
 Die Steuerzentrale liest und schreibt nie selbst Dateien, sondern fragt den Dienst über IPC
 (`Settings`, `SetSetting`, `Accounts`, `AddAccount…`, `RemoveAccount`, `TestAccount`). So sehen
 Tray, Apps und Steuerzentrale immer denselben Stand.
 
-Das gewählte Design gilt in allen offenen Fenstern sofort, auf demselben Weg wie hell/dunkel und
-der Zoom: Jede App fragt die Einstellungen beim Start (vor dem ersten Bild) und bei jedem Takt, lädt
-das Paket, lädt seine Schriften nach und zeichnet neu; nur das Tray-Symbol bleibt fest (Issue #114). Ist das Paket
-weg oder ungültig, zeichnen alle mit dem Standardpaket, die Einstellung bleibt stehen. Zum
-Ausprobieren ohne Dienst: `--demo --design <id>` in jeder App.
+Design, Schrift und Farbschema gelten in allen offenen Fenstern sofort, auf demselben Weg wie hell/dunkel
+und der Zoom: Jede App fragt die Einstellungen beim Start (vor dem ersten Bild) und bei jedem Takt, liest
+den Teil neu, der sich geändert hat, lädt bei einer neuen Schrift deren Dateien nach und zeichnet neu; nur
+das Tray-Symbol bleibt fest (Issue #114). Ist ein Teil weg oder ungültig, zeichnen alle mit dem Standard
+dieses Teils, die Einstellung bleibt stehen. Zum Ausprobieren ohne Dienst: `--demo --design <id> --font <id>
+--color-scheme <id>` in jeder App, jede id aus ihrem eigenen Ordner (L.22).
 
 ## Apps ohne Konto
 
@@ -669,7 +670,7 @@ führt nur noch dorthin, wo es um Konten geht („Open Settings“ einer App ohn
 |---|---|---|---|---|---|
 | Modelle je Anbieter an/aus | welche Modelle die Module anbieten | S.24–S.26 (Steuerzentrale › AI) | `<config>/ai-models.json` (neu) | `ai.set_model_enabled` (neu) | bleibt, Suite › AI |
 | Keyboard shortcuts (Preset, eigene Tasten) | Kürzel des Mail-Fensters | E10.1b, E10.2, E10.3 (#209) | `settings.json` (`mailShortcuts`) | `set_setting mail_shortcut_preset`, `mail_shortcut` (neu) | bleibt, Mail |
-| Design, Schrift, Farbschema getrennt | Aussehen feiner wählen | #189 | `settings.json` | `set_setting` (neu) | bleibt, Suite › Appearance |
+| Design, Schrift, Farbschema getrennt | Aussehen feiner wählen | #189 (Einstellungen, API, MCP: L.22; Seite: L.23) | `settings.json` (`design`, `font`, `colorScheme`) | `set_setting design\|font\|color_scheme`, `settings.list_fonts`, `settings.list_color_schemes` | bleibt, Suite › Appearance |
 | Fenster-Profil (Kalender, Listen, Ansicht je Fenster) | mehrere Kalenderfenster nebeneinander | „pro Fenster (später)“ oben | State-Verzeichnis | – | bleibt geplant |
 
 ### Startargumente
@@ -683,7 +684,7 @@ Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder
 | `--setup`, `--setup-if-open`, `--step <schritt>` | öffnet die Einrichtung, auf Wunsch nur solange sie offen ist | Steuerzentrale | bleibt |
 | `--settings <abschnitt>` | öffnet eine App mit offenen Einstellungen | alle Apps (S.18–S.20) | bleibt; kein Request, nur ein Startwort |
 | `--demo` | Beispieldaten statt Dienst, schreibt nichts | alle | bleibt (Sichtprüfung) |
-| `--appearance light\|dark\|system`, `--design <id>` | überschreibt `appearance` bzw. `design` für dieses Fenster (`--design` nur mit `--demo`) | alle | bleibt (Sichtprüfung) |
+| `--appearance light\|dark\|system`, `--design <id>`, `--font <id>`, `--color-scheme <id>` | überschreibt `appearance`, `design`, `font` bzw. `colorScheme` für dieses Fenster (die drei Teile nur mit `--demo`, je eine id ihres Ordners) | alle | bleibt (Sichtprüfung) |
 | `--mail-view`, `--mail-colors` | überschreiben `mailView` und `mailAppearance` für dieses Fenster | Eingang, Mail | bleibt (Sichtprüfung) |
 | `--view`, `--lane`, `--source`, `--account`, `--open`, `--size`, `--now`, `--task` | wählen Fensterart, Ausschnitt, Größe und Zeitpunkt | Apps | bleibt, keine Einstellung |
 | `--reminders`, `--all-displays`, `--monitors`, `--cover` | das Erinnerungsfenster, das der Kern selbst startet (`torrocalendar::reminder`) | Kalender | bleibt, keine Einstellung |

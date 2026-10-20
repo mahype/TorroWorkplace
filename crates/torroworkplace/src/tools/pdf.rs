@@ -68,8 +68,8 @@ impl PdfFonts {
         readable.then_some(fonts)
     }
 
-    /// The faces of the font `id` from the fonts folder `dir` (`torro_core::design::font_dir`): until task L.22 the
-    /// id of the design (`Settings::design`), whose font has the same id. The standard's when the font cannot be
+    /// The faces of the font `id` from the fonts folder `dir` (`torro_core::design::font_dir`): the chosen font
+    /// (`Settings::font`, task L.22). The standard's when the font cannot be
     /// loaded or printpdf cannot read its files ([`PdfFonts::of`]), so a PDF is always set.
     pub fn of_font(dir: Option<&Path>, id: &str) -> PdfFonts {
         let font = dir.and_then(|dir| design::load_font(dir, id).ok());

@@ -74,7 +74,7 @@ fn main() -> ExitCode {
     // Appearance, zoom, design and "open another app" come from the core; with `--demo` there is
     // none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
-    torro_gui::design::start_for(&suite, launch.design.as_deref());
+    torro_gui::design::start_for(&suite, &launch.forced());
     let backend = if launch.demo { Backend::Demo(Arc::new(demo_for(launch.open))) } else { Backend::core() };
     match run(backend, suite, launch) {
         Ok(()) => ExitCode::SUCCESS,
