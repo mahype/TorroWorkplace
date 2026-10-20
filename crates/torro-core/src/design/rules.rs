@@ -20,6 +20,10 @@
 //! The tokens of the inbox's comfortable density (task E8.2) have rules of their own: `read` is
 //! never smaller than `body` (it is the text read longest), and the avatars and source tiles grow
 //! from small to large, so "large" always means larger.
+//!
+//! `layout.density` itself has no rule here (task E13.1): it is a word, not a number, so there is
+//! no range to hold it to. Anything but `compact` or `comfortable` is already refused while
+//! `design.toml` is read, with its line (`pack.rs`), as `type.*.font` and `weight` are.
 
 use super::{Design, DesignError, Mode, Palette, Rgba};
 

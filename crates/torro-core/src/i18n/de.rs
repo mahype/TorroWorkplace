@@ -1239,9 +1239,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("only Info", "nur Info"),
     ("hidden", "ausgeblendet"),
     ("{source}: no popups", "{source}: keine Popups"),
-    // Density of the inbox windows (E8.2)
-    ("Compact", "Kompakt"),
-    ("Comfortable", "Komfortabel"),
     ("Newest first", "Neueste zuerst"),
     ("Oldest first", "Älteste zuerst"),
     // The mail window's large buttons (E11.1)

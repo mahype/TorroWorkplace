@@ -261,12 +261,13 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   tut, was seine Taste an der Zeile tut. Zeilen mit mehreren Zeilen Text (Mail-Zeile, Hinweis mit
   Text) setzen die Leiste auf die erste Zeile, über die Zeit (`widgets::row_actions_at`, E3.11), damit
   Vorschau und Konto darunter frei bleiben.
-- **Zwei Dichten im Eingang** (E8.2, `ui_state::Density`): **Compact** (eine Zeile je Eintrag, Aktionsleiste
-  beim Überfahren) und **Comfortable** (Karten). Umschalter `widgets::density_switch(dichte, wörter, nachricht)` in
-  der Kopfleiste jeder Fensterart, Icons `List` / `LayoutGrid`, in Schmal nur Icons mit Tooltip. Gemerkt je
-  Fensterart und Ausschnitt in `ui.json` (`ui_state::save_density_task`, Schlüssel wie `mail`, `hub/lane:info`);
-  `--density compact|comfortable` beim Start hat Vorrang. Ohne Wahl: Comfortable, in Schmal Compact
-  (`Density::default_for`). Mini und Leiste bleiben Anzeigen.
+- **Dichte im Eingang** (E8.2, seit #226 ein Wert des Designs: `torro_core::design::Density`,
+  `torro_gui::layout::density()`): **Compact** (eine Zeile je Eintrag, Aktionsleiste beim Überfahren) und
+  **Comfortable** (Karten). Das Paket sagt, welche gilt (`layout.density = "compact" | "comfortable"`, fehlt er:
+  `compact`); es gibt keinen Umschalter in der Kopfleiste, keinen Startschalter und nichts Gemerktes. „Torro“ und
+  alle mitgelieferten Pakete zeigen kompakt, Karten zeigt nur ein selbst gebautes Paket. Das Design entscheidet in
+  jeder Größenklasse; Mini und Leiste bleiben Anzeigen ohne Dichte. Alle Bausteine beider Dichten anschauen:
+  `cargo run -p torro-gui --example gallery -- --cards`.
 - **Karte** (E8.2, `widgets::card(teile, gewählt, on_press)`): Fläche `RAISED`, Rand `LINE_STRONG`, Radius
   `radius::lg()`, Innenrand `layout::panel_padding()` (16), Teile mit `size::card_gap()` (12) untereinander, Karten
   mit demselben Abstand. Gewählt (Cursor, im Leser) `SELECTED` mit Kante `LINE_SELECTED`; mit `on_press` ist die

@@ -8,9 +8,9 @@
 //!
 //! Three windows (task E8.1, [`Kind`], `--view mail|notifications|hub`): each with its own window
 //! class, title and entry in the app switcher. They keep different entries ([`Kind::keeps`]: mail,
-//! everything else, all) and draw their overviews in their own way (below). Each has "Compact |
-//! Comfortable" in its header bar (task E8.2, [`App::density`]), remembered per window and slice in
-//! `ui.json` ([`Launch::density_key`]), `--density` winning.
+//! everything else, all) and draw their overviews in their own way (below). How close their entries
+//! stand is not theirs to choose: the density comes from the active design (task E13.2,
+//! [`App::density`], `torro_gui::layout::density`), so all three windows agree.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
 //! Its sidebar lists For me (the overview's one column: the mail for the user by day, "Info"
@@ -164,6 +164,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
+use torro_core::design::Density;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
 use torro_core::shortcuts;
@@ -178,7 +179,7 @@ use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons
 use torro_gui::source::Source;
 use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::ui_state::{self, Density, UiState};
+use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -1343,10 +1344,6 @@ impl Open {
 /// - `--view mail|notifications|hub`: which of the three windows this is (task E8.1, [`Kind`]);
 ///   without it the hub. Works without `--demo`; the core starts each kind with it
 ///   ([`torro_core::AppId::args`]) and a workspace template stores it with the command line.
-/// - `--density compact|comfortable`: the density the window starts in (task E8.2, [`Density`]).
-///   It wins over the density remembered for the window in `ui.json`, so a workspace template that
-///   stores it brings the window back as it was; a switch in the header bar changes it (and is
-///   remembered) as usual. Works without `--demo`.
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
 ///   on that lane or source, for one window per slice of the inbox (E3.6), inside the window's
 ///   kind. Works without `--demo`;
@@ -1375,8 +1372,6 @@ pub struct Launch {
     pub design: Option<String>,
     /// The window of `--view`; the hub without it.
     pub kind: Kind,
-    /// The density of `--density`; `None` takes the one remembered for the window (task E8.2).
-    pub density: Option<Density>,
     /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
     /// The sources the window shows (task E8.4): in the notifications window those of `--source`
@@ -1660,13 +1655,6 @@ impl Launch {
             }
         };
         let kind = Kind::parse(args)?;
-        let density = match flag_value(args, "--density")? {
-            None => None,
-            Some(word) => match Density::parse(word) {
-                Some(density) => Some(density),
-                None => return Err(unknown("--density", word, Density::ALL.map(|(name, _)| name).to_vec())),
-            },
-        };
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         let settings = match flag_value(args, "--settings")? {
             None => None,
@@ -1686,7 +1674,6 @@ impl Launch {
             now,
             design,
             kind,
-            density,
             view,
             shown,
             compose,
@@ -1704,14 +1691,15 @@ impl Launch {
         }
     }
 
-    /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
-    /// kind's word of `--view`, and after a "/" the slice of `--lane` or `--source` – `mail`,
-    /// `hub/lane:info`, `notifications/source:agent:claude-code`. So every window kind and every
-    /// window per slice keeps a density of its own, though all of them share one state directory.
+    /// The name of this window in `ui.json` (task E13.2, `ui_state::order_from`): the kind's word
+    /// of `--view`, and after a "/" the slice of `--lane` or `--source` – `mail`, `hub/lane:info`,
+    /// `notifications/source:agent:claude-code`. It names the window and the slice it shows, so
+    /// every window kind and every window per slice keeps its own order and split, though all of
+    /// them share one state directory.
     ///
     /// The notifications window names the sources it was started with (task E8.4,
     /// [`Shown::slice`]): `notifications/source:script:ci+script:deploy`.
-    pub fn density_key(&self) -> String {
+    pub fn window_key(&self) -> String {
         let kind = self.kind.word();
         let lane = match &self.view {
             Some(View::ForMe) => Some("lane:for-me".to_owned()),
@@ -2204,11 +2192,11 @@ pub struct App<S> {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
-    /// The density chosen for this window (task E8.2): `--density`, else the one remembered in
-    /// `ui.json`, else `None` – then the layout decides ([`App::density`]).
-    density: Option<Density>,
+    /// The density of the active design (task E13.2): read at start and again when another design
+    /// arrives, the only two moments it can change in a process ([`App::density`]).
+    density: Density,
     /// Newest or oldest first in this window's lists (task E8.15): remembered in `ui.json` under
-    /// the density's key ([`Launch::density_key`]), newest first until chosen.
+    /// the window's key ([`Launch::window_key`]), newest first until chosen.
     order: Order,
     /// The order was turned in this window before `ui.json` answered: what it remembers is late.
     order_chosen: bool,
@@ -2432,10 +2420,6 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
-    /// "Compact | Comfortable" in the header bar (task E8.2): show the entries so, and remember it.
-    SetDensity(Density),
-    /// The density remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
-    StoredDensity(Option<Density>),
     /// "Newest first | Oldest first" in the header bar (task E8.15): turn the order, remember it and
     /// list anew.
     ToggleOrder,
@@ -2906,7 +2890,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
-            density: launch.density,
+            density: layout::density(),
             order: Order::default(),
             order_chosen: false,
             split: Split::default(),
@@ -2917,22 +2901,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
-        // `--density` wins over what `ui.json` remembers, so with it nothing is asked.
-        let density = match app.launch.density {
-            Some(_) => Task::none(),
-            None => ui_state::load_density_task(INBOX, app.launch.density_key()).map(Message::StoredDensity),
-        };
-        let order = ui_state::load_order_task(INBOX, app.launch.density_key()).map(Message::StoredOrder);
+        let order = ui_state::load_order_task(INBOX, app.launch.window_key()).map(Message::StoredOrder);
         // Only the mail window has a divider (issue #130).
         let split = match app.launch.kind {
-            Kind::Mail => ui_state::load_split_task(INBOX, app.launch.density_key()).map(Message::StoredSplit),
+            Kind::Mail => ui_state::load_split_task(INBOX, app.launch.window_key()).map(Message::StoredSplit),
             _ => Task::none(),
         };
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
             ui_state::load_searches_task(INBOX).map(Message::RecentSearches),
-            density,
             order,
             split,
             // The first load waits for a core that is still starting (issue #206).
@@ -3439,7 +3417,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // No canvas keeps a cache: the next frame draws with the new design, the task loads its
             // fonts.
             Message::Design(message) => {
-                if let Some(task) = self.design.update(message) {
+                let task = self.design.update(message);
+                // A new design brings its own density (task E13.2). This and the start are the only
+                // two moments it changes in a process, so the field stays current.
+                self.density = layout::density();
+                if let Some(task) = task {
                     return task.map(Message::Design);
                 }
             }
@@ -3474,17 +3456,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
-            Message::SetDensity(density) => return self.set_density(density),
-            Message::StoredDensity(stored) => {
-                // `--density` wins; a choice made before the file answered as well.
-                if self.density.is_none() {
-                    self.density = stored;
-                }
-            }
             Message::ToggleOrder => return self.set_order(self.order.toggled()),
             Message::Split(event) => {
                 if self.split.update(event, self.split_limits()) {
-                    return ui_state::save_split_task(INBOX, self.launch.density_key(), self.split.chosen);
+                    return ui_state::save_split_task(INBOX, self.launch.window_key(), self.split.chosen);
                 }
             }
             Message::StoredSplit(stored) => {
@@ -6279,20 +6254,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         ui_state::save_task(INBOX, UiState { sidebar: self.sidebar })
     }
 
-    /// "Compact | Comfortable" (task E8.2): the window shows its entries in `density` from now on,
-    /// and remembers it for its key ([`Launch::density_key`]) for the next start – not in the
-    /// demo, which stores nothing.
-    fn set_density(&mut self, density: Density) -> Task<Message> {
-        self.density = Some(density);
-        if self.launch.demo {
-            return Task::none();
-        }
-        ui_state::save_density_task(INBOX, self.launch.density_key(), density)
-    }
-
     /// "Newest first | Oldest first" (task E8.15): the window lists in `order` from now on – asked
     /// anew, since a folder's next pages and an entry list's `limit` follow the order –, and
-    /// remembers it for its key ([`Launch::density_key`]) – not in the demo, which stores nothing.
+    /// remembers it for its key ([`Launch::window_key`]) – not in the demo, which stores nothing.
     fn set_order(&mut self, order: Order) -> Task<Message> {
         self.order = order;
         self.order_chosen = true;
@@ -6301,7 +6265,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.launch.demo {
             return load;
         }
-        Task::batch([load, ui_state::save_order_task(INBOX, self.launch.density_key(), order)])
+        Task::batch([load, ui_state::save_order_task(INBOX, self.launch.window_key(), order)])
     }
 
     /// Whether the header offers "Newest first | Oldest first" (task E8.15): where the window lists
@@ -6311,11 +6275,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         !self.is_hub() && self.view != View::Invitations
     }
 
-    /// The density the window shows its entries in (task E8.2): the one chosen (`--density`, the
-    /// switch, `ui.json`), else the layout's ([`Density::default_for`]: compact when narrow).
-    /// Mini and strip are glances and ignore it.
+    /// The density the window shows its entries in (task E13.2): the active design's, the same in
+    /// every window of the suite and in every size class. Mini and strip are glances and ignore it.
     pub fn density(&self) -> Density {
-        self.density.unwrap_or_else(|| Density::default_for(self.class()))
+        self.density
     }
 
     /// How the lists draw mail (task E8.3): cards in the comfortable density of the mail window –
@@ -6817,16 +6780,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 chosen,
             ));
         }
-        // "Compact | Comfortable" in every window kind (task E8.2), with its words where there is
-        // room: wide, and medium unless "Mail | Notifications" or "By app | By time" takes the room;
-        // narrow icons only.
-        let words = class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange);
-        // "Newest first | Oldest first" (task E8.15) where the window lists by arrival, with its word
-        // where the density switch has its words.
+        // "Newest first | Oldest first" (task E8.15) where the window lists by arrival.
         if self.orderable() {
-            trailing.push(order_button(self.order, words));
+            trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
         }
-        trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
         // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
         // layout; off while nothing can be dismissed.
         if self.is_board() && self.view == View::Overview {
@@ -8146,6 +8103,16 @@ fn mute_menu_width(choices: &[Choice], leaves: bool) -> f32 {
     choice_menu_width(choices).max(segments.ceil()).max(rules).min(size::panel())
 }
 
+/// Whether the order button carries its word beside its icon (task E13.2): in the wide layout, and
+/// in the medium one unless "Mail | Notifications" (`choose_column`) or "By app | By time"
+/// (`arrange`) already takes that room; narrower headers show the icon with a tooltip.
+///
+/// This was the rule of the density switch beside it (task E8.2); with the switch gone (task E13.2)
+/// the order button owns it.
+fn order_words(class: SizeClass, choose_column: bool, arrange: bool) -> bool {
+    class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange)
+}
+
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
 /// now ("Newest first", "Oldest first"), the word beside the icon with `words`, else as tooltip; a
 /// click turns it.
@@ -8427,6 +8394,8 @@ fn failure_line(failure: &Failure) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use chrono::TimeZone;
     use iced::futures::executor::block_on;
     use torro_inbox::demo::DemoSource;
@@ -8447,7 +8416,16 @@ mod tests {
     fn demo(words: &[&str]) -> App<DemoSource> {
         let launch = Launch::parse(&args(words)).expect("valid parameters");
         let inbox = Arc::new(DemoSource::new(launch.start()));
-        App::new(inbox, Source::from_args(args(&["--demo"])), launch).0
+        pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0)
+    }
+
+    /// `app` with its density pinned to `Compact` (task E13.2). The density comes from the design,
+    /// and all tests of this binary share the one design of the process, so a test that switches it
+    /// (see `the_density_follows_the_design`) would otherwise reach the tests beside it. Every
+    /// helper that builds an app goes through here; a test that wants cards sets the field itself.
+    fn pinned<S>(mut app: App<S>) -> App<S> {
+        app.density = Density::Compact;
+        app
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
@@ -8523,10 +8501,17 @@ mod tests {
         assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
     }
 
+    /// The design of a process is one global (`torro_gui::design::set`) and Rust runs the tests of
+    /// a binary in threads of one process, so two tests that switch it would overwrite each other's
+    /// pack. Every test that switches the design takes this lock first (task E13.2). A poisoned
+    /// lock is taken anyway: the panic of another test is reported by that test, not by this one.
+    static DESIGN: Mutex<()> = Mutex::new(());
+
     /// The message "design changed" (task L.3): the stored setting arrives and the window draws
     /// with that pack from the next frame; a broken one gives the standard.
     #[test]
     fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("temp dir");
         // The standard's values under another id, so the tests beside this one see the same tokens.
         for (id, toml) in [
@@ -8544,6 +8529,38 @@ mod tests {
         let _ = app.view();
         let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
         assert!(design::active().is_standard(), "a broken pack is never drawn");
+    }
+
+    /// Task E13.2: the window takes its density from the active design – at start, and again when
+    /// another design arrives. Holds [`DESIGN`] while a pack with cards is active and puts the
+    /// standard back at the end, because every other test expects "Torro".
+    #[test]
+    fn the_density_follows_the_design() {
+        let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().expect("temp dir");
+        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[layout]\ndensity = \"comfortable\"\n";
+        std::fs::create_dir_all(dir.path().join("roomy")).expect("pack folder");
+        std::fs::write(dir.path().join("roomy").join("design.toml"), toml).expect("design.toml");
+
+        let mut app = loaded(&["--view", "mail"]);
+        assert_eq!(app.density(), Density::Compact, "the standard design \"Torro\" shows rows");
+        app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        let _ = app.update(Message::Design(design::Message::Stored(Ok("roomy".into()))));
+        assert_eq!(design::active().id, "roomy");
+        assert_eq!(app.density(), Density::Comfortable, "the pack asks for cards, so the window draws cards");
+        assert_eq!(app.look(), Look::Cards);
+        let _ = app.view();
+
+        // A window that starts while the pack is active comes up with cards: this is the only
+        // proof that `App::new` reads `layout::density()`, since `demo` pins the field afterwards.
+        let launch = Launch::parse(&args(&["--demo", "--view", "mail"])).expect("valid parameters");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let fresh = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        assert_eq!(fresh.density(), Density::Comfortable, "the start reads the design, not a default");
+
+        // Back to the standard: the tests of this binary share the one design of the process.
+        design::set(torro_core::design::Design::standard());
+        assert_eq!(layout::density(), Density::Compact);
     }
 
     #[test]
@@ -8596,25 +8613,22 @@ mod tests {
         assert_eq!((launch.kind, launch.view), (Kind::Mail, Some(View::Info)));
     }
 
-    /// Task E8.2: `--density` is read, an unknown one refused with the valid ones (exit 64).
+    /// Task E13.2: `--density` is gone. An old workspace template that still stores it starts the
+    /// window as if it were not there – `Launch::parse` leaves words it does not know alone, so a
+    /// stored command line never keeps a window from opening.
     #[test]
-    fn density_is_read_from_the_command_line() {
-        let density = |words: &[&str]| Launch::parse(&args(words)).map(|launch| launch.density);
-        assert_eq!(density(&[]), Ok(None), "without it the window takes what it remembers");
-        assert_eq!(density(&["--density", "compact"]), Ok(Some(Density::Compact)));
-        assert_eq!(density(&["--view", "mail", "--density=comfortable"]), Ok(Some(Density::Comfortable)));
-        assert_eq!(density(&["--density"]), Err(LaunchError::MissingValue("--density")));
-        let refused = density(&["--density", "cozy"]).expect_err("not a density");
-        assert_eq!(
-            refused,
-            LaunchError::UnknownValue { flag: "--density", value: "cozy".into(), valid: "compact, comfortable".into() }
-        );
+    fn an_old_density_flag_is_ignored() {
+        let launch = Launch::parse(&args(&["--density", "comfortable", "--view", "mail"])).expect("valid");
+        assert_eq!((launch.kind, launch.window_key()), (Kind::Mail, "mail".to_owned()));
+        let launch = Launch::parse(&args(&["--density=cozy"])).expect("not a word of ours, so not ours to refuse");
+        assert_eq!(launch.kind, Kind::Hub);
     }
 
-    /// Task E8.2: every window kind and every window per slice has a key of its own in `ui.json`.
+    /// Task E8.2, renamed in E13.2: every window kind and every window per slice has a key of its
+    /// own in `ui.json` – for its order and its divider, since the density left (task E13.2).
     #[test]
-    fn every_window_remembers_its_density_under_its_own_key() {
-        let key = |words: &[&str]| Launch::parse(&args(words)).expect("valid").density_key();
+    fn every_window_remembers_its_state_under_its_own_key() {
+        let key = |words: &[&str]| Launch::parse(&args(words)).expect("valid").window_key();
         assert_eq!(key(&[]), "hub");
         assert_eq!(key(&["--view", "mail"]), "mail");
         assert_eq!(key(&["--view", "notifications"]), "notifications");
@@ -8625,43 +8639,34 @@ mod tests {
             key(&["--view", "notifications", "--source", "agent:claude-code"]),
             "notifications/source:agent:claude-code"
         );
-        assert_eq!(key(&["--density", "compact", "--view", "mail"]), "mail", "the density is no part of its key");
     }
 
-    /// Task E8.2: `--density` wins over `ui.json`, which wins over the layout's default; the switch
-    /// changes it in any case.
+    /// Task E13.2: the density is the design's in every size class – the old rule "compact when
+    /// narrow" is gone, because a design decides as plainly as a person did. The header bar of
+    /// every window kind draws without the switch; that no view can ask for it any more is the
+    /// compiler's doing (`Message` has no `SetDensity`).
     #[test]
-    fn density_follows_the_command_line_then_ui_json_then_the_layout() {
-        let mut app = demo(&["--demo", "--view", "mail", "--density", "compact"]);
-        let _ = app.update(Message::Resized(WIDE));
-        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
-        assert_eq!(app.density(), Density::Compact, "the command line wins over ui.json");
-        let _ = app.update(Message::SetDensity(Density::Comfortable));
-        assert_eq!(app.density(), Density::Comfortable, "the switch changes it");
-
-        let mut app = demo(&["--demo", "--view", "mail"]);
-        let _ = app.update(Message::Resized(WIDE));
-        assert_eq!(app.density(), Density::Comfortable, "nothing chosen: comfortable in the wide layout");
-        let _ = app.update(Message::Resized(NARROW));
-        assert_eq!(app.density(), Density::Compact, "nothing chosen: compact in the narrow one");
-        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
-        assert_eq!(app.density(), Density::Comfortable, "what ui.json remembers wins over the layout");
-        let _ = app.update(Message::SetDensity(Density::Compact));
-        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
-        assert_eq!(app.density(), Density::Compact, "a late answer of ui.json does not undo a choice");
-    }
-
-    /// Task E8.2: the switch is in the header bar of every window kind, in every size with a header.
-    #[test]
-    fn every_window_kind_draws_the_density_switch() {
+    fn every_window_kind_draws_in_the_density_of_the_design() {
         for kind in ["mail", "notifications", "hub"] {
-            for density in ["compact", "comfortable"] {
-                let mut app = demo(&["--demo", "--view", kind, "--density", density]);
-                for size in SIZES {
-                    let _ = app.update(Message::Resized(size));
-                    let _: Element<'_, Message> = app.view();
-                }
+            let mut app = demo(&["--demo", "--view", kind]);
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                assert_eq!(app.density(), Density::Compact, "{kind} at {size:?}: the standard design is compact");
+                let _: Element<'_, Message> = app.view();
             }
+        }
+    }
+
+    /// Task E13.2: the word of the order button follows the room left in the header – the rule the
+    /// density switch had beside it from E8.2 until E13.2 took the switch away.
+    #[test]
+    fn the_order_button_keeps_its_word_where_there_is_room() {
+        assert!(order_words(SizeClass::Wide, true, true), "the wide header always has room");
+        assert!(order_words(SizeClass::Medium, false, false));
+        assert!(!order_words(SizeClass::Medium, true, false), "\"Mail | Notifications\" takes it");
+        assert!(!order_words(SizeClass::Medium, false, true), "\"By app | By time\" takes it");
+        for class in [SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+            assert!(!order_words(class, false, false), "{class:?}: the icon with a tooltip");
         }
     }
 
@@ -8686,7 +8691,7 @@ mod tests {
     fn a_restored_mail_window_is_a_mail_window_again() {
         let stored = AppId::INBOX_MAIL.command("/usr/bin/torroinbox");
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.launch.kind.app().window_class, "torro-inbox-mail");
         assert_eq!((app.view.clone(), app.column), (View::Overview, Column::Mail));
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("For me"))]), "its overview is \"For me\"");
@@ -8698,13 +8703,13 @@ mod tests {
     fn a_restored_command_line_starts_on_its_view() {
         let stored = args(&["/usr/bin/torroinbox", "--lane", "info"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.view, View::Info);
         assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Info"))]));
 
         let stored = args(&["/usr/bin/torroinbox", "--source", "agent:claude-code"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
-        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         assert_eq!(app.view, View::Source(SourceRef::agent("claude-code")));
     }
 
@@ -9020,7 +9025,7 @@ mod tests {
     #[test]
     fn without_the_demo_the_inbox_is_empty() {
         let launch = Launch::default();
-        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         assert!(app.loaded && app.items.is_empty() && app.for_me.is_empty());
         assert_eq!(app.nav_entries().0[0].trail(), Trail::None, "no 0 beside For me");
@@ -10442,7 +10447,7 @@ mod tests {
     #[test]
     fn without_a_mail_account_the_window_of_mail_says_so() {
         let launch = Launch::parse(&args(&["--source", "mail"])).expect("valid parameters");
-        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         assert_eq!(app.view, View::Mail, "nothing to start on");
         assert!(app.loaded && app.folders.is_empty());
@@ -11537,9 +11542,12 @@ mod tests {
         assert_eq!(ids(&notices), ["demo-11"], "other windows keep all of Done");
     }
 
+    /// Task E13.2: with cards, because the heights this walks through are the cards' – under the
+    /// standard design the hub draws rows, so the card geometry needs asking for.
     #[test]
     fn moving_in_act_now_scrolls_it() {
         let mut app = overview_at(&[]);
+        app.density = Density::Comfortable;
         let sections = hub::Sections::of(&app.items, None);
         let tiles = hub::tiles(&app.items).len();
         let (_, first) = hub::span(&sections, tiles, app.hub_layout(), "demo-3").expect("the approval");
@@ -11640,34 +11648,44 @@ mod tests {
         assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-14")), "the first card");
     }
 
+    /// Task E13.2: both densities, since the hub's overview draws cards in the comfortable one
+    /// (`hub::layout`) and rows in the compact one – the standard design gives every other test
+    /// the compact path, so the cards need asking for here.
     #[test]
     fn the_overview_builds_in_every_size_with_panel_menus_and_cards() {
         for open in
             [&["--open", "overview"][..], &["--open", "overview-info"], &["--open", "detail"], &["--open", "empty"]]
         {
-            let mut app = overview_at(open);
-            for size in SIZES {
-                let _ = app.update(Message::Resized(size));
-                let _ = app.view();
-                let _ = press(&mut app, Key::Down);
-                let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
-                let _ = app.view();
-                let _ = app.update(Message::CloseMenu);
-                let _ = app.update(Message::ShowDrawer);
-                let _ = app.view();
-                let _ = app.update(Message::CloseMenu);
-                let _ = app.update(Message::Select("demo-3".into()));
-                let _ = app.view();
-                let _ = app.update(Message::CloseDetail);
+            for density in [Density::Compact, Density::Comfortable] {
+                let mut app = overview_at(open);
+                app.density = density;
+                for size in SIZES {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.view();
+                    let _ = press(&mut app, Key::Down);
+                    let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseMenu);
+                    let _ = app.update(Message::ShowDrawer);
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseMenu);
+                    let _ = app.update(Message::Select("demo-3".into()));
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseDetail);
+                }
             }
         }
     }
 
     /// The mail window at the demo's fixed time in `density`, loaded on its start view ("For me").
-    fn mail_window(density: &str, more: &[&str]) -> App<DemoSource> {
-        let mut words = vec!["--view", "mail", "--density", density];
+    /// Task E13.2: the density is no longer a parameter of the window, so it is set on the built
+    /// app instead of passed as `--density`.
+    fn mail_window(density: Density, more: &[&str]) -> App<DemoSource> {
+        let mut words = vec!["--view", "mail"];
         words.extend_from_slice(more);
-        overview_at(&words)
+        let mut app = overview_at(&words);
+        app.density = density;
+        app
     }
 
     /// Task E11.2: the mail window's rows carry the strip from edge to edge, its search field spans
@@ -11676,7 +11694,7 @@ mod tests {
     #[test]
     fn the_mail_window_has_the_edge_strip_and_the_hub_its_buttons() {
         let anchors = detail::Anchors::default();
-        let mut mail = mail_window("compact", &[]);
+        let mut mail = mail_window(Density::Compact, &[]);
         assert!(mail.rows_data(&anchors).edge_strip && mail.edge_strip());
         assert!(!mail.sidebar_search(), "the field over the list is the search");
         let hub = overview_at(&["--view", "hub"]);
@@ -11694,7 +11712,7 @@ mod tests {
     /// Task E8.3: the mail window lists, counts and walks mail alone, in every view of its sidebar.
     #[test]
     fn the_mail_window_shows_mail_only() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         assert!(!app.items.is_empty());
         for view in [View::Overview, View::Info, View::Snoozed, View::Done] {
             let _ = app.update(Message::Show(view.clone()));
@@ -11711,7 +11729,7 @@ mod tests {
     /// "For me" is the window's overview.
     #[test]
     fn the_mail_windows_sidebar_lists_its_views_smart_views_and_folders() {
-        let app = mail_window("comfortable", &[]);
+        let app = mail_window(Density::Comfortable, &[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
         assert_eq!(labels, [tr("For me"), tr("Info"), tr("Later"), tr("Done")]);
@@ -11722,7 +11740,7 @@ mod tests {
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
         assert!(overview_at(&["--view", "hub"]).smart_entries().is_empty(), "smart views are the mail window's");
         for size in SIZES {
-            let mut app = mail_window("comfortable", &["--open", "menu"]);
+            let mut app = mail_window(Density::Comfortable, &["--open", "menu"]);
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
@@ -11732,16 +11750,17 @@ mod tests {
     /// every layout (their words follow the room, `list::spoken`), the wide cards beside the reader.
     #[test]
     fn comfortable_mail_is_cards_and_everything_else_rows() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Resized(WIDE));
         assert_eq!(app.look(), Look::Cards);
         assert_eq!(app.card_width(), size::list() - list::cards_side(), "the list beside the reader");
         let _ = app.update(Message::Resized(NARROW));
         assert_eq!(app.look(), Look::Cards);
         assert_eq!(app.card_width(), NARROW.width - list::cards_side(), "the window's width");
-        let compact = mail_window("compact", &[]);
+        let compact = mail_window(Density::Compact, &[]);
         assert_eq!(compact.look(), Look::Rows);
-        let hub = overview_at(&["--view", "hub", "--density", "comfortable"]);
+        let mut hub = overview_at(&["--view", "hub"]);
+        hub.density = Density::Comfortable;
         assert_eq!(hub.look(), Look::Rows, "the hub's cards come with E8.5");
     }
 
@@ -11751,14 +11770,14 @@ mod tests {
     fn the_mail_list_fills_the_window_without_a_reader() {
         let medium = Size::new(1000.0, 700.0);
         let room = medium.width - shell::rail() - layout::inset();
-        for density in ["comfortable", "compact"] {
+        for density in [Density::Comfortable, Density::Compact] {
             let mut app = mail_window(density, &[]);
             let _ = app.update(Message::Resized(medium));
-            assert_eq!(app.list_cap(1), None, "{density}");
+            assert_eq!(app.list_cap(1), None, "{density:?}");
             assert!(room > overview::width(1), "a window where the cap would show");
             let _ = app.view();
         }
-        let mut cards = mail_window("comfortable", &[]);
+        let mut cards = mail_window(Density::Comfortable, &[]);
         let _ = cards.update(Message::Resized(medium));
         assert_eq!(cards.card_width(), room - list::cards_side(), "the cards take the whole room");
         let hub = overview_at(&["--view", "hub"]);
@@ -11770,7 +11789,7 @@ mod tests {
     /// default, and what `ui.json` remembers counts only until the person drags.
     #[test]
     fn the_divider_drags_the_list_width() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Resized(WIDE));
         let limits = app.split_limits();
         assert_eq!(app.split.width(limits), size::list(), "the default");
@@ -11799,7 +11818,7 @@ mod tests {
     /// Task E8.3: the narrow comfortable "For me" leads with how many mails are new for the user.
     #[test]
     fn the_narrow_mail_window_says_how_many_are_new_for_you() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Resized(WIDE));
         assert_eq!(app.lead(), None, "only narrow");
         let _ = app.update(Message::Resized(NARROW));
@@ -11807,7 +11826,7 @@ mod tests {
         assert_eq!(count, app.for_me.len());
         assert!(senders.starts_with(tr("From {senders}").trim_end_matches("{senders}")), "{senders}");
         // Task E8.11 (finding 7): in both densities.
-        let mut compact = mail_window("compact", &[]);
+        let mut compact = mail_window(Density::Compact, &[]);
         let _ = compact.update(Message::Resized(NARROW));
         assert_eq!(compact.lead(), app.lead(), "compact leads the same");
         let _ = compact.update(Message::Resized(WIDE));
@@ -11822,15 +11841,15 @@ mod tests {
     /// with the empty state, so the list keeps its width; the panel and the other layouts have none.
     #[test]
     fn the_wide_mail_window_keeps_an_empty_reader() {
-        for density in ["comfortable", "compact"] {
+        for density in [Density::Comfortable, Density::Compact] {
             let mut app = mail_window(density, &[]);
             let _ = app.update(Message::Resized(WIDE));
             assert!(!app.panel_open());
-            assert!(app.empty_reader(SizeClass::Wide).is_some(), "{density}: the empty reader");
-            assert!(app.empty_reader(SizeClass::Medium).is_none(), "{density}: medium has no reader");
+            assert!(app.empty_reader(SizeClass::Wide).is_some(), "{density:?}: the empty reader");
+            assert!(app.empty_reader(SizeClass::Medium).is_none(), "{density:?}: medium has no reader");
             let _ = app.view();
         }
-        let mut open = mail_window("comfortable", &["--open", "mail-entry"]);
+        let mut open = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let _ = open.update(Message::Resized(WIDE));
         assert!(open.empty_reader(SizeClass::Wide).is_none(), "a mail is open");
         let hub = overview_at(&["--view", "hub"]);
@@ -11842,30 +11861,30 @@ mod tests {
     /// open, else at the row. Keys inside the open menu leave it where it is.
     #[test]
     fn a_menu_hangs_at_the_button_clicked() {
-        for density in ["compact", "comfortable"] {
+        for density in [Density::Compact, Density::Comfortable] {
             let mut app = mail_window(density, &["--open", "mail-entry"]);
             let _ = app.update(Message::Resized(WIDE));
             let entry = app.detail.as_ref().expect("the entry in the reader").id.clone();
             let _ = app.update(Message::Act(entry.clone(), Command::Snooze));
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density}: the row's");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density:?}: the row's");
             let _ = app.view();
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::AskSnooze(entry.clone()));
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: the reader's");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density:?}: the reader's");
             let _ = app.view();
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::Act(entry.clone(), Command::Hide));
             let _ = press(&mut app, Key::Down);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), false), "{density}: keys in the menu");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), false), "{density:?}: keys in the menu");
             let _ = app.update(Message::CloseMenu);
             let _ = press(&mut app, Key::S);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: s, reader open");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density:?}: s, reader open");
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::CloseDetail);
             let _ = app.update(Message::Select(entry.clone()));
             let _ = app.update(Message::CloseDetail);
             let _ = press(&mut app, Key::S);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density}: s at the row");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density:?}: s at the row");
             for size in SIZES {
                 let _ = app.update(Message::Resized(size));
                 let _ = app.view();
@@ -11878,7 +11897,7 @@ mod tests {
     /// Escape closes them as any menu, and no key acts behind them.
     #[test]
     fn the_readers_menus_open_at_their_cells_and_close_on_a_click() {
-        let mut app = mail_window("comfortable", &["--open", "mail-entry"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let _ = app.update(Message::Resized(WIDE));
         let entry = app.detail.as_ref().expect("the entry in the reader").id.clone();
         let id = app.wanted_letter().expect("its mail");
@@ -11913,7 +11932,7 @@ mod tests {
         assert!(app.menu.is_none() && app.detail.is_none(), "Close closes the reader");
         assert!(app.mail_menu(Menu::More).is_none(), "nothing to show without the mail");
         // The demo's states for pictures.
-        let more = mail_window("comfortable", &["--open", "mail-more"]);
+        let more = mail_window(Density::Comfortable, &["--open", "mail-more"]);
         assert_eq!((more.menu, more.menu_mail.as_deref()), (Some(Menu::More), Some("m:w1")));
         let mut reply = loaded(&["--open", "mail-reply"]);
         load(&mut reply);
@@ -11926,7 +11945,7 @@ mod tests {
     /// the ✕ stands in the panel's head. The hub and the App Feed keep the split of task E9.4.
     #[test]
     fn the_mail_windows_panel_has_the_readers_bars_and_the_hubs_its_own() {
-        let mut app = mail_window("compact", &["--open", "mail-entry"]);
+        let mut app = mail_window(Density::Compact, &["--open", "mail-entry"]);
         let entry = app.detail.as_ref().expect("a mail entry in the panel").id.clone();
         let id = app.wanted_letter().expect("its mail");
         deliver_letter(&mut app, &id);
@@ -11957,7 +11976,7 @@ mod tests {
         let words = app.mail_menu_sections(Menu::More).expect("the reader's \"…\"");
         assert!(words.iter().any(|s| s.items.iter().any(|i| i.label == tr("Close"))), "the reader closes from \"…\"");
         // A folder's message: the reader's bars without an entry.
-        let mut folder = mail_window("compact", &[]);
+        let mut folder = mail_window(Density::Compact, &[]);
         let inbox = folder_view(&folder, "f:work-inbox");
         let _ = folder.update(Message::Show(inbox));
         load(&mut folder);
@@ -12006,7 +12025,7 @@ mod tests {
     /// "For me", and `s` does the same on the message under the cursor.
     #[test]
     fn an_invitation_card_puts_off_and_hides_its_entry() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Show(View::Invitations));
         load(&mut app);
         let (message, entry) = app
@@ -12036,7 +12055,7 @@ mod tests {
     /// other layouts and windows keep the panel.
     #[test]
     fn the_wide_mail_window_reads_beside_the_list() {
-        let mut app = mail_window("comfortable", &["--open", "mail-entry"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "mail-entry"]);
         let id = app.detail.as_ref().map(|item| item.id.clone()).expect("a mail entry in the panel");
         let _ = app.update(Message::Resized(WIDE));
         let anchors = detail::Anchors::default();
@@ -12048,7 +12067,7 @@ mod tests {
         let mut hub = overview_at(&["--view", "hub", "--open", "mail-entry"]);
         let _ = hub.update(Message::Resized(WIDE));
         assert!(hub.wide_reader(SizeClass::Wide, &anchors).is_none(), "the hub keeps its panel");
-        for density in ["comfortable", "compact"] {
+        for density in [Density::Comfortable, Density::Compact] {
             for open in ["mail-entry", "mail", "attachments", "overview"] {
                 let mut app = mail_window(density, &["--open", open]);
                 for size in SIZES {
@@ -12062,7 +12081,7 @@ mod tests {
     /// Task E8.3: the keys work in the mail window as before – on cards as on rows.
     #[test]
     fn the_keys_of_the_list_work_on_the_mail_windows_cards() {
-        let mut app = mail_window("comfortable", &["--open", "overview"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "overview"]);
         let first = cursor(&app).map(str::to_owned).expect("the cursor on the first mail");
         let _ = press(&mut app, Key::R);
         assert!(matches!(app.sent.last(), Some(Sent::Compose(args)) if args.contains(&"--reply".to_owned())), "r");
@@ -12085,7 +12104,7 @@ mod tests {
     /// Task E8.3: the smart view lists the messages with attachments of every account.
     #[test]
     fn with_attachments_lists_the_mail_with_attachments_of_every_account() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Show(View::Attachments));
         load(&mut app);
         assert!(!app.messages.is_empty());
@@ -12103,7 +12122,7 @@ mod tests {
     /// card and in the reader, also over later loads.
     #[test]
     fn invitations_are_listed_and_answered_once_at_a_time() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::Show(View::Invitations));
         load(&mut app);
         assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Invitations"))]));
@@ -12141,10 +12160,10 @@ mod tests {
         let shown = app.messages.iter().find(|m| m.id == first.id).and_then(|m| m.invite.clone());
         assert_eq!(shown.and_then(|invite| invite.answered), Some(InvitationAnswer::Accept), "a failed answer is none");
         for size in SIZES {
-            let mut app = mail_window("comfortable", &["--open", "invitation"]);
+            let mut app = mail_window(Density::Comfortable, &["--open", "invitation"]);
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
-            let mut compact = mail_window("compact", &["--open", "invitation"]);
+            let mut compact = mail_window(Density::Compact, &["--open", "invitation"]);
             let _ = compact.update(Message::Resized(size));
             let _ = compact.view();
         }
@@ -12155,7 +12174,7 @@ mod tests {
     /// out leaves it open.
     #[test]
     fn answering_an_invitation_marks_its_entry_done() {
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let hike = app.items.iter().find(|item| item.id == "demo-mail-4").cloned().expect("Paul's mail");
         assert!(hike.invite.as_ref().is_some_and(|invite| invite.all_day), "the hike, all Saturday");
         let Some(Link::Mail { message }) = hike.link.clone() else { panic!("a mail entry links its mail") };
@@ -12175,7 +12194,7 @@ mod tests {
         let done = Sent::Edit(Edit::Done { id: hike.id.clone(), done: true }, Some(After { text, undo }));
         assert_eq!(app.sent.last(), Some(&done));
 
-        let mut app = mail_window("comfortable", &[]);
+        let mut app = mail_window(Density::Comfortable, &[]);
         let _ = app.update(Message::AnswerInvitation(hike.source.key(), message.clone(), InvitationAnswer::Tentative));
         let before = app.sent.len();
         let _ = app.update(Message::InvitationAnswered(message, InvitationAnswer::Tentative, Ok(Delivery::Unknown)));
@@ -12192,7 +12211,7 @@ mod tests {
     /// pick, none while the calendars are not in (the core chooses then).
     #[test]
     fn the_calendar_picked_goes_with_the_answer() {
-        let mut app = mail_window("comfortable", &["--open", "invitation"]);
+        let mut app = mail_window(Density::Comfortable, &["--open", "invitation"]);
         let summary = app.messages.first().cloned().expect("the first invitation");
         let invite = summary.invite.clone().expect("an invitation");
         assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some(summary.id.as_str()), "read at once");
@@ -12274,8 +12293,8 @@ mod tests {
         let key =
             Launch::parse(&args(&["--view", "notifications", "--source", "script:ci", "--source", "script:deploy"]))
                 .expect("valid")
-                .density_key();
-        assert_eq!(key, "notifications/source:script:ci+script:deploy", "each window its own density");
+                .window_key();
+        assert_eq!(key, "notifications/source:script:ci+script:deploy", "each window its own key");
     }
 
     /// Task E8.4: two notifications windows with different sources show only theirs – in the list,
@@ -12353,7 +12372,7 @@ mod tests {
         let mut suite = notifications_window(&["--source", "suite"]);
         let _ = suite.update(Message::Act("demo-3".into(), Command::Dismiss));
         assert!(suite.sent.is_empty(), "an approval waits for yes or no");
-        let mut mail = mail_window("comfortable", &[]);
+        let mut mail = mail_window(Density::Comfortable, &[]);
         let _ = press(&mut mail, Key::Down);
         let _ = press(&mut mail, Key::X);
         assert!(mail.sent.is_empty(), "the mail window dismisses nothing");
@@ -12575,7 +12594,7 @@ mod tests {
             matches!(opens, Some(Message::OpenApp(ref app)) if app == AppId::INBOX.window_class),
             "the mail window asks the core for the Notification Hub, not the control centre: {opens:?}"
         );
-        let mut mail = mail_window("compact", &[]);
+        let mut mail = mail_window(Density::Compact, &[]);
         let _ = mail.update(Message::OpenRules);
         assert!(mail.settings.is_none(), "the mail window opens no section of its own");
     }
@@ -12727,9 +12746,10 @@ mod tests {
         assert_eq!(lane_icon(Lane::Info), Icon::Info, "Info is for your information");
         assert!(![Icon::Bell, Icon::BellOff].contains(&lane_icon(Lane::Info)), "the bells notify and mute");
         assert_eq!(Kind::Notifications.view_icon(&View::Overview), Icon::Bell, "the bell stays for notifications");
-        for density in ["compact", "comfortable"] {
+        for density in [Density::Compact, Density::Comfortable] {
             for open in ["mute-menu", "mute-panel"] {
-                let mut app = notifications_window(&["--density", density, "--open", open]);
+                let mut app = notifications_window(&["--open", open]);
+                app.density = density;
                 assert_eq!(app.menu, Some(Menu::Mute), "{open}");
                 assert_eq!(app.detail.is_some(), open == "mute-panel");
                 deliver(&mut app);
@@ -12751,14 +12771,8 @@ mod tests {
     /// go across; "By time" walks newest first, the narrow window "For me", then "Info".
     #[test]
     fn the_keys_walk_the_board_as_it_is_drawn() {
-        let mut app = notifications_window(&[
-            "--source",
-            "script:deploy",
-            "--source",
-            "agent:claude-code",
-            "--density",
-            "comfortable",
-        ]);
+        let mut app = notifications_window(&["--source", "script:deploy", "--source", "agent:claude-code"]);
+        app.density = Density::Comfortable;
         let _ = app.update(Message::Resized(WIDE));
         assert!(matches!(app.board(), Board::Columns(_)), "{:?}", app.board());
         let columns = notifications::app_columns(&app.items, 3);
@@ -12786,7 +12800,8 @@ mod tests {
     /// Task E8.4: moving the cursor scrolls the board, which scrolls as one.
     #[test]
     fn moving_on_the_board_scrolls_it() {
-        let mut app = notifications_window(&["--density", "comfortable"]);
+        let mut app = notifications_window(&[]);
+        app.density = Density::Comfortable;
         let _ = app.update(Message::Resized(NARROW));
         let first = app.rows()[0].id.clone();
         let (_, bottom) =
@@ -12801,16 +12816,15 @@ mod tests {
     /// time, with the panel, the menus, the drawer and the toast, in every view of its sidebar.
     #[test]
     fn the_notifications_window_builds_in_every_size() {
-        for density in ["compact", "comfortable"] {
+        for density in [Density::Compact, Density::Comfortable] {
             for open in [
                 &[][..],
                 &["--open", "by-time"],
                 &["--open", "empty"],
                 &["--source", "suite", "--source", "agent:claude-code"],
             ] {
-                let mut words = vec!["--density", density];
-                words.extend_from_slice(open);
-                let mut app = notifications_window(&words);
+                let mut app = notifications_window(open);
+                app.density = density;
                 for view in [View::Overview, View::Snoozed, View::Done] {
                     let _ = app.update(Message::Show(view));
                     load(&mut app);
@@ -12850,7 +12864,7 @@ mod tests {
             Launch::parse(&args(&["--demo", "--now", "2026-10-13T10:30", "--view", "mail"])).expect("valid parameters");
         launch.message = Some(message.into());
         let inbox = Arc::new(DemoSource::new(launch.start()));
-        let mut app = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
         load(&mut app);
         app
     }
@@ -12975,7 +12989,7 @@ mod tests {
         let mut launch = Launch::parse(&args(&["--demo", "--view", "hub"])).expect("valid");
         launch.message = Some("m:w9".into());
         let mut hub =
-            App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0;
+            pinned(App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0);
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
     }
