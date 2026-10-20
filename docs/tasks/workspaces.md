@@ -129,7 +129,7 @@ WS.1 ── WS.2 ─┬─ WS.3 ── WS.4
   Modifikatorwechsel meldet alle alten Tasten ab.
 
 ### WS.4 Tasten unter macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WS.3 · **Dateien:** `Cargo.toml`, `crates/torroworkplace/Cargo.toml`,
   `crates/torroworkplace/src/{workspace_keys,daemon}.rs`, `crates/torroworkplace/src/tray/desktop.rs`
 - Abhängigkeit `global-hotkey` in `[workspace.dependencies]` (Version, die mit `tray-icon` 0.26 und `winit` 0.30

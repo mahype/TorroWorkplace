@@ -7,7 +7,8 @@
 //! - the tray icon (see `tray`),
 //! - a refresher that rebuilds the tray menu after every command, on window manager events and
 //!   when the open approvals change ([`watch_approvals`]) or anything is written to the inbox
-//!   ([`watch_inbox`]), all debounced into one refresh,
+//!   ([`watch_inbox`]), all debounced into one refresh; on macOS and Windows the template keys
+//!   ([`template_keys`]) go with each new menu, so a change of a key or the modifiers refreshes too,
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
 //!
@@ -62,6 +63,13 @@ impl Daemon {
             }
             let _ = refresh.send(());
         });
+    }
+
+    /// Tells the core how the template keys the tray registered stand (task WS.4), for
+    /// `system.status` ([`Core::report_shortcuts`]).
+    #[cfg(any(target_os = "macos", windows))]
+    pub fn report_shortcuts(&self, report: crate::workspace_keys::Report) {
+        self.core.report_shortcuts(report.active, report.problem);
     }
 
     /// Opens or focuses one of the suite's apps.
@@ -236,6 +244,8 @@ async fn serve(shows: Shows) -> Result<(), String> {
                     // notifications as clicks in the tray.
                     let changes = changes_state(&request).then(|| describe(&request));
                     let notifies = tells_on_desktop(&request);
+                    // The tray on macOS and Windows registers the template keys with each new menu.
+                    let rekeys = crate::workspace_keys::rebinds_after(&request);
                     let ends = matches!(request, Request::Quit);
                     // A refused request ran nothing: no notification, no new menu, so a foreign
                     // client cannot flood the desktop.
@@ -250,6 +260,8 @@ async fn serve(shows: Shows) -> Result<(), String> {
                         if notifies {
                             report(&what, &response);
                         }
+                        let _ = refresh.send(());
+                    } else if rekeys {
                         let _ = refresh.send(());
                     }
                     response
@@ -322,6 +334,7 @@ enum Front {
 }
 
 impl Front {
+    /// Shows `snapshot` first; on macOS and Windows with the template keys ([`template_keys`]).
     async fn start(daemon: &Arc<Daemon>, shows: Shows, snapshot: Snapshot) -> Result<Front, String> {
         match shows {
             Shows::Nothing => {
@@ -335,25 +348,51 @@ impl Front {
             }
             #[cfg(any(target_os = "macos", windows))]
             Shows::Desktop(handle) => {
-                handle.start(Arc::clone(daemon), snapshot);
+                let keys = template_keys(&daemon.core, &snapshot).await;
+                handle.start(Arc::clone(daemon), snapshot, keys);
                 Ok(Front::Desktop(handle))
             }
         }
     }
 
-    async fn show(&self, snapshot: Snapshot) {
+    /// Shows `snapshot`; on macOS and Windows with the template keys `core` names now.
+    async fn show(&self, core: &Core, snapshot: Snapshot) {
         match self {
             #[cfg(target_os = "linux")]
             Front::Tray(handle) => {
+                let _ = core;
                 handle.update(|tray| tray.snapshot = snapshot).await;
             }
             #[cfg(any(target_os = "macos", windows))]
-            Front::Desktop(handle) => handle.show(snapshot),
+            Front::Desktop(handle) => {
+                let keys = template_keys(core, &snapshot).await;
+                handle.show(snapshot, keys);
+            }
             Front::None => {
-                let _ = snapshot;
+                let _ = (core, snapshot);
             }
         }
     }
+}
+
+/// The template keys the tray on macOS and Windows registers (task WS.4): the keys of the templates in
+/// `snapshot`, held with the modifiers of the settings. `None` without a window manager to load them
+/// (`Snapshot::unsupported`), so the keys stay free for other programs. Unreadable settings give the
+/// system's default modifiers, as everywhere else in the core.
+///
+/// When the templates could not be read, `snapshot` lists none and the keys are released until the
+/// next menu finds them again.
+#[cfg(any(target_os = "macos", windows))]
+async fn template_keys(core: &Core, snapshot: &Snapshot) -> Option<crate::workspace_keys::TemplateKeys> {
+    if snapshot.unsupported.is_some() {
+        return None;
+    }
+    let modifiers = match core.handle(Request::Settings).await {
+        Response::Settings { settings } => settings.workspaces.modifiers,
+        _ => torro_core::settings::ShortcutModifiers::default(),
+    };
+    let slots = crate::workspace_keys::summary_slots(&snapshot.templates);
+    Some(crate::workspace_keys::TemplateKeys { modifiers, slots })
 }
 
 /// Rebuilds the menu when asked; bursts of requests (a load opens many windows) collapse
@@ -362,7 +401,7 @@ async fn refresher(core: Arc<Core>, mut requests: mpsc::UnboundedReceiver<()>, f
     while requests.recv().await.is_some() {
         tokio::time::sleep(Duration::from_millis(150)).await;
         while requests.try_recv().is_ok() {}
-        front.show(core.snapshot().await).await;
+        front.show(&core, core.snapshot().await).await;
     }
 }
 

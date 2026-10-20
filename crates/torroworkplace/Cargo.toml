@@ -75,6 +75,7 @@ winreg.workspace = true
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tray-icon.workspace = true
 winit.workspace = true
+global-hotkey.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

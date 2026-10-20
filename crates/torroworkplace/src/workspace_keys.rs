@@ -1,24 +1,30 @@
 //! The template keys (issue #243): the modifiers of the settings and a digit load the template that
 //! holds the digit, like "Load" in the mode `add`.
 //!
-//! Two halves, kept apart so macOS and Windows (task WS.4, `global-hotkey` in the tray) reuse the
-//! first one:
+//! Three parts; the first is shared by the other two:
 //!
 //! - **What the keys are**, for every system: [`slots`] (which digit loads which template) and
-//!   [`label`] (how people read a key, "Super + Alt + 5").
+//!   [`label`] (how people read a key: "Super + Alt + 5" on Linux, "Ctrl + Option + 5" on macOS).
 //! - **Hyprland** (task WS.3): [`hyprland_binds`] turns the slots into [`KeyBind`]s, [`BoundKeys`]
 //!   remembers what it bound and applies only the difference, and [`follow`] binds everything anew
 //!   after Hyprland reloaded its configuration, which drops every bind made at run time.
+//! - **macOS and Windows** (task WS.4): the tray's event loop registers the keys with the system
+//!   (`global-hotkey`, which wants the main thread). It gets [`TemplateKeys`] with every snapshot of
+//!   the menu, [`hotkey`] maps a key to the system's, and [`DesktopKeys`] registers only the
+//!   difference and says which template a pressed key loads.
 //!
-//! The core decides when ([`crate::core::Core`]): at its start, after a template was saved, captured
-//! again or deleted, a key was set and the modifiers changed ([`rebinds_after`]). Without Hyprland it
-//! binds nothing here.
+//! The core decides when on Hyprland ([`crate::core::Core`]): at its start, after a template was
+//! saved, captured again or deleted, a key was set and the modifiers changed ([`rebinds_after`]).
+//! On macOS and Windows the same requests refresh the menu (`crate::daemon`), and the new snapshot
+//! brings the keys. Elsewhere nothing binds them.
 
 use std::slice;
 
 use torro_core::i18n::trf;
 use torro_core::settings::ShortcutModifiers;
 use torro_ipc::{Request, SettingKey};
+#[cfg(any(target_os = "macos", windows))]
+use torro_setups::TemplateSummary;
 use torro_setups::{MAX_SHORTCUT, Template};
 use torro_wm::{Events, KeyBind, WindowManager, WmEvent};
 
@@ -36,11 +42,22 @@ pub struct Slot {
 /// edited by hand may break it, then the first of `templates` (the store lists them by name) keeps
 /// the key. Keys above [`MAX_SHORTCUT`] are not keys and are left out.
 pub fn slots(templates: &[Template]) -> Vec<Slot> {
+    slots_of(templates.iter().map(|template| (template.id.as_str(), template.shortcut)))
+}
+
+/// [`slots`] for the summaries the tray's snapshot holds (`Snapshot::templates`), with the same rules.
+#[cfg(any(target_os = "macos", windows))]
+pub fn summary_slots(templates: &[TemplateSummary]) -> Vec<Slot> {
+    slots_of(templates.iter().map(|template| (template.id.as_str(), template.shortcut)))
+}
+
+/// [`slots`] of `(id, key)` pairs, in the order the store lists them.
+fn slots_of<'a>(templates: impl Iterator<Item = (&'a str, Option<u8>)>) -> Vec<Slot> {
     let mut slots: Vec<Slot> = Vec::new();
-    for template in templates {
-        let Some(key) = template.shortcut.filter(|key| *key <= MAX_SHORTCUT) else { continue };
+    for (id, key) in templates {
+        let Some(key) = key.filter(|key| *key <= MAX_SHORTCUT) else { continue };
         if slots.iter().all(|slot| slot.key != key) {
-            slots.push(Slot { key, template: template.id.clone() });
+            slots.push(Slot { key, template: id.to_string() });
         }
     }
     slots.sort_by_key(|slot| keyboard_order(slot.key));
@@ -52,28 +69,62 @@ fn keyboard_order(key: u8) -> u8 {
     (key + MAX_SHORTCUT) % (MAX_SHORTCUT + 1)
 }
 
-/// The two modifiers by their Linux names, as people read them ("Super", "Alt"). Key names are not
-/// translated anywhere in the suite ("Ctrl K"), so neither are these.
-fn modifier_names(modifiers: ShortcutModifiers) -> [&'static str; 2] {
-    match modifiers {
+/// The systems whose keyboards name the modifiers differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum System {
+    Linux,
+    MacOs,
+    Windows,
+}
+
+impl System {
+    /// The system this runs on; every other one names the keys as Linux does.
+    const CURRENT: System = if cfg!(target_os = "macos") {
+        System::MacOs
+    } else if cfg!(windows) {
+        System::Windows
+    } else {
+        System::Linux
+    };
+}
+
+/// The two modifiers as the keyboard of `system` names them: Super is Cmd on macOS and Win on
+/// Windows, Alt is Option on macOS. Key names are not translated anywhere in the suite ("Ctrl K"), so
+/// neither are these.
+fn modifier_names(modifiers: ShortcutModifiers, system: System) -> [&'static str; 2] {
+    let linux = match modifiers {
         ShortcutModifiers::SuperAlt => ["Super", "Alt"],
         ShortcutModifiers::SuperCtrl => ["Super", "Ctrl"],
         ShortcutModifiers::CtrlAlt => ["Ctrl", "Alt"],
         ShortcutModifiers::CtrlShift => ["Ctrl", "Shift"],
-    }
+    };
+    linux.map(|name| match (system, name) {
+        (System::MacOs, "Super") => "Cmd",
+        (System::MacOs, "Alt") => "Option",
+        (System::Windows, "Super") => "Win",
+        _ => name,
+    })
 }
 
-/// `key` with `modifiers` as people read it: `Super + Alt + 5`. For messages and the control
-/// centre; Hyprland gets [`hyprland_keys`].
-pub fn label(modifiers: ShortcutModifiers, key: u8) -> String {
-    let [first, second] = modifier_names(modifiers);
+/// `key` with `modifiers` as people on `system` read it.
+fn label_on(system: System, modifiers: ShortcutModifiers, key: u8) -> String {
+    let [first, second] = modifier_names(modifiers, system);
     format!("{first} + {second} + {key}")
+}
+
+/// `key` with `modifiers` as people read it on this system: `Super + Alt + 5` on Linux,
+/// `Ctrl + Option + 5` or `Cmd + Option + 5` on macOS, `Win + Alt + 5` on Windows. For messages and
+/// the control centre; Hyprland gets [`hyprland_keys`].
+// On Linux only the tests call it until the control centre shows the keys (task WS.6).
+#[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
+pub fn label(modifiers: ShortcutModifiers, key: u8) -> String {
+    label_on(System::CURRENT, modifiers, key)
 }
 
 /// `key` with `modifiers` in Hyprland's spelling: `SUPER + ALT + 5`. [`KeyBind::keys`] keeps it, and
 /// unbinding needs exactly this text again, so it is made here only.
 pub fn hyprland_keys(modifiers: ShortcutModifiers, key: u8) -> String {
-    label(modifiers, key).to_uppercase()
+    label_on(System::Linux, modifiers, key).to_uppercase()
 }
 
 /// The command a template key runs: `program ctl setups load <id> --mode add`, `program` being the
@@ -178,14 +229,8 @@ impl BoundKeys {
             }
         }
         stuck.retain(|keys| !failed.contains(keys));
-        let mut problems = Vec::new();
-        if !failed.is_empty() {
-            problems.push(trf("{keys} could not be registered", &[("keys", &for_people(&failed))]));
-        }
-        if !stuck.is_empty() {
-            problems.push(trf("{keys} could not be released", &[("keys", &for_people(&stuck))]));
-        }
-        Report { active: problems.is_empty(), problem: (!problems.is_empty()).then(|| problems.join("; ")) }
+        let readable = |keys: &[String]| keys.iter().map(|keys| for_people(keys)).collect::<Vec<_>>();
+        report_of(&readable(&failed), &readable(&stuck))
     }
 
     /// Forgets every bind: the window manager dropped them itself ([`WmEvent::ConfigReloaded`]), so the
@@ -195,18 +240,28 @@ impl BoundKeys {
     }
 }
 
-/// Hyprland's key texts as people read them, joined: `SUPER + ALT + 5` → `Super + Alt + 5`.
-fn for_people(keys: &[String]) -> String {
-    let readable = |keys: &String| {
-        keys.split(" + ")
-            .map(|part| {
-                let mut chars = part.chars();
-                chars.next().map(|first| first.to_string() + &chars.as_str().to_lowercase()).unwrap_or_default()
-            })
-            .collect::<Vec<_>>()
-            .join(" + ")
-    };
-    keys.iter().map(readable).collect::<Vec<_>>().join(", ")
+/// The report after binding: `failed` are the keys (as people read them) that could not be
+/// registered, `stuck` those whose old binding could not be released.
+fn report_of(failed: &[String], stuck: &[String]) -> Report {
+    let mut problems = Vec::new();
+    if !failed.is_empty() {
+        problems.push(trf("{keys} could not be registered", &[("keys", &failed.join(", "))]));
+    }
+    if !stuck.is_empty() {
+        problems.push(trf("{keys} could not be released", &[("keys", &stuck.join(", "))]));
+    }
+    Report { active: problems.is_empty(), problem: (!problems.is_empty()).then(|| problems.join("; ")) }
+}
+
+/// A Hyprland key text as people read it: `SUPER + ALT + 5` → `Super + Alt + 5`.
+fn for_people(keys: &str) -> String {
+    keys.split(" + ")
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map(|first| first.to_string() + &chars.as_str().to_lowercase()).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 /// Keeps the keys bound for as long as `events` runs: binds them now, and anew after every
@@ -229,6 +284,138 @@ pub async fn follow(
             keys.forget().await;
             report(keys.sync(wm, wanted()).await);
         }
+    }
+}
+
+/// The template keys as a whole, as the tray on macOS and Windows registers them (task WS.4): which
+/// digit loads which template ([`slots`]), all held with `modifiers` (`Settings.workspaces`).
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateKeys {
+    pub modifiers: ShortcutModifiers,
+    /// In keyboard order, a key at most once ([`summary_slots`]).
+    pub slots: Vec<Slot>,
+}
+
+/// The system's key for the digit `key` held with `modifiers`; `None` for a `key` above
+/// [`MAX_SHORTCUT`]. `global-hotkey` reads Super as Cmd on macOS and as the Windows key on Windows,
+/// and Alt as Option on macOS, so the modifiers map one to one.
+#[cfg(any(target_os = "macos", windows))]
+pub fn hotkey(modifiers: ShortcutModifiers, key: u8) -> Option<global_hotkey::hotkey::HotKey> {
+    use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+
+    let held = match modifiers {
+        ShortcutModifiers::SuperAlt => Modifiers::SUPER | Modifiers::ALT,
+        ShortcutModifiers::SuperCtrl => Modifiers::SUPER | Modifiers::CONTROL,
+        ShortcutModifiers::CtrlAlt => Modifiers::CONTROL | Modifiers::ALT,
+        ShortcutModifiers::CtrlShift => Modifiers::CONTROL | Modifiers::SHIFT,
+    };
+    let digit = match key {
+        0 => Code::Digit0,
+        1 => Code::Digit1,
+        2 => Code::Digit2,
+        3 => Code::Digit3,
+        4 => Code::Digit4,
+        5 => Code::Digit5,
+        6 => Code::Digit6,
+        7 => Code::Digit7,
+        8 => Code::Digit8,
+        9 => Code::Digit9,
+        _ => return None,
+    };
+    Some(HotKey::new(Some(held), digit))
+}
+
+/// Where the keys are registered: the system's `GlobalHotKeyManager`, or a fake in the tests. A call
+/// fails with the reason as text.
+#[cfg(any(target_os = "macos", windows))]
+pub trait Registrar {
+    fn register(&self, key: global_hotkey::hotkey::HotKey) -> Result<(), String>;
+    fn unregister(&self, key: global_hotkey::hotkey::HotKey) -> Result<(), String>;
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl Registrar for global_hotkey::GlobalHotKeyManager {
+    fn register(&self, key: global_hotkey::hotkey::HotKey) -> Result<(), String> {
+        global_hotkey::GlobalHotKeyManager::register(self, key).map_err(|err| err.to_string())
+    }
+
+    fn unregister(&self, key: global_hotkey::hotkey::HotKey) -> Result<(), String> {
+        global_hotkey::GlobalHotKeyManager::unregister(self, key).map_err(|err| err.to_string())
+    }
+}
+
+/// The template keys registered with the system on macOS and Windows (task WS.4), kept by the tray
+/// on its main thread. Like [`BoundKeys`], it changes only the difference: a key that stays but now
+/// loads another template needs no call to the system at all.
+#[cfg(any(target_os = "macos", windows))]
+#[derive(Debug, Default)]
+pub struct DesktopKeys {
+    /// What [`DesktopKeys::apply`] was last asked for; the same again changes nothing.
+    wanted: Option<TemplateKeys>,
+    /// The keys the system holds for us, each with its label for messages.
+    registered: Vec<(global_hotkey::hotkey::HotKey, String)>,
+    /// The template a pressed key loads, by the key's id (`GlobalHotKeyEvent::id`). Only registered
+    /// keys of the current [`TemplateKeys`] are here, so a key that could not be released loads
+    /// nothing.
+    targets: Vec<(u32, String)>,
+}
+
+#[cfg(any(target_os = "macos", windows))]
+impl DesktopKeys {
+    /// Registers `wanted` with `system`, only the difference to what it holds, and says how the keys
+    /// stand for `Core::report_shortcuts`; `None` when `wanted` is what the last call got, so a new
+    /// menu without a change of the keys costs nothing.
+    ///
+    /// First every held key that `wanted` does not name is released, then every key of `wanted` not
+    /// held yet is registered, one call each. A refused call leaves the others alone and is tried
+    /// again with the next change of the keys; the report names those keys
+    /// ("Ctrl + Option + 5 could not be registered", for example when another app holds it).
+    pub fn apply(&mut self, system: &impl Registrar, wanted: &TemplateKeys) -> Option<Report> {
+        if self.wanted.as_ref() == Some(wanted) {
+            return None;
+        }
+        self.wanted = Some(wanted.clone());
+        let keys: Vec<(global_hotkey::hotkey::HotKey, &Slot)> =
+            wanted.slots.iter().filter_map(|slot| hotkey(wanted.modifiers, slot.key).map(|key| (key, slot))).collect();
+        let mut stuck = Vec::new();
+        let gone: Vec<(global_hotkey::hotkey::HotKey, String)> =
+            self.registered.iter().filter(|(held, _)| keys.iter().all(|(key, _)| key != held)).cloned().collect();
+        for (held, name) in gone {
+            match system.unregister(held) {
+                Ok(()) => self.registered.retain(|(kept, _)| *kept != held),
+                Err(err) => {
+                    eprintln!("torroworkplace: cannot release the key {name}: {err}");
+                    stuck.push(name);
+                }
+            }
+        }
+        let mut failed = Vec::new();
+        for (key, slot) in &keys {
+            if self.registered.iter().any(|(held, _)| held == key) {
+                continue;
+            }
+            let name = label(wanted.modifiers, slot.key);
+            match system.register(*key) {
+                Ok(()) => self.registered.push((*key, name)),
+                Err(err) => {
+                    eprintln!("torroworkplace: cannot register the key {name}: {err}");
+                    failed.push(name);
+                }
+            }
+        }
+        self.targets = keys
+            .iter()
+            .filter(|(key, _)| self.registered.iter().any(|(held, _)| held == key))
+            .map(|(key, slot)| (key.id(), slot.template.clone()))
+            .collect();
+        Some(report_of(&failed, &stuck))
+    }
+
+    /// The id of the template the key with the id `pressed` loads; `None` for a key not ours (any
+    /// more).
+    pub fn template(&self, pressed: u32) -> Option<&str> {
+        self.targets.iter().find(|(id, _)| *id == pressed).map(|(_, template)| template.as_str())
     }
 }
 
@@ -286,7 +473,7 @@ mod tests {
     #[test]
     fn the_keys_are_spelled_for_hyprland_and_for_people() {
         let spelled: Vec<(String, String)> =
-            ShortcutModifiers::ALL.iter().map(|m| (hyprland_keys(*m, 5), label(*m, 5))).collect();
+            ShortcutModifiers::ALL.iter().map(|m| (hyprland_keys(*m, 5), label_on(System::Linux, *m, 5))).collect();
         let expected = [
             ("SUPER + ALT + 5", "Super + Alt + 5"),
             ("SUPER + CTRL + 5", "Super + Ctrl + 5"),
@@ -294,10 +481,25 @@ mod tests {
             ("CTRL + SHIFT + 5", "Ctrl + Shift + 5"),
         ];
         assert_eq!(spelled, expected.map(|(h, p)| (h.to_string(), p.to_string())));
-        assert_eq!(
-            for_people(&["CTRL + SHIFT + 0".into(), "SUPER + ALT + 1".into()]),
-            "Ctrl + Shift + 0, Super + Alt + 1"
-        );
+        assert_eq!(for_people("CTRL + SHIFT + 0"), "Ctrl + Shift + 0");
+        assert_eq!(label(ShortcutModifiers::CtrlAlt, 5), label_on(System::CURRENT, ShortcutModifiers::CtrlAlt, 5));
+    }
+
+    /// Task WS.4: macOS and Windows name the modifiers as their keyboards do; Hyprland keeps Linux's.
+    #[test]
+    fn macos_and_windows_name_the_modifiers_as_their_keyboards_do() {
+        let on = |system| ShortcutModifiers::ALL.map(|m| label_on(system, m, 5));
+        assert_eq!(on(System::MacOs), ["Cmd + Option + 5", "Cmd + Ctrl + 5", "Ctrl + Option + 5", "Ctrl + Shift + 5"]);
+        assert_eq!(on(System::Windows), ["Win + Alt + 5", "Win + Ctrl + 5", "Ctrl + Alt + 5", "Ctrl + Shift + 5"]);
+        assert_eq!(hyprland_keys(ShortcutModifiers::SuperAlt, 5), "SUPER + ALT + 5");
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn the_snapshot_s_summaries_give_the_same_slots() {
+        let templates = [template("zero", Some(0)), template("one", Some(1)), template("also-one", Some(1))];
+        let summaries: Vec<TemplateSummary> = templates.iter().map(TemplateSummary::from).collect();
+        assert_eq!(summary_slots(&summaries), slots(&templates));
     }
 
     /// The bind runs the command line `ctl` understands: load in the mode `add`.
@@ -504,5 +706,149 @@ mod tests {
         let expected = trf("The templates could not be read: {error}", &[("error", &"disk on fire")]);
         assert_eq!(report, Report { active: false, problem: Some(expected) });
         assert_eq!(wm.calls().len(), 1, "nothing released");
+    }
+
+    /// Task WS.4: a slot and the modifiers become the system's key.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_slot_and_the_modifiers_become_the_system_s_key() {
+        use global_hotkey::hotkey::{Code, HotKey, Modifiers};
+
+        let expected = [
+            (ShortcutModifiers::SuperAlt, Modifiers::SUPER | Modifiers::ALT),
+            (ShortcutModifiers::SuperCtrl, Modifiers::SUPER | Modifiers::CONTROL),
+            (ShortcutModifiers::CtrlAlt, Modifiers::CONTROL | Modifiers::ALT),
+            (ShortcutModifiers::CtrlShift, Modifiers::CONTROL | Modifiers::SHIFT),
+        ];
+        for (modifiers, held) in expected {
+            assert_eq!(hotkey(modifiers, 5), Some(HotKey::new(Some(held), Code::Digit5)), "{modifiers:?}");
+        }
+        let digits = [
+            Code::Digit0,
+            Code::Digit1,
+            Code::Digit2,
+            Code::Digit3,
+            Code::Digit4,
+            Code::Digit5,
+            Code::Digit6,
+            Code::Digit7,
+            Code::Digit8,
+            Code::Digit9,
+        ];
+        for (key, digit) in (0..=MAX_SHORTCUT).zip(digits) {
+            assert_eq!(hotkey(ShortcutModifiers::CtrlAlt, key).map(|hotkey| hotkey.key), Some(digit), "{key}");
+        }
+        assert_eq!(hotkey(ShortcutModifiers::CtrlAlt, MAX_SHORTCUT + 1), None);
+    }
+
+    /// The system's keys in a test: records every call, refuses the keys in `refused` and every
+    /// release of `stuck`.
+    #[cfg(any(target_os = "macos", windows))]
+    #[derive(Default)]
+    struct FakeSystem {
+        calls: Mutex<Vec<(&'static str, global_hotkey::hotkey::HotKey)>>,
+        refused: Vec<global_hotkey::hotkey::HotKey>,
+        stuck: Vec<global_hotkey::hotkey::HotKey>,
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    impl FakeSystem {
+        fn calls(&self) -> Vec<(&'static str, global_hotkey::hotkey::HotKey)> {
+            self.calls.lock().expect("calls").clone()
+        }
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    impl Registrar for FakeSystem {
+        fn register(&self, key: global_hotkey::hotkey::HotKey) -> Result<(), String> {
+            self.calls.lock().expect("calls").push(("register", key));
+            if self.refused.contains(&key) { Err("taken".into()) } else { Ok(()) }
+        }
+
+        fn unregister(&self, key: global_hotkey::hotkey::HotKey) -> Result<(), String> {
+            self.calls.lock().expect("calls").push(("unregister", key));
+            if self.stuck.contains(&key) { Err("no".into()) } else { Ok(()) }
+        }
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn desktop(modifiers: ShortcutModifiers, keys: &[(u8, &str)]) -> TemplateKeys {
+        let slots = keys.iter().map(|(key, id)| Slot { key: *key, template: id.to_string() }).collect();
+        TemplateKeys { modifiers, slots }
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    fn system_key(modifiers: ShortcutModifiers, key: u8) -> global_hotkey::hotkey::HotKey {
+        hotkey(modifiers, key).expect("a digit")
+    }
+
+    /// Moving key 1 from `mail` to `dev` and dropping key 2 releases 2 only; key 1 stays registered and
+    /// now loads `dev`. The same keys again call nothing.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn the_desktop_registers_only_the_difference() {
+        let system = FakeSystem::default();
+        let mut keys = DesktopKeys::default();
+        let ctrl_alt = ShortcutModifiers::CtrlAlt;
+        let before = desktop(ctrl_alt, &[(1, "mail"), (2, "dev")]);
+        assert_eq!(keys.apply(&system, &before), Some(Report { active: true, problem: None }));
+        let one = system_key(ctrl_alt, 1);
+        assert_eq!(keys.template(one.id()), Some("mail"));
+
+        let after = desktop(ctrl_alt, &[(1, "dev")]);
+        assert_eq!(keys.apply(&system, &after), Some(Report { active: true, problem: None }));
+        let two = system_key(ctrl_alt, 2);
+        assert_eq!(system.calls(), [("register", one), ("register", two), ("unregister", two)]);
+        assert_eq!(keys.template(one.id()), Some("dev"));
+        assert_eq!(keys.template(two.id()), None);
+
+        assert_eq!(keys.apply(&system, &after), None);
+        assert_eq!(system.calls().len(), 3);
+    }
+
+    /// New modifiers release every old key before they register the new ones.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn new_modifiers_release_every_old_desktop_key() {
+        let system = FakeSystem::default();
+        let mut keys = DesktopKeys::default();
+        let (old, new) = (ShortcutModifiers::CtrlAlt, ShortcutModifiers::SuperAlt);
+        keys.apply(&system, &desktop(old, &[(1, "dev"), (0, "mail")]));
+        keys.apply(&system, &desktop(new, &[(1, "dev"), (0, "mail")]));
+        assert_eq!(
+            system.calls()[2..],
+            [
+                ("unregister", system_key(old, 1)),
+                ("unregister", system_key(old, 0)),
+                ("register", system_key(new, 1)),
+                ("register", system_key(new, 0)),
+            ]
+        );
+        assert_eq!(keys.template(system_key(old, 1).id()), None);
+        assert_eq!(keys.template(system_key(new, 0).id()), Some("mail"));
+    }
+
+    /// A key another program holds is named for people, loads nothing and is tried again with the next
+    /// change; a key that cannot be released loads nothing either.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_taken_desktop_key_is_reported_and_tried_again() {
+        let ctrl_alt = ShortcutModifiers::CtrlAlt;
+        let five = system_key(ctrl_alt, 5);
+        let system = FakeSystem { refused: vec![five], ..FakeSystem::default() };
+        let mut keys = DesktopKeys::default();
+        let report = keys.apply(&system, &desktop(ctrl_alt, &[(5, "dev"), (6, "mail")]));
+        let expected = trf("{keys} could not be registered", &[("keys", &label(ctrl_alt, 5))]);
+        assert_eq!(report, Some(Report { active: false, problem: Some(expected) }));
+        assert_eq!(keys.template(five.id()), None);
+        assert_eq!(keys.template(system_key(ctrl_alt, 6).id()), Some("mail"));
+
+        let system = FakeSystem { stuck: vec![system_key(ctrl_alt, 6)], ..FakeSystem::default() };
+        let report = keys.apply(&system, &desktop(ctrl_alt, &[(5, "dev")]));
+        let expected = trf("{keys} could not be released", &[("keys", &label(ctrl_alt, 6))]);
+        assert_eq!(report, Some(Report { active: false, problem: Some(expected) }));
+        assert_eq!(system.calls(), [("unregister", system_key(ctrl_alt, 6)), ("register", five)]);
+        assert_eq!(keys.template(five.id()), Some("dev"));
+        assert_eq!(keys.template(system_key(ctrl_alt, 6).id()), None);
     }
 }

@@ -146,6 +146,9 @@ futures-util = { version = "0.3.34", default-features = false, features = ["sink
 # the one iced already brings along.
 tray-icon = { version = "0.26.1", default-features = false }
 winit = { version = "0.30.13", default-features = false }
+# The template keys on macOS and Windows (issue #243, WS.4), registered on the tray's event loop. 0.8: the same
+# objc2, objc2-app-kit, windows-sys and keyboard-types as tray-icon, muda and torro-ipc already bring.
+global-hotkey = { version = "0.8.0", default-features = false }
 # Letters as people see them (torroassistant, issue #135): an answer appears grapheme by grapheme. The version Iced's
 # text stack already brings.
 unicode-segmentation = "1.13.3"
