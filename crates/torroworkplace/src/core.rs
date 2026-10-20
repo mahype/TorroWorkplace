@@ -15621,13 +15621,14 @@ mod tests {
         }
     }
 
-    /// Reads conversation `id` until `done` holds for its state, at most four seconds.
+    /// Reads conversation `id` until `done` holds for its state, at most twenty seconds: a turn that sets a PDF
+    /// takes well under a second on its own, but a full `cargo test --workspace` in debug can starve it for seconds.
     async fn conversation_until(
         core: &Core,
         id: &str,
         done: impl Fn(bool, &[torro_ipc::assistant::Entry]) -> bool,
     ) -> Vec<torro_ipc::assistant::Entry> {
-        for _ in 0..800 {
+        for _ in 0..4000 {
             let Response::Conversation { conversation, entries } =
                 core.handle(Request::GetConversation { id: id.into(), after: None }).await
             else {
