@@ -1,0 +1,480 @@
+<!doctype html>
+<!-- Entwurf zu Issue #243 (Workspaces: Tastenkürzel, Laden beim Start, ein Dialog). Maßstab für docs/tasks/workspaces.md. -->
+<html lang="de">
+<head>
+<title>Torro Workspaces Entwurf</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+@font-face{font-family:Inter;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf)}
+@font-face{font-family:Inter;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf)}
+@font-face{font-family:Inter;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf)}
+</style>
+<style>
+/* Layout: Entwurfsbogen – je Abschnitt eine Erklärung links, darunter das Fenster im Torro-Linear-Stil (Tokens aus docs/prototypes/linear/torro.css). Dunkel zuerst. */
+:root{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518; --menu:#17181B;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10); --line-selected:rgba(255,255,255,.28);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --accent:#D50C0C; --on-accent:#FFFFFF; --ok:#3FB984; --attention:#E8A33D; --scrim:rgba(0,0,0,.62);
+  --shadow:0 12px 32px rgba(0,0,0,.5); --page:#050606; --note:#B4B8BF;
+  --font:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA; --menu:#FFFFFF;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-selected:rgba(0,0,0,.32);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D; --ok:#1F9D68; --attention:#B06F12; --scrim:rgba(0,0,0,.30);
+  --shadow:0 12px 32px rgba(0,0,0,.12); --page:#E7E9EC; --note:#4F535A; color-scheme:light}}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA; --menu:#FFFFFF;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-selected:rgba(0,0,0,.32);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D; --ok:#1F9D68; --attention:#B06F12; --scrim:rgba(0,0,0,.30);
+  --shadow:0 12px 32px rgba(0,0,0,.12); --page:#E7E9EC; --note:#4F535A; color-scheme:light}
+
+*{box-sizing:border-box}
+body{background:var(--page);color:var(--text);font:400 13px/20px var(--font);-webkit-font-smoothing:antialiased;margin:0;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:32px 64px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+.tab{font-variant-numeric:tabular-nums}
+svg.i{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.s14{width:14px;height:14px}
+
+/* Bogenkopf */
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;flex-wrap:wrap}
+.top h1{font-size:22px;line-height:28px;font-weight:600;margin:0 0 6px;text-wrap:balance}
+.top p{margin:0;color:var(--note);max-width:68ch}
+.themes{display:inline-flex;height:28px;padding:2px;border-radius:6px;background:var(--bg);border:1px solid var(--line-strong)}
+.themes button{border:0;background:none;color:var(--text3);font:500 12px/1 var(--font);padding:0 10px;border-radius:4px;cursor:pointer}
+.themes button[aria-pressed="true"]{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-selected)}
+.themes button:focus-visible,.btn:focus-visible{outline:2px solid var(--line-selected);outline-offset:1px}
+
+/* Abschnitt */
+section.sheet{display:grid;grid-template-columns:280px minmax(0,1fr);gap:32px;align-items:start}
+.explain{display:flex;flex-direction:column;gap:10px;position:sticky;top:calc(env(safe-area-inset-top,0px) + 16px)}
+.explain .k{font-size:12px;font-weight:500;color:var(--text3)}
+.explain h2{font-size:16px;line-height:22px;font-weight:600;margin:0;text-wrap:balance}
+.explain p,.explain li{color:var(--note);margin:0}
+.explain ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px}
+.stage{overflow-x:auto;min-width:0;padding-bottom:4px}
+@media (max-width:900px){section.sheet{grid-template-columns:minmax(0,1fr)}.explain{position:static}}
+
+/* Fenster */
+.win{background:var(--bg);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);overflow:hidden;position:relative}
+.band{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px}
+.lights{display:flex;gap:8px}.lights i{width:12px;height:12px;border-radius:50%;background:var(--line-strong);display:block}
+.band .grow{flex:1}.band .ttl{color:var(--text3);font-size:12px}
+.app{display:flex;min-height:560px}
+.sidebar{width:232px;flex:none;padding:0 8px 8px;display:flex;flex-direction:column;gap:2px}
+.switch{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px;margin-bottom:6px}
+.logo{width:20px;height:20px;border-radius:5px;background:var(--accent);display:grid;place-items:center;color:var(--on-accent);font-weight:600;font-size:11px}
+.nav{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;color:var(--text2)}
+.nav.on{background:var(--selected);color:var(--text)}
+.nav .grow{flex:1}.nav .n{font-size:12px;color:var(--text3)}
+.panel{flex:1;min-width:0;margin:0 8px 8px 0;background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column}
+.head{height:44px;display:flex;align-items:center;gap:8px;padding:0 12px 0 16px;border-bottom:1px solid var(--line)}
+.head b{font-weight:500}.head .grow{flex:1}
+.page{padding:24px;display:flex;flex-direction:column;gap:24px;max-width:688px;width:100%;margin:0 auto}
+
+/* Bausteine */
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 var(--font);white-space:nowrap}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.btn.lg{height:36px;padding:0 14px}
+.btn.icon{width:28px;padding:0;justify-content:center;border-color:transparent;background:none;color:var(--text2)}
+.btn.icon.on{background:var(--selected);color:var(--text)}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:0 0 8px}
+.group{border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.row{display:flex;align-items:center;gap:12px;min-height:44px;padding:8px 16px;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row.tall{min-height:56px}
+.row .body{flex:1;min-width:0;display:flex;flex-direction:column}
+.row .t{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .m{font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.hl{background:var(--hover)}
+.tile{width:28px;height:28px;border-radius:6px;background:var(--selected);border:1px solid var(--line-strong);display:grid;place-items:center;color:var(--text);flex:none}
+.explain-line{color:var(--text2);font-size:12px;line-height:16px;margin:8px 0 0}
+.kbd{display:inline-flex;gap:3px;align-items:center}
+kbd{font:500 11px/1 var(--font);color:var(--text2);border:1px solid var(--line-strong);border-radius:4px;padding:3px 5px;background:var(--raised);min-width:20px;text-align:center}
+.pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);font-size:12px;font-weight:500;color:var(--text2);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.dot.att{background:var(--attention)}
+.ok{color:var(--ok)}.att{color:var(--attention)}
+
+/* Menü */
+.menu{position:absolute;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);padding:4px;min-width:240px;z-index:3}
+.mi{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:6px;color:var(--text)}
+.mi.hov{background:var(--hover)}
+.mi .grow{flex:1}.mi .dim{color:var(--text3);font-size:12px}
+.mi.danger{color:#E5484D}
+.msep{height:1px;background:var(--line);margin:4px 0}
+.mcap{font-size:12px;font-weight:500;color:var(--text3);padding:6px 8px 2px;display:flex;justify-content:space-between}
+
+/* Dialog */
+.scrim{position:absolute;inset:0;background:var(--scrim);display:grid;place-items:center;padding:24px;z-index:4}
+.dialog{background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);width:100%;max-width:520px;display:flex;flex-direction:column}
+.dialog .dh{padding:16px 16px 0;display:flex;gap:12px;align-items:flex-start}
+.dialog .dh h3{font-size:16px;line-height:22px;font-weight:600;margin:0}
+.dialog .dh p{margin:2px 0 0;color:var(--text3);font-size:12px;line-height:16px}
+.dialog .db{padding:16px;display:flex;flex-direction:column;gap:20px}
+.dialog .df{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;align-items:center}
+.dialog .df .grow{flex:1}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label,.field .lbl{font-size:12px;line-height:16px;font-weight:500;color:var(--text2)}
+.input{height:32px;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);display:flex;align-items:center;padding:0 10px;gap:8px;color:var(--text)}
+.input.focus{box-shadow:0 0 0 2px var(--line-selected)}
+.input .grow{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.input .ph{color:var(--text3)}
+.hint{font-size:12px;line-height:16px;color:var(--text3)}
+.hint.warn{color:var(--attention);display:flex;gap:6px;align-items:flex-start}
+.slots{display:grid;grid-template-columns:auto repeat(10,minmax(0,1fr));gap:4px}
+.slot{height:32px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);display:flex;flex-direction:column;align-items:center;justify-content:center;font-weight:500;color:var(--text);position:relative;line-height:14px;padding:0 8px}
+.slot small{font-size:10px;line-height:11px;color:var(--text3);font-weight:400;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.slot.sel{background:var(--selected);border-color:var(--line-selected)}
+.slot.taken{color:var(--text2)}
+.slot.taken::after{content:"";position:absolute;top:4px;right:4px;width:5px;height:5px;border-radius:50%;background:var(--text3)}
+.toggle{display:flex;align-items:center;gap:12px}
+.sw{width:32px;height:18px;border-radius:9px;background:var(--line-strong);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--text2)}
+.sw.on{background:var(--text)}
+.sw.on::after{left:16px;background:var(--panel)}
+.sub{padding-left:44px;display:flex;flex-direction:column;gap:12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text2)}
+.chip.sel{background:var(--selected);border-color:var(--line-selected);color:var(--text)}
+.contents{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.apps{display:flex;flex-wrap:wrap;gap:6px}
+.app-chip{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;background:var(--raised);border:1px solid var(--line);font-size:12px;color:var(--text2)}
+.mon{display:flex;gap:6px;align-items:flex-end}
+.mon .scr{border:1px solid var(--line-strong);border-radius:3px;background:var(--raised);display:grid;place-items:center;font-size:11px;color:var(--text3)}
+.mon .scr.sel{border-color:var(--text);color:var(--text);background:var(--selected)}
+.sec-title{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--text3)}
+.sec-title::after{content:"";flex:1;height:1px;background:var(--line)}
+
+/* Desktop-Hintergrund für Tray und kleines Fenster */
+.desk{background:linear-gradient(160deg,var(--selected),var(--bg));border:1px solid var(--line-strong);border-radius:10px;position:relative;overflow:hidden}
+.bar{height:30px;background:var(--bg);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:var(--text2)}
+.bar .grow{flex:1}
+.bar .trayic{width:22px;height:22px;border-radius:5px;display:grid;place-items:center;background:var(--selected);color:var(--text)}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+@media (max-width:700px){.two{grid-template-columns:minmax(0,1fr)}}
+.lbl-above{font-size:12px;color:var(--text3);margin:0 0 8px;font-weight:500}
+</style>
+
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+  <symbol id="grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></symbol>
+  <symbol id="cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+  <symbol id="code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+  <symbol id="link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+  <symbol id="user" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4"/><path d="m16 19 2 2 4-4"/></symbol>
+  <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+  <symbol id="monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+  <symbol id="more" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+  <symbol id="plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+  <symbol id="power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+  <symbol id="keyboard" viewBox="0 0 24 24"><path d="M10 8h.01M12 12h.01M14 8h.01M16 12h.01M18 8h.01M6 8h.01M7 16h10M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/></symbol>
+  <symbol id="pencil" viewBox="0 0 24 24"><path d="M21.17 6.81a1 1 0 0 0-3.99-3.99L3.84 16.17a2 2 0 0 0-.5.83l-1.32 4.35a.5.5 0 0 0 .62.62l4.35-1.32a2 2 0 0 0 .83-.5z"/></symbol>
+  <symbol id="refresh" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></symbol>
+  <symbol id="trash" viewBox="0 0 24 24"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></symbol>
+  <symbol id="chev-r" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="settings" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+  <symbol id="app" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4M2 8h20M6 4v4"/></symbol>
+  <symbol id="save" viewBox="0 0 24 24"><path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7M7 3v4a1 1 0 0 0 1 1h7"/></symbol>
+</svg>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Workspaces: Kürzel, Start und ein Dialog für alles</h1>
+      <p>Entwürfe zum Issue „Workspaces: Kürzel, Laden beim Start und ein Dialog zum Speichern und Bearbeiten“. Oberflächentexte englisch wie in der Software, Erklärungen deutsch. Beispiel-Daten: Hyprland mit zwei Bildschirmen.</p>
+    </div>
+    <div class="themes" role="group" aria-label="Farbschema">
+      <button type="button" id="t-dark" data-t="dark">Dark</button>
+      <button type="button" id="t-light" data-t="light">Light</button>
+    </div>
+  </header>
+
+  <!-- 1 Einstellungen -->
+  <section class="sheet">
+    <div class="explain">
+      <span class="k">Einstellungen › Workspaces</span>
+      <h2>Fenstermanager oben, Vorlagen mit Taste und Start</h2>
+      <ul>
+        <li>Neue Gruppe <b>Window manager</b>: welcher erkannt ist, Version, Zahl der Bildschirme, Zustand der Kürzel.</li>
+        <li>Jede Vorlage zeigt ihre Taste und, falls gesetzt, „At startup · DP-1“.</li>
+        <li>Sortiert nach Taste, ohne Taste nach Name.</li>
+        <li>Eine sichtbare Aktion je Zeile (<b>Load</b>), der Rest im „…“-Menü: <b>Edit…</b>, <b>Update from current workspace</b>, <b>Delete</b>. Das Umbenennen in der Zeile entfällt.</li>
+        <li>Primärknopf <b>Save workspace…</b> öffnet denselben Dialog wie im Tray.</li>
+      </ul>
+    </div>
+    <div class="stage">
+      <div class="win" style="min-width:860px">
+        <div class="band"><div class="lights"><i></i><i></i><i></i></div><div class="grow"></div><svg class="i" style="color:var(--text3)"><use href="#settings"/></svg></div>
+        <div class="app">
+          <nav class="sidebar">
+            <div class="switch"><span class="logo">T</span><b style="font-weight:500">Workplace</b><svg class="i s14" style="color:var(--text3)"><use href="#chev-d"/></svg></div>
+            <div class="nav"><svg class="i"><use href="#grid"/></svg><span class="grow">Overview</span></div>
+            <div class="nav"><svg class="i"><use href="#cloud"/></svg><span class="grow">Accounts</span><span class="n tab">8</span></div>
+            <div class="nav"><svg class="i"><use href="#code"/></svg><span class="grow">API</span><span class="n tab">1</span></div>
+            <div class="nav"><svg class="i"><use href="#link"/></svg><span class="grow">MCP</span><span class="n tab">2</span></div>
+            <div class="nav"><svg class="i"><use href="#user"/></svg><span class="grow">Approvals</span><span class="n tab">3</span></div>
+            <div class="nav on"><svg class="i"><use href="#layers"/></svg><span class="grow">Workspaces</span><span class="n tab">4</span></div>
+            <div class="nav"><svg class="i"><use href="#sun"/></svg><span class="grow">Appearance</span></div>
+          </nav>
+          <div class="panel" style="position:relative">
+            <div class="head"><svg class="i" style="color:var(--text3)"><use href="#layers"/></svg><b>Workspaces</b><div class="grow"></div><span class="btn primary"><svg class="i s14"><use href="#plus"/></svg>Save workspace…</span></div>
+            <div class="page">
+              <div>
+                <p class="cap">Window manager</p>
+                <div class="group">
+                  <div class="row tall">
+                    <span class="tile"><svg class="i"><use href="#monitor"/></svg></span>
+                    <div class="body"><span class="t">Hyprland</span><span class="m">Version 0.56 · 2 screens: DP-1 (main), HDMI-A-1</span></div>
+                    <span class="pill"><span class="dot"></span>Detected</span>
+                  </div>
+                  <div class="row tall">
+                    <span class="tile"><svg class="i"><use href="#keyboard"/></svg></span>
+                    <div class="body"><span class="t">Shortcuts</span><span class="m">Super + Alt + 1 … 0 load the template on that key</span></div>
+                    <span class="btn">Super + Alt<svg class="i s14" style="color:var(--text3)"><use href="#chev-d"/></svg></span>
+                  </div>
+                </div>
+                <p class="explain-line">Super + 1 … 0 already switch workspaces in Hyprland, so templates use Super + Alt. Torro registers the keys while it runs.</p>
+              </div>
+              <div>
+                <p class="cap">Templates</p>
+                <div class="group">
+                  <div class="row tall">
+                    <span class="kbd"><kbd>1</kbd></span>
+                    <div class="body"><span class="t">Deep work</span><span class="m">5 windows · workspace 1 · saved 18.10. 14:02</span></div>
+                    <span class="pill"><svg class="i s14"><use href="#power"/></svg>At startup · DP-1</span>
+                    <span class="btn">Load</span><span class="btn icon"><svg class="i"><use href="#more"/></svg></span>
+                  </div>
+                  <div class="row tall">
+                    <span class="kbd"><kbd>2</kbd></span>
+                    <div class="body"><span class="t">Mail &amp; chat</span><span class="m">3 windows · workspace 2 · saved 12.10. 09:15</span></div>
+                    <span class="pill"><svg class="i s14"><use href="#power"/></svg>At startup · HDMI-A-1</span>
+                    <span class="btn">Load</span><span class="btn icon"><svg class="i"><use href="#more"/></svg></span>
+                  </div>
+                  <div class="row tall hl">
+                    <span class="kbd"><kbd>3</kbd></span>
+                    <div class="body"><span class="t">Torro development</span><span class="m">6 windows · workspace 3 · saved 20.10. 10:41</span></div>
+                    <span class="btn">Load</span><span class="btn icon on"><svg class="i"><use href="#more"/></svg></span>
+                  </div>
+                  <div class="row tall">
+                    <span class="kbd"><kbd style="color:var(--text3);border-style:dashed;background:none">–</kbd></span>
+                    <div class="body"><span class="t">Workspace 4, 19.10. 16:20</span><span class="m">2 windows · workspace 4 · saved 19.10. 16:20</span></div>
+                    <span class="btn">Load</span><span class="btn icon"><svg class="i"><use href="#more"/></svg></span>
+                  </div>
+                </div>
+                <p class="explain-line">Load adds the windows to the workspace you are on. Edit a template to give it a key or load it at startup.</p>
+              </div>
+            </div>
+            <div class="menu" style="top:398px;right:24px">
+              <div class="mi hov"><svg class="i"><use href="#pencil"/></svg><span class="grow">Edit…</span><span class="kbd"><kbd>E</kbd></span></div>
+              <div class="mi"><svg class="i"><use href="#refresh"/></svg><span class="grow">Update from current workspace</span></div>
+              <div class="msep"></div>
+              <div class="mi danger"><svg class="i"><use href="#trash"/></svg><span class="grow">Delete…</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 Bearbeiten -->
+  <section class="sheet">
+    <div class="explain">
+      <span class="k">Einstellungen › Workspaces › Edit…</span>
+      <h2>Ein Dialog für alle Einstellungen einer Vorlage</h2>
+      <ul>
+        <li><b>Name</b>, <b>Shortcut</b> und <b>At startup</b> auf einen Blick, gespeichert mit einem Klick.</li>
+        <li>Tasten 1 … 0 als Reihe; belegte Tasten tragen einen Punkt und den Namen der Vorlage darunter.</li>
+        <li>Wird eine belegte Taste gewählt, sagt der Hinweis, dass sie umzieht. Kein zweiter Dialog.</li>
+        <li>Der Bildschirm wird als kleine Skizze in echten Proportionen gewählt; „Screen the template was saved on“ ist die Vorgabe.</li>
+        <li>Abschnitte mit Titel, damit später mehr dazukommen kann (z. B. Verhalten je Fenster).</li>
+      </ul>
+    </div>
+    <div class="stage">
+      <div class="win" style="min-width:640px;height:720px">
+        <div class="band"><div class="lights"><i></i><i></i><i></i></div></div>
+        <div class="app" style="opacity:.5;min-height:0;height:680px">
+          <nav class="sidebar"><div class="switch"><span class="logo">T</span><b style="font-weight:500">Workplace</b></div><div class="nav on"><svg class="i"><use href="#layers"/></svg><span class="grow">Workspaces</span></div></nav>
+          <div class="panel"></div>
+        </div>
+        <div class="scrim">
+          <div class="dialog" role="dialog" aria-label="Edit template">
+            <div class="dh">
+              <div style="flex:1"><h3>Edit template</h3><p>6 windows · saved from workspace 3 on DP-1 · 20.10. 10:41</p></div>
+              <span class="btn icon"><svg class="i"><use href="#x"/></svg></span>
+            </div>
+            <div class="db">
+              <div class="field">
+                <label for="n1">Name</label>
+                <div class="input focus" id="n1"><span class="grow">Torro development</span></div>
+              </div>
+              <div class="field">
+                <span class="lbl">Shortcut · Super + Alt +</span>
+                <div class="slots">
+                  <span class="slot">None</span>
+                  <span class="slot taken">1<small>Deep work</small></span>
+                  <span class="slot sel taken">2<small>Mail &amp; chat</small></span>
+                  <span class="slot">3</span><span class="slot">4</span><span class="slot">5</span><span class="slot">6</span><span class="slot">7</span><span class="slot">8</span><span class="slot">9</span><span class="slot">0</span>
+                </div>
+                <span class="hint warn"><svg class="i s14"><use href="#alert"/></svg>Key 2 belongs to “Mail &amp; chat”. Saving moves it here; “Mail &amp; chat” keeps no key.</span>
+              </div>
+              <div class="sec-title">Startup</div>
+              <div class="toggle"><span class="sw on"></span><div><div style="font-weight:500">Load at startup</div><div class="hint">When Torro starts after you log in</div></div></div>
+              <div class="sub">
+                <div class="field">
+                  <span class="lbl">Screen</span>
+                  <div class="mon">
+                    <div style="display:flex;flex-direction:column;gap:4px;align-items:center"><div class="scr sel" style="width:192px;height:54px">DP-1</div><span class="hint">3840×1080 · main</span></div>
+                    <div style="display:flex;flex-direction:column;gap:4px;align-items:center"><div class="scr" style="width:96px;height:54px">HDMI-A-1</div><span class="hint">1920×1080</span></div>
+                  </div>
+                </div>
+                <div class="field">
+                  <span class="lbl">If the screen is missing</span>
+                  <div class="chips"><span class="chip sel">Use the main screen</span><span class="chip">Skip</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="df"><span class="hint grow">The windows stay as saved. Update captures them again.</span><span class="btn ghost">Cancel</span><span class="btn primary lg">Save</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 Tray -->
+  <section class="sheet">
+    <div class="explain">
+      <span class="k">Tray-Menü</span>
+      <h2>Laden mit Taste im Blick, Speichern mit Dialog</h2>
+      <ul>
+        <li>Kopf der Gruppe nennt den Fenstermanager.</li>
+        <li>Vorlagen direkt in der ersten Ebene, Taste als Hinweis rechts. Klick lädt (wie <b>Load</b>), das Untermenü bietet <b>Replace windows</b>.</li>
+        <li><b>Save workspace…</b> mit Auslassungspunkten: Es öffnet den Dialog rechts statt still „Workspace 4, 19.10.“ zu speichern.</li>
+        <li><b>Manage workspaces…</b> öffnet Einstellungen › Workspaces.</li>
+        <li>Update und Delete wandern aus dem Tray in die Einstellungen.</li>
+      </ul>
+    </div>
+    <div class="stage">
+      <div class="two" style="min-width:640px">
+        <div>
+          <p class="lbl-above">Tray, Gruppe „Workspaces“</p>
+          <div class="desk" style="height:440px">
+            <div class="bar"><span>1</span><span style="color:var(--text)">3</span><span>4</span><span class="grow"></span><span class="trayic"><span class="logo" style="width:16px;height:16px;font-size:9px;border-radius:4px">T</span></span><span class="tab">10:41</span></div>
+            <div class="menu" style="top:38px;right:44px;min-width:280px">
+              <div class="mcap"><span>Workspaces</span><span>Hyprland</span></div>
+              <div class="mi"><span class="grow">Deep work</span><span class="kbd"><kbd>Super</kbd><kbd>Alt</kbd><kbd>1</kbd></span></div>
+              <div class="mi"><span class="grow">Mail &amp; chat</span><span class="kbd"><kbd>Super</kbd><kbd>Alt</kbd><kbd>2</kbd></span></div>
+              <div class="mi hov"><span class="grow">Torro development</span><span class="kbd"><kbd>Super</kbd><kbd>Alt</kbd><kbd>3</kbd></span><svg class="i s14" style="color:var(--text3)"><use href="#chev-r"/></svg></div>
+              <div class="mi"><span class="grow">Workspace 4, 19.10. 16:20</span><svg class="i s14" style="color:var(--text3)"><use href="#chev-r"/></svg></div>
+              <div class="msep"></div>
+              <div class="mi"><svg class="i"><use href="#save"/></svg><span class="grow">Save workspace…</span></div>
+              <div class="mi"><svg class="i"><use href="#layers"/></svg><span class="grow">Manage workspaces…</span></div>
+              <div class="msep"></div>
+              <div class="mi"><span class="grow" style="color:var(--text2)">Pause notifications</span></div>
+              <div class="mi"><span class="grow" style="color:var(--text2)">Settings…</span></div>
+            </div>
+          </div>
+          <p class="hint" style="margin-top:8px">Untermenü an einer Vorlage: Load · Replace windows · Edit…</p>
+        </div>
+        <div>
+          <p class="lbl-above">Nach „Save workspace…“: eigenes kleines Fenster</p>
+          <div class="desk" style="height:440px;display:grid;place-items:center;padding:16px">
+            <div class="dialog" style="max-width:420px">
+              <div class="dh"><div style="flex:1"><h3>Save workspace</h3><p>Captured workspace 3 on DP-1</p></div></div>
+              <div class="db" style="gap:16px">
+                <div class="apps"><span class="app-chip"><svg class="i s14"><use href="#app"/></svg>Firefox</span><span class="app-chip"><svg class="i s14"><use href="#app"/></svg>Ghostty ×2</span><span class="app-chip"><svg class="i s14"><use href="#app"/></svg>Zed</span><span class="app-chip"><svg class="i s14"><use href="#app"/></svg>Torro Tasks</span><span class="app-chip"><svg class="i s14"><use href="#app"/></svg>Torro Calendar</span></div>
+                <div class="field"><label for="n2">Name</label><div class="input focus" id="n2"><span class="grow">Torro development</span></div></div>
+                <div class="field"><span class="lbl">Shortcut · Super + Alt +</span>
+                  <div class="chips"><span class="chip">None</span><span class="chip" style="opacity:.6">1 ·</span><span class="chip" style="opacity:.6">2 ·</span><span class="chip sel">3</span><span class="chip">4</span><span class="chip">5</span><span class="chip">…</span></div>
+                  <span class="hint">3 is the next free key.</span>
+                </div>
+                <div class="toggle"><span class="sw"></span><div><div style="font-weight:500">Load at startup</div><div class="hint">On DP-1 when Torro starts</div></div></div>
+              </div>
+              <div class="df"><span class="btn ghost">Cancel</span><span class="btn primary lg">Save</span></div>
+            </div>
+          </div>
+          <p class="hint" style="margin-top:8px">Der Dienst erfasst die Fenster beim Klick, bevor der Dialog aufgeht. Der Dialog selbst kommt nie in die Vorlage. Cancel verwirft die Aufnahme.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 Zustände -->
+  <section class="sheet">
+    <div class="explain">
+      <span class="k">Zustände</span>
+      <h2>Kein Fenstermanager, Taste belegt, schmale Kachel</h2>
+      <ul>
+        <li>Fehlt der Fenstermanager, sagt die Gruppe, welcher erwartet wird und was zu tun ist. Laden, Speichern und Kürzel sind dann aus.</li>
+        <li>Kann eine Taste nicht angemeldet werden (vom System belegt), steht das an der Zeile „Shortcuts“, nicht still.</li>
+        <li>In schmalen Fenstern (unter 600) stehen die Tasten im Dialog in zwei Reihen, Bildschirme untereinander.</li>
+      </ul>
+    </div>
+    <div class="stage">
+      <div class="two" style="min-width:640px">
+        <div>
+          <p class="lbl-above">macOS ohne AeroSpace</p>
+          <div class="group">
+            <div class="row tall">
+              <span class="tile"><svg class="i"><use href="#monitor"/></svg></span>
+              <div class="body"><span class="t">AeroSpace not found</span><span class="m">Workspaces on macOS need AeroSpace</span></div>
+              <span class="pill"><span class="dot att"></span>Not running</span>
+            </div>
+            <div class="row tall">
+              <span class="tile"><svg class="i"><use href="#keyboard"/></svg></span>
+              <div class="body"><span class="t">Shortcuts</span><span class="m">Off until a window manager is found</span></div>
+            </div>
+          </div>
+          <p class="explain-line">Install and start AeroSpace, then Torro finds it on its own.</p>
+          <p class="lbl-above" style="margin-top:24px">Taste vom System belegt</p>
+          <div class="group">
+            <div class="row tall">
+              <span class="tile"><svg class="i"><use href="#keyboard"/></svg></span>
+              <div class="body"><span class="t">Shortcuts</span><span class="m att">Super + Alt + 5 is taken by another program</span></div>
+              <span class="btn">Change keys</span>
+            </div>
+          </div>
+        </div>
+        <div>
+          <p class="lbl-above">Bearbeiten, schmal (480)</p>
+          <div class="dialog" style="max-width:420px">
+            <div class="dh"><div style="flex:1"><h3>Edit template</h3><p>3 windows · workspace 2 on HDMI-A-1</p></div><span class="btn icon"><svg class="i"><use href="#x"/></svg></span></div>
+            <div class="db" style="gap:16px">
+              <div class="field"><label for="n3">Name</label><div class="input" id="n3"><span class="grow">Mail &amp; chat</span></div></div>
+              <div class="field"><span class="lbl">Shortcut · Super + Alt +</span>
+                <div class="slots" style="grid-template-columns:repeat(6,minmax(0,1fr))"><span class="slot">None</span><span class="slot taken">1</span><span class="slot sel">2</span><span class="slot taken">3</span><span class="slot">4</span><span class="slot">5</span><span class="slot">6</span><span class="slot">7</span><span class="slot">8</span><span class="slot">9</span><span class="slot">0</span></div>
+              </div>
+              <div class="toggle"><span class="sw on"></span><div style="font-weight:500">Load at startup</div></div>
+              <div class="field"><span class="lbl">Screen</span>
+                <div class="chips"><span class="chip"><svg class="i s14"><use href="#monitor"/></svg>DP-1 · main</span><span class="chip sel"><svg class="i s14"><use href="#monitor"/></svg>HDMI-A-1</span></div>
+              </div>
+            </div>
+            <div class="df"><span class="btn ghost">Cancel</span><span class="btn primary lg">Save</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  function current(){var t=root.getAttribute('data-theme');if(t)return t;return matchMedia('(prefers-color-scheme: light)').matches?'light':'dark';}
+  function sync(){var c=current();document.querySelectorAll('.themes button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.t===c));});}
+  document.querySelectorAll('.themes button').forEach(function(b){b.addEventListener('click',function(){root.setAttribute('data-theme',b.dataset.t);sync();});});
+  sync();
+})();
+</script>
+</body>
+</html>
