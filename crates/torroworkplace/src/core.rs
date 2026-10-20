@@ -1451,6 +1451,9 @@ impl Core {
     /// with (task C.2, [`Core::attach_assistant`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(self: &Arc<Self>) {
+        // Nothing reads the switches of the models before the models in use are kept on (#231):
+        // the mail feed below would count them off.
+        self.ai.hold_until_kept();
         self.await_stored_accounts();
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
@@ -1471,7 +1474,8 @@ impl Core {
         });
         self.github.start();
         self.ai.start();
-        // The first start after the switches came (task S.24): what the suite uses stays on.
+        // The first start after the switches came (task S.24): what the suite uses stays on. The
+        // readers of the switches wait for it (`hold_until_kept` above).
         let core = Arc::clone(self);
         tokio::spawn(async move { core.keep_used_models_on().await });
         self.ntfy.start();
@@ -5647,7 +5651,8 @@ impl Core {
     /// [`AiAccounts::keep_used_models_on`]): the models the suite already uses stay on – the
     /// assistant's default for new chats, the models assigned to functions (`ai.set_assignment`,
     /// #231: a deciding model has no tools, so the rule alone would turn it off) and the models of
-    /// the bots. Afterwards it does nothing.
+    /// the bots. Afterwards it does nothing. Always lets the readers of the switches go
+    /// ([`AiAccounts::hold_until_kept`]).
     pub(crate) async fn keep_used_models_on(&self) {
         let mut used = Vec::new();
         let settings = self.settings.current();

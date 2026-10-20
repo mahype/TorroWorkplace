@@ -543,16 +543,32 @@ pub struct AiAccounts {
     /// ([`AiAccounts::switches`]); `None` until then. One lock for reading and writing, so two
     /// switches at once never write over each other.
     switches: tokio::sync::Mutex<Option<Switches>>,
+    /// `false` while the core keeps the models in use on at its start (#231,
+    /// [`AiAccounts::hold_until_kept`]): until then the readers of the switches wait
+    /// ([`AiAccounts::kept`]), so no module counts a model in use as off. `true` otherwise.
+    kept: tokio::sync::watch::Sender<bool>,
 }
 
-/// What the core holds of `ai-models.json` (task S.24).
-#[derive(Debug, Default)]
+/// How long the readers of the switches wait for the models in use to be kept on at the start
+/// ([`AiAccounts::kept`]) before they read the switches as they are: it reads two files and writes
+/// one, so this is only a bound for a disk that hangs.
+const KEPT_WAIT: Duration = Duration::from_secs(10);
+
+/// What the core holds of `ai-models.json` (task S.24), as the file holds it: the switches, and
+/// whether the models in use are still to be kept on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Switches {
+    #[serde(flatten)]
     held: ModelSwitches,
-    /// The file is there or was written: the first start after the update has passed, so the models
-    /// in use are not turned on again ([`AiAccounts::keep_used_models_on`]). Also `true` without a
-    /// home directory and for a file that does not read, so nothing is ever turned on in doubt.
-    stored: bool,
+    /// The first start after the update that brought the switches has not passed yet (#231): there
+    /// was no file when the core first read it, so the models in use are still to be kept on
+    /// ([`AiAccounts::keep_used_models_on`]). A mark of its own, kept in the file, so a switch a
+    /// person turns before (which writes the file) does not stop it, and a core that stops in
+    /// between keeps them on at its next start. Never set for a file that was there (older ones
+    /// read without it), one that does not read, or without a home directory: nothing is turned
+    /// on in doubt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    keep_used: bool,
 }
 
 /// Whether `model` of the account at `server` (its kind and base address, `None` when it is gone)
@@ -570,31 +586,28 @@ fn may_compute_here(server: Option<&(AiProvider, String)>) -> bool {
     computes_here(server, &AiModel { remote: Some(false), ..AiModel::named("") })
 }
 
-/// The switches in `file`: none (and not stored) when it is not there; empty but stored without a
-/// home directory or when it does not read, which the core's log then says.
+/// The switches in `file`: none, with the models in use still to be kept on, when it is not there;
+/// empty without a home directory or when it does not read, which the core's log then says.
 fn read_switches(file: Option<&std::path::Path>) -> Switches {
-    let Some(file) = file else { return Switches { held: ModelSwitches::default(), stored: true } };
+    let Some(file) = file else { return Switches::default() };
     match std::fs::read(file) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Switches::default(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Switches { keep_used: true, ..Switches::default() },
         Err(err) => {
             eprintln!("torroworkplace: cannot read {}: {err}", file.display());
-            Switches { held: ModelSwitches::default(), stored: true }
+            Switches::default()
         }
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
-            Ok(held) => Switches { held, stored: true },
-            Err(err) => {
-                eprintln!(
-                    "torroworkplace: {} does not read, so only the rule decides which models are on: {err}",
-                    file.display()
-                );
-                Switches { held: ModelSwitches::default(), stored: true }
-            }
-        },
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+            eprintln!(
+                "torroworkplace: {} does not read, so only the rule decides which models are on: {err}",
+                file.display()
+            );
+            Switches::default()
+        }),
     }
 }
 
 /// Writes `switches` to `file` (0600, atomically), creating the folder.
-fn write_switches(file: &std::path::Path, switches: &ModelSwitches) -> Result<(), String> {
+fn write_switches(file: &std::path::Path, switches: &Switches) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(switches).map_err(|err| err.to_string())?;
     if let Some(dir) = file.parent() {
         crate::clients::create_private_dir(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
@@ -635,6 +648,7 @@ impl AiAccounts {
             local,
             slots: RwLock::new(Vec::new()),
             switches: tokio::sync::Mutex::new(None),
+            kept: tokio::sync::watch::Sender::new(true),
         }
     }
 
@@ -887,13 +901,29 @@ impl AiAccounts {
         if held.is_none() {
             let file = self.models_file();
             let read = tokio::task::spawn_blocking(move || read_switches(file.as_deref())).await;
-            *held = Some(read.unwrap_or_else(|_| Switches { held: ModelSwitches::default(), stored: true }));
+            *held = Some(read.unwrap_or_default());
         }
         held
     }
 
+    /// Makes the readers of the switches ([`AiAccounts::mark_enabled`], [`AiAccounts::offers_a_model`])
+    /// wait until [`AiAccounts::keep_used_models_on`] has run (#231), at most [`KEPT_WAIT`]. The core
+    /// calls it at its start, before anything can read them, and then keeps the models in use on.
+    pub fn hold_until_kept(&self) {
+        self.kept.send_replace(false);
+    }
+
+    /// Waits until the models in use are kept on ([`AiAccounts::hold_until_kept`]); at once when
+    /// nobody holds the readers.
+    async fn kept(&self) {
+        let mut kept = self.kept.subscribe();
+        // Timed out, the switches are read as they are: better a model counted off than a core
+        // that hangs.
+        let _ = tokio::time::timeout(KEPT_WAIT, kept.wait_for(|kept| *kept)).await;
+    }
+
     /// Writes `switches` to `ai-models.json` on a blocking thread.
-    async fn store_switches(&self, switches: &ModelSwitches) -> Result<(), String> {
+    async fn store_switches(&self, switches: &Switches) -> Result<(), String> {
         let file = self.models_file().ok_or("No home directory, so the models turned on cannot be stored.")?;
         let switches = switches.clone();
         tokio::task::spawn_blocking(move || write_switches(&file, &switches)).await.map_err(|err| err.to_string())?
@@ -907,6 +937,7 @@ impl AiAccounts {
     /// `models` of the account `id` with [`AiModel::enabled`] set from the switches: what
     /// `ai.list_models` answers. A list straight from the server has it `false` everywhere.
     pub async fn mark_enabled(&self, id: &str, models: Vec<AiModel>) -> Vec<AiModel> {
+        self.kept().await;
         let server = self.server(id).await;
         let held = self.switches().await;
         let switches = held.as_ref().map(|held| &held.held);
@@ -937,6 +968,7 @@ impl AiAccounts {
     /// ([`AiAccounts::known_models`]). A list that fails then counts as "yes": the answer reports the
     /// server's problem, not the switches. `false` for an id that is no AI account.
     pub async fn offers_a_model(&self, id: &str) -> bool {
+        self.kept().await;
         let Some(server) = self.server(id).await else { return false };
         let (follows_rule, turned_on) = {
             let held = self.switches().await;
@@ -1018,35 +1050,48 @@ impl AiAccounts {
         };
         let mut held = self.switches().await;
         let switches = held.get_or_insert_with(Switches::default);
-        let mut changed = switches.held.clone();
+        let mut changed = switches.clone();
         match enabled {
-            true => changed.turn_on(id, model),
-            false => changed.turn_off(id, model, on_by_rule),
+            true => changed.held.turn_on(id, model),
+            false => changed.held.turn_off(id, model, on_by_rule),
         }
         self.store_switches(&changed).await.map_err(AiError::Format)?;
-        switches.held = changed;
-        switches.stored = true;
+        *switches = changed;
         Ok(())
     }
 
-    /// The first start after the update that brought the switches (task S.24): when there is no
-    /// `ai-models.json` yet, the models the suite already uses – `used` as pairs of account id and
-    /// model id (the assistant's default for new chats, the models of the bots) – are turned on, so
-    /// nothing that worked stops, and the file is written. Afterwards it does nothing, and a model a
-    /// module chooses later turns nothing on. Ids that are no AI account (`ai:…`) are left out.
+    /// The first start after the update that brought the switches (task S.24): when there was no
+    /// `ai-models.json` at the core's first look ([`Switches::keep_used`]), the models the suite
+    /// already uses – `used` as pairs of account id and model id (the assistant's default for new
+    /// chats, the models of the bots and of the functions) – are turned on, so nothing that worked
+    /// stops, and the file is written with the mark gone. Afterwards it does nothing, and a model a
+    /// module chooses later turns nothing on. Ids that are no AI account (`ai:…`) are left out, and
+    /// so are accounts a person switched a model at already (#231): their switch wins. Lets the
+    /// readers of the switches go ([`AiAccounts::hold_until_kept`]) whatever came of it.
     pub async fn keep_used_models_on(&self, used: Vec<(String, String)>) -> Result<(), String> {
+        let kept = self.keep_used(used).await;
+        self.kept.send_replace(true);
+        kept
+    }
+
+    /// [`AiAccounts::keep_used_models_on`] without letting the readers go.
+    async fn keep_used(&self, used: Vec<(String, String)>) -> Result<(), String> {
         let mut held = self.switches().await;
         let switches = held.get_or_insert_with(Switches::default);
-        if switches.stored {
+        if !switches.keep_used {
             return Ok(());
         }
-        let mut seeded = switches.held.clone();
+        // While the mark stands, every entry is a person's: there was no file before.
+        let switched = switches.held.accounts.keys().cloned().collect::<std::collections::BTreeSet<_>>();
+        let mut seeded = switches.clone();
         for (account, model) in used.iter().filter(|(account, _)| account.starts_with("ai:")) {
-            seeded.turn_on(account, model);
+            if !switched.contains(account) {
+                seeded.held.turn_on(account, model);
+            }
         }
+        seeded.keep_used = false;
         self.store_switches(&seeded).await?;
-        switches.held = seeded;
-        switches.stored = true;
+        *switches = seeded;
         Ok(())
     }
 
@@ -1058,10 +1103,10 @@ impl AiAccounts {
         if !switches.held.accounts.contains_key(id) {
             return;
         }
-        let mut changed = switches.held.clone();
-        changed.forget(id);
+        let mut changed = switches.clone();
+        changed.held.forget(id);
         match self.store_switches(&changed).await {
-            Ok(()) => switches.held = changed,
+            Ok(()) => *switches = changed,
             Err(err) => eprintln!("torroworkplace: cannot forget the models of a removed AI account: {err}"),
         }
     }
@@ -1931,7 +1976,7 @@ pub(crate) mod tests {
         assert_eq!(on(&again, &cloud.id).await, ["openai/gpt-4o"], "after a new start");
         assert_eq!(on(&again, &local.id).await, ["qwen3:8b"]);
         assert!(again.keep_used_models_on(vec![(local.id.clone(), "gemma3:4b".into())]).await.is_ok());
-        assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "the update has passed: nothing turned on again");
+        assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "a person switched there: their switch wins");
 
         again.remove(&cloud.id).await.expect("removed");
         let stored = std::fs::read_to_string(&file).expect("stored");
@@ -1958,6 +2003,70 @@ pub(crate) mod tests {
         assert!(!stored.contains("claude-code"), "{stored}");
         ai.keep_used_models_on(vec![(cloud.id.clone(), "openai/gpt-4o".into())]).await.expect("once only");
         assert_eq!(on(&ai, &cloud.id).await, ["qwen/qwen3-14b"]);
+    }
+
+    /// #231: a switch a person turns before the models in use are kept on does not stop it – the
+    /// mark is the file's own – but wins at its account; a file from before the mark keeps nothing on.
+    #[tokio::test]
+    async fn an_early_switch_does_not_stop_keeping_the_models_in_use_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let ai = service(dir.path(), &keys, Vec::new());
+        let local = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ollama");
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.set_enabled(&local.id, "broken:1b", false).await.expect("a person's switch, written at once");
+        let file = dir.path().join("config").join(ai::MODELS_FILE);
+        assert!(std::fs::read_to_string(&file).expect("stored").contains("keep_used"), "still to do");
+
+        // The core stopped here; at its next start it keeps them on all the same.
+        let again = service(dir.path(), &keys, Vec::new());
+        again.load().await.expect("loaded");
+        let used = vec![(cloud.id.clone(), "qwen/qwen3-14b".to_string()), (local.id.clone(), "gemma3:4b".into())];
+        again.keep_used_models_on(used).await.expect("kept on");
+        assert_eq!(on(&again, &cloud.id).await, ["qwen/qwen3-14b"]);
+        assert_eq!(on(&again, &local.id).await, ["qwen3:8b"], "the person's account stays theirs");
+        assert!(!std::fs::read_to_string(&file).expect("stored").contains("keep_used"), "done");
+
+        // A file written before the mark existed: the update has passed, nothing is turned on.
+        let old = tempfile::tempdir().expect("temp dir");
+        let ai = service(old.path(), &keys, Vec::new());
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        let file = old.path().join("config").join(ai::MODELS_FILE);
+        std::fs::write(&file, r#"{"accounts": {}}"#).expect("an old file");
+        let ai = service(old.path(), &keys, Vec::new());
+        ai.load().await.expect("loaded");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())]).await.expect("nothing to do");
+        assert!(on(&ai, &cloud.id).await.is_empty());
+    }
+
+    /// #231: while the core keeps the models in use on, the readers of the switches wait for it, so
+    /// none counts a model in use as off.
+    #[tokio::test]
+    async fn readers_wait_until_the_models_in_use_are_kept_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let ai = Arc::new(service(dir.path(), &keys, Vec::new()));
+        let cloud = ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), Secret::new(KEY))
+            .await
+            .expect("openrouter");
+        ai.hold_until_kept();
+        let reader = tokio::spawn({
+            let (ai, id) = (Arc::clone(&ai), cloud.id.clone());
+            async move { ai.offers_a_model(&id).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!reader.is_finished(), "it waits");
+        ai.keep_used_models_on(vec![(cloud.id.clone(), "qwen/qwen3-14b".into())]).await.expect("kept on");
+        assert!(reader.await.expect("read"), "and reads the model kept on");
     }
 
     /// Task S.24: a model turned on that the server no longer offers counts once the core holds the
