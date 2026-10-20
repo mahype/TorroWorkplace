@@ -50,7 +50,7 @@ einen Balken aus einem Flex-Kind mit Hintergrundfarbe. Codeblöcke brauchen `whi
 | „Page X of Y“ fest englisch? | **ja**, fest im Code: `azul-layout-0.0.16/src/solver3/pagination.rs`, `build_margin_content` (`"Page "`, `" of "`) | Quelltext |
 | Seitenzahl selbst in die Fußzeile | **ja**, über die Textschicht nach dem Satz, Seitenzahl bekannt (`pages.len()`), rechtsbündig über die Glyphenbreiten; „Seite 1 von 3“ | `a4-inter.pdf`, Seite 1 unten rechts |
 | Tabellen über Seitengrenzen | **ja** als Flex-Zeilen (Umbruch zwischen Zeilen, volle Seite); Kopfzeile wird **nicht** wiederholt. Echte `<table>`: nein (keine Rahmen, Umbruch bei etwa 65 %) | `a4-inter.pdf`, Seiten 2–3; `experiments/table.html` |
-| Umlaute und `ß` mit eingebetteter TTF | **ja**, Inter aus `crates/torro-gui/assets/fonts/` und Lato aus `designs/channelr/fonts/`, auch in Kopf und Fuß | `a4-inter.pdf` und `a5-lato.pdf`, Seite 1 |
+| Umlaute und `ß` mit eingebetteter TTF | **ja**, Inter aus `crates/torro-gui/assets/fonts/` und Lato aus `fonts/channelr/`, auch in Kopf und Fuß | `a4-inter.pdf` und `a5-lato.pdf`, Seite 1 |
 | Fett ohne Bold-Datei (Inter) | **ja** mit der SemiBold-Datei als eigener Familie; Lato mit Lato-Bold | `a4-inter.pdf`, Seite 1 („fett“, Überschriften, Tabellenkopf) |
 | Kursiv ohne Italic-Datei | **nein**: azul schrägt nicht nach, kein Design-Paket hat eine Italic-Datei. Kursiv fällt aufrecht aus (Text bleibt); die Basis-14-Schrift `Helvetica-Oblique` ginge, passt aber nicht zur Suite | `a4-inter.pdf`, Seite 1 („kursiv“); `experiments/fonts.html` |
 | `page-break-before: always` für `\pagebreak` | **ja** (`<div class="pagebreak">`), nur als eigener Absatz | `a4-inter.pdf`: „Preise“ beginnt auf Seite 2 |

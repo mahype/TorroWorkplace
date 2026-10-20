@@ -348,8 +348,8 @@ Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
 ## Design, Schrift und Farbschema getrennt
 
 > **Plan zu Issue #189, Stand 2026-10-20.** Entschieden: die Schrift ist eine eigene, dritte Wahl (2026-10-15); drei
-> Ordner statt eines Pakets mit Abschnitten, alte Komplettpakete werden einmal kopiert, die Seite Appearance wird
-> kompakt mit Kacheln (2026-10-20). Aufgaben L.18–L.30 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
+> Ordner statt eines Pakets mit Abschnitten, die Seite Appearance wird kompakt mit Kacheln, keine Übernahme alter
+> Pakete und Einstellungen (2026-10-20). Aufgaben L.18–L.30 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
 > Umsetzung gilt alles oben unverändert.
 
 ### Warum
@@ -441,25 +441,16 @@ Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Untero
   heute. Jeder Ordner hat seine eigene `.torro-examples`; in einem neu angelegten Ordner gelten die ids aus
   `designs/.torro-examples` als schon angeboten, damit ein gelöschtes Beispiel nicht als Farbschema wiederkommt.
 
-### Alte Komplettpakete
+### Keine Übernahme alter Pakete
 
-Ein `design.toml` von früher in `designs/` kann noch `[fonts.*]`, `[colors.*]`, `[logo]` und `[about] font_license`
-tragen. Darum, einmal beim Start, vor dem Nachlegen der Beispiele:
-
-- Die Suite **kopiert** Farben und Logo nach `color-schemes/<id>/` und die Schrift mit ihren Dateien nach
-  `fonts/<id>/`, nur wenn der Zielordner fehlt. Die Quelle wird nie geändert. Übernommene ids stehen in
-  `designs/.torro-migrated`; ein später gelöschter Zielordner kommt nicht wieder.
-- In `designs/` sind die alten Abschnitte danach kein Fehler, sie werden überlesen. Ein `design.toml` ohne
-  Form-Abschnitt, das Farben oder Schriften hatte (eine alte Kopie von Nord), erscheint nicht mehr als Design.
-- Ein altes Paket, das eine Regel bricht, wird trotzdem kopiert; seine Gründe zeigt dann der neue Ordner.
+Es gibt noch keine ausgelieferte Version (Entscheidung 2026-10-20). Darum übernimmt die Suite weder alte
+Komplettpakete noch alte Einstellungen: In `designs/` sind `[fonts.*]`, `[colors.*]` und `[logo]` unbekannte Schlüssel
+wie jeder andere, und `font` und `color_scheme` beginnen mit `torro`. Wer noch einen Ordner `designs/` von vorher hat,
+benennt ihn einmal um oder löscht ihn; beim nächsten Start legt die Suite die Beispiele in alle drei Ordner.
 
 ### Wählen
 
 - Drei Einstellungen: `design` (gibt es), neu `font` und `color_scheme`, alle mit `torro` als Standard.
-- **Übernahme alter Einstellungen**, einmal beim Lesen im Dienst (nach der Übernahme der Pakete), für `font` und
-  `color_scheme` je für sich, wenn es fehlt: Hat `fonts/` bzw. `color-schemes/` die id des gewählten Designs, wird sie
-  gewählt, sonst `torro`; hat `designs/` sie nicht als Design, wird `design` zu `torro`. Commitr →
-  Commitr/Commitr/Commitr (sieht aus wie vorher), Nord → Torro/Torro/Nord.
 - **Steuerzentrale**, Appearance, kompakt untereinander (Entwurf in Issue #189): **Color mode** als Segment mit
   Symbolen (Bildschirm, Sonne, Mond) · **Design** · **Font** · **Colour scheme** · Interface. Die drei Wahlen sind
   Raster kleiner Kacheln: Design mit `preview.png` oder Farbmuster, Font mit „Aa 09“ in der Schrift, Colour scheme mit

@@ -310,8 +310,8 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
 
 > **Plan zu Issue #189** (2026-10-20, ersetzt den Vorschlag vom 2026-10-15). Konzept:
 > [Design, Schrift und Farbschema getrennt](../design-pakete.md#design-schrift-und-farbschema-getrennt). Entschieden:
-> die Schrift ist eine eigene Wahl; drei Ordner statt eines Pakets mit Abschnitten; alte Komplettpakete werden einmal
-> kopiert; die kompakte Seite kommt zuerst. Die Schnittstelle in L.19 gilt mit der Freigabe des Plans als freigegeben.
+> die Schrift ist eine eigene Wahl; drei Ordner statt eines Pakets mit Abschnitten; die kompakte Seite kommt zuerst;
+> keine Rücksicht auf alte Pakete und Einstellungen, weil es noch keine ausgelieferte Version gibt (2026-10-20). Die Schnittstelle in L.19 gilt mit der Freigabe des Plans als freigegeben.
 
 ```
 L.18 kompakte Seite ───────────────────────────────┐
@@ -374,7 +374,7 @@ eine neue Schrift vorschlagen, warten auf L.24.
   (`[colors.light|dark]`, `[colors.*.sidebar]`, `[colors.*.chart]` wie heute, `[logo] mark`). Ein Tray-Symbol gibt es
   im neuen Format nicht mehr (Issue #114).
 - **Alte Abschnitte in `designs/`:** `[fonts.*]`, `[colors.*]`, `[logo]` und `[about] font_license` sind dort kein
-  Fehler, sondern werden überlesen (L.20 kopiert sie). Ein `design.toml` ohne einen Form-Abschnitt, das aber Farben
+  Fehler, sondern werden überlesen (bis L.21, dort entfernt). Ein `design.toml` ohne einen Form-Abschnitt, das aber Farben
   oder Schriften hatte, ist ein altes reines Farb- oder Schriftpaket: `list` lässt es aus, `load` antwortet mit einer
   neuen Fehlervariante, die auf `color-schemes/` bzw. `fonts/` verweist. Nur `[about]` bleibt ein Design gleich Torro.
 - **Größenausgleich:** von selbst aus der x-Höhe der Textschrift (`ttf-parser`, OS/2 `sxHeight`; fehlt sie, die Höhe
@@ -392,54 +392,44 @@ eine neue Schrift vorschlagen, warten auf L.24.
   der Gewichte (Lato ohne Medium); Tabellen-Test jedes Design × jede Schrift × jedes Farbschema der Testdaten ergibt
   gültige wirksame Stufen (≥ 11, Zeile ≥ Größe). fmt/clippy/test, auch `TORRO_LANG=de`.
 
-### L.20 Beispiele aufteilen, alte Pakete übernehmen
+### L.20 Beispiele aufteilen
 - [x] erledigt (2026-10-20: ohne Übernahme alter Pakete (entfällt, Entscheidung 2026-10-20); `micro` in Channelr, Guildr
   und Ribbon 12 statt 11, weil ein Design nicht unter 11 darf)
 - **Modell:** Opus · **Braucht:** L.19 · **Dateien:** `designs/**`, neu `fonts/**` und `color-schemes/**` in der
-  Wurzel des Repositorys, `crates/torroworkplace/src/{designs,daemon}.rs`, `docs/design-pakete.md` (Abschnitt „Ein Paket
+  Wurzel des Repositorys, `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md` (Abschnitt „Ein Paket
   bauen“: drei Ordner, welche Datei was trägt, Größen meinen Inter)
 - **Beispiele im Repository** nach den drei Ordnern aufteilen, wie im Datenordner: Nord, Solarized, Catppuccin,
   Gruvbox, Dracula, Everforest nur unter `color-schemes/` (Dracula und Everforest verlieren `[radius]`); Plex, Commitr,
   Channelr, Guildr, Quattro, Ribbon unter allen drei. Ihre `[type.*]`-Größen auf Inter zurückrechnen (geteilt durch
   den Ausgleich ihrer Schrift), damit sie mit der eigenen Schrift wirken wie heute. `tray.svg` entfällt.
-- **Nachlegen** (`install_new`, `install_examples`): je Ordner eine eigene `.torro-examples`. Legt die Suite
-  `fonts/` oder `color-schemes/` neu an, gelten dort die ids aus `designs/.torro-examples` als schon angeboten: Wer ein
-  Beispiel gelöscht hat, bekommt es nicht als Farbschema zurück.
-- **Übernahme alter Pakete**, einmal, vor dem Nachlegen: Für jeden Ordner in `designs/`, dessen `design.toml` Farben
-  oder Schriften trägt, schreibt die Suite `color-schemes/<id>/` (`[about]`, `[colors.*]`, `[logo]`, `logo.svg`) und
-  `fonts/<id>/` (`[about]`, `license` aus `font_license`, `[fonts.*]`, die Schriftdateien), nur wenn der Zielordner
-  fehlt. Die Quelle wird nie geändert. Übernommene ids stehen in `designs/.torro-migrated`, damit ein später gelöschter
-  Zielordner nicht wiederkommt. Ein Paket, das eine Regel bricht, wird trotzdem übernommen; seine Gründe zeigt dann der
-  neue Ordner.
-- **Pfade bei der Übernahme:** Kopiert werden nur Dateien, die die Dateiprüfung aus L.19 (heute
-  `design/files.rs`) durchlässt: normale Dateien, deren aufgelöster Pfad im Quellordner liegt, mit denselben Grenzen
-  für Größe und Anzahl. Kopiert wird der Inhalt, nie ein Link, unter demselben relativen Pfad. Ein Eintrag, der aus dem
-  Ordner zeigt, kommt nur als Text in die neue `font.toml` bzw. `color-scheme.toml`, die Datei wird nie gelesen; so
-  zeigt der neue Ordner den Grund. Geschrieben wird in einen versteckten Ordner und dann umbenannt, wie beim Nachlegen.
-- **Nur der Dienst übernimmt** (`daemon.rs` ruft `install_examples` vor `Core::new`); die Steuerzentrale legt bei
-  „Open … folder“ nur Beispiele nach, nie die Übernahme, damit nie zwei Prozesse `.torro-migrated` schreiben. Die
-  Funktion für den Dienst (Übernahme, dann Nachlegen; neu, aufgerufen in `daemon.rs`) und die für die Steuerzentrale
-  (`install_examples`, nur Nachlegen, für alle drei Ordner) sind getrennt.
+- **Nachlegen** (`install_new`, `install_examples`): je Ordner eine eigene `.torro-examples`, unabhängig voneinander;
+  ein neuer Ordner bekommt alle Beispiele dieses Ordners.
+- **Keine Übernahme alter Pakete** (Entscheidung 2026-10-20): Es gibt noch keine ausgelieferte Version.
 - **Oberfläche/API/MCP:** keine neue Funktion.
 - **Abnahme:** Tests in `designs.rs`: jede eingebettete Datei ist das ganze Paket (je Ordner); alle Beispiele laden
   ohne Gründe; Nord und die anderen fünf sind nur Farbschemata, die sechs übrigen alle drei Teile, ihre wirksamen
-  Größen höchstens 0,5 px von heute; Übernahme Commitr → drei Ordner, Nord → nur `color-schemes/`, vorhandener
-  Zielordner bleibt unberührt, zweiter Lauf tut nichts, gelöschter Zielordner kommt nicht wieder; gelöschtes Beispiel
-  kommt in den neuen Ordnern nicht wieder; ein Link auf eine Datei außerhalb des Pakets wird nicht kopiert.
+  Größen höchstens 0,5 px von heute (außer `micro` von Channelr, Guildr, Ribbon: 12 statt 11); jeder Ordner legt
+  seine Beispiele für sich nach, ein gelöschtes Beispiel kommt nicht wieder.
 
 ### L.21 torro-gui: drei aktive Teile, alle Apps umgestellt
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** L.20 · **Dateien:** `crates/torro-gui/src/**` (vor allem `design.rs`, `theme.rs`,
   `typo.rs`, `shell.rs`, `widgets.rs`), die Stellen in `crates/{torrocalendar,torrotasks,torroinbox,torroassistant}/src/**`,
   `crates/torro-settings-ui/src/**` und `crates/torroworkplace/src/ui/**`, die `Design::fonts`, `Design::colors` oder
-  `Design::logo` lesen
+  `Design::logo` lesen; `crates/torro-core/src/design.rs` und `crates/torro-core/src/design/**` (Brücke entfernen)
 - `design::active()`, neu `font::active()`/`set` und `scheme::active()`/`set`. `typo::*()` liefern die wirksamen
   Stufen aus `Selection`, `theme::font()` die Familie der aktiven Schrift, `palette(theme)` und das Logo das aktive
   Farbschema (`shell.rs`). Schriften laden nur beim Wechsel der Schrift (`load_fonts` nimmt ein `FontSet`).
 - Bis L.22 setzt jede App alle drei Teile aus derselben id, jeden aus seinem Ordner (fehlt er dort → Torro).
+- **Brücke aus L.19 entfernen:** `Design::fonts`, `Design::colors`, `Design::logo`, `Logo::tray` und die als „Bridge
+  until L.21/L.22“ markierten Funktionen. Ohne Rücksicht auf alte Pakete (Entscheidung 2026-10-20) sind `[fonts.*]`,
+  `[colors.*]`, `[logo]` und `[about] font_license` in `designs/` danach unbekannte Schlüssel wie jeder andere; die
+  Sonderfälle für alte reine Farb- und Schriftpakete in `list`/`load` entfallen, ihre Fehlervarianten auch, wenn
+  nichts sie mehr braucht.
 - **Oberfläche/API/MCP:** keine Änderung für Nutzer.
 - **Abnahme:** Torro/Torro/Torro ergibt exakt die Werte von heute (alte Werte als Testdaten); jedes Beispielpaket als
-  alle drei Teile weicht in den wirksamen Größen höchstens 0,5 px von heute ab; Galerie und Demo-Starts aller Apps
+  alle drei Teile weicht in den wirksamen Größen höchstens 0,5 px von heute ab (außer der `micro`-Ausnahme aus L.20);
+  ein `design.toml` mit `[colors.dark]` ist unbrauchbar mit unbekanntem Schlüssel; Galerie und Demo-Starts aller Apps
   laufen; `scripts/design-check.sh` sauber.
 
 ### L.22 Einstellungen, API, MCP und Wechsel für Schrift und Farbschema
@@ -450,11 +440,9 @@ eine neue Schrift vorschlagen, warten auf L.24.
   `--demo`-Argumente in `crates/{torrocalendar,torrotasks,torroinbox,torroassistant}/src/**` und
   `crates/torroworkplace/src/ui/launch.rs`; Doku: `docs/{api,settings}.md`, `docs/api-reference.md` (neu erzeugt)
 - `Settings::font` und `Settings::color_scheme` (JSON `font`, `colorScheme`), `SettingKey::Font` und
-  `SettingKey::ColorScheme` (Schlüssel `font`, `color_scheme`). serde liest sie so, dass „fehlt“ erkennbar ist.
-  **Übernahme** im Dienst beim Lesen der Einstellungen (nach `install_examples`, das vor `Core::new` läuft), jedes Feld
-  für sich, und gleich gespeichert: `font` = die id des Designs, wenn `fonts/<id>/` sie hat, sonst `torro`;
-  `color_scheme` ebenso mit `color-schemes/`; `design` wird `torro`, wenn `designs/` die id nicht als Design hat.
-  `update_settings` eines alten Clients ohne die Felder behält die aktuellen Werte.
+  `SettingKey::ColorScheme` (Schlüssel `font`, `color_scheme`), Standard `torro` wie bei `design`. Keine Übernahme
+  alter Einstellungen (Entscheidung 2026-10-20). `update_settings` eines Clients ohne die Felder behält die aktuellen
+  Werte.
 - `set_setting design|font|color_scheme` lehnt eine id ab, die der Ordner nicht hat; liegt sie in einem anderen Ordner,
   nennt der Fehler (Code `error`) den richtigen Schlüssel.
 - **API:** neu `Request::ListFonts` · `settings.list_fonts` · Read, Antwort `Response::Fonts { fonts: Vec<FontInfo> }`
@@ -476,8 +464,7 @@ eine neue Schrift vorschlagen, warten auf L.24.
 - **Wechsel:** `design::Follow` folgt allen drei Einstellungen und meldet nur Änderungen; nur ein Wechsel der Schrift
   lädt Schriften. `--demo --font <id> --color-scheme <id>` neben `--design`.
 - **PDF-Werkzeug:** setzt in der gewählten Schrift (`Settings::font`, `fonts/`) statt der des Designs.
-- **Abnahme:** Tests: Übernahme (Commitr → Commitr ×3, Nord → Torro/Torro/Nord, Plex → Plex ×3, Torro → Torro ×3, nur
-  `font` fehlt → nur `font` abgeleitet); Ablehnungen mit Hinweis auf den richtigen Schlüssel; beide Listen mit gültigen
+- **Abnahme:** Tests: fehlende Felder → `torro`; Ablehnungen mit Hinweis auf den richtigen Schlüssel; beide Listen mit gültigen
   und kaputten Teilen; Rechte (Read listet, Admin wählt); `update_settings` ohne die Felder behält die Werte;
   MCP-Tests für `settings_set_setting` mit `font` und `color_scheme`; App-Nachrichten setzen nur ihren Teil; PDF in
   Lato bei `font = "channelr"`. API-Referenz neu: `TORRO_BLESS=1 cargo test -p torro-ipc`. `torro-api-review`.
@@ -497,7 +484,7 @@ eine neue Schrift vorschlagen, warten auf L.24.
   `settings.set_setting` (L.22). Proben und Farbmuster liest die Seite wie heute nur lesend über
   `torro_core::design::load_font`/`load_color_scheme`, und nur für ids aus den Listen des Kerns (wie heute für
   Designs). Ordner öffnen bleibt eine lokale Aktion der Steuerzentrale ohne Request (wie heute), legt fehlende Ordner
-  mit ihren Beispielen an, übernimmt aber nie alte Pakete (L.20). Die Begründung kommt einmal in `docs/api.md`
+  mit ihren Beispielen an. Die Begründung kommt einmal in `docs/api.md`
   (Fußnote ⁹): Sie öffnet nur den Dateimanager am Desktop eines Menschen, ohne Daten und ohne Rechte.
 - **Übersetzungen** im Bericht: „Font“, „Colour scheme“, „Suggested“, „Suggested for {design}“, „Open fonts folder“,
   „Open colour schemes folder“, neue Gruppenbeschreibungen.
