@@ -29,7 +29,7 @@ pub(crate) const APP_NAME: &str = "Torro Workplace";
 /// (the AppUserModelID limit). Never change it once released: the system keys the user's
 /// notification settings by it.
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-const APP_ID: &str = "io.github.mahype.torro-workplace";
+const APP_ID: &str = torro_core::app::WORKPLACE_BUNDLE_ID;
 
 /// The summary and body for a finished command, or `None` when there is nothing to tell.
 ///

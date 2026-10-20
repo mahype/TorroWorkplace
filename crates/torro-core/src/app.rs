@@ -15,6 +15,12 @@
 /// control centre ([`AppId::WORKPLACE`]) it never goes into a workspace template.
 pub const WORKPLACE_DIALOG_CLASS: &str = "torro-workplace-dialog";
 
+/// The bundle id of the core's app on macOS (`packaging/macos/Info.plist.in` builds
+/// `io.github.mahype.<app id>` from [`AppId::WORKPLACE`]'s window class), also its AppUserModelID on
+/// Windows. AeroSpace names a window by it, so the control centre and the dialog, which both run
+/// from this bundle, carry it there instead of their window class. Never changes once released.
+pub const WORKPLACE_BUNDLE_ID: &str = "io.github.mahype.torro-workplace";
+
 /// An app of the suite, or one kind of window of an app with several ([`AppId::INBOX_MAIL`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AppId {
