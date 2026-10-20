@@ -1046,6 +1046,7 @@ impl Ui {
                 let next = workspaces::answered(&mut self.workspaces, asked, &result, &self.data);
                 self.notice = match next {
                     Some(_) => None,
+                    None if asked == workspaces::Asked::Other => template_refused(&result),
                     None => refused(&result),
                 };
                 let mut tasks: Vec<Task<Message>> = next.into_iter().map(|action| self.perform(action)).collect();
@@ -1850,6 +1851,25 @@ fn refused(result: &Result<Response, String>) -> Option<String> {
     }
 }
 
+/// What a refused or failed answer to a plain request of the page Workspaces says
+/// ([`workspaces::Asked::Other`]: Load, Update, Delete, the modifiers), for the notice: `busy` and
+/// `not-found` as the template dialog says them ([`template_form::refusal_words`]), every other code
+/// and no answer in one general sentence. The core's own text is English for the log: it goes to
+/// stderr only. `None` for an answer that went through.
+fn template_refused(result: &Result<Response, String>) -> Option<String> {
+    let (code, detail) = match result {
+        Ok(Response::Error { code, message }) => (Some(code.as_str()), message),
+        Ok(_) => return None,
+        Err(detail) => (None, detail),
+    };
+    eprintln!("torroworkplace: a request of the page Workspaces failed ({}): {detail}", code.unwrap_or("no answer"));
+    Some(
+        code.and_then(template_form::refusal_words)
+            .unwrap_or_else(|| tr("Something went wrong. Try again."))
+            .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2023,7 +2043,7 @@ mod tests {
         let mut ui = ui(Section::Workspaces);
         let busy = || Ok(Response::Error { code: "busy".into(), message: "another save or load is running".into() });
         let _ = ui.update(Message::Answered(workspaces::Asked::Other, busy()));
-        assert_eq!(ui.notice.as_deref(), Some("another save or load is running"));
+        assert_eq!(ui.notice.as_deref(), Some(tr("A template is being loaded or saved. Try again in a moment.")));
         let _ = ui.update(Message::Answered(workspaces::Asked::Other, Ok(Response::Ok)));
         assert!(ui.notice.is_none());
 
@@ -2034,6 +2054,25 @@ mod tests {
         assert!(demo.page_overlay().is_some());
         let _ = demo.update(Message::Answered(workspaces::Asked::Other, Ok(Response::Ok)));
         assert!(demo.page_overlay().is_some());
+    }
+
+    /// Second review fix: a refusal of a plain request of the page Workspaces is the notice in words for
+    /// people, `busy` and `not-found` as the template dialog says them, any other code and no answer in
+    /// the general sentence; the core's English text never shows.
+    #[test]
+    fn workspaces_refusals_are_translated() {
+        let refusal = |code: &str| Ok(Response::Error { code: code.into(), message: "core text".into() });
+        let mut ui = ui(Section::Workspaces);
+        let cases = [
+            (refusal("busy"), tr("A template is being loaded or saved. Try again in a moment.")),
+            (refusal("not-found"), tr("This template no longer exists. It may have been deleted.")),
+            (refusal("unsupported"), tr("Something went wrong. Try again.")),
+            (Err("connection refused".to_string()), tr("Something went wrong. Try again.")),
+        ];
+        for (answer, words) in cases {
+            let _ = ui.update(Message::Answered(workspaces::Asked::Other, answer));
+            assert_eq!(ui.notice.as_deref(), Some(words));
+        }
     }
 
     /// A design chosen on the Appearance page is drawn in this window at once and saved; a reload that

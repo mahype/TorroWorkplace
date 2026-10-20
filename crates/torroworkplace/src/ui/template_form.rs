@@ -331,12 +331,19 @@ fn gone(code: &str, sent: &Request) -> bool {
 /// message or why the call failed, goes to stderr only: it is English for the log, not for people.
 pub fn refusal(code: Option<&str>, detail: &str) -> String {
     eprintln!("torroworkplace: the template dialog's request failed ({}): {detail}", code.unwrap_or("no answer"));
+    code.and_then(refusal_words).unwrap_or_else(|| tr("The change could not be saved. Try again.")).to_string()
+}
+
+/// The words for the refusals any request about a template can get, by the code of
+/// `Response::Error`: `busy` (a save or load runs) and `not-found` (the template is gone). `None` for
+/// every other code, which each host says in its own general sentence ([`refusal`], and the page
+/// Workspaces of the control centre).
+pub fn refusal_words(code: &str) -> Option<&'static str> {
     match code {
-        Some("busy") => tr("A template is being loaded or saved. Try again in a moment."),
-        Some("not-found") => tr("This template no longer exists. It may have been deleted."),
-        _ => tr("The change could not be saved. Try again."),
+        "busy" => Some(tr("A template is being loaded or saved. Try again in a moment.")),
+        "not-found" => Some(tr("This template no longer exists. It may have been deleted.")),
+        _ => None,
     }
-    .to_string()
 }
 
 /// The first key in the order of the keyboard (1 … 9, 0) that no template but `id` holds.
