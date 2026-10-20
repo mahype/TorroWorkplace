@@ -3032,6 +3032,10 @@ E12.10 braucht E12.5 und E12.6
   Satz, dass `source: model` ein Vorschlag ist; Freigabe-Satz in `approvals.rs`, Protokollzeile in
   `audit.rs` (nur die Kennung, nie die Kategorie) und Beschriftung in `daemon.rs`.
   `inbox.classify_item` und `inbox.catch_up_categories` antworten bis E12.6 `not-connected`.
+  Nach dem PR-Review: Die Zähler prüfen das Leserecht auf `mail` selbst (`MailService::reachable`)
+  – die Befehle liegen im Bereich `inbox`, also wiegt es sonst niemand für sie; `inbox.list_items`
+  wendet seinen Kategorie-Filter wirklich an (nach dem Lesen, damit die Grenze die Treffer zählt),
+  und das MCP-Tool kennt das Feld jetzt auch.
   Abweichung: `docs/api.md` hat keine Befehlstabelle für den Eingang – die Liste steht in der
   erzeugten `docs/api-reference.md`, die mitcommittet ist.
 - **Modell:** Opus · **Braucht:** E12.2, E12.3 · **Dateien:**
@@ -3160,6 +3164,13 @@ E12.10 braucht E12.5 und E12.6
   der Feed bekommt den Modellaufruf als `inbox_feed::Decider` hereingereicht, damit er von
   KI-Konten, Zuordnungen und Datenregel nichts wissen muss. Fixtures unter
   `crates/torroworkplace/tests/fixtures/categories/`.
+  Nach dem PR-Review: Mail, die schon eine Kategorie hat, wird beim Eintreffen nicht noch einmal
+  eingeordnet (`MailStore::categorised`) – nach einer Lücke im Änderungsstrom und auf dem Rückweg
+  aus „Später" lief der Pfad sonst erneut und schrieb über die Wahl des Menschen. Der
+  Altbestandslauf hat dieselbe Zeitgrenze wie der Eintreff-Pfad (60 s), und seine Läufe sind
+  nummeriert, damit ein „Anhalten" zwischen Start und Flag nicht verlorengeht. Tests: ein Lauf
+  gegen ein falsches Ollama (`fake_deciding_ollama`) von der Zuordnung bis zur Kategorie am
+  Eintrag, dazu die Nummerierung als eigener Test.
   Nach dem Korrektheits-Review: Neue Mail wird **erst abgelegt, dann gefragt** – der Modellaufruf
   läuft in einer eigenen Aufgabe mit Zeitgrenze (60 s) und Pause (250 ms), und die Kategorie
   kommt danach auch auf den Eintrag; vorher hing jede Zustellung an einer Reihe ungedrosselter
@@ -3282,6 +3293,10 @@ E12.10 braucht E12.5 und E12.6
   (`SearchQuery::in_inbox`) – Papierkorb, Spam und Gesendet tragen ihre Kategorie weiter, gehören
   aber unter keine. `inbox.set_item_category` und `inbox.classify_item` nehmen jetzt wirklich ein
   `m:…` für Mail ohne Eintrag, wie der Katalog es verspricht.
+  Nach dem PR-Review: „Load more" lädt auch in einer Kategorie-Ansicht die nächste Seite,
+  `Enter` in der Betrugs-Rückfrage öffnet den Link, statt auf den Picker durchzufallen und einen
+  fremden Eintrag zurückzustellen, und eine von Hand gesetzte Kategorie überlebt die nächste
+  Mail der Unterhaltung (`rules::merge` wägt die Quellen ab, statt die neue blind zu nehmen).
 - **Modell:** Opus · **Braucht:** E12.4, E12.7 · **Dateien:**
   `crates/torroinbox/src/{app,list,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Skill `torro-design` laden. Nicht parallel zu E9.2, E9.3b oder E12.9.

@@ -1060,14 +1060,15 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     let named = |id: &str| quote(facts.name.as_deref().unwrap_or(id));
     match request {
         // Which model does which function (task E12.5): the function and the account, no secret.
-        Request::SetAiAssignment { function, engine: Some(engine), model, .. } => trf(
-            "Let {engine} ({model}) do “{function}”",
-            &[
-                ("engine", &quote(engine)),
-                ("model", &model.as_deref().unwrap_or(tr("a model it picks"))),
-                ("function", &function.label()),
-            ],
-        ),
+        Request::SetAiAssignment { function, engine: Some(engine), model, .. } => {
+            // The model's id comes from the client like the account's: through `quote` as well,
+            // so no name can forge a second line or a placeholder in the summary.
+            let model = model.as_deref().map_or_else(|| tr("a model it picks").to_string(), quote);
+            trf(
+                "Let {engine} ({model}) do “{function}”",
+                &[("engine", &quote(engine)), ("model", &model), ("function", &function.label())],
+            )
+        }
         Request::SetAiAssignment { function, .. } => {
             trf("Let no model do “{function}” any more", &[("function", &function.label())])
         }

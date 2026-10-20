@@ -776,6 +776,20 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Which of `ids` already have a category (task E12.6), in no particular order: what the
+    /// feed leaves alone when mail comes in again – after a gap in the change stream, or on the
+    /// way back from "Later". Sorting it again would write a rule's answer over the person's.
+    pub fn categorised(&self, ids: &[String]) -> Result<Vec<String>, MailStoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let places = vec!["?"; ids.len()].join(", ");
+        let sql = format!("SELECT id FROM messages WHERE category IS NOT NULL AND id IN ({places})");
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(ids.iter()), |row| row.get::<_, String>(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// How much mail each category holds and how much of it is unread (task E12.4), only
     /// categories that occur: `(category, unread, all)`.
     ///

@@ -4555,6 +4555,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Ok(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
                 })
             }
+            // A group of categories or one of them (task E12.8): the next page of the same
+            // categories, as the first one was asked for.
+            View::Category(shown) => {
+                let (categories, cursor) = (shown.categories(), cursor.clone());
+                Box::pin(async move {
+                    inbox
+                        .search_by_category(categories, mail::PAGE, Some(cursor), order)
+                        .await
+                        .map_err(|err| err.to_string())
+                })
+            }
             _ => return Task::none(),
         };
         #[cfg(test)]
@@ -5100,6 +5111,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::Confirm if self.menu == Some(Menu::Task) => self.create_task(),
             Command::Confirm if self.menu == Some(Menu::Event) => self.create_event(),
             Command::Confirm if self.menu == Some(Menu::DeleteForGood) => self.delete_for_good(),
+            // "Open anyway" of a fraudulent mail (task E12.9): without its own arm `Enter` would
+            // fall through to the picker and act on whatever entry was last touched.
+            Command::Confirm if self.menu == Some(Menu::PhishingLink) => self.update(Message::OpenLinkAnyway),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
         }

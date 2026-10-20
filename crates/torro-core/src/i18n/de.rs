@@ -3938,6 +3938,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Antwort des KI-Servers ist keine Entscheidung. Versuch es noch einmal oder nimm ein anderes Modell.",
     ),
     ("There is no mail account {id}.", "Es gibt kein E-Mail-Konto {id}."),
+    ("A decision takes 1 to {most} questions, not {n}.", "Eine Entscheidung nimmt 1 bis {most} Fragen, nicht {n}."),
+    (
+        "No decision model is set up for mail. Choose one in the mail window, under Categorization.",
+        "Für E-Mails ist kein Entscheidermodell eingerichtet. Wähle eines im E-Mail-Fenster unter \
+         Kategorisierung.",
+    ),
     ("This AI account offers no model {id}.", "Dieses KI-Konto bietet kein Modell {id}."),
     (
         "This model does not decide. Pick one that does, like nimble on Ollama.",

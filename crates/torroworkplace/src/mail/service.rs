@@ -346,6 +346,15 @@ impl MailChange {
     }
 }
 
+/// A caller that may read mail at all: the suite, or a client with read access to the area
+/// `mail`. Which of the accounts it then sees is [`Mailbox::within`].
+fn reads_mail(reach: Reach<'_>) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.area(torro_ipc::api::Area::Mail).allows(torro_ipc::api::Access::Read),
+    }
+}
+
 /// The store of one account, shared by its sync and the mail commands. Every call runs on a
 /// blocking thread ([`SharedStore::run`]), so a slow disk never stalls the runtime.
 #[derive(Debug, Clone)]
@@ -1638,7 +1647,16 @@ impl MailService {
     }
 
     /// The mailboxes in `reach` that sync mail, or just `only` when it is given and in reach.
+    ///
+    /// **Read access to `mail` is checked here**, not only the account list: what this answers
+    /// goes to commands of the area `inbox` (`inbox.list_categories`,
+    /// `inbox.get_categorization`, `inbox.catch_up_categories`, task E12.4), so the dispatcher
+    /// has weighed `inbox`, never `mail`. A key with the inbox but without mail must see no
+    /// number about any mailbox – it gets an empty list, and so zeros everywhere.
     async fn reachable(&self, reach: Reach<'_>, only: Option<&str>) -> Vec<Arc<Mailbox>> {
+        if !reads_mail(reach) {
+            return Vec::new();
+        }
         self.entries
             .read()
             .await

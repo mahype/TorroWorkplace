@@ -1094,6 +1094,15 @@ impl Inbox {
         .map_err(|failure| failure.to_string())
     }
 
+    /// What the fixed rules make of `mail` (task E12.2, `docs/kategorien.md`): a category kept
+    /// for its sender or domain, else what its headers and its folder say; `None` when only a
+    /// model could tell (task E12.6 asks one then). The same answer [`Inbox::file_mail`] puts on
+    /// the entry, so the mail store and the entry never disagree.
+    pub fn mail_category_of(&self, mail: &NewMail) -> Result<Option<MailCategory>, String> {
+        let sender = rules::sender_key(mail.from.as_ref());
+        self.with(|db| mail_category_in(db, sender.as_deref(), mail)).map_err(|failure| failure.to_string())
+    }
+
     /// Files the new mail `mail` at `now` (task E4.1): as a new entry of its conversation, or
     /// merged into the entry of the conversation, which counts one more and opens again when it
     /// was done ([`rules::merge`]). Returns the entry's id, or `None` when nothing was filed:
@@ -1109,15 +1118,6 @@ impl Inbox {
     /// the newest mail's date (never later than `now`); a mail older than the entry's newest leaves
     /// title, text, sender and link as they are. `Err` holds the message for the log, without
     /// anything of the mail.
-    /// What the fixed rules make of `mail` (task E12.2, `docs/kategorien.md`): a category kept
-    /// for its sender or domain, else what its headers and its folder say; `None` when only a
-    /// model could tell (task E12.6 asks one then). The same answer [`Inbox::file_mail`] puts on
-    /// the entry, so the mail store and the entry never disagree.
-    pub fn mail_category_of(&self, mail: &NewMail) -> Result<Option<MailCategory>, String> {
-        let sender = rules::sender_key(mail.from.as_ref());
-        self.with(|db| mail_category_in(db, sender.as_deref(), mail)).map_err(|failure| failure.to_string())
-    }
-
     pub fn file_mail(&self, mail: &NewMail, notify: Notify, now: DateTime<Utc>) -> Result<Option<String>, String> {
         if notify == Notify::Off {
             return Ok(None);
@@ -2159,12 +2159,25 @@ fn list_items(db: &Connection, filter: &ItemFilter, client: Option<&ClientInfo>)
         Order::OldestFirst => "ASC",
     };
     let mut tail = format!(" ORDER BY urgent DESC, updated {updated}, id");
-    if let Some(limit) = filter.limit {
+    // What a mail is sits in the entry's JSON, not in a column of its own (task E12.4): those
+    // rows are picked after reading, and the limit is applied to what is left – pushed into SQL
+    // it would cut before the filter and leave a page short of what was asked for.
+    let by_category = !filter.categories.is_empty();
+    if let Some(limit) = filter.limit
+        && !by_category
+    {
         tail.push_str(" LIMIT ?");
         values.push(Value::Integer(i64::from(limit)));
     }
     let rows = read_items(db, &scope, &conditions.join(" AND "), values, &tail)?;
-    Ok(rows.into_iter().map(|stored| stored.shown_to(client)).collect())
+    let mut items: Vec<Item> = rows.into_iter().map(|stored| stored.shown_to(client)).collect();
+    if by_category {
+        items.retain(|item| item.category.is_some_and(|held| filter.categories.contains(&held.category)));
+        if let Some(limit) = filter.limit {
+            items.truncate(limit as usize);
+        }
+    }
+    Ok(items)
 }
 
 /// The `lane` column of `lane`, as serde writes it.
@@ -3869,7 +3882,6 @@ impl MailLater {
     }
 }
 
-/// [`Inbox::file_mail`] on the open database, for `source`, the account's.
 /// What the fixed rules make of `mail` for the sender `sender` (task E12.2): a category kept for
 /// that sender or domain in **any** mail account (like a hidden sender, task E3.11), else what the
 /// headers and the folder say ([`rules::mail_category`]).
@@ -3880,6 +3892,7 @@ fn mail_category_in(db: &Connection, sender: Option<&str>, mail: &NewMail) -> Re
     Ok(rules::mail_category(kept, mail.invite, mail.auto_submitted.as_deref(), mail.junk))
 }
 
+/// [`Inbox::file_mail`] on the open database, for `source`, the account's.
 fn file_mail(
     db: &mut Connection,
     mail: &NewMail,
@@ -6306,8 +6319,55 @@ pub(crate) mod tests {
         }
     }
 
+    /// Task E12.4: `inbox.list_items` lists only the entries of the categories asked for, and
+    /// the limit counts what is left – not what SQL read. An entry without a category (and so
+    /// everything that is no mail) is out as soon as the filter is given.
+    #[test]
+    fn listing_entries_by_category_leaves_the_others_out() {
+        use torro_mail::{Category, MailCategory};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let inbox = inbox_in(dir.path());
+        let invoice = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let shipping = filed(&inbox, &personal("m:2", "t:2", at(8, 10)), at(8, 11));
+        let plain = filed(&inbox, &personal("m:3", "t:3", at(8, 20)), at(8, 21));
+        inbox.set_category(&invoice, Some(MailCategory::by_model(Category::Invoice, 0.9))).expect("kept");
+        inbox.set_category(&shipping, Some(MailCategory::by_person(Category::Shipping))).expect("kept");
+        // A notice of an agent has no category at all.
+        let Response::Posted { id: Some(notice_id) } =
+            inbox.handle(notice("Deploy failed", None), Some(&script()), at(8, 30))
+        else {
+            panic!("posted")
+        };
+
+        let list = |categories: Vec<Category>, limit: Option<u32>| {
+            let request = Request::ListItems {
+                lane: None,
+                source: None,
+                state: None,
+                since: None,
+                limit,
+                order: None,
+                dismissed: None,
+                categories,
+            };
+            match inbox.handle(request, None, at(12, 0)) {
+                Response::Items { items } => items.into_iter().map(|item| item.id).collect::<Vec<String>>(),
+                other => panic!("expected items, got {other:?}"),
+            }
+        };
+        assert_eq!(list(vec![Category::Invoice], None), std::slice::from_ref(&invoice));
+        let both = list(vec![Category::Invoice, Category::Shipping], None);
+        assert_eq!(both.len(), 2, "both categories, and nothing else: {both:?}");
+        assert!(!both.contains(&plain) && !both.contains(&notice_id), "no entry without one of them");
+        assert!(list(vec![Category::Promotion], None).is_empty(), "a category nothing has");
+        // Without the filter everything is there, with it the limit counts the matches.
+        assert_eq!(list(Vec::new(), None).len(), 4);
+        assert_eq!(list(vec![Category::Invoice, Category::Shipping], Some(1)).len(), 1);
+    }
+
     /// Task E12.4: filing a mail by hand sets the person's category, and `remember` keeps it for
-    /// the sender – one sender, one category, so choosing another replaces the rule.
+    /// the sender – one sender, one category, so choosing another replaces the rule.""
     #[test]
     fn filing_a_mail_by_hand_sets_its_category_and_can_remember_it() {
         use torro_mail::{Category, CategorySource};
