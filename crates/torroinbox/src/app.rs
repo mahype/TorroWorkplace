@@ -9820,8 +9820,8 @@ mod tests {
         {
             let _ = app.update(Message::Resized(size));
             assert_eq!(app.is_glance(), glance, "{size:?}");
-            // The keys, ⌘F of the search (the demo has mail) and Escape.
-            let expected = if glance { wide - 3 } else { wide };
+            // The keys, the modifiers of the mail selection, ⌘F of the search (the demo has mail) and Escape.
+            let expected = if glance { wide - 4 } else { wide };
             assert_eq!(app.subscription().units(), expected, "no keys and no Escape in a glance: {size:?}");
             let _ = app.view();
         }
