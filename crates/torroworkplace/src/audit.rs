@@ -399,6 +399,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListTools | Request::CreatePdf { .. } => Vec::new(),
         Request::OpenFile { file } | Request::SaveFileAs { file, .. } => vec![random("file", file)],
         mail @ (Request::MailFolders { .. }
+        | Request::MailAccountStats { .. }
         | Request::SearchMail { .. }
         | Request::MailIndexStatus { .. }
         | Request::GetMail { .. }

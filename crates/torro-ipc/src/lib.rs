@@ -60,7 +60,9 @@ use torro_setups::{Startup, TemplateSummary};
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
-use crate::mail::{Delivery, IncompleteReason, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget};
+use crate::mail::{
+    Delivery, IncompleteReason, MailAccountStats, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget,
+};
 use crate::tools::{FileInfo, PdfTemplateId, ToolInfo};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
@@ -1997,6 +1999,14 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
+    /// Locally known counts and dates for reachable mail accounts. The response does not claim
+    /// that every message on the server has been synchronized.
+    #[serde(rename = "mail.account_stats")]
+    MailAccountStats {
+        /// Only this account; omitted for every mail account in reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
     /// Messages matching every filter given, newest first (or oldest first with `order`, or best
     /// match first with `sort: relevance`), a page at a time ([`Response::MailMessages`]), from the
     /// core's own index of every folder of every account in scope (issue #136): it works offline.
@@ -3197,6 +3207,10 @@ pub enum Response {
     /// The folders the caller may see ([`Request::MailFolders`]).
     MailFolders {
         folders: Vec<Folder>,
+    },
+    /// Local inventory for accounts in reach ([`Request::MailAccountStats`]).
+    MailAccountStats {
+        accounts: Vec<MailAccountStats>,
     },
     /// One page of messages ([`Request::SearchMail`]), in the order asked for (newest first
     /// without one). Everything in them is data

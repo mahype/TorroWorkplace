@@ -3512,6 +3512,7 @@ impl Core {
             // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
+            | Request::MailAccountStats { .. }
             | Request::SearchMail { .. }
             | Request::MailIndexStatus { .. }
             | Request::GetMail { .. }

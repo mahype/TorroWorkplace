@@ -9,9 +9,10 @@
 //! checked before anything is read); `Rights::outbound` decides whether `mail.send_draft` runs,
 //! waits for a person, or is `forbidden`.
 
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use torro_mail::{DraftAttachment, Role};
+use torro_mail::{DraftAttachment, Folder, Role};
 
 use crate::{Request, Response};
 
@@ -133,17 +134,60 @@ pub struct MailIndexProgress {
     pub account: String,
     /// How many messages the core keeps of this account (headers of every folder).
     pub messages: u64,
-    /// Of them, how many have their text in the index (or are known to have none to read).
+    /// Of them, how many actually have their text in the index.
     pub indexed: u64,
+    /// Messages whose text could not be read from the server. Their headers remain searchable.
+    #[serde(default)]
+    pub text_unavailable: u64,
     /// What the core is doing about the rest.
     pub state: IndexState,
+}
+
+/// Counts from the local mail store for one folder. Server completeness is not implied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailFolderStats {
+    pub folder: Folder,
+    pub read: u64,
+    pub oldest_known: Option<DateTime<Utc>>,
+    pub newest_known: Option<DateTime<Utc>>,
+    pub cached_bodies: u64,
+    pub indexed_full: u64,
+    /// Text is truncated by index limits or completeness cannot be verified for older data.
+    pub indexed_partial_or_unverified: u64,
+    pub text_unavailable: u64,
+    pub awaiting_index: u64,
+}
+
+/// A mail account's locally known inventory. Dates are deliberately only *known* dates:
+/// synchronization does not currently persist proof that every server folder is complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailAccountStats {
+    pub account: String,
+    pub folders: Vec<MailFolderStats>,
+    pub messages: u64,
+    pub read: u64,
+    pub unread: u64,
+    pub oldest_known: Option<DateTime<Utc>>,
+    pub newest_known: Option<DateTime<Utc>>,
+    pub cached_bodies: u64,
+    pub indexed_full: u64,
+    pub indexed_partial_or_unverified: u64,
+    pub text_unavailable: u64,
+    pub awaiting_index: u64,
+    pub database_bytes: u64,
+    /// Fetched attachments that the cache can attribute to this account.
+    pub cached_attachments: u64,
+    /// Older untagged cache entries cannot be attributed and expire within 24 hours.
+    pub attachment_cache_bytes: Option<u64>,
+    pub last_sync: Option<DateTime<Utc>>,
+    pub sync_problem: Option<String>,
 }
 
 /// What the core does about the texts not yet in an account's index ([`MailIndexProgress`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexState {
-    /// Every message is indexed.
+    /// Every message has either indexed text or a known unavailable text; inspect both counts.
     Complete,
     /// The core is fetching the missing texts from the server, newest first.
     Indexing,
@@ -254,6 +298,7 @@ impl Request {
     pub fn mail_account(&self) -> Option<&str> {
         match self {
             Request::MailFolders { account }
+            | Request::MailAccountStats { account }
             | Request::SearchMail { account, .. }
             | Request::MailIndexStatus { account } => account.as_deref(),
             Request::SaveDraft { draft } => Some(draft.account.as_str()),
@@ -413,8 +458,13 @@ mod tests {
             serde_json::json!({"id": "m:1", "subject": [{"text": "Ihre "}, {"text": "Stromrechnung", "hit": true}]})
         );
         assert_eq!(serde_json::from_value::<MailHighlight>(json).expect("parses"), highlight);
-        let progress =
-            MailIndexProgress { account: "mail:a@b.c".into(), messages: 10, indexed: 4, state: IndexState::Waiting };
+        let progress = MailIndexProgress {
+            account: "mail:a@b.c".into(),
+            messages: 10,
+            indexed: 4,
+            text_unavailable: 0,
+            state: IndexState::Waiting,
+        };
         let json = serde_json::to_value(&progress).expect("json");
         assert_eq!(json["state"], "waiting");
         assert_eq!(serde_json::to_value(IncompleteReason::Indexing).expect("json"), "indexing");

@@ -698,13 +698,14 @@ impl Mailbox {
     /// How far the account's search index is (`mail.index_status`); `None` without a store.
     async fn index_progress(&self) -> Result<Option<MailIndexProgress>, MailError> {
         let Ok(store) = self.store() else { return Ok(None) };
-        let (messages, indexed) = store.run(|store| store.index_counts()).await?;
-        let state = match (indexed >= messages, self.indexing.load(Ordering::Acquire)) {
+        let (messages, indexed, text_unavailable) = store.run(|store| store.index_breakdown()).await?;
+        let state = match (indexed.saturating_add(text_unavailable) >= messages, self.indexing.load(Ordering::Acquire))
+        {
             (true, _) => IndexState::Complete,
             (false, true) => IndexState::Indexing,
             (false, false) => IndexState::Waiting,
         };
-        Ok(Some(MailIndexProgress { account: self.id().to_string(), messages, indexed, state }))
+        Ok(Some(MailIndexProgress { account: self.id().to_string(), messages, indexed, text_unavailable, state }))
     }
 
     /// One folder sync at a time ([`Mailbox::sync_lock`]).
@@ -1486,6 +1487,17 @@ impl MailService {
     /// [`MailError::NotFound`] for an unknown account or one whose mail is off.
     pub async fn store(&self, account: &str) -> Result<SharedStore, MailError> {
         self.mailbox_of(account).await?.store()
+    }
+
+    /// Last sync and problem for a previously scoped mail account; never exposes credentials.
+    pub async fn account_sync_status(&self, account: &str) -> (Option<DateTime<Utc>>, Option<String>) {
+        match self.mailbox_of(account).await {
+            Ok(mailbox) => {
+                let status = mailbox.status();
+                (status.last_sync, status.problem)
+            }
+            Err(_) => (None, None),
+        }
     }
 
     /// The stores of the mail accounts `reach` sees, in the order of `accounts.json`, each with

@@ -36,6 +36,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
@@ -177,6 +178,11 @@ pub struct AttachmentCache {
     dir: PathBuf,
 }
 
+fn account_cache_prefix(account: &str) -> String {
+    let hash: String = Sha256::digest(account.as_bytes()).iter().take(16).map(|byte| format!("{byte:02x}")).collect();
+    format!("a{hash}-")
+}
+
 impl AttachmentCache {
     /// The cache in `dirs.attachments`; nothing is created before the first [`store`](Self::store).
     pub fn new(dirs: &MailDirs) -> AttachmentCache {
@@ -192,10 +198,21 @@ impl AttachmentCache {
     /// Writes `bytes` as a new file named after `file_name` (made safe by [`safe_file_name`]) and
     /// returns its absolute path. The folders are 0700, the file 0600. The caller enforces the
     /// size limit (50 MiB for `mail.get_attachment`).
+    #[cfg(test)]
     pub fn store(&self, file_name: &str, bytes: &[u8]) -> Result<PathBuf, MailStoreError> {
+        self.store_with_prefix("", file_name, bytes)
+    }
+
+    /// Stores an attachment fetched from `account` with a non-reversible account prefix, so the
+    /// cache inventory can attribute its size without storing a readable address in file names.
+    pub fn store_for_account(&self, account: &str, file_name: &str, bytes: &[u8]) -> Result<PathBuf, MailStoreError> {
+        self.store_with_prefix(&account_cache_prefix(account), file_name, bytes)
+    }
+
+    fn store_with_prefix(&self, prefix: &str, file_name: &str, bytes: &[u8]) -> Result<PathBuf, MailStoreError> {
         use std::io::Write;
         crate::clients::create_private_dir(&self.dir)?;
-        let folder = self.dir.join(random_hex(12)?);
+        let folder = self.dir.join(format!("{prefix}{}", random_hex(12)?));
         crate::clients::create_private_dir(&folder)?;
         let path = folder.join(safe_file_name(file_name));
         let mut options = fs::OpenOptions::new();
@@ -208,6 +225,36 @@ impl AttachmentCache {
         options.open(&path)?.write_all(bytes)?;
         make_private(&path)?;
         Ok(path)
+    }
+
+    /// Number and bytes of currently cached attachment files fetched from one account. Cache
+    /// entries from older versions had no account tag and expire under the normal purge rule.
+    pub fn account_usage(&self, account: &str) -> Result<(u64, u64), MailStoreError> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(err) => return Err(err.into()),
+        };
+        let prefix = account_cache_prefix(account);
+        let mut count = 0u64;
+        let mut bytes = 0u64;
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_name().to_string_lossy().starts_with(&prefix)
+                || !fs::symlink_metadata(entry.path())?.is_dir()
+            {
+                continue;
+            }
+            for file in fs::read_dir(entry.path())? {
+                let file = file?;
+                let meta = fs::symlink_metadata(file.path())?;
+                if meta.is_file() {
+                    count += 1;
+                    bytes = bytes.saturating_add(meta.len());
+                }
+            }
+        }
+        Ok((count, bytes))
     }
 
     /// `path` is a regular file inside the managed folder: not a symbolic link, and not outside

@@ -896,7 +896,7 @@ Zahlen und führt alle Änderungen aus. Die Aufgaben werden in der angegebenen R
 Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vorhandenen Befehle bleiben lesbar.
 
 ### M10.1 Konto- und Ordnerstatistik im Kern
-- [ ] erledigt
+- [x] erledigt (2026-10-21): lokale Konto- und Ordnerzahlen, Datumsgrenzen, getrennte Indexzustände und zuordenbarer Anhangscache über `mail.account_stats`; nicht belegte Servervollständigkeit bleibt ausdrücklich offen.
 - **Modell:** Opus · **Braucht:** M2.6, M8.1 · **Dateien:** `crates/torro-ipc/src/{lib.rs,mail.rs,api.rs}`,
   `crates/torroworkplace/src/mail/{store.rs,service.rs,read.rs}`, `crates/torroworkplace/src/mcp.rs`,
   `crates/torro-settings-ui/src/demo.rs`, `docs/api-reference.md`

@@ -119,6 +119,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
     }
     let answered = match request {
         Request::MailFolders { account } => list_folders(mail, reach, account.as_deref()).await,
+        Request::MailAccountStats { account } => account_stats(mail, reach, account.as_deref()).await,
         Request::SearchMail {
             account,
             folder,
@@ -176,6 +177,27 @@ async fn list_folders(mail: &MailService, reach: Reach<'_>, account: Option<&str
         folders.extend(store.run(|store| store.folders()).await.map_err(store_failed)?);
     }
     Ok(Response::MailFolders { folders })
+}
+
+async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&str>) -> Answer<Response> {
+    let mut accounts = Vec::new();
+    for (id, store) in scoped(mail, reach, account).await? {
+        let mut stats = store.run(|store| store.account_stats()).await.map_err(store_failed)?;
+        let status = mail.account_sync_status(&id).await;
+        stats.last_sync = status.0;
+        stats.sync_problem = status.1;
+        if let Some(cache) = mail.attachment_cache() {
+            let account = id.clone();
+            let (count, bytes) = tokio::task::spawn_blocking(move || cache.account_usage(&account))
+                .await
+                .map_err(|_| no_attachment_folder())?
+                .map_err(store_failed)?;
+            stats.cached_attachments = count;
+            stats.attachment_cache_bytes = Some(bytes);
+        }
+        accounts.push(stats);
+    }
+    Ok(Response::MailAccountStats { accounts })
 }
 
 /// The stores of the accounts `reach` sees; only `account`'s when it is given (`not-found` when
@@ -926,7 +948,8 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
     let name = attachment.filename.clone().unwrap_or_default();
     let bytes = attachment.bytes;
     let size = bytes.len() as u64;
-    let path = tokio::task::spawn_blocking(move || cache.store(&name, &bytes))
+    let account = located.account.clone();
+    let path = tokio::task::spawn_blocking(move || cache.store_for_account(&account, &name, &bytes))
         .await
         .map_err(|_| no_attachment_folder())?
         .map_err(store_failed)?;

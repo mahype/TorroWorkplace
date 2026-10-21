@@ -682,9 +682,21 @@ pub fn demo_index(source: &DemoSource) -> Result<Vec<MailIndexProgress>, InboxEr
             let messages: u64 = folders.iter().filter(|f| f.account == account).map(|f| u64::from(f.total)).sum();
             if account == DEMO_INDEXING {
                 // An older mailbox behind it, as a real one would have.
-                MailIndexProgress { account, messages: 1800, indexed: 1240, state: IndexState::Indexing }
+                MailIndexProgress {
+                    account,
+                    messages: 1800,
+                    indexed: 1240,
+                    text_unavailable: 0,
+                    state: IndexState::Indexing,
+                }
             } else {
-                MailIndexProgress { account, messages, indexed: messages, state: IndexState::Complete }
+                MailIndexProgress {
+                    account,
+                    messages,
+                    indexed: messages,
+                    text_unavailable: 0,
+                    state: IndexState::Complete,
+                }
             }
         })
         .collect())
@@ -882,8 +894,13 @@ mod tests {
             trf("More than {n} results", &[("n", &50)])
         );
         assert_eq!(missing_text(&complete), None);
-        let progress =
-            |state, indexed| MailIndexProgress { account: "mail:a@x.org".into(), messages: 1800, indexed, state };
+        let progress = |state, indexed| MailIndexProgress {
+            account: "mail:a@x.org".into(),
+            messages: 1800,
+            indexed,
+            text_unavailable: 0,
+            state,
+        };
         let indexing = Found { complete: false, total: Some(40), index: vec![progress(IndexState::Indexing, 1240)] };
         assert_eq!(count_text(40, false, &indexing), trf("At least {n} results", &[("n", &40)]));
         let counts = [("indexed", &1240_u64 as &dyn std::fmt::Display), ("total", &1800_u64)];

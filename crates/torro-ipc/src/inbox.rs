@@ -1545,6 +1545,7 @@ mod tests {
                     account: "mail:anna@example.org".into(),
                     messages: 18,
                     indexed: 12,
+                    text_unavailable: 0,
                     state: crate::mail::IndexState::Indexing,
                 }],
             },

@@ -738,6 +738,7 @@ fn describe(request: &Request) -> String {
         Request::SetModelEnabled { account, enabled: false, .. } => format!("turn off a model of {account}"),
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
+        Request::MailAccountStats { .. } => "mail account statistics".into(),
         Request::SearchMail { .. } => "search mail".into(),
         Request::MailIndexStatus { .. } => "mail index status".into(),
         Request::GetMail { .. } => "get mail".into(),

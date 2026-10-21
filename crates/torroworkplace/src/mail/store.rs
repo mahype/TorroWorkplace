@@ -45,6 +45,7 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
+use torro_ipc::mail::{MailAccountStats, MailFolderStats};
 use torro_mail::{
     AttachmentInfo, Category, CategorySource, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory,
     Message, MessageSummary, MessageTraits, Order, Role,
@@ -59,7 +60,7 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// At most this many bytes of a message's text go into the word index: a log of megabytes is
 /// found by its first half megabyte, and the index stays small.
@@ -137,6 +138,11 @@ ALTER TABLE messages ADD COLUMN category_confidence INTEGER;
 ALTER TABLE messages ADD COLUMN needs_reply INTEGER;
 ALTER TABLE messages ADD COLUMN urgency INTEGER;
 CREATE INDEX IF NOT EXISTS messages_by_category ON messages (category, date DESC);";
+
+/// Whether the full text may not be searchable: a limit clipped it, or an older indexed row has
+/// already lost its source text and cannot be verified after this migration.
+const SCHEMA_V8: &str = "ALTER TABLE messages ADD COLUMN index_partial_or_unverified INTEGER NOT NULL DEFAULT 0;
+UPDATE messages SET index_partial_or_unverified = 1 WHERE indexed = 1;";
 
 /// `indexed` of a message whose text is not in the index yet.
 const NOT_INDEXED: i64 = 0;
@@ -513,6 +519,84 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Local inventory only: a successful account sync does not prove that every server folder
+    /// has been fetched. Dates therefore describe the oldest and newest *known* messages.
+    pub fn account_stats(&self) -> Result<MailAccountStats, MailStoreError> {
+        let mut folders = Vec::new();
+        for folder in self.folders()? {
+            let sql = "SELECT count(*), coalesce(sum((m.flags & 1) <> 0), 0), min(m.date), max(m.date),
+                coalesce(sum(EXISTS(SELECT 1 FROM bodies b WHERE b.seq = m.seq)), 0),
+                coalesce(sum(m.indexed = 1 AND m.index_partial_or_unverified = 0), 0),
+                coalesce(sum(m.indexed = 1 AND m.index_partial_or_unverified <> 0), 0),
+                coalesce(sum(m.indexed = 2), 0), coalesce(sum(m.indexed = 0), 0)
+                FROM messages m WHERE m.folder_id = ?1";
+            let (_total, read, oldest, newest, bodies, indexed_full, indexed_partial, unavailable, awaiting): (
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) = self.db.query_row(sql, [&folder.id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            })?;
+            let to_date = |seconds: Option<i64>| seconds.and_then(|value| DateTime::from_timestamp(value, 0));
+            folders.push(MailFolderStats {
+                folder,
+                read: u64::try_from(read).unwrap_or(0),
+                oldest_known: to_date(oldest),
+                newest_known: to_date(newest),
+                cached_bodies: u64::try_from(bodies).unwrap_or(0),
+                indexed_full: u64::try_from(indexed_full).unwrap_or(0),
+                indexed_partial_or_unverified: u64::try_from(indexed_partial).unwrap_or(0),
+                text_unavailable: u64::try_from(unavailable).unwrap_or(0),
+                awaiting_index: u64::try_from(awaiting).unwrap_or(0),
+            });
+        }
+        let messages = folders.iter().map(|stats| u64::from(stats.folder.total)).sum();
+        let read = folders.iter().map(|stats| stats.read).sum();
+        let oldest_known = folders.iter().filter_map(|stats| stats.oldest_known).min();
+        let newest_known = folders.iter().filter_map(|stats| stats.newest_known).max();
+        let wal = self.path.with_extension("sqlite-wal");
+        let shm = self.path.with_extension("sqlite-shm");
+        let database_bytes = [&self.path, &wal, &shm]
+            .into_iter()
+            .filter_map(|path| std::fs::metadata(path).ok().map(|meta| meta.len()))
+            .sum();
+        Ok(MailAccountStats {
+            account: self.account.clone(),
+            messages,
+            read,
+            unread: messages.saturating_sub(read),
+            oldest_known,
+            newest_known,
+            cached_bodies: folders.iter().map(|stats| stats.cached_bodies).sum(),
+            indexed_full: folders.iter().map(|stats| stats.indexed_full).sum(),
+            indexed_partial_or_unverified: folders.iter().map(|stats| stats.indexed_partial_or_unverified).sum(),
+            text_unavailable: folders.iter().map(|stats| stats.text_unavailable).sum(),
+            awaiting_index: folders.iter().map(|stats| stats.awaiting_index).sum(),
+            database_bytes,
+            cached_attachments: 0,
+            attachment_cache_bytes: None,
+            last_sync: None,
+            sync_problem: None,
+            folders,
+        })
+    }
+
     /// Id, name, path and role of every folder, without counting their messages: what `in:` of a
     /// search looks for ([`Folder::unread`] and [`Folder::total`] are 0).
     fn folder_names(&self) -> Result<Vec<Folder>, MailStoreError> {
@@ -667,7 +751,10 @@ impl MailStore {
         // The answer has its own column: reading the text again keeps it.
         let invite = body.invite.as_ref().map(|invite| Invite { answered: None, ..invite.clone() });
         let invite = invite.map(|invite| serde_json::to_string(&invite)).transpose()?;
-        tx.execute("UPDATE messages SET invite_json = ?2, indexed = ?3 WHERE seq = ?1", params![seq, invite, INDEXED])?;
+        tx.execute(
+            "UPDATE messages SET invite_json = ?2, indexed = ?3, index_partial_or_unverified = ?4 WHERE seq = ?1",
+            params![seq, invite, INDEXED, index_is_partial(&body.text)],
+        )?;
         refresh_index(&tx, seq, Some(IndexText { body: &body.text, filenames: &names.join(" ") }))?;
         tx.commit()?;
         Ok(true)
@@ -682,7 +769,10 @@ impl MailStore {
         let seq: Option<i64> =
             tx.query_row("SELECT seq FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?;
         let Some(seq) = seq else { return Ok(false) };
-        tx.execute("UPDATE messages SET indexed = ?2 WHERE seq = ?1", params![seq, INDEXED])?;
+        tx.execute(
+            "UPDATE messages SET indexed = ?2, index_partial_or_unverified = ?3 WHERE seq = ?1",
+            params![seq, INDEXED, index_is_partial(text)],
+        )?;
         refresh_index(&tx, seq, Some(IndexText { body: text, filenames: &filenames.join(" ") }))?;
         tx.commit()?;
         Ok(true)
@@ -723,17 +813,30 @@ impl MailStore {
 
     /// How many messages the store holds, and how many of them are done for the index (their text
     /// is in it, or they have none): `mail.index_status`.
+    #[cfg(test)]
     pub fn index_counts(&self) -> Result<(u64, u64), MailStoreError> {
         let sql = "SELECT count(*), coalesce(sum(indexed <> 0), 0) FROM messages";
         let (all, done): (i64, i64) = self.db.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok((u64::try_from(all).unwrap_or(0), u64::try_from(done).unwrap_or(0)))
     }
 
-    /// Every message is done for the index ([`index_counts`](Self::index_counts) equal), asked
-    /// cheaply for every search.
+    /// Separate indexed text from text the server cannot provide (`indexed = 2`).
+    pub fn index_breakdown(&self) -> Result<(u64, u64, u64), MailStoreError> {
+        let sql = "SELECT count(*), coalesce(sum(indexed = 1), 0), coalesce(sum(indexed = 2), 0) FROM messages";
+        let (all, indexed, unavailable): (i64, i64, i64) =
+            self.db.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok((
+            u64::try_from(all).unwrap_or(0),
+            u64::try_from(indexed).unwrap_or(0),
+            u64::try_from(unavailable).unwrap_or(0),
+        ))
+    }
+
+    /// Every message has searchable text. A message known to have no available text keeps a
+    /// search answer incomplete even when the backfill has no more work to do.
     pub fn fully_indexed(&self) -> Result<bool, MailStoreError> {
-        let sql = "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE indexed = ?1)";
-        Ok(self.db.query_row(sql, [NOT_INDEXED], |row| row.get(0))?)
+        let sql = "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE indexed <> ?1)";
+        Ok(self.db.query_row(sql, [INDEXED], |row| row.get(0))?)
     }
 
     /// Keeps what the mail `id` is (task E12.2); `None` takes the category away again. `false`
@@ -1368,6 +1471,25 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 7 && !has_column(&tx, "messages", "category")? {
         tx.execute_batch(SCHEMA_V7)?;
     }
+    if version < 8 && !has_column(&tx, "messages", "index_partial_or_unverified")? {
+        tx.execute_batch(SCHEMA_V8)?;
+        let known: Vec<(i64, bool)> = {
+            let mut statement =
+                tx.prepare("SELECT m.seq, b.text FROM messages m JOIN bodies b ON b.seq = m.seq WHERE m.indexed = 1")?;
+            statement
+                .query_map([], |row| {
+                    let text: String = row.get(1)?;
+                    Ok((row.get(0)?, index_is_partial(&text)))
+                })?
+                .collect::<Result<_, _>>()?
+        };
+        for (seq, partial) in known {
+            tx.execute(
+                "UPDATE messages SET index_partial_or_unverified = ?2 WHERE seq = ?1",
+                params![seq, partial],
+            )?;
+        }
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -1483,6 +1605,10 @@ struct IndexText<'a> {
 /// its text and attachment names (folded, cut at [`INDEX_TEXT_MAX`] and [`TRIGRAM_TEXT_MAX`]).
 /// Without `text` the text already in the index stays: new headers (a sync, a flag) never lose
 /// words of a text that is no longer kept to read.
+fn index_is_partial(text: &str) -> bool {
+    text.len() > INDEX_TEXT_MAX || fold(head(text, INDEX_TEXT_MAX)).len() > TRIGRAM_TEXT_MAX
+}
+
 fn refresh_index(db: &Connection, seq: i64, text: Option<IndexText<'_>>) -> Result<(), MailStoreError> {
     let headers: Option<(String, String, String)> = db
         .query_row("SELECT subject, sender, recipients FROM messages WHERE seq = ?1", [seq], |row| {
@@ -1939,7 +2065,7 @@ mod tests {
         let next: Vec<String> = store.unindexed(10).expect("next").into_iter().map(|(at, _)| at.id).collect();
         assert_eq!(next, std::slice::from_ref(&without));
         assert!(store.mark_unindexable(&without).expect("marked"));
-        assert!(store.unindexed(10).expect("next").is_empty() && store.fully_indexed().expect("asked"));
+        assert!(store.unindexed(10).expect("next").is_empty() && !store.fully_indexed().expect("asked"));
         assert_eq!(search_ids(&store, "kein"), [without], "its headers are searchable");
     }
 
