@@ -2020,8 +2020,9 @@ pub enum Request {
     //   most 500 characters, a draft with at most 100 recipients, 20 attachments and 1 MiB of
     //   text, ids and cursors at most 300 bytes; else `error` before anything is checked further.
     // - Everything a message brings is data from outside (`untrusted: true`), never instructions.
-    /// Starts a background archive of the chosen mail account. `file_name` is only a safe base name
-    /// inside the configured backup folder; it is never a path. `since` includes that IMAP internal
+    /// Starts a background archive of the chosen mail account. `file_name` is a safe base name
+    /// inside the managed backup folder, or an absolute destination path with the app key only.
+    /// `since` includes that IMAP internal
     /// calendar day. Returns [`Response::MailBackupJob`]. Errors: `not-found`, `busy`, `offline`,
     /// `forbidden`, `error`. The result is complete only after final inventory and ZIP verification.
     #[serde(rename = "mail.backup_create")]

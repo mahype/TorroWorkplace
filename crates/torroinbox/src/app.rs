@@ -3715,6 +3715,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Refresh | Message::CoreReady => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
+                let backup_poll = self.settings.as_mut().and_then(|pane| {
+                    let SettingsState::Mail(state) = &mut pane.sections else { return None };
+                    let request = settings_mail::poll_request(state)?;
+                    Some(pane.host.act(torro_settings_ui::Action::<()>::Ask(request)))
+                });
+                let backup_poll = backup_poll.map_or_else(Task::none, |outcome| self.settings_outcome(outcome));
                 let settings = self.settings.as_ref().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 return Task::batch([
                     self.fetch_appearance(),
@@ -3722,6 +3728,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     self.fetch_ai_ready(),
                     self.zoom.fetch().map(Message::Zoom),
                     self.load(),
+                    backup_poll,
                     settings.unwrap_or_else(Task::none),
                 ]);
             }

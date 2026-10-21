@@ -26,6 +26,7 @@ use torro_gui::icon::Icon;
 
 use crate::{Action, Data, Page, Section};
 
+mod backup;
 mod editor;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
@@ -108,8 +109,13 @@ pub fn escape(state: &State) -> Option<Message> {
 
 /// The answer of a one-off preview request for the currently selected sorting scope.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    accounts::answered(&mut state.accounts, answer);
     categorization::answered(&mut state.categorization, answer);
     storage::answered(&mut state.storage, answer);
+}
+
+pub fn poll_request(state: &mut State) -> Option<torro_ipc::Request> {
+    accounts::poll_request(&mut state.accounts)
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -151,6 +157,8 @@ pub mod accounts {
         /// accounts.
         draft: Option<Draft>,
         folders_expanded: bool,
+        backup: backup::State,
+        backup_account: Option<String>,
     }
 
     /// What a row of this section reports.
@@ -171,7 +179,11 @@ pub mod accounts {
         /// "Write new mail as" was set (issue #125).
         Format(MailFormat),
         /// "Use this folder" for a role the server left open.
-        PickFolder { role: Role, path: String },
+        PickFolder {
+            role: Role,
+            path: String,
+        },
+        Backup(backup::Message),
     }
 
     /// The sender name and the signature of one account as they are being typed.
@@ -226,6 +238,15 @@ pub mod accounts {
                 // Without the account in the loaded data there is nothing to show or type into;
                 // the list stays, and a press after the next load opens it.
                 if let Some(mail) = mail_of(data, &id) {
+                    if state.backup_account.as_deref() != Some(id.as_str()) {
+                        state.backup = backup::State::from_preferences(&mail.settings.backup);
+                        state.backup_account = Some(id.clone());
+                    } else {
+                        let saved = backup::State::from_preferences(&mail.settings.backup);
+                        state.backup.source = saved.source;
+                        state.backup.since = saved.since;
+                        state.backup.destination = saved.destination;
+                    }
                     state.draft = Some(Draft::new(&id, mail));
                     state.folders_expanded = false;
                 }
@@ -261,7 +282,20 @@ pub mod accounts {
             Message::PickFolder { role, path } => change(state, data, |_| {
                 Some(MailChange { folder_roles: Some(BTreeMap::from([(role, path)])), ..MailChange::default() })
             }),
+            Message::Backup(message) => state
+                .draft
+                .as_ref()
+                .map_or(Action::None, |draft| backup::update(&mut state.backup, &draft.account, message)),
         }
+    }
+
+    pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+        backup::answered(&mut state.backup, answer);
+    }
+
+    pub fn poll_request(state: &mut State) -> Option<Request> {
+        let draft = state.draft.as_ref()?;
+        backup::poll_request(&mut state.backup, &draft.account)
     }
 
     /// The fields of `accounts.update_mail_account` that one press changes; the others stay as they
@@ -311,7 +345,8 @@ pub mod accounts {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
                 let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
-                Page::new(account_page(draft, mail, stats, state.folders_expanded)).sub_page(label, Message::Back)
+                Page::new(account_page(draft, mail, stats, state.folders_expanded, &state.backup))
+                    .sub_page(label, Message::Back)
             }
             None => Page::new(list(data)),
         }
@@ -353,6 +388,7 @@ pub mod accounts {
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
         folders_expanded: bool,
+        backup_state: &'a backup::State,
     ) -> Element<'a, Message> {
         let mut page =
             column![inventory_group(stats, folders_expanded), sender_groups(draft, mail), writing_group(mail)]
@@ -360,6 +396,7 @@ pub mod accounts {
         if !mail.open_roles.is_empty() {
             page = page.push(folders_group(&mail.open_roles));
         }
+        page = page.push(backup::view(backup_state, &draft.account).map(Message::Backup));
         page.into()
     }
 
@@ -1071,9 +1108,9 @@ pub mod storage {
         }
         page = page.push(widgets::group(tr("Attachment cache"), vec![
             line("Keep downloaded attachments", trf("{days} days", &[("days", &current.attachment_retention_days)])),
-            row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(8), false),
+            row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(torro_gui::theme::space::s()), false),
             line("Prefetch attachments", if current.prefetch_attachments { tr("On") } else { tr("Off") }.to_string()),
-            row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(8), false),
+            row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(torro_gui::theme::space::s()), false),
         ], Some(tr("Newly fetched mail can also download its attachment parts. Existing mail can be fetched by a maintenance job. Files have separate retention and can be large.").to_string())));
         let job = data.mail_cache_jobs.iter().find(|job| job.account == account);
         let running = job.is_some_and(|job| job.state == MailCacheJobState::Running);
@@ -1126,7 +1163,7 @@ pub mod storage {
                             .then(|| Message::Resume(job.id.clone()))
                     ),
                 ]
-                .spacing(8),
+                .spacing(torro_gui::theme::space::s()),
                 false,
             ));
         }
@@ -1756,7 +1793,7 @@ pub mod categorization {
                         typo::text(typo::body_strong(), tr("Selected mail")),
                         typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
                     ]
-                    .spacing(4),
+                    .spacing(torro_gui::theme::space::xs()),
                     false,
                 ),
                 row_frame(start, false),

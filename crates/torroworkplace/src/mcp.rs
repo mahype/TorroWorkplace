@@ -1458,9 +1458,32 @@ mod tests {
                 allow_incomplete: false
             })
         );
-        for pending in ["mail_backup_create", "mail_backup_status", "mail_backup_cancel"] {
-            assert!(!names.contains(pending));
+        for active in ["mail_backup_create", "mail_backup_status", "mail_backup_cancel"] {
+            assert!(names.contains(active));
         }
+        assert_eq!(
+            request_for(
+                "mail_backup_create",
+                args(json!({
+                    "account": "mail:anna@example.org", "source": "local", "since": "2026-10-20", "file_name": "anna.zip"
+                })),
+                &Utc
+            ),
+            Ok(Request::MailBackupCreate {
+                account: "mail:anna@example.org".into(),
+                source: torro_ipc::mail::BackupScope::Local,
+                since: chrono::NaiveDate::from_ymd_opt(2026, 10, 20),
+                file_name: Some("anna.zip".into()),
+            })
+        );
+        assert_eq!(
+            request_for("mail_backup_status", args(json!({"account": "mail:anna@example.org", "job": "j-1"})), &Utc),
+            Ok(Request::MailBackupStatus { account: "mail:anna@example.org".into(), job: "j-1".into() })
+        );
+        assert_eq!(
+            request_for("mail_backup_cancel", args(json!({"account": "mail:anna@example.org", "job": "j-1"})), &Utc),
+            Ok(Request::MailBackupCancel { account: "mail:anna@example.org".into(), job: "j-1".into() })
+        );
     }
 
     #[test]

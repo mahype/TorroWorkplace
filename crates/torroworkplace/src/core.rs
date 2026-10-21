@@ -43,7 +43,7 @@ use crate::audit::Audit;
 use crate::categorize;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
-use crate::mail::backup::{BackupJobs, BackupRunError, RestorePlans};
+use crate::mail::backup::{BackupJobs, BackupRunError, BackupSelection, RestorePlans};
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
@@ -94,14 +94,14 @@ fn start_setup(_section: Section) -> Result<(), String> {
 }
 
 /// A client may name only one ordinary ZIP in the core's managed backup folder. The app key may
-/// use a file-picker path. This is a provisional fixed folder until the per-account choice of MB.6.
+/// use an absolute file-picker path. A bare ZIP name resolves in the managed backup folder.
 fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Response> {
     let not_found =
         || Response::Error { code: "not-found".into(), message: tr("Backup archive is not available.").into() };
     if file.is_empty() {
         return Err(not_found());
     }
-    if matches!(reach, Reach::Suite) {
+    if matches!(reach, Reach::Suite) && Path::new(file).is_absolute() {
         return Ok(PathBuf::from(file));
     }
     let path = Path::new(file);
@@ -122,6 +122,29 @@ fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Respo
         return Err(not_found());
     }
     Ok(path)
+}
+
+/// Only a suite caller may select a destination outside the managed backup folder.
+fn backup_destination(
+    file_name: Option<String>,
+    reach: Reach<'_>,
+) -> Result<(Option<String>, Option<PathBuf>), Response> {
+    let Some(file_name) = file_name else { return Ok((None, None)) };
+    let path = Path::new(&file_name);
+    if path.is_absolute() {
+        if !matches!(reach, Reach::Suite) {
+            return Err(Response::Error {
+                code: "forbidden".into(),
+                message: tr("Only the app may select a mail backup folder.").into(),
+            });
+        }
+        let name = path.file_name().and_then(|name| name.to_str()).ok_or_else(|| Response::Error {
+            code: "error".into(),
+            message: tr("Choose a valid archive name.").into(),
+        })?;
+        return Ok((Some(name.to_string()), path.parent().map(Path::to_path_buf)));
+    }
+    Ok((Some(file_name), None))
 }
 
 fn restore_error_response(error: BackupRunError) -> Response {
@@ -4022,24 +4045,49 @@ impl Core {
             },
             Request::MailBackupCreate { account, source, since, file_name } => match self.mail.config(&account).await {
                 Err(error) => error.response(),
-                Ok(_) => match crate::mail::MailDirs::for_workplace() {
-                    None => Response::Error {
-                        code: "error".into(),
-                        message: tr("Mail cannot be kept on this device.").into(),
-                    },
-                    Some(dirs) => {
-                        match self.backup_jobs.start(Arc::clone(&self.mail), dirs, account, source, since, file_name) {
-                            Ok(job) => Response::MailBackupJob { job },
-                            Err(BackupRunError::Busy) => Response::Error {
-                                code: "busy".into(),
-                                message: tr("A backup for this mail account is already running.").into(),
-                            },
-                            Err(_) => Response::Error {
-                                code: "error".into(),
-                                message: tr("Mail backup could not be started.").into(),
-                            },
+                Ok(_) => match backup_destination(file_name, reach) {
+                    Err(response) => response,
+                    Ok((file_name, target_dir)) => match crate::mail::MailDirs::for_workplace() {
+                        None => Response::Error {
+                            code: "error".into(),
+                            message: tr("Mail cannot be kept on this device.").into(),
+                        },
+                        Some(dirs) => {
+                            if matches!(reach, Reach::Suite) {
+                                let preferences = torro_mail::BackupPreferences {
+                                    local: source == torro_ipc::mail::BackupScope::Local,
+                                    since,
+                                    directory: target_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                                };
+                                if let Err(message) = self
+                                    .mail
+                                    .update(&account, move |stored| {
+                                        stored.mail_settings.get_or_insert_with(MailSettings::default).backup =
+                                            preferences;
+                                    })
+                                    .await
+                                {
+                                    return Response::Error { code: "error".into(), message };
+                                }
+                            }
+                            match self.backup_jobs.start(
+                                Arc::clone(&self.mail),
+                                dirs,
+                                account,
+                                BackupSelection { source, since, filename: file_name, target_dir },
+                            ) {
+                                Ok(job) => Response::MailBackupJob { job },
+                                Err(BackupRunError::Busy) => Response::Error {
+                                    code: "busy".into(),
+                                    message: tr("A backup for this mail account is already running.").into(),
+                                },
+                                Err(_) => Response::Error {
+                                    code: "error".into(),
+                                    message: tr("Mail backup could not be started.").into(),
+                                },
+                            }
                         }
-                    }
+                    },
                 },
             },
             Request::MailBackupStatus { account, job } => match self.backup_jobs.status(&account, &job) {
@@ -6306,7 +6354,12 @@ impl Core {
             account.collections = self.pim.filter_lists_within(&account.id, reach).await;
         }
         let mut others = Vec::new();
-        for mail in self.mail.infos(reach).await {
+        for mut mail in self.mail.infos(reach).await {
+            if matches!(reach, Reach::Client(_))
+                && let Some(view) = &mut mail.mail
+            {
+                view.settings.backup.directory = None;
+            }
             match accounts.iter().position(|account| account.id == mail.id) {
                 Some(at) => others.push(joined_info(mail, accounts.remove(at))),
                 None => others.push(mail),
@@ -8454,6 +8507,76 @@ mod tests {
         }
         let selected = tempfile::tempdir().expect("selected file directory").path().join("archive.zip");
         assert_eq!(backup_file_for_verify(selected.to_str().expect("UTF-8 test path"), Reach::Suite), Ok(selected));
+    }
+
+    #[test]
+    fn only_suite_backup_requests_may_choose_an_absolute_folder() {
+        let selected = tempfile::tempdir().expect("selected folder").path().join("archive.zip");
+        let absolute = selected.to_string_lossy().into_owned();
+        let rights = RightsTemplate::FullAccess.rights();
+        assert_eq!(
+            code(&backup_destination(Some(absolute.clone()), Reach::Client(&rights)).expect_err("client path")),
+            "forbidden"
+        );
+        assert_eq!(
+            backup_destination(Some(absolute), Reach::Suite),
+            Ok((Some("archive.zip".into()), selected.parent().map(Path::to_path_buf)))
+        );
+        assert_eq!(
+            backup_destination(Some("archive.zip".into()), Reach::Client(&rights)),
+            Ok((Some("archive.zip".into()), None))
+        );
+    }
+
+    #[tokio::test]
+    async fn suite_backup_remembers_source_date_and_selected_folder_on_the_mail_account() {
+        use crate::account::github::tests::MemoryTokens;
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+
+        let dir = tempfile::tempdir().expect("test directory");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let selected = dir.path().join("selected");
+        std::fs::create_dir(&selected).expect("selected folder");
+        let since = chrono::NaiveDate::from_ymd_opt(2020, 1, 2);
+        let answer = ask(
+            &core,
+            Some(&app_key),
+            Request::MailBackupCreate {
+                account: account.id.clone(),
+                source: torro_ipc::mail::BackupScope::Local,
+                since,
+                file_name: Some(selected.join("anna.zip").to_string_lossy().into_owned()),
+            },
+        )
+        .await;
+        assert!(matches!(answer, Response::MailBackupJob { .. }), "{answer:?}");
+        let stored = core.mail.stored_accounts().await.expect("saved accounts");
+        let preferences = &stored[0].mail_settings.as_ref().expect("settings").backup;
+        assert!(preferences.local);
+        assert_eq!(preferences.since, since);
+        assert_eq!(preferences.directory.as_deref(), selected.to_str());
+        if let Response::MailBackupJob { job } = answer {
+            for _ in 0..40 {
+                let phase = core.backup_jobs.status(&account.id, &job.id).expect("job status").phase;
+                if matches!(
+                    phase,
+                    torro_ipc::mail::BackupPhase::Complete
+                        | torro_ipc::mail::BackupPhase::Incomplete
+                        | torro_ipc::mail::BackupPhase::Cancelled
+                ) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
     }
 
     #[tokio::test]

@@ -203,11 +203,17 @@ noch gültige Plan-ID desselben Kontos an, verifiziert das Archiv erneut und pr�
 Zielbestand vor dem Schreiben. Unvollständige Archive brauchen `allow_incomplete: true`.
 Die Antwort zählt hinzugefügte, übersprungene und unklare Nachrichten; unbestätigte
 Uploads werden journalisiert und nicht blind wiederholt. Ein Client kann keinen
-beliebigen Ausgabe- oder Restore-Pfad setzen; `file_name` ist nur ein Basisname im
-verwalteten Ordner. Die Rechte und das Zielkonto werden vor Datei- oder Serverzugriff
+beliebigen Ausgabe- oder Restore-Pfad setzen; `file_name` ist für ihn nur ein Basisname im
+verwalteten Ordner. Mit App-Schlüssel darf `file_name` ein absoluter Zielpfad sein; der
+ausgewählte Ordner muss bereits existieren, die finale ZIP wird atomar und ohne
+Überschreiben veröffentlicht. Die zuletzt genutzte Quelle, Datumsgrenze und der
+Zielordner werden nur für den App-Schlüssel in den Mail-Kontoeinstellungen gespeichert;
+der absolute Ordner wird in Client-Antworten zu `accounts.list_accounts` entfernt.
+Die Rechte und das Zielkonto werden vor Datei- oder Serverzugriff
 geprüft. MCP bietet `mail_restore_plan` und `mail_restore_apply` auf denselben Requests;
 für das echte Einspielen braucht ein Agent Mail-Adminrechte und eine persönliche
-Freigabe. Die CLI und Mail-Kontoeinstellungen folgen in MB.6.
+Freigabe. Außerdem sind `mail_backup_create`, `mail_backup_status` und
+`mail_backup_cancel` als MCP-Werkzeuge verfügbar.
 
 Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
 100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst

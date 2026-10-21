@@ -79,15 +79,33 @@ pub(crate) struct PendingBackup {
 }
 
 impl PendingBackup {
+    #[cfg(test)]
     pub(crate) fn new(dirs: &MailDirs, filename: &str) -> Result<Self, BackupFileError> {
+        Self::new_in(dirs, filename, None)
+    }
+
+    pub(crate) fn new_in(dirs: &MailDirs, filename: &str, selected: Option<&Path>) -> Result<Self, BackupFileError> {
         if !valid_filename(filename) {
             return Err(BackupFileError::InvalidName);
         }
-        reject_symlink(&dirs.data)?;
-        crate::clients::create_private_dir(&dirs.data)?;
-        let backup_dir = dirs.data.join("backups");
-        reject_symlink(&backup_dir)?;
-        crate::clients::create_private_dir(&backup_dir)?;
+        let backup_dir = if let Some(selected) = selected {
+            if !selected.is_absolute() {
+                return Err(BackupFileError::InvalidName);
+            }
+            reject_symlink(selected)?;
+            let path = selected.canonicalize()?;
+            if !path.is_dir() {
+                return Err(BackupFileError::InvalidName);
+            }
+            path
+        } else {
+            reject_symlink(&dirs.data)?;
+            crate::clients::create_private_dir(&dirs.data)?;
+            let path = dirs.data.join("backups");
+            reject_symlink(&path)?;
+            crate::clients::create_private_dir(&path)?;
+            path
+        };
         let destination = backup_dir.join(filename);
         let temporary = tempfile::Builder::new().prefix(".backup-").suffix(".partial").tempfile_in(&backup_dir)?;
         Ok(Self { backup_dir, destination, temporary })
@@ -243,16 +261,22 @@ pub(crate) struct BackupJobs {
     entries: Arc<Mutex<HashMap<String, JobEntry>>>,
 }
 
+pub(crate) struct BackupSelection {
+    pub source: BackupScope,
+    pub since: Option<NaiveDate>,
+    pub filename: Option<String>,
+    pub target_dir: Option<PathBuf>,
+}
+
 impl BackupJobs {
     pub(crate) fn start(
         &self,
         mail: Arc<MailService>,
         dirs: MailDirs,
         account: String,
-        source: BackupScope,
-        since: Option<NaiveDate>,
-        filename: Option<String>,
+        selection: BackupSelection,
     ) -> Result<BackupJob, BackupRunError> {
+        let BackupSelection { source, since, filename, target_dir } = selection;
         let mut random = [0u8; 16];
         getrandom::fill(&mut random).map_err(|_| BackupRunError::Random)?;
         let id = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -294,8 +318,12 @@ impl BackupJobs {
         tokio::spawn(async move {
             let progress = BackupProgress { jobs: &jobs, id: &id, state: &state };
             let result = match source {
-                BackupScope::Server => run_server_backup(mail, dirs, &account, since, &filename, progress).await,
-                BackupScope::Local => run_local_backup(mail, dirs, &account, since, &filename, progress).await,
+                BackupScope::Server => {
+                    run_server_backup(mail, dirs, &account, since, &filename, target_dir.as_deref(), progress).await
+                }
+                BackupScope::Local => {
+                    run_local_backup(mail, dirs, &account, since, &filename, target_dir.as_deref(), progress).await
+                }
             };
             let mut entries = jobs.entries.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(entry) = entries.get_mut(&id) {
@@ -375,6 +403,7 @@ async fn run_server_backup(
     account: &str,
     since: Option<NaiveDate>,
     filename: &str,
+    target_dir: Option<&Path>,
     progress: BackupProgress<'_>,
 ) -> Result<VerifiedArchive, BackupRunError> {
     let BackupProgress { jobs, id: job_id, state } = progress;
@@ -434,7 +463,7 @@ async fn run_server_backup(
         warnings: Vec::new(),
     };
     jobs.progress(job_id, manifest.counts.folders, 0, 0);
-    let mut pending = PendingBackup::new(&dirs, filename)?;
+    let mut pending = PendingBackup::new_in(&dirs, filename, target_dir)?;
     let spool_dir = pending.directory().to_path_buf();
     let mut writer = ArchiveWriter::new(pending.file_mut(), manifest)?;
     let folder_count = writer.manifest_mut().folders.len();
@@ -568,6 +597,7 @@ async fn run_local_backup(
     account: &str,
     since: Option<NaiveDate>,
     filename: &str,
+    target_dir: Option<&Path>,
     progress: BackupProgress<'_>,
 ) -> Result<VerifiedArchive, BackupRunError> {
     let BackupProgress { jobs, id: job_id, state } = progress;
@@ -644,7 +674,7 @@ async fn run_local_backup(
         warnings,
     };
     jobs.progress(job_id, manifest.counts.folders, 0, 0);
-    let mut pending = PendingBackup::new(&dirs, filename)?;
+    let mut pending = PendingBackup::new_in(&dirs, filename, target_dir)?;
     let spool_dir = pending.directory().to_path_buf();
     let mut writer = ArchiveWriter::new(pending.file_mut(), manifest)?;
     let mut second_digest = Sha256::new();
@@ -1303,8 +1333,9 @@ mod tests {
     use torro_ipc::mail::{BackupJob, BackupPhase, BackupScope};
 
     use super::{
-        BackupFileError, BackupJobs, BackupProgress, CANCELLED, COMMITTING, JobEntry, RUNNING, RestoreJournal,
-        RestorePlans, manifest_digest, run_local_backup, run_server_backup, uid_inventory_hash, write_verified_backup,
+        BackupFileError, BackupJobs, BackupProgress, CANCELLED, COMMITTING, JobEntry, PendingBackup, RUNNING,
+        RestoreJournal, RestorePlans, manifest_digest, run_local_backup, run_server_backup, uid_inventory_hash,
+        write_verified_backup,
     };
     use crate::account::github::tests::MemoryTokens;
     use crate::mail::MailDirs;
@@ -1340,6 +1371,30 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(fs::metadata(&path).expect("file mode").permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn selected_existing_folder_publishes_verified_archive_there() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let selected = root.path().join("chosen");
+        fs::create_dir(&selected).expect("selected folder");
+        let mut pending = PendingBackup::new_in(&dirs(root.path()), "selected.zip", Some(&selected)).expect("pending");
+        pending.file_mut().write_all(SAMPLE_ZIP).expect("write sample");
+        let (path, report) = pending.publish().expect("published");
+        assert!(report.complete);
+        assert_eq!(path, selected.canonicalize().expect("canonical selected folder").join("selected.zip"));
+        assert_eq!(fs::read(path).expect("archive"), SAMPLE_ZIP);
+        assert!(!root.path().join("data/mail/backups").exists());
+        let mut duplicate =
+            PendingBackup::new_in(&dirs(root.path()), "selected.zip", Some(&selected)).expect("pending");
+        duplicate.file_mut().write_all(SAMPLE_ZIP).expect("write duplicate");
+        assert!(duplicate.publish().is_err(), "a selected archive is not overwritten");
+        #[cfg(unix)]
+        {
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&selected, &link).expect("directory link");
+            assert!(PendingBackup::new_in(&dirs(root.path()), "link.zip", Some(&link)).is_err());
         }
     }
 
@@ -1430,6 +1485,7 @@ mod tests {
             &account.id,
             None,
             "all.zip",
+            None,
             BackupProgress { jobs: &jobs, id: "test", state: &state },
         )
         .await
@@ -1469,6 +1525,7 @@ mod tests {
             &account.id,
             Some(today),
             "today.zip",
+            None,
             BackupProgress { jobs: &jobs, id: "today", state: &state },
         )
         .await
@@ -1480,6 +1537,7 @@ mod tests {
             &account.id,
             Some(today + Duration::days(1)),
             "tomorrow.zip",
+            None,
             BackupProgress { jobs: &jobs, id: "tomorrow", state: &next_state },
         )
         .await
@@ -1506,6 +1564,7 @@ mod tests {
             &account.id,
             None,
             "arrival.zip",
+            None,
             BackupProgress { jobs: &jobs, id: "arrival", state: &state },
         )
         .await
@@ -1522,6 +1581,7 @@ mod tests {
                 &account.id,
                 None,
                 "missing.zip",
+                None,
                 BackupProgress { jobs: &jobs, id: "missing", state: &state },
             )
             .await
@@ -1565,6 +1625,7 @@ mod tests {
             &account.id,
             None,
             "local.zip",
+            None,
             BackupProgress { jobs: &jobs, id: "local", state: &state },
         )
         .await

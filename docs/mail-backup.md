@@ -122,8 +122,10 @@ SHA-256; der Writer erzeugt die sicheren IDs, `README.txt`, `manifest.json`, `me
 und `SHA256SUMS`. Vor der Veröffentlichung prüft der Dienst die fertige Datei noch einmal
 offline, einschließlich EML-Hashes, Metadaten-Prüfsummen und CSV/Manifest-Abgleich. Eine
 bekannt unvollständige Quelle oder ein abgebrochener Lauf wird nicht als finale ZIP-Datei
-veröffentlicht. Die temporäre Datei liegt im privaten Backup-Ordner und wird bei Fehlern
-entfernt; ein vorhandener Zielname wird nie überschrieben.
+veröffentlicht. Die temporäre Datei liegt im Zielordner (standardmäßig dem privaten
+verwalteten Backup-Ordner) und wird bei Fehlern entfernt; ein vorhandener Zielname wird
+nie überschrieben. Ein gewählter Ordner muss bereits bestehen und darf selbst kein
+symbolischer Link sein.
 
 Die Serverquelle (MB.3) liest die Ordnerliste und öffnet jeden auswählbaren Ordner mit
 `EXAMINE`. Sie ermittelt zuerst alle UIDs, holt Flags, Keywords, `INTERNALDATE` und
@@ -180,30 +182,44 @@ Unvollständige Archive erfordern eine eigene Bestätigung und werden im Ergebni
 
 ## Oberfläche, CLI und Rechte
 
-Im Mail-Konto stehen Quelle, Datum, Zielordner, Start und Fortschritt sowie „Archiv prüfen“,
-„Testlauf“ und „Wiederherstellen“. Der Ablauf zeigt Leerlauf, laufende Arbeit, Abbruch,
-Fehler und Ergebnisse in schmalen wie breiten Fenstern. Die Kontoauswahl für den Restore
-ist explizit. Neue Texte sind Englisch mit `tr()` und deutscher Übersetzung.
+Unter **Mail-Fenster → Einstellungen → Konten → Konto** stehen Quelle, inklusives Datum,
+Archivname, Start, Fortschritt/Abbruch, Archivprüfung, Restore-Testlauf und explizit
+bestätigter Restore. Ohne Auswahl ist der Backup-Ordner
+`<Torro-Datenverzeichnis>/mail/backups/`. Für einen eigenen Zielordner werden ein
+absoluter, bereits vorhandener Ordner und ein Archivname eingegeben. Die zuletzt
+verwendete Quelle, Datumsgrenze und der Ordner werden mit dem Mail-Konto gespeichert.
+Der Dateiname wird in der Oberfläche und im Job-Ergebnis angezeigt. Der Restore-Eingabewert
+darf dieser Dateiname oder bei Nutzung des App-Schlüssels ein absoluter Pfad zu einer
+ausgewählten ZIP-Datei sein. Auf der Seite werden die Ordnerzuordnung und die Zahlen je
+Ordner sowie Warnungen angezeigt. Die Bestätigung gilt nur für den zuletzt geprüften
+Plan; ein unvollständiges Archiv braucht eine weitere Bestätigung. Ein laufender Auftrag
+wird alle zehn Sekunden aktualisiert. Neue Texte sind Englisch mit `tr()` und deutscher
+Übersetzung.
 
-Vorgesehene CLI-Form, konsistent mit bestehenden `ctl`-Befehlen:
+CLI-Form, konsistent mit bestehenden `ctl`-Befehlen:
 
 ```text
-torroworkplace ctl mail backup create --account mail:anna@example.org --source server --since 2020-01-01 --json
-torroworkplace ctl mail backup verify --file /erlaubter/ordner/backup.zip --json
+torroworkplace ctl mail backup create --account mail:anna@example.org --source server --since 2020-01-01 --file anna.zip --wait --json
+torroworkplace ctl mail backup create --account mail:anna@example.org --source local --file /mein/backups/anna.zip --wait --json
+torroworkplace ctl mail backup status --account mail:anna@example.org --job <job-id> --json
+torroworkplace ctl mail backup cancel --account mail:anna@example.org --job <job-id> --json
+torroworkplace ctl mail backup verify --file anna.zip --account mail:anna@example.org --json
 torroworkplace ctl mail restore --file /erlaubter/ordner/backup.zip --account mail:anna@example.org --dry-run --json
 torroworkplace ctl mail restore --file /erlaubter/ordner/backup.zip --account mail:anna@example.org --apply --json
 ```
 
-Die CLI verwendet dieselbe Engine wie die Oberfläche, klare Exit-Codes und einen nicht
-interaktiven Modus. Der Zieldateiname darf über den erlaubten Backup-Ordner gesteuert
-werden; ein beliebiger Pfad von einem Client-Schlüssel ist ausgeschlossen. Kontozugang
+Ohne `--apply` ist `restore` ein reiner Testlauf. Mit `--apply` plant die CLI zunächst neu,
+prüft auf unklare Nachrichten und wendet genau diesen Plan an. Bei einem unvollständigen
+Archiv ist zusätzlich `--allow-incomplete` nötig. `--wait` fragt den Backup-Status bis zu
+einem Endzustand ab; ein unvollständiger oder abgebrochener Lauf endet mit Exit-Code 1.
+`--json` gibt die strukturierte Endantwort aus. Syntaxfehler enden mit 64, Fehler des
+Dienstes mit 1. Beim App-Schlüssel darf `--file` ein absoluter Zielpfad sein; bei
+Client-Schlüsseln bleibt es ein einfacher ZIP-Name im verwalteten Ordner. Kontozugang
 kommt aus dem Schlüsselbund des laufenden Dienstes, nie aus CLI-Argumenten oder Logs.
-Getrennte Rechte für Backup lesen, Archiv schreiben und Restore schreiben werden mit den
-bestehenden `Rights`-Regeln geplant; `verify` und Testlauf bekommen kein Ziel-Schreibrecht.
-Die erste Implementierungsaufgabe legt `torro_ipc::Request`, Befehlskatalog und Rechte
-zusammen fest. MCP bietet sichere, berechtigte Operationen auf dem konfigurierten
-Backup-Ordner; freie Pfade und echte Restore-Ausführung ohne explizite Freigabe bleiben
-ausgeschlossen.
+Die bestehenden `mail`-Rechte gelten: Erstellen/Abbrechen benötigen `write`,
+Status/Prüfen/Testlauf `read`, echtes Wiederherstellen `admin` samt Personenfreigabe bei
+MCP-Nutzung. MCP-Clients dürfen nur ZIP-Basisnamen aus dem verwalteten Backup-Ordner
+angeben; freie Pfade bleiben ihnen versperrt.
 
 ## Abnahme
 

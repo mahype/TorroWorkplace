@@ -114,13 +114,19 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
 
 ### MB.6 Mail-Oberfläche, CLI und sichere MCP-Wege
 
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MB.5 · **Dateien:**
   `crates/torro-settings-ui/src/mail.rs`,
   `crates/torro-settings-ui/src/mail/{accounts,backup}.rs`,
   `crates/torroinbox/src/{app,hub}.rs`,
   `crates/torroworkplace/src/{cli,mcp}.rs`,
-  `crates/torro-core/src/i18n/de.rs`, `docs/{settings,api-reference,mail-backup}.md`
+  `crates/torro-core/src/i18n/de.rs`, `docs/{settings,api,api-reference,mail-backup}.md`
+  **Technische Ergänzungen:** `crates/torroworkplace/src/core.rs` (vom Job gelieferte
+  Archiv-Basisnamen auch mit App-Schlüssel im verwalteten Backup-Ordner auflösen),
+  `crates/torro-ipc/src/{api,lib,mail}.rs` (MCP und absolute App-Zielpfade),
+  `crates/torro-mail/src/{account,lib}.rs` sowie
+  `crates/torroworkplace/src/mail/{backup,service}.rs` (gespeicherte Kontowahl und
+  sicherer Zielordner gemäß Issue-Text).
 - Unter Mail-Kontoeinstellungen den Ablauf aus dem Mock-up anbinden: Quelle,
   Datum, Speicherort, Fortschritt/Abbruch, Verify, Restore-Plan und echte Bestätigung,
   verständliche Fehler und Hinweis auf unverschlüsseltes ZIP. CLI als

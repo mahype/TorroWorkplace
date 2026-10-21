@@ -3394,15 +3394,15 @@ static MAIL_BACKUP_CREATE: Command = Command {
     name: "mail.backup_create",
     area: Area::Mail,
     access: Access::Write,
-    mcp: Mcp::Never,
-    description: "Starts a background ZIP backup of all reachable IMAP mail or complete local originals of one permitted account. The file is written only in the configured backup folder; since includes the given IMAP internal date. Check backup_status before treating it as complete.",
+    mcp: Mcp::Tool,
+    description: "Starts a background ZIP backup of all reachable IMAP mail or complete local originals of one permitted account. A client writes only in the managed folder; the suite key may select an absolute destination. Since includes the given IMAP internal date. Check backup_status before treating it as complete.",
 };
 
 static MAIL_BACKUP_STATUS: Command = Command {
     name: "mail.backup_status",
     area: Area::Mail,
     access: Access::Read,
-    mcp: Mcp::Never,
+    mcp: Mcp::Tool,
     description: "Returns progress and final completeness of one backup job. It changes nothing.",
 };
 
@@ -3410,7 +3410,7 @@ static MAIL_BACKUP_CANCEL: Command = Command {
     name: "mail.backup_cancel",
     area: Area::Mail,
     access: Access::Write,
-    mcp: Mcp::Never,
+    mcp: Mcp::Tool,
     description: "Cancels one running backup job; no cancelled archive is reported as complete.",
 };
 
@@ -4616,11 +4616,6 @@ mod tests {
                         // Switching a tool on through settings.set_setting is kept back by value
                         // (`only_people_switch_a_tool_on`).
                         | "tools.save_file_as"
-                        // Backup creation and restore are contractual requests until their
-                        // engines land; only offline verify is an active MCP tool in MB.1.
-                        | "mail.backup_create"
-                        | "mail.backup_status"
-                        | "mail.backup_cancel"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.

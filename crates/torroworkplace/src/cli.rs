@@ -22,10 +22,13 @@
 use std::fmt;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
+use chrono::NaiveDate;
 use torro_core::i18n::{tr, trf};
 use torro_inbox::{AgentKind, Kind, Lane, Link};
 use torro_ipc::api::{Rights, RightsTemplate};
+use torro_ipc::mail::{BackupPhase, BackupScope};
 use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, IpcError, Key, Request, Response, socket_path};
 use torro_setups::{LoadMode, TemplateSummary};
 
@@ -48,6 +51,10 @@ const USAGE: &str = "usage:
   torroworkplace ctl allow <id> [--json]
   torroworkplace ctl deny <id> [--json]
   torroworkplace ctl quit [--json]
+  torroworkplace ctl mail backup create --account <id> [--source server|local] [--since YYYY-MM-DD] [--file <name.zip>] [--wait] [--json]
+  torroworkplace ctl mail backup status|cancel --account <id> --job <id> [--json]
+  torroworkplace ctl mail backup verify --account <id> --file <archive.zip> [--json]
+  torroworkplace ctl mail restore --account <id> --file <archive.zip> [--dry-run|--apply] [--allow-incomplete] [--json]
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
   torroworkplace hook claude-code|codex|gemini [--key-file <file>]
                                                  (run by an agent's hooks; reads stdin, prints nothing)";
@@ -103,6 +110,15 @@ pub fn from_args(args: &[String]) -> ExitCode {
     if args.first().is_some_and(|head| head == "notify") {
         return notify_from_args(&args[1..]);
     }
+    if args.get(0..2).is_some_and(|prefix| prefix == ["ctl", "mail"]) {
+        return match parse_mail(&args[2..]) {
+            Ok(command) => run_mail(command),
+            Err(err) => {
+                eprintln!("{}: {err}\n\n{}", crate::APP.binary, usage());
+                ExitCode::from(64)
+            }
+        };
+    }
     match parse(args) {
         Ok(command) => run(command),
         Err(err) => {
@@ -110,6 +126,202 @@ pub fn from_args(args: &[String]) -> ExitCode {
             ExitCode::from(64)
         }
     }
+}
+
+/// A mail command can make a second request after the first one: waiting on a backup or
+/// applying the exact plan returned by a read-only restore test.
+#[derive(Debug, PartialEq, Eq)]
+struct MailCommand {
+    request: Request,
+    account: String,
+    json: bool,
+    wait: bool,
+    apply: bool,
+    allow_incomplete: bool,
+}
+
+/// Parse only the `ctl mail` tail. Every option is validated before contacting the daemon.
+fn parse_mail(args: &[String]) -> Result<MailCommand, UsageError> {
+    let mut words = Vec::new();
+    let (mut account, mut source, mut since, mut file, mut job) = (None, None, None, None, None);
+    let (mut json, mut wait, mut apply, mut dry_run, mut allow_incomplete) = (false, false, false, false, false);
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let (flag, inline) = arg
+            .split_once('=')
+            .filter(|(flag, _)| flag.starts_with("--"))
+            .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
+        match flag {
+            "--json" | "--wait" | "--apply" | "--dry-run" | "--allow-incomplete" => {
+                if inline.is_some() {
+                    return Err(UsageError::new(tr("This option takes no value.")));
+                }
+                match flag {
+                    "--json" => json = true,
+                    "--wait" => wait = true,
+                    "--apply" => apply = true,
+                    "--dry-run" => dry_run = true,
+                    _ => allow_incomplete = true,
+                }
+            }
+            "--account" | "--source" | "--since" | "--file" | "--job" => {
+                let value = inline
+                    .or_else(|| iter.next().map(String::as_str))
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| UsageError::new(tr("An option needs a value.")))?;
+                let slot = match flag {
+                    "--account" => &mut account,
+                    "--source" => &mut source,
+                    "--since" => &mut since,
+                    "--file" => &mut file,
+                    _ => &mut job,
+                };
+                if slot.replace(value).is_some() {
+                    return Err(UsageError::new(tr("An option was given twice.")));
+                }
+            }
+            option if option.starts_with('-') => {
+                return Err(UsageError::new(trf("unknown option {option}", &[("option", &arg)])));
+            }
+            word => words.push(word),
+        }
+    }
+    let account = account.ok_or_else(|| UsageError::new(tr("Mail commands need --account.")))?.to_string();
+    let must_file = || file.ok_or_else(|| UsageError::new(tr("This command needs --file.")));
+    let must_job = || job.ok_or_else(|| UsageError::new(tr("This command needs --job.")));
+    let command = match words.as_slice() {
+        ["backup", "create"] => {
+            if job.is_some() || apply || dry_run || allow_incomplete {
+                return Err(UsageError::new(tr("Options do not match this mail command.")));
+            }
+            let source = match source.unwrap_or("server") {
+                "server" => BackupScope::Server,
+                "local" => BackupScope::Local,
+                _ => return Err(UsageError::new(tr("Source must be server or local."))),
+            };
+            let since = since
+                .map(|day| {
+                    NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                        .map_err(|_| UsageError::new(tr("Enter a valid date as YYYY-MM-DD.")))
+                })
+                .transpose()?;
+            Request::MailBackupCreate { account: account.clone(), source, since, file_name: file.map(str::to_string) }
+        }
+        ["backup", "status"] | ["backup", "cancel"] => {
+            if source.is_some() || since.is_some() || file.is_some() || wait || apply || dry_run || allow_incomplete {
+                return Err(UsageError::new(tr("Options do not match this mail command.")));
+            }
+            let job = must_job()?.to_string();
+            if words[1] == "status" {
+                Request::MailBackupStatus { account: account.clone(), job }
+            } else {
+                Request::MailBackupCancel { account: account.clone(), job }
+            }
+        }
+        ["backup", "verify"] => {
+            if source.is_some() || since.is_some() || job.is_some() || wait || apply || dry_run || allow_incomplete {
+                return Err(UsageError::new(tr("Options do not match this mail command.")));
+            }
+            Request::MailBackupVerify { account: account.clone(), file: must_file()?.to_string() }
+        }
+        ["restore"] => {
+            if source.is_some()
+                || since.is_some()
+                || job.is_some()
+                || wait
+                || (apply && dry_run)
+                || (allow_incomplete && !apply)
+            {
+                return Err(UsageError::new(tr("Options do not match this mail command.")));
+            }
+            Request::MailRestorePlan { account: account.clone(), file: must_file()?.to_string() }
+        }
+        _ => return Err(UsageError::new(tr("Use ctl mail backup create|status|cancel|verify or ctl mail restore."))),
+    };
+    Ok(MailCommand { request: command, account, json, wait, apply, allow_incomplete })
+}
+
+fn run_mail(command: MailCommand) -> ExitCode {
+    let Some(socket) = socket_path() else {
+        eprintln!("{}", tr("No core socket is available."));
+        return ExitCode::FAILURE;
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    runtime.block_on(async {
+        let mut response = match torro_ipc::client::call(&socket, &command.request).await {
+            Ok(response) => response,
+            Err(err) => {
+                eprintln!("{err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if command.wait
+            && let Response::MailBackupJob { job } = &response
+        {
+            let id = job.id.clone();
+            while let Response::MailBackupJob { job } = &response {
+                if matches!(job.phase, BackupPhase::Complete | BackupPhase::Incomplete | BackupPhase::Cancelled) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                response = match torro_ipc::client::call(
+                    &socket,
+                    &Request::MailBackupStatus { account: command.account.clone(), job: id.clone() },
+                )
+                .await
+                {
+                    Ok(response) => response,
+                    Err(err) => {
+                        eprintln!("{err}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+            }
+        }
+        if command.apply {
+            let Response::MailRestorePlanned { plan } = &response else {
+                return show(&response, command.json);
+            };
+            if plan.uncertain > 0 || (!plan.complete_archive && !command.allow_incomplete) {
+                let _ = show(&response, command.json);
+                eprintln!("{}", tr("Restore plan needs review: uncertain messages or an incomplete archive."));
+                return ExitCode::FAILURE;
+            }
+            response = match torro_ipc::client::call(
+                &socket,
+                &Request::MailRestoreApply {
+                    account: command.account.clone(),
+                    plan: plan.id.clone(),
+                    allow_incomplete: command.allow_incomplete,
+                },
+            )
+            .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    eprintln!("{err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+        }
+        let status = show(&response, command.json);
+        match response {
+            Response::MailBackupJob { job }
+                if matches!(job.phase, BackupPhase::Incomplete | BackupPhase::Cancelled) =>
+            {
+                ExitCode::FAILURE
+            }
+            Response::MailBackupVerified { verification } if !verification.complete => ExitCode::FAILURE,
+            Response::MailRestored { restore } if restore.uncertain > 0 => ExitCode::FAILURE,
+            _ => status,
+        }
+    })
 }
 
 /// Turns the arguments (starting with `status` or `ctl`) into a [`Command`].
@@ -601,6 +813,70 @@ mod tests {
     use torro_ipc::Status;
 
     use super::*;
+
+    fn mail(args: &[&str]) -> Result<MailCommand, UsageError> {
+        parse_mail(&args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn mail_backup_cli_parses_automation_options() {
+        let command = mail(&[
+            "backup",
+            "create",
+            "--account",
+            "mail:a@example.org",
+            "--source=local",
+            "--since",
+            "2026-10-20",
+            "--file",
+            "a.zip",
+            "--wait",
+            "--json",
+        ])
+        .unwrap();
+        assert_eq!(
+            command.request,
+            Request::MailBackupCreate {
+                account: "mail:a@example.org".into(),
+                source: BackupScope::Local,
+                since: NaiveDate::from_ymd_opt(2026, 10, 20),
+                file_name: Some("a.zip".into()),
+            }
+        );
+        assert!(command.wait && command.json);
+        assert_eq!(
+            mail(&["backup", "status", "--account", "a", "--job", "j"]).unwrap().request,
+            Request::MailBackupStatus { account: "a".into(), job: "j".into() }
+        );
+        let selected = std::env::temp_dir().join("anna.zip").to_string_lossy().into_owned();
+        assert_eq!(
+            mail(&["backup", "create", "--account", "a", "--file", &selected]).unwrap().request,
+            Request::MailBackupCreate {
+                account: "a".into(),
+                source: BackupScope::Server,
+                since: None,
+                file_name: Some(selected)
+            }
+        );
+    }
+
+    #[test]
+    fn mail_restore_cli_defaults_to_test_run_and_requires_explicit_apply() {
+        let args = ["restore", "--account", "a", "--file", "a.zip"];
+        let plan = mail(&args).unwrap();
+        assert_eq!(plan.request, Request::MailRestorePlan { account: "a".into(), file: "a.zip".into() });
+        assert!(!plan.apply);
+        assert!(mail(&["restore", "--account", "a", "--file", "a.zip", "--apply"]).unwrap().apply);
+        assert!(mail(&["restore", "--account", "a", "--file", "a.zip", "--allow-incomplete"]).is_err());
+        assert!(mail(&["restore", "--account", "a", "--file", "a.zip", "--apply", "--dry-run"]).is_err());
+    }
+
+    #[test]
+    fn mail_cli_rejects_missing_account_and_bad_day() {
+        assert!(mail(&["backup", "create"]).is_err());
+        assert!(mail(&["backup", "create", "--account", "a", "--since", "2026-02-30"]).is_err());
+        assert!(mail(&["backup", "create", "--account", "a", "--wait", "--job", "j"]).is_err());
+    }
 
     fn parse_strs(args: &[&str]) -> Result<Command, UsageError> {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();

@@ -415,13 +415,8 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         return refuse(format!("an id, folder, cursor or attachment part may hold at most {MAX_ID_BYTES} bytes"));
     }
     match request {
-        Request::MailBackupCreate { file_name: Some(file_name), .. }
-            if file_name.is_empty()
-                || file_name.starts_with('.')
-                || !file_name.ends_with(".zip")
-                || file_name.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | ':')) =>
-        {
-            refuse("backup file_name must be a plain .zip base name".into())
+        Request::MailBackupCreate { file_name: Some(file_name), .. } if !valid_backup_filename(file_name) => {
+            refuse("backup file_name must be a plain .zip name or absolute suite path".into())
         }
         Request::SetMailFlags { ids, .. } | Request::MoveMail { ids, .. } | Request::DeleteMail { ids, .. } => {
             if ids.is_empty() {
@@ -455,6 +450,18 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         }
         _ => None,
     }
+}
+
+fn valid_backup_filename(file_name: &str) -> bool {
+    let path = std::path::Path::new(file_name);
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return false };
+    if !path.is_absolute() && name != file_name {
+        return false;
+    }
+    !name.starts_with('.')
+        && name.len() <= 120
+        && name.ends_with(".zip")
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 /// Every id-like text of a mail request, for [`MAX_ID_BYTES`]: its account, messages, folder,
@@ -599,6 +606,16 @@ mod tests {
                 file_name: Some(file_name.into()),
             }));
         }
+        let absolute = std::env::temp_dir().join("backup.zip").to_string_lossy().into_owned();
+        assert_eq!(
+            limit_refusal(&Request::MailBackupCreate {
+                account: "mail:anna@example.org".into(),
+                source: BackupScope::Server,
+                since: None,
+                file_name: Some(absolute),
+            }),
+            None
+        );
 
         let long = "m".repeat(MAX_ID_BYTES + 1);
         assert!(refused(&Request::GetMail { id: long.clone(), include_body: true, include_html: false }));

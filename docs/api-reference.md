@@ -1100,9 +1100,9 @@ Pauses or resumes a cache maintenance job by id.
 
 ### `mail.backup_create`
 
-Zugriff `write` · kein MCP-Tool, nur App-Schlüssel
+Zugriff `write` · MCP-Tool `mail_backup_create`
 
-Starts a background ZIP backup of all reachable IMAP mail or complete local originals of one permitted account. The file is written only in the configured backup folder; since includes the given IMAP internal date. Check backup_status before treating it as complete.
+Starts a background ZIP backup of all reachable IMAP mail or complete local originals of one permitted account. A client writes only in the managed folder; the suite key may select an absolute destination. Since includes the given IMAP internal date. Check backup_status before treating it as complete.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1113,7 +1113,7 @@ Starts a background ZIP backup of all reachable IMAP mail or complete local orig
 
 ### `mail.backup_status`
 
-Zugriff `read` · kein MCP-Tool, nur App-Schlüssel
+Zugriff `read` · MCP-Tool `mail_backup_status`
 
 Returns progress and final completeness of one backup job. It changes nothing.
 
@@ -1124,7 +1124,7 @@ Returns progress and final completeness of one backup job. It changes nothing.
 
 ### `mail.backup_cancel`
 
-Zugriff `write` · kein MCP-Tool, nur App-Schlüssel
+Zugriff `write` · MCP-Tool `mail_backup_cancel`
 
 Cancels one running backup job; no cancelled archive is reported as complete.
 
