@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -231,6 +231,16 @@ pub struct FetchedHeader {
     pub has_attachments: bool,
     /// The whole header block, raw (`mime` or `mail-parser` reads it).
     pub header: Vec<u8>,
+}
+
+/// Metadata retained for each backed-up folder occurrence, including every server flag and the
+/// original INTERNALDATE offset. Unlike `FetchedHeader`, this omits derived MIME data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupMessage {
+    pub uid: u32,
+    pub flags: Vec<String>,
+    pub internal_date: DateTime<FixedOffset>,
+    pub bytes: u64,
 }
 
 /// The flags of one message ([`Session::fetch_flags`]).
@@ -476,12 +486,23 @@ impl Session {
     /// [`ImapError::NotFound`] when it does not exist; [`ImapError::Protocol`] when the server
     /// sends no UIDVALIDITY (nothing could be cached safely).
     pub async fn select(&mut self, path: &str) -> Result<Selected, ImapError> {
+        self.open_folder(path, false).await
+    }
+
+    /// Opens a folder read-only for an inventory, backup or restore test run. The server must not
+    /// accept changes through this selected folder, even if a future caller sends one by mistake.
+    pub async fn examine(&mut self, path: &str) -> Result<Selected, ImapError> {
+        self.open_folder(path, true).await
+    }
+
+    async fn open_folder(&mut self, path: &str, read_only: bool) -> Result<Selected, ImapError> {
         self.selected = None;
-        let mut args = vec![Arg::Raw("SELECT"), Arg::Str(path)];
+        let command = if read_only { "EXAMINE" } else { "SELECT" };
+        let mut args = vec![Arg::Raw(command), Arg::Str(path)];
         if self.condstore() {
             args.push(Arg::Raw("(CONDSTORE)"));
         }
-        let data = self.run(&args, "SELECT").await?;
+        let data = self.run(&args, command).await?;
         let mut uid_validity = None;
         let mut selected =
             Selected { path: path.into(), uid_validity: 0, uid_next: None, exists: 0, highest_modseq: None };
@@ -500,7 +521,7 @@ impl Session {
             }
         }
         selected.uid_validity =
-            uid_validity.ok_or_else(|| ImapError::Protocol(format!("SELECT of {path:?} named no UIDVALIDITY")))?;
+            uid_validity.ok_or_else(|| ImapError::Protocol(format!("{command} of {path:?} named no UIDVALIDITY")))?;
         self.selected = Some(selected.clone());
         Ok(selected)
     }
@@ -595,6 +616,61 @@ impl Session {
                 })
             })
             .collect())
+    }
+
+    /// Raw backup metadata without narrowing flags to Torro's ordinary reading set. The caller
+    /// compares returned UIDs with its inventory and treats any missing UID as incomplete.
+    pub async fn fetch_backup_metadata(&mut self, uids: &[u32]) -> Result<Vec<BackupMessage>, ImapError> {
+        self.require_selected()?;
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let set = uid_set(uids);
+        let data = self
+            .run(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw("(UID FLAGS INTERNALDATE RFC822.SIZE)")], "FETCH")
+            .await?;
+        fetched(&data)
+            .map(|item| {
+                let flags = item
+                    .get("FLAGS")
+                    .and_then(Token::list)
+                    .ok_or_else(|| ImapError::Protocol("backup FETCH named no FLAGS".into()))?
+                    .iter()
+                    .map(|token| token.text().ok_or_else(|| ImapError::Protocol("invalid backup flag".into())))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let internal_date = item
+                    .get("INTERNALDATE")
+                    .and_then(Token::text)
+                    .and_then(|value| DateTime::parse_from_str(value.trim(), "%d-%b-%Y %H:%M:%S %z").ok())
+                    .ok_or_else(|| ImapError::Protocol("backup FETCH named no valid INTERNALDATE".into()))?;
+                let bytes = item
+                    .get("RFC822.SIZE")
+                    .and_then(Token::number)
+                    .ok_or_else(|| ImapError::Protocol("backup FETCH named no valid RFC822.SIZE".into()))?;
+                Ok(BackupMessage { uid: item.uid, flags, internal_date, bytes })
+            })
+            .collect()
+    }
+
+    /// Returns at most 64 KiB of original RFC-822 bytes via IMAP partial `BODY.PEEK[]`. A server
+    /// that omits the requested item is reported as a vanished message by the backup caller.
+    pub async fn fetch_backup_chunk(
+        &mut self,
+        uid: u32,
+        offset: u64,
+        count: usize,
+    ) -> Result<Option<Vec<u8>>, ImapError> {
+        self.require_selected()?;
+        if count == 0 || count > LITERAL_CHUNK || offset.checked_add(count as u64).is_none() {
+            return Err(ImapError::Protocol("invalid backup chunk range".into()));
+        }
+        let set = uid.to_string();
+        let item = format!("(UID BODY.PEEK[]<{offset}.{count}>)");
+        let returned = format!("BODY[]<{offset}>");
+        let data = self.run(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw(&item)], "FETCH").await?;
+        Ok(fetched(&data)
+            .filter(|item| item.uid == uid)
+            .find_map(|item| item.get(&returned).and_then(Token::bytes).map(<[u8]>::to_vec)))
     }
 
     /// The flags of every message in the open folder (`UID FETCH 1:* (UID FLAGS)`), or, with

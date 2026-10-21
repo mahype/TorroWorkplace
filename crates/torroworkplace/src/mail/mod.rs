@@ -40,7 +40,6 @@ use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
-#[allow(dead_code, reason = "archive publication is wired to backup jobs in MB.3")]
 pub mod backup;
 pub mod fold;
 pub mod inbox_feed;

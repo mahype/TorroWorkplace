@@ -43,6 +43,7 @@ use crate::audit::Audit;
 use crate::categorize;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
+use crate::mail::backup::{BackupJobs, BackupRunError};
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
@@ -1682,6 +1683,8 @@ pub struct Core {
     /// ([`MailService::system`]), loaded only by [`Core::start`]; tests use their own, and one
     /// without a home directory unless they bring it ([`MailService::without_home`]).
     mail: Arc<MailService>,
+    /// Progress and cancellation for archive jobs in this core process.
+    backup_jobs: BackupJobs,
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
@@ -1769,6 +1772,7 @@ impl Core {
             ai: Arc::new(AiAccounts::system()),
             ntfy: Arc::new(NtfyAccounts::system()),
             mail,
+            backup_jobs: BackupJobs::default(),
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
             settle_done: crate::sources::settle_done,
@@ -3987,11 +3991,41 @@ impl Core {
                 }
                 Err(response) => response,
             },
-            Request::MailBackupCreate { .. }
-            | Request::MailBackupStatus { .. }
-            | Request::MailBackupCancel { .. }
-            | Request::MailRestorePlan { .. }
-            | Request::MailRestoreApply { .. } => Response::Error {
+            Request::MailBackupCreate { account, source, since, file_name } => match self.mail.config(&account).await {
+                Err(error) => error.response(),
+                Ok(_) => match crate::mail::MailDirs::for_workplace() {
+                    None => Response::Error {
+                        code: "error".into(),
+                        message: tr("Mail cannot be kept on this device.").into(),
+                    },
+                    Some(dirs) => {
+                        match self.backup_jobs.start(Arc::clone(&self.mail), dirs, account, source, since, file_name) {
+                            Ok(job) => Response::MailBackupJob { job },
+                            Err(BackupRunError::Busy) => Response::Error {
+                                code: "busy".into(),
+                                message: tr("A backup for this mail account is already running.").into(),
+                            },
+                            Err(_) => Response::Error {
+                                code: "error".into(),
+                                message: tr("Mail backup could not be started.").into(),
+                            },
+                        }
+                    }
+                },
+            },
+            Request::MailBackupStatus { account, job } => match self.backup_jobs.status(&account, &job) {
+                Some(job) => Response::MailBackupJob { job },
+                None => {
+                    Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
+                }
+            },
+            Request::MailBackupCancel { account, job } => match self.backup_jobs.cancel(&account, &job) {
+                Some(job) => Response::MailBackupJob { job },
+                None => {
+                    Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
+                }
+            },
+            Request::MailRestorePlan { .. } | Request::MailRestoreApply { .. } => Response::Error {
                 code: "unsupported".into(),
                 message: tr("Mail backup or restore is not available yet.").into(),
             },
@@ -17956,6 +17990,8 @@ mod tests {
         let ollama = fake_ollama().await;
         let script = Script::new(Vec::new());
         let mut rights = Rights::assistant();
+        // Keep this test below the model's tool cap so it exercises the PDF switch itself.
+        rights.areas.clear();
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let (core, _host, engine, client) =

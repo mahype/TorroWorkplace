@@ -10,8 +10,12 @@ Entwurf liegt unter [prototypes/mail-backup/index.html](prototypes/mail-backup/i
 Ein Backup umfasst eine gewählte Quelle und optional alle Nachrichten ab einem Kalendertag
 (einschließlich, anhand von IMAP `INTERNALDATE`). Ohne Datum gilt die ganze Quelle. „Server“
 meint alle erreichbaren, auswählbaren IMAP-Ordner und ihre Nachrichten; `\All` und andere
-virtuelle Sammelansichten werden nicht noch einmal als Ordnerinhalt gesichert. Eine Nachricht
-in zwei echten Ordnern ergibt zwei wiederherstellbare Ordnerzuordnungen. Nicht auswählbare
+virtuelle Sammelansichten werden zuletzt gelesen, damit Nachrichten, die nur dort liegen,
+erhalten bleiben. Jede UID wird als Ordnerzuordnung archiviert, auch in `\All`: Aus
+bytegleichen Rohdaten allein lässt sich nicht beweisen, ob zwei UIDs dieselbe Mail oder
+eigenständige Exemplare sind. Die Zähler meinen daher Ordner-Einträge; eine virtuelle
+Sammelansicht kann darin zusätzliche Kopien enthalten. Beim Restore muss die Zuordnung
+dieser Ansicht bewusst geprüft werden. Nicht auswählbare
 Ordner werden im Manifest mit Grund erfasst; wenn dort Nachrichten vermutet werden, ist die
 Vollständigkeit unklar und niemals stillschweigend „100 %“.
 
@@ -119,13 +123,17 @@ bekannt unvollständige Quelle oder ein abgebrochener Lauf wird nicht als finale
 veröffentlicht. Die temporäre Datei liegt im privaten Backup-Ordner und wird bei Fehlern
 entfernt; ein vorhandener Zielname wird nie überschrieben.
 
-Die Backup-Engine zählt Ordner und UIDs, liest Originalbytes ohne `\Seen` zu setzen,
-streamt große Literale statt der aktuellen 100-MiB-Grenze und berechnet SHA-256 während
-des Schreibens. Sie liest Flags/Keywords und `INTERNALDATE` pro Nachricht. Ein begrenztes
-Schlussinventar prüft UID-Bestand und `UIDVALIDITY` erneut. Ein vollständiges Archiv wird
-offline nochmals gegen die im ZIP gespeicherten Hashes geprüft. Fortschritt nennt Ordner,
-Nachrichten und Bytes; Abbruch hinterlässt keine fertig benannte Datei. `verify` benötigt
-weder Kontozugang noch Netzwerk.
+Die Serverquelle (MB.3) liest die Ordnerliste und öffnet jeden auswählbaren Ordner mit
+`EXAMINE`. Sie ermittelt zuerst alle UIDs, holt Flags, Keywords, `INTERNALDATE` und
+`RFC822.SIZE` und liest die Originalbytes über `UID FETCH BODY.PEEK[]<offset.count>` in
+höchstens 64-KiB-Stücken. Der inklusive Datumsfilter verwendet das tatsächliche
+`INTERNALDATE` mit seiner Zeitzone. Nach jedem Ordner prüft sie UIDVALIDITY und UID-Liste,
+holt neue UIDs höchstens zweimal nach und bricht bei verschwundenen Nachrichten oder
+fortlaufender Änderung ab. Nach dem letzten Ordner vergleicht sie die gesamte Ordnerliste
+und alle auswählbaren UID-Inventare erneut. Ein solcher Abbruch veröffentlicht keine fertige
+Datei. Das archivierte UID-Inventar wird mit den geschriebenen EML-Einträgen verglichen;
+ein vollständiges Archiv wird zusätzlich offline gegen seine Hashes geprüft. Der Job meldet
+Zähler, Phase und Abbruchstatus; `verify` benötigt weder Kontozugang noch Netzwerk.
 
 ## Testlauf und Restore
 

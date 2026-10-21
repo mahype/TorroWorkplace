@@ -627,6 +627,7 @@ pub(crate) mod fake {
         changes: watch::Sender<u64>,
         /// Counts cuts; every open connection ends on one.
         cuts: watch::Sender<u64>,
+        backup_change: Arc<Mutex<Option<(String, String)>>>,
     }
 
     impl FakeImap {
@@ -660,6 +661,7 @@ pub(crate) mod fake {
                 world: Arc::new(Mutex::new(world)),
                 changes: watch::Sender::new(0),
                 cuts: watch::Sender::new(0),
+                backup_change: Arc::new(Mutex::new(None)),
             };
             let accepting = server.clone();
             tokio::spawn(async move {
@@ -705,6 +707,11 @@ pub(crate) mod fake {
             };
             self.changed();
             uid
+        }
+
+        /// Injects an incoming message when the next backup body chunk is served.
+        pub(crate) fn add_on_backup_chunk(&self, folder: &str, raw: &str) {
+            *self.backup_change.lock().expect("backup change") = Some((folder.into(), raw.into()));
         }
 
         /// Sets the flags of message `uid` in `folder`, as another mail program would.
@@ -852,14 +859,22 @@ pub(crate) mod fake {
                     }
                     "NAMESPACE" => format!("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n{tag} OK done"),
                     "LIST" => self.list(&tag),
-                    "SELECT" => {
-                        let path = quoted(&rest["SELECT ".len()..]);
+                    "SELECT" | "EXAMINE" => {
+                        let path = quoted(&rest[command.len() + 1..]);
                         seen = *changes.borrow_and_update();
-                        let answer = self.select(&tag, &path);
+                        let answer = self.select(&tag, &path, command == "EXAMINE");
                         selected = Some(path);
                         answer
                     }
-                    "UID" => self.uid(&tag, &rest["UID ".len()..], selected.as_deref()),
+                    "UID" => {
+                        let answer = self.uid(&tag, &rest["UID ".len()..], selected.as_deref());
+                        if rest.contains("BODY.PEEK[]<")
+                            && let Some((folder, raw)) = self.backup_change.lock().expect("backup change").take()
+                        {
+                            self.add(&folder, &raw, &[]);
+                        }
+                        answer
+                    }
                     "STATUS" => self.status(&tag, &quoted(&rest["STATUS ".len()..])),
                     "EXPUNGE" => self.expunge_deleted(&tag, selected.as_deref()),
                     "APPEND" => match self.append(&mut reader, &mut writer, &tag, &rest).await {
@@ -931,12 +946,13 @@ pub(crate) mod fake {
             lines.join("\r\n")
         }
 
-        fn select(&self, tag: &str, path: &str) -> String {
+        fn select(&self, tag: &str, path: &str, read_only: bool) -> String {
             let mut world = self.world();
             let folder = world.folder(path);
+            let mode = if read_only { "READ-ONLY" } else { "READ-WRITE" };
             format!(
                 "* {} EXISTS\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] Next\r\n\
-                 * OK [HIGHESTMODSEQ {}] Highest\r\n{tag} OK [READ-WRITE] Select completed",
+                 * OK [HIGHESTMODSEQ {}] Highest\r\n{tag} OK [{mode}] Select completed",
                 folder.messages.len(),
                 folder.uidvalidity,
                 folder.next_uid,
@@ -1123,9 +1139,20 @@ pub(crate) mod fake {
                  BODY[HEADER] {{{}}}\r\n{header})",
                 message.uid, message.modseq, end
             )
+        } else if let Some(part) = items.split("BODY.PEEK[]<").nth(1) {
+            let (offset, count) =
+                part.trim_end_matches(")").trim_end_matches('>').split_once('.').expect("partial range");
+            let offset: usize = offset.parse().expect("partial offset");
+            let count: usize = count.parse().expect("partial count");
+            let end = offset.saturating_add(count).min(size);
+            let raw = String::from_utf8_lossy(message.raw.get(offset..end).unwrap_or_default());
+            format!("* {seq} FETCH (UID {} BODY[]<{offset}> {{{}}}\r\n{raw})", message.uid, raw.len())
         } else if items.contains("BODY.PEEK[]") {
             let raw = String::from_utf8_lossy(&message.raw);
             format!("* {seq} FETCH (UID {} BODY[] {{{size}}}\r\n{raw})", message.uid)
+        } else if items.contains("INTERNALDATE") && items.contains("RFC822.SIZE") {
+            let date = message.received.format("%d-%b-%Y %H:%M:%S +0000");
+            format!("* {seq} FETCH (UID {} FLAGS ({flags}) INTERNALDATE \"{date}\" RFC822.SIZE {size})", message.uid)
         } else {
             format!("* {seq} FETCH (UID {} FLAGS ({flags}) MODSEQ ({}))", message.uid, message.modseq)
         }

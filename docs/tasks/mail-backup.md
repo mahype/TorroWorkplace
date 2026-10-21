@@ -53,11 +53,16 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
 
 ### MB.3 Serverquelle vollständig lesen
 
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MB.2 · **Dateien:**
   `crates/torro-mail-imap/src/{imap,lib}.rs`, `crates/torro-mail-imap/tests/{imap,imap_support/**}.rs`,
   `crates/torroworkplace/src/mail/{backup,mod}.rs`, `crates/torroworkplace/src/{core,mcp}.rs`,
-  `docs/mail-backup.md`
+  `docs/mail-backup.md`. **Freigegebene technische Ergänzungen:**
+  `crates/torro-core/src/i18n/de.rs` (neue Meldungen und doppelter Basiseintrag),
+  `crates/torroworkplace/src/mail/sync.rs` (instrumentierter IMAP-Testserver),
+  `crates/torro-ipc/src/api.rs` (Katalogtests nach #263),
+  `crates/torroinbox/src/app.rs` (Rebase-Testwert),
+  `crates/torroworkplace/src/{inbox,mail/read}.rs` (Baseline-Testregressionen).
 - Read-only Ordnerinventar und UID-Suche, `BODY.PEEK[]` in begrenzten Blöcken,
   `INTERNALDATE`, alle übertragbaren Flags/Keywords. `\All`-Doppelzählung vermeiden,
   Datum inklusiv und nach tatsächlichem `INTERNALDATE` filtern. Schlussinventar mit

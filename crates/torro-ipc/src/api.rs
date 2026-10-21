@@ -1750,6 +1750,12 @@ pub static CATALOGUE: &[&Command] = &[
     &GET_QUIET,
     &LIST_FOLDERS,
     &ACCOUNT_STATS,
+    &GET_CACHE_POLICY,
+    &SET_CACHE_POLICY,
+    &PREVIEW_CACHE,
+    &START_CACHE_JOB,
+    &CACHE_JOB_STATUS,
+    &CONTROL_CACHE_JOB,
     &MAIL_BACKUP_CREATE,
     &MAIL_BACKUP_STATUS,
     &MAIL_BACKUP_CANCEL,
@@ -4291,6 +4297,13 @@ mod tests {
             Request::ClassifyItem { id: "i1".into() },
             Request::GetCategorization,
             Request::CatchUpCategories { cancel: false, again: false },
+            Request::PreviewCategoryJob { scope: crate::inbox::CategoryJobScope::default() },
+            Request::StartCategoryJob { scope: crate::inbox::CategoryJobScope::default() },
+            Request::GetCategoryJob { id: None },
+            Request::ControlCategoryJob { id: "job-1".into(), action: crate::inbox::CategoryJobControl::Pause },
+            Request::PreviewClearCategories,
+            Request::ClearCategories { all_accounts: true, disable_automatic: false },
+            Request::ControlClearCategories { id: "job-1".into(), action: crate::inbox::CategoryJobControl::Resume },
             Request::CreateCategory {
                 group: torro_mail::CategoryGroup::PaperTrail,
                 name: "Tax".into(),
@@ -4363,6 +4376,25 @@ mod tests {
             },
             Request::MailFolders { account: None },
             Request::MailAccountStats { account: None },
+            Request::GetMailCachePolicy { account: "mail:anna@mailbox.org".into() },
+            Request::SetMailCachePolicy {
+                policy: crate::mail::MailCachePolicy {
+                    account: "mail:anna@mailbox.org".into(),
+                    mode: crate::mail::MailCacheMode::Recent90Days,
+                    prefetch_attachments: false,
+                    attachment_retention_days: 1,
+                },
+            },
+            Request::PreviewMailCache {
+                account: "mail:anna@mailbox.org".into(),
+                mode: crate::mail::MailCacheMode::AllOffline,
+            },
+            Request::StartMailCacheJob {
+                account: "mail:anna@mailbox.org".into(),
+                action: crate::mail::MailCacheAction::ApplyPolicy,
+            },
+            Request::MailCacheJobStatus { account: "mail:anna@mailbox.org".into() },
+            Request::ControlMailCacheJob { account: "mail:anna@mailbox.org".into(), id: "job-1".into(), resume: false },
             Request::MailBackupCreate {
                 account: "mail:anna@mailbox.org".into(),
                 source: crate::mail::BackupScope::Server,
@@ -5724,6 +5756,13 @@ mod tests {
                 "inbox.classify_item",
                 "inbox.get_categorization",
                 "inbox.catch_up_categories",
+                "inbox.preview_category_job",
+                "inbox.start_category_job",
+                "inbox.get_category_job",
+                "inbox.control_category_job",
+                "inbox.preview_clear_categories",
+                "inbox.clear_categories",
+                "inbox.control_clear_categories",
                 "inbox.create_category",
                 "inbox.update_category",
                 "inbox.remove_category",
@@ -6073,7 +6112,7 @@ mod tests {
 
         let mail: Vec<&str> = CATALOGUE.iter().filter(|c| c.area == Area::Mail).map(|c| c.name).collect();
         // Issue #136: mail.index_status reads how far the search index is.
-        assert_eq!(mail.len(), 18);
+        assert_eq!(mail.len(), 25);
         assert_eq!(INDEX_STATUS.access, Access::Read);
         assert!(
             CATALOGUE

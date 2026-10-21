@@ -1334,6 +1334,9 @@ pub(crate) mod tests {
         let id = id_of(&service, "Old news").await;
         let stored = message(answer(&service, Reach::Suite, get(&id, false)).await);
         assert_eq!(stored.text, None, "older than 90 days: not kept ahead");
+        let mut policy = service.cache_policy(ANNA).await.expect("cache policy");
+        policy.mode = torro_ipc::mail::MailCacheMode::AllOffline;
+        service.set_cache_policy(policy).await.expect("keep fetched originals offline");
 
         let read = message(answer(&service, Reach::Suite, get(&id, true)).await);
         assert_eq!(read.text.as_deref(), Some("From long ago\n"));

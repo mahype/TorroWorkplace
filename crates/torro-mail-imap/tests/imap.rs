@@ -38,6 +38,48 @@ async fn connect(server: &Server) -> Session {
     Session::connect(&server.endpoint, LOGIN, &Secret::new(PASSWORD), &trust()).await.expect("signed in")
 }
 
+#[tokio::test]
+async fn backup_reads_exact_original_in_read_only_bounded_parts() {
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid"),
+        send("a2 OK [READ-ONLY] opened"),
+        expect("a3 UID SEARCH ALL"),
+        send("* SEARCH 7"),
+        send("a3 OK searched"),
+        expect("a4 UID FETCH 7 (UID FLAGS INTERNALDATE RFC822.SIZE)"),
+        send("* 1 FETCH (UID 7 FLAGS (\\Seen $Custom \\Draft) INTERNALDATE \"20-Oct-2026 09:00:00 -0700\" RFC822.SIZE 9)"),
+        send("a4 OK metadata"),
+        expect("a5 UID FETCH 7 (UID BODY.PEEK[]<0.4>)"),
+        send("* 1 FETCH (UID 7 BODY[]<0> {4}\r\nABCD)"),
+        send("a5 OK part"),
+        expect("a6 UID FETCH 7 (UID BODY.PEEK[]<4.4>)"),
+        send("* 1 FETCH (UID 7 BODY[]<4> {4}\r\nEFGH)"),
+        send("a6 OK part"),
+        expect("a7 UID FETCH 7 (UID BODY.PEEK[]<8.1>)"),
+        send("* 1 FETCH (UID 7 BODY[]<8> {1}\r\nI)"),
+        send("a7 OK part"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    assert_eq!(session.examine("INBOX").await.expect("read-only folder").uid_validity, 42);
+    assert_eq!(session.uid_search(&Search::All).await.expect("inventory"), [7]);
+    let metadata = session.fetch_backup_metadata(&[7]).await.expect("metadata");
+    assert_eq!(metadata.len(), 1);
+    assert_eq!(metadata[0].uid, 7);
+    assert_eq!(metadata[0].bytes, 9);
+    assert_eq!(metadata[0].flags, ["\\Seen", "$Custom", "\\Draft"]);
+    assert_eq!(metadata[0].internal_date.offset().local_minus_utc(), -7 * 3600);
+    let mut original = Vec::new();
+    for (offset, length) in [(0, 4), (4, 4), (8, 1)] {
+        original.extend(session.fetch_backup_chunk(7, offset, length).await.expect("part").expect("message exists"));
+    }
+    assert_eq!(original, b"ABCDEFGHI");
+    let received = server.received().await;
+    assert!(!received.iter().any(|line| line.contains("SELECT ") || line.contains("STORE ")));
+}
+
 fn roles(list: &FolderList) -> Vec<(Role, &str, &str)> {
     let mut roles: Vec<_> =
         list.folders.iter().filter_map(|f| Some((f.role?, f.path.as_str(), f.name.as_str()))).collect();

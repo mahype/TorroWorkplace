@@ -2106,6 +2106,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Backup archive is not available for this account.", "Das Backup-Archiv ist für dieses Konto nicht verfügbar."),
     ("Backup archive failed verification.", "Die Prüfung des Backup-Archivs ist fehlgeschlagen."),
     ("Mail backup or restore is not available yet.", "Mail-Backup oder Wiederherstellung ist noch nicht verfügbar."),
+    ("A backup for this mail account is already running.", "Für dieses Mail-Konto läuft bereits ein Backup."),
+    ("Backup job is not available.", "Der Backup-Auftrag ist nicht verfügbar."),
+    ("Mail backup could not be started.", "Das Mail-Backup konnte nicht gestartet werden."),
+    ("Mail backup could not be completed.", "Das Mail-Backup konnte nicht abgeschlossen werden."),
+    (
+        "Mail backup is incomplete because the source changed.",
+        "Das Mail-Backup ist unvollständig, weil sich die Quelle geändert hat.",
+    ),
+    ("Mail backup was cancelled.", "Das Mail-Backup wurde abgebrochen."),
     // Mail rights on the agents page (M3.4)
     ("Always", "Immer"),
     ("Ask me each time", "Jedes Mal fragen"),
@@ -3956,7 +3965,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Time span", "Zeitraum"),
     ("All known mail", "Alle bekannten E-Mails"),
     ("Last 30 days", "Letzte 30 Tage"),
-    ("Last 90 days", "Letzte 90 Tage"),
     ("Last year", "Letztes Jahr"),
     ("Recheck model categories", "Modellkategorien erneut prüfen"),
     ("Manual choices and sorting rules remain protected.", "Manuelle Zuordnungen und Sortierregeln bleiben geschützt."),
