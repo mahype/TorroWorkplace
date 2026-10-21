@@ -2540,6 +2540,27 @@ pub fn card<'a, M: Clone + 'a>(parts: Vec<Element<'a, M>>, selected: bool, on_pr
     }
 }
 
+/// A clickable card with a reserved mark slot inside its left padding. Mail cards use the slot
+/// for the unread dot; an empty mark keeps read cards at precisely the same width and height.
+/// The mark belongs to the card button, so its hover and click area is continuous.
+pub fn card_with_inset_mark<'a, M: Clone + 'a>(
+    parts: Vec<Element<'a, M>>,
+    selected: bool,
+    on_press: M,
+    mark: Element<'a, M>,
+) -> Element<'a, M> {
+    let pad = layout::panel_padding();
+    let head_height = size::avatar().max(typo::line_height(typo::body_strong()) + typo::line_height(typo::meta()));
+    let slot = container(mark).width(pad.left).height(head_height).align_x(iced::Center).align_y(iced::Center);
+    let content = row![slot, column(parts).spacing(size::card_gap()).width(Fill)].align_y(Alignment::Start);
+    button(content)
+        .width(Fill)
+        .padding(Padding { left: 0.0, ..pad })
+        .style(card_style(selected))
+        .on_press(on_press)
+        .into()
+}
+
 /// The look of a [`card`]: `raised` with a `line_strong` frame at rest, `line_selected` on hover,
 /// `selected` with `line_selected` when pressed or `selected` – the states of a framed button
 /// (`style::button::secondary`), with the card's radius.

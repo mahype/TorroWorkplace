@@ -1393,8 +1393,11 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
         ]
     };
     let on_press = Message::Select(item.id.clone());
-    let card = widgets::card(parts, selected, Some(on_press.clone()));
-    let card = if mail { list::mail_card_mark(card, unread, on_press) } else { card };
+    let card = if mail {
+        list::mail_card_mark(parts, selected, unread, on_press)
+    } else {
+        widgets::card(parts, selected, Some(on_press))
+    };
     if selected { widgets::anchored(&data.rows.anchors.row, card) } else { card }
 }
 

@@ -73,7 +73,7 @@ use std::ops::Range;
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    button, center, column, container, mouse_area, responsive, row, rule, scrollable, space as blank, stack, svg,
+    button, center, column, container, mouse_area, responsive, row, rule, scrollable, space as blank, svg,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
 use torro_core::i18n::{tr, trf};
@@ -623,19 +623,18 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     if !chips.is_empty() {
         parts.push(container(widgets::chip_row(chips)).center_y(size::control_sm()).clip(true).into());
     }
-    mail_card_mark(widgets::card(parts, selected, Some(on_press.clone())), new, on_press)
+    mail_card_mark(parts, selected, new, on_press)
 }
 
-/// Place the unread marker over the card's existing left inset. The marker receives the same
-/// click as the card, so it does not leave a dead area in the card's hit target.
-pub(crate) fn mail_card_mark<'a>(card: Element<'a, Message>, unread: bool, on_press: Message) -> Element<'a, Message> {
-    if !unread {
-        return card;
-    }
-    let pad = layout::panel_padding();
-    let marker = container(unread_dot()).center_x(pad.left).center_y(size::avatar());
-    let overlay = mouse_area(column![blank().height(pad.top), marker]).on_press(on_press);
-    stack![card, overlay].into()
+/// Build either read state with the same left slot inside the card's button.
+pub(crate) fn mail_card_mark<'a>(
+    parts: Vec<Element<'a, Message>>,
+    selected: bool,
+    unread: bool,
+    on_press: Message,
+) -> Element<'a, Message> {
+    let marker = if unread { unread_dot() } else { blank().into() };
+    widgets::card_with_inset_mark(parts, selected, on_press, marker)
 }
 
 /// The height of a mail card ([`mail_card`]) with `preview` lines of preview ([`preview_lines`]),
