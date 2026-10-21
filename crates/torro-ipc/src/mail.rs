@@ -12,6 +12,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use torro_core::i18n::tr;
 use torro_mail::{DraftAttachment, Folder, Role};
 
 use crate::{Request, Response};
@@ -416,7 +417,7 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
     }
     match request {
         Request::MailBackupCreate { file_name: Some(file_name), .. } if !valid_backup_filename(file_name) => {
-            refuse("backup file_name must be a plain .zip name or absolute suite path".into())
+            refuse(tr("Backup file name must be a plain .zip name or absolute app path.").into())
         }
         Request::SetMailFlags { ids, .. } | Request::MoveMail { ids, .. } | Request::DeleteMail { ids, .. } => {
             if ids.is_empty() {

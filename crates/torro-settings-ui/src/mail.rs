@@ -109,9 +109,14 @@ pub fn escape(state: &State) -> Option<Message> {
 
 /// The answer of a one-off preview request for the currently selected sorting scope.
 pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
-    accounts::answered(&mut state.accounts, answer);
     categorization::answered(&mut state.categorization, answer);
     storage::answered(&mut state.storage, answer);
+}
+
+/// Backup answers carry their originating account, so another section's pending answer cannot
+/// consume a backup job and a job remains visible after switching between mail accounts.
+pub fn backup_answered(state: &mut State, account: &str, answer: &Result<torro_ipc::Response, String>) {
+    accounts::backup_answered(&mut state.accounts, account, answer);
 }
 
 pub fn poll_request(state: &mut State) -> Option<torro_ipc::Request> {
@@ -159,6 +164,7 @@ pub mod accounts {
         folders_expanded: bool,
         backup: backup::State,
         backup_account: Option<String>,
+        backup_others: BTreeMap<String, backup::State>,
     }
 
     /// What a row of this section reports.
@@ -239,13 +245,13 @@ pub mod accounts {
                 // the list stays, and a press after the next load opens it.
                 if let Some(mail) = mail_of(data, &id) {
                     if state.backup_account.as_deref() != Some(id.as_str()) {
-                        state.backup = backup::State::from_preferences(&mail.settings.backup);
-                        state.backup_account = Some(id.clone());
-                    } else {
-                        let saved = backup::State::from_preferences(&mail.settings.backup);
-                        state.backup.source = saved.source;
-                        state.backup.since = saved.since;
-                        state.backup.destination = saved.destination;
+                        if let Some(previous) = state.backup_account.replace(id.clone()) {
+                            state.backup_others.insert(previous, std::mem::take(&mut state.backup));
+                        }
+                        state.backup = state
+                            .backup_others
+                            .remove(&id)
+                            .unwrap_or_else(|| backup::State::from_preferences(&mail.settings.backup));
                     }
                     state.draft = Some(Draft::new(&id, mail));
                     state.folders_expanded = false;
@@ -289,8 +295,12 @@ pub mod accounts {
         }
     }
 
-    pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
-        backup::answered(&mut state.backup, answer);
+    pub fn backup_answered(state: &mut State, account: &str, answer: &Result<torro_ipc::Response, String>) {
+        if state.backup_account.as_deref() == Some(account) {
+            backup::answered(&mut state.backup, answer);
+        } else if let Some(saved) = state.backup_others.get_mut(account) {
+            backup::answered(saved, answer);
+        }
     }
 
     pub fn poll_request(state: &mut State) -> Option<Request> {
@@ -1199,6 +1209,48 @@ mod tests {
         let _: Action<()> =
             update(&mut state, Message::Accounts(accounts::Message::Open("mail:anna@example.org".into())), &data);
         assert!(page(&state, &data, "accounts").sub_page.is_some());
+    }
+
+    #[test]
+    fn backup_answer_returns_to_the_account_that_started_the_job() {
+        use torro_ipc::mail::{BackupJob, BackupPhase, BackupScope};
+
+        let anna = "mail:anna@example.org";
+        let bernd = "mail:bernd@example.org";
+        let data = Data {
+            accounts: vec![
+                accounts::tests::account("anna@example.org", "Anna", None),
+                accounts::tests::account("bernd@example.org", "Bernd", None),
+            ],
+            ..Data::default()
+        };
+        let mut state = State::default();
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        let action: Action<()> =
+            update(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data);
+        assert!(matches!(action, Action::Ask(torro_ipc::Request::MailBackupCreate { .. })));
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(bernd.into())), &data);
+        let job = BackupJob {
+            id: "job-anna".into(),
+            account: anna.into(),
+            source: BackupScope::Server,
+            phase: BackupPhase::Reading,
+            folders: 1,
+            messages: 2,
+            bytes: 32,
+            archive: None,
+            warnings: Vec::new(),
+        };
+        backup_answered(&mut state, anna, &Ok(torro_ipc::Response::MailBackupJob { job }));
+        assert!(accounts::poll_request(&mut state.accounts).is_none(), "Bernd's page has no Anna job");
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        assert!(
+            matches!(accounts::poll_request(&mut state.accounts), Some(torro_ipc::Request::MailBackupStatus { job, .. }) if job == "job-anna")
+        );
+        assert_eq!(
+            update::<()>(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data),
+            Action::None
+        );
     }
 
     /// The sections' ids and names, as the list and `--settings <section>` use them. "Keyboard

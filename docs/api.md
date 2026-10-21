@@ -196,11 +196,19 @@ verspricht nur eine Prüfung der Datei zum Zeitpunkt des Aufrufs.
 
 `mail.backup_create` (`Write`), `mail.backup_status` (`Read`) und
 `mail.backup_cancel` (`Write`) starten und steuern die Sicherung eines Kontos.
+Status und Abbruch eines Client-Auftrags sind nur mit dem erzeugenden Client-Schlüssel
+sichtbar; andere Client-Schlüssel erhalten `not-found`. Der App-Schlüssel kann jeden
+Auftrag des Kontos sehen und abbrechen.
 `mail.restore_plan` (`Read`) verifiziert das Archiv und liest den Zielserver ausschließlich
 mit read-only IMAP-Befehlen. Der Testlauf erstellt auch lokal kein Journal.
 `mail.restore_apply` (`Admin`, mit gesonderter Freigabe für das Zielkonto) nimmt nur eine
 noch gültige Plan-ID desselben Kontos an, verifiziert das Archiv erneut und prüft den
-Zielbestand vor dem Schreiben. Unvollständige Archive brauchen `allow_incomplete: true`.
+Zielbestand vor dem Schreiben. Der beim Testlauf vorhandene Zielbestand darf zwischen
+Plan und Anwendung weder Ordner noch Nachrichten verlieren oder seine UIDVALIDITY
+wechseln; die tatsächlich erforderlichen Schreibvorgänge dürfen den genehmigten
+Umfang nicht überschreiten. Die Freigabe zeigt Zielkonto, Archiv, Ordner und
+Nachrichtenanzahl aus dem gespeicherten Plan. Unvollständige Archive brauchen
+`allow_incomplete: true` und diese Wahl erscheint in der Freigabe.
 Die Antwort zählt hinzugefügte, übersprungene und unklare Nachrichten; unbestätigte
 Uploads werden journalisiert und nicht blind wiederholt. Ein Client kann keinen
 beliebigen Ausgabe- oder Restore-Pfad setzen; `file_name` ist für ihn nur ein Basisname im

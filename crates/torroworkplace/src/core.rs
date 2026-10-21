@@ -111,7 +111,20 @@ fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Respo
     {
         return Err(not_found());
     }
-    let root = crate::mail::MailDirs::for_workplace().ok_or_else(not_found)?.data.join("backups");
+    let dirs = crate::mail::MailDirs::for_workplace().ok_or_else(not_found)?;
+    backup_file_in_managed_dir(file, &dirs)
+}
+
+fn backup_file_in_managed_dir(file: &str, dirs: &crate::mail::MailDirs) -> Result<PathBuf, Response> {
+    let not_found =
+        || Response::Error { code: "not-found".into(), message: tr("Backup archive is not available.").into() };
+    if dirs.data.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(not_found());
+    }
+    let root = dirs.data.join("backups");
+    if root.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(not_found());
+    }
     let root = root.canonicalize().map_err(|_| not_found())?;
     let path = root.join(file);
     if !path.symlink_metadata().is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink()) {
@@ -2645,6 +2658,14 @@ impl Core {
         {
             return Ok(refused);
         }
+        if let Request::MailBackupStatus { account, job } | Request::MailBackupCancel { account, job } = &request
+            && self.backup_jobs.status(account, job, Some(&id)).is_none()
+        {
+            return Ok(Response::Error {
+                code: "not-found".into(),
+                message: tr("Backup job is not available.").into(),
+            });
+        }
         // Changing mail (task M3.2): message and folder ids in reachable accounts only, a client's
         // own drafts and files from the managed folder (or its own files of the tools' register,
         // issue #225) only; a move into a trash folder is deleting, and the rights are checked
@@ -2899,7 +2920,7 @@ impl Core {
         // Boxed: `handle_within` is a large future, and a client's request can run it again inside
         // (the inbox's quiet asks the core for settings and events); on the stack both no longer
         // fit a test thread's in debug builds.
-        Ok(Box::pin(self.handle_within(request, reach)).await)
+        Ok(Box::pin(self.handle_within_as(request, reach, Some(&id))).await)
     }
 
     /// Whether `operation` from the client `id` would let the assistant drive itself or a bot start a
@@ -3125,6 +3146,23 @@ impl Core {
                 let facts = Facts { mail: Some(mail), ..Facts::default() };
                 fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            (Request::MailRestoreApply { account, plan, allow_incomplete }, _) => {
+                let Some((file, stored)) = self.restore_plans.planned_for(account, plan) else {
+                    return Ok(Response::Error {
+                        code: "not-found".into(),
+                        message: tr("Restore plan is no longer available.").into(),
+                    });
+                };
+                if stored.uncertain > 0 || (!stored.complete_archive && !allow_incomplete) {
+                    return Ok(Response::Error {
+                        code: "conflict".into(),
+                        message: tr("Restore plan needs review: uncertain messages or an incomplete archive.").into(),
+                    });
+                }
+                shown = crate::approvals::restore_details(&stored);
+                let summary = crate::approvals::restore_summary(&file, &stored, *allow_incomplete);
                 (request, None, summary)
             }
             // An answer to an invitation (task E8.3b): planned now as it will run, the calendar the
@@ -3547,7 +3585,7 @@ impl Core {
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
-        Box::pin(self.handle_within(request, reach)).await
+        Box::pin(self.handle_within_as(request, reach, Some(client))).await
     }
 
     /// The name of the client `id` as a person stored it, a bot's as "Bot …" (as approvals say it,
@@ -3603,10 +3641,16 @@ impl Core {
     /// answer is no error), the template keys follow before the answer goes out, so `system.status`
     /// right after tells how they stand (task WS.3).
     pub async fn handle_within(&self, request: Request, reach: Reach<'_>) -> Response {
+        // A quiet-status request may re-enter the core while another handler is waiting. Keep
+        // this wrapper's large future off the small test/runtime thread stack as well.
+        Box::pin(self.handle_within_as(request, reach, None)).await
+    }
+
+    async fn handle_within_as(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         let rebinds = crate::workspace_keys::rebinds_after(&request);
         // Boxed: the answer's future is large, and waiting for the keys after it must not put it on
         // the stack a second time.
-        let response = Box::pin(self.answer_within(request, reach)).await;
+        let response = Box::pin(self.answer_within(request, reach, caller)).await;
         if rebinds && !matches!(response, Response::Error { .. }) {
             self.bind_template_keys().await;
         }
@@ -3614,8 +3658,20 @@ impl Core {
     }
 
     /// [`Core::handle_within`] without the template keys: the answer to `request` itself.
-    async fn answer_within(&self, request: Request, reach: Reach<'_>) -> Response {
+    async fn answer_within(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
         let client = matches!(reach, Reach::Client(_));
+        if client
+            && caller.is_none()
+            && matches!(
+                &request,
+                Request::MailBackupCreate { .. } | Request::MailBackupStatus { .. } | Request::MailBackupCancel { .. }
+            )
+        {
+            return Response::Error {
+                code: "forbidden".into(),
+                message: tr("The backup job caller is not known.").into(),
+            };
+        }
         match request {
             Request::Ping => Response::Pong { version: version(), api: API_VERSION },
             Request::Status => self.status(reach).await,
@@ -4075,6 +4131,7 @@ impl Core {
                                 dirs,
                                 account,
                                 BackupSelection { source, since, filename: file_name, target_dir },
+                                caller.map(str::to_string),
                             ) {
                                 Ok(job) => Response::MailBackupJob { job },
                                 Err(BackupRunError::Busy) => Response::Error {
@@ -4090,13 +4147,13 @@ impl Core {
                     },
                 },
             },
-            Request::MailBackupStatus { account, job } => match self.backup_jobs.status(&account, &job) {
+            Request::MailBackupStatus { account, job } => match self.backup_jobs.status(&account, &job, caller) {
                 Some(job) => Response::MailBackupJob { job },
                 None => {
                     Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
                 }
             },
-            Request::MailBackupCancel { account, job } => match self.backup_jobs.cancel(&account, &job) {
+            Request::MailBackupCancel { account, job } => match self.backup_jobs.cancel(&account, &job, caller) {
                 Some(job) => Response::MailBackupJob { job },
                 None => {
                     Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
@@ -8509,6 +8566,28 @@ mod tests {
         assert_eq!(backup_file_for_verify(selected.to_str().expect("UTF-8 test path"), Reach::Suite), Ok(selected));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn managed_backup_paths_reject_symlinked_parent_directories() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("private root");
+        let elsewhere = tempfile::tempdir().expect("outside root");
+        let outside = elsewhere.path().join("archive.zip");
+        std::fs::write(&outside, b"contents").expect("outside archive");
+        let data = root.path().join("data");
+        std::fs::create_dir(&data).expect("data");
+        symlink(elsewhere.path(), data.join("backups")).expect("symlink backup folder");
+        let dirs = crate::mail::MailDirs::new(&data, &root.path().join("cache"));
+        assert_eq!(code(&backup_file_in_managed_dir("archive.zip", &dirs).expect_err("parent symlink")), "not-found");
+
+        std::fs::remove_file(data.join("backups")).expect("remove symlink");
+        let link_data = root.path().join("link-data");
+        symlink(elsewhere.path(), &link_data).expect("symlink data root");
+        let dirs = crate::mail::MailDirs::new(&link_data, &root.path().join("cache"));
+        assert_eq!(code(&backup_file_in_managed_dir("archive.zip", &dirs).expect_err("data symlink")), "not-found");
+    }
+
     #[test]
     fn only_suite_backup_requests_may_choose_an_absolute_folder() {
         let selected = tempfile::tempdir().expect("selected folder").path().join("archive.zip");
@@ -8565,7 +8644,7 @@ mod tests {
         assert_eq!(preferences.directory.as_deref(), selected.to_str());
         if let Response::MailBackupJob { job } = answer {
             for _ in 0..40 {
-                let phase = core.backup_jobs.status(&account.id, &job.id).expect("job status").phase;
+                let phase = core.backup_jobs.status(&account.id, &job.id, None).expect("job status").phase;
                 if matches!(
                     phase,
                     torro_ipc::mail::BackupPhase::Complete

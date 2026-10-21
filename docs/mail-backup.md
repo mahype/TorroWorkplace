@@ -29,6 +29,11 @@ beim Entfernen veralteter Header geleert; es wird mit dem Konto entfernt. Sein P
 wächst daher bis zur Größe der aufbewahrten Originalnachrichten. Andere Cache-Modi legen
 keine neuen Originale an. Bestehende Header ohne Original werden gezählt und im lokalen
 Backup-Bericht als ausgelassen ausgewiesen. Das Backup holt im Lokal-Modus nichts vom Server.
+Große Originale liest der Offline-Modus ebenfalls in 64-KiB-Teilen und speichert sie ohne
+vollständigen RAM-Puffer. Die SQLite-BLOB-Grenze begrenzt sehr große einzelne lokale Mails;
+überschreitet eine Nachricht diese Grenze, kann ihr lokales Original nicht gespeichert
+werden und der lokale Lückenzähler weist es aus. Das Server-Backup liest auch solche Mails
+direkt per IMAP in Stücken.
 
 „Vollständig“ bedeutet: Alle beim ersten Inventar gefundenen passenden Ordner/UIDs liegen
 nach Integritätsprüfung im Archiv, und ein Schlussinventar hat keine ungeklärte Abweichung.
@@ -138,6 +143,9 @@ und alle auswählbaren UID-Inventare erneut. Ein solcher Abbruch veröffentlicht
 Datei. Das archivierte UID-Inventar wird mit den geschriebenen EML-Einträgen verglichen;
 ein vollständiges Archiv wird zusätzlich offline gegen seine Hashes geprüft. Der Job meldet
 Zähler, Phase und Abbruchstatus; `verify` benötigt weder Kontozugang noch Netzwerk.
+Auch ein Wechsel zwischen nicht auswählbarem und auswählbarem Ordner im Schlussinventar
+verhindert die Veröffentlichung einer fertigen Datei. Im Originaldepot werden später
+geänderte Flags und Keywords beim IMAP-Abgleich aktualisiert.
 
 Die Lokalquelle (MB.4) inventarisiert das Originaldepot seitenweise und liest jede EML
 als höchstens 64-KiB-BLOB-Stücke in eine temporäre Datei. Gespeicherte SHA-256 und Länge
@@ -166,7 +174,12 @@ Zeitpunkt des Testlaufs; vor echtem Schreiben wird es erneut geprüft.
 Der echte Restore validiert vorab erneut und fügt standardmäßig nur hinzu. Er erstellt
 fehlende Ordner nach ausdrücklicher Bestätigung, führt `APPEND` mit den Originalbytes,
 übertragbaren Flags/Keywords und `INTERNALDATE` aus und prüft das Ergebnis. Er löscht
-und überschreibt keine vorhandenen Mails. Die Kombination aus Konto und Manifest-Hash
+und überschreibt keine vorhandenen Mails.
+Der geprüfte Plan bindet Konto, Archiv, Zielordner und Nachrichtenanzahlen. Wird zwischen
+Testlauf und Anwendung ein zuvor vorhandener Ordner oder eine Nachricht entfernt oder
+ändert sich dessen UIDVALIDITY, stoppt Restore vor dem ersten Schreibbefehl. Neue
+Nachrichten im Ziel dürfen den genehmigten Umfang nur verringern.
+Die Kombination aus Konto und Manifest-Hash
 benennt das private Restore-Journal. Vor jedem `APPEND` speichert es den Archiv-Eintrag
 und die zuvor gezählte Anzahl gleicher Rohmails. Erst wenn eine erneute read-only
 Zielprüfung eine zusätzliche Kopie bestätigt, wird der ausstehende Eintrag entfernt.

@@ -1406,6 +1406,52 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
     }
 }
 
+/// The server-side restore plan, never counts or names supplied by the requesting client.
+pub fn restore_summary(file: &str, plan: &torro_ipc::mail::RestorePlan, allow_incomplete: bool) -> String {
+    let archive = Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
+    let account = quote(&plan.account);
+    let archive = quote(archive);
+    let folders = plan.folders_to_create;
+    let messages = plan.messages_to_add;
+    let bytes = plan.bytes_to_add;
+    let mut summary = trf(
+        "Restore {messages} mail messages ({bytes} bytes) from {archive} to {account}; create {folders} folders",
+        &[
+            ("messages", &messages),
+            ("bytes", &bytes),
+            ("archive", &archive),
+            ("account", &account),
+            ("folders", &folders),
+        ],
+    );
+    if !plan.complete_archive && allow_incomplete {
+        summary.push_str(tr("; incomplete archive explicitly accepted"));
+    }
+    summary
+}
+
+pub fn restore_details(plan: &torro_ipc::mail::RestorePlan) -> Vec<String> {
+    let mut details: Vec<String> = plan
+        .folders
+        .iter()
+        .filter(|folder| folder.create || folder.messages_to_add > 0)
+        .take(10)
+        .map(|folder| {
+            let path = quote(&folder.target_path);
+            let messages = folder.messages_to_add;
+            let create = if folder.create { tr("new folder") } else { tr("existing folder") };
+            trf(
+                "{path}: {messages} messages, {create}",
+                &[("path", &path), ("messages", &messages), ("create", &create)],
+            )
+        })
+        .collect();
+    if plan.folders.iter().filter(|folder| folder.create || folder.messages_to_add > 0).count() > 10 {
+        details.push(tr("More folder changes are listed in the restore test result.").into());
+    }
+    details
+}
+
 /// A PDF template as people call it. With a context: "Letter" and "Note" are other words elsewhere
 /// (a letter of the alphabet, a hint), so the German table keeps these as `template|Letter` etc.
 fn template_word(template: torro_ipc::tools::PdfTemplateId) -> &'static str {
@@ -2952,6 +2998,37 @@ pub(crate) mod tests {
         assert_eq!(code, "error");
         assert!(!message.contains("/home/anna") && !message.contains("approvals.json"), "{message}");
         assert!(ApprovalsError::NotFound("x".into()).to_string().contains("\"x\""), "other errors stay as they are");
+    }
+
+    #[test]
+    fn restore_approval_describes_the_stored_plan_and_incomplete_choice() {
+        let plan = torro_ipc::mail::RestorePlan {
+            id: "opaque-plan".into(),
+            account: "mail:anna@example.org".into(),
+            complete_archive: false,
+            folders_to_create: 1,
+            messages_to_add: 3,
+            already_present: 2,
+            uncertain: 0,
+            bytes_to_add: 1234,
+            folders: vec![torro_ipc::mail::RestoreFolderPlan {
+                archive_path: "Projects".into(),
+                target_path: "Projects".into(),
+                create: true,
+                messages_to_add: 3,
+                already_present: 2,
+                uncertain: 0,
+                bytes_to_add: 1234,
+            }],
+            warnings: Vec::new(),
+        };
+        let shown = restore_summary("/private/backups/archive.zip", &plan, true);
+        assert!(shown.contains("archive.zip") && shown.contains("anna@example.org"), "{shown}");
+        assert!(shown.contains('3') && shown.contains("1234") && shown.contains('1'), "{shown}");
+        assert!(shown.contains(tr("; incomplete archive explicitly accepted")), "{shown}");
+        let details = restore_details(&plan);
+        assert_eq!(details.len(), 1);
+        assert!(details[0].contains("Projects") && details[0].contains('3'), "{:?}", details);
     }
 
     /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget

@@ -704,10 +704,12 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
 /// server or the folder was renumbered since the store took it.
 async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
     let mut command = mail.command(&located.account).await.map_err(|err| Box::new(err.response()))?;
-    let raw = peek(command.session(), &located.place).await.map_err(|err| Box::new(err.response()))?;
     let retain = located.store.run(|store| store.cache_policy()).await.map_err(store_failed)?.mode
         == torro_ipc::mail::MailCacheMode::AllOffline;
-    let metadata = if retain && raw.is_some() {
+    if !valid_selection(command.session(), &located.place).await.map_err(|err| Box::new(err.response()))? {
+        return Err(no_message());
+    }
+    let metadata = if retain {
         command
             .session()
             .fetch_backup_metadata(&[located.place.uid])
@@ -718,6 +720,21 @@ async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
     } else {
         None
     };
+    if let Some(item) = metadata.as_ref().filter(|item| item.bytes > super::sync::LARGE_ORIGINAL) {
+        super::sync::retain_large_original(command.session(), &located.store, &located.place, item)
+            .await
+            .map_err(|err| Box::new(err.response()))?;
+        command.release();
+        return Err(Box::new(Response::Error {
+            code: "error".into(),
+            message: tr("This message is too large to display; its original is retained for backup.").into(),
+        }));
+    }
+    let raw = command
+        .session()
+        .fetch_message(located.place.uid)
+        .await
+        .map_err(|err| Box::new(MailError::from(err).response()))?;
     command.release();
     let raw = raw.ok_or_else(no_message)?;
     if let Some(metadata) = metadata {
@@ -739,14 +756,18 @@ async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
 /// `BODY.PEEK[]` of the message at `place`, opening its folder first unless it is open. `None`
 /// when it is gone, or the folder was renumbered since the store took it.
 pub(crate) async fn peek(session: &mut Session, place: &MessageRef) -> Result<Option<Vec<u8>>, MailError> {
+    if !valid_selection(session, place).await? {
+        return Ok(None);
+    }
+    Ok(session.fetch_message(place.uid).await?)
+}
+
+pub(crate) async fn valid_selection(session: &mut Session, place: &MessageRef) -> Result<bool, MailError> {
     let uid_validity = match session.selected() {
         Some(selected) if selected.path == place.folder_path => selected.uid_validity,
         _ => session.select(&place.folder_path).await?.uid_validity,
     };
-    if uid_validity != place.uidvalidity {
-        return Ok(None);
-    }
-    Ok(session.fetch_message(place.uid).await?)
+    Ok(uid_validity == place.uidvalidity)
 }
 
 // ----- invitations (task E8.3b) -----

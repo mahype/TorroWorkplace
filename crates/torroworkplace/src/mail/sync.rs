@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use torro_ipc::mail::MailCacheMode;
 use torro_mail::{Flag, Role};
 use torro_mail_imap::folders;
-use torro_mail_imap::imap::{FetchedHeader, ImapError, Search, Session};
+use torro_mail_imap::imap::{BackupMessage, FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, ReadMessage};
 
 use super::service::{Command, MailChange, MailError, Mailbox, SharedStore};
@@ -48,6 +48,13 @@ pub const HEADER_BATCH: usize = 100;
 
 /// Texts of messages bigger than this (5 MiB, attachments included) are not fetched ahead.
 pub const BODY_PREFETCH_MAX: u32 = 5 << 20;
+
+/// Beyond the IMAP parser's full-literal ceiling, keep the original through bounded partial
+/// reads. Tests use a smaller threshold to exercise the same path without a 100-MiB fixture.
+#[cfg(not(test))]
+pub(crate) const LARGE_ORIGINAL: u64 = 100 << 20;
+#[cfg(test)]
+pub(crate) const LARGE_ORIGINAL: u64 = 32 << 20;
 
 /// How many texts one step of [`backfill`] fetches before the indexer looks again.
 pub const BACKFILL_BATCH: u32 = 25;
@@ -213,13 +220,24 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
 /// The whole message at `place` from the account's command connection; `None` when it is gone.
 async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Result<Option<Vec<u8>>, MailError> {
     let mut command = mailbox.command().await?;
-    let raw = super::read::peek(command.session(), place).await?;
-    let retain = mailbox.store()?.run(|store| store.cache_policy()).await?.mode == MailCacheMode::AllOffline;
-    let metadata = if retain && raw.is_some() {
+    let store = mailbox.store()?;
+    let retain = store.run(|store| store.cache_policy()).await?.mode == MailCacheMode::AllOffline;
+    if !super::read::valid_selection(command.session(), place).await? {
+        return Ok(None);
+    }
+    let metadata = if retain {
         command.session().fetch_backup_metadata(&[place.uid]).await?.into_iter().find(|item| item.uid == place.uid)
     } else {
         None
     };
+    if let Some(item) = metadata.as_ref().filter(|item| item.bytes > LARGE_ORIGINAL) {
+        retain_large_original(command.session(), &store, place, item).await?;
+        command.release();
+        // The original is available for local backup. The normal MIME cache deliberately does
+        // not parse a message this large into memory.
+        return Ok(None);
+    }
+    let raw = command.session().fetch_message(place.uid).await?;
     command.release();
     match (metadata, raw) {
         (Some(metadata), Some(raw)) => {
@@ -243,6 +261,43 @@ async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Resu
         }
         (_, raw) => Ok(raw),
     }
+}
+
+/// Fetch a large mail in bounded pieces, then atomically place it in the local original depot.
+/// A disappeared or changing source is left missing so local backup reports incompleteness.
+pub(crate) async fn retain_large_original(
+    session: &mut Session,
+    store: &SharedStore,
+    place: &super::store::MessageRef,
+    metadata: &BackupMessage,
+) -> Result<(), MailError> {
+    use std::io::Write;
+
+    let mut file = tempfile::tempfile().map_err(super::MailStoreError::Io)?;
+    let mut offset = 0u64;
+    while offset < metadata.bytes {
+        let count = (metadata.bytes - offset).min(64 * 1024) as usize;
+        let chunk = session.fetch_backup_chunk(place.uid, offset, count).await?;
+        let Some(chunk) = chunk else {
+            return Err(MailError::Server(ImapError::NotFound("message vanished during original capture".into())));
+        };
+        if chunk.len() != count {
+            return Err(MailError::Server(ImapError::Protocol("short original body chunk".into())));
+        }
+        file.write_all(&chunk).map_err(super::MailStoreError::Io)?;
+        offset += count as u64;
+    }
+    let after = session.fetch_backup_metadata(&[place.uid]).await?.into_iter().find(|item| item.uid == place.uid);
+    if after.as_ref() != Some(metadata) {
+        return Err(MailError::Server(ImapError::Protocol("original metadata changed during capture".into())));
+    }
+    let path = place.folder_path.clone();
+    let validity = place.uidvalidity;
+    let item = metadata.clone();
+    store
+        .run(move |db| db.save_original_file(&path, validity, item.uid, item.internal_date, &item.flags, &mut file))
+        .await?;
+    Ok(())
 }
 
 /// Fetch one complete reading body for an offline maintenance job, without setting Seen.
@@ -348,6 +403,12 @@ async fn sync_folder(
         .map(|state| (state.uid, state.flags.clone()))
         .collect();
     let folder = target.id.clone();
+    let path = target.path.clone();
+    let original_flags: Vec<(u32, Vec<String>)> = states
+        .iter()
+        .filter(|state| !state.deleted && on_server.contains(&state.uid))
+        .map(|state| (state.uid, state.raw_flags.clone()))
+        .collect();
     let (mut removed, flags) = store
         .run(move |store| {
             let mut removed = Vec::new();
@@ -360,6 +421,9 @@ async fn sync_folder(
                 if store.set_flags_by_uid(&folder, *uid, flags)? {
                     flagged.extend(store.message_id_for_uid(&folder, *uid)?);
                 }
+            }
+            for (uid, flags) in &original_flags {
+                store.set_original_flags(&path, uidvalidity, *uid, flags)?;
             }
             Ok((removed, flagged))
         })
@@ -678,6 +742,7 @@ pub(crate) mod fake {
         /// Counts cuts; every open connection ends on one.
         cuts: watch::Sender<u64>,
         backup_change: Arc<Mutex<Option<(String, String)>>>,
+        selectable_change: Arc<Mutex<Option<String>>>,
         drop_after_append: Arc<Mutex<bool>>,
     }
 
@@ -713,6 +778,7 @@ pub(crate) mod fake {
                 changes: watch::Sender::new(0),
                 cuts: watch::Sender::new(0),
                 backup_change: Arc::new(Mutex::new(None)),
+                selectable_change: Arc::new(Mutex::new(None)),
                 drop_after_append: Arc::new(Mutex::new(false)),
             };
             let accepting = server.clone();
@@ -764,6 +830,11 @@ pub(crate) mod fake {
         /// Injects an incoming message when the next backup body chunk is served.
         pub(crate) fn add_on_backup_chunk(&self, folder: &str, raw: &str) {
             *self.backup_change.lock().expect("backup change") = Some((folder.into(), raw.into()));
+        }
+
+        pub(crate) fn make_selectable_on_backup_chunk(&self, folder: &str) {
+            self.world().folder(folder).attributes = "\\Noselect".into();
+            *self.selectable_change.lock().expect("selectable change") = Some(folder.into());
         }
 
         /// Store the next APPEND literal, then lose the connection before acknowledging it.
@@ -929,6 +1000,12 @@ pub(crate) mod fake {
                             && let Some((folder, raw)) = self.backup_change.lock().expect("backup change").take()
                         {
                             self.add(&folder, &raw, &[]);
+                        }
+                        if rest.contains("BODY.PEEK[]<")
+                            && let Some(folder) = self.selectable_change.lock().expect("selectable change").take()
+                        {
+                            self.world().folder(&folder).attributes = "\\HasNoChildren".into();
+                            self.changed();
                         }
                         answer
                     }
@@ -1469,6 +1546,38 @@ mod tests {
         assert_eq!(originals[0].flags, vec!["$Work", "\\Seen"]);
         let seq = originals[0].seq;
         assert_eq!(store.run(move |db| db.original_bytes(seq)).await.expect("read"), Some(raw.into_bytes()));
+        server.set_flags("INBOX", 1, &["\\Answered", "$Updated"]);
+        sync_account(&mailbox).await.expect("flags synced");
+        let updated = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed again");
+        assert_eq!(updated[0].flags, vec!["$Updated", "\\Answered"]);
+    }
+
+    #[tokio::test]
+    async fn all_offline_backfill_retains_a_message_above_the_chunk_threshold() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = format!("From: a@example.org\r\nSubject: Large\r\n\r\n{}", "x".repeat((33 << 20) + 1));
+        server.add("INBOX", &raw, &["$Large"]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        store
+            .run(|db| {
+                let mut policy = db.cache_policy()?;
+                policy.mode = MailCacheMode::AllOffline;
+                db.set_cache_policy(&policy)
+            })
+            .await
+            .expect("all offline");
+        sync_account(&mailbox).await.expect("headers synced");
+        backfill(&mailbox, 1, Utc::now()).await.expect("chunked original capture");
+        let originals = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
+        assert_eq!(originals.len(), 1);
+        assert_eq!(originals[0].bytes, raw.len() as u64);
+        assert_eq!(originals[0].flags, vec!["$Large"]);
+        let seq = originals[0].seq;
+        let actual = store.run(move |db| db.original_bytes(seq)).await.expect("original").expect("present");
+        assert_eq!(actual, raw.as_bytes());
+        assert!(server.lines().iter().any(|line| line.contains("BODY.PEEK[]<")), "partial FETCH used");
     }
 
     #[tokio::test]

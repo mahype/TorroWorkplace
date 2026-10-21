@@ -248,6 +248,8 @@ pub struct BackupMessage {
 pub struct FlagState {
     pub uid: u32,
     pub flags: Vec<Flag>,
+    /// Every IMAP flag and keyword as returned by the server, for retained originals.
+    pub raw_flags: Vec<String>,
     /// Marked `\Deleted`, waiting to be expunged.
     pub deleted: bool,
     /// The message's mod-sequence, when the server has CONDSTORE.
@@ -690,8 +692,10 @@ impl Session {
         let data = self.run(&[Arg::Raw("UID FETCH 1:*"), Arg::Raw(&items)], "FETCH").await?;
         Ok(fetched(&data)
             .filter_map(|item| {
-                let (flags, deleted) = parse_flags(item.get("FLAGS")?);
-                Some(FlagState { uid: item.uid, flags, deleted, modseq: item.modseq() })
+                let flag_list = item.get("FLAGS")?;
+                let (flags, deleted) = parse_flags(flag_list);
+                let raw_flags = flag_list.list()?.iter().filter_map(Token::atom).map(str::to_string).collect();
+                Some(FlagState { uid: item.uid, flags, raw_flags, deleted, modseq: item.modseq() })
             })
             .collect())
     }

@@ -1962,6 +1962,18 @@ fn settings_update(
     }
 }
 
+fn is_mail_backup_request(request: &torro_ipc::Request) -> bool {
+    matches!(
+        request,
+        torro_ipc::Request::MailBackupCreate { .. }
+            | torro_ipc::Request::MailBackupStatus { .. }
+            | torro_ipc::Request::MailBackupCancel { .. }
+            | torro_ipc::Request::MailBackupVerify { .. }
+            | torro_ipc::Request::MailRestorePlan { .. }
+            | torro_ipc::Request::MailRestoreApply { .. }
+    )
+}
+
 /// What Escape means in the open section before it closes the settings (task E15.5): `None`
 /// lets the settings close.
 fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
@@ -2558,6 +2570,8 @@ pub enum Message {
     SettingsHost(torro_settings_ui::host::Message),
     /// What a widget of the open settings section reported.
     SettingsPage(SettingsMessage),
+    /// The answer to one backup request, tagged with its originating mail account.
+    MailBackupAnswered(String, Box<Result<torro_ipc::Response, String>>),
     /// Open the control centre: what an entry about the suite links to ([`App::open_entry`] with
     /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
     /// able to open a settings section in this window (task S.20).
@@ -3717,10 +3731,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.now = Utc::now() + self.offset;
                 let backup_poll = self.settings.as_mut().and_then(|pane| {
                     let SettingsState::Mail(state) = &mut pane.sections else { return None };
-                    let request = settings_mail::poll_request(state)?;
-                    Some(pane.host.act(torro_settings_ui::Action::<()>::Ask(request)))
+                    settings_mail::poll_request(state)
                 });
-                let backup_poll = backup_poll.map_or_else(Task::none, |outcome| self.settings_outcome(outcome));
+                let backup_poll = backup_poll.map_or_else(Task::none, |request| self.ask_mail_backup(request));
                 let settings = self.settings.as_ref().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 return Task::batch([
                     self.fetch_appearance(),
@@ -3864,12 +3877,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 return self.settings_outcome(outcome);
             }
             Message::SettingsPage(message) => {
-                let outcome = {
+                let action = {
                     let Some(pane) = self.settings.as_mut() else { return Task::none() };
-                    let action = settings_update(&mut pane.sections, message, pane.host.data());
-                    pane.host.act(action)
+                    settings_update(&mut pane.sections, message, pane.host.data())
                 };
+                if let torro_settings_ui::Action::Ask(request) = &action
+                    && is_mail_backup_request(request)
+                {
+                    return self.ask_mail_backup(request.clone());
+                }
+                let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                let outcome = pane.host.act(action);
                 return self.settings_outcome(outcome);
+            }
+            Message::MailBackupAnswered(account, answer) => {
+                if let Some(pane) = self.settings.as_mut()
+                    && let SettingsState::Mail(state) = &mut pane.sections
+                {
+                    settings_mail::backup_answered(state, &account, &answer);
+                }
             }
             Message::OpenControlCentre => {
                 self.close_menus();
@@ -5257,6 +5283,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
             Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
         }
+    }
+
+    fn ask_mail_backup(&self, request: torro_ipc::Request) -> Task<Message> {
+        let Some(account) = request.mail_account().map(str::to_string) else { return Task::none() };
+        Task::perform(torro_settings_ui::ask(self.settings_backend(), request), move |answer| {
+            Message::MailBackupAnswered(account, Box::new(answer))
+        })
     }
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or

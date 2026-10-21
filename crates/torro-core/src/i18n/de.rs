@@ -2107,6 +2107,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Mail backup or restore is not available yet.", "Mail-Backup oder Wiederherstellung ist noch nicht verfügbar."),
     ("A backup for this mail account is already running.", "Für dieses Mail-Konto läuft bereits ein Backup."),
     ("Backup job is not available.", "Der Backup-Auftrag ist nicht verfügbar."),
+    ("The backup job caller is not known.", "Der Auftraggeber dieses Backups ist nicht bekannt."),
+    (
+        "Backup file name must be a plain .zip name or absolute app path.",
+        "Der Backup-Dateiname muss ein einfacher .zip-Name oder ein absoluter App-Pfad sein.",
+    ),
     ("Mail backup could not be started.", "Das Mail-Backup konnte nicht gestartet werden."),
     ("Mail backup could not be completed.", "Das Mail-Backup konnte nicht abgeschlossen werden."),
     (
@@ -2154,6 +2159,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Archiv oder Ziel haben sich geändert. Starte den Wiederherstellungstest erneut.",
     ),
     ("Restore plan is no longer available.", "Der Wiederherstellungsplan ist nicht mehr verfügbar."),
+    (
+        "Restore {messages} mail messages ({bytes} bytes) from {archive} to {account}; create {folders} folders",
+        "{messages} Mails ({bytes} Bytes) aus {archive} nach {account} wiederherstellen; {folders} Ordner anlegen",
+    ),
+    ("; incomplete archive explicitly accepted", "; unvollständiges Archiv ausdrücklich akzeptiert"),
+    ("new folder", "neuer Ordner"),
+    ("existing folder", "vorhandener Ordner"),
+    ("{path}: {messages} messages, {create}", "{path}: {messages} Mails, {create}"),
+    (
+        "More folder changes are listed in the restore test result.",
+        "Weitere Ordneränderungen stehen im Ergebnis des Wiederherstellungstests.",
+    ),
     (
         "Mail restore could not be completed; check the archive and target account.",
         "Die Mail-Wiederherstellung konnte nicht abgeschlossen werden. Prüfe Archiv und Zielkonto.",
@@ -2347,6 +2364,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No such message.", "Diese Nachricht gibt es nicht."),
     ("The attachment is larger than 50 MiB.", "Der Anhang ist größer als 50 MiB."),
     ("The message could not be read.", "Die Nachricht konnte nicht gelesen werden."),
+    (
+        "This message is too large to display; its original is retained for backup.",
+        "Diese Nachricht ist zu groß für die Anzeige; ihr Original bleibt für das Backup gespeichert.",
+    ),
     ("The message has no such attachment.", "Die Nachricht hat keinen solchen Anhang."),
     ("This cursor is not valid. Search again without it.", "Dieser Cursor ist ungültig. Suche ohne ihn erneut."),
     // Mail search: the query language (issue #136)

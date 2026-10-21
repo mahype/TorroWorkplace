@@ -1,8 +1,9 @@
 //! Backup and restore controls of one mail account's own settings page.
 
 use chrono::NaiveDate;
-use iced::Element;
-use iced::widget::{column, row};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container};
+use iced::{Element, Fill};
 use std::path::{Path, PathBuf};
 use torro_core::i18n::tr;
 use torro_gui::theme::space;
@@ -11,7 +12,7 @@ use torro_ipc::mail::{BackupJob, BackupPhase, BackupScope, BackupVerification, R
 use torro_ipc::{Request, Response};
 
 use crate::Action;
-use crate::parts::{field, row_frame, setting_row};
+use crate::parts::{choice, field, row_frame, setting_row};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pending {
@@ -37,6 +38,7 @@ pub struct State {
     pub confirm_restore: bool,
     pub allow_incomplete: bool,
     pub error: Option<String>,
+    error_in_backup: bool,
     pending: Option<Pending>,
     job_directory: Option<PathBuf>,
 }
@@ -56,6 +58,7 @@ impl Default for State {
             confirm_restore: false,
             allow_incomplete: false,
             error: None,
+            error_in_backup: false,
             pending: None,
             job_directory: None,
         }
@@ -80,6 +83,12 @@ pub enum Message {
 }
 
 impl State {
+    fn active_job(&self) -> bool {
+        self.job.as_ref().is_some_and(|job| {
+            !matches!(job.phase, BackupPhase::Complete | BackupPhase::Incomplete | BackupPhase::Cancelled)
+        })
+    }
+
     pub fn from_preferences(preferences: &torro_mail::BackupPreferences) -> Self {
         Self {
             source: if preferences.local { BackupScope::Local } else { BackupScope::Server },
@@ -114,7 +123,7 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
         }
         Message::ConfirmRestore(confirmed) => state.confirm_restore = confirmed,
         Message::AllowIncomplete(allowed) => state.allow_incomplete = allowed,
-        Message::Create if state.pending.is_none() => {
+        Message::Create if state.pending.is_none() && !state.active_job() => {
             let since = if state.since.trim().is_empty() {
                 None
             } else {
@@ -122,15 +131,18 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
                     Ok(day) => Some(day),
                     Err(_) => {
                         state.error = Some(tr("Enter a valid date as YYYY-MM-DD.").into());
+                        state.error_in_backup = true;
                         return Action::None;
                     }
                 }
             };
             if !state.file_name.trim().is_empty() && !valid_base_name(state.file_name.trim()) {
                 state.error = Some(tr("Use a simple .zip archive name without folders.").into());
+                state.error_in_backup = true;
                 return Action::None;
             }
             state.error = None;
+            state.error_in_backup = true;
             state.pending = Some(Pending::Create);
             let destination = state.destination.trim();
             let file_name = if destination.is_empty() {
@@ -140,6 +152,7 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
                 if !Path::new(destination).is_absolute() || state.file_name.trim().is_empty() {
                     state.pending = None;
                     state.error = Some(tr("Choose an absolute backup folder and an archive name.").into());
+                    state.error_in_backup = true;
                     return Action::None;
                 }
                 state.job_directory = Some(PathBuf::from(destination));
@@ -170,6 +183,7 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
             if !state.restore_file.trim().is_empty() {
                 state.pending = Some(Pending::Verify);
                 state.error = None;
+                state.error_in_backup = false;
                 return Action::Ask(Request::MailBackupVerify {
                     file: state.restore_file.trim().into(),
                     account: account.into(),
@@ -183,6 +197,7 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
                 state.result = None;
                 state.confirm_restore = false;
                 state.error = None;
+                state.error_in_backup = false;
                 return Action::Ask(Request::MailRestorePlan {
                     file: state.restore_file.trim().into(),
                     account: account.into(),
@@ -193,6 +208,7 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
             let Some(plan) = &state.plan else { return Action::None };
             state.pending = Some(Pending::Apply);
             state.error = None;
+            state.error_in_backup = false;
             return Action::Ask(Request::MailRestoreApply {
                 plan: plan.id.clone(),
                 account: account.into(),
@@ -213,6 +229,7 @@ fn valid_base_name(name: &str) -> bool {
 
 pub fn answered(state: &mut State, answer: &Result<Response, String>) {
     let Some(pending) = state.pending.take() else { return };
+    state.error_in_backup = matches!(pending, Pending::Create | Pending::Poll | Pending::Cancel);
     match answer {
         Ok(Response::MailBackupJob { job }) if matches!(pending, Pending::Create | Pending::Poll | Pending::Cancel) => {
             if let Some(archive) = &job.archive
@@ -261,6 +278,10 @@ pub fn view<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
     column![backup_group(state), restore_group(state, account)].spacing(layout::section_gap()).into()
 }
 
+fn wrapped_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).width(Fill).padding([space::s(), space::l()]).into()
+}
+
 fn backup_group(state: &State) -> Element<'_, Message> {
     let source = widgets::segmented(
         [(tr("Server"), Message::Source(BackupScope::Server)), (tr("Local"), Message::Source(BackupScope::Local))],
@@ -290,8 +311,8 @@ fn backup_group(state: &State) -> Element<'_, Message> {
     let start = widgets::text_button(
         None,
         tr("Create backup"),
-        style::button::primary,
-        state.pending.is_none().then_some(Message::Create),
+        style::button::secondary,
+        (state.pending.is_none() && !state.active_job()).then_some(Message::Create),
     );
     rows.push(row_frame(start, false));
     if let Some(job) = &state.job {
@@ -313,7 +334,7 @@ fn backup_group(state: &State) -> Element<'_, Message> {
             rows.push(row_frame(typo::text(typo::body_strong(), format!("{}: {archive}", tr("Archive"))), false));
         }
         for warning in &job.warnings {
-            rows.push(row_frame(typo::text(typo::body(), warning.as_str()), false));
+            rows.push(wrapped_row(typo::text(typo::body(), warning.clone()).wrapping(Wrapping::WordOrGlyph)));
         }
         if !matches!(job.phase, BackupPhase::Complete | BackupPhase::Incomplete | BackupPhase::Cancelled) {
             let refresh = widgets::text_button(
@@ -328,8 +349,14 @@ fn backup_group(state: &State) -> Element<'_, Message> {
                 style::button::secondary,
                 state.pending.is_none().then_some(Message::Cancel),
             );
-            rows.push(row_frame(row![refresh, cancel].spacing(space::s()), false));
+            rows.push(row_frame(refresh, false));
+            rows.push(row_frame(cancel, false));
         }
+    }
+    if state.error_in_backup
+        && let Some(error) = &state.error
+    {
+        rows.push(wrapped_row(typo::text(typo::body(), error.clone()).wrapping(Wrapping::WordOrGlyph)));
     }
     widgets::group(tr("Backup"), rows,
         Some(tr("The ZIP is readable without Torro and is not encrypted. Keep it in a private location. Local backup includes only retained original mails.").into()))
@@ -347,7 +374,8 @@ fn restore_group<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
         widgets::text_button(None, tr("Verify archive"), style::button::secondary, ready.then_some(Message::Verify));
     let plan =
         widgets::text_button(None, tr("Run restore test"), style::button::secondary, ready.then_some(Message::Plan));
-    rows.push(row_frame(row![verify, plan].spacing(space::s()), false));
+    rows.push(row_frame(verify, false));
+    rows.push(row_frame(plan, false));
     if let Some(verification) = &state.verification {
         rows.push(row_frame(
             typo::text(
@@ -364,7 +392,7 @@ fn restore_group<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
             false,
         ));
         for warning in &verification.warnings {
-            rows.push(row_frame(typo::text(typo::body(), warning.as_str()), false));
+            rows.push(wrapped_row(typo::text(typo::body(), warning.clone()).wrapping(Wrapping::WordOrGlyph)));
         }
     }
     if let Some(plan) = &state.plan {
@@ -385,50 +413,43 @@ fn restore_group<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
         ));
         for folder in &plan.folders {
             let action = if folder.create { tr("Create folder") } else { tr("Use folder") };
-            rows.push(row_frame(
-                typo::text(
-                    typo::body(),
-                    format!(
-                        "{} → {} · {} · {}: {} · {}: {} · {}: {}",
-                        folder.archive_path,
-                        folder.target_path,
-                        action,
-                        tr("Add"),
-                        folder.messages_to_add,
-                        tr("Already present"),
-                        folder.already_present,
-                        tr("Uncertain"),
-                        folder.uncertain
-                    ),
-                ),
-                false,
+            rows.push(wrapped_row(
+                column![
+                    typo::text(typo::body_strong(), format!("{} → {}", folder.archive_path, folder.target_path))
+                        .wrapping(Wrapping::WordOrGlyph),
+                    typo::text(
+                        typo::meta(),
+                        format!(
+                            "{} · {}: {} · {}: {} · {}: {}",
+                            action,
+                            tr("Add"),
+                            folder.messages_to_add,
+                            tr("Already present"),
+                            folder.already_present,
+                            tr("Uncertain"),
+                            folder.uncertain
+                        ),
+                    )
+                    .wrapping(Wrapping::WordOrGlyph)
+                ]
+                .spacing(space::xs()),
             ));
         }
         for warning in &plan.warnings {
-            rows.push(row_frame(typo::text(typo::body(), warning.as_str()), false));
+            rows.push(wrapped_row(typo::text(typo::body(), warning.clone()).wrapping(Wrapping::WordOrGlyph)));
         }
-        let reviewed = widgets::segmented(
-            [
-                (tr("Not reviewed"), Message::ConfirmRestore(false)),
-                (tr("I reviewed the plan"), Message::ConfirmRestore(true)),
-            ],
-            usize::from(state.confirm_restore),
-        );
-        rows.push(setting_row(None, tr("Restore confirmation"), None, reviewed));
+        rows.push(row_frame(typo::text(typo::body_strong(), tr("Restore confirmation")), false));
+        rows.push(choice(tr("Not reviewed"), !state.confirm_restore, Message::ConfirmRestore(false)));
+        rows.push(choice(tr("I reviewed the plan"), state.confirm_restore, Message::ConfirmRestore(true)));
         if !plan.complete_archive {
-            let incomplete = widgets::segmented(
-                [
-                    (tr("Do not restore"), Message::AllowIncomplete(false)),
-                    (tr("Accept incomplete archive"), Message::AllowIncomplete(true)),
-                ],
-                usize::from(state.allow_incomplete),
-            );
-            rows.push(setting_row(None, tr("Incomplete archive"), None, incomplete));
+            rows.push(row_frame(typo::text(typo::body_strong(), tr("Incomplete archive")), false));
+            rows.push(choice(tr("Do not restore"), !state.allow_incomplete, Message::AllowIncomplete(false)));
+            rows.push(choice(tr("Accept incomplete archive"), state.allow_incomplete, Message::AllowIncomplete(true)));
         }
         let apply = widgets::text_button(
             None,
             tr("Restore mail"),
-            style::button::primary,
+            style::button::secondary,
             state.can_apply(account).then_some(Message::Apply),
         );
         rows.push(row_frame(apply, false));
@@ -450,11 +471,13 @@ fn restore_group<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
             false,
         ));
         for warning in &result.warnings {
-            rows.push(row_frame(typo::text(typo::body(), warning.as_str()), false));
+            rows.push(wrapped_row(typo::text(typo::body(), warning.clone()).wrapping(Wrapping::WordOrGlyph)));
         }
     }
-    if let Some(error) = &state.error {
-        rows.push(row_frame(typo::text(typo::body(), error.as_str()), false));
+    if !state.error_in_backup
+        && let Some(error) = &state.error
+    {
+        rows.push(wrapped_row(typo::text(typo::body(), error.clone()).wrapping(Wrapping::WordOrGlyph)));
     }
     widgets::group(tr("Restore"), rows,
         Some(tr("The test only reads the target. Restoring adds mail and missing folders; it never deletes existing mail.").into()))
@@ -497,6 +520,29 @@ mod tests {
                 file_name: Some("anna.zip".into()),
             })
         );
+    }
+
+    #[test]
+    fn a_second_create_cannot_replace_the_path_of_a_running_job() {
+        let mut state = State {
+            file_name: "second.zip".into(),
+            destination: "/tmp/new-backups".into(),
+            job: Some(torro_ipc::mail::BackupJob {
+                id: "first".into(),
+                account: ACCOUNT.into(),
+                source: BackupScope::Server,
+                phase: BackupPhase::Reading,
+                folders: 1,
+                messages: 2,
+                bytes: 30,
+                archive: None,
+                warnings: Vec::new(),
+            }),
+            job_directory: Some(PathBuf::from("/tmp/old-backups")),
+            ..State::default()
+        };
+        assert_eq!(update::<()>(&mut state, ACCOUNT, Message::Create), Action::None);
+        assert_eq!(state.job_directory.as_deref(), Some(Path::new("/tmp/old-backups")));
     }
 
     #[test]

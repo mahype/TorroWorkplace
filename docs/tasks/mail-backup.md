@@ -127,6 +127,14 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
   `crates/torro-mail/src/{account,lib}.rs` sowie
   `crates/torroworkplace/src/mail/{backup,service}.rs` (gespeicherte Kontowahl und
   sicherer Zielordner gemäß Issue-Text).
+- **Review-Nacharbeit (technische Ergänzungen):** `Cargo.toml` (SQLite-BLOB-Streaming),
+  `crates/torroworkplace/src/{approvals,core}.rs` (Planinhalt in Freigaben,
+  Job-Eigentümer und Pfadgrenzen), `crates/torroworkplace/src/mail/{backup,read,store,sync}.rs`
+  und `crates/torro-mail-imap/src/imap.rs` (Planbindung, Flags/Keywords, große Originale und
+  Testserver), `crates/torro-settings-ui/src/mail{,/backup}.rs` und
+  `crates/torroinbox/src/app.rs` (kontogenaue Antworten und verständlicher Dialog),
+  `crates/torro-ipc/src/mail.rs`, `crates/torro-core/src/i18n/de.rs` und
+  `docs/{api,mail-backup}.md` (Validierung, Übersetzung und Vertrag).
 - Unter Mail-Kontoeinstellungen den Ablauf aus dem Mock-up anbinden: Quelle,
   Datum, Speicherort, Fortschritt/Abbruch, Verify, Restore-Plan und echte Bestätigung,
   verständliche Fehler und Hinweis auf unverschlüsseltes ZIP. CLI als

@@ -252,6 +252,7 @@ fn uid_inventory_hash(uids: &HashSet<u32>) -> String {
 struct JobEntry {
     job: BackupJob,
     state: Arc<AtomicU8>,
+    owner: Option<String>,
 }
 
 /// In-process progress and cancellation. A clean shutdown drops partial files through
@@ -275,6 +276,7 @@ impl BackupJobs {
         dirs: MailDirs,
         account: String,
         selection: BackupSelection,
+        owner: Option<String>,
     ) -> Result<BackupJob, BackupRunError> {
         let BackupSelection { source, since, filename, target_dir } = selection;
         let mut random = [0u8; 16];
@@ -312,7 +314,7 @@ impl BackupJobs {
                     !matches!(entry.job.phase, BackupPhase::Complete | BackupPhase::Incomplete | BackupPhase::Cancelled)
                 });
             }
-            entries.insert(id.clone(), JobEntry { job: job.clone(), state: Arc::clone(&state) });
+            entries.insert(id.clone(), JobEntry { job: job.clone(), state: Arc::clone(&state), owner });
         }
         let jobs = self.clone();
         tokio::spawn(async move {
@@ -352,18 +354,20 @@ impl BackupJobs {
         Ok(job)
     }
 
-    pub(crate) fn status(&self, account: &str, id: &str) -> Option<BackupJob> {
+    pub(crate) fn status(&self, account: &str, id: &str, caller: Option<&str>) -> Option<BackupJob> {
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(id)
-            .filter(|entry| entry.job.account == account)
+            .filter(|entry| entry.job.account == account && (caller.is_none() || entry.owner.as_deref() == caller))
             .map(|entry| entry.job.clone())
     }
 
-    pub(crate) fn cancel(&self, account: &str, id: &str) -> Option<BackupJob> {
+    pub(crate) fn cancel(&self, account: &str, id: &str, caller: Option<&str>) -> Option<BackupJob> {
         let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = entries.get_mut(id).filter(|entry| entry.job.account == account)?;
+        let entry = entries
+            .get_mut(id)
+            .filter(|entry| entry.job.account == account && (caller.is_none() || entry.owner.as_deref() == caller))?;
         if !matches!(entry.job.phase, BackupPhase::Complete | BackupPhase::Incomplete | BackupPhase::Cancelled)
             && entry.state.compare_exchange(RUNNING, CANCELLED, Ordering::AcqRel, Ordering::Acquire).is_ok()
         {
@@ -563,8 +567,16 @@ async fn run_server_backup(
     // while a later one is downloaded, so a per-folder check alone cannot prove completeness.
     let mut command = mail.command(account).await?;
     let final_list = command.session().list().await?;
-    let final_paths: HashSet<String> = final_list.into_iter().map(|folder| folder.path).collect();
-    if final_paths != paths {
+    let final_selectability: HashMap<String, bool> = final_list
+        .into_iter()
+        .map(|folder| {
+            let selectable = folder.selectable();
+            (folder.path, selectable)
+        })
+        .collect();
+    let initial_selectability: HashMap<String, bool> =
+        writer.manifest_mut().folders.iter().map(|folder| (folder.path.clone(), folder.selectable)).collect();
+    if final_selectability != initial_selectability {
         return Err(BackupRunError::Incomplete("folder list changed during backup"));
     }
     for (path, (validity, uids)) in &source_inventory {
@@ -794,7 +806,7 @@ fn transferable_flags(flags: &[String]) -> Vec<String> {
     kept
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct TargetSnapshot {
     existing: HashSet<String>,
     selectable: HashMap<String, TargetFolder>,
@@ -1060,7 +1072,20 @@ struct PlannedRestore {
     file: String,
     account: String,
     manifest_sha256: String,
+    plan: RestorePlan,
+    target: TargetSnapshot,
     created: std::time::Instant,
+}
+
+fn target_preserves_plan(before: &TargetSnapshot, current: &TargetSnapshot) -> bool {
+    before.existing.is_subset(&current.existing)
+        && before.selectable.iter().all(|(path, old)| {
+            current.selectable.get(path).is_some_and(|now| {
+                now.uid_validity == old.uid_validity
+                    && old.uids.is_subset(&now.uids)
+                    && old.hashes.iter().all(|(hash, count)| now.hashes.get(hash).is_some_and(|found| found >= count))
+            })
+        })
 }
 
 #[derive(Clone, Default)]
@@ -1159,6 +1184,8 @@ impl RestorePlans {
                 file,
                 account: account.into(),
                 manifest_sha256: manifest_digest(archive.manifest())?,
+                plan: plan.clone(),
+                target,
                 created: std::time::Instant::now(),
             },
         );
@@ -1174,6 +1201,15 @@ impl RestorePlans {
             .map(|item| item.file.clone())
     }
 
+    pub(crate) fn planned_for(&self, account: &str, id: &str) -> Option<(String, RestorePlan)> {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(id)
+            .filter(|item| item.account == account && item.created.elapsed() < std::time::Duration::from_secs(3600))
+            .map(|item| (item.file.clone(), item.plan.clone()))
+    }
+
     /// Reverify the exact planned archive and target before writing. Only an explicitly requested
     /// apply reaches this method; a dry run never makes a journal or sends IMAP write commands.
     pub(crate) async fn apply(
@@ -1186,12 +1222,13 @@ impl RestorePlans {
         allow_incomplete: bool,
     ) -> Result<RestoreResult, BackupRunError> {
         let _serial = self.apply_lock.lock().await;
-        let planned_digest = {
+        let (planned_digest, planned_plan, planned_target) = {
             let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
             let item = entries.get(id).filter(|item| {
                 item.account == account && item.created.elapsed() < std::time::Duration::from_secs(3600)
             });
-            item.ok_or(BackupRunError::Incomplete("restore plan expired"))?.manifest_sha256.clone()
+            let item = item.ok_or(BackupRunError::Incomplete("restore plan expired"))?;
+            (item.manifest_sha256.clone(), item.plan.clone(), item.target.clone())
         };
         let mut archive = RestoreArchive::open(File::open(path)?)?;
         let manifest = archive.manifest().clone();
@@ -1206,6 +1243,17 @@ impl RestorePlans {
         }
         let mut target = inspect_restore_target(mail, account, &manifest).await?;
         let preview = summarize_restore(&manifest, &target, id.into(), account);
+        if !target_preserves_plan(&planned_target, &target)
+            || preview.folders_to_create > planned_plan.folders_to_create
+            || preview.messages_to_add > planned_plan.messages_to_add
+            || preview.folders.iter().zip(&planned_plan.folders).any(|(now, old)| {
+                now.target_path != old.target_path
+                    || (now.create && !old.create)
+                    || now.messages_to_add > old.messages_to_add
+            })
+        {
+            return Err(BackupRunError::Incomplete("restore target changed after the reviewed plan"));
+        }
         if preview.uncertain > 0 {
             return Ok(RestoreResult {
                 added: 0,
@@ -1440,14 +1488,17 @@ mod tests {
         let jobs = BackupJobs {
             entries: Arc::new(Mutex::new(HashMap::from([(
                 job.id.clone(),
-                JobEntry { job, state: Arc::clone(&state) },
+                JobEntry { job, state: Arc::clone(&state), owner: Some("client-1".into()) },
             )]))),
         };
         assert!(state.compare_exchange(RUNNING, COMMITTING, Ordering::AcqRel, Ordering::Acquire).is_ok());
-        let current = jobs.cancel("mail:anna@example.org", "job").expect("the job exists");
+        let current = jobs.cancel("mail:anna@example.org", "job", Some("client-1")).expect("the job exists");
         assert_eq!(current.phase, BackupPhase::Verifying);
         assert_eq!(state.load(Ordering::Acquire), COMMITTING);
-        assert!(jobs.cancel("mail:other@example.org", "job").is_none());
+        assert!(jobs.cancel("mail:other@example.org", "job", Some("client-1")).is_none());
+        assert!(jobs.status("mail:anna@example.org", "job", Some("client-2")).is_none());
+        assert!(jobs.cancel("mail:anna@example.org", "job", Some("client-2")).is_none());
+        assert!(jobs.status("mail:anna@example.org", "job", None).is_some(), "suite sees the job");
 
         let pending = Arc::new(AtomicU8::new(RUNNING));
         assert!(pending.compare_exchange(RUNNING, CANCELLED, Ordering::AcqRel, Ordering::Acquire).is_ok());
@@ -1591,6 +1642,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_backup_rejects_a_folder_that_becomes_selectable_mid_run() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", "From: a@example.org\r\n\r\nFirst\r\n", &[]);
+        server.make_selectable_on_backup_chunk("Archive");
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(root.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = Arc::new(service_in(root.path(), &secrets));
+        mail.reload().await;
+        let jobs = BackupJobs::default();
+        let state = AtomicU8::new(RUNNING);
+        let outcome = run_server_backup(
+            mail,
+            dirs(root.path()),
+            &account.id,
+            None,
+            "changed.zip",
+            None,
+            BackupProgress { jobs: &jobs, id: "changed", state: &state },
+        )
+        .await;
+        assert!(outcome.is_err(), "newly selectable folder invalidates the first inventory");
+        assert!(!root.path().join("data/mail/backups/changed.zip").exists());
+    }
+
+    #[tokio::test]
     async fn local_backup_works_with_no_reachable_imap_server_and_reads_originals_in_chunks() {
         use torro_mail::{Endpoint, Security};
 
@@ -1602,18 +1680,13 @@ mod tests {
         let mail = Arc::new(service_in(root.path(), &secrets));
         mail.reload().await;
         let original = format!("From: a@example.org\r\n\r\n{}\r\n", "x".repeat(140_000));
+        let mut spool = tempfile::tempfile().expect("spool");
+        spool.write_all(original.as_bytes()).expect("write original");
         let now = Utc::now();
         let store = mail.store(&account.id).await.expect("local store");
         store
             .run(move |db| {
-                db.save_original(
-                    "INBOX",
-                    1,
-                    5,
-                    now.fixed_offset(),
-                    &["\\Seen".into(), "$Work".into()],
-                    original.as_bytes(),
-                )
+                db.save_original_file("INBOX", 1, 5, now.fixed_offset(), &["\\Seen".into(), "$Work".into()], &mut spool)
             })
             .await
             .expect("original retained");
@@ -1732,6 +1805,30 @@ mod tests {
         assert_eq!((result.added, result.skipped, result.uncertain), (0, 1, 0));
         assert_eq!(server.lines().iter().filter(|line| line.contains(" APPEND ")).count(), 1);
         assert!(server.lines().iter().any(|line| line.contains(" EXAMINE ")));
+    }
+
+    #[tokio::test]
+    async fn restore_apply_rejects_a_removed_message_after_the_reviewed_plan() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(root.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(root.path(), &secrets);
+        mail.reload().await;
+        let path = root.path().join("sample.zip");
+        fs::write(&path, SAMPLE_ZIP).expect("sample");
+        let mut archive = torro_mail_backup::restore::RestoreArchive::open(std::io::Cursor::new(SAMPLE_ZIP))
+            .expect("verified sample");
+        let mut raw = Vec::new();
+        archive.copy_message(0, &mut raw).expect("original");
+        let uid = server.add("INBOX", &String::from_utf8(raw).expect("sample text"), &[]);
+        let plans = RestorePlans::default();
+        let plan = plans.plan(&mail, "sample.zip".into(), &path, &account.id).await.expect("reviewed plan");
+        assert_eq!(plan.messages_to_add, 0);
+        server.expunge("INBOX", uid);
+        assert!(plans.apply(&mail, &dirs(root.path()), &path, &account.id, &plan.id, false).await.is_err());
+        assert!(!server.lines().iter().any(|line| line.contains(" APPEND ")));
     }
 
     #[tokio::test]

@@ -546,6 +546,84 @@ impl MailStore {
         Ok(())
     }
 
+    /// Retain a large RFC-822 original without holding the whole message in memory. The
+    /// temporary source is complete before this transaction starts; a failed BLOB write rolls
+    /// back the metadata and bytes together.
+    pub fn save_original_file(
+        &self,
+        folder_path: &str,
+        uid_validity: u32,
+        uid: u32,
+        internal_date: DateTime<FixedOffset>,
+        flags: &[String],
+        raw: &mut std::fs::File,
+    ) -> Result<(), MailStoreError> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+
+        let bytes = raw.metadata()?.len();
+        let size =
+            i32::try_from(bytes).map_err(|_| MailStoreError::Corrupt("original exceeds SQLite BLOB limit".into()))?;
+        raw.seek(SeekFrom::Start(0))?;
+        let mut hash = Sha256::new();
+        let mut chunk = [0u8; 64 * 1024];
+        loop {
+            let count = raw.read(&mut chunk)?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&chunk[..count]);
+        }
+        let sha256 = hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        raw.seek(SeekFrom::Start(0))?;
+        let transaction = self.db.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO originals (folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256, raw)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(folder_path, uidvalidity, uid) DO UPDATE SET
+               internal_date = excluded.internal_date, flags_json = excluded.flags_json,
+               bytes = excluded.bytes, sha256 = excluded.sha256, raw = excluded.raw",
+            params![
+                folder_path,
+                uid_validity,
+                uid,
+                internal_date.to_rfc3339(),
+                serde_json::to_string(flags)?,
+                i64::from(size),
+                sha256,
+                rusqlite::blob::ZeroBlob(size)
+            ],
+        )?;
+        let rowid: i64 = transaction.query_row(
+            "SELECT seq FROM originals WHERE folder_path = ?1 AND uidvalidity = ?2 AND uid = ?3",
+            params![folder_path, uid_validity, uid],
+            |row| row.get(0),
+        )?;
+        {
+            let mut blob = transaction.blob_open(rusqlite::MAIN_DB, "originals", "raw", rowid, false)?;
+            if std::io::copy(raw, &mut blob)? != bytes {
+                return Err(MailStoreError::Corrupt("original length changed during write".into()));
+            }
+            blob.flush()?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Refresh retained RFC-822 metadata even when the body was not fetched again.
+    pub fn set_original_flags(
+        &self,
+        folder_path: &str,
+        uid_validity: u32,
+        uid: u32,
+        flags: &[String],
+    ) -> Result<(), MailStoreError> {
+        self.db.execute(
+            "UPDATE originals SET flags_json = ?4 WHERE folder_path = ?1 AND uidvalidity = ?2 AND uid = ?3",
+            params![folder_path, uid_validity, uid, serde_json::to_string(flags)?],
+        )?;
+        Ok(())
+    }
+
     /// A bounded metadata page of complete originals, stable by insertion sequence.
     pub fn local_originals_page(&self, after: i64, limit: u32) -> Result<Vec<LocalOriginal>, MailStoreError> {
         let mut statement = self.db.prepare(
