@@ -16,8 +16,10 @@ bytegleichen Rohdaten allein lässt sich nicht beweisen, ob zwei UIDs dieselbe M
 eigenständige Exemplare sind. Die Zähler meinen daher Ordner-Einträge; eine virtuelle
 Sammelansicht kann darin zusätzliche Kopien enthalten. Beim Restore muss die Zuordnung
 dieser Ansicht bewusst geprüft werden. Nicht auswählbare
-Ordner werden im Manifest mit Grund erfasst; wenn dort Nachrichten vermutet werden, ist die
-Vollständigkeit unklar und niemals stillschweigend „100 %“.
+Ordner stehen im Manifest als `selectable: false`; der Servergrund (`\\Noselect` oder
+`\\NonExistent`) und der betroffene Pfad erscheinen in `warnings`. Ihre Nachrichten können
+per IMAP nicht inventarisiert werden. `complete` bezieht sich deshalb nur auf alle erreichbaren,
+auswählbaren Ordner und bedeutet keine Zusage über unzugängliche Serverinhalte.
 
 „Lokal“ meint nur Nachrichten, deren **vollständige RFC-822-Originalbytes** auf dem Gerät
 vorliegen. Der lokale Text- und Suchcache enthält für ältere Bestände nicht verlässlich

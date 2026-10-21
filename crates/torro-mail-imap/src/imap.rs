@@ -1020,7 +1020,7 @@ fn flag_atom(flag: Flag) -> &'static str {
 /// could expunge a restored message; unsupported system flags are reported and omitted.
 pub fn backup_flag_transferable(flag: &str) -> bool {
     if flag.starts_with('\\') {
-        return matches!(flag, "\\Seen" | "\\Answered" | "\\Flagged" | "\\Draft");
+        return ["\\Seen", "\\Answered", "\\Flagged", "\\Draft"].iter().any(|system| flag.eq_ignore_ascii_case(system));
     }
     !flag.is_empty()
         && flag.bytes().all(|byte| {

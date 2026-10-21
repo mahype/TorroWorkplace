@@ -39,6 +39,8 @@ pub struct State {
     pub allow_incomplete: bool,
     pub error: Option<String>,
     error_in_backup: bool,
+    error_after_job_action: bool,
+    error_after_apply: bool,
     pending: Option<Pending>,
     job_directory: Option<PathBuf>,
 }
@@ -59,6 +61,8 @@ impl Default for State {
             allow_incomplete: false,
             error: None,
             error_in_backup: false,
+            error_after_job_action: false,
+            error_after_apply: false,
             pending: None,
             job_directory: None,
         }
@@ -120,10 +124,12 @@ pub fn update<A>(state: &mut State, account: &str, message: Message) -> Action<A
             state.result = None;
             state.confirm_restore = false;
             state.allow_incomplete = false;
+            state.error = None;
         }
         Message::ConfirmRestore(confirmed) => state.confirm_restore = confirmed,
         Message::AllowIncomplete(allowed) => state.allow_incomplete = allowed,
         Message::Create if state.pending.is_none() && !state.active_job() => {
+            state.error_after_job_action = false;
             let since = if state.since.trim().is_empty() {
                 None
             } else {
@@ -230,6 +236,8 @@ fn valid_base_name(name: &str) -> bool {
 pub fn answered(state: &mut State, answer: &Result<Response, String>) {
     let Some(pending) = state.pending.take() else { return };
     state.error_in_backup = matches!(pending, Pending::Create | Pending::Poll | Pending::Cancel);
+    state.error_after_job_action = matches!(pending, Pending::Poll | Pending::Cancel);
+    state.error_after_apply = pending == Pending::Apply;
     match answer {
         Ok(Response::MailBackupJob { job }) if matches!(pending, Pending::Create | Pending::Poll | Pending::Cancel) => {
             if let Some(archive) = &job.archive
@@ -283,12 +291,10 @@ fn wrapped_row<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Mess
 }
 
 fn backup_group(state: &State) -> Element<'_, Message> {
-    let source = widgets::segmented(
-        [(tr("Server"), Message::Source(BackupScope::Server)), (tr("Local"), Message::Source(BackupScope::Local))],
-        if state.source == BackupScope::Server { 0 } else { 1 },
-    );
     let mut rows = vec![
-        setting_row(None, tr("Backup source"), None, source),
+        row_frame(typo::text(typo::body_strong(), tr("Backup source")), false),
+        choice(tr("Server"), state.source == BackupScope::Server, Message::Source(BackupScope::Server)),
+        choice(tr("Local"), state.source == BackupScope::Local, Message::Source(BackupScope::Local)),
         setting_row(
             None,
             tr("From date"),
@@ -315,6 +321,12 @@ fn backup_group(state: &State) -> Element<'_, Message> {
         (state.pending.is_none() && !state.active_job()).then_some(Message::Create),
     );
     rows.push(row_frame(start, false));
+    if state.error_in_backup
+        && !state.error_after_job_action
+        && let Some(error) = &state.error
+    {
+        rows.push(wrapped_row(typo::text(typo::body(), error.clone()).wrapping(Wrapping::WordOrGlyph)));
+    }
     if let Some(job) = &state.job {
         rows.push(row_frame(
             typo::text(
@@ -354,6 +366,7 @@ fn backup_group(state: &State) -> Element<'_, Message> {
         }
     }
     if state.error_in_backup
+        && state.error_after_job_action
         && let Some(error) = &state.error
     {
         rows.push(wrapped_row(typo::text(typo::body(), error.clone()).wrapping(Wrapping::WordOrGlyph)));
@@ -376,6 +389,12 @@ fn restore_group<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
         widgets::text_button(None, tr("Run restore test"), style::button::secondary, ready.then_some(Message::Plan));
     rows.push(row_frame(verify, false));
     rows.push(row_frame(plan, false));
+    if !state.error_in_backup
+        && !state.error_after_apply
+        && let Some(error) = &state.error
+    {
+        rows.push(wrapped_row(typo::text(typo::body(), error.clone()).wrapping(Wrapping::WordOrGlyph)));
+    }
     if let Some(verification) = &state.verification {
         rows.push(row_frame(
             typo::text(
@@ -475,6 +494,7 @@ fn restore_group<'a>(state: &'a State, account: &str) -> Element<'a, Message> {
         }
     }
     if !state.error_in_backup
+        && state.error_after_apply
         && let Some(error) = &state.error
     {
         rows.push(wrapped_row(typo::text(typo::body(), error.clone()).wrapping(Wrapping::WordOrGlyph)));

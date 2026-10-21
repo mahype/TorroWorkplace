@@ -2077,6 +2077,8 @@ pub struct App<S> {
     suite: Source,
     /// The settings in the content area, while they are open (task S.20).
     settings: Option<SettingsPane>,
+    /// Keep mail backup jobs and in-flight answers when the settings content area is hidden.
+    saved_mail_settings: Option<Box<settings_mail::State>>,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
@@ -3049,6 +3051,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             design: Follow::for_source(&suite),
             suite,
             settings: None,
+            saved_mail_settings: None,
             opened: false,
             categories: Vec::new(),
             open_groups: std::collections::BTreeSet::new(),
@@ -3844,7 +3847,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 } else if self.settings.is_some() {
                     // The settings cover the content area; Escape gives it back (task S.20). What
                     // was open behind them – the panel, a search – comes back with it.
-                    self.settings = None;
+                    self.leave_settings();
                 } else if self.suggesting {
                     self.suggesting = false;
                 } else if !self.selected_mail.is_empty() {
@@ -3894,6 +3897,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(pane) = self.settings.as_mut()
                     && let SettingsState::Mail(state) = &mut pane.sections
                 {
+                    settings_mail::backup_answered(state, &account, &answer);
+                } else if let Some(state) = self.saved_mail_settings.as_mut() {
                     settings_mail::backup_answered(state, &account, &answer);
                 }
             }
@@ -5298,7 +5303,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn toggle_settings(&mut self) -> Task<Message> {
         self.close_menus();
         if self.settings.is_some() {
-            self.settings = None;
+            self.leave_settings();
             return Task::none();
         }
         self.open_settings(None)
@@ -5314,13 +5319,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if let Some(id) = section {
             host.open(id);
         }
-        self.settings = Some(SettingsPane { host, sections: kind.settings_state() });
+        let sections = self.saved_mail_settings.take().map_or_else(|| kind.settings_state(), SettingsState::Mail);
+        self.settings = Some(SettingsPane { host, sections });
         load.map(Message::SettingsHost)
     }
 
     /// The content area shows entries again: the settings step aside, with everything they held.
     fn leave_settings(&mut self) {
-        self.settings = None;
+        if let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = self.settings.take() {
+            self.saved_mail_settings = Some(state);
+        }
     }
 
     /// What the host asks of the window: the browser and the control centre are the window's;
@@ -5334,7 +5342,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             // seconds later. The same loads a tick does.
             Outcome::Changed => Task::batch([self.fetch_appearance(), self.fetch_look(), self.load()]),
             Outcome::Close => {
-                self.settings = None;
+                self.leave_settings();
                 Task::none()
             }
             Outcome::OpenUrl(url) => self.open_url(url),
@@ -14293,6 +14301,25 @@ mod tests {
         let _ = app.update(Message::OpenSettings);
         let _ = app.update(Message::Tick);
         assert!(app.settings.is_some());
+    }
+
+    #[test]
+    fn mail_settings_reopen_keeps_backup_state() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let _ = app.update(Message::OpenSettings);
+        let original = match &app.settings.as_ref().expect("settings open").sections {
+            SettingsState::Mail(state) => &**state as *const settings_mail::State,
+            SettingsState::Inbox(_) => panic!("mail window has mail settings"),
+        };
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_none());
+        assert!(app.saved_mail_settings.is_some());
+        let _ = app.update(Message::OpenSettings);
+        let reopened = match &app.settings.as_ref().expect("settings reopened").sections {
+            SettingsState::Mail(state) => &**state as *const settings_mail::State,
+            SettingsState::Inbox(_) => panic!("mail window has mail settings"),
+        };
+        assert_eq!(original, reopened, "the same backup state remains available after closing the page");
     }
 
     /// A change behind the gear reaches the entries at once: when the host reports it stored

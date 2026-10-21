@@ -100,6 +100,8 @@ async fn restore_append_streams_raw_bytes_with_date_and_keywords() {
         .expect("appended");
     assert_eq!(appended, Some(AppendUid { uid_validity: 42, uid: 8 }));
     assert!(backup_flag_transferable("$Work"));
+    assert!(backup_flag_transferable("\\seen"));
+    assert!(backup_flag_transferable("\\FLAGGED"));
     assert!(!backup_flag_transferable("\\Deleted"));
     assert!(!backup_flag_transferable("bad flag"));
 }

@@ -2118,6 +2118,34 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Mail backup is incomplete because the source changed.",
         "Das Mail-Backup ist unvollständig, weil sich die Quelle geändert hat.",
     ),
+    (
+        "Mail backup is incomplete: a source message disappeared while reading.",
+        "Das Mail-Backup ist unvollständig: Beim Lesen ist eine Nachricht aus der Quelle verschwunden.",
+    ),
+    (
+        "Mail backup is incomplete: the server returned an incomplete message body.",
+        "Das Mail-Backup ist unvollständig: Der Server hat einen unvollständigen Nachrichtentext geliefert.",
+    ),
+    (
+        "Mail backup is incomplete: IMAP message identifiers changed.",
+        "Das Mail-Backup ist unvollständig: Die IMAP-Nachrichtenkennungen haben sich geändert.",
+    ),
+    (
+        "Mail backup is incomplete: the folder inventory changed while reading.",
+        "Das Mail-Backup ist unvollständig: Der Ordnerbestand hat sich beim Lesen geändert.",
+    ),
+    (
+        "Mail backup is incomplete: a local original is missing or damaged.",
+        "Das Mail-Backup ist unvollständig: Ein lokales Original fehlt oder ist beschädigt.",
+    ),
+    (
+        "Mail backup is incomplete: the local mail inventory changed while reading.",
+        "Das Mail-Backup ist unvollständig: Der lokale Mail-Bestand hat sich beim Lesen geändert.",
+    ),
+    (
+        "The IMAP server marks this folder as non-selectable; its messages cannot be inventoried",
+        "Der IMAP-Server markiert diesen Ordner als nicht auswählbar; seine Nachrichten können nicht inventarisiert werden",
+    ),
     ("Mail backup was cancelled.", "Das Mail-Backup wurde abgebrochen."),
     (
         "Local mail headers without an original were omitted.",

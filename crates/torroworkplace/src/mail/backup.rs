@@ -185,7 +185,33 @@ impl BackupRunError {
             Self::Imap(ImapError::Auth(_)) => tr("Password was refused").into(),
             Self::Imap(ImapError::Offline(_)) => tr("The server cannot be reached.").into(),
             Self::Imap(_) => tr("The mail server answered unexpectedly.").into(),
-            Self::Incomplete(_) => tr("Mail backup is incomplete because the source changed.").into(),
+            Self::Incomplete(reason) => match *reason {
+                "message disappeared during metadata fetch"
+                | "message disappeared during body fetch"
+                | "messages disappeared during backup" => {
+                    tr("Mail backup is incomplete: a source message disappeared while reading.").into()
+                }
+                "server returned a short body chunk" => {
+                    tr("Mail backup is incomplete: the server returned an incomplete message body.").into()
+                }
+                "source returned a different UID"
+                | "UIDVALIDITY changed during backup"
+                | "UIDVALIDITY changed during final inventory" => {
+                    tr("Mail backup is incomplete: IMAP message identifiers changed.").into()
+                }
+                "folder kept changing during backup"
+                | "folder list changed during backup"
+                | "messages changed during final inventory" => {
+                    tr("Mail backup is incomplete: the folder inventory changed while reading.").into()
+                }
+                "local original disappeared" | "local original was truncated" | "local original hash changed" => {
+                    tr("Mail backup is incomplete: a local original is missing or damaged.").into()
+                }
+                "local folder changed" | "local originals changed during backup" => {
+                    tr("Mail backup is incomplete: the local mail inventory changed while reading.").into()
+                }
+                _ => tr("Mail backup is incomplete because the source changed.").into(),
+            },
             Self::Cancelled => tr("Mail backup was cancelled.").into(),
             Self::File(_) | Self::Archive(_) | Self::Store(_) | Self::Io(_) | Self::Random => {
                 tr("Mail backup could not be completed.").into()
@@ -420,6 +446,7 @@ async fn run_server_backup(
     command.release();
     let mut paths = HashSet::new();
     let mut aggregate_paths = HashSet::new();
+    let mut warnings = Vec::new();
     let mut folders = Vec::new();
     for folder in listed {
         if !paths.insert(folder.path.clone()) {
@@ -436,6 +463,14 @@ async fn run_server_backup(
             .or_else(|| folder.path.eq_ignore_ascii_case("INBOX").then(|| "inbox".to_string()))
             .or_else(|| aggregate.then(|| "all".to_string()));
         let selectable = folder.selectable();
+        if !selectable {
+            let reason = if folder.has_attribute("\\NonExistent") { "\\NonExistent" } else { "\\Noselect" };
+            warnings.push(format!(
+                "{}: {} ({reason})",
+                tr("The IMAP server marks this folder as non-selectable; its messages cannot be inventoried"),
+                folder.path
+            ));
+        }
         folders.push(Folder {
             id: String::new(),
             name: folders::display_name(&folder.path, folder.delimiter),
@@ -464,7 +499,7 @@ async fn run_server_backup(
         counts: Counts { folders: folders.len() as u64, messages: 0, bytes: 0 },
         folders,
         messages: Vec::new(),
-        warnings: Vec::new(),
+        warnings,
     };
     jobs.progress(job_id, manifest.counts.folders, 0, 0);
     let mut pending = PendingBackup::new_in(&dirs, filename, target_dir)?;
@@ -801,7 +836,16 @@ struct TargetMetadata {
 }
 
 fn transferable_flags(flags: &[String]) -> Vec<String> {
-    let mut kept: Vec<String> = flags.iter().filter(|flag| backup_flag_transferable(flag)).cloned().collect();
+    let mut kept: Vec<String> = flags
+        .iter()
+        .filter(|flag| backup_flag_transferable(flag))
+        .map(|flag| {
+            ["\\Seen", "\\Answered", "\\Flagged", "\\Draft"]
+                .iter()
+                .find(|system| flag.eq_ignore_ascii_case(system))
+                .map_or_else(|| flag.clone(), |system| (*system).into())
+        })
+        .collect();
     kept.sort();
     kept
 }
@@ -1270,7 +1314,11 @@ impl RestorePlans {
                 let mut command = mail.command(account).await?;
                 command.session().create_folder(&folder.path, None).await?;
                 command.release();
-                target = inspect_restore_target(mail, account, &manifest).await?;
+                let refreshed = inspect_restore_target(mail, account, &manifest).await?;
+                if !target_preserves_plan(&target, &refreshed) || !target_preserves_plan(&planned_target, &refreshed) {
+                    return Err(BackupRunError::Incomplete("restore target changed after creating a folder"));
+                }
+                target = refreshed;
                 if !target.selectable.contains_key(&folder.path) {
                     return Err(BackupRunError::Incomplete("created restore folder is not selectable"));
                 }
@@ -1292,7 +1340,7 @@ impl RestorePlans {
                 .unwrap_or(0);
             let used = consumed.entry(key).or_default();
             if let Some(before) = journal.pending.get(&message.path).copied() {
-                if count <= before {
+                if count != before.saturating_add(1) {
                     result.uncertain += 1;
                     result
                         .warnings
@@ -1312,8 +1360,7 @@ impl RestorePlans {
             )?;
             archive.copy_message(index, &mut spool)?;
             spool.seek(SeekFrom::Start(0))?;
-            let flags: Vec<String> =
-                message.flags.iter().filter(|flag| backup_flag_transferable(flag)).cloned().collect();
+            let flags = transferable_flags(&message.flags);
             let before = target
                 .selectable
                 .get(*folder)
@@ -1373,6 +1420,7 @@ impl RestorePlans {
 mod tests {
     use std::collections::{HashMap, HashSet};
     use std::fs;
+
     use std::io::Write;
     use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1381,14 +1429,32 @@ mod tests {
     use torro_ipc::mail::{BackupJob, BackupPhase, BackupScope};
 
     use super::{
-        BackupFileError, BackupJobs, BackupProgress, CANCELLED, COMMITTING, JobEntry, PendingBackup, RUNNING,
-        RestoreJournal, RestorePlans, manifest_digest, run_local_backup, run_server_backup, uid_inventory_hash,
-        write_verified_backup,
+        BackupFileError, BackupJobs, BackupProgress, BackupRunError, CANCELLED, COMMITTING, JobEntry, PendingBackup,
+        RUNNING, RestoreJournal, RestorePlans, manifest_digest, run_local_backup, run_server_backup,
+        uid_inventory_hash, write_verified_backup,
     };
     use crate::account::github::tests::MemoryTokens;
     use crate::mail::MailDirs;
     use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
     use crate::mail::sync::fake::FakeImap;
+
+    #[test]
+    fn incomplete_backup_reports_the_specific_source_problem() {
+        let gone = BackupRunError::Incomplete("message disappeared during body fetch").user_message();
+        let changed = BackupRunError::Incomplete("UIDVALIDITY changed during backup").user_message();
+        let short = BackupRunError::Incomplete("server returned a short body chunk").user_message();
+        assert_ne!(gone, changed);
+        assert_ne!(gone, short);
+        assert_ne!(changed, short);
+    }
+
+    #[test]
+    fn transferable_system_flags_use_canonical_spelling() {
+        assert_eq!(
+            super::transferable_flags(&["\\seen".into(), "\\FLAGGED".into(), "$Work".into()]),
+            vec!["$Work", "\\Flagged", "\\Seen"]
+        );
+    }
 
     const SAMPLE_ZIP: &[u8] = include_bytes!("../../../torro-mail-backup/tests/fixtures/sample-v1.zip");
 
@@ -1554,6 +1620,33 @@ mod tests {
                 .any(|line| { line.contains(" STORE ") || line.contains(" APPEND ") || line.contains(" CREATE ") })
         );
         assert!(root.path().join("data/mail/backups/all.zip").exists());
+    }
+
+    #[tokio::test]
+    async fn server_backup_reports_nonselectable_folders_in_the_archive() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Container", "\\Noselect \\HasChildren", 15);
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(root.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = Arc::new(service_in(root.path(), &secrets));
+        mail.reload().await;
+        let jobs = BackupJobs::default();
+        let state = AtomicU8::new(RUNNING);
+        let report = run_server_backup(
+            mail,
+            dirs(root.path()),
+            &account.id,
+            None,
+            "containers.zip",
+            None,
+            BackupProgress { jobs: &jobs, id: "containers", state: &state },
+        )
+        .await
+        .expect("backup");
+        assert!(report.complete);
+        assert!(report.warnings.iter().any(|warning| warning.contains("Container") && warning.contains("\\Noselect")));
     }
 
     #[tokio::test]
@@ -1783,6 +1876,44 @@ mod tests {
             plans.apply(&mail, &dirs(root.path()), &path, &account.id, &plan.id, false).await.expect("resolved");
         assert_eq!((outcome.added, outcome.skipped, outcome.uncertain), (0, 1, 0));
         assert!(RestoreJournal::open(&journal_path, &account.id, &digest).expect("journal").pending.is_empty());
+        assert!(!server.lines().iter().any(|line| line.contains(" APPEND ")));
+    }
+
+    #[tokio::test]
+    async fn two_matching_copies_do_not_resolve_one_uncertain_append() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(root.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(root.path(), &secrets);
+        mail.reload().await;
+        let path = root.path().join("sample.zip");
+        fs::write(&path, SAMPLE_ZIP).expect("sample");
+        let plans = RestorePlans::default();
+        let plan = plans.plan(&mail, "sample.zip".into(), &path, &account.id).await.expect("plan");
+        let mut archive = torro_mail_backup::restore::RestoreArchive::open(std::io::Cursor::new(SAMPLE_ZIP))
+            .expect("verified sample");
+        let digest = manifest_digest(archive.manifest()).expect("digest");
+        let message_path = archive.manifest().messages[0].path.clone();
+        let journal_path = RestoreJournal::path(&dirs(root.path()), &account.id, &digest).expect("private path");
+        let mut journal = RestoreJournal::open(&journal_path, &account.id, &digest).expect("new journal");
+        journal.pending.insert(message_path.clone(), 0);
+        journal.save(&journal_path).expect("pending before append");
+        let mut raw = Vec::new();
+        archive.copy_message(0, &mut raw).expect("EML");
+        let raw = String::from_utf8(raw).expect("sample text");
+        server.add("INBOX", &raw, &[]);
+        server.add("INBOX", &raw, &[]);
+        let outcome =
+            plans.apply(&mail, &dirs(root.path()), &path, &account.id, &plan.id, false).await.expect("safe stop");
+        assert_eq!((outcome.added, outcome.uncertain), (0, 1));
+        assert!(
+            RestoreJournal::open(&journal_path, &account.id, &digest)
+                .expect("journal")
+                .pending
+                .contains_key(&message_path)
+        );
         assert!(!server.lines().iter().any(|line| line.contains(" APPEND ")));
     }
 
