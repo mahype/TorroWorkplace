@@ -878,6 +878,7 @@ mod tests {
         assert_eq!(led.0, plain.0 + lead_rows_height());
         assert_eq!(led.1 - led.0, plain.1 - plain.0, "the row keeps its height");
         let rows = Rows {
+            selected_mail: &[],
             categories: &[],
             view: &crate::app::View::Overview,
             selected: None,
