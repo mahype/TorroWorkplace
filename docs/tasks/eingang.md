@@ -3833,12 +3833,15 @@ E16.1 semantische Farbe ── E16.2 Mail-Zeilen und -Karten
   Werte; `the_shipped_colour_schemes_stay_valid` besteht mit sämtlichen mitgelieferten Schemata.
 
 ### E16.2 Punkt links und stabile Typografie in allen Mail-Ansichten
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** E16.1 · **Dateien:** `crates/torroinbox/src/{list,mail,hub}.rs`,
+- [x] erledigt (2026-10-21): Punkt und Schriftwechsel in Mail-Zeilen und -Karten, feste
+  Absenderzelle und unveränderte Zeilen-/Kartenhöhe. Gezielte Tests und Workspace-Clippy bestehen;
+  vollständige Workspace-Tests sowie lokaler CI-Lauf treffen auf vorhandene Fehler in
+  `origin/main` (doppelter i18n-Eintrag, vier Design-Check-Funde).
+- **Modell:** Opus · **Braucht:** E16.1 · **Dateien:** `crates/torroinbox/src/{list,mail,hub,notifications}.rs`,
   `crates/torro-gui/src/widgets.rs` (Kartenkopf mit wählbarer Schriftstufe)
 - `list::avatar` zeichnet nur noch Initialen und Kontofläche; den Parameter `new` aus Signatur und
   Aufrufern entfernen. Die Mail-Zeile zeichnet den 8px-Punkt (`space::s()`) im linken Innenabstand
-  von `list::sized_row` über einen neuen Parameter `unread: bool`, mit reserviertem Platz auch im
+  von `list::sized_row` über `unread: Option<bool>` (`None` für andere Zeilen), mit reserviertem Platz auch im
   gelesenen Zustand. `entry_row`, `mail::message_row` und `hub::entry_row` liefern den Status;
   `notifications::entry_row` bleibt eine normale Hinweiszeile. Falls ein eigenes Design weniger
   linken Innenabstand hat, wird der nötige Platz für beide Zustände gleichermaßen reserviert.

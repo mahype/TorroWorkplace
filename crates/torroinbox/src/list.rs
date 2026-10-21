@@ -6,10 +6,10 @@
 //!
 //! - a **mail entry** ([`size::row_message()`]): a round avatar with the sender's initials on the
 //!   account's colour, tinted ([`account_index`]; neutral for an account not listed); the sender
-//!   (`BODY_STRONG`) with the domain (`META`, `text_3`) and the time at the right; the subject
-//!   (`BODY_STRONG` while new, else `BODY`) with the number of messages from two on; the preview in
+//!   (`BODY_STRONG` while new, else `BODY`) with the domain (`META`, `text_3`) and the time at the
+//!   right; the subject (`BODY_STRONG` while new, else `BODY`) with the number of messages from two on; the preview in
 //!   `text_2` on one line, and at its right – with two accounts or more – the account as dot and
-//!   name. New is a small dot in `text` at the avatar, never red; read but open entries keep their
+//!   name. New has a blue dot in the left row inset; read but open entries keep their
 //!   subject in `text` and nothing fainter than `text_2`.
 //! - **any other entry** ([`size::row_notice()`]): the source's icon on a small tile (in the
 //!   attention colour while it waits – never Torro red, E3.2b), the title (medium weight while new)
@@ -168,6 +168,7 @@ pub(crate) fn cell_gap() -> f32 {
 
 /// Width of the bar at the left of the selected row, as `widgets::list_row` draws it.
 const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
+const MAIL_ROW_LINES: usize = 3;
 
 /// Edge of the avatar of a mail row, and the width the marks of all rows take, so the text of mail
 /// and of notices starts at the same x.
@@ -180,7 +181,7 @@ pub(crate) fn tile() -> f32 {
     size::control_sm()
 }
 
-/// Edge of the "new" dot at the avatar.
+/// Edge of the unread dot in the left inset.
 fn new_dot() -> f32 {
     space::s()
 }
@@ -359,7 +360,9 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     } else {
         notice_content(item, rows, width)
     };
-    let row = sized_row(with_strip(content, actions, width), selected, Message::Select(item.id.clone()), height);
+    let unread = (item.source.kind == SourceKind::Mail).then_some(item.state == State::New);
+    let row =
+        sized_row(with_strip(content, actions, width), selected, unread, Message::Select(item.id.clone()), height);
     let row = if rows.bare && item.source.kind == SourceKind::Mail {
         mouse_area(row).on_right_press(Message::ContextEntry(item.id.clone())).into()
     } else {
@@ -586,7 +589,7 @@ pub(crate) struct MailCard<'a> {
 }
 
 /// A mail card `width` wide (task E8.3, `widgets::card`): the head with the avatar
-/// ([`size::avatar()`], new with its dot), the sender and "domain · account · time"
+/// ([`size::avatar()`]), the sender and "domain · account · time"
 /// ([`widgets::card_head`]); the subject (medium weight while new); the preview on up to
 /// [`PREVIEW_LINES`] lines in `text_2`, as many as it takes ([`preview_lines`]); then the chips in a
 /// row. No buttons (task E14.2). As high as [`mail_card_height`] says for these parts.
@@ -596,13 +599,13 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, .. } = lines;
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map_or(Color::TRANSPARENT, |hits| hits.text);
-    let lead = avatar(&name, account, new, size::avatar());
+    let lead = avatar(&name, account, size::avatar());
     let account_name = account_shown(account_name, domain.as_deref());
     let meta: Vec<String> =
         [domain, account_name, Some(time)].into_iter().flatten().filter(|p| !p.is_empty()).collect();
-    let head = widgets::card_head(Some(lead), name, meta.join(" · "), None);
+    let head = widgets::card_head_with_level(Some(lead), name, meta.join(" · "), mail_text_level(new), None);
 
-    let level = if new { typo::body_strong() } else { typo::body() };
+    let level = mail_text_level(new);
     let subject = marked(typo::ellipsize(&subject, level, inner), level, theme::text, &words, hit_colour);
     let mut text = column![subject].spacing(space::xs());
     if let Some(preview) = preview {
@@ -620,7 +623,19 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     if !chips.is_empty() {
         parts.push(container(widgets::chip_row(chips)).center_y(size::control_sm()).clip(true).into());
     }
-    widgets::card(parts, selected, Some(on_press))
+    mail_card_mark(widgets::card(parts, selected, Some(on_press.clone())), new, on_press)
+}
+
+/// Place the unread marker over the card's existing left inset. The marker receives the same
+/// click as the card, so it does not leave a dead area in the card's hit target.
+pub(crate) fn mail_card_mark<'a>(card: Element<'a, Message>, unread: bool, on_press: Message) -> Element<'a, Message> {
+    if !unread {
+        return card;
+    }
+    let pad = layout::panel_padding();
+    let marker = container(unread_dot()).center_x(pad.left).center_y(size::avatar());
+    let overlay = mouse_area(column![blank().height(pad.top), marker]).on_press(on_press);
+    stack![card, overlay].into()
 }
 
 /// The height of a mail card ([`mail_card`]) with `preview` lines of preview ([`preview_lines`]),
@@ -701,22 +716,42 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     if cursor { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 
-/// A row of the list `height` high (including its line): `content` with 16 at the sides, centred
-/// in the height, the bar at the left while `selected`, a line below – `widgets::list_row` at
-/// another height.
+/// A row of the list `height` high (including its line): `content` with the design's inset,
+/// centred in the height, the bar at the left while `selected`, a line below. For mail,
+/// `Some(unread)` reserves the same marker slot in both read states; `None` leaves other rows as-is.
 pub(crate) fn sized_row<'a>(
     content: Element<'a, Message>,
     selected: bool,
+    unread: Option<bool>,
     on_press: Message,
     height: f32,
 ) -> Element<'a, Message> {
     let pad = layout::row_padding();
-    let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
+    let left =
+        unread.map_or_else(|| if selected { pad.left - SELECTED_BAR } else { pad.left }, |_| mail_row_left(selected));
     let height = height - size::HAIRLINE;
-    let body: Element<'a, Message> = button(container(content).center_y(Fill))
+    let content: Element<'a, Message> = if let Some(unread) = unread {
+        let marker: Element<'a, Message> = if unread { unread_dot() } else { blank().into() };
+        // The action strip can extend a selected row. Align the dot with the avatar in the
+        // original three-line mail row rather than the centre of the expanded row.
+        let marker = container(marker)
+            .width(left)
+            .height(mark_width())
+            // The selected bar takes space from this slot; keep the dot at the same absolute x.
+            .padding(Padding::ZERO.right(if selected { SELECTED_BAR } else { 0.0 }))
+            .align_x(iced::Center)
+            .align_y(iced::Center);
+        let slot = column![blank().height(lines_top(message_height(), MAIL_ROW_LINES)), marker, blank().height(Fill)]
+            .width(left)
+            .height(Fill);
+        row![slot, container(content).center_y(Fill).width(Fill)].height(Fill).into()
+    } else {
+        container(content).center_y(Fill).into()
+    };
+    let body: Element<'a, Message> = button(content)
         .width(Fill)
         .height(height)
-        .padding(Padding::new(0.0).left(left).right(pad.right))
+        .padding(Padding::new(0.0).left(if unread.is_some() { 0.0 } else { left }).right(pad.right))
         .style(style::button::list_row(selected))
         .on_press(on_press)
         .into();
@@ -730,6 +765,33 @@ pub(crate) fn sized_row<'a>(
         body
     };
     column![line, rule::horizontal(size::HAIRLINE).style(style::rule)].into()
+}
+
+fn mail_row_left(selected: bool) -> f32 {
+    let left = layout::row_padding().left.max(new_dot() + 2.0 * space::xs());
+    if selected { left - SELECTED_BAR } else { left }
+}
+
+fn unread_dot<'a>() -> Element<'a, Message> {
+    container(blank())
+        .width(new_dot())
+        .height(new_dot())
+        .style(|t: &Theme| container::Style {
+            background: Some(Background::Color(palette(t).unread)),
+            border: border::rounded(new_dot() / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn mail_text_level(unread: bool) -> Level {
+    if unread { typo::body_strong() } else { typo::body() }
+}
+
+fn sender_cell(name: &str, room: f32) -> (String, f32) {
+    let shown = typo::ellipsize(name, typo::body_strong(), room);
+    let width = typo::text_width(&shown, typo::body_strong());
+    (shown, width)
 }
 
 /// The width the lines of a row `width` wide have beside the mark: minus the row's sides, the mark
@@ -873,7 +935,7 @@ pub(crate) fn account_shown(account_name: Option<String>, domain: Option<&str>) 
 /// The content of a mail row `width` wide (task E3.9): avatar, then sender · domain · (marks) ·
 /// time, subject (· count), preview (· account, unless it is the sender's domain: [`account_shown`]).
 pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
-    let room = words_room(width);
+    let room = (words_room(width) - (mail_row_left(false) - layout::row_padding().left)).max(0.0);
     let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
@@ -882,12 +944,13 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
     // Sender, then the domain in what is left, then the marks and the time.
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
     let first_room = room - end_width(&time, typo::meta()) - marks_width;
-    let name_shown = typo::ellipsize(&name, typo::body_strong(), first_room);
-    let left = first_room - typo::text_width(&name_shown, typo::body_strong()) - space::s();
+    let (name_shown, name_width) = sender_cell(&name, first_room);
+    let left = first_room - name_width - space::s();
     let domain = domain.map(|domain| typo::ellipsize(&domain, typo::meta(), left)).filter(|d| !d.is_empty());
-    let mut who = row![typo::text(typo::body_strong(), name_shown).style(theme::text).wrapping(Wrapping::None)]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
+    let sender = container(typo::text(mail_text_level(new), name_shown).style(theme::text).wrapping(Wrapping::None))
+        .width(name_width)
+        .clip(true);
+    let mut who = row![sender].spacing(space::s()).align_y(Alignment::Center);
     if let Some(domain) = domain {
         who = who.push(typo::text(typo::meta(), domain).style(theme::text_3).wrapping(Wrapping::None));
     }
@@ -896,7 +959,7 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
     let first = line(who, ends);
 
     // The subject, with the number of messages from two on.
-    let level = if new { typo::body_strong() } else { typo::body() };
+    let level = mail_text_level(new);
     let subject_room = room - count.as_deref().map_or(0.0, pill_width);
     let subject = marked(typo::ellipsize(&subject, level, subject_room), level, theme::text, &words, hit_colour);
     let second = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
@@ -912,7 +975,7 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
         .into_iter()
         .collect();
     let words = column![first, second, line(preview, ends)].width(Fill);
-    row![avatar(&name, account, new, mark_width()), words].spacing(space::m()).align_y(Alignment::Start).into()
+    row![avatar(&name, account, mark_width()), words].spacing(space::m()).align_y(Alignment::Start).into()
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -990,9 +1053,8 @@ pub(crate) fn source_tile<'a>(item: &Item) -> Element<'a, Message> {
 /// The round avatar of a mail row or card, `edge` wide ([`mark_width`] in a row, [`size::avatar()`]
 /// on a card, [`size::avatar_lg()`] in the reader): the initials of `name` ([`initials`], `CAPTION`,
 /// `text`) on the colour of the account at `account` ([`account_index`]) tinted over the panel, or
-/// on `raised` for an account not listed. A `new` entry has a small dot in `text` at its top right –
-/// never red.
-pub(crate) fn avatar<'a>(name: &str, account: Option<usize>, new: bool, edge: f32) -> Element<'a, Message> {
+/// on `raised` for an account not listed.
+pub(crate) fn avatar<'a>(name: &str, account: Option<usize>, edge: f32) -> Element<'a, Message> {
     let letters = typo::text(typo::caption(), initials(name)).style(theme::text).wrapping(Wrapping::None);
     let face = container(letters).center(edge).style(move |t: &Theme| {
         let p = palette(t);
@@ -1006,15 +1068,7 @@ pub(crate) fn avatar<'a>(name: &str, account: Option<usize>, new: bool, edge: f3
             ..container::Style::default()
         }
     });
-    if !new {
-        return face.into();
-    }
-    let dot = container(blank()).width(new_dot()).height(new_dot()).style(|t: &Theme| container::Style {
-        background: Some(Background::Color(palette(t).text)),
-        border: border::rounded(new_dot() / 2.0),
-        ..container::Style::default()
-    });
-    stack![face, container(dot).width(edge).height(edge).align_right(edge).align_top(edge)].into()
+    face.into()
 }
 
 /// The account at the end of the preview's line: its dot in the account's colour and its name
@@ -1563,6 +1617,35 @@ mod tests {
         assert_eq!(account_index(&mail("A", "a@b.c", "other@x.org"), &accounts), None, "not listed: neutral");
         assert_eq!(account_index(&demo::sample(now()).remove(0), &accounts), None, "no mail");
         assert_eq!(account_label(&item.source), "work.example.org");
+    }
+
+    #[test]
+    fn reading_mail_keeps_the_row_geometry_and_changes_both_text_levels() {
+        let view = View::ForMe;
+        let rows = rows_on(&view, "demo-1", true);
+        let mut item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let unread = MailLines::of(&item, &rows).new;
+        let height = row_height_of(&item);
+        let left = mail_row_left(false);
+        item.state = State::Seen;
+        let read = MailLines::of(&item, &rows).new;
+        assert!(unread && !read);
+        assert_eq!(row_height_of(&item), height);
+        assert_eq!(mail_row_left(false), left);
+        assert_eq!(mail_text_level(unread), typo::body_strong());
+        assert_eq!(mail_text_level(read), typo::body());
+        assert_eq!(mail_row_left(true) + SELECTED_BAR, left, "selection does not move the content");
+    }
+
+    #[test]
+    fn sender_cell_reserves_the_strong_width_for_read_mail() {
+        let name = "Jonas Weber";
+        let (shown, width) = sender_cell(name, 180.0);
+        assert_eq!(shown, name);
+        assert_eq!(width, typo::text_width(name, typo::body_strong()));
+        let (short, clipped_width) = sender_cell(name, width / 2.0);
+        assert!(short.ends_with('…'));
+        assert!(clipped_width <= width / 2.0);
     }
 
     fn labels(actions: &[RowAction<'_, Message>]) -> Vec<String> {

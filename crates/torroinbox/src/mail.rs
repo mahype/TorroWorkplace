@@ -1386,10 +1386,15 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
     let strip = if actions.is_empty() { 0.0 } else { list::strip_height() };
     let content = list::with_strip(list::mail_content(lines, width), actions, width);
-    let row: Element<'a, Message> =
-        mouse_area(list::sized_row(content, selected, on_press, list::message_height() + strip))
-            .on_right_press(Message::ContextMail(message.id.clone()))
-            .into();
+    let row: Element<'a, Message> = mouse_area(list::sized_row(
+        content,
+        selected,
+        Some(!message.flags.contains(&Flag::Seen)),
+        on_press,
+        list::message_height() + strip,
+    ))
+    .on_right_press(Message::ContextMail(message.id.clone()))
+    .into();
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
     if data.selected == Some(message.id.as_str()) { widgets::anchored(&data.anchors.row, row) } else { row }
 }
@@ -2418,7 +2423,7 @@ fn head_with<'a>(
 fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f32) -> Element<'a, Message> {
     let name = sender_name(summary.from.as_ref());
     let edge = size::pill();
-    let face = list::avatar(&name, reading.account, false, edge);
+    let face = list::avatar(&name, reading.account, edge);
     let words_room = (room - edge - space::m()).max(0.0);
     // A flagged mail says so at its sender, as the panel's head of task E9.4 did: the name leaves
     // room for the flag, so a long one never pushes it out.

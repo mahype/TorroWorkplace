@@ -1269,7 +1269,7 @@ fn lead<'a>(item: &Item, rows: &Rows<'_>, attention: Color) -> Element<'a, Messa
     if item.source.kind == SourceKind::Mail {
         let (name, _) = list::sender(item);
         let account = list::account_index(item, &rows.accounts);
-        return list::avatar(&name, account, item.state == State::New, size::avatar());
+        return list::avatar(&name, account, size::avatar());
     }
     let tint = list::is_waiting(item).then_some(attention);
     widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Large, tint)
@@ -1349,6 +1349,9 @@ pub fn sort_buttons_room(width: f32) -> f32 {
 /// the panel.
 fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlots) -> Element<'a, Message> {
     let selected = data.rows.selected == Some(item.id.as_str());
+    let mail = item.source.kind == SourceKind::Mail;
+    let unread = mail && item.state == State::New;
+    let title_level = if mail && !unread { typo::body() } else { typo::body_strong() };
     let (title, _) = list::words(item);
     let meta = sort_meta(item, &data.rows);
     let pad = layout::panel_padding();
@@ -1364,7 +1367,10 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
             data.rows.anchors.wrap(selected, message.as_ref(), element)
         });
         let line = row(line).spacing(space::s()).align_y(Alignment::Center);
-        vec![widgets::card_head(Some(lead(item, &data.rows, data.attention)), title, meta, None), line.into()]
+        vec![
+            widgets::card_head_with_level(Some(lead(item, &data.rows, data.attention)), title, meta, title_level, None),
+            line.into(),
+        ]
     } else {
         let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
         for (slot, width) in slots.widths.iter().enumerate() {
@@ -1378,7 +1384,7 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
             };
             line = line.push(container(cell).width(width));
         }
-        let words = container(widgets::card_head(None, title, meta, None)).width(Fill);
+        let words = container(widgets::card_head_with_level(None, title, meta, title_level, None)).width(Fill);
         vec![
             row![lead(item, &data.rows, data.attention), words, line]
                 .spacing(space::m())
@@ -1386,7 +1392,9 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
                 .into(),
         ]
     };
-    let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
+    let on_press = Message::Select(item.id.clone());
+    let card = widgets::card(parts, selected, Some(on_press.clone()));
+    let card = if mail { list::mail_card_mark(card, unread, on_press) } else { card };
     if selected { widgets::anchored(&data.rows.anchors.row, card) } else { card }
 }
 
@@ -1401,7 +1409,8 @@ fn entry_row<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, 
     } else {
         list::notice_content(item, &data.rows, width)
     };
-    let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
+    let unread = (item.source.kind == SourceKind::Mail).then_some(item.state == State::New);
+    let line = list::sized_row(content, selected, unread, Message::Select(item.id.clone()), height);
     let actions: Vec<RowAction<'a, Message>> = acts(item)
         .into_iter()
         .filter_map(|act| {

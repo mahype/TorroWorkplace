@@ -2579,7 +2579,18 @@ pub fn card_head<'a, M: Clone + 'a>(
     meta: impl IntoFragment<'a>,
     dismiss: Option<M>,
 ) -> Element<'a, M> {
-    let mut words = column![one_line(typo::body_strong(), title, theme::text)];
+    card_head_with_level(lead, title, meta, typo::body_strong(), dismiss)
+}
+
+/// A card head whose title may use a lighter level, for read mail.
+pub fn card_head_with_level<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    title_level: typo::Level,
+    dismiss: Option<M>,
+) -> Element<'a, M> {
+    let mut words = column![one_line(title_level, title, theme::text)];
     let meta = meta.into_fragment();
     if !meta.is_empty() {
         words = words.push(one_line(typo::meta(), meta, theme::text_3));
