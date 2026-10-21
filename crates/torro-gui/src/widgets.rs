@@ -155,6 +155,11 @@ pub enum Mark {
     Dot(Color),
     /// A small square check box in a calendar colour, checked or not (calendar visibility in a menu).
     Check(Color, bool),
+    /// An icon in the row's tone with a filled dot in a status colour on its top-right corner, e.g. a
+    /// provider whose accounts need the person (issue #248). The dot is a shape, so the state does not
+    /// rest on colour alone, and the icon stays the entry's own, so two such entries stay apart in the
+    /// rail. The mark takes the icon's room; the dot reaches past its corner.
+    Badged(Icon, Color),
 }
 
 impl From<Icon> for Mark {
@@ -244,6 +249,7 @@ fn mark_view<'a, M: 'a>(mark: Mark, scale: Scale, tone: Tone) -> Element<'a, M> 
             container(blank()).width(edge).height(edge).style(move |_| ring(colour, edge)).into()
         }
         Mark::Dot(colour) => color_dot(colour, scale.dot()),
+        Mark::Badged(which, colour) => badged(toned(which, scale.icon(), tone), colour),
         Mark::Check(colour, checked) => {
             let edge = scale.ring();
             let inner: Element<'a, M> = if checked { tinted(Icon::Check, edge - 4.0, colour) } else { blank().into() };
@@ -256,6 +262,13 @@ fn mark_view<'a, M: 'a>(mark: Mark, scale: Scale, tone: Tone) -> Element<'a, M> 
                 .into()
         }
     }
+}
+
+/// `content` (an icon) with the dot of [`Mark::Badged`] in `colour` centred on its top-right corner.
+/// The dot keeps one size at every scale, the smallest that still reads as a shape; it adds no room,
+/// so rows and chips do not move when a state comes or goes. Shared with the panel's path marks.
+pub(crate) fn badged<'a, M: 'a>(content: Element<'a, M>, colour: Color) -> Element<'a, M> {
+    Element::new(badge::CornerDot { content, colour, edge: Scale::Small.dot() })
 }
 
 /// A transparent circle with a 2-px border in `colour`.
@@ -4216,6 +4229,86 @@ pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: O
     table.width(Fill).into()
 }
 
+/// The widget behind [`badged`]: Iced has no layer that may reach past its parent's bounds, so the
+/// dot is drawn as a quad over the corner after the content, outside the layout. Only for content
+/// that takes no input (an icon): events and operations are not passed on.
+mod badge {
+    use iced::advanced::layout::{self, Layout};
+    use iced::advanced::renderer::{self, Quad, Renderer as _};
+    use iced::advanced::widget::{Tree, tree};
+    use iced::advanced::{Widget, mouse};
+    use iced::{Background, Color, Element, Length, Rectangle, Renderer, Size, Theme, border};
+
+    /// `content` with a dot `edge` wide in `colour` on its top-right corner.
+    pub(super) struct CornerDot<'a, M> {
+        pub(super) content: Element<'a, M>,
+        pub(super) colour: Color,
+        pub(super) edge: f32,
+    }
+
+    /// Where the dot stands for content in `bounds`: its centre on the top-right corner.
+    pub(super) fn dot_bounds(bounds: Rectangle, edge: f32) -> Rectangle {
+        let half = edge / 2.0;
+        Rectangle { x: bounds.x + bounds.width - half, y: bounds.y - half, width: edge, height: edge }
+    }
+
+    /// The clip of the dot's layer: the dot and one pixel around it (the smoothed edge reaches past
+    /// the quad), within the `viewport`; `None` when none of it is in view.
+    pub(super) fn clip_bounds(dot: Rectangle, viewport: &Rectangle) -> Option<Rectangle> {
+        dot.expand(1.0).intersection(viewport)
+    }
+
+    impl<M> Widget<M, Theme, Renderer> for CornerDot<'_, M> {
+        fn tag(&self) -> tree::Tag {
+            self.content.as_widget().tag()
+        }
+
+        fn state(&self) -> tree::State {
+            self.content.as_widget().state()
+        }
+
+        fn children(&self) -> Vec<Tree> {
+            self.content.as_widget().children()
+        }
+
+        fn diff(&self, tree: &mut Tree) {
+            self.content.as_widget().diff(tree);
+        }
+
+        fn size(&self) -> Size<Length> {
+            self.content.as_widget().size()
+        }
+
+        fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+            let child = self.content.as_widget_mut().layout(tree, renderer, limits);
+            layout::Node::with_children(child.size(), vec![child])
+        }
+
+        fn draw(
+            &self,
+            tree: &Tree,
+            renderer: &mut Renderer,
+            theme: &Theme,
+            style: &renderer::Style,
+            layout: Layout<'_>,
+            cursor: mouse::Cursor,
+            viewport: &Rectangle,
+        ) {
+            if let Some(child) = layout.children().next() {
+                self.content.as_widget().draw(tree, renderer, theme, style, child, cursor, viewport);
+            }
+            let bounds = dot_bounds(layout.bounds(), self.edge);
+            // A layer of its own: wgpu draws a layer's quads before its images, so in the icon's layer
+            // the icon would cover the dot. A layer does not inherit the clip of the one around it, so
+            // it is clipped to the viewport (a scrolled page hides the dot with its entry), one pixel
+            // wider than the dot for its smoothed edge.
+            let Some(clip) = clip_bounds(bounds, viewport) else { return };
+            let quad = Quad { bounds, border: border::rounded(self.edge / 2.0), ..Quad::default() };
+            renderer.with_layer(clip, |renderer| renderer.fill_quad(quad, Background::Color(self.colour)));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// Task E12.7: the four group colours stand out on the panel in both modes, stay apart from
@@ -4274,6 +4367,31 @@ mod tests {
             )
             .foot(),
         ]
+    }
+
+    /// Issue #248: a badged mark keeps its own icon and adds a dot centred on the icon's top-right
+    /// corner, one size at every scale and without room of its own; it builds in rows, chips and both
+    /// sidebar modes.
+    #[test]
+    fn a_badged_mark_puts_a_dot_on_the_corner() {
+        let dot = badge::dot_bounds(rect(10.0, 20.0, 16.0, 16.0), Scale::Small.dot());
+        assert_eq!(dot, rect(23.0, 17.0, 6.0, 6.0), "centre on the corner (26, 20)");
+        let window = rect(0.0, 0.0, 800.0, 600.0);
+        assert_eq!(badge::clip_bounds(dot, &window), Some(rect(22.0, 16.0, 8.0, 8.0)), "room for the edge");
+        let page = rect(0.0, 20.0, 800.0, 580.0);
+        assert_eq!(badge::clip_bounds(dot, &page), Some(rect(22.0, 20.0, 8.0, 4.0)), "cut where the page ends");
+        assert_eq!(badge::clip_bounds(dot, &rect(0.0, 100.0, 800.0, 500.0)), None, "scrolled out of view");
+        let colour = Color::WHITE;
+        let mark = Mark::Badged(Icon::Cloud, colour);
+        assert_ne!(mark, Mark::Badged(Icon::Github, colour), "two badged entries keep their icons apart");
+        let _: Element<'_, Msg> = mark_view(mark, Scale::Row, Tone::Text2);
+        let _: Element<'_, Msg> = mark_view(mark, Scale::Small, Tone::Text);
+        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+            let _ = sidebar_item_in(mode, mark, "Nextcloud", Trail::Count(2), false, Msg::Go);
+            let _ = sidebar_item_in(mode, mark, "Nextcloud", Trail::Count(2), true, Msg::Go);
+        }
+        let _ = choice_chip("Nextcloud", Some(mark), true, Some(Msg::Go));
+        let _ = choice_chip("Nextcloud", Some(mark), false, Some(Msg::Go));
     }
 
     /// Task E14.1: the rail's mode goes back and forth, starts collapsed and is as wide as the

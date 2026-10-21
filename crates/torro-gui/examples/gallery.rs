@@ -2015,7 +2015,56 @@ impl Gallery {
                 .width(size::list())
                 .height(size::control_lg() + 2.0 * space::xl()),
         ];
+        // A state on an entry is a dot on its icon (issue #248), never only a tinted icon: in the
+        // sidebar, its rail and as a chip, chosen and not.
+        let in_need = Mark::Badged(Icon::Cloud, p.attention_text);
+        let failing = Mark::Badged(Icon::Github, p.error_text);
+        let badged = row![
+            container(column![
+                widgets::sidebar_item_in(
+                    shell::SidebarMode::Expanded,
+                    in_need,
+                    "Nextcloud",
+                    Trail::Count(2),
+                    true,
+                    Msg::Noop
+                ),
+                widgets::sidebar_item_in(
+                    shell::SidebarMode::Expanded,
+                    failing,
+                    "GitHub",
+                    Trail::Count(1),
+                    false,
+                    Msg::Noop
+                ),
+            ])
+            .width(size::sidebar()),
+            container(column![
+                widgets::sidebar_item_in(
+                    shell::SidebarMode::Rail,
+                    in_need,
+                    "Nextcloud",
+                    Trail::Count(2),
+                    true,
+                    Msg::Noop
+                ),
+                widgets::sidebar_item_in(
+                    shell::SidebarMode::Rail,
+                    failing,
+                    "GitHub",
+                    Trail::Count(1),
+                    false,
+                    Msg::Noop
+                ),
+            ])
+            .width(shell::rail()),
+            widgets::choice_chip("Nextcloud", Some(in_need), true, Some(Msg::Noop)),
+            widgets::choice_chip("GitHub", Some(failing), false, Some(Msg::Noop)),
+        ]
+        .spacing(space::l())
+        .align_y(Alignment::Center);
         let small = column![
+            section("State on an entry", badged.into()),
             section("Row actions", bars.into()),
             section("Toast", toasts.into()),
             section("State pills and label chips", pills.into()),

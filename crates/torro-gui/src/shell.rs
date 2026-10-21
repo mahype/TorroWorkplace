@@ -166,6 +166,19 @@ pub fn sidebar_mode(class: SizeClass, choice: SidebarMode) -> Option<SidebarMode
     }
 }
 
+/// The width of the content beside the sidebar for a window `width` wide in `class`, given the user's
+/// `choice` ([`sidebar_mode`]): the window less the sidebar or the rail and the inset margin, the whole
+/// window where no sidebar stands beside the content. Views that switch their own columns compare this
+/// width, not the window's, so a column does not change while the sidebar takes or gives back room.
+pub fn content_width(class: SizeClass, choice: SidebarMode, width: f32) -> f32 {
+    let side = match sidebar_mode(class, choice) {
+        Some(SidebarMode::Expanded) => size::sidebar(),
+        Some(SidebarMode::Rail) => rail(),
+        None => return width,
+    };
+    (width - side - layout::inset()).max(0.0)
+}
+
 /// Whether a key press is the sidebar shortcut `[` (as in Linear): the app then flips its choice
 /// (wide) or opens or closes the drawer (medium, narrow) – the same as the panel button. Ctrl and
 /// Alt are allowed, because some layouts type `[` with AltGr (German: AltGr+8, which Windows
@@ -1157,6 +1170,21 @@ mod tests {
                 assert_eq!(sidebar_mode(class, choice), None, "{class:?} has only the drawer");
             }
         }
+    }
+
+    /// Issue #248: the content is the window less the sidebar the class shows and the inset margin;
+    /// without a sidebar it is the whole window.
+    #[test]
+    fn the_content_width_leaves_out_the_sidebar_beside_it() {
+        let width = 1400.0;
+        let expanded = content_width(SizeClass::Wide, SidebarMode::Expanded, width);
+        assert_eq!(expanded, width - size::sidebar() - layout::inset());
+        assert_eq!(content_width(SizeClass::Wide, SidebarMode::Rail, width), width - rail() - layout::inset());
+        for choice in [SidebarMode::Expanded, SidebarMode::Rail] {
+            assert_eq!(content_width(SizeClass::Medium, choice, 800.0), 800.0 - rail() - layout::inset());
+            assert_eq!(content_width(SizeClass::Narrow, choice, 480.0), 480.0, "narrow: the whole window");
+        }
+        assert_eq!(content_width(SizeClass::Wide, SidebarMode::Expanded, 10.0), 0.0, "never below zero");
     }
 
     fn account(id: &str) -> PimAccount {

@@ -1541,7 +1541,10 @@ impl Ui {
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
         let page = column(notices).push(page).spacing(space::l());
         let providers = match self.section {
-            Section::Accounts => accounts::provider_column(&self.accounts, &self.data, class, &palette),
+            Section::Accounts => {
+                let content = shell::content_width(class, self.sidebar, self.size.width);
+                accounts::provider_column(&self.accounts, &self.data, class, content, &palette)
+            }
             _ => None,
         };
         // Beside the providers' column the page starts at it, as beside the sidebar (design skill,
