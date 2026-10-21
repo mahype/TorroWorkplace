@@ -151,8 +151,8 @@ mod tests {
             let key = format!("{}|{english}", crate::category::CONTEXT);
             de::TABLE.iter().any(|(table_key, _)| *table_key == key)
         };
-        for category in torro_mail::Category::ALL {
-            let english = crate::category::english_label(category);
+        for category in torro_mail::Category::BUILT_IN {
+            let english = crate::category::english_label(category).unwrap_or_default();
             assert!(entry(english), "{category:?} has no German word: add (\"category|{english}\", …) to de.rs");
         }
         for group in torro_mail::CategoryGroup::ALL {

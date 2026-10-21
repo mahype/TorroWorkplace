@@ -1712,6 +1712,7 @@ mod tests {
 
         let view = crate::app::View::Overview;
         let rows = Rows {
+            categories: &[],
             view: &view,
             selected: None,
             now: now(),

@@ -750,6 +750,23 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
+    /// How much mail of any folder is of `category` (task E15.2): what removing the category
+    /// would move.
+    pub fn count_category(&self, category: Category) -> Result<u64, MailStoreError> {
+        let count: i64 =
+            self.db
+                .query_row("SELECT count(*) FROM messages WHERE category = ?1", [category.key()], |row| row.get(0))?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// Files every mail of `category` as `replacement` (task E15.2), keeping where its category
+    /// came from and how sure a model was: the person's choice stays the person's. Returns how
+    /// many changed.
+    pub fn replace_category(&self, category: Category, replacement: Category) -> Result<usize, MailStoreError> {
+        let sql = "UPDATE messages SET category = ?2 WHERE category = ?1";
+        Ok(self.db.execute(sql, params![category.key(), replacement.key()])?)
+    }
+
     /// Keeps the two answers the same model call brings along besides the category (task E12.6):
     /// whether a reply is waited for and how pressing the mail is (0 routine, 1 soon, 2 urgent).
     /// Nothing reads them yet; they are kept so a later step need not run the model over the
@@ -771,6 +788,16 @@ impl MailStore {
         let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
         let sql = "SELECT id FROM messages WHERE folder_id = ?1 AND category IS NULL AND date >= ?2
             ORDER BY date DESC, seq DESC LIMIT ?3";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map(params![inbox.id, since.timestamp(), limit], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The mail of the inbox folder in the window the backlog run uses, newest first, with a
+    /// category or without (task E15.4): what sorting again goes through.
+    pub fn in_window(&self, since: DateTime<Utc>, limit: u32) -> Result<Vec<String>, MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+        let sql = "SELECT id FROM messages WHERE folder_id = ?1 AND date >= ?2 ORDER BY date DESC, seq DESC LIMIT ?3";
         let mut statement = self.db.prepare(sql)?;
         let rows = statement.query_map(params![inbox.id, since.timestamp(), limit], |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)

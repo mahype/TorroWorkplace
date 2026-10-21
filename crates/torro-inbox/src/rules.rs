@@ -22,7 +22,7 @@ use torro_mail::{Category, CategorySource, MailCategory, Order};
 
 use crate::item::{
     AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
-    RuleEffect, Sender, SourceKind, SourceRef, State,
+    RuleEffect, Sender, SortCondition, SortField, SortRule, SourceKind, SourceRef, State,
 };
 
 /// Days a done entry is kept before [`expired`] says it goes.
@@ -70,8 +70,9 @@ pub fn mail_lane(bulk: bool, remembered: Option<Lane>) -> Lane {
 ///
 /// In this order, and always [`CategorySource::Rule`]:
 ///
-/// 1. `remembered` – a category the person kept for this sender or domain
-///    ([`RuleEffect::Category`]). It wins over every header, because the person said so.
+/// 1. `remembered` – the category of the first sorting rule that holds ([`sort_category`], task
+///    E15.3), "Always for this sender?" among them. It wins over every header, because the person
+///    said so.
 /// 2. [`Category::Invitation`] – the mail invites to an event (iMIP, `invite`).
 /// 3. [`Category::AutoReply`] – `Auto-Submitted` says something other than `no`.
 /// 4. [`Category::Spam`] – `junk`: the mail lies in the folder the server keeps junk in.
@@ -96,6 +97,60 @@ pub fn mail_category(
         return None;
     };
     Some(MailCategory::by_rule(found))
+}
+
+/// What a sorting rule looks at in one mail (task E15.3): who sent it, its subject and as much of
+/// its text as the suite holds. All of it text from outside.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SortInput<'a> {
+    /// The sender's address ([`sender_key`]); `None` without one.
+    pub sender: Option<&'a str>,
+    pub subject: &'a str,
+    pub text: &'a str,
+}
+
+/// What the first of `rules` that holds for `mail` files it as (task E15.3, `docs/kategorien.md`,
+/// "Sortierregeln"): a rule holds when it is on, every one of its conditions holds and none of
+/// its exceptions. `rules` stand in their order, so the first wins and a tie is no tie. `None`:
+/// no rule holds, and the headers and the model have their say.
+pub fn sort_category(rules: &[SortRule], mail: &SortInput<'_>) -> Option<Category> {
+    rules.iter().find(|rule| sort_holds(rule, mail)).map(|rule| rule.category)
+}
+
+/// `rule` holds for `mail`: on, with at least one condition, all of them holding and none of the
+/// exceptions.
+pub fn sort_holds(rule: &SortRule, mail: &SortInput<'_>) -> bool {
+    rule.enabled
+        && !rule.conditions.is_empty()
+        && rule.conditions.iter().all(|condition| condition_holds(condition, mail))
+        && !rule.exceptions.iter().any(|exception| condition_holds(exception, mail))
+}
+
+/// One condition on one mail, without regard to upper and lower case: the sender's whole
+/// address, its domain or one below it, and words in the subject or the text.
+pub fn condition_holds(condition: &SortCondition, mail: &SortInput<'_>) -> bool {
+    let wanted = sort_value(condition.field, &condition.value);
+    if wanted.is_empty() {
+        return false;
+    }
+    match condition.field {
+        SortField::Sender => mail.sender.is_some_and(|sender| sender.trim().to_lowercase() == wanted),
+        SortField::Domain => mail.sender.and_then(domain_of).is_some_and(|domain| {
+            domain == wanted || domain.strip_suffix(&wanted).is_some_and(|below| below.ends_with('.'))
+        }),
+        SortField::Subject => mail.subject.to_lowercase().contains(&wanted),
+        SortField::Text => mail.text.to_lowercase().contains(&wanted),
+    }
+}
+
+/// How a condition's value is compared and kept (task E15.3): trimmed and in small letters; a
+/// domain without a leading `@` and a final dot, so `@Shop.Example.` is `shop.example`.
+pub fn sort_value(field: SortField, value: &str) -> String {
+    let value = value.trim().to_lowercase();
+    match field {
+        SortField::Domain => value.trim_start_matches('@').trim_end_matches('.').to_string(),
+        SortField::Sender | SortField::Subject | SortField::Text => value,
+    }
 }
 
 /// The category `rule` keeps for new mail of `sender` ([`RuleEffect::Category`]); `None` for every
@@ -1802,5 +1857,69 @@ mod tests {
         let entry: Item = serde_json::from_value(json).expect("deserialize");
         assert_eq!(entry.source, SourceRef::suite());
         assert_eq!((entry.body, entry.link, entry.actions), (None, None, Vec::new()));
+    }
+
+    /// Task E15.3: the first rule that holds decides; an exception beats its conditions; a rule
+    /// switched off or without conditions holds for nothing; the fields compare as
+    /// `docs/kategorien.md` says.
+    #[test]
+    fn the_first_sorting_rule_that_holds_decides() {
+        use crate::item::{SortCondition, SortField, SortRule};
+
+        let condition = |field, value: &str| SortCondition { field, value: value.into() };
+        let rule = |category, conditions: Vec<SortCondition>, exceptions: Vec<SortCondition>| SortRule {
+            id: "r".into(),
+            category,
+            conditions,
+            exceptions,
+            enabled: true,
+            created: DateTime::from_timestamp(0, 0).expect("a time"),
+        };
+        let mail = SortInput {
+            sender: Some("billing@mail.shop.example"),
+            subject: "Your INVOICE 2026-114",
+            text: "Please pay by Friday. Order 77.",
+        };
+        // Domain: the domain itself or one below it, never a mere ending.
+        assert!(condition_holds(&condition(SortField::Domain, "shop.example"), &mail));
+        assert!(condition_holds(&condition(SortField::Domain, "@Mail.Shop.Example."), &mail));
+        assert!(!condition_holds(&condition(SortField::Domain, "op.example"), &mail));
+        assert!(condition_holds(&condition(SortField::Sender, " Billing@mail.shop.example "), &mail));
+        assert!(!condition_holds(&condition(SortField::Sender, "mail.shop.example"), &mail), "the whole address");
+        assert!(condition_holds(&condition(SortField::Subject, "invoice"), &mail));
+        assert!(condition_holds(&condition(SortField::Text, "ORDER 77"), &mail));
+        assert!(!condition_holds(&condition(SortField::Text, "   "), &mail), "an empty value holds for nothing");
+        let anonymous = SortInput { sender: None, ..mail };
+        assert!(!condition_holds(&condition(SortField::Domain, "shop.example"), &anonymous));
+
+        let shop = rule(Category::Invoice, vec![condition(SortField::Domain, "shop.example")], Vec::new());
+        let receipts = rule(
+            Category::Receipt,
+            vec![condition(SortField::Domain, "shop.example"), condition(SortField::Subject, "receipt")],
+            Vec::new(),
+        );
+        let order = rule(
+            Category::Order,
+            vec![condition(SortField::Domain, "shop.example")],
+            vec![condition(SortField::Subject, "invoice")],
+        );
+        // In order: the narrow receipt rule does not hold, the order rule is excepted, the shop's
+        // holds – and it wins over everything after it.
+        let rules = vec![receipts.clone(), order.clone(), shop.clone(), rule(Category::Spam, vec![], Vec::new())];
+        assert_eq!(sort_category(&rules, &mail), Some(Category::Invoice));
+        // Order is all: the broad rule first wins even where a narrower one would hold.
+        let receipt = SortInput { subject: "Receipt", ..mail };
+        assert_eq!(sort_category(&[shop.clone(), receipts.clone()], &receipt), Some(Category::Invoice));
+        assert_eq!(sort_category(&[receipts.clone(), shop.clone()], &receipt), Some(Category::Receipt));
+        // Switched off, a rule holds for nothing and the next one decides.
+        let off = SortRule { enabled: false, ..shop.clone() };
+        assert_eq!(sort_category(&[off, order.clone()], &receipt), Some(Category::Order));
+        assert_eq!(sort_category(&[rule(Category::Spam, vec![], Vec::new())], &mail), None, "no condition, no rule");
+        // What a rule holds for goes before the headers.
+        let kept = sort_category(&[shop], &mail);
+        assert_eq!(
+            mail_category(kept, true, Some("auto-replied"), true),
+            Some(MailCategory::by_rule(Category::Invoice))
+        );
     }
 }

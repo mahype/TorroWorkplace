@@ -468,6 +468,61 @@ impl Demo {
             .collect()
     }
 
+    /// The catalogue of mail categories (`inbox.list_categories`): the suite's own, one renamed,
+    /// and one of the person's own (task E15.5).
+    fn categories(&self) -> Vec<torro_ipc::inbox::CategoryInfo> {
+        let mut defs = torro_mail::CategoryDef::defaults();
+        if let Some(invoice) = defs.iter_mut().find(|def| def.category == torro_mail::Category::Invoice) {
+            invoice.name = Some("Bills".into());
+        }
+        if let Some(tax) = torro_mail::CustomCategory::new(1) {
+            defs.push(torro_mail::CategoryDef {
+                category: torro_mail::Category::Custom(tax),
+                group: torro_mail::CategoryGroup::PaperTrail,
+                name: Some("Tax".into()),
+                description: Some(
+                    "Anything for the tax return: the tax office, the adviser, receipts asked for.".into(),
+                ),
+                model: true,
+            });
+        }
+        defs.iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()
+    }
+
+    /// The sorting rules (`inbox.list_sort_rules`, task E15.5): a kept sender, a domain with an
+    /// exception, and one switched off.
+    fn sort_rules(&self) -> Vec<torro_inbox::SortRule> {
+        use torro_inbox::{SortCondition, SortField, SortRule};
+        let on = |field, value: &str| SortCondition { field, value: value.into() };
+        let rule = |id: &str, category, conditions, exceptions, enabled| SortRule {
+            id: id.into(),
+            category,
+            conditions,
+            exceptions,
+            enabled,
+            created: chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap_or_default(),
+        };
+        let tax =
+            torro_mail::CustomCategory::new(1).map_or(torro_mail::Category::Document, torro_mail::Category::Custom);
+        vec![
+            rule(
+                "r1",
+                torro_mail::Category::Invoice,
+                vec![on(SortField::Sender, "billing@shop.example")],
+                vec![],
+                true,
+            ),
+            rule(
+                "r2",
+                tax,
+                vec![on(SortField::Domain, "finanzamt.example")],
+                vec![on(SortField::Subject, "newsletter")],
+                true,
+            ),
+            rule("r3", torro_mail::Category::Promotion, vec![on(SortField::Subject, "sale")], vec![], false),
+        ]
+    }
+
     /// How far the sample inbox is sorted (`inbox.get_categorization`): most of it done, the rest
     /// waiting for the backlog run.
     fn categorization(&self) -> torro_ipc::inbox::Categorization {
@@ -481,6 +536,7 @@ impl Demo {
                 done: 184,
                 state: torro_ipc::inbox::CatchUpState::NotStarted,
             }],
+            again: false,
         }
     }
 
@@ -537,6 +593,8 @@ impl Backend for Demo {
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
+            Request::ListCategories { .. } => Response::Categories { categories: self.categories() },
+            Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },

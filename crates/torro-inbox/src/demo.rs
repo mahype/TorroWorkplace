@@ -1066,7 +1066,7 @@ impl DemoSource {
     /// Category counts restricted to one mail account.
     pub fn category_counts_for(&self, account: Option<&str>) -> Vec<(Category, u32, u32)> {
         let data = self.lock();
-        Category::ALL
+        Category::BUILT_IN
             .into_iter()
             .map(|category| {
                 let of_category = data.mail.iter().filter(|m| {

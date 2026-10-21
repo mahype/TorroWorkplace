@@ -49,7 +49,14 @@ pub const SECTIONS: [Section; 3] = [
 /// What one load of these sections needs: the suite-wide settings (Notifications), every account
 /// with its mail settings (Sources), the sources with their mutes and the rules.
 pub fn wanted() -> Vec<Request> {
-    vec![Request::Settings, Request::Accounts, Request::ListSources, Request::ListRules]
+    // The catalogue names the categories of "Always for this sender?" rules (task E15.2).
+    vec![
+        Request::Settings,
+        Request::Accounts,
+        Request::ListSources,
+        Request::ListRules,
+        Request::ListCategories { account: None },
+    ]
 }
 
 /// The state of every section that keeps some; the app owns one of these next to its host.
@@ -517,6 +524,7 @@ pub mod rules {
     use torro_inbox::item::{FacetKey, MuteEffect};
     use torro_inbox::{Lane, Rule, RuleEffect, rules as inbox_rules};
     use torro_ipc::RuleHits;
+    use torro_ipc::inbox::CategoryInfo;
 
     use super::*;
     use crate::parts::row_frame;
@@ -564,8 +572,10 @@ pub mod rules {
             );
         }
         let caught = |rule: &Rule| data.rule_hits.iter().find(|hit| hit.rule == rule.id);
-        let rows =
-            ordered(&data.rules).into_iter().map(|rule| rule_row(state, rule, caught(rule), now)).collect::<Vec<_>>();
+        let rows = ordered(&data.rules)
+            .into_iter()
+            .map(|rule| rule_row(state, rule, caught(rule), now, &data.categories))
+            .collect::<Vec<_>>();
         widgets::group(
             tr("Rules"),
             rows,
@@ -583,12 +593,13 @@ pub mod rules {
         rule: &'a Rule,
         hits: Option<&RuleHits>,
         now: DateTime<Utc>,
+        categories: &[CategoryInfo],
     ) -> Element<'a, Message> {
         let remove = (!state.removing.contains(&rule.id)).then(|| Message::Remove(rule.id.clone()));
         let button = widgets::text_button(None, tr("Remove"), style::button::secondary, remove);
         let lines = column![
             widgets::ellipsized(typo::body(), subject(rule), theme::text),
-            widgets::ellipsized(typo::meta(), rule_line(rule, hits, now), theme::text_2),
+            widgets::ellipsized(typo::meta(), rule_line(rule, hits, now, categories), theme::text_2),
         ];
         row_frame(row![lines.width(Fill), button].spacing(space::l()).align_y(Alignment::Center), true)
     }
@@ -638,7 +649,7 @@ pub mod rules {
     /// What a rule does, with its end: "Goes to “Info”" for a remembered lane, "Muted" for a whole
     /// source, "Hidden" for a sender or domain, and for a trait "Hidden", "Only Info" or "No
     /// popups", with "until tomorrow 09:00" while it ends.
-    fn effect_words(rule: &Rule, now: DateTime<Utc>) -> String {
+    fn effect_words(rule: &Rule, now: DateTime<Utc>, categories: &[CategoryInfo]) -> String {
         if rule.facet.is_none() {
             return match rule.effect {
                 RuleEffect::Lane { lane } => trf("Goes to “{lane}”", &[("lane", &lane_name(lane))]),
@@ -649,7 +660,7 @@ pub mod rules {
                 RuleEffect::NoPopup => tr("No popups").to_owned(),
                 // "Always for this sender?" after the person sorted one mail by hand (E12.2).
                 RuleEffect::Category { category } => {
-                    trf("Filed as “{category}”", &[("category", &torro_core::category::label(category))])
+                    trf("Filed as “{category}”", &[("category", &crate::category_name_in(categories, category))])
                 }
             };
         }
@@ -676,8 +687,8 @@ pub mod rules {
 
     /// The quiet line under a rule's title: what it does, where it holds and what it caught since
     /// when, joined by " · ".
-    fn rule_line(rule: &Rule, hits: Option<&RuleHits>, now: DateTime<Utc>) -> String {
-        [Some(effect_words(rule, now)), place(rule), caught(rule, hits, now)]
+    fn rule_line(rule: &Rule, hits: Option<&RuleHits>, now: DateTime<Utc>, categories: &[CategoryInfo]) -> String {
+        [Some(effect_words(rule, now, categories)), place(rule), caught(rule, hits, now)]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
@@ -814,18 +825,18 @@ pub mod rules {
         fn rules_read_as_subject_effect_and_place() {
             let lane = rule("l", SourceRef::agent("claude-code"), RuleEffect::Lane { lane: Lane::Info });
             assert_eq!(subject(&lane), trf("Everything from {source}", &[("source", &"Claude Code")]));
-            assert_eq!(effect_words(&lane, now()), trf("Goes to “{lane}”", &[("lane", &tr("Info"))]));
+            assert_eq!(effect_words(&lane, now(), &[]), trf("Goes to “{lane}”", &[("lane", &tr("Info"))]));
             let sender = hidden("h", Some("news@shop.example"), None);
             assert_eq!(subject(&sender), trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
-            assert_eq!(effect_words(&sender, now()), tr("Hidden"));
+            assert_eq!(effect_words(&sender, now(), &[]), tr("Hidden"));
             assert_eq!(place(&sender).as_deref(), Some(tr("All mail accounts")));
             let muted = rule("m", SourceRef::script("backup"), RuleEffect::Muted);
-            assert_eq!(effect_words(&muted, now()), tr("Muted"));
+            assert_eq!(effect_words(&muted, now(), &[]), tr("Muted"));
             assert_eq!(place(&muted), None, "the title names the source");
             let hits = RuleHits { rule: "m".into(), hits: 31, since: now() };
             let caught = trf("Hid {n} since {day}", &[("n", &31), ("day", &tr("today"))]);
-            assert_eq!(rule_line(&muted, Some(&hits), now()), [tr("Muted").to_owned(), caught].join(" · "));
-            assert_eq!(rule_line(&muted, None, now()), tr("Muted"), "a core before E8.8a tells nothing");
+            assert_eq!(rule_line(&muted, Some(&hits), now(), &[]), [tr("Muted").to_owned(), caught].join(" · "));
+            assert_eq!(rule_line(&muted, None, now(), &[]), tr("Muted"), "a core before E8.8a tells nothing");
         }
 
         /// A muted trait reads with its words, its end and where its kind reaches, and comes after
@@ -839,7 +850,7 @@ pub mod rules {
             };
             let bulk = trait_of("b", FacetKey::Bulk, "bulk", RuleEffect::Lane { lane: Lane::Info });
             assert_eq!(subject(&bulk), tr("Newsletters and automatic mail"));
-            assert_eq!(effect_words(&bulk, now()), tr("Only Info"));
+            assert_eq!(effect_words(&bulk, now(), &[]), tr("Only Info"));
             let tomorrow = now() + chrono::Duration::days(1);
             let project = Rule {
                 until: Some(tomorrow),
@@ -847,7 +858,7 @@ pub mod rules {
                 ..rule("p", SourceRef::agent("claude-code"), RuleEffect::NoPopup)
             };
             let when = until_text(tomorrow, now());
-            assert_eq!(effect_words(&project, now()), trf("No popups until {when}", &[("when", &when)]));
+            assert_eq!(effect_words(&project, now(), &[]), trf("No popups until {when}", &[("when", &when)]));
             assert_eq!(place(&project).as_deref(), Some(tr("All agents")));
             let rules = vec![
                 bulk,
@@ -952,7 +963,16 @@ mod tests {
     /// One load asks for what the three sections show, and for nothing else.
     #[test]
     fn the_load_asks_for_what_the_sections_show() {
-        assert_eq!(wanted(), vec![Request::Settings, Request::Accounts, Request::ListSources, Request::ListRules]);
+        assert_eq!(
+            wanted(),
+            vec![
+                Request::Settings,
+                Request::Accounts,
+                Request::ListSources,
+                Request::ListRules,
+                Request::ListCategories { account: None }
+            ]
+        );
     }
 
     /// An answer that came back lets every "Remove" work again.

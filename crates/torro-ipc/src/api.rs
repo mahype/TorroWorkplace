@@ -1492,6 +1492,14 @@ impl Request {
             Request::ClassifyItem { .. } => &CLASSIFY_ITEM,
             Request::GetCategorization => &GET_CATEGORIZATION,
             Request::CatchUpCategories { .. } => &CATCH_UP_CATEGORIES,
+            Request::CreateCategory { .. } => &CREATE_CATEGORY,
+            Request::UpdateCategory { .. } => &UPDATE_CATEGORY,
+            Request::RemoveCategory { .. } => &REMOVE_CATEGORY,
+            Request::ListSortRules => &LIST_SORT_RULES,
+            Request::CreateSortRule { .. } => &CREATE_SORT_RULE,
+            Request::UpdateSortRule { .. } => &UPDATE_SORT_RULE,
+            Request::RemoveSortRule { .. } => &REMOVE_SORT_RULE,
+            Request::MoveSortRule { .. } => &MOVE_SORT_RULE,
             Request::HideSender { .. } => &HIDE_SENDER,
             Request::ListMuteOptions { .. } => &LIST_MUTE_OPTIONS,
             Request::MuteItem { .. } => &MUTE_ITEM,
@@ -1698,6 +1706,14 @@ pub static CATALOGUE: &[&Command] = &[
     &CLASSIFY_ITEM,
     &GET_CATEGORIZATION,
     &CATCH_UP_CATEGORIES,
+    &CREATE_CATEGORY,
+    &UPDATE_CATEGORY,
+    &REMOVE_CATEGORY,
+    &LIST_SORT_RULES,
+    &CREATE_SORT_RULE,
+    &UPDATE_SORT_RULE,
+    &REMOVE_SORT_RULE,
+    &MOVE_SORT_RULE,
     &HIDE_SENDER,
     &LIST_MUTE_OPTIONS,
     &MUTE_ITEM,
@@ -2997,9 +3013,11 @@ static LIST_CATEGORIES: Command = Command {
                   or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
                   (read access to mail and the account), so a key without them sees 0 everywhere, never a number \
                   about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is \
-                  `not-found` when it is not there or out of reach. The words are the suite's own, not foreign \
-                  text. Use it to offer the categories and to build a sidebar; filter mail by them with the field \
-                  `categories` of mail_search_messages and inbox_list_items.",
+                  `not-found` when it is not there or out of reach. Each one also says what it means (`description`, \
+                  what a decision model reads), whether a model may choose it (`model`) and whether the suite \
+                  brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or \
+                  the person's own, not foreign text. Use it to offer the categories and to build a sidebar; \
+                  filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.",
 };
 
 static SET_ITEM_CATEGORY: Command = Command {
@@ -3048,9 +3066,108 @@ static CATCH_UP_CATEGORIES: Command = Command {
     mcp: Mcp::Tool,
     description: "Starts sorting the mail that has no category yet, or stops a run with `cancel: true`; returns \
                   how it stands. One run looks at the inbox of the last 30 days, at most 500 messages per mail \
-                  account this key may read, throttled in the background; mail that has a category already is \
-                  never asked about again, so starting twice asks nothing twice. Needs the person's approval: it \
-                  makes their AI account work for minutes. `not-connected` without a decision model.",
+                  account this key may read, throttled in the background: the sorting rules first, then a \
+                  decision model. Mail that has a category already is never asked about again, so starting twice \
+                  asks nothing twice – unless `again: true`, which sorts every mail of the window anew (after new \
+                  rules or changed descriptions) and leaves only a category the person set by hand. Needs the \
+                  person's approval: it makes their AI account work for minutes. `not-connected` without a \
+                  decision model, unless `again` (then the rules alone run).",
+};
+
+// Admin, like `inbox.set_item_category` with `remember`: a category changes how every later mail
+// is sorted, in every mail account. A person approves it.
+static CREATE_CATEGORY: Command = Command {
+    name: "inbox.create_category",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Makes a mail category of the person's own in one of the four groups and returns it; its key is \
+                  `custom_<n>` and never changes. `description` says what belongs there, with examples and \
+                  exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \
+                  A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or \
+                  taken name (at most 60 characters), an empty description or one over 500 characters, or more \
+                  than 20 categories of the group for the model. Needs the person's approval.",
+};
+
+static UPDATE_CATEGORY: Command = Command {
+    name: "inbox.update_category",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Changes a mail category, one of the suite's or the person's own, and returns it: only the fields \
+                  given (`group`, `name`, `description`, `model`). The key stays, so mail and rules that name it \
+                  stay valid. An empty `name` or `description` puts back the suite's words for one of its \
+                  categories. Mail already filed keeps its category until inbox_catch_up_categories runs with \
+                  `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs \
+                  the person's approval.",
+};
+
+static REMOVE_CATEGORY: Command = Command {
+    name: "inbox.remove_category",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Removes a mail category the person made. Mail, inbox entries and sorting rules that name it move \
+                  to `replacement`, keeping where their category came from; nothing is moved, hidden or deleted \
+                  besides. `conflict` when something names it and no replacement is given, `busy` while the mail \
+                  accounts are still read or another removal hands this category its mail, `unsupported` for a \
+                  category of the suite, `not-found` for one not in the catalogue. Needs the person's approval.",
+};
+
+static LIST_SORT_RULES: Command = Command {
+    name: "inbox.list_sort_rules",
+    area: Area::Inbox,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the sorting rules for mail in their order. Each files mail as `category` when every one of \
+                  its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), \
+                  `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower \
+                  case never count. The first rule that holds decides, after a category the person set by hand \
+                  and before the headers and the decision model; rules with `enabled: false` hold for nothing. \
+                  \"Always for this sender\" keeps one of these too. The values are the person's own words.",
+};
+
+static CREATE_SORT_RULE: Command = Command {
+    name: "inbox.create_sort_rule",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on \
+                  new mail that meets every condition and no exception is filed as `category`; mail already \
+                  filed changes only with inbox_catch_up_categories and `again`. `error` for no condition, more \
+                  than 10 conditions or 10 exceptions, an empty, multi-line or over-long value (200 characters), a \
+                  category not in the catalogue, or more than 500 rules. Needs the person's approval.",
+};
+
+static UPDATE_SORT_RULE: Command = Command {
+    name: "inbox.update_sort_rule",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Changes a sorting rule and returns it: `category` and `conditions` always, `exceptions` and \
+                  `enabled` where given (left out, they stay; an empty `exceptions` takes them away). Its place \
+                  stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there or out of reach, \
+                  `error` as for create_sort_rule. Needs the person's approval.",
+};
+
+static REMOVE_SORT_RULE: Command = Command {
+    name: "inbox.remove_sort_rule",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Removes a sorting rule and returns the rules left, in order. Mail it filed keeps its category. \
+                  `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
+};
+
+static MOVE_SORT_RULE: Command = Command {
+    name: "inbox.move_sort_rule",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order \
+                  around it. Returns all rules in their new order. The first rule that holds decides, so the order \
+                  is what makes a narrow rule win over a broad one. Places count in the list this key sees. \
+                  `not-found` for a rule that is not there or out of reach. Needs the person's approval.",
 };
 
 static HIDE_SENDER: Command = Command {
@@ -3979,7 +4096,47 @@ mod tests {
             Request::SetItemCategory { id: "i1".into(), category: torro_mail::Category::Invoice, remember: true },
             Request::ClassifyItem { id: "i1".into() },
             Request::GetCategorization,
-            Request::CatchUpCategories { cancel: false },
+            Request::CatchUpCategories { cancel: false, again: false },
+            Request::CreateCategory {
+                group: torro_mail::CategoryGroup::PaperTrail,
+                name: "Tax".into(),
+                description: "Anything for the tax return.".into(),
+                model: true,
+            },
+            Request::UpdateCategory {
+                category: torro_mail::Category::Invoice,
+                group: None,
+                name: Some("Bills".into()),
+                description: None,
+                model: None,
+            },
+            Request::RemoveCategory {
+                category: torro_mail::Category::Custom(torro_mail::CustomCategory::new(1).expect("a number")),
+                replacement: Some(torro_mail::Category::Other),
+            },
+            Request::ListSortRules,
+            Request::CreateSortRule {
+                category: torro_mail::Category::Invoice,
+                conditions: vec![torro_inbox::SortCondition {
+                    field: torro_inbox::SortField::Domain,
+                    value: "shop.example".into(),
+                }],
+                exceptions: Vec::new(),
+                position: None,
+                enabled: true,
+            },
+            Request::UpdateSortRule {
+                id: "r1".into(),
+                category: torro_mail::Category::Receipt,
+                conditions: vec![torro_inbox::SortCondition {
+                    field: torro_inbox::SortField::Subject,
+                    value: "receipt".into(),
+                }],
+                exceptions: None,
+                enabled: Some(false),
+            },
+            Request::RemoveSortRule { id: "r1".into() },
+            Request::MoveSortRule { id: "r1".into(), position: 0 },
             Request::HideSender { id: "i1".into(), scope: HideScope::Domain },
             Request::ListMuteOptions { id: "i1".into() },
             Request::MuteItem {
@@ -5348,6 +5505,14 @@ mod tests {
                 "inbox.classify_item",
                 "inbox.get_categorization",
                 "inbox.catch_up_categories",
+                "inbox.create_category",
+                "inbox.update_category",
+                "inbox.remove_category",
+                "inbox.list_sort_rules",
+                "inbox.create_sort_rule",
+                "inbox.update_sort_rule",
+                "inbox.remove_sort_rule",
+                "inbox.move_sort_rule",
                 "inbox.hide_sender",
                 "inbox.list_mute_options",
                 "inbox.mute_item",

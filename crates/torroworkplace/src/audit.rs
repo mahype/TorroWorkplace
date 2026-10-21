@@ -303,6 +303,17 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListCategories { .. } | Request::GetCategorization | Request::CatchUpCategories { .. } => {
             Vec::new()
         }
+        // The catalogue and the sorting rules (task E15.1): never a name, a description, a
+        // condition's value or a category – a person's own words about their mail. A sorting
+        // rule is named by its id only.
+        Request::CreateCategory { .. }
+        | Request::UpdateCategory { .. }
+        | Request::RemoveCategory { .. }
+        | Request::ListSortRules
+        | Request::CreateSortRule { .. } => Vec::new(),
+        Request::UpdateSortRule { id: rule, .. }
+        | Request::RemoveSortRule { id: rule }
+        | Request::MoveSortRule { id: rule, .. } => vec![random("rule", rule)],
         // The function and the account are ids, not content; the model's name is the server's.
         Request::AiAssignments => Vec::new(),
         Request::SetAiAssignment { engine, .. } => engine.iter().map(|id| account(id)).collect(),

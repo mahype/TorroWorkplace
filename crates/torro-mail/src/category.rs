@@ -11,6 +11,15 @@
 //!
 //! Only mail carries a category. Entries of GitHub, Talk and ntfy leave it empty: their facets
 //! (`reason`, `result`, `kind`) tell more, and a model call would be wasted there.
+//!
+//! **The catalogue can be edited** (task E15.1, issue #255): the 23 categories the suite brings
+//! ([`Category::BUILT_IN`]) are its default, the person adds their own ([`Category::Custom`]) and
+//! changes name, group, description and whether a model may choose one ([`CategoryDef`]). A
+//! category's **key never changes** – renaming one keeps every mail and rule that names it valid.
+//! So what a category is called and which group it is in comes from the catalogue the core keeps,
+//! never from the key alone ([`Category::default_group`] is only the suite's default).
+
+use std::borrow::Cow;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -45,20 +54,25 @@ impl CategoryGroup {
         }
     }
 
-    /// The categories of this group, in the order of the catalogue.
-    pub fn categories(self) -> Vec<Category> {
-        Category::ALL.into_iter().filter(|category| category.group() == self).collect()
+    /// The group named by `key` ([`CategoryGroup::key`]); `None` for a word no group has.
+    pub fn from_key(key: &str) -> Option<CategoryGroup> {
+        CategoryGroup::ALL.into_iter().find(|group| group.key() == key)
+    }
+
+    /// The categories the suite puts in this group by default, in the order of its catalogue.
+    /// What a group holds now is the core's catalogue's word.
+    pub fn default_categories(self) -> Vec<Category> {
+        Category::BUILT_IN.into_iter().filter(|category| category.default_group() == Some(self)).collect()
     }
 }
 
-/// What a piece of mail is. The English key is what travels; the words a person reads come from
-/// `torro_core::category::label`.
+/// What a piece of mail is. The English key is what travels ([`Category::key`]); the words a
+/// person reads come from the catalogue (`torro_core::category::name_of`).
 ///
-/// Three of them follow from the headers alone and are never asked of a model
-/// ([`Category::by_rule_only`]); the other 20 are the options of the one `choice` question
-/// ([`Category::BY_MODEL`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+/// The suite brings 23 ([`Category::BUILT_IN`]); three of them follow from the headers alone and
+/// are by default never asked of a model ([`Category::by_rule_only`]). Categories the person made
+/// are [`Category::Custom`], written `custom_<n>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Category {
     /// A question or request addressed to the person; an answer is expected.
     Request,
@@ -108,12 +122,39 @@ pub enum Category {
     Phishing,
     /// Fits nothing else, or the model was too unsure.
     Other,
+    /// A category the person made (task E15.1): what it is called, its group and what it means
+    /// are in the catalogue.
+    Custom(CustomCategory),
 }
 
+/// The number of a category the person made ([`Category::Custom`]), written `custom_<n>`.
+///
+/// Given out once: the core never hands a number out again, also not after the category was
+/// removed, so an old reference can never come to mean another category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CustomCategory(u32);
+
+impl CustomCategory {
+    /// The category numbered `number`; `None` for 0, which no category has.
+    pub fn new(number: u32) -> Option<CustomCategory> {
+        (number > 0).then_some(CustomCategory(number))
+    }
+
+    /// Its number, as in `custom_<n>`.
+    pub fn number(self) -> u32 {
+        self.0
+    }
+}
+
+/// How a category the person made starts on the wire: `custom_<n>`. No category of the suite
+/// starts like this (a test checks), so the two can never be mixed up.
+pub const CUSTOM_PREFIX: &str = "custom_";
+
 impl Category {
-    /// Every category, in the order of the catalogue (`docs/kategorien.md`), grouped as
-    /// [`Category::group`] says.
-    pub const ALL: [Category; 23] = [
+    /// The categories the suite brings, in the order of its catalogue (`docs/kategorien.md`),
+    /// grouped as [`Category::default_group`] says. The person may add their own and move any of
+    /// them to another group; the core's catalogue says what holds now.
+    pub const BUILT_IN: [Category; 23] = [
         // Waiting for me
         Category::Request,
         Category::Task,
@@ -143,11 +184,13 @@ impl Category {
         Category::Other,
     ];
 
-    /// The categories a decision model chooses between: [`Category::ALL`] without the three that
-    /// follow from the headers ([`Category::by_rule_only`]), in the order of the catalogue.
+    /// The categories of the suite a decision model chooses between by default:
+    /// [`Category::BUILT_IN`] without the three that follow from the headers
+    /// ([`Category::by_rule_only`]), in the order of the catalogue.
     ///
     /// Exactly 20, which is also the narrowest documented limit of a `choice` question (the Jev
-    /// reference; Ollama allows 26), so the whole catalogue fits into **one** call.
+    /// reference; Ollama allows 26), so the default catalogue fits into **one** call. The person
+    /// can change which ones a model may choose ([`CategoryDef::model`]).
     pub const BY_MODEL: [Category; 20] = [
         Category::Request,
         Category::Task,
@@ -172,9 +215,17 @@ impl Category {
     ];
 
     /// How the category is written on the wire and in the API (the serde name): `request`,
-    /// `service_notice`, `auto_reply` …
-    pub fn key(self) -> &'static str {
+    /// `service_notice`, `auto_reply` … and `custom_<n>` for one the person made.
+    pub fn key(self) -> Cow<'static, str> {
         match self {
+            Category::Custom(custom) => Cow::Owned(format!("{CUSTOM_PREFIX}{}", custom.number())),
+            built_in => Cow::Borrowed(built_in.built_in_key().unwrap_or_default()),
+        }
+    }
+
+    /// The key of a category of the suite; `None` for one the person made.
+    fn built_in_key(self) -> Option<&'static str> {
+        Some(match self {
             Category::Request => "request",
             Category::Task => "task",
             Category::Approval => "approval",
@@ -198,17 +249,37 @@ impl Category {
             Category::Spam => "spam",
             Category::Phishing => "phishing",
             Category::Other => "other",
-        }
+            Category::Custom(_) => return None,
+        })
     }
 
     /// The category named by `key` ([`Category::key`]); `None` for a word no category has.
+    ///
+    /// `custom_<n>` is read for any `n` above 0, written without leading zeros, so every
+    /// category has exactly one way to be written. Whether the catalogue holds it is the core's
+    /// to say.
     pub fn from_key(key: &str) -> Option<Category> {
-        Category::ALL.into_iter().find(|category| category.key() == key)
+        if let Some(number) = key.strip_prefix(CUSTOM_PREFIX) {
+            let canonical =
+                !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) && !number.starts_with('0');
+            return canonical
+                .then(|| number.parse().ok().and_then(CustomCategory::new))
+                .flatten()
+                .map(Category::Custom);
+        }
+        Category::BUILT_IN.into_iter().find(|category| category.built_in_key() == Some(key))
     }
 
-    /// Which group the category belongs to.
-    pub fn group(self) -> CategoryGroup {
-        match self {
+    /// The category is one the suite brings, not one the person made.
+    pub fn is_built_in(self) -> bool {
+        !matches!(self, Category::Custom(_))
+    }
+
+    /// Which group the suite puts the category in; `None` for one the person made, which has
+    /// only the group the catalogue gives it. The person can move any category, so what holds
+    /// now is the catalogue's word ([`CategoryDef::group`]), not this.
+    pub fn default_group(self) -> Option<CategoryGroup> {
+        Some(match self {
             Category::Request
             | Category::Task
             | Category::Approval
@@ -230,7 +301,8 @@ impl Category {
             Category::Bounce | Category::AutoReply | Category::Spam | Category::Phishing | Category::Other => {
                 CategoryGroup::Junk
             }
-        }
+            Category::Custom(_) => return None,
+        })
     }
 
     /// The category follows from the headers alone and is never asked of a model: an invitation
@@ -238,6 +310,94 @@ impl Category {
     /// [`Category::BY_MODEL`].
     pub fn by_rule_only(self) -> bool {
         matches!(self, Category::Invitation | Category::Bounce | Category::AutoReply)
+    }
+}
+
+impl Serialize for Category {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.key())
+    }
+}
+
+impl<'de> Deserialize<'de> for Category {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Category, D::Error> {
+        let key = Cow::<'de, str>::deserialize(deserializer)?;
+        Category::from_key(&key).ok_or_else(|| serde::de::Error::custom(format!("unknown category `{key}`")))
+    }
+}
+
+impl JsonSchema for Category {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "Category".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let built_in: Vec<&'static str> = Category::BUILT_IN.into_iter().filter_map(Category::built_in_key).collect();
+        schemars::json_schema!({
+            "description": "A mail category: one of the suite's keys, or `custom_<n>` for one the person made \
+                            (`inbox.list_categories` lists the catalogue).",
+            "anyOf": [
+                { "type": "string", "enum": built_in },
+                { "type": "string", "pattern": "^custom_[1-9][0-9]{0,9}$" }
+            ]
+        })
+    }
+}
+
+/// The most characters of a category's name ([`CategoryDef::name`]).
+pub const NAME_MAX: usize = 60;
+
+/// The most characters of a category's description ([`CategoryDef::description`]): enough for
+/// what it is, a few examples and exceptions, and short enough that 20 of them fit into one call
+/// to a decision model.
+pub const DESCRIPTION_MAX: usize = 500;
+
+/// The most categories of one group a decision model may choose between (task E15.4): the
+/// narrowest documented limit of a `choice` question. With more than this over all groups the
+/// model is asked for the group first, so one group must never hold more.
+pub const MODEL_PER_GROUP_MAX: usize = 20;
+
+/// One category of the catalogue as the core keeps it (task E15.1, issue #255): its key, which
+/// never changes, and what the person may change about it.
+///
+/// For a category of the suite, `name` and `description` left `None` mean the suite's own words
+/// (translated name, English description); a category the person made always has both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryDef {
+    pub category: Category,
+    /// The group it stands in now.
+    pub group: CategoryGroup,
+    /// What the person calls it; `None`: the suite's word for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// What it means, as a decision model reads it – with examples and exceptions; `None`: the
+    /// suite's description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// A decision model may choose it. Off, only a rule or the person files mail under it.
+    pub model: bool,
+}
+
+impl CategoryDef {
+    /// The suite's own entry for `category`, as nobody changed it; `None` for a category the
+    /// person made, which has no default.
+    pub fn built_in(category: Category) -> Option<CategoryDef> {
+        Some(CategoryDef {
+            category,
+            group: category.default_group()?,
+            name: None,
+            description: None,
+            model: Category::BY_MODEL.contains(&category),
+        })
+    }
+
+    /// The catalogue as the suite brings it, in its order.
+    pub fn defaults() -> Vec<CategoryDef> {
+        Category::BUILT_IN.into_iter().filter_map(CategoryDef::built_in).collect()
     }
 }
 
@@ -302,11 +462,11 @@ mod tests {
 
     #[test]
     fn every_category_is_written_as_its_key_and_read_back() {
-        for category in Category::ALL {
+        for category in Category::BUILT_IN {
             let json = serde_json::to_value(category).expect("json");
             assert_eq!(json, serde_json::json!(category.key()), "{category:?}");
             assert_eq!(serde_json::from_value::<Category>(json).expect("back"), category);
-            assert_eq!(Category::from_key(category.key()), Some(category));
+            assert_eq!(Category::from_key(&category.key()), Some(category));
         }
         assert_eq!(Category::from_key("no such category"), None);
         for group in CategoryGroup::ALL {
@@ -321,19 +481,21 @@ mod tests {
 
     #[test]
     fn the_catalogue_has_twenty_three_categories_split_over_four_groups_without_a_duplicate() {
-        assert_eq!(Category::ALL.len(), 23);
+        assert_eq!(Category::BUILT_IN.len(), 23);
         let mut seen = std::collections::HashSet::new();
-        for category in Category::ALL {
+        for category in Category::BUILT_IN {
             assert!(seen.insert(category.key()), "duplicate key {}", category.key());
+            assert!(!category.key().starts_with(CUSTOM_PREFIX), "{category:?} reads like a custom category");
+            assert!(category.is_built_in());
         }
         let mut from_groups: Vec<Category> = Vec::new();
         for group in CategoryGroup::ALL {
-            let of_group = group.categories();
+            let of_group = group.default_categories();
             assert!(!of_group.is_empty(), "{group:?} is empty");
-            assert!(of_group.iter().all(|category| category.group() == group), "{group:?}");
+            assert!(of_group.iter().all(|category| category.default_group() == Some(group)), "{group:?}");
             from_groups.extend(of_group);
         }
-        assert_eq!(from_groups, Category::ALL.to_vec(), "the groups together are the catalogue, in its order");
+        assert_eq!(from_groups, Category::BUILT_IN.to_vec(), "the groups together are the catalogue, in its order");
     }
 
     #[test]
@@ -346,9 +508,10 @@ mod tests {
             assert!(by_rule.by_rule_only(), "{by_rule:?}");
             assert!(!Category::BY_MODEL.contains(&by_rule), "{by_rule:?} is no option of the question");
         }
-        let left_out: Vec<Category> = Category::ALL.into_iter().filter(|c| !Category::BY_MODEL.contains(c)).collect();
+        let left_out: Vec<Category> =
+            Category::BUILT_IN.into_iter().filter(|c| !Category::BY_MODEL.contains(c)).collect();
         assert_eq!(left_out, [Category::Invitation, Category::Bounce, Category::AutoReply]);
-        let in_catalogue_order: Vec<Category> = Category::ALL.into_iter().filter(|c| !c.by_rule_only()).collect();
+        let in_catalogue_order: Vec<Category> = Category::BUILT_IN.into_iter().filter(|c| !c.by_rule_only()).collect();
         assert_eq!(in_catalogue_order, Category::BY_MODEL.to_vec(), "BY_MODEL keeps the catalogue's order");
     }
 
@@ -373,5 +536,43 @@ mod tests {
         assert_eq!(json, serde_json::json!({"category": "invitation", "source": "rule"}));
         let json = serde_json::to_value(MailCategory::by_model(Category::Shipping, 0.97)).expect("json");
         assert_eq!(json, serde_json::json!({"category": "shipping", "source": "model", "confidence": 97}));
+    }
+
+    /// Task E15.1: a category the person made is written `custom_<n>`, read back the same, and
+    /// has exactly one spelling.
+    #[test]
+    fn a_custom_category_is_written_with_its_number_and_read_back() {
+        let custom = Category::Custom(CustomCategory::new(7).expect("a number"));
+        assert_eq!(custom.key(), "custom_7");
+        let json = serde_json::to_value(custom).expect("json");
+        assert_eq!(json, serde_json::json!("custom_7"));
+        assert_eq!(serde_json::from_value::<Category>(json).expect("back"), custom);
+        assert_eq!(Category::from_key("custom_7"), Some(custom));
+        assert!(!custom.is_built_in());
+        assert_eq!(custom.default_group(), None, "only the catalogue knows its group");
+        assert!(!custom.by_rule_only());
+        assert_eq!(CategoryDef::built_in(custom), None);
+        for wrong in ["custom_0", "custom_", "custom_x", "custom_07", "custom_-1", "custom_99999999999", "Custom_7"] {
+            assert_eq!(Category::from_key(wrong), None, "{wrong}");
+            assert!(serde_json::from_value::<Category>(serde_json::json!(wrong)).is_err(), "{wrong}");
+        }
+        assert_eq!(CustomCategory::new(0), None);
+    }
+
+    /// Task E15.1: the suite's default catalogue keeps every category in its group, and a model
+    /// may choose exactly the 20 it chose before.
+    #[test]
+    fn the_default_catalogue_is_the_catalogue_of_the_suite() {
+        let defaults = CategoryDef::defaults();
+        assert_eq!(defaults.iter().map(|def| def.category).collect::<Vec<_>>(), Category::BUILT_IN.to_vec());
+        for def in &defaults {
+            assert_eq!(Some(def.group), def.category.default_group());
+            assert_eq!((def.name.as_deref(), def.description.as_deref()), (None, None));
+            assert_eq!(def.model, Category::BY_MODEL.contains(&def.category), "{:?}", def.category);
+        }
+        for group in CategoryGroup::ALL {
+            let by_model = defaults.iter().filter(|def| def.group == group && def.model).count();
+            assert!(by_model <= MODEL_PER_GROUP_MAX, "{group:?}");
+        }
     }
 }

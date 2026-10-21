@@ -97,6 +97,9 @@ use crate::{detail, mail, notifications};
 pub struct Rows<'a> {
     /// The view shown, for the times ("until Wed, 14 Oct" in "Snoozed").
     pub view: &'a View,
+    /// The catalogue of mail categories (task E15.2): what a mail's category is called and where
+    /// it stands now. Empty where no mail is listed.
+    pub categories: &'a [torro_ipc::inbox::CategoryInfo],
     /// Id of the entry under the cursor (and in the panel, when it is open): highlighted, with its
     /// action bar shown.
     pub selected: Option<&'a str>,
@@ -346,7 +349,8 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     let height = entry_row_height(item, rows);
     let content = if item.source.kind == SourceKind::Mail {
         // An invitation (task E8.3c): the calendar's mark before the time, as in a folder's row.
-        let mut marks: Vec<(Element<'a, Message>, f32)> = item.category.map(mail::category_mark).into_iter().collect();
+        let mut marks: Vec<(Element<'a, Message>, f32)> =
+            item.category.map(|held| mail::category_mark(held, rows.categories)).into_iter().collect();
         marks.extend(item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)));
         mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width)
     } else {
@@ -640,8 +644,13 @@ pub fn hide_action<'a>(item: &Item, word: &'static str) -> RowAction<'a, Message
 
 /// The chips of a mail entry's card: when its invitation is, with the answer given (task E8.3c,
 /// `mail::invite_chips`), and the number of messages from two on.
-fn entry_chips<'a>(item: &Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
-    let mut chips: Vec<Element<'a, Message>> = item.category.map(mail::category_pill).into_iter().collect();
+fn entry_chips<'a>(
+    item: &Item,
+    now: DateTime<Utc>,
+    categories: &[torro_ipc::inbox::CategoryInfo],
+) -> Vec<Element<'a, Message>> {
+    let mut chips: Vec<Element<'a, Message>> =
+        item.category.map(|held| mail::category_pill(held, categories)).into_iter().collect();
     chips.extend(item.invite.as_ref().map(|invite| mail::invite_chips(invite, now)).unwrap_or_default());
     if item.count > 1 {
         chips.push(widgets::state_pill(Icon::Mail, trf("{n} messages", &[("n", &item.count)])));
@@ -672,8 +681,12 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     }
     let selected = rows.selected == Some(item.id.as_str());
     let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
-    let card =
-        MailCard { lines, chips: entry_chips(item, rows.now), selected, on_press: Message::Select(item.id.clone()) };
+    let card = MailCard {
+        lines,
+        chips: entry_chips(item, rows.now, rows.categories),
+        selected,
+        on_press: Message::Select(item.id.clone()),
+    };
     let card: Element<'a, Message> =
         mouse_area(mail_card(card, width)).on_right_press(Message::ContextEntry(item.id.clone())).into();
     if selected { widgets::anchored(&rows.anchors.row, card) } else { card }
@@ -1576,6 +1589,7 @@ mod tests {
         for (accounts, bare) in accounts.into_iter().flat_map(|accounts| [(accounts.clone(), false), (accounts, true)])
         {
             let rows = Rows {
+                categories: &[],
                 view: &view,
                 selected: Some("demo-1"),
                 now: now(),
@@ -1597,6 +1611,7 @@ mod tests {
     /// `rows` of the list `view` with the cursor on `selected`, bare or not ([`Rows::bare`]).
     fn rows_on<'a>(view: &'a View, selected: &'a str, bare: bool) -> Rows<'a> {
         Rows {
+            categories: &[],
             view,
             selected: Some(selected),
             now: now(),
@@ -1805,6 +1820,7 @@ mod tests {
         items.push(mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"));
         items.push(Item { count: 3, state: State::Seen, ..mail("", "x@y.z", "anna@example.org") });
         let rows = Rows {
+            categories: &[],
             view: &view,
             selected: Some("demo-1"),
             now: now(),
@@ -1866,6 +1882,7 @@ mod tests {
         let view = View::Overview;
         for look in [Look::Rows, Look::Cards] {
             let rows = Rows {
+                categories: &[],
                 view: &view,
                 selected: Some(item.id.as_str()),
                 now: now(),

@@ -608,13 +608,24 @@ fn describe(request: &Request) -> String {
         }
         Request::ClassifyItem { id } => format!("classify {id}"),
         Request::GetCategorization => "categorization".into(),
-        Request::CatchUpCategories { cancel } => {
+        Request::CatchUpCategories { cancel, again } => {
             if *cancel {
                 "stop sorting mail".into()
+            } else if *again {
+                "sort mail again".into()
             } else {
                 "sort the mail backlog".into()
             }
         }
+        // Never a name, a description or a condition (task E15.1).
+        Request::CreateCategory { .. } => "create a mail category".into(),
+        Request::UpdateCategory { .. } => "change a mail category".into(),
+        Request::RemoveCategory { .. } => "remove a mail category".into(),
+        Request::ListSortRules => "list sorting rules".into(),
+        Request::CreateSortRule { .. } => "create a sorting rule".into(),
+        Request::UpdateSortRule { id, .. } => format!("change sorting rule {id}"),
+        Request::RemoveSortRule { id } => format!("remove sorting rule {id}"),
+        Request::MoveSortRule { id, position } => format!("move sorting rule {id} to {position}"),
         // Never the token.
         Request::SetGithubToken { .. } => "set github token".into(),
         // Never the address or the password (task M7.1).

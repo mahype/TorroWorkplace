@@ -1679,6 +1679,41 @@ pub struct CategoryInfo {
     /// number, so an entry never leads to an empty list.
     #[serde(default)]
     pub messages: u32,
+    /// What it means, as a decision model reads it (task E15.1): the person's words, or the
+    /// suite's English description while they wrote none. Words the person keeps, not foreign
+    /// text.
+    #[serde(default)]
+    pub description: String,
+    /// A decision model may choose it (task E15.1).
+    #[serde(default)]
+    pub model: bool,
+    /// The suite brings it (task E15.1): it can be changed and put back, not removed. `false` for
+    /// a category the person made (`custom_<n>`).
+    #[serde(default)]
+    pub built_in: bool,
+    /// The person changed its name (task E15.1); `label` is then their name. `false` for a
+    /// category the person made, whose name is always theirs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub renamed: bool,
+}
+
+impl CategoryInfo {
+    /// The entry of `def` with its counts: the words a person reads come from the catalogue
+    /// (task E15.1) – the name they gave it, else the suite's word.
+    pub fn of(def: &torro_mail::CategoryDef, unread: u32, messages: u32) -> CategoryInfo {
+        CategoryInfo {
+            category: def.category,
+            group: def.group,
+            label: torro_core::category::name_of(def),
+            group_label: torro_core::category::group_label(def.group).to_string(),
+            unread,
+            messages,
+            description: torro_core::category::description_of(def),
+            model: def.model,
+            built_in: def.category.is_built_in(),
+            renamed: def.category.is_built_in() && def.name.as_deref().is_some_and(|name| !name.trim().is_empty()),
+        }
+    }
 }
 
 /// How the categorisation of mail stands (`inbox.get_categorization`, task E12.4).
@@ -1696,6 +1731,10 @@ pub struct Categorization {
     /// How far the backlog run has come, per mail account the caller may read.
     #[serde(default)]
     pub accounts: Vec<CategoryProgress>,
+    /// The run sorts the window anew, also mail that had a category (task E15.4,
+    /// `inbox.catch_up_categories` with `again`); `accounts` counts what it went through.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub again: bool,
 }
 
 /// How far the backlog of one mail account has been sorted ([`Categorization::accounts`], task

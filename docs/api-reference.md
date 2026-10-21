@@ -56,7 +56,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`calendar`](#calendar) | [`calendar.list_calendars`](#calendarlist_calendars), [`calendar.list_events`](#calendarlist_events), [`calendar.save_event`](#calendarsave_event), [`calendar.delete_event`](#calendardelete_event), [`calendar.list_reminders`](#calendarlist_reminders), [`calendar.snooze_reminder`](#calendarsnooze_reminder), [`calendar.dismiss_reminder`](#calendardismiss_reminder), [`calendar.pause_reminders`](#calendarpause_reminders), [`calendar.preview_reminder`](#calendarpreview_reminder) |
 | [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
 | [`github`](#github) | [`tasks.create_filter_list`](#taskscreate_filter_list), [`tasks.update_filter_list`](#tasksupdate_filter_list), [`tasks.delete_filter_list`](#tasksdelete_filter_list), [`tasks.preview_filter`](#taskspreview_filter), [`tasks.list_github_repos`](#taskslist_github_repos), [`tasks.describe_github_repo`](#tasksdescribe_github_repo), [`tasks.unpin_issue`](#tasksunpin_issue) |
-| [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.hide_sender`](#inboxhide_sender), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
+| [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.hide_sender`](#inboxhide_sender), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
 | [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment) |
@@ -526,7 +526,7 @@ Lists inbox entries (the person sees them in the Notification Hub), urgent first
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `categories` | array<`"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"`> | nein | Only entries whose mail is of one of these categories (task E12.4, `docs/kategorien.md`); left out: every entry. Entries that are no mail have none, so a filter always leaves them out. |
+| `categories` | array<`"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string> | nein | Only entries whose mail is of one of these categories (task E12.4, `docs/kategorien.md`); left out: every entry. Entries that are no mail have none, so a filter always leaves them out. |
 | `dismissed` | boolean | nein | `false`: leave out the entries dismissed ("✕", `inbox.set_item_done` with `dismissed`, issue #117), so a list of done entries shows only what was done for real; `true`: only those dismissed. Left out: both. A dismissed entry is always done, and opening it again (by hand or by a new report) makes it an entry like any other. |
 | `lane` | `"for_me"` \| `"info"` | nein | Only entries in this lane: `for_me` or `info`. |
 | `limit` | integer | nein | At most this many entries, the first ones in the order above. |
@@ -700,7 +700,7 @@ Mutes an inbox source, so its new reports are dropped until it is unmuted, or un
 
 Zugriff `read` · MCP-Tool `inbox_list_categories`
 
-Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, `info`, `junk`), the words a person reads for both, how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam or sent by the person is counted nowhere. The counts cover only mail accounts this key may read (read access to mail and the account), so a key without them sees 0 everywhere, never a number about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is `not-found` when it is not there or out of reach. The words are the suite's own, not foreign text. Use it to offer the categories and to build a sidebar; filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.
+Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, `info`, `junk`), the words a person reads for both, how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam or sent by the person is counted nowhere. The counts cover only mail accounts this key may read (read access to mail and the account), so a key without them sees 0 everywhere, never a number about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is `not-found` when it is not there or out of reach. Each one also says what it means (`description`, what a decision model reads), whether a model may choose it (`model`) and whether the suite brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or the person's own, not foreign text. Use it to offer the categories and to build a sidebar; filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -714,7 +714,7 @@ Files a mail under `category` by hand and returns its entry: the category of the
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` | ja | What the mail is. |
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What the mail is. |
 | `id` | string | ja | The mail entry's id, or a message's id (`m:…`). |
 | `remember` | boolean | nein, Standard `false` | Also file later mail of this sender there. |
 
@@ -740,11 +740,115 @@ Keine Felder.
 
 Zugriff `admin` · MCP-Tool `inbox_catch_up_categories`
 
-Starts sorting the mail that has no category yet, or stops a run with `cancel: true`; returns how it stands. One run looks at the inbox of the last 30 days, at most 500 messages per mail account this key may read, throttled in the background; mail that has a category already is never asked about again, so starting twice asks nothing twice. Needs the person's approval: it makes their AI account work for minutes. `not-connected` without a decision model.
+Starts sorting the mail that has no category yet, or stops a run with `cancel: true`; returns how it stands. One run looks at the inbox of the last 30 days, at most 500 messages per mail account this key may read, throttled in the background: the sorting rules first, then a decision model. Mail that has a category already is never asked about again, so starting twice asks nothing twice – unless `again: true`, which sorts every mail of the window anew (after new rules or changed descriptions) and leaves only a category the person set by hand. Needs the person's approval: it makes their AI account work for minutes. `not-connected` without a decision model, unless `again` (then the rules alone run).
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
+| `again` | boolean | nein | Sort the mail of the window anew, also mail that has a category already – after new rules or changed descriptions. A category the person set by hand stays. |
 | `cancel` | boolean | nein, Standard `false` | Stop a run instead of starting one; what was sorted stays sorted. |
+
+### `inbox.create_category`
+
+Zugriff `admin` · MCP-Tool `inbox_create_category`
+
+Makes a mail category of the person's own in one of the four groups and returns it; its key is `custom_<n>` and never changes. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `description` | string | ja | What it means, with examples and exceptions: what a decision model reads. |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` | ja | The group it stands in. |
+| `model` | boolean | nein, Standard `false` | A decision model may choose it. |
+| `name` | string | ja | What it is called. |
+
+### `inbox.update_category`
+
+Zugriff `admin` · MCP-Tool `inbox_update_category`
+
+Changes a mail category, one of the suite's or the person's own, and returns it: only the fields given (`group`, `name`, `description`, `model`). The key stays, so mail and rules that name it stay valid. An empty `name` or `description` puts back the suite's words for one of its categories. Mail already filed keeps its category until inbox_catch_up_categories runs with `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The category's key, as `inbox.list_categories` gives it. |
+| `description` | string | nein | What it means, as a model reads it; empty puts back the suite's description. Left out: as it is. |
+| `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` | nein | The group to move it to. Left out: as it is. |
+| `model` | boolean | nein | A decision model may choose it. Left out: as it is. |
+| `name` | string | nein | Its new name; empty puts back the suite's word. Left out: as it is. |
+
+### `inbox.remove_category`
+
+Zugriff `admin` · MCP-Tool `inbox_remove_category`
+
+Removes a mail category the person made. Mail, inbox entries and sorting rules that name it move to `replacement`, keeping where their category came from; nothing is moved, hidden or deleted besides. `conflict` when something names it and no replacement is given, `busy` while the mail accounts are still read or another removal hands this category its mail, `unsupported` for a category of the suite, `not-found` for one not in the catalogue. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The key of a category the person made, `custom_<n>`. |
+| `replacement` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | nein | Where what names the category goes. |
+
+### `inbox.list_sort_rules`
+
+Zugriff `read` · MCP-Tool `inbox_list_sort_rules`
+
+Lists the sorting rules for mail in their order. Each files mail as `category` when every one of its `conditions` holds and none of its `exceptions`; fields are `sender` (the whole address), `domain` (the domain or one below it), `subject` and `text` (contain the value), upper and lower case never count. The first rule that holds decides, after a category the person set by hand and before the headers and the decision model; rules with `enabled: false` hold for nothing. "Always for this sender" keeps one of these too. The values are the person's own words.
+
+Keine Felder.
+
+### `inbox.create_sort_rule`
+
+Zugriff `admin` · MCP-Tool `inbox_create_sort_rule`
+
+Adds a sorting rule for mail at `position` (0 first; left out: last) and returns it. From then on new mail that meets every condition and no exception is filed as `category`; mail already filed changes only with inbox_catch_up_categories and `again`. `error` for no condition, more than 10 conditions or 10 exceptions, an empty, multi-line or over-long value (200 characters), a category not in the catalogue, or more than 500 rules. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as: a category of `inbox.list_categories`. |
+| `conditions` | array<object> | ja | All of them must hold; at least one, at most 10. |
+| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `conditions[].value` | string | ja | What the field is compared with; one line. |
+| `enabled` | boolean | nein | Switched off, it holds for nothing. Left out: on. |
+| `exceptions` | array<object> | nein | None of them may hold; at most 10. |
+| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `exceptions[].value` | string | ja | What the field is compared with; one line. |
+| `position` | integer | nein | Where it stands, 0 first; left out: last. |
+
+### `inbox.update_sort_rule`
+
+Zugriff `admin` · MCP-Tool `inbox_update_sort_rule`
+
+Changes a sorting rule and returns it: `category` and `conditions` always, `exceptions` and `enabled` where given (left out, they stay; an empty `exceptions` takes them away). Its place stays (inbox_move_sort_rule moves it). `not-found` for a rule that is not there or out of reach, `error` as for create_sort_rule. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | What mail the rule holds for is filed as. |
+| `conditions` | array<object> | ja | All of them must hold; at least one. |
+| `conditions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `conditions[].value` | string | ja | What the field is compared with; one line. |
+| `enabled` | boolean | nein | On or off. Left out: as it is. |
+| `exceptions` | array<object> | nein | None of them may hold; an empty list takes them all away. Left out: as they are. |
+| `exceptions[].field` | `"sender"` \| `"domain"` \| `"subject"` \| `"text"` | ja | What of a mail a [`SortCondition`] looks at. |
+| `exceptions[].value` | string | ja | What the field is compared with; one line. |
+| `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
+
+### `inbox.remove_sort_rule`
+
+Zugriff `admin` · MCP-Tool `inbox_remove_sort_rule`
+
+Removes a sorting rule and returns the rules left, in order. Mail it filed keeps its category. `not-found` for a rule that is not there or out of reach. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
+
+### `inbox.move_sort_rule`
+
+Zugriff `admin` · MCP-Tool `inbox_move_sort_rule`
+
+Moves one sorting rule to `position` (0 first, past the end: last); the others keep their order around it. Returns all rules in their new order. The first rule that holds decides, so the order is what makes a narrow rule win over a broad one. Places count in the list this key sees. `not-found` for a rule that is not there or out of reach. Needs the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The rule's id, as `inbox.list_sort_rules` gives it. |
+| `position` | integer | ja | Its new place, 0 first. |
 
 ### `inbox.hide_sender`
 
@@ -839,7 +943,7 @@ Searches mail in every folder of every account this key may see (or one `account
 |---|---|---|---|
 | `account` | string | nein | Only this account: `mail:<address>`. |
 | `before` | string (date-time) | nein | Only messages before this instant (RFC 3339). |
-| `categories` | array<`"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"`> | nein | Only mail of one of these categories (task E12.4, `docs/kategorien.md`); empty or left out: every message, with a category or without. A typed set, not a word in `query`: a group of the sidebar is up to seven categories. Filtered before paging, so pages and `cursor` hold; a cursor belongs to this field as well. |
+| `categories` | array<`"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string> | nein | Only mail of one of these categories (task E12.4, `docs/kategorien.md`); empty or left out: every message, with a category or without. A typed set, not a word in `query`: a group of the sidebar is up to seven categories. Filtered before paging, so pages and `cursor` hold; a cursor belongs to this field as well. |
 | `cursor` | string | nein | The `cursor` of the previous page, for the next one. A cursor belongs to its order: pass the same `order` with it. |
 | `flagged` | boolean | nein | Only flagged (`true`) or only unflagged (`false`) messages. |
 | `folder` | string | nein | Only this folder: its id from `mail.list_folders`. Left out: every folder. |
@@ -1608,7 +1712,7 @@ Replaces all suite-wide settings at once. Prefer set_setting and set_collection_
 | `settings.componentsOff` | array<`"calendar"` \| `"tasks"` \| `"mail"` \| `"inbox"` \| `"assistant"` \| `"workspaces"`> | nein | The components a person turned off (task W.1); every other one is on. Only the ones turned off are stored, so a component added later starts on, and so do installations from before. A name this version does not know is dropped when the file is read. |
 | `settings.design` | string | nein, Standard `"torro"` | The design pack every window draws with (task L.3, `docs/design-pakete.md`): its id, the folder name under `<data>/designs/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the standard. Kept as written even when the pack is gone or broken: the apps then draw with the standard, and the control centre shows why. |
 | `settings.font` | string | nein, Standard `""` | The font every window draws with (task L.22, `docs/design-pakete.md` "Wählen"): its id, the folder name under `<data>/fonts/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the standard. Kept as written like [`Settings::design`]; choosing a design never changes it. A settings file without it reads as the standard. Left out of `settings.update_settings` (or sent as `""`), the stored one stays. |
-| `settings.hiddenCategories` | array<`"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"`> | nein | The mail categories the sidebar leaves out (task E12.10, `docs/kategorien.md`). Only the ones hidden are stored, so a category added later starts shown. A key this version does not know is dropped when the file is read. |
+| `settings.hiddenCategories` | array<`"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string> | nein | The mail categories the sidebar leaves out (task E12.10, `docs/kategorien.md`). Only the ones hidden are stored, so a category added later starts shown. A key this version does not know is dropped when the file is read. |
 | `settings.hiddenCollections` | array<string> | nein, Standard `[]` | Collections (calendar and task list ids) the apps do not show. |
 | `settings.language` | `"english"` \| `"german"` \| `"system"` | nein, Standard `"system"` | Language of the suite: `system` follows the desktop, `english` and `german` fix it. Applies to processes started afterwards. |
 | `settings.listOrders` | object | nein | How each task list is ordered, by list id (`<account-id>/<list URL>`, task P.3a). A list that is not named here is grouped by due date ([`ListOrder::DueDate`]), so only lists in [`ListOrder::Manual`] are stored. |

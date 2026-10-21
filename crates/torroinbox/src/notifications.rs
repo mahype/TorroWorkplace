@@ -1259,6 +1259,7 @@ mod tests {
         let backup = items.iter().find(|item| item.id == "demo-7").expect("the backup notice");
         let view = View::Overview;
         let rows = Rows {
+            categories: &[],
             view: &view,
             selected: None,
             now: now(),

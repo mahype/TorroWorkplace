@@ -188,6 +188,76 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 Kein Befehl braucht `Never`: Es sind keine Geheimnisse beteiligt, Schlüssel bleiben wie bisher im
 Dienst und werden nur über die Oberfläche eingetragen.
 
+## Eigene Kategorien und Sortierregeln (Issue #255)
+
+Stand: 2026-10-20. Aufgaben: [tasks/eingang.md › E15](tasks/eingang.md#e15-kategorien-und-sortierregeln-frei-bearbeiten-issue-255).
+Der Katalog oben ist seitdem die **Vorgabe**, nicht mehr fest.
+
+### Kennung und Angaben
+
+- Jede Kategorie hat eine **Kennung, die nie wechselt**: die 23 Schlüssel oben und für eigene
+  Kategorien `custom_<n>`. `<n>` wird nie neu vergeben, auch nicht nach dem Entfernen.
+- Bearbeitbar sind bei **jeder** Kategorie Name, Gruppe, Beschreibung und „das Modell darf sie
+  wählen“. Umbenennen ändert die Kennung nicht, Mail und Regeln bleiben gültig. Eine mitgelieferte
+  Kategorie lässt sich auf die Worte der Suite zurücksetzen, aber nicht entfernen.
+- Die **vier Gruppen** bleiben fest; Farbe und Icon kommen weiter von der Gruppe.
+- Die **Beschreibung** ist das, was das Modell über die Kategorie liest – mit Beispielen und
+  Ausnahmen in den Worten des Menschen. Sie lenkt das Modell, garantiert aber nichts: Eine harte
+  Ausnahme ist eine Sortierregel.
+
+### Sortierregeln
+
+Eine Regel nennt eine Kategorie, **Bedingungen** (alle müssen gelten) und **Ausnahmen** (keine darf
+gelten). Felder: Absender (gleich), Domain (gleich oder Subdomain), Betreff (enthält), Text
+(enthält, so weit die Suite den Text hat). Groß- und Kleinschreibung zählt nicht. Die Regeln stehen
+in einer sichtbaren Reihenfolge; **die erste passende entscheidet**, abgeschaltete zählen nicht.
+
+Die gemerkten Regeln aus „Always for this sender?“ sind Sortierregeln mit einer Bedingung
+„Absender“ und stehen in derselben Liste. Über `inbox.list_rules` und `inbox.remove_rule` sind sie
+weiter erreichbar.
+
+### Vorrang
+
+1. **Von Hand** gesetzt (`person`): bleibt, bis der Mensch selbst etwas anderes wählt oder
+   ausdrücklich `inbox.classify_item` drückt.
+2. **Sortierregeln** in ihrer Reihenfolge (`rule`).
+3. **Feste Merkmale**: Einladung, Abwesenheit, Junk-Ordner (`rule`).
+4. **Modell** (`model`), nur für Kategorien, die es wählen darf.
+
+### Mehr als 20 Kategorien fürs Modell
+
+Eine `choice`-Frage hat höchstens 20 Optionen. Bis 20 Modellkategorien bleibt es bei einem
+Aufruf. Darüber fragt der erste Aufruf die **Gruppe** (dazu `needs_reply` und `urgency`), der
+zweite die **Kategorie** in dieser Gruppe; mit nur einer Kategorie in der Gruppe entfällt er. Je
+Gruppe sind höchstens 20 Modellkategorien erlaubt, darum fällt keine stillschweigend weg. Die
+Schwelle 0,6 gilt für beide Antworten.
+
+### Entfernen und neu einordnen
+
+- Eine eigene Kategorie ohne Mail, Einträge und Regeln verschwindet sofort. Sonst braucht es eine
+  **Ersatzkategorie**: Der Dienst merkt sie sich, stellt Regeln, Mail und Einträge um und entfernt
+  die Kategorie zuletzt. Bricht das ab, setzt der nächste Start es fort; die Herkunft der
+  Kategorie bleibt dabei erhalten.
+- Neue Regeln und geänderte Beschreibungen wirken auf **neue** Mail. Bestehende Mail ordnet
+  „Sort again“ neu (`inbox.catch_up_categories` mit `again`), über dasselbe Fenster wie der
+  Altbestand, mit Fortschritt und Abbrechen. Von Hand gesetzte Kategorien bleiben.
+
+### Die drei Wege
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Katalog lesen | Einstellungen › Categorization, Seitenleiste, Menü | `inbox.list_categories` · Read | `inbox_list_categories` |
+| Kategorie anlegen | Einstellungen › Categorization | `inbox.create_category` · Admin | `inbox_create_category` |
+| Kategorie ändern | Einstellungen › Categorization | `inbox.update_category` · Admin | `inbox_update_category` |
+| Kategorie entfernen | Einstellungen › Categorization | `inbox.remove_category` · Admin | `inbox_remove_category` |
+| Regeln lesen | Einstellungen › Categorization | `inbox.list_sort_rules` · Read | `inbox_list_sort_rules` |
+| Regel anlegen, ändern, entfernen | Einstellungen › Categorization | `inbox.create_sort_rule`, `inbox.update_sort_rule`, `inbox.remove_sort_rule` · Admin | gleichnamig |
+| Reihenfolge ändern | Einstellungen › Categorization | `inbox.move_sort_rule` · Admin | `inbox_move_sort_rule` |
+| Neu einordnen | Einstellungen › Categorization | `inbox.catch_up_categories { again }` · Admin | `inbox_catch_up_categories` |
+
+Admin, weil jede dieser Änderungen dauerhaft bestimmt, wie alle Mail eingeordnet wird – wie
+„Always for this sender?“. Ein Agent braucht dafür die Freigabe eines Menschen.
+
 ## Abgrenzung
 
 - Nur Mail bekommt Kategorien.

@@ -3568,6 +3568,236 @@ E12.10 braucht E12.5 und E12.6
   `torro-design-review` in allen Größenklassen, hell und dunkel, auch mit `--demo`
   (Bilder im Bericht). Übersetzungen im Bericht.
 
+## E15 Kategorien und Sortierregeln frei bearbeiten (Issue #255)
+
+Konzept: [kategorien.md › Eigene Kategorien und Sortierregeln](../kategorien.md#eigene-kategorien-und-sortierregeln-issue-255).
+Aus E12 wird ein bearbeitbarer Katalog: Jede Kategorie, auch eine mitgelieferte, bekommt bearbeitbare
+Angaben (Name, Gruppe, Beschreibung, Modellwahl), eigene Kategorien kommen dazu, und geordnete
+Sortierregeln entscheiden vor dem Modell.
+
+Entschieden mit der Freigabe des Plans (20.10.2026):
+
+1. Die vier Gruppen bleiben. Jede Kategorie darf Name, Gruppe, Beschreibung und Modellwahl ändern;
+   die technische Kennung bleibt. Eigene Kategorien heißen `custom_<n>`, `<n>` wird nie neu
+   vergeben.
+2. Sortierregeln haben Bedingungen (alle müssen gelten) und Ausnahmen (keine darf gelten) und eine
+   sichtbare Reihenfolge; die erste passende Regel entscheidet. Die gemerkten „Always for this
+   sender?“-Regeln werden zu Sortierregeln und stehen in derselben Liste.
+3. Bis zu 20 Modellkategorien fragt ein Aufruf; darüber zuerst die Gruppe, dann die Kategorie.
+   Je Gruppe höchstens 20 Modellkategorien; der Dienst lehnt mehr ab, der Editor zeigt die Grenze.
+4. Eine eigene Kategorie mit Verweisen wird nur mit Ersatzkategorie entfernt. Die Umstellung ist
+   fortsetzbar (Mail und Eingang liegen in getrennten Datenbanken), die Kategorie verschwindet
+   zuletzt. Bereits eingeordnete Mail ändert sich nur auf ausdrückliche Aktion; von Hand gesetzte
+   Kategorien bleiben immer.
+
+Vorrang beim Einordnen: **von Hand** › **Sortierregeln** in ihrer Reihenfolge › **feste Merkmale**
+(Einladung, Abwesenheit, Junk-Ordner) › **Modell**.
+
+Nachgetragen 2026-10-20 bei der Umsetzung: Der Branch der Planung lag nur in einer
+Codex-Umgebung und war nicht auffindbar. Diese Aufgaben sind aus dem freigegebenen Plan-Kommentar
+in #255 nachgebaut.
+
+```
+E15.1 ── E15.2 ── E15.3 ── E15.4 ── E15.5
+```
+
+Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinander.
+
+### E15.1 API und dynamische Kennungen
+- [x] erledigt (2026-10-20): `Category::Custom(CustomCategory)` mit `custom_<n>`, Serde und Schema von
+  Hand, `BUILT_IN`, `default_group`, `CategoryDef`; `torro_core::category::{suite_label, name_of,
+  description_of, fallback_name, group_description}` (statt `label`/`description`, damit jede Anzeige
+  den Katalog fragt); `SortRule`/`SortCondition`/`SortField`; acht Requests mit Katalogeintrag und
+  MCP-Tool, `again` an `inbox.catch_up_categories`, `CategoryInfo::of` mit `description`, `model`,
+  `built_in`, `renamed`; Freigabe-Sätze aus dem Katalog (`InboxFacts::{categories, sort_rule}`),
+  Protokoll und Benachrichtigung ohne Namen. Abweichung: Damit jeder Commit baut, lesen Mail-Fenster
+  (Pille, Seitenleiste, Menü), Hub-Seite „Rules“ und die Seitenleisten-Schalter den Katalog schon
+  hier (`Rows`, `MailList`, `Reading` tragen ihn; `CategoryView` merkt sich Kategorien und Namen).
+  Nebenbefund behoben: `inbox.set_item_category` mit Eintragskennung bekam für die Freigabe keinen
+  Eintrag nachgeschlagen. Die Fakten der Freigabe liegen in einer Box, sonst lief ein Test über den
+  Stapel.
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/{lib,category}.rs`,
+  `crates/torro-core/src/category.rs`, `crates/torro-inbox/src/{lib,item,rules}.rs`,
+  `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,mcp,approvals,audit,daemon,pim}.rs`,
+  `crates/torroworkplace/src/mail/service.rs`, `crates/torro-settings-ui/src/mail.rs`, `docs/api-reference.md`
+- Skill `torro-api` laden.
+- **Kennung:** `torro_mail::Category` bekommt `Custom(CustomCategory)` (`CustomCategory(u32)`, `Copy`),
+  geschrieben als `custom_<n>`; `key()` gibt `Cow<'static, str>`, `from_key` liest beides.
+  `Category::ALL` heißt `Category::BUILT_IN` (die 23 mitgelieferten), `Category::group()` wird
+  `default_group() -> Option<CategoryGroup>`, damit jede Stelle, die eine feste Gruppe annimmt,
+  beim Bauen auffällt. Serde und Schema von Hand (Zeichenkette); alte Schlüssel bleiben gleich.
+- **Katalogtyp:** `torro_mail::category::CategoryDef { category, group, name, description, model }`
+  (`name`/`description` `None`: die Worte der Suite). `torro_core::category::{name_of, description_of}`.
+- **Regeltyp:** `torro_inbox::SortRule { id, category, conditions, exceptions, enabled, created }` mit
+  `SortCondition { field, value }` und `SortField` (`sender`, `domain`, `subject`, `text`).
+- **Requests** mit Katalogeintrag und MCP-Tool gleichen Namens:
+
+  | Request | Befehl | Zugriff | MCP |
+  |---|---|---|---|
+  | `CreateCategory` | `inbox.create_category` | Admin | `inbox_create_category` |
+  | `UpdateCategory` | `inbox.update_category` | Admin | `inbox_update_category` |
+  | `RemoveCategory` | `inbox.remove_category` | Admin | `inbox_remove_category` |
+  | `ListSortRules` | `inbox.list_sort_rules` | Read | `inbox_list_sort_rules` |
+  | `CreateSortRule` | `inbox.create_sort_rule` | Admin | `inbox_create_sort_rule` |
+  | `UpdateSortRule` | `inbox.update_sort_rule` | Admin | `inbox_update_sort_rule` |
+  | `RemoveSortRule` | `inbox.remove_sort_rule` | Admin | `inbox_remove_sort_rule` |
+  | `MoveSortRule` | `inbox.move_sort_rule` | Admin | `inbox_move_sort_rule` |
+
+  Admin wie `inbox.set_item_category { remember }`: dauerhafte Ordnung für alle Mail, ein Mensch
+  gibt sie frei. `inbox.catch_up_categories` bekommt das optionale Feld `again` (alles im Fenster
+  neu einordnen, außer von Hand gesetzten Kategorien). `CategoryInfo` bekommt `description`,
+  `model` und `built_in` (verträglich, mit `serde(default)`). Neue Antworten `Response::Category`,
+  `Response::CategoryRemoved`, `Response::SortRules`, `Response::SortRule`.
+- Freigabe-Sätze in `approvals.rs` (Namen der vorhandenen Kategorien und Regeln aus `Facts`, nie aus
+  dem Request), Protokoll ohne Namen, Beschreibungen und Bedingungen, Beschriftung in `daemon.rs`.
+  Bis E15.2/E15.3 antworten die Handler `unsupported`.
+- **Oberfläche:** keine. **API/MCP:** die Tabelle oben.
+- **Abnahme:** Tabellen- und Vertragstest über den Katalog; jede mitgelieferte Kategorie wird wie
+  bisher geschrieben, `custom_7` hin und zurück, `custom_0` und `custom_x` sind keine Kategorie;
+  Freigabe-Sätze ohne Text des Clients für Änderungen an Vorhandenem; API-Referenz neu erzeugt.
+
+### E15.2 Katalog und Anzeige
+- [x] erledigt (2026-10-21): Schema 11 mit `category_edits`, `custom_categories` und schon
+  `sort_rules` (für E15.3); Untermodul `inbox/catalogue.rs` (Lesen, Anlegen, Ändern, Prüfen der
+  Grenzen, Entfernen in zwei Schritten); `inbox.create_category`, `inbox.update_category` und
+  `inbox.remove_category` im Kern, die Mail über `MailService::{count_category,
+  replace_category}` in jedem Konto; eine unterbrochene Entfernung setzt `Core::start` fort,
+  sobald die Mailkonten gelesen sind, und ein erneuter Aufruf ebenso. `inbox.set_item_category`
+  nimmt nur Kategorien des Katalogs. Eine entfernte Kategorie fällt aus `hidden_categories`.
+  Die Anzeige stand schon mit E15.1. Abweichung: neue Datei `inbox/catalogue.rs`, damit
+  `inbox.rs` nicht weiter wächst.
+- **Modell:** Opus · **Braucht:** E15.1 · **Dateien:** `crates/torroworkplace/src/{core,inbox,approvals}.rs`,
+  `crates/torroworkplace/src/mail/{service,store}.rs`, `crates/torro-core/src/{category,i18n/de}.rs`,
+  `crates/torro-inbox/src/demo.rs`, `crates/torroinbox/src/{app,list,mail}.rs`,
+  `crates/torro-settings-ui/src/{mail,inbox,demo}.rs`
+- **Speicher:** Schema 11 in `inbox.sqlite`: `category_edits` (Änderungen an mitgelieferten) und
+  `custom_categories` (`AUTOINCREMENT`, Feld `replaced_by` für eine laufende Entfernung).
+- **Befehle:** `inbox.create_category`, `inbox.update_category`, `inbox.remove_category`.
+  Name 1–60 Zeichen, eine Zeile, eindeutig im Katalog; Beschreibung höchstens 500 Zeichen, bei
+  eigenen Pflicht; je Gruppe höchstens 20 Modellkategorien (`error`). `update` mit `""` für Name
+  oder Beschreibung einer mitgelieferten Kategorie nimmt die Worte der Suite zurück. Mitgelieferte
+  sind nicht entfernbar (`unsupported`); eine eigene mit Mail, Einträgen oder Regeln nur mit
+  `replacement` (`conflict` mit den Zahlen). Die Entfernung merkt sich die Ersatzkategorie, stellt
+  Regeln, Mail jedes Kontos und Einträge um und löscht die Kategorie zuletzt; der Dienst setzt eine
+  unterbrochene Entfernung beim Start fort.
+- **Anzeige:** `inbox.list_categories` liest den Katalog (Reihenfolge: mitgelieferte nach Katalog,
+  eigene nach Anlage, je Gruppe). Pille, Seitenleiste, Menü „Category…“, Seite „Rules“ des Hubs und
+  die Seitenleisten-Schalter der Einstellungen nehmen Name und Gruppe aus `CategoryInfo`, nicht aus
+  `Category::group()`; die Freigabe-Sätze nennen den Namen aus dem Katalog.
+- **Oberfläche:** Mail-Fenster (Pille, Seitenleiste, Menü), Einstellungen (Seitenleisten-Schalter).
+  **API:** die drei Befehle aus E15.1, `inbox.list_categories`. **MCP:** aus E15.1.
+- **Abnahme:** Tests: eine eigene Kategorie erscheint in `inbox.list_categories`, lässt sich an einer
+  Mail setzen, filtern und zählen; Änderungen an einer mitgelieferten überstehen einen Neustart
+  (neu geöffnete Datenbank); mehr als 20 Modellkategorien in einer Gruppe werden abgelehnt;
+  Entfernen ohne Ersatz bei Verweisen ist `conflict`; eine nach dem Merken der Ersatzkategorie
+  abgebrochene Entfernung wird fortgesetzt und lässt keine Mail, keinen Eintrag und keine Regel
+  mit der alten Kennung zurück; die Herkunft (`person`, `rule`, `model`) bleibt beim Umstellen.
+
+### E15.3 Regeln und Vorrang
+- [x] erledigt (2026-10-21): `rules::{SortInput, sort_category, sort_holds, condition_holds,
+  sort_value}`; Tabelle `sort_rules` mit Spalte `source` (das Mailkonto, in dem „Always for this
+  sender?“ die Regel anlegte); Migration der gemerkten Kategorieregeln in Reihenfolge ihrer
+  Anlage; die fünf Befehle im Eingang, Reihenfolge ohne Lücken; `inbox.list_sort_rules` zeigt
+  einem Schlüssel ohne Leserecht auf Mail nichts. „Always for this sender?“ legt eine
+  Sortierregel an die erste Stelle und antwortet weiter mit einer `Rule`; `inbox.list_rules`,
+  `inbox.remove_rule` und die Freigabe dazu erreichen solche Regeln weiter (nur solange sie genau
+  ein Absender oder eine Domain ohne Ausnahme sind und an). Neue Mail fragt die Sortierregeln vor
+  Einladung, Abwesenheit und Junk-Ordner; „Text“ ist beim Eintreffen der Anfang der Mail.
+  Nach den Reviews: Regeln, die „Always for this sender?“ in einem Konto anlegte, sieht und ändert
+  nur ein Schlüssel, der das Konto lesen darf; Plätze zählen in der Liste, die ein Schlüssel sieht;
+  `inbox.update_sort_rule` lässt weggelassene Ausnahmen und Schalter stehen.
+- **Modell:** Opus · **Braucht:** E15.2 · **Dateien:** `crates/torro-inbox/src/rules.rs`,
+  `crates/torroworkplace/src/{core,inbox,approvals}.rs`, `crates/torroworkplace/src/mail/inbox_feed.rs`,
+  `crates/torro-settings-ui/src/inbox.rs`
+- **Speicher:** Tabelle `sort_rules` (Schema 11, Reihenfolge in `position`). Die gemerkten
+  Kategorieregeln (`RuleEffect::Category`) wandern in der Migration in Reihenfolge ihrer Anlage
+  dorthin, mit einer Bedingung `sender` bzw. `domain`.
+- **Befehle:** `inbox.list_sort_rules`, `inbox.create_sort_rule` (ohne `position` ans Ende),
+  `inbox.update_sort_rule`, `inbox.remove_sort_rule`, `inbox.move_sort_rule`. 1–10 Bedingungen,
+  höchstens 10 Ausnahmen, Werte eine Zeile, höchstens 200 Zeichen; höchstens 500 Regeln; die
+  Kategorie muss im Katalog stehen.
+- **Prüfen** (`rules::sort_category`): Absender gleich (ohne Groß/klein), Domain gleich oder
+  Subdomain, Betreff und Text enthalten (ohne Groß/klein). Alle Bedingungen gelten, keine Ausnahme
+  gilt; abgeschaltete Regeln zählen nicht; die erste in der Reihenfolge entscheidet.
+- **Vorrang:** `rules::mail_category` nimmt die Sortierregel vor den festen Merkmalen; eine
+  Kategorie `person` fasst nichts Automatisches an.
+- **Verträglich:** `inbox.set_item_category { remember: true }` legt eine Sortierregel mit der
+  Bedingung `sender` an (eine vorhandene für denselben Absender wird umgestellt) und antwortet
+  weiter mit einer `Rule` (`RuleEffect::Category`, Kennung der Sortierregel). `inbox.list_rules`
+  zeigt Sortierregeln mit genau einer Absender- oder Domain-Bedingung ohne Ausnahme weiter als
+  solche `Rule`, und `inbox.remove_rule` entfernt sie; die Freigabe nennt Absender und Kategorie aus
+  der gespeicherten Regel.
+- **Oberfläche:** keine neue (Editor in E15.5); die Seite „Rules“ des Hubs zeigt wie bisher.
+  **API/MCP:** die fünf Befehle aus E15.1.
+- **Abnahme:** Tests: Migration der gemerkten Regeln samt Reihenfolge; erste passende Regel
+  gewinnt, Gleichstand nach Reihenfolge; Ausnahme schlägt Bedingung; abgeschaltete Regel zählt
+  nicht; Sortierregel vor Einladung/Abwesenheit/Junk; `person` schlägt jede Regel; „Always for this
+  sender?“ und `inbox.remove_rule` laufen weiter; Verschieben ändert die Reihenfolge eindeutig.
+
+### E15.4 KI und erneute Einordnung
+- [x] erledigt (2026-10-21): `categorize::{Offer, offers, plan, Plan, request, group_request,
+  narrow_request, decide}`: Optionen aus dem Katalog (`model` oder `other`), lesbare Namen
+  (`option_name`, nie `custom_<n>`, nie doppelt, nie der Schlüssel einer anderen Kategorie der
+  Suite), Kriterium „Name: Beschreibung“ bei umbenannten und eigenen. Über 20 Optionen erst die
+  Gruppe (mit `needs_reply`/`urgency`), dann die Kategorie der Gruppe; eine Gruppe mit einer
+  Kategorie braucht keinen zweiten Aufruf; Konfidenz das Minimum beider. Die Grenze je Gruppe zählt
+  `other` mit, weil sie immer angeboten wird. Der Lauf nimmt erst Sortierregeln und Kopfzeilen
+  (`Inbox::rule_category`, `MailService::{sorting_facts, in_window}`), dann das Modell; mit
+  `again` geht er durch das ganze Fenster, lässt `person` stehen, läuft ohne Modell nur mit Regeln
+  und meldet Fortschritt in `CatchUp::progress` (`Categorization::again`). Ohne Regel und ohne
+  Modell behält eine Mail beim erneuten Einordnen, was sie hat.
+- **Modell:** Opus · **Braucht:** E15.3 · **Dateien:** `crates/torroworkplace/src/{categorize,core}.rs`,
+  `crates/torroworkplace/src/mail/{service,store,inbox_feed}.rs`
+- **Fragen aus dem Katalog:** die Optionen sind alle Kategorien mit `model: true` (immer mit `other`),
+  die Kriterien ihre Beschreibung, bei umbenannten und eigenen mit dem Namen davor. Optionen eigener
+  Kategorien tragen einen lesbaren Namen aus dem Namen der Kategorie, nicht `custom_<n>`.
+- **Gestuft:** bis 20 Optionen ein Aufruf wie bisher; darüber fragt der erste Aufruf die Gruppe
+  (mit `needs_reply` und `urgency`), der zweite die Kategorie der Gruppe. Hat die Gruppe nur eine
+  Modellkategorie, entfällt der zweite. Die Schwelle 0,6 gilt für beide Antworten.
+- **Erneut einordnen:** `inbox.catch_up_categories { again: true }` geht durch dasselbe Fenster
+  (30 Tage, 500 Mails je Konto) und ordnet jede Mail neu: Sortierregeln, feste Merkmale, dann das
+  Modell; eine Kategorie `person` bleibt. Fortschritt über `inbox.get_categorization` (Feld
+  `again`), Abbrechen wie beim Altbestand. Ohne Modell laufen nur die Regeln. Auch der
+  Altbestandslauf nimmt jetzt erst die Regeln.
+- **Oberfläche:** keine neue (Knopf in E15.5). **API/MCP:** `inbox.catch_up_categories`,
+  `inbox.get_categorization`.
+- **Abnahme:** Tests: Beschreibung und Name erreichen die Kriterien; mit 21+ Modellkategorien
+  zwei Aufrufe, die Kategorie aus der gewählten Gruppe, keine Kategorie fällt weg; ein erfundener
+  Schlüssel wird `other`; der Lauf `again` lässt `person` stehen, wendet eine neue Regel an und
+  meldet Fortschritt; Abbruch hält an.
+
+### E15.5 Editor und Sichtprüfung
+- [x] erledigt (2026-10-21): neues Modul `torro-settings-ui/src/mail/editor.rs` mit den Gruppen
+  „Sorting rules“ (Reihenfolge, ↑ ↓, Schalter, Bearbeiten, „New sorting rule“) und „Categories“ (je
+  Gruppe, Seite mit Name, Gruppe, Beschreibung, „Let the AI choose it“ mit Zähler „n of 20“,
+  „Use the suite's words“, „Remove…“ mit Ersatzkategorie) als Unterseiten mit „‹ Back“; Fehler erst
+  nach „Save“; „Sort again“ neben „Catch up now“ mit eigenem Fortschritt. Der alte Verweis „Rules“
+  in den Notification Hub entfällt: die gemerkten Absender stehen jetzt unter den Sortierregeln.
+  `Data::sort_rules`, `--demo` mit einer umbenannten, einer eigenen Kategorie und drei Regeln.
+  Nach der Design-Prüfung umgebaut: Regelzeilen öffnen nur ihre Seite (an/aus, „Move up“/„Move
+  down“ und „Delete rule“ stehen dort), Kategorien je Gruppe mit dem Schalter für die Seitenleiste
+  auf ihrer Seite (keine zweite Liste), „File as“ als Auswahlfeld, „Save“ in der Kopfleiste,
+  Fehler am Feld mit Sprung zum ersten, Rückfragen auf der Seite vor „Delete rule“, „Reset“ und
+  dem Verlassen mit Änderungen, Escape geht eine Seite zurück, „Sort everything again“ als eigene
+  Zeile. Sichtprüfung: nur die Liste in Mittel (dunkel) vor dem Umbau angesehen; danach war der
+  Bildschirm gesperrt.
+- **Modell:** Opus · **Braucht:** E15.4 · **Dateien:** `crates/torro-settings-ui/src/{mail,demo}.rs`,
+  `crates/torro-settings-ui/src/mail/` (neu, falls die Seite eigene Module braucht),
+  `crates/torro-core/src/i18n/de.rs`
+- Skill `torro-design` laden.
+- **Seite Categorization** bekommt drei Gruppen: **Categories** (je Gruppe die Kategorien mit
+  Name, Modell-Kennzeichen, Bearbeiten; „New category“; Formular mit Name, Gruppe, Beschreibung,
+  „Let the AI choose it“; Entfernen eigener mit Wahl der Ersatzkategorie; Zähler „n of 20 for the
+  AI“ je Gruppe), **Sorting rules** (Liste in Reihenfolge mit Kategorie und Bedingungen, an/aus,
+  nach oben/unten, Bearbeiten, Löschen; Formular mit Bedingungen und Ausnahmen) und **Sort again**
+  (Knopf mit Fortschritt und Abbrechen).
+- **Oberfläche:** Einstellungen des Mail-Fensters › Categorization, alle Größenklassen.
+  **API:** alle Befehle aus E15.1. **MCP:** –.
+- **Abnahme:** Tests: Speichern schickt den passenden Request; die Grenze von 20 wird vor dem
+  Speichern gemeldet; Entfernen fragt nach Ersatz; Verschieben schickt `inbox.move_sort_rule`;
+  „Sort again“ schickt `again: true`. Oberflächentexte über `tr("…")`. Sichtprüfung mit Agent
+  `torro-design-review` (schmal, mittel, breit, hell und dunkel). Übersetzungen in `de.rs`.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur
