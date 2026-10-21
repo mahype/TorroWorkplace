@@ -47,7 +47,7 @@
 //! and only then to the host, which closes the settings – like the control centre routes it.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, rule, scrollable, svg};
+use iced::widget::{Row, button, column, container, row, rule, scrollable, svg};
 use iced::{Alignment, Element, Fill, Padding, Task, Theme};
 
 use torro_core::i18n::tr;
@@ -406,12 +406,15 @@ impl Host {
         let anchor = Anchor::new();
         let on_list = form == Form::Steps && self.list;
         let Page { body, sub_page, actions } = page;
+        // The open section's own back message, kept aside before `header` takes `sub_page`: the
+        // list and the menu need it too, to close a sub page instead of re-selecting the section.
+        let open_back = sub_page.as_ref().map(|(_, back)| back.clone());
         let header = self.header(form, on_list, sub_page, actions, &anchor, wrap);
         let body = match (form, on_list) {
-            (Form::Steps, true) => self.page_area(class, self.list_rows(false, wrap)),
+            (Form::Steps, true) => self.page_area(class, self.list_rows(false, open_back.clone(), wrap)),
             (Form::Steps | Form::Menu, _) => self.page_area(class, body),
             (Form::List, _) => {
-                let list = container(self.list_rows(true, wrap))
+                let list = container(self.list_rows(true, open_back.clone(), wrap))
                     .width(size::sidebar())
                     .height(Fill)
                     .padding(Padding::new(space::s()));
@@ -419,7 +422,12 @@ impl Host {
             }
         };
         let overlay = (form == Form::Menu && self.menu).then(|| {
-            widgets::floating(&anchor, Placement::Below(Align::Start), self.menu_card(wrap), wrap(Message::Close))
+            widgets::floating(
+                &anchor,
+                Placement::Below(Align::Start),
+                self.menu_card(open_back, wrap),
+                wrap(Message::Close),
+            )
         });
         Frame { header, body, overlay }
     }
@@ -454,21 +462,27 @@ impl Host {
                 Some((name, _)) => shell::header_title(None, name, None),
                 None => widgets::menu_button(anchor, Some(section.icon), section.name(), wrap(Message::Menu)),
             },
-            (Form::List, _) => path(section, sub_page.map(|(name, _)| name)),
+            (Form::List, _) => path(section, sub_page),
         };
         shell::header_bar(leading, title, actions)
     }
 
     /// The sections as rows, and under them the two ways into the control centre. `highlight`
     /// marks the open one – in the narrow list nothing is open yet.
-    fn list_rows<'a, M: Clone + 'a>(&'a self, highlight: bool, wrap: fn(Message) -> M) -> Element<'a, M> {
+    fn list_rows<'a, M: Clone + 'a>(
+        &'a self,
+        highlight: bool,
+        open_back: Option<M>,
+        wrap: fn(Message) -> M,
+    ) -> Element<'a, M> {
         let row_of = |(at, section): (usize, &Section)| {
+            let open = highlight && at == self.current;
             widgets::sidebar_item(
                 section.icon,
                 section.name(),
                 Trail::None,
-                highlight && at == self.current,
-                wrap(Message::Select(section.id)),
+                open,
+                row_press(section.id, open, &open_back, wrap),
             )
         };
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
@@ -488,10 +502,10 @@ impl Host {
 
     /// The section menu of the medium form, with the two links in a part of their own – the same
     /// rows as the list, as a menu.
-    fn menu_card<'a, M: Clone + 'a>(&'a self, wrap: fn(Message) -> M) -> Element<'a, M> {
+    fn menu_card<'a, M: Clone + 'a>(&'a self, open_back: Option<M>, wrap: fn(Message) -> M) -> Element<'a, M> {
         let entry = |section: &Section| {
-            MenuItem::new(section.icon, section.name(), wrap(Message::Select(section.id)))
-                .current(section.id == self.current().id)
+            let open = section.id == self.current().id;
+            MenuItem::new(section.icon, section.name(), row_press(section.id, open, &open_back, wrap)).current(open)
         };
         let link = |(at, (_, icon, label)): (usize, &(&str, Icon, &'static str))| {
             MenuItem::new(*icon, tr(label), wrap(Message::Link(at))).trail(Trail::Icon(Icon::ArrowUpRight))
@@ -520,21 +534,47 @@ impl Host {
     }
 }
 
-/// "Settings › Reminders › Work": what is open in `BODY_STRONG`, the way to it in `text_3`.
-fn path<'a, M: 'a>(section: Section, sub_page: Option<String>) -> Element<'a, M> {
+/// What pressing the row of `id` in the list or the menu sends. The already open row closes
+/// `open_back` – the open sub page's back message – instead of selecting it again:
+/// `Message::Select` would do nothing, the section is already current, and the sub page would
+/// stay open (#264).
+fn row_press<M: Clone>(id: &'static str, open: bool, open_back: &Option<M>, wrap: fn(Message) -> M) -> M {
+    match (open, open_back) {
+        (true, Some(back)) => back.clone(),
+        _ => wrap(Message::Select(id)),
+    }
+}
+
+/// The section's crumb in the path, pressable when a sub page is open: `BODY_STRONG`'s text in
+/// `text_3`, no frame, a `ghost` hover to show it leads somewhere.
+fn crumb_button<'a, M: Clone + 'a>(label: &'static str, on_press: M) -> Element<'a, M> {
+    let text = typo::text(typo::body(), label).style(theme::text_3).wrapping(Wrapping::None);
+    button(text).padding(Padding::ZERO).style(style::button::ghost).on_press(on_press).into()
+}
+
+/// "Settings › Reminders › Work": what is open in `BODY_STRONG`, the way to it in `text_3`. On a
+/// sub page the section's own crumb is pressable and leads to it (`back`), the only way back from
+/// a sub page besides the ‹ arrow.
+fn path<'a, M: Clone + 'a>(section: Section, sub_page: Option<(String, M)>) -> Element<'a, M> {
     let quiet = |text: &'static str| typo::text(typo::body(), text).style(theme::text_3).wrapping(Wrapping::None);
     let step = || {
         icon::icon(Icon::ChevronRight, icon::SIZE_SM)
             .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
     };
-    let mut crumbs = row![quiet(tr("Settings")), step()].spacing(space::xs()).align_y(Alignment::Center);
+    // A `Vec` built up first, not `row![...]` with incremental `.push`: once a crumb carries `M`
+    // (the pressable section crumb below), the compiler infers the growing `Row`'s lifetime too
+    // eagerly across reassignments and asks for `M: 'static`, which the host's own `Message` is
+    // not required to be.
+    let mut children: Vec<Element<'a, M>> = vec![quiet(tr("Settings")).into(), step().into()];
     match sub_page {
-        Some(name) => {
-            crumbs = crumbs.push(quiet(section.name())).push(step());
-            crumbs = crumbs.push(typo::text(typo::body_strong(), name).wrapping(Wrapping::None));
+        Some((name, back)) => {
+            children.push(crumb_button(section.name(), back));
+            children.push(step().into());
+            children.push(typo::text(typo::body_strong(), name).wrapping(Wrapping::None).into());
         }
-        None => crumbs = crumbs.push(typo::text(typo::body_strong(), section.name()).wrapping(Wrapping::None)),
+        None => children.push(typo::text(typo::body_strong(), section.name()).wrapping(Wrapping::None).into()),
     }
+    let crumbs = Row::with_children(children).spacing(space::xs()).align_y(Alignment::Center);
     crumbs.into()
 }
 
@@ -751,5 +791,22 @@ mod tests {
     #[test]
     fn section_names_are_translated() {
         assert_eq!(sections()[1].name(), tr("Reminders"));
+    }
+
+    /// A row that is not the open section always selects it, in the list (wide) and the menu
+    /// (medium) alike – [`row_press`] backs both.
+    #[test]
+    fn a_closed_row_s_press_selects_its_section() {
+        assert_eq!(row_press::<Message>("reminders", false, &Some(Message::Back), |m| m), Message::Select("reminders"));
+        assert_eq!(row_press::<Message>("reminders", false, &None, |m| m), Message::Select("reminders"));
+    }
+
+    /// The already open section's row, in the list (wide) and the menu (medium), closes its sub
+    /// page instead of resending `Select`: with no sub page it still just selects, already current
+    /// or not (#264).
+    #[test]
+    fn an_open_row_s_press_closes_its_sub_page_instead_of_reselecting() {
+        assert_eq!(row_press("reminders", true, &Some(Message::Back), |m| m), Message::Back);
+        assert_eq!(row_press::<Message>("reminders", true, &None, |m| m), Message::Select("reminders"));
     }
 }
