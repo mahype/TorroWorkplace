@@ -851,10 +851,11 @@ pub fn card_height(item: &Item, narrow: bool) -> f32 {
 /// buttons at the right, a card with its buttons below (narrow), or its row (compact).
 pub fn sort_height(item: &Item, layout: Layout) -> f32 {
     let pad = layout::panel_padding();
+    let lead = if item.source.kind == SourceKind::Mail { size::avatar() } else { size::tile_lg() };
     match (layout.cards, layout.narrow) {
         (false, _) => list::row_height_of(item),
-        (true, false) => pad.top + pad.bottom + head_height().max(size::avatar()).max(size::tile_lg()),
-        (true, true) => pad.top + pad.bottom + head_height() + size::card_gap() + size::control_sm(),
+        (true, false) => pad.top + pad.bottom + head_height().max(lead),
+        (true, true) => pad.top + pad.bottom + head_height().max(lead) + size::card_gap() + size::control_sm(),
     }
 }
 
@@ -1340,7 +1341,7 @@ impl SortSlots {
 pub fn sort_buttons_room(width: f32) -> f32 {
     let pad = layout::panel_padding();
     let lead = size::avatar().max(size::tile_lg());
-    (width - pad.left - pad.right - lead - 2.0 * space::m() - size::props() / 2.0).max(0.0)
+    (width - widgets::card_mark_inset() - pad.right - lead - 2.0 * space::m() - size::props() / 2.0).max(0.0)
 }
 
 /// The card of `item` in To sort `width` wide: one line – the lead, title and meta, the buttons at
@@ -1351,11 +1352,11 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
     let selected = data.rows.selected == Some(item.id.as_str());
     let mail = item.source.kind == SourceKind::Mail;
     let unread = mail && item.state == State::New;
-    let title_level = if mail && !unread { typo::body() } else { typo::body_strong() };
+    let title_level = if mail { list::mail_text_level(unread) } else { typo::body_strong() };
     let (title, _) = list::words(item);
     let meta = sort_meta(item, &data.rows);
     let pad = layout::panel_padding();
-    let inner = (width - pad.left - pad.right).max(0.0);
+    let inner = (width - if mail { widgets::card_mark_inset() } else { pad.left } - pad.right).max(0.0);
     let pressed: Vec<(usize, notifications::CardButton)> =
         acts(item).iter().map(|act| (sort_slot(act), card_button(act, item, data.deciding))).collect();
     let parts: Vec<Element<'a, Message>> = if data.layout.narrow {

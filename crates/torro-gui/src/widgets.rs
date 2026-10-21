@@ -2551,7 +2551,7 @@ pub fn card_with_inset_mark<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let pad = layout::panel_padding();
     let head_height = size::avatar().max(typo::line_height(typo::body_strong()) + typo::line_height(typo::meta()));
-    let slot = container(mark).width(pad.left).height(head_height).align_x(iced::Center).align_y(iced::Center);
+    let slot = container(mark).width(card_mark_inset()).height(head_height).align_x(iced::Center).align_y(iced::Center);
     let content = row![slot, column(parts).spacing(size::card_gap()).width(Fill)].align_y(Alignment::Start);
     button(content)
         .width(Fill)
@@ -2559,6 +2559,16 @@ pub fn card_with_inset_mark<'a, M: Clone + 'a>(
         .style(card_style(selected))
         .on_press(on_press)
         .into()
+}
+
+/// The left inset of a card with an unread dot: at least one dot and a small gap on both sides.
+/// Mail cards reserve it in both read states, including when a design sets panel padding to zero.
+pub fn card_mark_inset() -> f32 {
+    card_mark_inset_for(layout::panel_padding().left)
+}
+
+fn card_mark_inset_for(left: f32) -> f32 {
+    left.max(space::s() + 2.0 * space::xs())
 }
 
 /// The look of a [`card`]: `raised` with a `line_strong` frame at rest, `line_selected` on hover,
@@ -5088,6 +5098,14 @@ mod tests {
         let edges = [TileSize::Small, TileSize::Medium, TileSize::Large].map(TileSize::edge);
         assert_eq!(edges, [size::tile_sm(), size::tile(), size::tile_lg()]);
         assert_eq!(edges, [20.0, 28.0, 36.0], "the standard's tiles");
+    }
+
+    #[test]
+    fn mail_card_marker_has_room_with_zero_panel_padding() {
+        let minimum = space::s() + 2.0 * space::xs();
+        assert_eq!(card_mark_inset_for(0.0), minimum);
+        assert_eq!(card_mark_inset_for(minimum / 2.0), minimum);
+        assert_eq!(card_mark_inset_for(minimum + space::s()), minimum + space::s());
     }
 
     /// Task L.18: the colour mode's segment is as wide as its icons and words, or squares without

@@ -3847,12 +3847,14 @@ E16.1 semantische Farbe ── E16.2 Mail-Zeilen und -Karten
   linken Innenabstand hat, wird der nötige Platz für beide Zustände gleichermaßen reserviert.
 - `list::mail_content` setzt Absender und Betreff nur bei ungelesener Mail kräftig. Der Absender
   behält für beide Gewichte dieselbe, mit `body_strong` berechnete Zellenbreite, damit Domain, Zeit
-  und Metadaten nicht horizontal springen. Vorschau, Trefferhervorhebung und Kontopunkt behalten
-  ihre bisherigen Rollen.
-- `list::mail_card` und `hub::sort_card` zeichnen den Punkt links im Karteninnenabstand, ohne den
-  Inhalt oder die Breitenrechnung (`card_inner`, `preview_lines`) zu ändern. Für den Kartentitel
-  erlaubt `widgets::card_head_with_level` zusätzlich zu `card_head` `body` bei gelesen und `body_strong` bei
-  ungelesen, ohne andere Kartenköpfe umzuschalten. `list::mail_card_height` und die Zeilenhöhe
+  und Metadaten nicht horizontal springen. Auch bei eigenen Designs mit abweichenden `body`-Maßen
+  bleiben Schriftgröße und Zeilenhöhe von `body_strong` erhalten; nur der Schriftschnitt wechselt.
+  Vorschau, Trefferhervorhebung und Kontopunkt behalten ihre bisherigen Rollen.
+- `list::mail_card` und `hub::sort_card` zeichnen den Punkt links im Karteninnenabstand. Designs
+  mit zu kleinem Karteninnenabstand reservieren mindestens Punktbreite plus Rand auf beiden Seiten;
+  `card_inner` und `preview_lines` rechnen mit diesem Platz in beiden Leseständen. Für den Kartentitel
+  erlaubt `widgets::card_head_with_level` zusätzlich zu `card_head` den regulären Schriftschnitt bei gelesen
+  und `body_strong` bei ungelesen, ohne andere Kartenköpfe umzuschalten. `list::mail_card_height` und die Zeilenhöhe
   bleiben unverändert. Klicks, Auswahlrahmen und rechter Mausklick funktionieren trotz Punkt.
 - **Abnahme:** Bestehende Tests für Öffnen/`Flag::Seen` und manuelles Zurücksetzen bestehen; neue
   gezielte Tests decken Statusableitung, feste Breiten und Höhen sowie die Karten-Vorschau ab.

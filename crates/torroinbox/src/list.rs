@@ -168,7 +168,6 @@ pub(crate) fn cell_gap() -> f32 {
 
 /// Width of the bar at the left of the selected row, as `widgets::list_row` draws it.
 const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
-const MAIL_ROW_LINES: usize = 3;
 
 /// Edge of the avatar of a mail row, and the width the marks of all rows take, so the text of mail
 /// and of notices starts at the same x.
@@ -527,7 +526,7 @@ pub(crate) fn preview_lines(text: Option<&str>, width: f32) -> usize {
 /// The width of the text inside a card `width` wide: less the card's padding and frame.
 pub(crate) fn card_inner(width: f32) -> f32 {
     let pad = layout::panel_padding();
-    (width - pad.left - pad.right - 2.0 * size::HAIRLINE).max(0.0)
+    (width - widgets::card_mark_inset() - pad.right - 2.0 * size::HAIRLINE).max(0.0)
 }
 
 /// The padding around a column of cards (task E8.3): [`space::m()`] on every side, as far from the
@@ -644,7 +643,7 @@ pub(crate) fn mail_card_height(preview: usize, chips: bool) -> f32 {
     let pad = layout::panel_padding();
     let gap = size::card_gap();
     let head = size::avatar().max(typo::line_height(typo::body_strong()) + typo::line_height(typo::meta()));
-    let mut text = typo::line_height(typo::body());
+    let mut text = typo::line_height(mail_text_level(false));
     if preview > 0 {
         text += space::xs() + preview as f32 * typo::line_height(typo::body());
     }
@@ -740,9 +739,7 @@ pub(crate) fn sized_row<'a>(
             .padding(Padding::ZERO.right(if selected { SELECTED_BAR } else { 0.0 }))
             .align_x(iced::Center)
             .align_y(iced::Center);
-        let slot = column![blank().height(lines_top(message_height(), MAIL_ROW_LINES)), marker, blank().height(Fill)]
-            .width(left)
-            .height(Fill);
+        let slot = column![blank().height(mail_lines_top()), marker, blank().height(Fill)].width(left).height(Fill);
         row![slot, container(content).center_y(Fill).width(Fill)].height(Fill).into()
     } else {
         container(content).center_y(Fill).into()
@@ -771,6 +768,11 @@ fn mail_row_left(selected: bool) -> f32 {
     if selected { left - SELECTED_BAR } else { left }
 }
 
+fn mail_lines_top() -> f32 {
+    let lines = 2.0 * typo::line_height(mail_text_level(false)) + typo::line_height(typo::body());
+    ((message_height() - size::HAIRLINE - lines) / 2.0).max(0.0)
+}
+
 fn unread_dot<'a>() -> Element<'a, Message> {
     container(blank())
         .width(new_dot())
@@ -783,8 +785,16 @@ fn unread_dot<'a>() -> Element<'a, Message> {
         .into()
 }
 
-fn mail_text_level(unread: bool) -> Level {
-    if unread { typo::body_strong() } else { typo::body() }
+pub(crate) fn mail_text_level(unread: bool) -> Level {
+    let strong = typo::body_strong();
+    let regular = typo::body();
+    mail_text_level_in(unread, strong, regular)
+}
+
+/// Only the font cut changes. A custom design may give `body` a different size or line height;
+/// those metrics must stay fixed when the mail becomes read.
+fn mail_text_level_in(unread: bool, strong: Level, regular: Level) -> Level {
+    if unread { strong } else { Level { font: regular.font, ..strong } }
 }
 
 fn sender_cell(name: &str, room: f32) -> (String, f32) {
@@ -834,7 +844,7 @@ pub(crate) struct MailLines<'a> {
     pub marks: Vec<(Element<'a, Message>, f32)>,
     /// The subject on one line.
     pub subject: String,
-    /// New or unread: the subject in medium weight, the dot at the avatar.
+    /// New or unread: the subject in medium weight, the dot in the left inset.
     pub new: bool,
     /// The number of messages from two on.
     pub count: Option<String>,
@@ -1645,6 +1655,19 @@ mod tests {
         let (short, clipped_width) = sender_cell(name, width / 2.0);
         assert!(short.ends_with('…'));
         assert!(clipped_width <= width / 2.0);
+    }
+
+    #[test]
+    fn read_mail_uses_regular_weight_with_the_unread_metrics() {
+        let strong = typo::body_strong();
+        let mut regular = typo::body();
+        regular.size = iced::Pixels(strong.size.0 + 5.0);
+        regular.line_height = iced::widget::text::LineHeight::Absolute(iced::Pixels(36.0));
+        let read = mail_text_level_in(false, strong, regular);
+        assert_eq!(read.size, strong.size);
+        assert_eq!(read.line_height, strong.line_height);
+        assert_eq!(read.font, regular.font);
+        assert_eq!(mail_text_level_in(true, strong, regular), strong);
     }
 
     fn labels(actions: &[RowAction<'_, Message>]) -> Vec<String> {
