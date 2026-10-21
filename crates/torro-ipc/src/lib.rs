@@ -1742,7 +1742,7 @@ pub enum Request {
         /// A decision model may choose it.
         #[serde(default)]
         model: bool,
-        /// The monochrome icon for the new category.
+        /// The monochrome icon for the new category; its group supplies the colour.
         #[serde(default)]
         icon: torro_mail::CategoryIcon,
     },
@@ -1768,7 +1768,7 @@ pub enum Request {
         /// A decision model may choose it. Left out: as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<bool>,
-        /// Its icon; left out to keep it as it is.
+        /// Its monochrome icon; its group supplies the colour. Left out to keep it as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<torro_mail::CategoryIcon>,
     },

@@ -42,7 +42,7 @@ pub enum CategoryGroup {
 ///
 /// These are stable catalogue values, separate from the GUI's SVG implementation, so category
 /// choices can travel over IPC and remain stored if the icon set is rearranged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CategoryIcon {
     MessageCircle,
@@ -69,6 +69,7 @@ pub enum CategoryIcon {
     Trash2,
     Eye,
     Ellipsis,
+    #[default]
     Tag,
 }
 
@@ -277,7 +278,8 @@ impl Category {
             Self::AutoReply => CategoryIcon::Reply,
             Self::Spam => CategoryIcon::Trash2,
             Self::Phishing => CategoryIcon::Eye,
-            Self::Other | Self::Custom(_) => CategoryIcon::Ellipsis,
+            Self::Other => CategoryIcon::Ellipsis,
+            Self::Custom(_) => CategoryIcon::Tag,
         }
     }
 
@@ -515,12 +517,6 @@ pub struct CategoryDef {
     pub icon: CategoryIcon,
 }
 
-impl Default for CategoryIcon {
-    fn default() -> Self {
-        Self::Tag
-    }
-}
-
 impl CategoryDef {
     /// The suite's own entry for `category`, as nobody changed it; `None` for a category the
     /// person made, which has no default.
@@ -705,14 +701,28 @@ mod tests {
     fn the_default_catalogue_is_the_catalogue_of_the_suite() {
         let defaults = CategoryDef::defaults();
         assert_eq!(defaults.iter().map(|def| def.category).collect::<Vec<_>>(), Category::BUILT_IN.to_vec());
+        let icons: std::collections::HashSet<CategoryIcon> = defaults.iter().map(|def| def.icon).collect();
+        assert_eq!(icons.len(), defaults.len(), "every built-in category has its own icon");
         for def in &defaults {
             assert_eq!(Some(def.group), def.category.default_group());
             assert_eq!((def.name.as_deref(), def.description.as_deref()), (None, None));
             assert_eq!(def.model, Category::BY_MODEL.contains(&def.category), "{:?}", def.category);
+            assert_eq!(CategoryIcon::from_key(def.icon.key()), def.icon, "{:?}", def.category);
         }
+        let custom = Category::Custom(CustomCategory::new(1).expect("a number"));
+        assert_eq!(custom.default_icon(), CategoryIcon::Tag);
         for group in CategoryGroup::ALL {
             let by_model = defaults.iter().filter(|def| def.group == group && def.model).count();
             assert!(by_model <= MODEL_PER_GROUP_MAX, "{group:?}");
         }
+    }
+
+    #[test]
+    fn category_icon_keys_are_stable_in_json_and_the_catalogue_store() {
+        for icon in CategoryIcon::ALL {
+            assert_eq!(serde_json::to_value(icon).expect("json"), serde_json::json!(icon.key()));
+            assert_eq!(CategoryIcon::from_key(icon.key()), icon);
+        }
+        assert_eq!(CategoryIcon::from_key("a_future_icon"), CategoryIcon::Tag);
     }
 }

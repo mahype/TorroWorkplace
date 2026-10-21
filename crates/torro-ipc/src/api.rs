@@ -3008,8 +3008,9 @@ static LIST_CATEGORIES: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, \
-                  `info`, `junk`), the words a person reads for both, how much mail it holds (`messages`) and how \
-                  much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam \
+                  `info`, `junk`), the words a person reads for both, its monochrome `icon` in the group's colour, \
+                  how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
+                  only, so mail thrown away, marked as spam \
                   or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
                   (read access to mail and the account), so a key without them sees 0 everywhere, never a number \
                   about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is \

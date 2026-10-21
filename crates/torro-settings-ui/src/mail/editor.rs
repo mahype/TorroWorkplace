@@ -877,7 +877,33 @@ struct CategoryIconChoice(CategoryIcon);
 
 impl std::fmt::Display for CategoryIconChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.0)
+        f.write_str(match self.0 {
+            CategoryIcon::MessageCircle => tr("Message"),
+            CategoryIcon::ListTodo => tr("Task"),
+            CategoryIcon::CircleCheck => tr("Approval"),
+            CategoryIcon::UserCheck => tr("Assigned"),
+            CategoryIcon::ShieldAlert => tr("Security"),
+            CategoryIcon::User => tr("Person"),
+            CategoryIcon::CalendarPlus => tr("New event"),
+            CategoryIcon::TextQuote => tr("Quote"),
+            CategoryIcon::Paperclip => tr("Attachment"),
+            CategoryIcon::SquareCheck => tr("Checked box"),
+            CategoryIcon::Send => tr("Send"),
+            CategoryIcon::CalendarDays => tr("Calendar"),
+            CategoryIcon::ChartColumn => tr("Statistics"),
+            CategoryIcon::AlignLeft => tr("Text"),
+            CategoryIcon::Mail => tr("Mail"),
+            CategoryIcon::Flag => tr("Flag"),
+            CategoryIcon::Bell => tr("Notification"),
+            CategoryIcon::Users => tr("People"),
+            CategoryIcon::Video => tr("Video"),
+            CategoryIcon::MailOpen => tr("Read mail"),
+            CategoryIcon::Reply => tr("Reply"),
+            CategoryIcon::Trash2 => tr("Trash"),
+            CategoryIcon::Eye => tr("View"),
+            CategoryIcon::Ellipsis => tr("More"),
+            CategoryIcon::Tag => tr("Tag"),
+        })
     }
 }
 
@@ -1257,7 +1283,12 @@ mod tests {
         let requests = sent(
             &mut state,
             &data,
-            vec![Message::EditCategory(Category::Invoice), Message::Name("Bills".into()), Message::SaveCategory],
+            vec![
+                Message::EditCategory(Category::Invoice),
+                Message::Name("Bills".into()),
+                Message::Icon(CategoryIcon::MailOpen),
+                Message::SaveCategory,
+            ],
         );
         assert_eq!(
             requests,
@@ -1267,7 +1298,7 @@ mod tests {
                 name: Some("Bills".into()),
                 description: None,
                 model: None,
-                icon: None,
+                icon: Some(CategoryIcon::MailOpen),
             }]
         );
         assert!(state.is_open());
@@ -1294,7 +1325,11 @@ mod tests {
         assert!(sent(&mut state, &data, vec![Message::EditCategory(Category::Invoice), Message::Reset]).is_empty());
         assert_eq!(state.asking, Some(Ask::Reset));
         let reset = sent(&mut state, &data, vec![Message::Answer(true)]);
-        assert!(matches!(reset.as_slice(), [Request::UpdateCategory { name: Some(name), .. }] if name.is_empty()));
+        assert!(matches!(
+            reset.as_slice(),
+            [Request::UpdateCategory { name: Some(name), icon: Some(icon), .. }]
+                if name.is_empty() && *icon == Category::Invoice.default_icon()
+        ));
         assert!(sent(&mut state, &data, vec![Message::EditRule("r2".into()), Message::DeleteRule]).is_empty());
         assert!(sent(&mut state, &data, vec![Message::Answer(false)]).is_empty(), "Cancel deletes nothing");
         let deleted = sent(&mut state, &data, vec![Message::DeleteRule, Message::Answer(true)]);

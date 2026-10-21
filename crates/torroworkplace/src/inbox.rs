@@ -6673,6 +6673,44 @@ pub(crate) mod tests {
         assert_eq!(rules.iter().map(|rule| rule.id.as_str()).collect::<Vec<_>>(), ["a"]);
     }
 
+    /// Issue #265: schema 11 catalogues had no icon columns. Their built-in categories receive
+    /// the suite defaults and existing custom categories receive the neutral tag during migration.
+    #[test]
+    fn a_file_of_schema_11_learns_category_icons() {
+        use torro_mail::{Category, CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let custom = {
+            let inbox = inbox_in(dir.path());
+            let custom = inbox
+                .create_category(CategoryGroup::Info, "Club", "The sports club.", false, CategoryIcon::Flag, at(8, 0))
+                .expect("made");
+            inbox.update_category(Category::Invoice, None, Some("Bills".into()), None, None, None).expect("renamed");
+            inbox
+                .with(|db| {
+                    db.execute_batch(
+                        "ALTER TABLE category_edits DROP COLUMN icon;
+                         ALTER TABLE custom_categories DROP COLUMN icon;
+                         PRAGMA user_version = 11;",
+                    )?;
+                    Ok(())
+                })
+                .expect("back to schema 11");
+            custom.category
+        };
+
+        let inbox = inbox_in(dir.path());
+        let catalogue = inbox.catalogue().expect("read");
+        let invoice = catalogue.iter().find(|def| def.category == Category::Invoice).expect("invoice");
+        assert_eq!(invoice.name.as_deref(), Some("Bills"), "the old edit stays");
+        assert_eq!(invoice.icon, Category::Invoice.default_icon(), "the suite icon is supplied");
+        let custom = catalogue.iter().find(|def| def.category == custom).expect("custom category");
+        assert_eq!(custom.icon, CategoryIcon::Tag, "old custom categories start neutral");
+        let version: i64 =
+            inbox.with(|db| Ok(db.query_row("PRAGMA user_version", [], |row| row.get(0))?)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
     /// Task E15.3: sorting rules are made, changed, moved and removed in an order without gaps,
     /// keep to their limits, and a key without mail sees none.
     #[test]
@@ -6903,12 +6941,12 @@ pub(crate) mod tests {
     /// choose between in one group.
     #[test]
     fn a_new_category_keeps_to_its_limits() {
-        use torro_mail::{Category, CategoryGroup};
+        use torro_mail::{Category, CategoryGroup, CategoryIcon};
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
         let make = |name: &str, model: bool| {
-            inbox.create_category(CategoryGroup::Info, name, "What belongs here.", model, at(8, 0))
+            inbox.create_category(CategoryGroup::Info, name, "What belongs here.", model, CategoryIcon::Tag, at(8, 0))
         };
         let refused = |answer: Result<torro_mail::CategoryDef, Response>| match answer {
             Err(Response::Error { code, .. }) => code,
@@ -6919,7 +6957,7 @@ pub(crate) mod tests {
         assert_eq!(refused(make(&"x".repeat(61), false)), "error", "60 characters");
         let suite = torro_core::category::suite_label(Category::Invoice).expect("a word");
         assert_eq!(refused(make(&suite.to_uppercase(), false)), "error", "no name twice, whatever the case");
-        let blank = inbox.create_category(CategoryGroup::Info, "Club", "  ", false, at(8, 0));
+        let blank = inbox.create_category(CategoryGroup::Info, "Club", "  ", false, CategoryIcon::Tag, at(8, 0));
         assert_eq!(refused(blank), "error", "one's own category says what it is");
         // "Info" brings five a model chooses between; fifteen more fit, the sixteenth does not.
         for n in 0..15 {
@@ -6927,15 +6965,58 @@ pub(crate) mod tests {
         }
         assert_eq!(refused(make("One too many", true)), "error");
         assert!(make("Not for the model", false).is_ok(), "a category the model does not choose always fits");
-        let moved = inbox.update_category(Category::Newsletter, Some(CategoryGroup::Info), None, None, Some(true));
+        let moved =
+            inbox.update_category(Category::Newsletter, Some(CategoryGroup::Info), None, None, Some(true), None);
         assert!(moved.is_ok(), "nothing changes the count");
-        let crowded = inbox.update_category(Category::Spam, Some(CategoryGroup::Info), None, None, None);
+        let crowded = inbox.update_category(Category::Spam, Some(CategoryGroup::Info), None, None, None, None);
         assert_eq!(refused(crowded), "error", "moving one in counts too");
         assert_eq!(
-            refused(inbox.update_category(Category::Request, None, Some("Topic 3".into()), None, None)),
+            refused(inbox.update_category(Category::Request, None, Some("Topic 3".into()), None, None, None)),
             "error",
             "renaming into a taken name"
         );
+    }
+
+    /// Issue #265: icon choices for built-in and custom categories survive a restart, and putting
+    /// a built-in back to its suite icon removes the otherwise empty override.
+    #[test]
+    fn category_icons_are_kept_and_a_suite_icon_can_be_restored() {
+        use torro_mail::{Category, CategoryGroup, CategoryIcon};
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let custom = {
+            let inbox = inbox_in(dir.path());
+            let custom = inbox
+                .create_category(CategoryGroup::Info, "Club", "The sports club.", false, CategoryIcon::Flag, at(8, 0))
+                .expect("made");
+            assert_eq!(custom.icon, CategoryIcon::Flag);
+            let invoice = inbox
+                .update_category(Category::Invoice, None, None, None, None, Some(CategoryIcon::MailOpen))
+                .expect("changed");
+            assert_eq!(invoice.icon, CategoryIcon::MailOpen);
+            custom.category
+        };
+
+        let inbox = inbox_in(dir.path());
+        let catalogue = inbox.catalogue().expect("read");
+        assert_eq!(catalogue.iter().find(|def| def.category == custom).map(|def| def.icon), Some(CategoryIcon::Flag));
+        assert_eq!(
+            catalogue.iter().find(|def| def.category == Category::Invoice).map(|def| def.icon),
+            Some(CategoryIcon::MailOpen)
+        );
+
+        let restored = inbox
+            .update_category(Category::Invoice, None, None, None, None, Some(Category::Invoice.default_icon()))
+            .expect("restored");
+        assert_eq!(restored.icon, Category::Invoice.default_icon());
+        let overrides: i64 = inbox
+            .with(|db| {
+                Ok(db.query_row("SELECT COUNT(*) FROM category_edits WHERE category = 'invoice'", [], |row| {
+                    row.get(0)
+                })?)
+            })
+            .expect("counted");
+        assert_eq!(overrides, 0, "no empty built-in override stays behind");
     }
 
     /// Task E15.2: removing a category moves its entries and sorting rules, keeping where an
@@ -6943,12 +7024,13 @@ pub(crate) mod tests {
     /// the file is opened again, and the category is out of the catalogue meanwhile.
     #[test]
     fn a_removed_category_hands_its_entries_and_rules_on() {
-        use torro_mail::{Category, CategoryGroup, MailCategory};
+        use torro_mail::{Category, CategoryGroup, CategoryIcon, MailCategory};
 
         let dir = tempfile::tempdir().expect("a directory");
         let inbox = inbox_in(dir.path());
-        let club =
-            inbox.create_category(CategoryGroup::Info, "Club", "The sports club.", false, at(8, 0)).expect("made");
+        let club = inbox
+            .create_category(CategoryGroup::Info, "Club", "The sports club.", false, CategoryIcon::Tag, at(8, 0))
+            .expect("made");
         let id = inbox
             .file_mail(&mail("m:1", "t:1", "Training", "coach@club.example", false, at(8, 0)), Notify::All, at(8, 0))
             .expect("filed")

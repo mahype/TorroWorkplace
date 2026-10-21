@@ -8467,10 +8467,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "Category ▸" (task E12.8): the catalogue by its four groups, each under its own caption,
     /// and scrollable – 23 choices in one flat list are taller than a medium window.
     fn category_menu<'a>(&self) -> Element<'a, Message> {
-        let choices = self.choices();
-        let width = choice_menu_width(&choices);
-        let mut list = column![menu_caption(tr("Category"))];
-        let mut at = 0;
         // The catalogue as the window loaded it (task E15.2): the person's names and groups,
         // their own categories too. The three the headers decide are no choice to make by hand.
         let catalogue = if self.categories.is_empty() {
@@ -8478,6 +8474,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         } else {
             self.categories.clone()
         };
+        let shown: Vec<&CategoryInfo> = CategoryGroup::ALL
+            .into_iter()
+            .flat_map(|group| {
+                catalogue
+                    .iter()
+                    .filter(move |held| held.group == group && !(held.built_in && held.category.by_rule_only()))
+            })
+            .collect();
+        let needed = shown.iter().enumerate().map(|(i, held)| {
+            choice_frame(None, keys::digit(i + 1), true) + typo::text_width(&held.label, typo::body())
+        });
+        let width = needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel());
+        let mut list = column![menu_caption(tr("Category"))];
+        let mut at = 0;
         for group in CategoryGroup::ALL {
             let of_group: Vec<&CategoryInfo> = catalogue
                 .iter()
@@ -12921,6 +12931,22 @@ mod tests {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
+    }
+
+    /// Issue #265: category children use their own monochrome symbol while the open parent group
+    /// supplies the colour, and the grouped picker can be built with the same catalogue.
+    #[test]
+    fn category_surfaces_use_the_category_icon_in_its_group_colour() {
+        let mut app = mail_window(Density::Comfortable, &[]);
+        let held = app.categories.iter().find(|held| held.messages > 0).expect("a category in the demo").clone();
+        app.open_groups.insert(held.group);
+        let entries = app.category_entries();
+        let child = entries.iter().find(|entry| entry.label == held.label).expect("the open group's category");
+        assert!(matches!(
+            child.mark,
+            Mark::Tinted(icon, _) if icon == mail::category_symbol(held.icon)
+        ));
+        let _ = app.category_menu();
     }
 
     #[test]

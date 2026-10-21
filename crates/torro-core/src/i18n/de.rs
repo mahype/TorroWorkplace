@@ -4054,6 +4054,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("File its mail as", "Ihre E-Mails ablegen als"),
     ("Group", "Gruppe"),
     ("Icon", "Symbol"),
+    ("Checked box", "Abgehaktes Kästchen"),
+    ("Statistics", "Statistik"),
+    ("Text", "Text"),
+    ("People", "Personen"),
+    ("Video", "Video"),
+    ("Tag", "Etikett"),
     ("If any of these fits, the rule leaves the mail alone.", "Passt eine davon, lässt die Regel die E-Mail in Ruhe."),
     (
         "Its mail, entries and rules move to a category you choose.",
