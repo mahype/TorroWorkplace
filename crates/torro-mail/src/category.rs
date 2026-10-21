@@ -38,6 +38,108 @@ pub enum CategoryGroup {
     Junk,
 }
 
+/// The monochrome icon shown for a mail category. Its colour comes from the category's group.
+///
+/// These are stable catalogue values, separate from the GUI's SVG implementation, so category
+/// choices can travel over IPC and remain stored if the icon set is rearranged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryIcon {
+    MessageCircle,
+    ListTodo,
+    CircleCheck,
+    UserCheck,
+    ShieldAlert,
+    User,
+    CalendarPlus,
+    TextQuote,
+    Paperclip,
+    SquareCheck,
+    Send,
+    CalendarDays,
+    ChartColumn,
+    AlignLeft,
+    Mail,
+    Flag,
+    Bell,
+    Users,
+    Video,
+    MailOpen,
+    Reply,
+    Trash2,
+    Eye,
+    Ellipsis,
+    #[default]
+    Tag,
+}
+
+impl CategoryIcon {
+    /// Every icon a category can use, in the order shown by the icon picker.
+    pub const ALL: [CategoryIcon; 25] = [
+        Self::MessageCircle,
+        Self::ListTodo,
+        Self::CircleCheck,
+        Self::UserCheck,
+        Self::ShieldAlert,
+        Self::User,
+        Self::CalendarPlus,
+        Self::TextQuote,
+        Self::Paperclip,
+        Self::SquareCheck,
+        Self::Send,
+        Self::CalendarDays,
+        Self::ChartColumn,
+        Self::AlignLeft,
+        Self::Mail,
+        Self::Flag,
+        Self::Bell,
+        Self::Users,
+        Self::Video,
+        Self::MailOpen,
+        Self::Reply,
+        Self::Trash2,
+        Self::Eye,
+        Self::Ellipsis,
+        Self::Tag,
+    ];
+
+    /// Stable snake-case key used by the catalogue database and APIs.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::MessageCircle => "message_circle",
+            Self::ListTodo => "list_todo",
+            Self::CircleCheck => "circle_check",
+            Self::UserCheck => "user_check",
+            Self::ShieldAlert => "shield_alert",
+            Self::User => "user",
+            Self::CalendarPlus => "calendar_plus",
+            Self::TextQuote => "text_quote",
+            Self::Paperclip => "paperclip",
+            Self::SquareCheck => "square_check",
+            Self::Send => "send",
+            Self::CalendarDays => "calendar_days",
+            Self::ChartColumn => "chart_column",
+            Self::AlignLeft => "align_left",
+            Self::Mail => "mail",
+            Self::Flag => "flag",
+            Self::Bell => "bell",
+            Self::Users => "users",
+            Self::Video => "video",
+            Self::MailOpen => "mail_open",
+            Self::Reply => "reply",
+            Self::Trash2 => "trash2",
+            Self::Eye => "eye",
+            Self::Ellipsis => "ellipsis",
+            Self::Tag => "tag",
+        }
+    }
+
+    /// The icon named by `key`; unknown stored values fall back to the neutral tag.
+    pub fn from_key(key: &str) -> CategoryIcon {
+        Self::ALL.into_iter().find(|icon| icon.key() == key).unwrap_or_default()
+    }
+}
+
 impl CategoryGroup {
     /// Every group, in the order of the catalogue.
     pub const ALL: [CategoryGroup; 4] =
@@ -151,6 +253,36 @@ impl CustomCategory {
 pub const CUSTOM_PREFIX: &str = "custom_";
 
 impl Category {
+    /// The suite's stable icon for a built-in category; custom categories start with a tag.
+    pub fn default_icon(self) -> CategoryIcon {
+        match self {
+            Self::Request => CategoryIcon::MessageCircle,
+            Self::Task => CategoryIcon::ListTodo,
+            Self::Approval => CategoryIcon::CircleCheck,
+            Self::Security => CategoryIcon::ShieldAlert,
+            Self::Personal => CategoryIcon::User,
+            Self::Invitation => CategoryIcon::CalendarPlus,
+            Self::Invoice => CategoryIcon::TextQuote,
+            Self::Receipt => CategoryIcon::Paperclip,
+            Self::Order => CategoryIcon::SquareCheck,
+            Self::Shipping => CategoryIcon::Send,
+            Self::Booking => CategoryIcon::CalendarDays,
+            Self::Statement => CategoryIcon::ChartColumn,
+            Self::Document => CategoryIcon::AlignLeft,
+            Self::Newsletter => CategoryIcon::Mail,
+            Self::Promotion => CategoryIcon::Flag,
+            Self::ServiceNotice => CategoryIcon::Bell,
+            Self::Social => CategoryIcon::Users,
+            Self::EventInvite => CategoryIcon::Video,
+            Self::Bounce => CategoryIcon::MailOpen,
+            Self::AutoReply => CategoryIcon::Reply,
+            Self::Spam => CategoryIcon::Trash2,
+            Self::Phishing => CategoryIcon::Eye,
+            Self::Other => CategoryIcon::Ellipsis,
+            Self::Custom(_) => CategoryIcon::Tag,
+        }
+    }
+
     /// The categories the suite brings, in the order of its catalogue (`docs/kategorien.md`),
     /// grouped as [`Category::default_group`] says. The person may add their own and move any of
     /// them to another group; the core's catalogue says what holds now.
@@ -380,6 +512,9 @@ pub struct CategoryDef {
     pub description: Option<String>,
     /// A decision model may choose it. Off, only a rule or the person files mail under it.
     pub model: bool,
+    /// The monochrome icon shown for this category; its group supplies the colour.
+    #[serde(default = "CategoryIcon::default")]
+    pub icon: CategoryIcon,
 }
 
 impl CategoryDef {
@@ -392,6 +527,7 @@ impl CategoryDef {
             name: None,
             description: None,
             model: Category::BY_MODEL.contains(&category),
+            icon: category.default_icon(),
         })
     }
 
@@ -565,14 +701,28 @@ mod tests {
     fn the_default_catalogue_is_the_catalogue_of_the_suite() {
         let defaults = CategoryDef::defaults();
         assert_eq!(defaults.iter().map(|def| def.category).collect::<Vec<_>>(), Category::BUILT_IN.to_vec());
+        let icons: std::collections::HashSet<CategoryIcon> = defaults.iter().map(|def| def.icon).collect();
+        assert_eq!(icons.len(), defaults.len(), "every built-in category has its own icon");
         for def in &defaults {
             assert_eq!(Some(def.group), def.category.default_group());
             assert_eq!((def.name.as_deref(), def.description.as_deref()), (None, None));
             assert_eq!(def.model, Category::BY_MODEL.contains(&def.category), "{:?}", def.category);
+            assert_eq!(CategoryIcon::from_key(def.icon.key()), def.icon, "{:?}", def.category);
         }
+        let custom = Category::Custom(CustomCategory::new(1).expect("a number"));
+        assert_eq!(custom.default_icon(), CategoryIcon::Tag);
         for group in CategoryGroup::ALL {
             let by_model = defaults.iter().filter(|def| def.group == group && def.model).count();
             assert!(by_model <= MODEL_PER_GROUP_MAX, "{group:?}");
         }
+    }
+
+    #[test]
+    fn category_icon_keys_are_stable_in_json_and_the_catalogue_store() {
+        for icon in CategoryIcon::ALL {
+            assert_eq!(serde_json::to_value(icon).expect("json"), serde_json::json!(icon.key()));
+            assert_eq!(CategoryIcon::from_key(icon.key()), icon);
+        }
+        assert_eq!(CategoryIcon::from_key("a_future_icon"), CategoryIcon::Tag);
     }
 }

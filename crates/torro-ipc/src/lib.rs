@@ -1742,6 +1742,9 @@ pub enum Request {
         /// A decision model may choose it.
         #[serde(default)]
         model: bool,
+        /// The monochrome icon for the new category; its group supplies the colour.
+        #[serde(default)]
+        icon: torro_mail::CategoryIcon,
     },
     /// Changes a mail category, of the suite or the person's own ([`Response::Category`], task
     /// E15.1). Only the fields given change; the key stays, so mail and rules keep it. An empty
@@ -1765,6 +1768,9 @@ pub enum Request {
         /// A decision model may choose it. Left out: as it is.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<bool>,
+        /// Its monochrome icon; its group supplies the colour. Left out to keep it as it is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<torro_mail::CategoryIcon>,
     },
     /// Removes a mail category the person made ([`Response::CategoryRemoved`], task E15.1). Mail,
     /// entries and sorting rules that name it move to `replacement`, keeping where their category

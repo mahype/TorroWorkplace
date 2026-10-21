@@ -700,7 +700,7 @@ Mutes an inbox source, so its new reports are dropped until it is unmuted, or un
 
 Zugriff `read` · MCP-Tool `inbox_list_categories`
 
-Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, `info`, `junk`), the words a person reads for both, how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam or sent by the person is counted nowhere. The counts cover only mail accounts this key may read (read access to mail and the account), so a key without them sees 0 everywhere, never a number about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is `not-found` when it is not there or out of reach. Each one also says what it means (`description`, what a decision model reads), whether a model may choose it (`model`) and whether the suite brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or the person's own, not foreign text. Use it to offer the categories and to build a sidebar; filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.
+Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, `info`, `junk`), the words a person reads for both, its monochrome `icon` in the group's colour, how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam or sent by the person is counted nowhere. The counts cover only mail accounts this key may read (read access to mail and the account), so a key without them sees 0 everywhere, never a number about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is `not-found` when it is not there or out of reach. Each one also says what it means (`description`, what a decision model reads), whether a model may choose it (`model`) and whether the suite brings it (`built_in`) or the person made it (key `custom_<n>`). The words are the suite's or the person's own, not foreign text. Use it to offer the categories and to build a sidebar; filter mail by them with the field `categories` of mail_search_messages and inbox_list_items.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -751,12 +751,13 @@ Starts sorting the mail that has no category yet, or stops a run with `cancel: t
 
 Zugriff `admin` · MCP-Tool `inbox_create_category`
 
-Makes a mail category of the person's own in one of the four groups and returns it; its key is `custom_<n>` and never changes. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
+Makes a mail category of the person's own in one of the four groups and returns it; its key is `custom_<n>` and never changes. `icon` chooses a monochrome category icon; the group supplies its colour. `description` says what belongs there, with examples and exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or taken name (at most 60 characters), an empty description or one over 500 characters, or more than 20 categories of the group for the model. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `description` | string | ja | What it means, with examples and exceptions: what a decision model reads. |
 | `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` | ja | The group it stands in. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"tag"` | nein, Standard `"tag"` | The monochrome icon for the new category; its group supplies the colour. |
 | `model` | boolean | nein, Standard `false` | A decision model may choose it. |
 | `name` | string | ja | What it is called. |
 
@@ -764,13 +765,14 @@ Makes a mail category of the person's own in one of the four groups and returns 
 
 Zugriff `admin` · MCP-Tool `inbox_update_category`
 
-Changes a mail category, one of the suite's or the person's own, and returns it: only the fields given (`group`, `name`, `description`, `model`). The key stays, so mail and rules that name it stay valid. An empty `name` or `description` puts back the suite's words for one of its categories. Mail already filed keeps its category until inbox_catch_up_categories runs with `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs the person's approval.
+Changes a mail category, one of the suite's or the person's own, and returns it: only the fields given (`group`, `name`, `description`, `model`, `icon`). The key stays, so mail and rules that name it stay valid. An empty `name` or `description` puts back the suite's words for one of its categories. Mail already filed keeps its category until inbox_catch_up_categories runs with `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs the person's approval.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `category` | `"request"` \| `"task"` \| `"approval"` \| `"security"` \| `"personal"` \| `"invitation"` \| `"invoice"` \| `"receipt"` \| `"order"` \| `"shipping"` \| `"booking"` \| `"statement"` \| `"document"` \| `"newsletter"` \| `"promotion"` \| `"service_notice"` \| `"social"` \| `"event_invite"` \| `"bounce"` \| `"auto_reply"` \| `"spam"` \| `"phishing"` \| `"other"` \| string | ja | The category's key, as `inbox.list_categories` gives it. |
 | `description` | string | nein | What it means, as a model reads it; empty puts back the suite's description. Left out: as it is. |
 | `group` | `"waiting_for_me"` \| `"paper_trail"` \| `"info"` \| `"junk"` | nein | The group to move it to. Left out: as it is. |
+| `icon` | `"message_circle"` \| `"list_todo"` \| `"circle_check"` \| `"user_check"` \| `"shield_alert"` \| `"user"` \| `"calendar_plus"` \| `"text_quote"` \| `"paperclip"` \| `"square_check"` \| `"send"` \| `"calendar_days"` \| `"chart_column"` \| `"align_left"` \| `"mail"` \| `"flag"` \| `"bell"` \| `"users"` \| `"video"` \| `"mail_open"` \| `"reply"` \| `"trash2"` \| `"eye"` \| `"ellipsis"` \| `"tag"` | nein | Its monochrome icon; its group supplies the colour. Left out to keep it as it is. |
 | `model` | boolean | nein | A decision model may choose it. Left out: as it is. |
 | `name` | string | nein | Its new name; empty puts back the suite's word. Left out: as it is. |
 

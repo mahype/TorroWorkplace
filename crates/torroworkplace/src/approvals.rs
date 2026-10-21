@@ -2027,17 +2027,18 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::CatchUpCategories { cancel: true, .. } => tr("Stop sorting mail into categories").to_string(),
         // The catalogue (task E15.1). A new category is named as it will be written; one already
         // there by its name in the catalogue, never by what the client sends.
-        Request::CreateCategory { group, name, .. } => trf(
-            "Add the mail category {name} to {group}",
+        Request::CreateCategory { group, name, icon, .. } => trf(
+            "Add the mail category {name} to {group} with icon {icon}",
             &[
                 ("name", &format!("\"{}\"", quote(name))),
                 ("group", &format!("\"{}\"", torro_core::category::group_label(*group))),
+                ("icon", &format!("{:?}", icon)),
             ],
         ),
         // Every field that changes is named (API review of #255): a new description steers the
         // model, a group or the model switch decides what is offered – none of it hidden behind
         // "change".
-        Request::UpdateCategory { category, group, name, description, model } => {
+        Request::UpdateCategory { category, group, name, description, model, icon } => {
             let mut changes: Vec<String> = Vec::new();
             match name.as_deref().map(str::trim) {
                 Some("") => changes.push(tr("put back the suite's name").to_string()),
@@ -2047,6 +2048,9 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             if let Some(group) = group {
                 let group = format!("\"{}\"", torro_core::category::group_label(*group));
                 changes.push(trf("move it to {group}", &[("group", &group)]));
+            }
+            if let Some(icon) = icon {
+                changes.push(trf("set its icon to {icon}", &[("icon", &format!("{:?}", icon))]));
             }
             match description.as_deref().map(str::trim) {
                 Some("") => changes.push(tr("put back the suite's description").to_string()),
@@ -4589,6 +4593,7 @@ pub(crate) mod tests {
             name: Some("Tax".into()),
             description: Some("For the tax return.".into()),
             model: true,
+            icon: torro_mail::CategoryIcon::Tag,
         };
         let rule = SortRule {
             id: "r1".into(),
@@ -4648,6 +4653,7 @@ pub(crate) mod tests {
             name: None,
             description: Some("Anything with a price.".into()),
             model: Some(false),
+            icon: None,
         };
         let words = inbox_summary(&changed, &facts);
         assert!(words.contains("Anything with a price."), "{words}");
@@ -4667,6 +4673,7 @@ pub(crate) mod tests {
             name: "Tax 2026".into(),
             description: "For the tax return.".into(),
             model: false,
+            icon: torro_mail::CategoryIcon::Tag,
         };
         assert!(inbox_summary(&create, &facts).contains("Tax 2026"));
         let renamed = Request::UpdateCategory {
@@ -4675,6 +4682,7 @@ pub(crate) mod tests {
             name: Some("Rechnungen".into()),
             description: None,
             model: None,
+            icon: None,
         };
         assert_eq!(
             inbox_summary(&renamed, &facts),

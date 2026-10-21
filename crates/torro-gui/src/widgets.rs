@@ -3167,11 +3167,11 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
 }
 
 /// What a mail is, as a pill in the list, the reader and the panel (task E12.7,
-/// `docs/kategorien.md`): the group's icon and colour, the category's words.
+/// `docs/kategorien.md`): the category's monochrome icon and words, tinted by its group's colour.
 ///
 /// `group` is the index of `torro_mail::CategoryGroup` (0 waiting for me, 3 junk) and picks the
-/// colour out of [`theme::Palette::category`]; a larger index falls back to the last. Colour and
-/// icon are per **group**, the words per category: 23 colours could not stay apart, and four can.
+/// colour out of [`theme::Palette::category`]; a larger index falls back to the last. The colour
+/// belongs to the group; the icon and words belong to the category.
 ///
 /// `suggested` marks a category a model chose (`docs/ki.md`, principle 5): the sparkles the suite
 /// puts on every AI result go in front. A category from a header or from the person has none.
@@ -3189,7 +3189,7 @@ pub fn category_pill<'a, M: 'a>(
     if suggested {
         content = content.push(sparkle(pill_icon()));
     }
-    content = content.push(group_icon(icon, at)).push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
+    content = content.push(category_icon(icon, at)).push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
     container(content)
         .center_y(PILL_HEIGHT)
         .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
@@ -3204,16 +3204,16 @@ pub fn category_pill<'a, M: 'a>(
         .into()
 }
 
-/// The small mark of a mail's category for a row of the list (task E12.8): the group's icon in
-/// the group's colour, `edge` wide. The words belong in its tooltip – a row's marks are icons, so
+/// The small mark of a mail's category for a row of the list (task E12.8): its icon in the group's
+/// colour, `edge` wide. The words belong in its tooltip – a row's marks are icons, so
 /// the whole pill ([`category_pill`]) stays for the reader and the card, where there is room.
 pub fn category_mark<'a, M: 'a>(which: Icon, group: usize, edge: f32) -> Element<'a, M> {
     let at = group.min(3);
     icon(which, edge).style(move |t, _| svg::Style { color: Some(palette(t).category[at]) }).into()
 }
 
-/// The icon of a category group in its own colour ([`category_pill`]).
-fn group_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
+/// The icon of a category in its group's colour ([`category_pill`]).
+fn category_icon<'a, M: 'a>(which: Icon, group: usize) -> Element<'a, M> {
     icon(which, pill_icon()).style(move |t, _| svg::Style { color: Some(palette(t).category[group]) }).into()
 }
 

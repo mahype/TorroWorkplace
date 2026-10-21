@@ -2397,7 +2397,7 @@ fn categories() -> Element<'static, Msg> {
     .align_y(Alignment::Center);
     column![
         typo::text(typo::title(), "Mail categories"),
-        typo::text(typo::meta(), "Colour and icon per group, words per category; sparkles mark a model's guess."),
+        typo::text(typo::meta(), "Group colour and category icon; sparkles mark a model's guess."),
         rows,
         typo::text(typo::meta(), "In a row of the list:"),
         in_a_row,

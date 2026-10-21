@@ -33,7 +33,7 @@ use torro_inbox::{SortCondition, SortField, SortRule};
 use torro_ipc::inbox::CategoryInfo;
 use torro_ipc::{Request, SettingKey};
 use torro_mail::category::{DESCRIPTION_MAX, MODEL_PER_GROUP_MAX, NAME_MAX};
-use torro_mail::{Category, CategoryGroup};
+use torro_mail::{Category, CategoryGroup, CategoryIcon};
 
 use crate::parts::{chevron, choice, field, picker, pressable, row_frame, setting_row, switch};
 use crate::{Action, Data};
@@ -63,7 +63,7 @@ impl State {
 enum Ask {
     /// Leave the page and drop what was typed.
     Discard,
-    /// Put back the suite's name and description of a category.
+    /// Put back the suite's name, description and icon of a category.
     Reset,
     /// Delete the open rule.
     Delete,
@@ -82,6 +82,7 @@ struct CategoryForm {
     category: Option<Category>,
     name: String,
     group: CategoryGroup,
+    icon: CategoryIcon,
     description: text_editor::Content,
     model: bool,
     /// "Remove…" was pressed: the page asks where the mail goes.
@@ -111,12 +112,13 @@ pub enum Message {
     EditCategory(Category),
     Name(String),
     Group(CategoryGroup),
+    Icon(CategoryIcon),
     Description(text_editor::Action),
     Model(bool),
     /// "Show in the sidebar" on a category's page: stored at once, as every switch of the list.
     Shown(Category, bool),
     SaveCategory,
-    /// "Reset": put back the suite's name and description – after the question.
+    /// "Reset": put back the suite's name, description and icon – after the question.
     Reset,
     /// "Remove…": ask where the mail goes.
     Remove,
@@ -171,6 +173,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                 category: None,
                 name: String::new(),
                 group: CategoryGroup::Info,
+                icon: CategoryIcon::Tag,
                 description: text_editor::Content::new(),
                 model: true,
                 removing: false,
@@ -206,6 +209,12 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
             Action::None
         }
         Message::Shown(category, shown) => Action::send(shown_request(data, category, shown)),
+        Message::Icon(icon) => {
+            if let Some(Form::Category(form)) = &mut state.form {
+                form.icon = icon;
+            }
+            Action::None
+        }
         Message::Move { id, up } => {
             let Some(at) = data.sort_rules.iter().position(|rule| rule.id == id) else { return Action::None };
             let position = match up {
@@ -249,6 +258,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
                         name: Some(String::new()),
                         description: Some(String::new()),
                         model: None,
+                        icon: Some(category.default_icon()),
                     })
                 }
                 (Ask::Delete, Some(Form::Rule(RuleForm { id: Some(id), .. }))) => {
@@ -400,6 +410,7 @@ impl CategoryForm {
             category: Some(info.category),
             name: info.label.clone(),
             group: info.group,
+            icon: info.icon,
             description: text_editor::Content::with_text(&info.description),
             model: info.model,
             removing: false,
@@ -485,17 +496,24 @@ impl CategoryForm {
         let name = self.name.trim().to_string();
         let description = self.description.text().replace("\r\n", "\n").trim().to_string();
         let Some(category) = self.category else {
-            return Some(Request::CreateCategory { group: self.group, name, description, model: self.model });
+            return Some(Request::CreateCategory {
+                group: self.group,
+                name,
+                description,
+                model: self.model,
+                icon: self.icon,
+            });
         };
         let stored = data.categories.iter().find(|info| info.category == category)?;
         let group = (stored.group != self.group).then_some(self.group);
         let model = (stored.model != self.model).then_some(self.model);
         let name = (stored.label != name).then_some(name);
         let description = (stored.description.trim() != description).then_some(description);
-        if group.is_none() && model.is_none() && name.is_none() && description.is_none() {
+        let icon = (stored.icon != self.icon).then_some(self.icon);
+        if group.is_none() && model.is_none() && name.is_none() && description.is_none() && icon.is_none() {
             return None;
         }
-        Some(Request::UpdateCategory { category, group, name, description, model })
+        Some(Request::UpdateCategory { category, group, name, description, model, icon })
     }
 }
 
@@ -622,8 +640,8 @@ fn question<'a>(asked: Ask) -> Element<'a, Message> {
     let (title, detail, yes) = match asked {
         Ask::Discard => (tr("Discard changes?"), tr("What you typed on this page is not saved."), tr("Discard")),
         Ask::Reset => (
-            tr("Use the suite's name and description?"),
-            tr("Your name and description of this category go."),
+            tr("Use the suite's name, description and icon?"),
+            tr("Your name, description and icon of this category go."),
             tr("Reset"),
         ),
         Ask::Delete => (tr("Delete this rule?"), tr("Mail it filed keeps its category."), tr("Delete rule")),
@@ -697,7 +715,10 @@ pub fn categories_groups(data: &Data) -> Vec<Element<'_, Message>> {
                 .flatten()
                 .collect();
                 let detail = (!notes.is_empty()).then(|| notes.join(" · "));
-                let row = setting_row(None, info.label.clone(), detail, chevron());
+                let color_at = CategoryGroup::ALL.iter().position(|held| *held == group).unwrap_or(0);
+                let mark = torro_gui::icon::icon(category_icon(info.icon), torro_gui::icon::SIZE)
+                    .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+                let row = setting_row(Some(mark.into()), info.label.clone(), detail, chevron());
                 pressable(row, Some(Message::EditCategory(info.category)))
             })
             .collect();
@@ -793,7 +814,12 @@ fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Mess
             vec![row_frame(name, false)],
             note_or_mistake(form.tried, form.name_mistake(data), None)
         ),
-        widgets::group(tr("Group"), groups, Some(tr("The group gives the category its colour and icon.").to_string())),
+        widgets::group(tr("Group"), groups, Some(tr("The group sets the category colour.").to_string())),
+        widgets::group(
+            tr("Icon"),
+            vec![icon_picker(form.icon, Message::Icon, form.group)],
+            Some(tr("The icon is shown in the colour of its group.").to_string()),
+        ),
         checked_group(
             tr("Description"),
             vec![container(description).width(Fill).padding([space::s(), space::l()]).into()],
@@ -809,11 +835,15 @@ fn category_page<'a>(form: &'a CategoryForm, data: &'a Data) -> Element<'a, Mess
         let sidebar = setting_row(None, tr("Show in the sidebar"), None, switch);
         page = page.push(widgets::group(tr("Sidebar"), vec![sidebar], None));
     }
-    if built_in.is_some_and(|info| info.renamed || info.description != suite_description(info.category)) {
+    if built_in.is_some_and(|info| {
+        info.renamed
+            || info.description != suite_description(info.category)
+            || info.icon != info.category.default_icon()
+    }) {
         let reset = widgets::text_button(None, tr("Reset"), style::button::secondary, Some(Message::Reset));
         page = page.push(widgets::group(
             tr("Reset"),
-            vec![setting_row(None, tr("Use the suite's name and description"), None, reset)],
+            vec![setting_row(None, tr("Use the suite's name, description and icon"), None, reset)],
             None,
         ));
     }
@@ -840,6 +870,90 @@ fn description_height() -> f32 {
 struct CategoryChoice {
     category: Category,
     words: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CategoryIconChoice(CategoryIcon);
+
+impl std::fmt::Display for CategoryIconChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            CategoryIcon::MessageCircle => tr("Message"),
+            CategoryIcon::ListTodo => tr("Task"),
+            CategoryIcon::CircleCheck => tr("Approval"),
+            CategoryIcon::UserCheck => tr("Assigned"),
+            CategoryIcon::ShieldAlert => tr("Security"),
+            CategoryIcon::User => tr("Person"),
+            CategoryIcon::CalendarPlus => tr("New event"),
+            CategoryIcon::TextQuote => tr("Quote"),
+            CategoryIcon::Paperclip => tr("Attachment"),
+            CategoryIcon::SquareCheck => tr("Checked box"),
+            CategoryIcon::Send => tr("Send"),
+            CategoryIcon::CalendarDays => tr("Calendar"),
+            CategoryIcon::ChartColumn => tr("Statistics"),
+            CategoryIcon::AlignLeft => tr("Text"),
+            CategoryIcon::Mail => tr("Mail"),
+            CategoryIcon::Flag => tr("Flag"),
+            CategoryIcon::Bell => tr("Notification"),
+            CategoryIcon::Users => tr("People"),
+            CategoryIcon::Video => tr("Video"),
+            CategoryIcon::MailOpen => tr("Read mail"),
+            CategoryIcon::Reply => tr("Reply"),
+            CategoryIcon::Trash2 => tr("Trash"),
+            CategoryIcon::Eye => tr("View"),
+            CategoryIcon::Ellipsis => tr("More"),
+            CategoryIcon::Tag => tr("Tag"),
+        })
+    }
+}
+
+fn icon_picker<'a>(
+    selected: CategoryIcon,
+    on_pick: impl Fn(CategoryIcon) -> Message + 'a,
+    group: CategoryGroup,
+) -> Element<'a, Message> {
+    let choices: Vec<_> = CategoryIcon::ALL.into_iter().map(CategoryIconChoice).collect();
+    let color_at = CategoryGroup::ALL.iter().position(|held| *held == group).unwrap_or(0);
+    let icon = torro_gui::icon::icon(category_icon(selected), torro_gui::icon::SIZE)
+        .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).category[color_at]) });
+    let pick = iced::widget::pick_list(choices, Some(CategoryIconChoice(selected)), move |choice| on_pick(choice.0))
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
+        .style(style::pick_list)
+        .menu_style(style::pick_list_menu);
+    row![icon, pick].spacing(space::m()).align_y(Alignment::Center).into()
+}
+
+fn category_icon(icon: CategoryIcon) -> Icon {
+    match icon {
+        CategoryIcon::MessageCircle => Icon::MessageCircle,
+        CategoryIcon::ListTodo => Icon::ListTodo,
+        CategoryIcon::CircleCheck => Icon::CircleCheck,
+        CategoryIcon::UserCheck => Icon::UserCheck,
+        CategoryIcon::ShieldAlert => Icon::ShieldAlert,
+        CategoryIcon::User => Icon::User,
+        CategoryIcon::CalendarPlus => Icon::CalendarPlus,
+        CategoryIcon::TextQuote => Icon::TextQuote,
+        CategoryIcon::Paperclip => Icon::Paperclip,
+        CategoryIcon::SquareCheck => Icon::SquareCheck,
+        CategoryIcon::Send => Icon::Send,
+        CategoryIcon::CalendarDays => Icon::CalendarDays,
+        CategoryIcon::ChartColumn => Icon::ChartColumn,
+        CategoryIcon::AlignLeft => Icon::AlignLeft,
+        CategoryIcon::Mail => Icon::Mail,
+        CategoryIcon::Flag => Icon::Flag,
+        CategoryIcon::Bell => Icon::Bell,
+        CategoryIcon::Users => Icon::Users,
+        CategoryIcon::Video => Icon::Video,
+        CategoryIcon::MailOpen => Icon::MailOpen,
+        CategoryIcon::Reply => Icon::Reply,
+        CategoryIcon::Trash2 => Icon::Trash2,
+        CategoryIcon::Eye => Icon::Eye,
+        CategoryIcon::Ellipsis => Icon::Ellipsis,
+        CategoryIcon::Tag => Icon::Tag,
+    }
 }
 
 impl PartialEq for CategoryChoice {
@@ -1050,6 +1164,7 @@ mod tests {
             name: Some("Tax".into()),
             description: Some("For the tax return.".into()),
             model: true,
+            icon: CategoryIcon::Tag,
         });
         Data {
             categories: defs.iter().map(|def| CategoryInfo::of(def, 0, 0)).collect(),
@@ -1112,6 +1227,7 @@ mod tests {
                 name: "Club".into(),
                 description: "The sports club.".into(),
                 model: false,
+                icon: CategoryIcon::Tag,
             }]
         );
         assert!(!state.is_open(), "made once, so a second Save makes no twin");
@@ -1139,6 +1255,7 @@ mod tests {
                 name: Some(format!("Topic {n}")),
                 description: Some("Something.".into()),
                 model: true,
+                icon: CategoryIcon::Tag,
             };
             full.categories.push(CategoryInfo::of(&def, 0, 0));
         }
@@ -1166,7 +1283,12 @@ mod tests {
         let requests = sent(
             &mut state,
             &data,
-            vec![Message::EditCategory(Category::Invoice), Message::Name("Bills".into()), Message::SaveCategory],
+            vec![
+                Message::EditCategory(Category::Invoice),
+                Message::Name("Bills".into()),
+                Message::Icon(CategoryIcon::MailOpen),
+                Message::SaveCategory,
+            ],
         );
         assert_eq!(
             requests,
@@ -1176,6 +1298,7 @@ mod tests {
                 name: Some("Bills".into()),
                 description: None,
                 model: None,
+                icon: Some(CategoryIcon::MailOpen),
             }]
         );
         assert!(state.is_open());
@@ -1202,7 +1325,11 @@ mod tests {
         assert!(sent(&mut state, &data, vec![Message::EditCategory(Category::Invoice), Message::Reset]).is_empty());
         assert_eq!(state.asking, Some(Ask::Reset));
         let reset = sent(&mut state, &data, vec![Message::Answer(true)]);
-        assert!(matches!(reset.as_slice(), [Request::UpdateCategory { name: Some(name), .. }] if name.is_empty()));
+        assert!(matches!(
+            reset.as_slice(),
+            [Request::UpdateCategory { name: Some(name), icon: Some(icon), .. }]
+                if name.is_empty() && *icon == Category::Invoice.default_icon()
+        ));
         assert!(sent(&mut state, &data, vec![Message::EditRule("r2".into()), Message::DeleteRule]).is_empty());
         assert!(sent(&mut state, &data, vec![Message::Answer(false)]).is_empty(), "Cancel deletes nothing");
         let deleted = sent(&mut state, &data, vec![Message::DeleteRule, Message::Answer(true)]);

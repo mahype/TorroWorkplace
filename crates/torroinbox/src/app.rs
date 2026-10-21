@@ -903,6 +903,8 @@ pub fn rules_allowed(source: &SourceRef) -> bool {
 #[derive(Debug, Clone)]
 pub struct Choice {
     pub icon: Icon,
+    /// `Palette::category` index for category menu icons; `None` uses the text colour.
+    pub tint: Option<usize>,
     pub label: String,
     /// When the choice snoozes until ([`wake_short`]: "13:30", "Wed 09:00"), shown quietly before
     /// the digit; `None` for choices without a fixed time.
@@ -915,7 +917,7 @@ pub struct Choice {
 
 impl Choice {
     fn new(icon: Icon, label: impl Into<String>, message: Message) -> Choice {
-        Choice { icon, label: label.into(), when: None, message, line: false }
+        Choice { icon, tint: None, label: label.into(), when: None, message, line: false }
     }
 }
 
@@ -8150,7 +8152,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             for held in of_group {
                 let view = View::Category(mail::CategoryView::of_category(held));
                 entries.push(NavEntry {
-                    mark: Mark::Tinted(mail::group_mark(group).0, self.category_colour(at)),
+                    mark: Mark::Tinted(mail::category_symbol(held.icon), self.category_colour(at)),
                     label: held.label.clone(),
                     // The number is what waits, as every other entry's is; the entry itself
                     // stands as long as the category occurs.
@@ -8465,10 +8467,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "Category ▸" (task E12.8): the catalogue by its four groups, each under its own caption,
     /// and scrollable – 23 choices in one flat list are taller than a medium window.
     fn category_menu<'a>(&self) -> Element<'a, Message> {
-        let choices = self.choices();
-        let width = choice_menu_width(&choices);
-        let mut list = column![menu_caption(tr("Category"))];
-        let mut at = 0;
         // The catalogue as the window loaded it (task E15.2): the person's names and groups,
         // their own categories too. The three the headers decide are no choice to make by hand.
         let catalogue = if self.categories.is_empty() {
@@ -8476,6 +8474,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         } else {
             self.categories.clone()
         };
+        let shown: Vec<&CategoryInfo> = CategoryGroup::ALL
+            .into_iter()
+            .flat_map(|group| {
+                catalogue
+                    .iter()
+                    .filter(move |held| held.group == group && !(held.built_in && held.category.by_rule_only()))
+            })
+            .collect();
+        let needed = shown.iter().enumerate().map(|(i, held)| {
+            choice_frame(None, keys::digit(i + 1), true) + typo::text_width(&held.label, typo::body())
+        });
+        let width = needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel());
+        let mut list = column![menu_caption(tr("Category"))];
+        let mut at = 0;
         for group in CategoryGroup::ALL {
             let of_group: Vec<&CategoryInfo> = catalogue
                 .iter()
@@ -8484,11 +8496,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             if of_group.is_empty() {
                 continue;
             }
-            list = list.push(menu_caption(torro_core::category::group_label(group)));
+            let (group_icon, color_at) = mail::group_mark(group);
+            let color = palette(&self.theme()).category[color_at];
+            let group_heading = row![
+                icon::icon(group_icon, icon::SIZE).style(move |_, _| iced::widget::svg::Style { color: Some(color) }),
+                typo::text(typo::caption(), torro_core::category::group_label(group).to_owned())
+                    .style(move |_| iced::widget::text::Style { color: Some(color) })
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            list = list.push(container(group_heading).padding(Padding::new(space::s()).bottom(space::xs())));
             for held in of_group {
-                let mark = mail::group_mark(group).0;
                 let choice = Choice {
-                    icon: mark,
+                    icon: mail::category_symbol(held.icon),
+                    tint: Some(color_at),
                     label: held.label.clone(),
                     when: None,
                     message: Message::PickCategory(held.category),
@@ -9189,12 +9210,19 @@ fn choice_entry<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32
 /// A label longer than its room – only beyond [`choice_menu_width`]'s widest menu – ends in "…"
 /// ([`choice_label`]) and shows whole as tooltip.
 fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32) -> Element<'a, Message> {
-    let mark = icon::icon(choice.icon, icon::SIZE)
-        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
-    let shown = choice_label(&choice.label, choice.when.as_deref(), key, width);
+    let tint = choice.tint;
+    let indented = tint.is_some();
+    let mark = icon::icon(choice.icon, icon::SIZE).style(move |t: &Theme, _| iced::widget::svg::Style {
+        color: Some(tint.map_or_else(|| palette(t).text, |at| palette(t).category[at.min(3)])),
+    });
+    let shown = choice_label(&choice.label, choice.when.as_deref(), key, width, indented);
     let cut = (shown != choice.label).then(|| choice.label.clone());
     let label = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
-    let mut content = row![mark, label].spacing(space::s()).align_y(Alignment::Center);
+    let mut content = row![];
+    if indented {
+        content = content.push(Space::new().width(space::m()));
+    }
+    content = content.push(mark).push(label).spacing(space::s()).align_y(Alignment::Center);
     if let Some(when) = choice.when {
         content = content.push(typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
     }
@@ -9216,18 +9244,18 @@ fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f3
 
 /// `label` as it fits in a choice of [`choice_button`] in a menu `width` wide, beside its time
 /// `when` and its key hint `key`: whole, or cut with "…" ([`typo::ellipsize`]).
-fn choice_label(label: &str, when: Option<&str>, key: &str, width: f32) -> String {
-    typo::ellipsize(label, typo::body(), width - choice_frame(when, key))
+fn choice_label(label: &str, when: Option<&str>, key: &str, width: f32, indented: bool) -> String {
+    typo::ellipsize(label, typo::body(), width - choice_frame(when, key, indented))
 }
 
 /// What a choice takes from its menu's width besides its label: the menu's and the entry's
 /// insets, the icon, the gaps, the time `when` and the key hint `key`.
-fn choice_frame(when: Option<&str>, key: &str) -> f32 {
+fn choice_frame(when: Option<&str>, key: &str, indented: bool) -> f32 {
     let gap = space::s();
     let kbd = typo::text_width(key, typo::caption()) + style::KBD_PADDING.left + style::KBD_PADDING.right;
     let when = when.map_or(0.0, |when| typo::text_width(when, typo::meta()) + gap);
     let frame = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
-    frame + icon::SIZE + 2.0 * gap + kbd + when
+    frame + icon::SIZE + 2.0 * gap + kbd + when + if indented { space::m() } else { 0.0 }
 }
 
 /// The width of a menu of `choices`: [`widgets::menu_width`], wider as far as its longest label
@@ -9235,7 +9263,8 @@ fn choice_frame(when: Option<&str>, key: &str) -> f32 {
 /// [`size::panel()`], beyond which a label ends in "…".
 fn choice_menu_width(choices: &[Choice]) -> f32 {
     let needed = choices.iter().enumerate().map(|(i, choice)| {
-        choice_frame(choice.when.as_deref(), keys::digit(i + 1)) + typo::text_width(&choice.label, typo::body())
+        choice_frame(choice.when.as_deref(), keys::digit(i + 1), choice.tint.is_some())
+            + typo::text_width(&choice.label, typo::body())
     });
     needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel())
 }
@@ -10812,7 +10841,7 @@ mod tests {
         let width = mute_menu_width(&choices, true);
         assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
         for (i, choice) in choices.iter().enumerate() {
-            let shown = choice_label(&choice.label, None, keys::digit(i + 1), width);
+            let shown = choice_label(&choice.label, None, keys::digit(i + 1), width, choice.tint.is_some());
             assert_eq!(shown, choice.label, "whole, not \"jonas.…\"");
         }
         let short = Choice::new(Icon::Sun, "Soon", Message::Refresh);
@@ -10820,14 +10849,15 @@ mod tests {
         let snooze = loaded(&["--open", "snooze"]);
         let width = choice_menu_width(&snooze.choices());
         for (i, choice) in snooze.choices().iter().enumerate() {
-            let shown = choice_label(&choice.label, choice.when.as_deref(), keys::digit(i + 1), width);
+            let shown =
+                choice_label(&choice.label, choice.when.as_deref(), keys::digit(i + 1), width, choice.tint.is_some());
             assert_eq!(shown, choice.label, "every language's snooze times fit");
         }
         // Beyond the widest menu a label still ends in "…".
         let long = Choice::new(Icon::User, "x".repeat(200), Message::Refresh);
         let width = choice_menu_width(std::slice::from_ref(&long));
         assert_eq!(width, size::panel());
-        let shown = choice_label(&long.label, None, "1", width);
+        let shown = choice_label(&long.label, None, "1", width, long.tint.is_some());
         assert!(shown.ends_with(typo::ELLIPSIS) && shown.len() < long.label.len(), "{shown}");
     }
 
@@ -12901,6 +12931,22 @@ mod tests {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
+    }
+
+    /// Issue #265: category children use their own monochrome symbol while the open parent group
+    /// supplies the colour, and the grouped picker can be built with the same catalogue.
+    #[test]
+    fn category_surfaces_use_the_category_icon_in_its_group_colour() {
+        let mut app = mail_window(Density::Comfortable, &[]);
+        let held = app.categories.iter().find(|held| held.messages > 0).expect("a category in the demo").clone();
+        app.open_groups.insert(held.group);
+        let entries = app.category_entries();
+        let child = entries.iter().find(|entry| entry.label == held.label).expect("the open group's category");
+        assert!(matches!(
+            child.mark,
+            Mark::Tinted(icon, _) if icon == mail::category_symbol(held.icon)
+        ));
+        let _ = app.category_menu();
     }
 
     #[test]

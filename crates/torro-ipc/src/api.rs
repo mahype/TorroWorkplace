@@ -3008,8 +3008,9 @@ static LIST_CATEGORIES: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the catalogue of mail categories: each with its group (`waiting_for_me`, `paper_trail`, \
-                  `info`, `junk`), the words a person reads for both, how much mail it holds (`messages`) and how \
-                  much of that is unread. Counted in the inbox folder only, so mail thrown away, marked as spam \
+                  `info`, `junk`), the words a person reads for both, its monochrome `icon` in the group's colour, \
+                  how much mail it holds (`messages`) and how much of that is unread. Counted in the inbox folder \
+                  only, so mail thrown away, marked as spam \
                   or sent by the person is counted nowhere. The counts cover only mail accounts this key may read \
                   (read access to mail and the account), so a key without them sees 0 everywhere, never a number \
                   about a mailbox it cannot see; `account` (`mail:<address>`) counts in one account and is \
@@ -3082,7 +3083,8 @@ static CREATE_CATEGORY: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Makes a mail category of the person's own in one of the four groups and returns it; its key is \
-                  `custom_<n>` and never changes. `description` says what belongs there, with examples and \
+                  `custom_<n>` and never changes. `icon` chooses a monochrome category icon; the group supplies \
+                  its colour. `description` says what belongs there, with examples and \
                   exceptions – what a decision model reads; `model: true` lets the model choose it for new mail. \
                   A hard exception is a sorting rule, not a description. `error` for an empty, multi-line or \
                   taken name (at most 60 characters), an empty description or one over 500 characters, or more \
@@ -3095,7 +3097,7 @@ static UPDATE_CATEGORY: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Changes a mail category, one of the suite's or the person's own, and returns it: only the fields \
-                  given (`group`, `name`, `description`, `model`). The key stays, so mail and rules that name it \
+                  given (`group`, `name`, `description`, `model`, `icon`). The key stays, so mail and rules that name it \
                   stay valid. An empty `name` or `description` puts back the suite's words for one of its \
                   categories. Mail already filed keeps its category until inbox_catch_up_categories runs with \
                   `again`. `not-found` for a category not in the catalogue; `error` as for create_category. Needs \
@@ -4102,6 +4104,7 @@ mod tests {
                 name: "Tax".into(),
                 description: "Anything for the tax return.".into(),
                 model: true,
+                icon: torro_mail::CategoryIcon::Tag,
             },
             Request::UpdateCategory {
                 category: torro_mail::Category::Invoice,
@@ -4109,6 +4112,7 @@ mod tests {
                 name: Some("Bills".into()),
                 description: None,
                 model: None,
+                icon: None,
             },
             Request::RemoveCategory {
                 category: torro_mail::Category::Custom(torro_mail::CustomCategory::new(1).expect("a number")),
