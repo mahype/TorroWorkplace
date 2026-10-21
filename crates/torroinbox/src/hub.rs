@@ -1409,7 +1409,7 @@ fn entry_row<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, 
     let selected = data.rows.selected == Some(item.id.as_str());
     let height = list::row_height_of(item);
     let content = if item.source.kind == SourceKind::Mail {
-        list::mail_content(list::MailLines::of(item, &data.rows), width)
+        list::mail_content(list::MailLines::of(item, &data.rows), width, selected)
     } else {
         list::notice_content(item, &data.rows, width)
     };

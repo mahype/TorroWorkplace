@@ -3840,15 +3840,17 @@ E16.1 semantische Farbe ── E16.2 Mail-Zeilen und -Karten
 - **Modell:** Opus · **Braucht:** E16.1 · **Dateien:** `crates/torroinbox/src/{list,mail,hub,notifications}.rs`,
   `crates/torro-gui/src/widgets.rs` (Kartenkopf mit wählbarer Schriftstufe)
 - `list::avatar` zeichnet nur noch Initialen und Kontofläche; den Parameter `new` aus Signatur und
-  Aufrufern entfernen. Die Mail-Zeile zeichnet den 8px-Punkt (`space::s()`) im linken Innenabstand
-  von `list::sized_row` über `unread: Option<bool>` (`None` für andere Zeilen), mit reserviertem Platz auch im
-  gelesenen Zustand. `entry_row`, `mail::message_row` und `hub::entry_row` liefern den Status;
+  Aufrufern entfernen. `list::mail_content` zeichnet den 8px-Punkt (`space::s()`) in einem festen
+  Platz links vom Avatar, auch wenn die Mail gelesen ist. So bleibt er bei eigenen Designs mit
+  größeren Metadaten auf Avatarhöhe. `list::sized_row` lässt über `unread: Option<bool>`
+  (`None` für andere Zeilen) den gewöhnlichen linken Innenabstand für Mail weg.
+  `entry_row`, `mail::message_row` und `hub::entry_row` liefern den Status;
   `notifications::entry_row` bleibt eine normale Hinweiszeile. Falls ein eigenes Design weniger
   linken Innenabstand hat, wird der nötige Platz für beide Zustände gleichermaßen reserviert.
 - `list::mail_content` setzt Absender und Betreff nur bei ungelesener Mail kräftig. Der Absender
   behält für beide Gewichte dieselbe, mit `body_strong` berechnete Zellenbreite, damit Domain, Zeit
   und Metadaten nicht horizontal springen. Auch bei eigenen Designs mit abweichenden `body`-Maßen
-  bleiben Schriftgröße und Zeilenhöhe von `body_strong` erhalten; nur der Schriftschnitt wechselt.
+  bleiben Schriftgröße, Zeilenhöhe und Schriftfamilie von `body_strong` erhalten; nur das Gewicht wechselt.
   Vorschau, Trefferhervorhebung und Kontopunkt behalten ihre bisherigen Rollen.
 - `list::mail_card` und `hub::sort_card` zeichnen den Punkt links im Karteninnenabstand. Designs
   mit zu kleinem Karteninnenabstand reservieren mindestens Punktbreite plus Rand auf beiden Seiten;

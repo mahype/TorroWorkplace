@@ -355,13 +355,18 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
         let mut marks: Vec<(Element<'a, Message>, f32)> =
             item.category.map(|held| mail::category_mark(held, rows.categories)).into_iter().collect();
         marks.extend(item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)));
-        mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width)
+        mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width, selected)
     } else {
         notice_content(item, rows, width)
     };
     let unread = (item.source.kind == SourceKind::Mail).then_some(item.state == State::New);
-    let row =
-        sized_row(with_strip(content, actions, width), selected, unread, Message::Select(item.id.clone()), height);
+    let row = sized_row(
+        with_strip(content, actions, width, unread.map(|_| selected)),
+        selected,
+        unread,
+        Message::Select(item.id.clone()),
+        height,
+    );
     let row = if rows.bare && item.source.kind == SourceKind::Mail {
         mouse_area(row).on_right_press(Message::ContextEntry(item.id.clone())).into()
     } else {
@@ -408,18 +413,24 @@ pub fn strip_height_in(bare: bool) -> f32 {
 /// The `content` of a row `width` wide with the strip of `actions` below it
 /// (`widgets::row_actions_strip`): the action bar hangs below the lines of the selected row, in a
 /// strip of its own, so it covers nothing of the row; the strip starts where the text does. The
-/// row is [`strip_height`] higher then. Without actions the content as it is.
+/// row is [`strip_height`] higher then. For mail, `mail_selected` shifts the strip past the
+/// reserved marker slot. Without actions the content as it is.
 pub(crate) fn with_strip<'a>(
     content: Element<'a, Message>,
     actions: Vec<RowAction<'a, Message>>,
     width: f32,
+    mail_selected: Option<bool>,
 ) -> Element<'a, Message> {
     if actions.is_empty() {
         return content;
     }
-    let words = widgets::row_actions_strip_words(&actions, words_room(width));
+    let words = widgets::row_actions_strip_words(
+        &actions,
+        if mail_selected.is_some() { mail_words_room(width) } else { words_room(width) },
+    );
+    let left = mail_selected.map_or(0.0, mail_row_left);
     let strip = container(widgets::row_actions_strip(actions, words))
-        .padding(Padding::new(0.0).left(mark_width() + space::m()));
+        .padding(Padding::new(0.0).left(left + mark_width() + space::m()));
     column![content, strip].spacing(space::s()).into()
 }
 
@@ -715,8 +726,8 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
 }
 
 /// A row of the list `height` high (including its line): `content` with the design's inset,
-/// centred in the height, the bar at the left while `selected`, a line below. For mail,
-/// `Some(unread)` reserves the same marker slot in both read states; `None` leaves other rows as-is.
+/// centred in the height, the bar at the left while `selected`, a line below. Mail content
+/// includes its own marker slot, so `Some(unread)` suppresses the button's ordinary left inset.
 pub(crate) fn sized_row<'a>(
     content: Element<'a, Message>,
     selected: bool,
@@ -725,25 +736,9 @@ pub(crate) fn sized_row<'a>(
     height: f32,
 ) -> Element<'a, Message> {
     let pad = layout::row_padding();
-    let left =
-        unread.map_or_else(|| if selected { pad.left - SELECTED_BAR } else { pad.left }, |_| mail_row_left(selected));
+    let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
     let height = height - size::HAIRLINE;
-    let content: Element<'a, Message> = if let Some(unread) = unread {
-        let marker: Element<'a, Message> = if unread { unread_dot() } else { blank().into() };
-        // The action strip can extend a selected row. Align the dot with the avatar in the
-        // original three-line mail row rather than the centre of the expanded row.
-        let marker = container(marker)
-            .width(left)
-            .height(mark_width())
-            // The selected bar takes space from this slot; keep the dot at the same absolute x.
-            .padding(Padding::ZERO.right(if selected { SELECTED_BAR } else { 0.0 }))
-            .align_x(iced::Center)
-            .align_y(iced::Center);
-        let slot = column![blank().height(mail_lines_top()), marker, blank().height(Fill)].width(left).height(Fill);
-        row![slot, container(content).center_y(Fill).width(Fill)].height(Fill).into()
-    } else {
-        container(content).center_y(Fill).into()
-    };
+    let content: Element<'a, Message> = container(content).center_y(Fill).into();
     let body: Element<'a, Message> = button(content)
         .width(Fill)
         .height(height)
@@ -768,11 +763,6 @@ fn mail_row_left(selected: bool) -> f32 {
     if selected { left - SELECTED_BAR } else { left }
 }
 
-fn mail_lines_top() -> f32 {
-    let lines = 2.0 * typo::line_height(mail_text_level(false)) + typo::line_height(typo::body());
-    ((message_height() - size::HAIRLINE - lines) / 2.0).max(0.0)
-}
-
 fn unread_dot<'a>() -> Element<'a, Message> {
     container(blank())
         .width(new_dot())
@@ -791,10 +781,10 @@ pub(crate) fn mail_text_level(unread: bool) -> Level {
     mail_text_level_in(unread, strong, regular)
 }
 
-/// Only the font cut changes. A custom design may give `body` a different size or line height;
-/// those metrics must stay fixed when the mail becomes read.
+/// Only the font weight changes. A custom design may give `body` different metrics or a
+/// different family; the strong metrics and family must stay fixed when the mail becomes read.
 fn mail_text_level_in(unread: bool, strong: Level, regular: Level) -> Level {
-    if unread { strong } else { Level { font: regular.font, ..strong } }
+    if unread { strong } else { Level { font: iced::Font { weight: regular.font.weight, ..strong.font }, ..strong } }
 }
 
 fn sender_cell(name: &str, room: f32) -> (String, f32) {
@@ -808,6 +798,10 @@ fn sender_cell(name: &str, room: f32) -> (String, f32) {
 pub fn words_room(width: f32) -> f32 {
     let pad = layout::row_padding();
     (width - pad.left - pad.right - mark_width() - space::m()).max(0.0)
+}
+
+fn mail_words_room(width: f32) -> f32 {
+    (words_room(width) - (mail_row_left(false) - layout::row_padding().left)).max(0.0)
 }
 
 /// One line of a row: `text` taking the free width (clipped, in case the estimate runs over),
@@ -941,10 +935,10 @@ pub(crate) fn account_shown(account_name: Option<String>, domain: Option<&str>) 
     account_name.filter(|account| domain != Some(account.as_str()))
 }
 
-/// The content of a mail row `width` wide (task E3.9): avatar, then sender · domain · (marks) ·
+/// The content of a mail row `width` wide (task E3.9): unread marker slot, avatar, then sender · domain · (marks) ·
 /// time, subject (· count), preview (· account, unless it is the sender's domain: [`account_shown`]).
-pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
-    let room = (words_room(width) - (mail_row_left(false) - layout::row_padding().left)).max(0.0);
+pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
+    let room = mail_words_room(width);
     let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
@@ -984,7 +978,16 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
         .into_iter()
         .collect();
     let words = column![first, second, line(preview, ends)].width(Fill);
-    row![avatar(&name, account, mark_width()), words].spacing(space::m()).align_y(Alignment::Start).into()
+    let marker: Element<'a, Message> = if new { unread_dot() } else { blank().into() };
+    let marker = container(marker)
+        .width(mail_row_left(selected))
+        .height(mark_width())
+        // The selection bar takes space from this slot; the dot stays at the same absolute x.
+        .padding(Padding::ZERO.right(if selected { SELECTED_BAR } else { 0.0 }))
+        .align_x(iced::Center)
+        .align_y(iced::Center);
+    let content = row![avatar(&name, account, mark_width()), words].spacing(space::m()).align_y(Alignment::Start);
+    row![marker, content].align_y(Alignment::Start).into()
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -1663,10 +1666,13 @@ mod tests {
         let mut regular = typo::body();
         regular.size = iced::Pixels(strong.size.0 + 5.0);
         regular.line_height = iced::widget::text::LineHeight::Absolute(iced::Pixels(36.0));
+        regular.font.family = iced::font::Family::Serif;
+        assert_ne!(regular.font.family, strong.font.family);
         let read = mail_text_level_in(false, strong, regular);
         assert_eq!(read.size, strong.size);
         assert_eq!(read.line_height, strong.line_height);
-        assert_eq!(read.font, regular.font);
+        assert_eq!(read.font.weight, regular.font.weight);
+        assert_eq!(read.font.family, strong.font.family);
         assert_eq!(mail_text_level_in(true, strong, regular), strong);
     }
 

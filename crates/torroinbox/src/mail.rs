@@ -1385,7 +1385,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     let actions = data.anchors.mark(true, row_buttons(data, message));
     // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
     let strip = if actions.is_empty() { 0.0 } else { list::strip_height() };
-    let content = list::with_strip(list::mail_content(lines, width), actions, width);
+    let content = list::with_strip(list::mail_content(lines, width, selected), actions, width, Some(selected));
     let row: Element<'a, Message> = mouse_area(list::sized_row(
         content,
         selected,
