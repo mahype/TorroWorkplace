@@ -7563,8 +7563,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The header: the view's title (wide with the full sidebar) or the navigation menu (with the
-    /// rail, medium, narrow), its count, and
-    /// "Refresh". The inbox creates nothing, so there is no primary button.
+    /// rail, medium, narrow), its count, and the view controls. A mail selection replaces those
+    /// controls with its count, Delete and Clear selection without adding a row above the list.
     fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, accounts: &Anchor) -> Element<'a, Message> {
         if self.is_insights() {
             return self.insights_header(class, nav);
@@ -7579,75 +7579,110 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .then(|| self.count_note())
             .filter(|note| !note.is_empty());
         let mut trailing = Vec::new();
-        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it
-        // where a window has two columns – none since the hub has sections (task E8.5); the mail and
-        // the notifications window have one column only.
-        let columns = self.launch.kind.columns();
-        let choose_column =
-            self.view == View::Overview && !self.is_hub() && class != SizeClass::Wide && columns.len() > 1;
-        if choose_column {
-            let chosen = columns.iter().position(|&column| column == self.column).unwrap_or_default();
-            let columns = columns.iter().map(|&column| (column.name(), Message::ShowColumn(column)));
-            trailing.push(widgets::segmented(columns, chosen));
-        }
-        // "By app | By time" (task E8.4) where the notifications window's board has room for columns.
-        let arrange =
-            self.is_board() && !self.items.is_empty() && notifications::has_arrange(self.board_width(), class);
-        if arrange {
-            let chosen = Arrange::ALL.iter().position(|&arrange| arrange == self.arrange).unwrap_or_default();
-            trailing.push(widgets::segmented(
-                Arrange::ALL.map(|arrange| (arrange.name(), Message::Arrange(arrange))),
-                chosen,
-            ));
-        }
-        // "Newest first | Oldest first" (task E8.15) where the window lists by arrival.
-        if self.orderable() {
-            trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
-        }
-        if kind == Kind::Mail && !self.folders.is_empty() {
-            let fixed_account = self.view.folder().map(|folder| folder.account.as_str()).or_else(|| {
-                self.view.search().and_then(|search| match &search.scope {
-                    Scope::All => None,
-                    Scope::Account(account) => Some(account.as_str()),
-                    Scope::Folder(folder) => Some(folder.account.as_str()),
-                })
-            });
-            if let Some(account) = fixed_account {
-                if matches!(class, SizeClass::Wide | SizeClass::Medium) {
-                    trailing.push(widgets::text_button(
-                        Some(Icon::Folder),
-                        mail::address(account).to_owned(),
-                        style::button::ghost,
-                        None,
-                    ));
-                }
+        if (kind == Kind::Mail || self.view.is_mail()) && !self.selected_mail.is_empty() {
+            let count = self.selected_mail.len().to_string();
+            if matches!(class, SizeClass::Wide | SizeClass::Medium) {
+                let selected = trf("{n} messages selected", &[("n", &count)]);
+                trailing
+                    .push(typo::text(typo::caption(), selected).style(theme::text_2).wrapping(Wrapping::None).into());
+                trailing.push(widgets::text_button(
+                    Some(Icon::Trash2),
+                    tr("Delete"),
+                    style::button::danger,
+                    Some(Message::DeleteSelectedMail),
+                ));
+                trailing.push(widgets::text_button(
+                    Some(Icon::X),
+                    tr("Clear selection"),
+                    style::button::ghost,
+                    Some(Message::ClearMailSelection),
+                ));
             } else {
-                let label = self.mail_accounts_label();
-                trailing.push(if class == SizeClass::Wide {
-                    widgets::menu_button(accounts, Some(Icon::ListFilter), label, Message::ToggleMailAccounts)
+                // In a narrow window the count and the two actions still fit beside the view menu.
+                let selected = trf("{n} messages selected", &[("n", &count)]);
+                trailing.push(widgets::with_tooltip(
+                    typo::text(typo::caption(), count).style(theme::text_2).wrapping(Wrapping::None),
+                    selected,
+                ));
+                trailing.push(widgets::compact_button(
+                    Icon::Trash2,
+                    tr("Delete"),
+                    style::button::danger,
+                    Some(Message::DeleteSelectedMail),
+                ));
+                trailing.push(widgets::icon_button(Icon::X, tr("Clear selection"), Some(Message::ClearMailSelection)));
+            }
+        } else {
+            // The overview shows one column below the wide layout: "Mail | Notifications" chooses it
+            // where a window has two columns – none since the hub has sections (task E8.5); the mail and
+            // the notifications window have one column only.
+            let columns = self.launch.kind.columns();
+            let choose_column =
+                self.view == View::Overview && !self.is_hub() && class != SizeClass::Wide && columns.len() > 1;
+            if choose_column {
+                let chosen = columns.iter().position(|&column| column == self.column).unwrap_or_default();
+                let columns = columns.iter().map(|&column| (column.name(), Message::ShowColumn(column)));
+                trailing.push(widgets::segmented(columns, chosen));
+            }
+            // "By app | By time" (task E8.4) where the notifications window's board has room for columns.
+            let arrange =
+                self.is_board() && !self.items.is_empty() && notifications::has_arrange(self.board_width(), class);
+            if arrange {
+                let chosen = Arrange::ALL.iter().position(|&arrange| arrange == self.arrange).unwrap_or_default();
+                trailing.push(widgets::segmented(
+                    Arrange::ALL.map(|arrange| (arrange.name(), Message::Arrange(arrange))),
+                    chosen,
+                ));
+            }
+            // "Newest first | Oldest first" (task E8.15) where the window lists by arrival.
+            if self.orderable() {
+                trailing.push(order_button(self.order, order_words(class, choose_column, arrange)));
+            }
+            if kind == Kind::Mail && !self.folders.is_empty() {
+                let fixed_account = self.view.folder().map(|folder| folder.account.as_str()).or_else(|| {
+                    self.view.search().and_then(|search| match &search.scope {
+                        Scope::All => None,
+                        Scope::Account(account) => Some(account.as_str()),
+                        Scope::Folder(folder) => Some(folder.account.as_str()),
+                    })
+                });
+                if let Some(account) = fixed_account {
+                    if matches!(class, SizeClass::Wide | SizeClass::Medium) {
+                        trailing.push(widgets::text_button(
+                            Some(Icon::Folder),
+                            mail::address(account).to_owned(),
+                            style::button::ghost,
+                            None,
+                        ));
+                    }
                 } else {
-                    widgets::anchored(
-                        accounts,
-                        widgets::icon_button(
-                            if self.mail_accounts.is_some() { Icon::ListFilter } else { Icon::List },
-                            label,
-                            Some(Message::ToggleMailAccounts),
-                        ),
-                    )
+                    let label = self.mail_accounts_label();
+                    trailing.push(if class == SizeClass::Wide {
+                        widgets::menu_button(accounts, Some(Icon::ListFilter), label, Message::ToggleMailAccounts)
+                    } else {
+                        widgets::anchored(
+                            accounts,
+                            widgets::icon_button(
+                                if self.mail_accounts.is_some() { Icon::ListFilter } else { Icon::List },
+                                label,
+                                Some(Message::ToggleMailAccounts),
+                            ),
+                        )
+                    });
+                }
+            }
+            // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
+            // layout; off while nothing can be dismissed.
+            if self.is_board() && self.view == View::Overview {
+                let dismiss = (!notifications::dismiss_all(&self.items).is_empty()).then_some(Message::DismissAll);
+                trailing.push(if class == SizeClass::Wide {
+                    widgets::text_button(Some(Icon::X), tr("Dismiss all"), style::button::ghost, dismiss)
+                } else {
+                    widgets::icon_button(Icon::X, tr("Dismiss all"), dismiss)
                 });
             }
+            trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         }
-        // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
-        // layout; off while nothing can be dismissed.
-        if self.is_board() && self.view == View::Overview {
-            let dismiss = (!notifications::dismiss_all(&self.items).is_empty()).then_some(Message::DismissAll);
-            trailing.push(if class == SizeClass::Wide {
-                widgets::text_button(Some(Icon::X), tr("Dismiss all"), style::button::ghost, dismiss)
-            } else {
-                widgets::icon_button(Icon::X, tr("Dismiss all"), dismiss)
-            });
-        }
-        trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
         // as in the medium layout, and every view stays one click away.
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
@@ -7821,28 +7856,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // The search stands above the error line: it belongs to the mail, the error to the list.
         if self.shows_search() {
             content = content.push(self.search_bar());
-        }
-        if self.view.is_mail() && !self.selected_mail.is_empty() {
-            let count = self.selected_mail.len().to_string();
-            let selected = trf("{n} messages selected", &[("n", &count)]);
-            let actions = row![
-                typo::text(typo::body(), selected),
-                widgets::text_button(
-                    Some(Icon::Trash2),
-                    tr("Delete"),
-                    style::button::danger,
-                    Some(Message::DeleteSelectedMail)
-                ),
-                widgets::text_button(
-                    None,
-                    tr("Clear selection"),
-                    style::button::ghost,
-                    Some(Message::ClearMailSelection)
-                ),
-            ]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-            content = content.push(container(actions).padding(Padding::new(space::s()).left(space::l())));
         }
         if let Some(failure) = &self.error {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
