@@ -110,6 +110,15 @@ abzuweisen.
 
 ## Sichern und Prüfen
 
+Die Archiv-Engine (MB.2) liest jede Originalmail in höchstens 64-KiB-Blöcken und schreibt
+die Bytes unverändert als eigene `.eml` in das ZIP. Beim Schreiben entstehen Bytezahl und
+SHA-256; der Writer erzeugt die sicheren IDs, `README.txt`, `manifest.json`, `messages.csv`
+und `SHA256SUMS`. Vor der Veröffentlichung prüft der Dienst die fertige Datei noch einmal
+offline, einschließlich EML-Hashes, Metadaten-Prüfsummen und CSV/Manifest-Abgleich. Eine
+bekannt unvollständige Quelle oder ein abgebrochener Lauf wird nicht als finale ZIP-Datei
+veröffentlicht. Die temporäre Datei liegt im privaten Backup-Ordner und wird bei Fehlern
+entfernt; ein vorhandener Zielname wird nie überschrieben.
+
 Die Backup-Engine zählt Ordner und UIDs, liest Originalbytes ohne `\Seen` zu setzen,
 streamt große Literale statt der aktuellen 100-MiB-Grenze und berechnet SHA-256 während
 des Schreibens. Sie liest Flags/Keywords und `INTERNALDATE` pro Nachricht. Ein begrenztes

@@ -37,11 +37,12 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
 
 ### MB.2 Archiv schreiben und offline prüfen
 
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MB.1 · **Dateien:**
   `crates/torro-mail-backup/src/{lib,format,writer,verify}.rs`,
   `crates/torro-mail-backup/tests/{archive,fixtures/**}.rs`,
-  `crates/torroworkplace/src/mail/backup.rs`, `docs/mail-backup.md`
+  `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/src/mail/{backup,mod}.rs`,
+  `docs/mail-backup.md`
 - Rohbytes pro EML streamen, SHA-256 je Eintrag und `SHA256SUMS` berechnen, CSV/README/
   Manifest schreiben und Abschlussstatus erst nach Verifikation vergeben. Dateischreiben
   im erlaubten Ordner mit temporärem Namen und atomarer Veröffentlichung. `verify` ist
