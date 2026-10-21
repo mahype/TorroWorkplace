@@ -1126,10 +1126,11 @@ async fn category_job_run(
         };
         if batch.is_empty() {
             let _ = inbox.change_category_job(&id, |job| {
-                if job.generation == generation && job.state == CategoryJobState::Running {
-                    if let Some(account) = job.accounts.iter_mut().find(|item| item.account == account.account) {
-                        account.cursor = account.max_sequence;
-                    }
+                if job.generation == generation
+                    && job.state == CategoryJobState::Running
+                    && let Some(account) = job.accounts.iter_mut().find(|item| item.account == account.account)
+                {
+                    account.cursor = account.max_sequence;
                 }
             });
             continue;
@@ -1232,12 +1233,13 @@ async fn category_job_run(
                 }
             }
             let _ = inbox.change_category_job(&id, |job| {
-                if job.generation == generation && job.state == CategoryJobState::Running {
-                    if let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account.account) {
-                        progress.cursor = seq;
-                        progress.processed += 1;
-                        progress.changed += u64::from(changed);
-                    }
+                if job.generation == generation
+                    && job.state == CategoryJobState::Running
+                    && let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account.account)
+                {
+                    progress.cursor = seq;
+                    progress.processed += 1;
+                    progress.changed += u64::from(changed);
                 }
             });
             if asked {
@@ -1293,12 +1295,12 @@ async fn category_clear_run(
             match mail.clear_category_batch(&account.account, account.cursor, account.max_sequence).await {
                 Ok((cursor, removed)) => {
                     let _ = inbox.change_category_clear_job(&id, |job| {
-                        if job.generation == generation && job.state == CategoryJobState::Running {
-                            if let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account.account)
-                            {
-                                progress.cursor = cursor;
-                                progress.removed += removed;
-                            }
+                        if job.generation == generation
+                            && job.state == CategoryJobState::Running
+                            && let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account.account)
+                        {
+                            progress.cursor = cursor;
+                            progress.removed += removed;
                         }
                     });
                 }

@@ -983,7 +983,7 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
   tatsächlichen Bestand; Bereinigung verliert keine Entwürfe und zeigt vorher ihre Wirkung.
 
 ### M10.7 Cache- und Indexseite
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M10.6 · **Dateien:** `crates/torro-settings-ui/src/{mail.rs,demo.rs}`,
   `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** `docs/prototypes/mail-263/screen-storage.png`: Strategie, getrennte Speichergrößen,

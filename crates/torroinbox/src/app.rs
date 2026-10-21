@@ -1493,7 +1493,7 @@ impl Kind {
     /// The state those sections keep while they are open (a draft, a removal on its way).
     fn settings_state(self) -> SettingsState {
         match self {
-            Kind::Mail => SettingsState::Mail(settings_mail::State::default()),
+            Kind::Mail => SettingsState::Mail(Box::default()),
             Kind::Notifications | Kind::Hub => SettingsState::Inbox(settings_inbox::State::default()),
         }
     }
@@ -1917,8 +1917,8 @@ struct SettingsPane {
 enum SettingsState {
     /// The Notification Hub and the App Feed: Notifications, Sources, Rules.
     Inbox(settings_inbox::State),
-    /// The mail window: Accounts, Reading.
-    Mail(settings_mail::State),
+    /// The mail window: Accounts, Reading, Categorization, Storage & index.
+    Mail(Box<settings_mail::State>),
 }
 
 /// What a section of the settings reported, over both kinds of window.

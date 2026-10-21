@@ -255,12 +255,12 @@ async fn prefetch_attachments(mailbox: &Mailbox, message: &str, raw: &[u8]) -> R
     tokio::task::spawn_blocking(move || {
         let mut saved = 0;
         for part in parts {
-            if let Ok(content) = mime::attachment(&raw, &part.part) {
-                if content.bytes.len() <= super::read::ATTACHMENT_MAX_BYTES {
-                    let name = content.filename.unwrap_or_default();
-                    cache.store_for_part(&account, &message, &part.part, &name, &content.bytes)?;
-                    saved += 1;
-                }
+            if let Ok(content) = mime::attachment(&raw, &part.part)
+                && content.bytes.len() <= super::read::ATTACHMENT_MAX_BYTES
+            {
+                let name = content.filename.unwrap_or_default();
+                cache.store_for_part(&account, &message, &part.part, &name, &content.bytes)?;
+                saved += 1;
             }
         }
         Ok::<usize, super::MailStoreError>(saved)
