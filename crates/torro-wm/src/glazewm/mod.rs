@@ -239,6 +239,14 @@ mod tests {
         let env = |key: &str| (key == PORT_VARIABLE).then(|| port.clone());
         assert_eq!(GlazeWm::probe(env).map(|wm| wm.port.to_string()), Some(port.clone()));
         drop(listener);
+
+        // Checking the now-freed `port` would race other tests that bind ephemeral ports
+        // (`TcpListener::bind` with port 0): the OS can hand it straight back to one of them,
+        // which would then make `probe` find something. Use a fixed port below the OS ephemeral
+        // range instead, which `bind(.., 0)` never allocates and nothing else in this crate
+        // binds, so nothing can grab it out from under this assertion.
+        const NEVER_BOUND_PORT: &str = "18237";
+        let env = |key: &str| (key == PORT_VARIABLE).then(|| NEVER_BOUND_PORT.to_owned());
         assert_eq!(GlazeWm::probe(env), None);
     }
 
