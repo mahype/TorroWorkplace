@@ -170,6 +170,17 @@ pub struct MailAccountStats {
     pub oldest_known: Option<DateTime<Utc>>,
     pub newest_known: Option<DateTime<Utc>>,
     pub cached_bodies: u64,
+    /// Oldest message whose complete reading text is kept locally.
+    #[serde(default)]
+    pub oldest_cached_body: Option<DateTime<Utc>>,
+    /// Approximate bytes occupied by reading texts; separate from the search index.
+    #[serde(default)]
+    pub body_cache_bytes: u64,
+    /// SQLite pages used by the word and trigram search indexes, when `dbstat` is available.
+    #[serde(default)]
+    pub search_index_bytes: Option<u64>,
+    #[serde(default)]
+    pub last_index_run: Option<DateTime<Utc>>,
     pub indexed_full: u64,
     pub indexed_partial_or_unverified: u64,
     pub text_unavailable: u64,
@@ -181,6 +192,82 @@ pub struct MailAccountStats {
     pub attachment_cache_bytes: Option<u64>,
     pub last_sync: Option<DateTime<Utc>>,
     pub sync_problem: Option<String>,
+}
+
+/// How many message bodies an account keeps for offline reading. Search text is independent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[repr(i64)]
+pub enum MailCacheMode {
+    HeadersOnly = 0,
+    #[default]
+    Recent90Days = 1,
+    AllOffline = 2,
+}
+
+/// Per-account local storage choice, persisted with the mail store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MailCachePolicy {
+    pub account: String,
+    pub mode: MailCacheMode,
+    /// Fetch attachment parts in advance, separately from message texts.
+    #[serde(default)]
+    pub prefetch_attachments: bool,
+    /// Attachment files are removed after this many days; 1 by default.
+    #[serde(default = "default_attachment_days")]
+    pub attachment_retention_days: u32,
+}
+
+fn default_attachment_days() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MailCacheAction {
+    ApplyPolicy,
+    FetchMissingBodies,
+    FetchAttachments,
+    RebuildIndex,
+    CleanCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MailCacheJobState {
+    Running,
+    Paused,
+    Complete,
+    Failed,
+}
+
+/// A durable, resumable maintenance operation on one mail account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailCacheJob {
+    pub id: String,
+    pub account: String,
+    pub action: MailCacheAction,
+    pub state: MailCacheJobState,
+    pub total: u64,
+    pub processed: u64,
+    /// Last inspected store sequence for a resumable body fetch.
+    #[serde(default)]
+    pub cursor: Option<i64>,
+    /// Estimated bytes affected before starting; actual storage may differ.
+    pub estimated_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Dry-run counts for a cache choice or maintenance job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailCacheEstimate {
+    pub account: String,
+    pub current_bodies: u64,
+    pub bodies_to_fetch: u64,
+    pub bodies_to_remove: u64,
+    pub estimated_download_bytes: u64,
+    pub estimated_reclaim_bytes: u64,
 }
 
 /// What the core does about the texts not yet in an account's index ([`MailIndexProgress`]).
@@ -301,6 +388,12 @@ impl Request {
             | Request::MailAccountStats { account }
             | Request::SearchMail { account, .. }
             | Request::MailIndexStatus { account } => account.as_deref(),
+            Request::GetMailCachePolicy { account }
+            | Request::PreviewMailCache { account, .. }
+            | Request::StartMailCacheJob { account, .. }
+            | Request::MailCacheJobStatus { account }
+            | Request::ControlMailCacheJob { account, .. } => Some(account),
+            Request::SetMailCachePolicy { policy } => Some(&policy.account),
             Request::SaveDraft { draft } => Some(draft.account.as_str()),
             _ => None,
         }

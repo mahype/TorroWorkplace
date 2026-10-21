@@ -3882,6 +3882,32 @@ impl Core {
                 let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles, format };
                 self.update_mail_account(&id, change).await
             }
+            Request::GetMailCachePolicy { account } => match self.mail.cache_policy(&account).await {
+                Ok(policy) => Response::MailCachePolicy { policy },
+                Err(err) => err.response(),
+            },
+            Request::PreviewMailCache { account, mode } => match self.mail.cache_estimate(&account, mode).await {
+                Ok(estimate) => Response::MailCacheEstimate { estimate },
+                Err(err) => err.response(),
+            },
+            Request::SetMailCachePolicy { policy } => match self.mail.set_cache_policy(policy).await {
+                Ok(policy) => Response::MailCachePolicy { policy },
+                Err(err) => err.response(),
+            },
+            Request::StartMailCacheJob { account, action } => match self.mail.start_cache_job(&account, action).await {
+                Ok(job) => Response::MailCacheJob { job: Some(job) },
+                Err(err) => err.response(),
+            },
+            Request::MailCacheJobStatus { account } => match self.mail.cache_job_status(&account).await {
+                Ok(job) => Response::MailCacheJob { job },
+                Err(err) => err.response(),
+            },
+            Request::ControlMailCacheJob { account, id, resume } => {
+                match self.mail.control_cache_job(&account, &id, resume).await {
+                    Ok(job) => Response::MailCacheJob { job },
+                    Err(err) => err.response(),
+                }
+            }
             // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }

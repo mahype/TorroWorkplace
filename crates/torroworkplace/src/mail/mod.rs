@@ -17,10 +17,10 @@
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
-//! **What is kept (the core decides, not the person):** the headers of every message of every
-//! folder, the texts to read of the last [`store::BODY_RETENTION_DAYS`] days, the words of every
-//! text in the search index (older texts are fetched for it in the background, issue #136),
-//! attachments only when someone asks for them and only for [`ATTACHMENT_MAX_AGE`].
+//! **What is kept:** headers of every known message, independently indexed text, and reading
+//! bodies according to each account's cache policy (#263): headers only, the last
+//! [`store::BODY_RETENTION_DAYS`] days (default), or all offline. Attachments have a separate
+//! prefetch choice and 1–365 day retention. Draft texts are never pruned by cache cleanup.
 //!
 //! **Threads.** The store is synchronous. A [`store::MailStore`] is `Send` but not `Sync`: keep it
 //! in an `Arc<Mutex<…>>` and call it from async code through `tokio::task::spawn_blocking`, so a
@@ -51,6 +51,7 @@ pub mod sync;
 pub mod write;
 
 /// Fetched attachments are deleted after this long (task M2.5).
+#[cfg(test)]
 pub const ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The longest file name an attachment is stored under, in bytes.
@@ -203,12 +204,54 @@ impl AttachmentCache {
         self.store_with_prefix("", file_name, bytes)
     }
 
-    /// Stores an attachment fetched from `account` with a non-reversible account prefix, so the
-    /// cache inventory can attribute its size without storing a readable address in file names.
-    pub fn store_for_account(&self, account: &str, file_name: &str, bytes: &[u8]) -> Result<PathBuf, MailStoreError> {
-        self.store_with_prefix(&account_cache_prefix(account), file_name, bytes)
+    /// A stable cache slot for one MIME part. Repeating a prefetch or opening the attachment
+    /// again reuses the same file until retention has removed it.
+    pub fn store_for_part(
+        &self,
+        account: &str,
+        message: &str,
+        part: &str,
+        file_name: &str,
+        bytes: &[u8],
+    ) -> Result<PathBuf, MailStoreError> {
+        crate::clients::create_private_dir(&self.dir)?;
+        let digest = Sha256::digest(format!("{message}\0{part}").as_bytes());
+        let key: String = digest.iter().take(12).map(|byte| format!("{byte:02x}")).collect();
+        let folder = self.dir.join(format!("{}{key}", account_cache_prefix(account)));
+        if fs::symlink_metadata(&folder).is_ok_and(|meta| !meta.is_dir()) {
+            return Err(MailStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "attachment cache path is not a directory",
+            )));
+        }
+        crate::clients::create_private_dir(&folder)?;
+        let path = folder.join(safe_file_name(file_name));
+        if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+            return Ok(path);
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        use std::io::Write;
+        match options.open(&path) {
+            Ok(mut file) => file.write_all(bytes)?,
+            Err(err)
+                if err.kind() == io::ErrorKind::AlreadyExists
+                    && fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) =>
+            {
+                return Ok(path);
+            }
+            Err(err) => return Err(err.into()),
+        }
+        make_private(&path)?;
+        Ok(path)
     }
 
+    #[cfg(test)]
     fn store_with_prefix(&self, prefix: &str, file_name: &str, bytes: &[u8]) -> Result<PathBuf, MailStoreError> {
         use std::io::Write;
         crate::clients::create_private_dir(&self.dir)?;
@@ -272,11 +315,48 @@ impl AttachmentCache {
 
     /// Deletes what is older than `max_age` ([`ATTACHMENT_MAX_AGE`]); returns how many attachments
     /// went. Run it when the core starts and now and then. A missing folder is nothing to do.
+    #[cfg(test)]
     pub fn purge(&self, max_age: Duration) -> Result<usize, MailStoreError> {
         self.purge_at(SystemTime::now(), max_age)
     }
 
+    /// Remove account-tagged attachment files according to each account's chosen lifetime.
+    /// Old untagged entries retain the legacy one-day lifetime.
+    pub fn purge_with_retention(&self, days: &[(String, u32)]) -> Result<usize, MailStoreError> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(err.into()),
+        };
+        let prefixes: Vec<_> = days.iter().map(|(account, days)| (account_cache_prefix(account), *days)).collect();
+        let now = SystemTime::now();
+        let mut removed = 0;
+        for entry in entries {
+            let entry = entry?;
+            let meta = fs::symlink_metadata(entry.path())?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let lifetime = prefixes
+                .iter()
+                .find(|(prefix, _)| name.starts_with(prefix))
+                .map_or_else(|| if name.starts_with('a') && name.contains('-') { 365 } else { 1 }, |(_, days)| *days);
+            if now.duration_since(meta.modified()?).unwrap_or_default()
+                <= Duration::from_secs(u64::from(lifetime) * 86_400)
+            {
+                continue;
+            }
+            if meta.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+            removed += 1;
+        }
+        Ok(removed)
+    }
+
     /// [`purge`](Self::purge) as of `now` (tests).
+    #[cfg(test)]
     pub(crate) fn purge_at(&self, now: SystemTime, max_age: Duration) -> Result<usize, MailStoreError> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,

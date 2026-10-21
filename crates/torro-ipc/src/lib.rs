@@ -61,7 +61,8 @@ use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{
-    Delivery, IncompleteReason, MailAccountStats, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget,
+    Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate, MailCacheJob, MailCachePolicy, MailHighlight,
+    MailIndexProgress, MailSort, MailSource, MoveTarget,
 };
 use crate::tools::{FileInfo, PdfTemplateId, ToolInfo};
 
@@ -2034,6 +2035,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
+    #[serde(rename = "mail.get_cache_policy")]
+    GetMailCachePolicy { account: String },
+    #[serde(rename = "mail.set_cache_policy")]
+    SetMailCachePolicy { policy: MailCachePolicy },
+    #[serde(rename = "mail.preview_cache")]
+    PreviewMailCache { account: String, mode: crate::mail::MailCacheMode },
+    #[serde(rename = "mail.start_cache_job")]
+    StartMailCacheJob { account: String, action: crate::mail::MailCacheAction },
+    #[serde(rename = "mail.cache_job_status")]
+    MailCacheJobStatus { account: String },
+    #[serde(rename = "mail.control_cache_job")]
+    ControlMailCacheJob { account: String, id: String, resume: bool },
     /// Messages matching every filter given, newest first (or oldest first with `order`, or best
     /// match first with `sort: relevance`), a page at a time ([`Response::MailMessages`]), from the
     /// core's own index of every folder of every account in scope (issue #136): it works offline.
@@ -3250,6 +3263,15 @@ pub enum Response {
     /// Local inventory for accounts in reach ([`Request::MailAccountStats`]).
     MailAccountStats {
         accounts: Vec<MailAccountStats>,
+    },
+    MailCachePolicy {
+        policy: MailCachePolicy,
+    },
+    MailCacheEstimate {
+        estimate: MailCacheEstimate,
+    },
+    MailCacheJob {
+        job: Option<MailCacheJob>,
     },
     /// One page of messages ([`Request::SearchMail`]), in the order asked for (newest first
     /// without one). Everything in them is data

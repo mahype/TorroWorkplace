@@ -12,9 +12,9 @@
 //! (`Access::Read`), so this check is the one before the handler runs, also for an approved run
 //! (`Core::run_approved` ends in `handle_within` as well).
 //!
-//! **Cache first.** The store holds the headers of every message and the texts of the last
-//! [`BODY_RETENTION_DAYS`] days. A message without its text is fetched from the server with
-//! `BODY.PEEK[]` (never marked read) and its text kept with `MailStore::set_body`.
+//! **Cache first.** The store holds headers and reading texts according to the account's policy
+//! (default [`BODY_RETENTION_DAYS`] days). A missing text is fetched with `BODY.PEEK[]` (never
+//! marked read); the fetched result can be shown even in headers-only mode without retaining it.
 //!
 //! **HTML** (task M8.1): the store keeps the cleaned HTML part beside the text (`mime::read`
 //! cleans it). `mail.get_message` hands it out only with `include_html`; when the store has the
@@ -687,7 +687,12 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
         .store
         .run(move |store| {
             store.set_body(&id, &body)?;
-            store.message(&id)
+            let message = store.message(&id)?;
+            let policy = store.cache_policy()?;
+            if policy.mode != torro_ipc::mail::MailCacheMode::AllOffline {
+                store.prune_bodies_for(policy.mode, Utc::now(), usize::MAX)?;
+            }
+            Ok(message)
         })
         .await
         .map_err(store_failed)?
@@ -949,7 +954,9 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
     let bytes = attachment.bytes;
     let size = bytes.len() as u64;
     let account = located.account.clone();
-    let path = tokio::task::spawn_blocking(move || cache.store_for_account(&account, &name, &bytes))
+    let message = id.to_string();
+    let part = part.to_string();
+    let path = tokio::task::spawn_blocking(move || cache.store_for_part(&account, &message, &part, &name, &bytes))
         .await
         .map_err(|_| no_attachment_folder())?
         .map_err(store_failed)?;

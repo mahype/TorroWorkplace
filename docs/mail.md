@@ -138,9 +138,11 @@ immer sichtbare Abschnitt zum Zuordnen.
    Abschnitt „Ordner“.
 
 Was wir aus TorroMail außerdem **nicht** übernehmen: Regeln je Ordner für Agenten, den Schalter
-`per_folder`, eine eigene Cache-Stufe je Konto (der Kern entscheidet: Kopfzeilen von allem,
-Inhalte der letzten 90 Tage, Anhänge bei Bedarf), Lesestufen „nur Kopfzeilen / ganze Nachricht /
-mit Anhängen“ (für Agenten reicht Lesen ja/nein je Konto), Dock- und Menüleisten-Schalter.
+`per_folder`, Lesestufen „nur Kopfzeilen / ganze Nachricht / mit Anhängen“ für Agenten
+(für sie reicht Lesen ja/nein je Konto), Dock- und Menüleisten-Schalter. Seit #263
+ist die Cache-Strategie je Konto unter Mail-Einstellungen › Storage & index wählbar:
+nur Kopfzeilen, Mailtexte der letzten 90 Tage oder alle Mailtexte offline. Der Suchindex bleibt
+unabhängig vom Lesecache; Anhänge haben eigene Vorladeoption und Aufbewahrung.
 
 ## Architektur: Mail im Kern
 
@@ -220,6 +222,8 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
 | Suchen / Liste | Mail-Liste, Suche | `mail.search_messages` · Read | `mail_search_messages` |
 | Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
+| Bestand und lokaler Cache (#263) | Mail-Einstellungen › Accounts und Storage & index | `mail.account_stats`, `mail.get_cache_policy`, `mail.preview_cache` · Read; `mail.set_cache_policy` · Admin | entsprechende `mail_*`-Tools |
+| Cache und Index warten (#263) | Mail-Einstellungen › Storage & index | `mail.start_cache_job`, `mail.control_cache_job` · Write; `mail.cache_job_status` · Read | entsprechende `mail_*`-Tools |
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |

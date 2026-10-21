@@ -967,7 +967,7 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
   ist nach Abbruch/Neustart nachvollziehbar und lässt Maildaten und Regeln unverändert.
 
 ### M10.6 Cache-Strategie und Indexwartung im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M10.1 · **Dateien:** `crates/torro-ipc/src/{lib.rs,mail.rs,api.rs}`,
   `crates/torroworkplace/src/{core.rs,mcp.rs}`, `crates/torroworkplace/src/mail/{mod.rs,store.rs,service.rs,sync.rs,read.rs}`,
   `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/approvals.rs`, `crates/torroworkplace/src/audit.rs`,

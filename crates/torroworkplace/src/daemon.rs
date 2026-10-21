@@ -795,6 +795,12 @@ fn describe(request: &Request) -> String {
         Request::CreatePdf { .. } => "make a PDF".into(),
         Request::OpenFile { file } => format!("open file {file}"),
         Request::SaveFileAs { file, .. } => format!("save file {file} elsewhere"),
+        Request::GetMailCachePolicy { account } => format!("cache policy of {account}"),
+        Request::SetMailCachePolicy { policy } => format!("set cache policy of {}", policy.account),
+        Request::PreviewMailCache { account, .. } => format!("cache estimate of {account}"),
+        Request::StartMailCacheJob { account, .. } => format!("start cache job for {account}"),
+        Request::MailCacheJobStatus { account } => format!("cache job of {account}"),
+        Request::ControlMailCacheJob { account, .. } => format!("control cache job of {account}"),
     }
 }
 

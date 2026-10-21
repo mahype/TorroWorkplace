@@ -128,6 +128,8 @@ pub struct Data {
     pub accounts: Vec<AccountInfo>,
     /// Locally known mail inventory from `mail.account_stats`.
     pub mail_stats: Vec<torro_ipc::mail::MailAccountStats>,
+    pub mail_cache_policies: Vec<torro_ipc::mail::MailCachePolicy>,
+    pub mail_cache_jobs: Vec<torro_ipc::mail::MailCacheJob>,
     /// The calendars the suite shows (`calendar.list_calendars`): what the rights editor offers
     /// under "Calendars" ([`rights::Known`]).
     pub calendars: Vec<Collection>,
@@ -204,6 +206,14 @@ impl Data {
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
             Response::MailAccountStats { accounts } => self.mail_stats = accounts,
+            Response::MailCachePolicy { policy } => {
+                self.mail_cache_policies.retain(|held| held.account != policy.account);
+                self.mail_cache_policies.push(policy);
+            }
+            Response::MailCacheJob { job: Some(job) } => {
+                self.mail_cache_jobs.retain(|held| held.account != job.account);
+                self.mail_cache_jobs.push(job);
+            }
             // Both `calendar.list_calendars` and `tasks.list_lists` answer with collections, and
             // the answer does not say which was asked. Each load starts empty ([`load`]), so the
             // answers are merged: a collection with events is a calendar, one with todos a list,
@@ -244,6 +254,12 @@ impl Data {
     /// what the first round brought.
     pub fn follow_up(&self) -> Vec<Request> {
         let mut wanted: Vec<Request> = assistant::models_request(self).into_iter().collect();
+        if !self.mail_stats.is_empty() {
+            for account in &self.mail_stats {
+                wanted.push(Request::GetMailCachePolicy { account: account.account.clone() });
+                wanted.push(Request::MailCacheJobStatus { account: account.account.clone() });
+            }
+        }
         // Only a load that wants the assignments pays for asking every AI server: the control
         // centre keeps the one request it always had.
         if self.assignments.is_empty() {

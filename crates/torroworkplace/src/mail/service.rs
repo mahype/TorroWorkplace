@@ -60,7 +60,10 @@ use tokio::time::Instant;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::i18n::{tr, trf};
-use torro_ipc::mail::{IndexState, MailIndexProgress};
+use torro_ipc::mail::{
+    IndexState, MailCacheAction, MailCacheEstimate, MailCacheJob, MailCacheJobState, MailCacheMode, MailCachePolicy,
+    MailIndexProgress,
+};
 use torro_ipc::{AccountInfo, FolderChoice, MailView, OpenRoleView, Response, ServiceState};
 use torro_mail::{Endpoint, MailAccountConfig, MailSettings, Role};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
@@ -71,7 +74,7 @@ use torro_pim_caldav::discover::is_public;
 
 use super::send::Outbox;
 use super::store::MailStore;
-use super::{ATTACHMENT_MAX_AGE, AttachmentCache, MailDirs, MailStoreError, send, sync};
+use super::{AttachmentCache, MailDirs, MailStoreError, send, sync};
 use crate::account::github::{SystemTokens, TokenStore};
 use crate::account::keychain;
 use crate::inbox::{AccountCheck, Health, Trouble};
@@ -602,6 +605,7 @@ pub(crate) struct Mailbox {
     /// `None` when the account's mail is switched off, or its store could not be opened (then
     /// `status` says why).
     store: Option<SharedStore>,
+    attachment_cache: Option<AttachmentCache>,
     status: StdMutex<Status>,
     /// The command connection; `None` until the first command or after one failed.
     command: Arc<Mutex<Option<Session>>>,
@@ -644,6 +648,10 @@ impl Mailbox {
             (None, false) => Err(MailError::NotFound),
             (None, true) => Err(MailError::Store(MailStoreError::Io(io::Error::other("the mail store is not open")))),
         }
+    }
+
+    pub(crate) fn attachment_cache(&self) -> Option<AttachmentCache> {
+        self.attachment_cache.clone()
     }
 
     /// `reach` may see this account: the suite always, a client when its rights name it.
@@ -955,6 +963,19 @@ pub struct MailService {
     /// Mail is turned off (task W.2): the accounts and their stores stay readable, but no worker
     /// fetches or indexes in the background.
     paused: AtomicBool,
+    cache_workers: std::sync::Mutex<std::collections::HashSet<String>>,
+    cache_jobs_lock: Mutex<()>,
+}
+
+struct CacheWorkerGuard {
+    service: Arc<MailService>,
+    account: String,
+}
+
+impl Drop for CacheWorkerGuard {
+    fn drop(&mut self) {
+        self.service.cache_workers.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.account);
+    }
 }
 
 impl MailService {
@@ -991,6 +1012,8 @@ impl MailService {
             calendars: None,
             outbox: tokio::sync::OnceCell::new(),
             paused: AtomicBool::new(false),
+            cache_workers: std::sync::Mutex::new(std::collections::HashSet::new()),
+            cache_jobs_lock: Mutex::new(()),
         }
     }
 
@@ -1040,8 +1063,14 @@ impl MailService {
             let cache = AttachmentCache::new(&dirs);
             loop {
                 service.remove_unknown_stores(&dirs).await;
+                let mut retention = Vec::new();
+                for (account, store) in service.stores(Reach::Suite).await {
+                    if let Ok(policy) = store.run(|store| store.cache_policy()).await {
+                        retention.push((account, policy.attachment_retention_days));
+                    }
+                }
                 let purge = cache.clone();
-                match tokio::task::spawn_blocking(move || purge.purge(ATTACHMENT_MAX_AGE)).await {
+                match tokio::task::spawn_blocking(move || purge.purge_with_retention(&retention)).await {
                     Ok(Ok(_)) => {}
                     Ok(Err(err)) => eprintln!("torroworkplace: cannot clean up mail attachments: {err}"),
                     Err(err) => eprintln!("torroworkplace: cannot clean up mail attachments: {err}"),
@@ -1158,6 +1187,7 @@ impl MailService {
             settings,
             password,
             store,
+            attachment_cache: self.dirs.as_ref().map(AttachmentCache::new),
             status: StdMutex::new(status),
             command: Arc::new(Mutex::new(None)),
             sync_lock: Mutex::new(()),
@@ -1487,6 +1517,254 @@ impl MailService {
     /// [`MailError::NotFound`] for an unknown account or one whose mail is off.
     pub async fn store(&self, account: &str) -> Result<SharedStore, MailError> {
         self.mailbox_of(account).await?.store()
+    }
+
+    pub async fn cache_policy(&self, account: &str) -> Result<MailCachePolicy, MailError> {
+        Ok(self.store(account).await?.run(|store| store.cache_policy()).await?)
+    }
+
+    pub async fn cache_estimate(&self, account: &str, mode: MailCacheMode) -> Result<MailCacheEstimate, MailError> {
+        Ok(self.store(account).await?.run(move |store| store.cache_estimate(mode)).await?)
+    }
+
+    pub async fn set_cache_policy(&self, policy: MailCachePolicy) -> Result<MailCachePolicy, MailError> {
+        if policy.attachment_retention_days == 0 || policy.attachment_retention_days > 365 {
+            return Err(MailError::Store(MailStoreError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "attachment retention must be 1–365 days",
+            ))));
+        }
+        let store = self.store(&policy.account).await?;
+        let saved = policy.clone();
+        store.run(move |store| store.set_cache_policy(&saved)).await?;
+        Ok(policy)
+    }
+
+    pub async fn cache_job_status(&self, account: &str) -> Result<Option<MailCacheJob>, MailError> {
+        let store = self.store(account).await?;
+        let mut job = store.run(|store| store.cache_job()).await?;
+        if let Some(held) = &mut job
+            && held.state == MailCacheJobState::Running
+        {
+            let active = self.cache_workers.lock().unwrap_or_else(PoisonError::into_inner).contains(account);
+            if !active {
+                held.state = MailCacheJobState::Paused;
+                let saved = held.clone();
+                store.run(move |store| store.set_cache_job(&saved)).await?;
+            }
+        }
+        Ok(job)
+    }
+
+    pub async fn start_cache_job(
+        self: &Arc<Self>,
+        account: &str,
+        action: MailCacheAction,
+    ) -> Result<MailCacheJob, MailError> {
+        let _one = self.cache_jobs_lock.lock().await;
+        let store = self.store(account).await?;
+        if let Some(existing) = self.cache_job_status(account).await?
+            && existing.state == MailCacheJobState::Running
+        {
+            return Ok(existing);
+        }
+        let policy = store.run(|store| store.cache_policy()).await?;
+        let estimate = store.run(move |store| store.cache_estimate(policy.mode)).await?;
+        let total = match action {
+            MailCacheAction::ApplyPolicy => estimate.bodies_to_fetch + estimate.bodies_to_remove,
+            MailCacheAction::FetchMissingBodies => estimate.bodies_to_fetch,
+            MailCacheAction::FetchAttachments => store.run(|store| store.attachment_message_count()).await?,
+            MailCacheAction::CleanCache => estimate.bodies_to_remove,
+            MailCacheAction::RebuildIndex => store.run(|store| store.reset_index()).await?,
+        };
+        let estimated_bytes = match action {
+            MailCacheAction::ApplyPolicy => estimate.estimated_download_bytes + estimate.estimated_reclaim_bytes,
+            MailCacheAction::FetchMissingBodies => estimate.estimated_download_bytes,
+            MailCacheAction::FetchAttachments => total.saturating_mul(128 * 1024),
+            MailCacheAction::CleanCache => estimate.estimated_reclaim_bytes,
+            MailCacheAction::RebuildIndex => estimate.current_bodies.saturating_mul(16 * 1024),
+        };
+        let job = MailCacheJob {
+            id: format!("cache:{}", super::random_hex(12)?),
+            account: account.to_string(),
+            action,
+            state: MailCacheJobState::Running,
+            total,
+            processed: 0,
+            cursor: None,
+            estimated_bytes,
+            error: None,
+        };
+        let saved = job.clone();
+        store.run(move |store| store.set_cache_job(&saved)).await?;
+        self.spawn_cache_worker(account);
+        Ok(job)
+    }
+
+    pub async fn control_cache_job(
+        self: &Arc<Self>,
+        account: &str,
+        id: &str,
+        resume: bool,
+    ) -> Result<Option<MailCacheJob>, MailError> {
+        let _one = self.cache_jobs_lock.lock().await;
+        let store = self.store(account).await?;
+        let Some(mut job) = self.cache_job_status(account).await? else { return Ok(None) };
+        if job.id != id {
+            return Ok(None);
+        }
+        if resume && job.state != MailCacheJobState::Complete {
+            job.state = MailCacheJobState::Running;
+            job.error = None;
+        } else if !resume && job.state == MailCacheJobState::Running {
+            job.state = MailCacheJobState::Paused;
+        }
+        let saved = job.clone();
+        store.run(move |store| store.set_cache_job(&saved)).await?;
+        if resume && job.state == MailCacheJobState::Running {
+            self.spawn_cache_worker(account);
+        }
+        Ok(Some(job))
+    }
+
+    fn spawn_cache_worker(self: &Arc<Self>, account: &str) {
+        let mut active = self.cache_workers.lock().unwrap_or_else(PoisonError::into_inner);
+        if !active.insert(account.to_string()) {
+            return;
+        }
+        let service = Arc::clone(self);
+        let account = account.to_string();
+        tokio::spawn(async move {
+            let guard = CacheWorkerGuard { service: Arc::clone(&service), account: account.clone() };
+            service.run_cache_job(&account).await;
+            drop(guard);
+            if let Ok(store) = service.store(&account).await
+                && let Ok(Some(job)) = store.run(|store| store.cache_job()).await
+                && job.state == MailCacheJobState::Running
+            {
+                service.spawn_cache_worker(&account);
+            }
+        });
+    }
+
+    async fn run_cache_job(&self, account: &str) {
+        let Ok(mailbox) = self.mailbox_of(account).await else { return };
+        let Ok(store) = mailbox.store() else { return };
+        loop {
+            let Ok(Some(mut job)) = store.run(|store| store.cache_job()).await else { return };
+            if job.state != MailCacheJobState::Running {
+                return;
+            }
+            let original = job.clone();
+            let result: Result<bool, MailError> = match job.action {
+                MailCacheAction::ApplyPolicy => {
+                    let mode = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy.mode,
+                        Err(err) => {
+                            self.fail_cache_job(&store, original, job, err.into()).await;
+                            return;
+                        }
+                    };
+                    match store.run(move |store| store.prune_bodies_for(mode, Utc::now(), 100)).await {
+                        Ok(count) if count > 0 => {
+                            job.processed += count as u64;
+                            Ok(true)
+                        }
+                        Ok(_) => match store.run(move |store| store.cached_body_missing(job.cursor, mode, 1)).await {
+                            Ok(rows) => match rows.into_iter().next() {
+                                Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
+                                    job.cursor = Some(cursor);
+                                    job.processed += 1;
+                                    true
+                                }),
+                                None => Ok(false),
+                            },
+                            Err(err) => Err(err.into()),
+                        },
+                        Err(err) => Err(err.into()),
+                    }
+                }
+                MailCacheAction::CleanCache => {
+                    let mode = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy.mode,
+                        Err(err) => {
+                            self.fail_cache_job(&store, original, job, err.into()).await;
+                            return;
+                        }
+                    };
+                    store
+                        .run(move |store| store.prune_bodies_for(mode, Utc::now(), 100))
+                        .await
+                        .map(|count| {
+                            job.processed += count as u64;
+                            count > 0
+                        })
+                        .map_err(Into::into)
+                }
+                MailCacheAction::RebuildIndex => {
+                    sync::backfill(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await.map(|count| {
+                        job.processed += count as u64;
+                        count > 0
+                    })
+                }
+                MailCacheAction::FetchMissingBodies => {
+                    let mode = match store.run(|store| store.cache_policy()).await {
+                        Ok(policy) => policy.mode,
+                        Err(err) => {
+                            self.fail_cache_job(&store, original, job, err.into()).await;
+                            return;
+                        }
+                    };
+                    match store.run(move |store| store.cached_body_missing(job.cursor, mode, 1)).await {
+                        Ok(rows) => match rows.into_iter().next() {
+                            Some((cursor, place)) => sync::cache_body(&mailbox, &place).await.map(|_| {
+                                job.cursor = Some(cursor);
+                                job.processed += 1;
+                                true
+                            }),
+                            None => Ok(false),
+                        },
+                        Err(err) => Err(err.into()),
+                    }
+                }
+                MailCacheAction::FetchAttachments => {
+                    match store.run(move |store| store.attachment_messages(job.cursor, 1)).await {
+                        Ok(rows) => match rows.into_iter().next() {
+                            Some((cursor, place)) => {
+                                sync::prefetch_message_attachments(&mailbox, &place).await.map(|_| {
+                                    job.cursor = Some(cursor);
+                                    job.processed += 1;
+                                    true
+                                })
+                            }
+                            None => Ok(false),
+                        },
+                        Err(err) => Err(err.into()),
+                    }
+                }
+            };
+            match result {
+                Ok(more) => {
+                    if !more {
+                        job.state = MailCacheJobState::Complete;
+                    }
+                    let _ = store.run(move |store| store.change_cache_job(&original, &job)).await;
+                    if !more {
+                        return;
+                    }
+                }
+                Err(err) => {
+                    self.fail_cache_job(&store, original, job, err).await;
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn fail_cache_job(&self, store: &SharedStore, original: MailCacheJob, mut job: MailCacheJob, err: MailError) {
+        job.state = MailCacheJobState::Failed;
+        job.error = Some(err.message());
+        let _ = store.run(move |store| store.change_cache_job(&original, &job)).await;
     }
 
     /// Last sync and problem for a previously scoped mail account; never exposes credentials.

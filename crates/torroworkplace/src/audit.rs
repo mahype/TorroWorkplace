@@ -407,6 +407,12 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::OpenFile { file } | Request::SaveFileAs { file, .. } => vec![random("file", file)],
         mail @ (Request::MailFolders { .. }
         | Request::MailAccountStats { .. }
+        | Request::GetMailCachePolicy { .. }
+        | Request::SetMailCachePolicy { .. }
+        | Request::PreviewMailCache { .. }
+        | Request::StartMailCacheJob { .. }
+        | Request::MailCacheJobStatus { .. }
+        | Request::ControlMailCacheJob { .. }
         | Request::SearchMail { .. }
         | Request::MailIndexStatus { .. }
         | Request::GetMail { .. }

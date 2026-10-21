@@ -26,7 +26,10 @@ use torro_ipc::inbox::{
     CategoryClearAccount, CategoryClearJob, CategoryClearPreview, CategoryClearProgress, CategoryJob,
     CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
 };
-use torro_ipc::mail::{MailAccountStats, MailFolderStats};
+use torro_ipc::mail::{
+    MailAccountStats, MailCacheAction, MailCacheEstimate, MailCacheJob, MailCacheJobState, MailCacheMode,
+    MailCachePolicy, MailFolderStats,
+};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{
     AccountInfo, ClientInfo, FolderChoice, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response,
@@ -56,6 +59,8 @@ pub struct Demo {
     sent: Mutex<Vec<Request>>,
     category_job: Mutex<Option<CategoryJob>>,
     category_clear_job: Mutex<Option<CategoryClearJob>>,
+    cache_policy: Mutex<Option<MailCachePolicy>>,
+    cache_job: Mutex<Option<MailCacheJob>>,
 }
 
 impl Demo {
@@ -89,6 +94,8 @@ impl Demo {
             sent: Mutex::new(Vec::new()),
             category_job: Mutex::new(None),
             category_clear_job: Mutex::new(None),
+            cache_policy: Mutex::new(None),
+            cache_job: Mutex::new(None),
         }
     }
 
@@ -356,6 +363,10 @@ impl Demo {
             oldest_known: oldest,
             newest_known: newest,
             cached_bodies: 11_000,
+            oldest_cached_body: Utc.with_ymd_and_hms(2026, 7, 23, 8, 0, 0).single(),
+            body_cache_bytes: 440_000_000,
+            search_index_bytes: Some(140_000_000),
+            last_index_run: newest,
             indexed_full: 21_000,
             indexed_partial_or_unverified: 2_800,
             text_unavailable: 300,
@@ -795,6 +806,68 @@ impl Backend for Demo {
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
             Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
+            Request::GetMailCachePolicy { account } => Response::MailCachePolicy {
+                policy: self.cache_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(
+                    MailCachePolicy {
+                        account: account.clone(),
+                        mode: MailCacheMode::Recent90Days,
+                        prefetch_attachments: false,
+                        attachment_retention_days: 1,
+                    },
+                ),
+            },
+            Request::SetMailCachePolicy { policy } => {
+                *self.cache_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(policy.clone());
+                self.note(request.clone());
+                Response::MailCachePolicy { policy: policy.clone() }
+            }
+            Request::PreviewMailCache { account, mode } => Response::MailCacheEstimate {
+                estimate: MailCacheEstimate {
+                    account: account.clone(),
+                    current_bodies: 11_000,
+                    bodies_to_fetch: match mode {
+                        MailCacheMode::HeadersOnly => 0,
+                        MailCacheMode::Recent90Days => 800,
+                        MailCacheMode::AllOffline => 13_813,
+                    },
+                    bodies_to_remove: match mode {
+                        MailCacheMode::HeadersOnly => 11_000,
+                        MailCacheMode::Recent90Days => 4_000,
+                        MailCacheMode::AllOffline => 0,
+                    },
+                    estimated_download_bytes: 210_000_000,
+                    estimated_reclaim_bytes: 160_000_000,
+                },
+            },
+            Request::StartMailCacheJob { account, action } => {
+                let job = MailCacheJob {
+                    id: "cache:demo".into(),
+                    account: account.clone(),
+                    action: *action,
+                    state: MailCacheJobState::Running,
+                    total: if *action == MailCacheAction::CleanCache { 4_000 } else { 13_813 },
+                    processed: 411,
+                    cursor: None,
+                    estimated_bytes: 210_000_000,
+                    error: None,
+                };
+                *self.cache_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job.clone());
+                self.note(request);
+                Response::MailCacheJob { job: Some(job) }
+            }
+            Request::MailCacheJobStatus { .. } => Response::MailCacheJob {
+                job: self.cache_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            },
+            Request::ControlMailCacheJob { resume, .. } => {
+                let mut job = self.cache_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(job) = job.as_mut() {
+                    job.state = if *resume { MailCacheJobState::Running } else { MailCacheJobState::Paused };
+                }
+                let answer = Response::MailCacheJob { job: job.clone() };
+                drop(job);
+                self.note(request);
+                answer
+            }
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
             Request::TaskCollections => Response::Collections { collections: self.collections(false) },
             Request::ListSources => Response::Sources { sources: self.sources() },

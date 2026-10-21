@@ -1232,6 +1232,12 @@ impl PimService {
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
             | Request::SendDraft { .. } => return None,
+            Request::GetMailCachePolicy { .. }
+            | Request::SetMailCachePolicy { .. }
+            | Request::PreviewMailCache { .. }
+            | Request::StartMailCacheJob { .. }
+            | Request::MailCacheJobStatus { .. }
+            | Request::ControlMailCacheJob { .. } => return None,
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. }
             | Request::AiModels { .. }

@@ -1529,6 +1529,12 @@ impl Request {
             Request::SetModelEnabled { .. } => &SET_MODEL_ENABLED,
             Request::MailFolders { .. } => &LIST_FOLDERS,
             Request::MailAccountStats { .. } => &ACCOUNT_STATS,
+            Request::GetMailCachePolicy { .. } => &GET_CACHE_POLICY,
+            Request::SetMailCachePolicy { .. } => &SET_CACHE_POLICY,
+            Request::PreviewMailCache { .. } => &PREVIEW_CACHE,
+            Request::StartMailCacheJob { .. } => &START_CACHE_JOB,
+            Request::MailCacheJobStatus { .. } => &CACHE_JOB_STATUS,
+            Request::ControlMailCacheJob { .. } => &CONTROL_CACHE_JOB,
             Request::SearchMail { .. } => &SEARCH_MESSAGES,
             Request::MailIndexStatus { .. } => &INDEX_STATUS,
             Request::GetMail { .. } => &GET_MESSAGE,
@@ -3381,6 +3387,49 @@ static ACCOUNT_STATS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. These are local counts, not verified server totals. Changes nothing.",
+};
+
+static GET_CACHE_POLICY: Command = Command {
+    name: "mail.get_cache_policy",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention.",
+};
+static SET_CACHE_POLICY: Command = Command {
+    name: "mail.set_cache_policy",
+    area: Area::Mail,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text.",
+};
+static PREVIEW_CACHE: Command = Command {
+    name: "mail.preview_cache",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything.",
+};
+static START_CACHE_JOB: Command = Command {
+    name: "mail.start_cache_job",
+    area: Area::Mail,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Starts a resumable cache or index maintenance job for one account. A job has progress and never deletes server mail or drafts.",
+};
+static CACHE_JOB_STATUS: Command = Command {
+    name: "mail.cache_job_status",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Reads the durable cache maintenance job of one account with progress and error.",
+};
+static CONTROL_CACHE_JOB: Command = Command {
+    name: "mail.control_cache_job",
+    area: Area::Mail,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Pauses or resumes a cache maintenance job by id.",
 };
 
 static SEARCH_MESSAGES: Command = Command {
