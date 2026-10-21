@@ -14152,8 +14152,8 @@ mod tests {
         for (words, ids) in [
             (vec!["--view", "hub"], vec!["notifications", "sources", "rules"]),
             (vec!["--view", "notifications"], vec!["notifications", "sources", "rules"]),
-            // Task E12.10 adds "Categorization" to the mail window.
-            (vec!["--view", "mail"], vec!["accounts", "reading", "categorization"]),
+            // Mail settings include categorization and storage controls.
+            (vec!["--view", "mail"], vec!["accounts", "reading", "categorization", "storage"]),
         ] {
             let launch = Launch::parse(&args(&words)).expect("valid parameters");
             let found: Vec<&str> = launch.kind.settings_sections().iter().map(|section| section.id).collect();
