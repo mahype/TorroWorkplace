@@ -123,6 +123,14 @@ fn colours(mode: Mode, p: &Palette, problems: &mut Vec<DesignError>) {
         }
     }
 
+    // Unread mail uses the same dot on rows and cards, including hover and selection surfaces.
+    for (name, surface) in [("panel", p.panel), ("raised", p.raised), ("hover", p.hover), ("selected", p.selected)] {
+        let ratio = p.unread.contrast(surface);
+        if ratio < CONTROL_MIN {
+            problems.push(DesignError::ControlContrast { fg: key("unread"), on: key(name), ratio });
+        }
+    }
+
     if !chosen_edge_stands_out(p) {
         problems.push(DesignError::ChosenEdge { mode });
     }
@@ -375,6 +383,33 @@ mod tests {
                 assert!(worst >= floor - 0.05, "{mode}: {worst:.2} below {floor}");
             }
         }
+    }
+
+    #[test]
+    fn unread_blue_stands_out_on_every_mail_surface() {
+        let scheme = ColorScheme::standard();
+        for mode in [Mode::Dark, Mode::Light] {
+            let p = scheme.colors.get(mode);
+            for (name, surface) in
+                [("panel", p.panel), ("raised", p.raised), ("hover", p.hover), ("selected", p.selected)]
+            {
+                assert!(p.unread.contrast(surface) >= 3.0, "{mode}: unread on {name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_faint_unread_colour_is_refused_on_every_mail_surface() {
+        let mut scheme = ColorScheme::standard();
+        scheme.colors.dark.unread = Rgba::hex(0x222222);
+        let surfaces: Vec<String> = check(&scheme)
+            .into_iter()
+            .filter_map(|problem| match problem {
+                DesignError::ControlContrast { fg, on, .. } if fg == "colors.dark.unread" => Some(on),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(surfaces, ["colors.dark.panel", "colors.dark.raised", "colors.dark.hover", "colors.dark.selected"]);
     }
 
     #[test]

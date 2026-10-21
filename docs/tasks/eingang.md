@@ -3812,10 +3812,14 @@ E16.1 semantische Farbe ── E16.2 Mail-Zeilen und -Karten
 ```
 
 ### E16.1 Eigenen Farbwert für ungelesene Mail einführen
-- [ ] erledigt
+- [x] erledigt (2026-10-21): `unread` in Kern, GUI und Paketspezifikation; Standardwerte und
+  Kontrastregel für Zeilen und Karten. Alle gelieferten Farbschemata gültig. Die gezielten Design-
+  und GUI-Theme-Tests sowie Workspace-Clippy bestehen; die vollständigen Workspace-Tests treffen
+  auf bereits in `origin/main` vorhandene Fehler in der Übersetzungstabelle und im API-Katalog.
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
   `crates/torro-core/src/design/{scheme,rules}.rs`, `crates/torro-gui/src/theme.rs`,
-  `color-schemes/*/color-scheme.toml` (nur wo nötig), `docs/design-pakete.md`
+  `crates/torro-gui/src/design/legacy.rs`, `color-schemes/*/color-scheme.toml` (nur wo nötig),
+  `docs/design-pakete.md`
 - `Palette::unread` als eigenständigen blauen Statuswert in Kern und GUI einführen; Standardwerte
   `#66A3FF` (dunkel) und `#2563D8` (hell) festlegen. `scheme::PALETTE_KEYS` und `Palette::slot_mut` erlauben einen
   optionalen Paketwert; ohne ihn gilt der Standardwert. Kalender-, Diagramm-, Kategorie-, Fokus-
