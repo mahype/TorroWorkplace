@@ -181,6 +181,9 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Neu einordnen lassen | Knopf im Leser | `inbox.classify_item` · Write | `inbox_classify_item` |
 | Stand der Kategorisierung | Einstellungen › Categorization | `inbox.get_categorization` · Read | `inbox_get_categorization` |
 | Altbestand nachrechnen, abbrechen | Einstellungen › Categorization | `inbox.catch_up_categories` · Admin (bis zu 500 Modellaufrufe je Konto) | `inbox_catch_up_categories` |
+| Beliebigen Umfang zählen | Einstellungen › Categorization | `inbox.preview_category_job` · Read; alle lokal bekannten Mails, gelesene eingeschlossen | `inbox_preview_category_job` |
+| Sortierauftrag starten und verfolgen | Einstellungen › Categorization | `inbox.start_category_job` · Write, `inbox.get_category_job` · Read | `inbox_start_category_job`, `inbox_get_category_job` |
+| Auftrag pausieren, fortsetzen, abbrechen | Einstellungen › Categorization | `inbox.control_category_job` · Write | `inbox_control_category_job` |
 | Entscheidermodelle anbieten | Einstellungen › Categorization | `ai.list_models` um das Feld `decision` erweitert · Read | vorhanden |
 | Modell je Funktion lesen | Einstellungen › Categorization | `ai.list_assignments` · Read | `ai_list_assignments` |
 | Modell je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |

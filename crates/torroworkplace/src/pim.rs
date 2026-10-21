@@ -1045,6 +1045,10 @@ impl PimService {
             | Request::ClassifyItem { .. }
             | Request::GetCategorization
             | Request::CatchUpCategories { .. }
+            | Request::PreviewCategoryJob { .. }
+            | Request::StartCategoryJob { .. }
+            | Request::GetCategoryJob { .. }
+            | Request::ControlCategoryJob { .. }
             | Request::CreateCategory { .. }
             | Request::UpdateCategory { .. }
             | Request::RemoveCategory { .. }

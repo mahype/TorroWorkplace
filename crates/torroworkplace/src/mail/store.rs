@@ -45,6 +45,7 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
+use torro_ipc::inbox::{CategoryJobPreview, CategoryJobScope};
 use torro_ipc::mail::{MailAccountStats, MailFolderStats};
 use torro_mail::{
     AttachmentInfo, Category, CategorySource, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory,
@@ -154,6 +155,25 @@ const NO_TEXT: i64 = 2;
 const FLAG_SEEN: i64 = 1;
 const FLAG_FLAGGED: i64 = 2;
 const FLAG_ANSWERED: i64 = 4;
+
+/// Bound parameters for a selected job scope. Every folder ID is a value, never SQL syntax.
+fn category_job_filter(scope: &CategoryJobScope) -> (String, Vec<Value>) {
+    let mut conditions = vec!["1 = 1".to_string()];
+    let mut values = Vec::new();
+    if !scope.folders.is_empty() {
+        conditions.push(format!("folder_id IN ({})", vec!["?"; scope.folders.len()].join(", ")));
+        values.extend(scope.folders.iter().cloned().map(Value::Text));
+    }
+    if let Some(since) = scope.since {
+        conditions.push("date >= ?".to_string());
+        values.push(Value::Integer(since.timestamp()));
+    }
+    if let Some(before) = scope.before {
+        conditions.push("date < ?".to_string());
+        values.push(Value::Integer(before.timestamp()));
+    }
+    (conditions.join(" AND "), values)
+}
 
 const SCHEMA_V1: &str = "
 CREATE TABLE folders (
@@ -853,6 +873,91 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
+    /// Commit a job's decision only if the category still matches the value read before the
+    /// model call. A person's or rule's concurrent change therefore wins, including when the
+    /// model took a long time to answer.
+    pub fn set_category_if_unchanged(
+        &self,
+        id: &str,
+        expected: Option<MailCategory>,
+        category: MailCategory,
+    ) -> Result<bool, MailStoreError> {
+        let expected_key = expected.map(|held| held.category.key());
+        let expected_source = expected.map(|held| match held.source {
+            CategorySource::Rule => "rule",
+            CategorySource::Model => "model",
+            CategorySource::Person => "person",
+        });
+        let source = match category.source {
+            CategorySource::Rule => "rule",
+            CategorySource::Model => "model",
+            CategorySource::Person => "person",
+        };
+        let changed = self.db.execute(
+            "UPDATE messages SET category = ?2, category_source = ?3, category_confidence = ?4
+             WHERE id = ?1 AND category IS ?5 AND category_source IS ?6
+             AND (category_source IS NULL OR category_source = 'model')",
+            params![
+                id,
+                category.category.key(),
+                source,
+                category.confidence.map(i64::from),
+                expected_key,
+                expected_source
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Counts and freezes a user-selected categorization scope. Empty folders mean all folders;
+    /// account filtering is performed by the service before this store is asked.
+    pub fn category_job_preview(&self, scope: &CategoryJobScope) -> Result<(CategoryJobPreview, i64), MailStoreError> {
+        let (where_sql, values) = category_job_filter(scope);
+        let sql = format!(
+            "SELECT count(*), coalesce(sum(category IS NULL), 0),
+             coalesce(sum(category_source = 'model'), 0),
+             coalesce(sum(category IS NOT NULL AND (category_source IS NULL OR category_source <> 'model')), 0)
+             FROM messages WHERE {where_sql}"
+        );
+        let (total, unclassified, automatic, protected): (i64, i64, i64, i64) =
+            self.db.query_row(&sql, params_from_iter(values), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+        let max_sequence: i64 =
+            self.db.query_row("SELECT coalesce(max(seq), 0) FROM messages", [], |row| row.get(0))?;
+        let preview = CategoryJobPreview {
+            total: total.max(0) as u64,
+            unclassified: unclassified.max(0) as u64,
+            automatic: automatic.max(0) as u64,
+            protected: protected.max(0) as u64,
+            eligible: (unclassified + if scope.again { automatic } else { 0 }).max(0) as u64,
+            request_scope: None,
+        };
+        Ok((preview, max_sequence))
+    }
+
+    /// The next small batch after `cursor`, bounded by the store's sequence when the job began.
+    pub fn category_job_batch(
+        &self,
+        scope: &CategoryJobScope,
+        cursor: i64,
+        max_sequence: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, String)>, MailStoreError> {
+        let (filter, mut values) = category_job_filter(scope);
+        let predicate =
+            if scope.again { "(category IS NULL OR category_source = 'model')" } else { "category IS NULL" };
+        values.push(Value::Integer(cursor));
+        values.push(Value::Integer(max_sequence));
+        values.push(Value::Integer(i64::from(limit)));
+        let sql = format!(
+            "SELECT seq, id FROM messages WHERE {filter} AND {predicate} AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(values), |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// How much mail of any folder is of `category` (task E15.2): what removing the category
     /// would move.
     pub fn count_category(&self, category: Category) -> Result<u64, MailStoreError> {
@@ -1484,10 +1589,7 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
                 .collect::<Result<_, _>>()?
         };
         for (seq, partial) in known {
-            tx.execute(
-                "UPDATE messages SET index_partial_or_unverified = ?2 WHERE seq = ?1",
-                params![seq, partial],
-            )?;
+            tx.execute("UPDATE messages SET index_partial_or_unverified = ?2 WHERE seq = ?1", params![seq, partial])?;
         }
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;

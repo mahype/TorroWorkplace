@@ -1602,6 +1602,53 @@ impl MailService {
         Ok(progress)
     }
 
+    /// Count the selected locally known mail in each reachable account and capture a high-water
+    /// sequence for each. The caller checks that explicitly named accounts are in reach.
+    pub async fn category_job_preview(
+        &self,
+        reach: Reach<'_>,
+        scope: &torro_ipc::inbox::CategoryJobScope,
+    ) -> Result<Vec<(String, torro_ipc::inbox::CategoryJobPreview, i64)>, MailError> {
+        let mut result = Vec::new();
+        for mailbox in self.reachable(reach, None).await {
+            if !scope.accounts.is_empty() && !scope.accounts.iter().any(|id| id == mailbox.id()) {
+                continue;
+            }
+            let store = mailbox.store()?;
+            let selected = scope.clone();
+            let (preview, maximum) = store.run(move |store| store.category_job_preview(&selected)).await?;
+            result.push((mailbox.id().to_string(), preview, maximum));
+        }
+        Ok(result)
+    }
+
+    /// Up to `limit` eligible mail IDs of one account, after its durable cursor.
+    pub async fn category_job_batch(
+        &self,
+        account: &str,
+        scope: &torro_ipc::inbox::CategoryJobScope,
+        cursor: i64,
+        maximum: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, String)>, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let selected = scope.clone();
+        Ok(store.run(move |store| store.category_job_batch(&selected, cursor, maximum, limit)).await?)
+    }
+
+    /// Write an automatic answer only while the mail still has the category the job read.
+    pub async fn set_category_if_unchanged(
+        &self,
+        account: &str,
+        message: &str,
+        expected: Option<torro_mail::MailCategory>,
+        category: torro_mail::MailCategory,
+    ) -> Result<bool, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        let id = message.to_string();
+        Ok(store.run(move |store| store.set_category_if_unchanged(&id, expected, category)).await?)
+    }
+
     /// Keeps `category` with every message of `messages` in the account `account` (task E12.4);
     /// `None` takes it away. Messages the store does not know are skipped.
     pub async fn set_category(

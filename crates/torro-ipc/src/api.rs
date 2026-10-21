@@ -1492,6 +1492,10 @@ impl Request {
             Request::ClassifyItem { .. } => &CLASSIFY_ITEM,
             Request::GetCategorization => &GET_CATEGORIZATION,
             Request::CatchUpCategories { .. } => &CATCH_UP_CATEGORIES,
+            Request::PreviewCategoryJob { .. } => &PREVIEW_CATEGORY_JOB,
+            Request::StartCategoryJob { .. } => &START_CATEGORY_JOB,
+            Request::GetCategoryJob { .. } => &GET_CATEGORY_JOB,
+            Request::ControlCategoryJob { .. } => &CONTROL_CATEGORY_JOB,
             Request::CreateCategory { .. } => &CREATE_CATEGORY,
             Request::UpdateCategory { .. } => &UPDATE_CATEGORY,
             Request::RemoveCategory { .. } => &REMOVE_CATEGORY,
@@ -1707,6 +1711,10 @@ pub static CATALOGUE: &[&Command] = &[
     &CLASSIFY_ITEM,
     &GET_CATEGORIZATION,
     &CATCH_UP_CATEGORIES,
+    &PREVIEW_CATEGORY_JOB,
+    &START_CATEGORY_JOB,
+    &GET_CATEGORY_JOB,
+    &CONTROL_CATEGORY_JOB,
     &CREATE_CATEGORY,
     &UPDATE_CATEGORY,
     &REMOVE_CATEGORY,
@@ -3075,6 +3083,38 @@ static CATCH_UP_CATEGORIES: Command = Command {
                   rules or changed descriptions) and leaves only a category the person set by hand. Needs the \
                   person's approval: it makes their AI account work for minutes. `not-connected` without a \
                   decision model, unless `again` (then the rules alone run).",
+};
+
+static PREVIEW_CATEGORY_JOB: Command = Command {
+    name: "inbox.preview_category_job",
+    area: Area::Inbox,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only.",
+};
+
+static START_CATEGORY_JOB: Command = Command {
+    name: "inbox.start_category_job",
+    area: Area::Inbox,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress.",
+};
+
+static GET_CATEGORY_JOB: Command = Command {
+    name: "inbox.get_category_job",
+    area: Area::Inbox,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Reads the latest persistent mail categorization job or a job by ID, including scope, processed and changed counts, errors and running/paused/cancelled/complete state.",
+};
+
+static CONTROL_CATEGORY_JOB: Command = Command {
+    name: "inbox.control_category_job",
+    area: Area::Inbox,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged.",
 };
 
 // Admin, like `inbox.set_item_category` with `remember`: a category changes how every later mail

@@ -300,7 +300,13 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
         // Nothing of their own to name: a catalogue, a status, a background run.
-        Request::ListCategories { .. } | Request::GetCategorization | Request::CatchUpCategories { .. } => {
+        Request::ListCategories { .. }
+        | Request::GetCategorization
+        | Request::CatchUpCategories { .. }
+        | Request::PreviewCategoryJob { .. }
+        | Request::StartCategoryJob { .. }
+        | Request::GetCategoryJob { .. }
+        | Request::ControlCategoryJob { .. } => {
             Vec::new()
         }
         // The catalogue and the sorting rules (task E15.1): never a name, a description, a

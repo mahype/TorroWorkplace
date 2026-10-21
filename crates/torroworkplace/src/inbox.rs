@@ -187,7 +187,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -506,6 +506,15 @@ const SCHEMA_V12: &str = "
 ALTER TABLE category_edits ADD COLUMN icon TEXT;
 ALTER TABLE custom_categories ADD COLUMN icon TEXT NOT NULL DEFAULT 'tag';
 ";
+/// From schema version 12 to 13: one durable record per explicit categorization run.
+/// The complete snapshot lives in JSON so
+/// later versions can add progress fields without rebuilding mail or inbox entries.
+const SCHEMA_V13: &str = "CREATE TABLE category_jobs (
+    id TEXT PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX category_jobs_latest ON category_jobs (updated_at DESC);";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
@@ -1312,6 +1321,23 @@ impl Inbox {
         .map_err(|failure| failure.to_string())
     }
 
+    /// Mirror a job's automatic answer only while the entry still has no category or a model's
+    /// category. A concurrent manual choice or fixed rule is never overwritten.
+    pub fn set_category_if_automatic(&self, id: &str, category: MailCategory) -> Result<bool, String> {
+        self.with(|db| {
+            let Some(mut held) = read_items(db, &Scope::All, "id = ?", vec![text(id)], "")?.pop() else {
+                return Ok(false);
+            };
+            if held.item.category.is_some_and(|current| current.source != torro_mail::CategorySource::Model) {
+                return Ok(false);
+            }
+            held.item.category = Some(category);
+            update_item(db, &held.item)?;
+            Ok(true)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// The messages filed into the entry `id`, oldest first (task E12.4): what a category set by
     /// hand is written to, so the whole conversation reads alike. `Err` holds the message for the
     /// log.
@@ -1661,6 +1687,73 @@ impl Inbox {
                 }
             };
             Ok(())
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// A random, opaque ID for a user-directed categorization job.
+    pub fn new_category_job_id(&self) -> Result<String, String> {
+        new_id().map(|id| format!("category-job:{id}")).map_err(|failure| failure.to_string())
+    }
+
+    /// The latest job, or a particular job by ID. The core presents a persisted `running` state
+    /// from before a daemon restart as paused until the person explicitly resumes it.
+    pub fn category_job(&self, id: Option<&str>) -> Result<Option<torro_ipc::inbox::CategoryJob>, String> {
+        self.with(|db| {
+            let data: Option<String> = match id {
+                Some(id) => {
+                    db.query_row("SELECT data FROM category_jobs WHERE id = ?1", [id], |row| row.get(0)).optional()?
+                }
+                None => db
+                    .query_row(
+                        "SELECT data FROM category_jobs ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()?,
+            };
+            let Some(data) = data else { return Ok(None) };
+            let job: torro_ipc::inbox::CategoryJob = serde_json::from_str(&data)?;
+            Ok(Some(job))
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Store a new job or its latest progress. Every worker update checks its generation first
+    /// through [`Inbox::change_category_job`].
+    pub fn save_category_job(&self, job: &torro_ipc::inbox::CategoryJob) -> Result<(), String> {
+        self.with(|db| {
+            let data = serde_json::to_string(job)?;
+            db.execute(
+                "INSERT INTO category_jobs (id, updated_at, data) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data",
+                params![job.id, job.updated_at.timestamp_micros(), data],
+            )?;
+            Ok(())
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Change one job while holding the inbox database lock, so pause/cancel and worker progress
+    /// cannot overwrite each other. `None` means the ID is unknown.
+    pub fn change_category_job(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut torro_ipc::inbox::CategoryJob),
+    ) -> Result<Option<torro_ipc::inbox::CategoryJob>, String> {
+        self.with(|db| {
+            let data: Option<String> =
+                db.query_row("SELECT data FROM category_jobs WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+            let Some(data) = data else { return Ok(None) };
+            let mut job: torro_ipc::inbox::CategoryJob = serde_json::from_str(&data)?;
+            change(&mut job);
+            job.updated_at = Utc::now();
+            let data = serde_json::to_string(&job)?;
+            db.execute(
+                "UPDATE category_jobs SET updated_at = ?2, data = ?3 WHERE id = ?1",
+                params![id, job.updated_at.timestamp_micros(), data],
+            )?;
+            Ok(Some(job))
         })
         .map_err(|failure| failure.to_string())
     }
@@ -3487,6 +3580,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 12 {
         tx.execute_batch(SCHEMA_V12)?;
+    }
+    if version < 13 {
+        tx.execute_batch(SCHEMA_V13)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;

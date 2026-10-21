@@ -616,6 +616,42 @@ impl InboxClient {
         }
     }
 
+    /// Count the mail selected for a persistent categorization job.
+    pub async fn preview_category_job(&self, scope: CategoryJobScope) -> Result<CategoryJobPreview, InboxError> {
+        match self.ask(Request::PreviewCategoryJob { scope }).await? {
+            Response::CategoryJobPreview { preview } => Ok(preview),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Start a persistent categorization run over a chosen scope.
+    pub async fn start_category_job(&self, scope: CategoryJobScope) -> Result<CategoryJob, InboxError> {
+        match self.ask(Request::StartCategoryJob { scope }).await? {
+            Response::CategoryJob { job: Some(job) } => Ok(job),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// The latest categorization job, or one by ID.
+    pub async fn category_job(&self, id: Option<String>) -> Result<Option<CategoryJob>, InboxError> {
+        match self.ask(Request::GetCategoryJob { id }).await? {
+            Response::CategoryJob { job } => Ok(job),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Pause, resume or cancel a persistent job.
+    pub async fn control_category_job(
+        &self,
+        id: String,
+        action: CategoryJobControl,
+    ) -> Result<CategoryJob, InboxError> {
+        match self.ask(Request::ControlCategoryJob { id, action }).await? {
+            Response::CategoryJob { job: Some(job) } => Ok(job),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.set_item_category` (task E12.8): files the mail by hand, and with `remember` keeps
     /// it for its sender.
     pub async fn set_mail_category(
@@ -1768,4 +1804,96 @@ pub enum CatchUpState {
     Complete,
     /// Someone stopped it; what was sorted stays sorted.
     Cancelled,
+}
+
+/// The mail selected for a deliberate categorization run (issue #263). Empty account or folder
+/// lists mean every accessible account or every folder of the selected accounts, respectively.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryJobScope {
+    #[serde(default)]
+    pub accounts: Vec<String>,
+    #[serde(default)]
+    pub folders: Vec<String>,
+    /// Inclusive lower date bound. `None` includes the oldest locally known mail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    /// Exclusive upper date bound. `None` includes the newest locally known mail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<DateTime<Utc>>,
+    /// Also revisit categories supplied by a model. Person and rule categories stay protected.
+    #[serde(default)]
+    pub again: bool,
+    /// Optional explicit decision model. Both fields must be supplied together; otherwise the
+    /// current `inbox.categorize` assignment is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Counts in the selected scope before a job starts. These are all mail, not sidebar unread counts.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryJobPreview {
+    pub total: u64,
+    pub unclassified: u64,
+    pub automatic: u64,
+    pub protected: u64,
+    pub eligible: u64,
+    /// The exact request scope echoed to correlate overlapping previews from a quickly edited
+    /// form. Older servers may leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_scope: Option<CategoryJobScope>,
+}
+
+/// Persistent state of one run. A run interrupted by a daemon restart is shown as paused and
+/// can be resumed using the same ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryJobState {
+    Running,
+    Paused,
+    Cancelled,
+    Complete,
+    Failed,
+}
+
+/// Control of a previously started job. Resume keeps the original scope and cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryJobControl {
+    Pause,
+    Resume,
+    Cancel,
+}
+
+/// Per-account cursor and progress. The maximum sequence freezes the locally known scope at the
+/// start; new mail is handled by the regular incoming-mail path, not silently added to this job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryJobAccount {
+    pub account: String,
+    pub max_sequence: i64,
+    pub cursor: i64,
+    pub eligible: u64,
+    pub processed: u64,
+    pub changed: u64,
+    pub failed: u64,
+}
+
+/// The most recent user-directed categorization job, persisted by the core.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryJob {
+    pub id: String,
+    pub scope: CategoryJobScope,
+    pub state: CategoryJobState,
+    pub accounts: Vec<CategoryJobAccount>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Incremented when a paused job resumes so an older worker cannot write into it.
+    pub generation: u64,
+    /// Whether the chosen model sends mail content beyond this computer. `None` when no model is
+    /// used (for a rule-only recheck).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_in_cloud: Option<bool>,
 }

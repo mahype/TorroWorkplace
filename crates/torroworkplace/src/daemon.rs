@@ -617,6 +617,10 @@ fn describe(request: &Request) -> String {
                 "sort the mail backlog".into()
             }
         }
+        Request::PreviewCategoryJob { .. } => "preview mail sorting".into(),
+        Request::StartCategoryJob { .. } => "start mail sorting job".into(),
+        Request::GetCategoryJob { .. } => "mail sorting job".into(),
+        Request::ControlCategoryJob { id, action } => format!("{action:?} mail sorting job {id}"),
         // Never a name, a description or a condition (task E15.1).
         Request::CreateCategory { .. } => "create a mail category".into(),
         Request::UpdateCategory { .. } => "change a mail category".into(),

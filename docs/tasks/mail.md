@@ -924,7 +924,7 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
   API-Antwort und die Kontoauswahl verliert keine bestehenden Absender-/Signaturfelder.
 
 ### M10.3 Steuerbarer, fortsetzbarer Kategorisierungsauftrag
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M10.1, E12.6 · **Dateien:** `crates/torro-ipc/src/{lib.rs,inbox.rs,api.rs}`,
   `crates/torroworkplace/src/{core.rs,mcp.rs,categorize.rs}`, `crates/torroworkplace/src/mail/{store.rs,service.rs}`,
   `crates/torroworkplace/src/approvals.rs`, `crates/torroworkplace/src/audit.rs`, `docs/api-reference.md`,

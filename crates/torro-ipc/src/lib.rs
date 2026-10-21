@@ -1728,6 +1728,23 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         again: bool,
     },
+    /// Counts all locally known mail in the requested accounts, folders and date range before a
+    /// deliberate categorization job starts. No fixed 30-day or 500-message limit.
+    #[serde(rename = "inbox.preview_category_job")]
+    PreviewCategoryJob { scope: crate::inbox::CategoryJobScope },
+    /// Starts a persistent categorization job over the requested scope. The response contains
+    /// its ID, counters and frozen scope; a second start while a job runs is refused.
+    #[serde(rename = "inbox.start_category_job")]
+    StartCategoryJob { scope: crate::inbox::CategoryJobScope },
+    /// Reads the latest job, or the job with `id`. An interrupted run is resumable after restart.
+    #[serde(rename = "inbox.get_category_job")]
+    GetCategoryJob {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Pauses, resumes or cancels the job with `id`. Changes already made remain.
+    #[serde(rename = "inbox.control_category_job")]
+    ControlCategoryJob { id: String, action: crate::inbox::CategoryJobControl },
     /// Makes a mail category of the person's own ([`Response::Category`], task E15.1,
     /// `docs/kategorien.md`). Its key is `custom_<n>` and never changes. `error` for a name that is
     /// empty, longer than 60 characters, more than one line or already a category's, for a
@@ -3126,6 +3143,14 @@ pub enum Response {
     /// [`Request::CatchUpCategories`]).
     Categorization {
         categorization: crate::inbox::Categorization,
+    },
+    /// Counts for a prospective categorization job.
+    CategoryJobPreview {
+        preview: crate::inbox::CategoryJobPreview,
+    },
+    /// Persisted categorization job. `None` means no job has been started yet.
+    CategoryJob {
+        job: Option<crate::inbox::CategoryJob>,
     },
     /// One mail category as it stands now ([`Request::CreateCategory`],
     /// [`Request::UpdateCategory`]).
