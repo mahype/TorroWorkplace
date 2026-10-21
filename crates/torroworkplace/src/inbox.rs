@@ -187,7 +187,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -498,6 +498,13 @@ CREATE TABLE sort_rules (
     data TEXT NOT NULL
 );
 CREATE INDEX sort_rules_by_category ON sort_rules (category);
+";
+
+/// From schema version 11 to 12: one category icon override for each built-in or custom entry.
+/// Built-ins without an override keep receiving the suite's icon from `CategoryDef::built_in`.
+const SCHEMA_V12: &str = "
+ALTER TABLE category_edits ADD COLUMN icon TEXT;
+ALTER TABLE custom_categories ADD COLUMN icon TEXT NOT NULL DEFAULT 'tag';
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -1187,9 +1194,10 @@ impl Inbox {
         name: &str,
         description: &str,
         model: bool,
+        icon: torro_mail::CategoryIcon,
         now: DateTime<Utc>,
     ) -> Result<torro_mail::CategoryDef, Response> {
-        let made = self.with(|db| catalogue::create(db, group, name, description, model, now));
+        let made = self.with(|db| catalogue::create(db, group, name, description, model, icon, now));
         made.map_err(Failure::response)
     }
 
@@ -1202,8 +1210,9 @@ impl Inbox {
         name: Option<String>,
         description: Option<String>,
         model: Option<bool>,
+        icon: Option<torro_mail::CategoryIcon>,
     ) -> Result<torro_mail::CategoryDef, Response> {
-        let changes = catalogue::Changes { group, name, description, model };
+        let changes = catalogue::Changes { group, name, description, model, icon };
         let changed = self.with(|db| catalogue::update(db, category, changes));
         changed.map_err(Failure::response)
     }
@@ -3475,6 +3484,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 11 {
         tx.execute_batch(SCHEMA_V11)?;
         catalogue::move_kept_rules(&tx)?;
+    }
+    if version < 12 {
+        tx.execute_batch(SCHEMA_V12)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;

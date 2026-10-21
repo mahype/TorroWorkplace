@@ -4197,14 +4197,14 @@ impl Core {
             }
             // The catalogue (task E15.2): the core answers, since the counts and a removal reach
             // the mail stores.
-            Request::CreateCategory { group, name, description, model } => {
-                match self.inbox.create_category(group, &name, &description, model, Utc::now()) {
+            Request::CreateCategory { group, name, description, model, icon } => {
+                match self.inbox.create_category(group, &name, &description, model, icon, Utc::now()) {
                     Ok(def) => self.category_answer(&def, reach).await,
                     Err(refused) => refused,
                 }
             }
-            Request::UpdateCategory { category, group, name, description, model } => {
-                match self.inbox.update_category(category, group, name, description, model) {
+            Request::UpdateCategory { category, group, name, description, model, icon } => {
+                match self.inbox.update_category(category, group, name, description, model, icon) {
                     Ok(def) => self.category_answer(&def, reach).await,
                     Err(refused) => refused,
                 }
@@ -13620,6 +13620,7 @@ mod tests {
             name: "Tax".into(),
             description: "Anything for the tax return, not invoices of shops.".into(),
             model: true,
+            icon: torro_mail::CategoryIcon::Tag,
         };
         let Response::Category { category: tax } = ask(&core, Some(&app_key), made.clone()).await else {
             panic!("a category")
@@ -13654,6 +13655,7 @@ mod tests {
             name: Some("Bills".into()),
             description: Some("Bills of the landlord.".into()),
             model: None,
+            icon: None,
         };
         let Response::Category { category: bills } = ask(&core, Some(&app_key), renamed).await else {
             panic!("changed")
@@ -13672,6 +13674,7 @@ mod tests {
             name: Some(String::new()),
             description: Some(String::new()),
             model: None,
+            icon: None,
         };
         let Response::Category { category: invoice } = ask(&core, Some(&app_key), back).await else {
             panic!("put back")
@@ -13700,6 +13703,7 @@ mod tests {
             name: "Club".into(),
             description: "The sports club.".into(),
             model: false,
+            icon: torro_mail::CategoryIcon::Tag,
         };
         let Response::Category { category: club } = ask(&core, Some(&app_key), second).await else { panic!("made") };
         assert_eq!(club.category, Category::Custom(CustomCategory::new(2).expect("a number")), "1 is never reused");
@@ -13725,6 +13729,7 @@ mod tests {
             name: name.into(),
             description: "Something.".into(),
             model: false,
+            icon: torro_mail::CategoryIcon::Tag,
         };
         let Response::Category { category: from } = restarted.handle(make("From")).await else { panic!("made") };
         let Response::Category { category: to } = restarted.handle(make("To")).await else { panic!("made") };

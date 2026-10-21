@@ -190,8 +190,10 @@ Dienst und werden nur über die Oberfläche eingetragen.
 
 ## Eigene Kategorien und Sortierregeln (Issue #255)
 
-Stand: 2026-10-20. Aufgaben: [tasks/eingang.md › E15](tasks/eingang.md#e15-kategorien-und-sortierregeln-frei-bearbeiten-issue-255).
+Stand: 2026-10-21. Aufgaben: [tasks/eingang.md › E15](tasks/eingang.md#e15-kategorien-und-sortierregeln-frei-bearbeiten-issue-255).
 Der Katalog oben ist seitdem die **Vorgabe**, nicht mehr fest.
+Die Darstellung mit Gruppenfarben und individuellen Kategorie-Icons gehört zu
+[Issue #265](https://github.com/mahype/TorroWorkplace/issues/265).
 
 ### Kennung und Angaben
 
@@ -200,7 +202,11 @@ Der Katalog oben ist seitdem die **Vorgabe**, nicht mehr fest.
 - Bearbeitbar sind bei **jeder** Kategorie Name, Gruppe, Beschreibung und „das Modell darf sie
   wählen“. Umbenennen ändert die Kennung nicht, Mail und Regeln bleiben gültig. Eine mitgelieferte
   Kategorie lässt sich auf die Worte der Suite zurücksetzen, aber nicht entfernen.
-- Die **vier Gruppen** bleiben fest; Farbe und Icon kommen weiter von der Gruppe.
+- Die **vier Gruppen** bleiben fest und erhalten je eine Farbe aus der Gruppenpalette des aktiven
+  Designs. Jede Unterkategorie hat ein einfarbiges Icon in der Farbe ihrer Gruppe. Die 23
+  mitgelieferten Kategorien haben feste Standard-Icons; bei eigenen Kategorien kann das Icon
+  gewählt werden. Die Icon-Auswahl ist auch für mitgelieferte Kategorien verfügbar. Gruppenname
+  und Einrückung zeigen die Hierarchie zusätzlich zur Farbe.
 - Die **Beschreibung** ist das, was das Modell über die Kategorie liest – mit Beispielen und
   Ausnahmen in den Worten des Menschen. Sie lenkt das Modell, garantiert aber nichts: Eine harte
   Ausnahme ist eine Sortierregel.

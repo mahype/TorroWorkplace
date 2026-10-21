@@ -484,6 +484,7 @@ impl Demo {
                     "Anything for the tax return: the tax office, the adviser, receipts asked for.".into(),
                 ),
                 model: true,
+                icon: torro_mail::CategoryIcon::Tag,
             });
         }
         defs.iter().map(|def| torro_ipc::inbox::CategoryInfo::of(def, 0, 0)).collect()

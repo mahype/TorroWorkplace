@@ -1670,6 +1670,9 @@ pub struct CategoryInfo {
     pub label: String,
     /// What a person reads for its group.
     pub group_label: String,
+    /// The category's monochrome icon; its colour comes from `group`.
+    #[serde(default)]
+    pub icon: torro_mail::CategoryIcon,
     /// Unread mail of this category, counted only in the accounts the caller may read; 0 for a
     /// caller without access to any mail. The inbox folder only: mail thrown away, marked as
     /// spam or sent by the person keeps its category and is counted nowhere.
@@ -1706,6 +1709,7 @@ impl CategoryInfo {
             group: def.group,
             label: torro_core::category::name_of(def),
             group_label: torro_core::category::group_label(def.group).to_string(),
+            icon: def.icon,
             unread,
             messages,
             description: torro_core::category::description_of(def),

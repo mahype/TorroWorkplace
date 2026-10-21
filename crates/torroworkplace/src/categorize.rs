@@ -719,6 +719,7 @@ mod tests {
                 name: Some(format!("Verein {i}")),
                 description: Some(format!("Mail of club {i}.")),
                 model: true,
+                icon: torro_mail::CategoryIcon::Tag,
             });
         }
         catalogue
@@ -767,6 +768,7 @@ mod tests {
                 name: Some(name.into()),
                 description: Some("Something.".into()),
                 model: true,
+                icon: torro_mail::CategoryIcon::Tag,
             });
         }
         let names: Vec<String> = offers(&catalogue).into_iter().map(|offer| offer.name).collect();

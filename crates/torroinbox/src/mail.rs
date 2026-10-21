@@ -1661,16 +1661,46 @@ pub(crate) fn invite_chips<'a>(invite: &Invite, now: DateTime<Utc>) -> Vec<Eleme
     chips
 }
 
-/// The icon and the place in `Palette::category` of a category's group (task E12.8): one icon
-/// per group, never per category – 23 would not be told apart (`docs/kategorien.md`). The icons
-/// are deliberately not the folder icons (`folder_icon`): "Inbox" the folder and "Waiting for
-/// me" the group stand in the same sidebar.
+/// The group-header icon and its place in `Palette::category` (task E12.8). Category rows use
+/// [`category_symbol`] in this group's colour; the group icon is deliberately not a folder icon
+/// ([`folder_icon`]): "Inbox" the folder and "Waiting for me" the group stand in one sidebar.
 pub(crate) fn group_mark(group: CategoryGroup) -> (Icon, usize) {
     match group {
         CategoryGroup::WaitingForMe => (Icon::UserCheck, 0),
         CategoryGroup::PaperTrail => (Icon::TextQuote, 1),
         CategoryGroup::Info => (Icon::Info, 2),
         CategoryGroup::Junk => (Icon::ShieldAlert, 3),
+    }
+}
+
+/// The monochrome mark of one category; its group supplies the colour.
+pub(crate) fn category_symbol(icon: torro_mail::CategoryIcon) -> Icon {
+    match icon {
+        torro_mail::CategoryIcon::MessageCircle => Icon::MessageCircle,
+        torro_mail::CategoryIcon::ListTodo => Icon::ListTodo,
+        torro_mail::CategoryIcon::CircleCheck => Icon::CircleCheck,
+        torro_mail::CategoryIcon::UserCheck => Icon::UserCheck,
+        torro_mail::CategoryIcon::ShieldAlert => Icon::ShieldAlert,
+        torro_mail::CategoryIcon::User => Icon::User,
+        torro_mail::CategoryIcon::CalendarPlus => Icon::CalendarPlus,
+        torro_mail::CategoryIcon::TextQuote => Icon::TextQuote,
+        torro_mail::CategoryIcon::Paperclip => Icon::Paperclip,
+        torro_mail::CategoryIcon::SquareCheck => Icon::SquareCheck,
+        torro_mail::CategoryIcon::Send => Icon::Send,
+        torro_mail::CategoryIcon::CalendarDays => Icon::CalendarDays,
+        torro_mail::CategoryIcon::ChartColumn => Icon::ChartColumn,
+        torro_mail::CategoryIcon::AlignLeft => Icon::AlignLeft,
+        torro_mail::CategoryIcon::Mail => Icon::Mail,
+        torro_mail::CategoryIcon::Flag => Icon::Flag,
+        torro_mail::CategoryIcon::Bell => Icon::Bell,
+        torro_mail::CategoryIcon::Users => Icon::Users,
+        torro_mail::CategoryIcon::Video => Icon::Video,
+        torro_mail::CategoryIcon::MailOpen => Icon::MailOpen,
+        torro_mail::CategoryIcon::Reply => Icon::Reply,
+        torro_mail::CategoryIcon::Trash2 => Icon::Trash2,
+        torro_mail::CategoryIcon::Eye => Icon::Eye,
+        torro_mail::CategoryIcon::Ellipsis => Icon::Ellipsis,
+        torro_mail::CategoryIcon::Tag => Icon::Tag,
     }
 }
 
@@ -1693,20 +1723,30 @@ pub(crate) fn category_words(held: MailCategory, categories: &[CategoryInfo]) ->
     if held.is_suggestion() { trf("{category} · suggested", &[("category", &label)]) } else { label }
 }
 
-/// The small mark of a mail's category for a row (task E12.8): the group's icon in its colour,
+/// The small mark of a mail's category for a row (task E12.8): the category icon in its group colour,
 /// the words in the tooltip. The whole pill goes where there is room – the reader and the card.
 pub(crate) fn category_mark<'a>(held: MailCategory, categories: &[CategoryInfo]) -> (Element<'a, Message>, f32) {
     let (_, group) = category_look(categories, held.category);
-    let (mark, group) = group_mark(group);
-    let pill = widgets::category_mark(mark, group, icon::SIZE_SM);
+    let (_, group) = group_mark(group);
+    let category_icon = categories
+        .iter()
+        .find(|info| info.category == held.category)
+        .map(|info| info.icon)
+        .unwrap_or_else(|| held.category.default_icon());
+    let pill = widgets::category_mark(category_symbol(category_icon), group, icon::SIZE_SM);
     (widgets::with_tooltip(pill, category_words(held, categories)), icon::SIZE_SM)
 }
 
 /// The whole pill of a mail's category, for the reader and the card (task E12.8).
 pub(crate) fn category_pill<'a>(held: MailCategory, categories: &[CategoryInfo]) -> Element<'a, Message> {
     let (label, group) = category_look(categories, held.category);
-    let (mark, group) = group_mark(group);
-    widgets::category_pill(mark, group, label, held.is_suggestion())
+    let (_, group_at) = group_mark(group);
+    let category_icon = categories
+        .iter()
+        .find(|info| info.category == held.category)
+        .map(|info| info.icon)
+        .unwrap_or_else(|| held.category.default_icon());
+    widgets::category_pill(category_symbol(category_icon), group_at, label, held.is_suggestion())
 }
 
 /// The mark of an invitation in a row's first line, with its width: the calendar's icon,

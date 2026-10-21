@@ -35,7 +35,7 @@ use torro_core::i18n::{tr, trf};
 /// category being removed is left out.
 pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure> {
     let mut defs = CategoryDef::defaults();
-    let mut edits = db.prepare("SELECT category, grp, name, description, model FROM category_edits")?;
+    let mut edits = db.prepare("SELECT category, grp, name, description, model, icon FROM category_edits")?;
     let rows = edits.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -43,10 +43,11 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<bool>>(4)?,
+            row.get::<_, Option<String>>(5)?,
         ))
     })?;
     for row in rows {
-        let (key, group, name, description, model) = row?;
+        let (key, group, name, description, model, icon) = row?;
         // A key this version does not know (a newer one wrote it) changes nothing.
         let Some(def) = defs.iter_mut().find(|def| def.category.key() == key) else { continue };
         if let Some(group) = group.as_deref().and_then(CategoryGroup::from_key) {
@@ -57,9 +58,12 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
         if let Some(model) = model {
             def.model = model;
         }
+        if let Some(icon) = icon {
+            def.icon = torro_mail::CategoryIcon::from_key(&icon);
+        }
     }
     let mut own = db.prepare(
-        "SELECT id, grp, name, description, model FROM custom_categories WHERE replaced_by IS NULL ORDER BY id",
+        "SELECT id, grp, name, description, model, icon FROM custom_categories WHERE replaced_by IS NULL ORDER BY id",
     )?;
     let rows = own.query_map([], |row| {
         Ok((
@@ -68,13 +72,21 @@ pub(super) fn catalogue_in(db: &Connection) -> Result<Vec<CategoryDef>, Failure>
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, bool>(4)?,
+            row.get::<_, String>(5)?,
         ))
     })?;
     for row in rows {
-        let (id, group, name, description, model) = row?;
+        let (id, group, name, description, model, icon) = row?;
         let category = u32::try_from(id).ok().and_then(CustomCategory::new).map(Category::Custom);
         let (Some(category), Some(group)) = (category, CategoryGroup::from_key(&group)) else { continue };
-        defs.push(CategoryDef { category, group, name: Some(name), description: Some(description), model });
+        defs.push(CategoryDef {
+            category,
+            group,
+            name: Some(name),
+            description: Some(description),
+            model,
+            icon: torro_mail::CategoryIcon::from_key(&icon),
+        });
     }
     // By group, as the sidebar lists them; within a group the suite's order, then the person's.
     defs.sort_by_key(|def| CategoryGroup::ALL.iter().position(|group| *group == def.group));
@@ -111,6 +123,7 @@ pub(super) fn create(
     name: &str,
     description: &str,
     model: bool,
+    icon: torro_mail::CategoryIcon,
     now: DateTime<Utc>,
 ) -> Result<CategoryDef, Failure> {
     let name = checked_name(name)?;
@@ -125,11 +138,12 @@ pub(super) fn create(
         name: Some(name.clone()),
         description: Some(description.clone()),
         model,
+        icon,
     });
     check(&catalogue, unborn, true)?;
     db.execute(
-        "INSERT INTO custom_categories (grp, name, description, model, created) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![group.key(), name, description, model, stamp(now)],
+        "INSERT INTO custom_categories (grp, name, description, model, created, icon) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![group.key(), name, description, model, stamp(now), icon.key()],
     )?;
     let id = db.last_insert_rowid();
     let category = u32::try_from(id)
@@ -137,7 +151,7 @@ pub(super) fn create(
         .and_then(CustomCategory::new)
         .map(Category::Custom)
         .ok_or_else(|| Failure::Invalid("no more numbers for categories".into()))?;
-    Ok(CategoryDef { category, group, name: Some(name), description: Some(description), model })
+    Ok(CategoryDef { category, group, name: Some(name), description: Some(description), model, icon })
 }
 
 /// What `inbox.update_category` changes; `None` leaves a field as it is.
@@ -146,6 +160,7 @@ pub(super) struct Changes {
     pub name: Option<String>,
     pub description: Option<String>,
     pub model: Option<bool>,
+    pub icon: Option<torro_mail::CategoryIcon>,
 }
 
 /// Changes `category` (`inbox.update_category`): only the fields given. An empty name or
@@ -159,6 +174,9 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
     }
     if let Some(model) = changes.model {
         def.model = model;
+    }
+    if let Some(icon) = changes.icon {
+        def.icon = icon;
     }
     if let Some(name) = changes.name {
         def.name = match (name.trim().is_empty(), category.is_built_in()) {
@@ -185,20 +203,21 @@ pub(super) fn update(db: &Connection, category: Category, changes: Changes) -> R
         let differs = |field: bool| field.then_some(());
         let group = differs(suite.as_ref().is_none_or(|held| held.group != def.group)).map(|()| def.group.key());
         let model = differs(suite.as_ref().is_none_or(|held| held.model != def.model)).map(|()| def.model);
-        if group.is_none() && model.is_none() && def.name.is_none() && def.description.is_none() {
+        let icon = differs(suite.as_ref().is_none_or(|held| held.icon != def.icon)).map(|()| def.icon.key());
+        if group.is_none() && model.is_none() && icon.is_none() && def.name.is_none() && def.description.is_none() {
             db.execute("DELETE FROM category_edits WHERE category = ?1", [category.key()])?;
         } else {
             db.execute(
-                "INSERT INTO category_edits (category, grp, name, description, model) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (category) DO UPDATE SET grp = ?2, name = ?3, description = ?4, model = ?5",
-                params![category.key(), group, def.name, def.description, model],
+                "INSERT INTO category_edits (category, grp, name, description, model, icon) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (category) DO UPDATE SET grp = ?2, name = ?3, description = ?4, model = ?5, icon = ?6",
+                params![category.key(), group, def.name, def.description, model, icon],
             )?;
         }
     } else {
         let Category::Custom(custom) = category else { return Ok(def) };
         db.execute(
-            "UPDATE custom_categories SET grp = ?2, name = ?3, description = ?4, model = ?5 WHERE id = ?1",
-            params![i64::from(custom.number()), def.group.key(), def.name, def.description, def.model],
+            "UPDATE custom_categories SET grp = ?2, name = ?3, description = ?4, model = ?5, icon = ?6 WHERE id = ?1",
+            params![i64::from(custom.number()), def.group.key(), def.name, def.description, def.model, def.icon.key()],
         )?;
     }
     Ok(def)
