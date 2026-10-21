@@ -2540,6 +2540,37 @@ pub fn card<'a, M: Clone + 'a>(parts: Vec<Element<'a, M>>, selected: bool, on_pr
     }
 }
 
+/// A clickable card with a reserved mark slot inside its left padding. Mail cards use the slot
+/// for the unread dot; an empty mark keeps read cards at precisely the same width and height.
+/// The mark belongs to the card button, so its hover and click area is continuous.
+pub fn card_with_inset_mark<'a, M: Clone + 'a>(
+    parts: Vec<Element<'a, M>>,
+    selected: bool,
+    on_press: M,
+    mark: Element<'a, M>,
+) -> Element<'a, M> {
+    let pad = layout::panel_padding();
+    let head_height = size::avatar().max(typo::line_height(typo::body_strong()) + typo::line_height(typo::meta()));
+    let slot = container(mark).width(card_mark_inset()).height(head_height).align_x(iced::Center).align_y(iced::Center);
+    let content = row![slot, column(parts).spacing(size::card_gap()).width(Fill)].align_y(Alignment::Start);
+    button(content)
+        .width(Fill)
+        .padding(Padding { left: 0.0, ..pad })
+        .style(card_style(selected))
+        .on_press(on_press)
+        .into()
+}
+
+/// The left inset of a card with an unread dot: at least one dot and a small gap on both sides.
+/// Mail cards reserve it in both read states, including when a design sets panel padding to zero.
+pub fn card_mark_inset() -> f32 {
+    card_mark_inset_for(layout::panel_padding().left)
+}
+
+fn card_mark_inset_for(left: f32) -> f32 {
+    left.max(space::s() + 2.0 * space::xs())
+}
+
 /// The look of a [`card`]: `raised` with a `line_strong` frame at rest, `line_selected` on hover,
 /// `selected` with `line_selected` when pressed or `selected` – the states of a framed button
 /// (`style::button::secondary`), with the card's radius.
@@ -2579,7 +2610,18 @@ pub fn card_head<'a, M: Clone + 'a>(
     meta: impl IntoFragment<'a>,
     dismiss: Option<M>,
 ) -> Element<'a, M> {
-    let mut words = column![one_line(typo::body_strong(), title, theme::text)];
+    card_head_with_level(lead, title, meta, typo::body_strong(), dismiss)
+}
+
+/// A card head whose title may use a lighter level, for read mail.
+pub fn card_head_with_level<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    title_level: typo::Level,
+    dismiss: Option<M>,
+) -> Element<'a, M> {
+    let mut words = column![one_line(title_level, title, theme::text)];
     let meta = meta.into_fragment();
     if !meta.is_empty() {
         words = words.push(one_line(typo::meta(), meta, theme::text_3));
@@ -5056,6 +5098,14 @@ mod tests {
         let edges = [TileSize::Small, TileSize::Medium, TileSize::Large].map(TileSize::edge);
         assert_eq!(edges, [size::tile_sm(), size::tile(), size::tile_lg()]);
         assert_eq!(edges, [20.0, 28.0, 36.0], "the standard's tiles");
+    }
+
+    #[test]
+    fn mail_card_marker_has_room_with_zero_panel_padding() {
+        let minimum = space::s() + 2.0 * space::xs();
+        assert_eq!(card_mark_inset_for(0.0), minimum);
+        assert_eq!(card_mark_inset_for(minimum / 2.0), minimum);
+        assert_eq!(card_mark_inset_for(minimum + space::s()), minimum + space::s());
     }
 
     /// Task L.18: the colour mode's segment is as wide as its icons and words, or squares without

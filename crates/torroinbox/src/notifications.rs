@@ -942,7 +942,7 @@ fn entry_row<'a>(item: &'a Item, data: &BoardData<'a>, width: f32) -> Element<'a
     let selected = data.rows.selected == Some(item.id.as_str());
     let height = list::row_height_of(item);
     let content = list::notice_content(item, &data.rows, width);
-    let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
+    let line = list::sized_row(content, selected, None, Message::Select(item.id.clone()), height);
     let actions = data.rows.anchors.mark(selected, row_actions(item));
     let words = widgets::row_actions_words(&actions, width);
     let middle = list::first_line_middle(height, list::line_count(item));

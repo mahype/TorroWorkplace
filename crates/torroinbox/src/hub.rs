@@ -851,10 +851,11 @@ pub fn card_height(item: &Item, narrow: bool) -> f32 {
 /// buttons at the right, a card with its buttons below (narrow), or its row (compact).
 pub fn sort_height(item: &Item, layout: Layout) -> f32 {
     let pad = layout::panel_padding();
+    let lead = if item.source.kind == SourceKind::Mail { size::avatar() } else { size::tile_lg() };
     match (layout.cards, layout.narrow) {
         (false, _) => list::row_height_of(item),
-        (true, false) => pad.top + pad.bottom + head_height().max(size::avatar()).max(size::tile_lg()),
-        (true, true) => pad.top + pad.bottom + head_height() + size::card_gap() + size::control_sm(),
+        (true, false) => pad.top + pad.bottom + head_height().max(lead),
+        (true, true) => pad.top + pad.bottom + head_height().max(lead) + size::card_gap() + size::control_sm(),
     }
 }
 
@@ -1269,7 +1270,7 @@ fn lead<'a>(item: &Item, rows: &Rows<'_>, attention: Color) -> Element<'a, Messa
     if item.source.kind == SourceKind::Mail {
         let (name, _) = list::sender(item);
         let account = list::account_index(item, &rows.accounts);
-        return list::avatar(&name, account, item.state == State::New, size::avatar());
+        return list::avatar(&name, account, size::avatar());
     }
     let tint = list::is_waiting(item).then_some(attention);
     widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Large, tint)
@@ -1340,7 +1341,7 @@ impl SortSlots {
 pub fn sort_buttons_room(width: f32) -> f32 {
     let pad = layout::panel_padding();
     let lead = size::avatar().max(size::tile_lg());
-    (width - pad.left - pad.right - lead - 2.0 * space::m() - size::props() / 2.0).max(0.0)
+    (width - widgets::card_mark_inset() - pad.right - lead - 2.0 * space::m() - size::props() / 2.0).max(0.0)
 }
 
 /// The card of `item` in To sort `width` wide: one line – the lead, title and meta, the buttons at
@@ -1349,10 +1350,13 @@ pub fn sort_buttons_room(width: f32) -> f32 {
 /// the panel.
 fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlots) -> Element<'a, Message> {
     let selected = data.rows.selected == Some(item.id.as_str());
+    let mail = item.source.kind == SourceKind::Mail;
+    let unread = mail && item.state == State::New;
+    let title_level = if mail { list::mail_text_level(unread) } else { typo::body_strong() };
     let (title, _) = list::words(item);
     let meta = sort_meta(item, &data.rows);
     let pad = layout::panel_padding();
-    let inner = (width - pad.left - pad.right).max(0.0);
+    let inner = (width - if mail { widgets::card_mark_inset() } else { pad.left } - pad.right).max(0.0);
     let pressed: Vec<(usize, notifications::CardButton)> =
         acts(item).iter().map(|act| (sort_slot(act), card_button(act, item, data.deciding))).collect();
     let parts: Vec<Element<'a, Message>> = if data.layout.narrow {
@@ -1364,7 +1368,10 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
             data.rows.anchors.wrap(selected, message.as_ref(), element)
         });
         let line = row(line).spacing(space::s()).align_y(Alignment::Center);
-        vec![widgets::card_head(Some(lead(item, &data.rows, data.attention)), title, meta, None), line.into()]
+        vec![
+            widgets::card_head_with_level(Some(lead(item, &data.rows, data.attention)), title, meta, title_level, None),
+            line.into(),
+        ]
     } else {
         let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
         for (slot, width) in slots.widths.iter().enumerate() {
@@ -1378,7 +1385,7 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
             };
             line = line.push(container(cell).width(width));
         }
-        let words = container(widgets::card_head(None, title, meta, None)).width(Fill);
+        let words = container(widgets::card_head_with_level(None, title, meta, title_level, None)).width(Fill);
         vec![
             row![lead(item, &data.rows, data.attention), words, line]
                 .spacing(space::m())
@@ -1386,7 +1393,12 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
                 .into(),
         ]
     };
-    let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
+    let on_press = Message::Select(item.id.clone());
+    let card = if mail {
+        list::mail_card_mark(parts, selected, unread, on_press)
+    } else {
+        widgets::card(parts, selected, Some(on_press))
+    };
     if selected { widgets::anchored(&data.rows.anchors.row, card) } else { card }
 }
 
@@ -1397,11 +1409,12 @@ fn entry_row<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, 
     let selected = data.rows.selected == Some(item.id.as_str());
     let height = list::row_height_of(item);
     let content = if item.source.kind == SourceKind::Mail {
-        list::mail_content(list::MailLines::of(item, &data.rows), width)
+        list::mail_content(list::MailLines::of(item, &data.rows), width, selected)
     } else {
         list::notice_content(item, &data.rows, width)
     };
-    let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
+    let unread = (item.source.kind == SourceKind::Mail).then_some(item.state == State::New);
+    let line = list::sized_row(content, selected, unread, Message::Select(item.id.clone()), height);
     let actions: Vec<RowAction<'a, Message>> = acts(item)
         .into_iter()
         .filter_map(|act| {

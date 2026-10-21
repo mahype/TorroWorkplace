@@ -66,7 +66,7 @@ struct LogoFile {
 }
 
 /// The keys of `[colors.dark]` and `[colors.light]`: the fields of [`Palette`].
-pub(super) const PALETTE_KEYS: [&str; 34] = [
+pub(super) const PALETTE_KEYS: [&str; 35] = [
     "bg",
     "panel",
     "raised",
@@ -87,6 +87,7 @@ pub(super) const PALETTE_KEYS: [&str; 34] = [
     "error",
     "inactive",
     "merged",
+    "unread",
     "calendar",
     "tint",
     "chart",
@@ -396,6 +397,22 @@ mod tests {
         for key in PALETTE_KEYS {
             assert!(p.slot_mut(key).is_some() || ["calendar", "chart", "tint"].contains(&key), "{key}");
         }
+    }
+
+    #[test]
+    fn unread_colour_can_be_set_and_defaults_to_the_standard() {
+        let standard = ColorScheme::standard().colors.dark;
+        let mut palette = standard;
+        let values: BTreeMap<String, toml::Value> = toml::from_str("panel = \"#222222\"").expect("toml");
+        let mut problems = Vec::new();
+        merge_palette(Mode::Dark, &mut palette, &values, &mut problems);
+        assert!(problems.is_empty());
+        assert_eq!(palette.unread, standard.unread);
+
+        let values: BTreeMap<String, toml::Value> = toml::from_str("unread = \"#77A8FF\"").expect("toml");
+        merge_palette(Mode::Dark, &mut palette, &values, &mut problems);
+        assert!(problems.is_empty());
+        assert_eq!(palette.unread, Rgba::hex(0x77A8FF));
     }
 
     /// Task E8.8b: chart keys are read like the calendar's; left out, they follow the scheme's own
