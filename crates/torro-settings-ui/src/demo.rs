@@ -23,7 +23,8 @@ use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Righ
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::inbox::{
-    CategoryJob, CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
+    CategoryClearAccount, CategoryClearJob, CategoryClearPreview, CategoryClearProgress, CategoryJob,
+    CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
 };
 use torro_ipc::mail::{MailAccountStats, MailFolderStats};
 use torro_ipc::tools::ToolInfo;
@@ -54,6 +55,7 @@ pub struct Demo {
     settings: Settings,
     sent: Mutex<Vec<Request>>,
     category_job: Mutex<Option<CategoryJob>>,
+    category_clear_job: Mutex<Option<CategoryClearJob>>,
 }
 
 impl Demo {
@@ -82,7 +84,12 @@ impl Demo {
             tools,
             ..Settings::default()
         };
-        Demo { settings, sent: Mutex::new(Vec::new()), category_job: Mutex::new(None) }
+        Demo {
+            settings,
+            sent: Mutex::new(Vec::new()),
+            category_job: Mutex::new(None),
+            category_clear_job: Mutex::new(None),
+        }
     }
 
     /// The sample settings it answers `settings.settings` with.
@@ -635,6 +642,7 @@ impl Demo {
                 state: torro_ipc::inbox::CatchUpState::NotStarted,
             }],
             again: false,
+            clear_job: self.category_clear_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         }
     }
 
@@ -691,6 +699,51 @@ impl Backend for Demo {
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
+            Request::PreviewClearCategories => Response::CategoryClearPreview {
+                preview: CategoryClearPreview {
+                    accounts: vec![CategoryClearAccount {
+                        account: format!("mail:{MAIL_ADDRESS}"),
+                        categorized: 21_801,
+                    }],
+                    total: 21_801,
+                },
+            },
+            Request::ClearCategories { disable_automatic, .. } => {
+                let now = Utc::now();
+                *self.category_clear_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(CategoryClearJob {
+                        id: "category-clear:demo".into(),
+                        state: CategoryJobState::Running,
+                        accounts: vec![CategoryClearProgress {
+                            account: format!("mail:{MAIL_ADDRESS}"),
+                            max_sequence: 24_813,
+                            cursor: 1_024,
+                            categorized: 21_801,
+                            removed: 1_024,
+                        }],
+                        disable_automatic: *disable_automatic,
+                        entries_cleared: false,
+                        errors: Vec::new(),
+                        started_at: now,
+                        updated_at: now,
+                        generation: 1,
+                    });
+                self.note(request);
+                Response::Categorization { categorization: self.categorization() }
+            }
+            Request::ControlClearCategories { action, .. } => {
+                if let Some(job) =
+                    self.category_clear_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut()
+                {
+                    job.state = match action {
+                        CategoryJobControl::Pause => CategoryJobState::Paused,
+                        CategoryJobControl::Resume => CategoryJobState::Running,
+                        CategoryJobControl::Cancel => CategoryJobState::Cancelled,
+                    };
+                }
+                self.note(request);
+                Response::Categorization { categorization: self.categorization() }
+            }
             Request::PreviewCategoryJob { scope } => {
                 Response::CategoryJobPreview { preview: self.category_job_preview(scope) }
             }

@@ -187,7 +187,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -515,6 +515,15 @@ const SCHEMA_V13: &str = "CREATE TABLE category_jobs (
     data TEXT NOT NULL
 );
 CREATE INDEX category_jobs_latest ON category_jobs (updated_at DESC);";
+
+/// From schema version 13 to 14: the latest reset blocks incoming categorization while
+/// incomplete, and carries a durable per-account cursor for the one-shot clear-all action.
+const SCHEMA_V14: &str = "CREATE TABLE category_clear_jobs (
+    id TEXT PRIMARY KEY,
+    updated_at INTEGER NOT NULL,
+    data TEXT NOT NULL
+);
+CREATE INDEX category_clear_jobs_latest ON category_clear_jobs (updated_at DESC);";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
@@ -1754,6 +1763,84 @@ impl Inbox {
                 params![id, job.updated_at.timestamp_micros(), data],
             )?;
             Ok(Some(job))
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The latest all-account reset, or one by ID.
+    pub fn category_clear_job(&self, id: Option<&str>) -> Result<Option<torro_ipc::inbox::CategoryClearJob>, String> {
+        self.with(|db| {
+            let data: Option<String> = match id {
+                Some(id) => db
+                    .query_row("SELECT data FROM category_clear_jobs WHERE id = ?1", [id], |row| row.get(0))
+                    .optional()?,
+                None => db
+                    .query_row(
+                        "SELECT data FROM category_clear_jobs ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .optional()?,
+            };
+            data.map(|data| serde_json::from_str(&data).map_err(StoreError::from).map_err(Failure::from)).transpose()
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Write an all-account reset after it starts or advances.
+    pub fn save_category_clear_job(&self, job: &torro_ipc::inbox::CategoryClearJob) -> Result<(), String> {
+        self.with(|db| {
+            let data = serde_json::to_string(job)?;
+            db.execute(
+                "INSERT INTO category_clear_jobs (id, updated_at, data) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, data = excluded.data",
+                params![job.id, job.updated_at.timestamp_micros(), data],
+            )?;
+            Ok(())
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Mutate a reset under the database lock so a worker cannot overwrite pause or cancel.
+    pub fn change_category_clear_job(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut torro_ipc::inbox::CategoryClearJob),
+    ) -> Result<Option<torro_ipc::inbox::CategoryClearJob>, String> {
+        self.with(|db| {
+            let data: Option<String> = db
+                .query_row("SELECT data FROM category_clear_jobs WHERE id = ?1", [id], |row| row.get(0))
+                .optional()?;
+            let Some(data) = data else { return Ok(None) };
+            let mut job: torro_ipc::inbox::CategoryClearJob = serde_json::from_str(&data)?;
+            change(&mut job);
+            job.updated_at = Utc::now();
+            let data = serde_json::to_string(&job)?;
+            db.execute(
+                "UPDATE category_clear_jobs SET updated_at = ?2, data = ?3 WHERE id = ?1",
+                params![id, job.updated_at.timestamp_micros(), data],
+            )?;
+            Ok(Some(job))
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// An incomplete reset suppresses incoming automatic and rule categorization until it is
+    /// resumed or cancelled. The mail feed still files and shows the new mail itself.
+    pub fn category_clear_blocked(&self) -> Result<bool, String> {
+        self.with(|db| clear_blocks_categories(db)).map_err(|failure| failure.to_string())
+    }
+
+    /// Remove the category field of up to 500 mail entries of one account. This is repeated
+    /// after the mail stores are clear; a restart before completion repeats it idempotently.
+    pub fn clear_entry_category_batch(&self, account: &str) -> Result<u64, String> {
+        self.with(|db| {
+            let changed = db.execute(
+                "UPDATE items SET data = json_remove(data, '$.category') WHERE id IN (
+                 SELECT id FROM items WHERE source = ?1 AND json_extract(data, '$.category') IS NOT NULL LIMIT 500)",
+                [account],
+            )?;
+            Ok(changed as u64)
         })
         .map_err(|failure| failure.to_string())
     }
@@ -3584,6 +3671,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 13 {
         tx.execute_batch(SCHEMA_V13)?;
     }
+    if version < 14 {
+        tx.execute_batch(SCHEMA_V14)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -4212,9 +4302,22 @@ fn rule_category_in(
     auto_submitted: Option<&str>,
     junk: bool,
 ) -> Result<Option<MailCategory>, Failure> {
+    if clear_blocks_categories(db)? {
+        return Ok(None);
+    }
     let sorting = catalogue::sort_rules_in(db)?;
     let kept = rules::sort_category(&sorting, input);
     Ok(rules::mail_category(kept, invite, auto_submitted, junk))
+}
+
+/// Whether an unfinished clear-all job temporarily blocks new category assignments. The rule
+/// catalogue itself stays intact and works again after completion or cancellation.
+fn clear_blocks_categories(db: &Connection) -> Result<bool, Failure> {
+    let state: Option<String> = db.query_row(
+        "SELECT json_extract(data, '$.state') FROM category_clear_jobs ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+        [], |row| row.get(0),
+    ).optional()?;
+    Ok(matches!(state.as_deref(), Some("running" | "paused" | "failed")))
 }
 
 /// The sorting rules `client` may see, in their order (task E15.3). They name senders and words of

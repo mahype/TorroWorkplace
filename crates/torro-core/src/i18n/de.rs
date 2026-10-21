@@ -3942,6 +3942,58 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Local model: mail content stays on this computer.", "Lokales Modell: E-Mail-Inhalte bleiben auf diesem Rechner."),
     ("Choose a decision model above.", "Wähle oben ein Entscheidungsmodell."),
     ("Error", "Fehler"),
+    (
+        "Choose all mail accounts to remove every category.",
+        "Wähle alle E-Mail-Konten aus, um sämtliche Kategorien zu entfernen.",
+    ),
+    ("Categories are already being removed.", "Die Kategorien werden bereits entfernt."),
+    ("Categories are being removed.", "Die Kategorien werden entfernt."),
+    (
+        "Resume or cancel the previous category reset first.",
+        "Setze zuerst das vorige Entfernen der Kategorien fort oder brich es ab.",
+    ),
+    (
+        "The previous sorting job is still stopping. Try again shortly.",
+        "Der vorige Sortierauftrag wird noch beendet. Versuch es gleich noch einmal.",
+    ),
+    ("Category reset not found.", "Auftrag zum Entfernen der Kategorien nicht gefunden."),
+    ("This sorting job is already complete.", "Dieser Sortierauftrag ist bereits abgeschlossen."),
+    ("This category reset is already complete.", "Das Entfernen der Kategorien ist bereits abgeschlossen."),
+    (
+        "Remove categories from all mail accounts and turn off automatic categorization",
+        "Kategorien aus allen E-Mail-Konten entfernen und automatische Kategorisierung ausschalten",
+    ),
+    (
+        "Remove categories from all mail accounts; future mail may receive categories again",
+        "Kategorien aus allen E-Mail-Konten entfernen; künftige E-Mails können wieder Kategorien erhalten",
+    ),
+    ("Pause removing all mail categories", "Entfernen aller E-Mail-Kategorien pausieren"),
+    ("Resume removing all mail categories", "Entfernen aller E-Mail-Kategorien fortsetzen"),
+    ("Cancel removing all mail categories", "Entfernen aller E-Mail-Kategorien abbrechen"),
+    ("Remove all categories…", "Alle Kategorien entfernen…"),
+    ("Categories on mail", "Kategorisierte E-Mails"),
+    ("{count} assignments across all accounts and folders", "{count} Zuordnungen in allen Konten und Ordnern"),
+    ("{count} categories", "{count} Kategorien"),
+    ("Turn off automatic categorization afterwards", "Automatische Kategorisierung danach ausschalten"),
+    (
+        "New mail stays uncategorized until you turn sorting on again.",
+        "Neue E-Mails bleiben ohne Kategorie, bis du die Sortierung wieder einschaltest.",
+    ),
+    (
+        "New mail may receive categories again after this reset.",
+        "Neue E-Mails können nach diesem Entfernen wieder Kategorien erhalten.",
+    ),
+    (
+        "This removes manual, rule and model categories and model answers. Mail, folders and sorting rules remain.",
+        "Manuelle, regelbasierte und Modellkategorien samt Modellantworten werden entfernt. E-Mails, Ordner und Sortierregeln bleiben.",
+    ),
+    ("Remove categories from all mail", "Kategorien aus allen E-Mails entfernen"),
+    ("Reset progress", "Fortschritt beim Entfernen"),
+    ("Reset categorization", "Kategorisierung zurücksetzen"),
+    (
+        "Only category assignments and model answers are removed; no mail is deleted.",
+        "Nur Kategoriezuordnungen und Modellantworten werden entfernt; keine E-Mail wird gelöscht.",
+    ),
     ("Not started", "Noch nicht begonnen"),
     ("{done} of {total}", "{done} von {total}"),
     (

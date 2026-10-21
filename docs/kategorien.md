@@ -184,6 +184,9 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Beliebigen Umfang zählen | Einstellungen › Categorization | `inbox.preview_category_job` · Read; alle lokal bekannten Mails, gelesene eingeschlossen | `inbox_preview_category_job` |
 | Sortierauftrag starten und verfolgen | Einstellungen › Categorization | `inbox.start_category_job` · Write, `inbox.get_category_job` · Read | `inbox_start_category_job`, `inbox_get_category_job` |
 | Auftrag pausieren, fortsetzen, abbrechen | Einstellungen › Categorization | `inbox.control_category_job` · Write | `inbox_control_category_job` |
+| Alle Kategorien vorab zählen | Einstellungen › Categorization | `inbox.preview_clear_categories` · Read | `inbox_preview_clear_categories` |
+| Kategorien aller Mails entfernen | Einstellungen › Categorization | `inbox.clear_categories` · Delete, mit expliziter All-Konten-Bestätigung und optionaler Deaktivierung der Automatik | `inbox_clear_categories` |
+| Entfernen pausieren, fortsetzen, abbrechen | Einstellungen › Categorization | `inbox.control_clear_categories` · Delete | `inbox_control_clear_categories` |
 | Entscheidermodelle anbieten | Einstellungen › Categorization | `ai.list_models` um das Feld `decision` erweitert · Read | vorhanden |
 | Modell je Funktion lesen | Einstellungen › Categorization | `ai.list_assignments` · Read | `ai_list_assignments` |
 | Modell je Funktion setzen | Einstellungen › Categorization | `ai.set_assignment` · Admin | `ai_set_assignment` |

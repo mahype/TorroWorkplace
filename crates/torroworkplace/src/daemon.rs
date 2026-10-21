@@ -621,6 +621,9 @@ fn describe(request: &Request) -> String {
         Request::StartCategoryJob { .. } => "start mail sorting job".into(),
         Request::GetCategoryJob { .. } => "mail sorting job".into(),
         Request::ControlCategoryJob { id, action } => format!("{action:?} mail sorting job {id}"),
+        Request::PreviewClearCategories => "preview removing mail categories".into(),
+        Request::ClearCategories { .. } => "remove all mail categories".into(),
+        Request::ControlClearCategories { id, action } => format!("{action:?} category reset {id}"),
         // Never a name, a description or a condition (task E15.1).
         Request::CreateCategory { .. } => "create a mail category".into(),
         Request::UpdateCategory { .. } => "change a mail category".into(),

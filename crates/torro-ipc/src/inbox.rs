@@ -652,6 +652,34 @@ impl InboxClient {
         }
     }
 
+    /// Count all category assignments before a global reset.
+    pub async fn preview_clear_categories(&self) -> Result<CategoryClearPreview, InboxError> {
+        match self.ask(Request::PreviewClearCategories).await? {
+            Response::CategoryClearPreview { preview } => Ok(preview),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Remove every category assignment in one resumable job.
+    pub async fn clear_categories(&self, disable_automatic: bool) -> Result<Categorization, InboxError> {
+        match self.ask(Request::ClearCategories { all_accounts: true, disable_automatic }).await? {
+            Response::Categorization { categorization } => Ok(categorization),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Pause, resume or cancel an all-account category reset.
+    pub async fn control_clear_categories(
+        &self,
+        id: String,
+        action: CategoryJobControl,
+    ) -> Result<Categorization, InboxError> {
+        match self.ask(Request::ControlClearCategories { id, action }).await? {
+            Response::Categorization { categorization } => Ok(categorization),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.set_item_category` (task E12.8): files the mail by hand, and with `remember` keeps
     /// it for its sender.
     pub async fn set_mail_category(
@@ -1776,6 +1804,9 @@ pub struct Categorization {
     /// `inbox.catch_up_categories` with `again`); `accounts` counts what it went through.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub again: bool,
+    /// The most recent all-account category reset, if one has been started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_job: Option<CategoryClearJob>,
 }
 
 /// How far the backlog of one mail account has been sorted ([`Categorization::accounts`], task
@@ -1896,4 +1927,46 @@ pub struct CategoryJob {
     /// used (for a rule-only recheck).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_in_cloud: Option<bool>,
+}
+
+/// Per-account count before removing every category in one deliberate action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryClearAccount {
+    pub account: String,
+    pub categorized: u64,
+}
+
+/// Preview for the all-account category reset. Counts include manual, rule and model categories
+/// in every folder, read and unread alike.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryClearPreview {
+    pub accounts: Vec<CategoryClearAccount>,
+    pub total: u64,
+}
+
+/// Durable progress in one account. `max_sequence` freezes what existed when the job began.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryClearProgress {
+    pub account: String,
+    pub max_sequence: i64,
+    pub cursor: i64,
+    pub categorized: u64,
+    pub removed: u64,
+}
+
+/// One resumable all-account reset. Nothing in this record contains mail text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryClearJob {
+    pub id: String,
+    pub state: CategoryJobState,
+    pub accounts: Vec<CategoryClearProgress>,
+    pub disable_automatic: bool,
+    /// True after category-bearing inbox entries have also been cleared.
+    #[serde(default)]
+    pub entries_cleared: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub generation: u64,
 }

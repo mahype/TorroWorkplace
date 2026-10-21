@@ -911,6 +911,9 @@ async fn decide_mail_with(
     let held = mail.content_for_category(account, message).await.map_err(|err| DecideError::Mail(err.to_string()))?;
     let Some(content) = held else { return Ok(None) };
     let Some(decided) = ask_model(ai, inbox, decider, &content).await? else { return Ok(None) };
+    if inbox.category_clear_blocked().map_err(DecideError::Mail)? {
+        return Ok(None);
+    }
     let one = [message.to_string()];
     mail.set_category(account, &one, Some(decided.category)).await.map_err(|err| DecideError::Mail(err.to_string()))?;
     mail.set_model_answers(account, message, decided.needs_reply, decided.urgency)
@@ -1196,7 +1199,7 @@ async fn category_job_run(
                     (None, None) => None,
                 };
                 // Pause/cancel may arrive while the model thinks. Do not apply that late answer.
-                if current().is_none() {
+                if current().is_none() || inbox.category_clear_blocked().unwrap_or(true) {
                     break;
                 }
                 if let Some((category, answers)) = decided
@@ -1259,6 +1262,147 @@ fn category_job_error(inbox: &Inbox, id: &str, generation: u64, account: &str, e
             if let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account) {
                 progress.failed += 1;
             }
+            if job.errors.len() < 20 {
+                job.errors.push(error.to_string());
+            }
+        }
+    });
+}
+
+/// Remove categories in account batches, then clear the category field of inbox entries. Both
+/// stages are idempotent: if the daemon stops between a mail batch and its cursor write, a
+/// repeat simply finds fewer rows; if it stops during entry cleanup, the next run repeats it.
+async fn category_clear_run(
+    mail: Arc<MailService>,
+    inbox: Arc<Inbox>,
+    active: Arc<std::sync::Mutex<Option<(String, u64)>>>,
+    clearing: Arc<std::sync::atomic::AtomicBool>,
+    id: String,
+    generation: u64,
+) {
+    use torro_ipc::inbox::CategoryJobState;
+    let current = || {
+        inbox
+            .category_clear_job(Some(&id))
+            .ok()
+            .flatten()
+            .filter(|job| job.generation == generation && job.state == CategoryJobState::Running)
+    };
+    while let Some(job) = current() {
+        if let Some(account) = job.accounts.iter().find(|account| account.cursor < account.max_sequence).cloned() {
+            match mail.clear_category_batch(&account.account, account.cursor, account.max_sequence).await {
+                Ok((cursor, removed)) => {
+                    let _ = inbox.change_category_clear_job(&id, |job| {
+                        if job.generation == generation && job.state == CategoryJobState::Running {
+                            if let Some(progress) = job.accounts.iter_mut().find(|item| item.account == account.account)
+                            {
+                                progress.cursor = cursor;
+                                progress.removed += removed;
+                            }
+                        }
+                    });
+                }
+                Err(err) => {
+                    category_clear_error(&inbox, &id, generation, &format!("{}: {err}", account.account));
+                    break;
+                }
+            }
+            tokio::task::yield_now().await;
+            continue;
+        }
+        // Categories can have been assigned between the initial count and persisting the
+        // blocking job. Sweep once more after all frozen cursors; incoming mail has been
+        // suppressed since the job record was written, so this converges.
+        let selected: Vec<String> = job.accounts.iter().map(|account| account.account.clone()).collect();
+        let remaining = match mail.category_clear_remaining(&selected).await {
+            Ok(remaining) => remaining,
+            Err(err) => {
+                category_clear_error(&inbox, &id, generation, &err.to_string());
+                break;
+            }
+        };
+        let mut found = false;
+        let _ = inbox.change_category_clear_job(&id, |job| {
+            if job.generation == generation && job.state == CategoryJobState::Running {
+                for progress in &mut job.accounts {
+                    if let Some((_, count, maximum)) =
+                        remaining.iter().find(|(account, _, _)| account == &progress.account)
+                        && *count > 0
+                    {
+                        progress.cursor = 0;
+                        progress.max_sequence = *maximum;
+                        progress.categorized += *count;
+                        found = true;
+                    }
+                }
+            }
+        });
+        if found {
+            continue;
+        }
+        let mut answers_more = false;
+        for account in &job.accounts {
+            if current().is_none() {
+                break;
+            }
+            match mail.clear_model_answers_batch(&account.account).await {
+                Ok(changed) if changed > 0 => answers_more = true,
+                Ok(_) => {}
+                Err(err) => {
+                    category_clear_error(&inbox, &id, generation, &format!("{}: {err}", account.account));
+                    break;
+                }
+            }
+        }
+        if current().is_none() {
+            break;
+        }
+        if answers_more {
+            continue;
+        }
+        // Every mail store is clear. An entry can include several messages; clear its cached
+        // category as a separate idempotent stage so a crash never leaves an entry mislabeled.
+        let mut more = false;
+        for account in &job.accounts {
+            if current().is_none() {
+                break;
+            }
+            match inbox.clear_entry_category_batch(&account.account) {
+                Ok(changed) if changed > 0 => more = true,
+                Ok(_) => {}
+                Err(err) => {
+                    category_clear_error(&inbox, &id, generation, &format!("{}: {err}", account.account));
+                    break;
+                }
+            }
+        }
+        if current().is_none() {
+            break;
+        }
+        if more {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        let _ = inbox.change_category_clear_job(&id, |job| {
+            if job.generation == generation && job.state == CategoryJobState::Running {
+                job.entries_cleared = true;
+                job.state = CategoryJobState::Complete;
+            }
+        });
+        break;
+    }
+    let mut held = active.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if held.as_ref() == Some(&(id, generation)) {
+        *held = None;
+        clearing.store(false, std::sync::atomic::Ordering::Release);
+    }
+    drop(held);
+}
+
+fn category_clear_error(inbox: &Inbox, id: &str, generation: u64, error: &str) {
+    let _ = inbox.change_category_clear_job(id, |job| {
+        if job.generation == generation && job.state == torro_ipc::inbox::CategoryJobState::Running {
+            job.state = torro_ipc::inbox::CategoryJobState::Failed;
             if job.errors.len() < 20 {
                 job.errors.push(error.to_string());
             }
@@ -1491,6 +1635,10 @@ pub struct Core {
     /// The explicit categorization worker in this daemon. A stored running job without this
     /// marker belongs to an earlier daemon and is resumable as paused.
     category_worker: Arc<std::sync::Mutex<Option<(String, u64)>>>,
+    /// A clear-all job reserves categorization while it runs; its durable record also blocks
+    /// incoming rules/model decisions after a daemon restart until the job is resolved.
+    clearing_categories: Arc<std::sync::atomic::AtomicBool>,
+    clear_worker: Arc<std::sync::Mutex<Option<(String, u64)>>>,
     /// The ntfy accounts (task E5.12), kept apart like the AI accounts: the user's
     /// ([`NtfyAccounts::system`]), loaded only by [`Core::start`]; tests bring their own. The
     /// inbox's ntfy source subscribes to their topics (task E5.13).
@@ -1577,6 +1725,8 @@ impl Core {
             clients,
             catch_up: Arc::new(CatchUp::default()),
             category_worker: Arc::new(std::sync::Mutex::new(None)),
+            clearing_categories: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            clear_worker: Arc::new(std::sync::Mutex::new(None)),
             approvals: Arc::new(Approvals::system()),
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
@@ -3661,6 +3811,9 @@ impl Core {
             | Request::StartCategoryJob { .. }
             | Request::GetCategoryJob { .. }
             | Request::ControlCategoryJob { .. }
+            | Request::PreviewClearCategories
+            | Request::ClearCategories { .. }
+            | Request::ControlClearCategories { .. }
             | Request::CreateCategory { .. }
             | Request::UpdateCategory { .. }
             | Request::RemoveCategory { .. }
@@ -4213,12 +4366,35 @@ impl Core {
                 progress
             })
             .collect();
+        let mut clear_job = match self.inbox.category_clear_job(None) {
+            Ok(job) => job,
+            Err(err) => return Response::Error { code: "error".into(), message: err },
+        };
+        if let Some(job) = &mut clear_job {
+            let available = self.mail.accounts_in(reach).await;
+            if job.accounts.iter().any(|account| !available.contains(&account.account)) {
+                clear_job = None;
+            } else if job.state == torro_ipc::inbox::CategoryJobState::Running {
+                let active = self.clear_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let running_here = active.as_ref() == Some(&(job.id.clone(), job.generation));
+                drop(active);
+                if !running_here {
+                    clear_job = match self.inbox.change_category_clear_job(&job.id, |held| {
+                        held.state = torro_ipc::inbox::CategoryJobState::Paused;
+                    }) {
+                        Ok(job) => job,
+                        Err(err) => return Response::Error { code: "error".into(), message: err },
+                    };
+                }
+            }
+        }
         let categorization = torro_ipc::inbox::Categorization {
             enabled: assignment.as_ref().is_some_and(|held| held.is_ready()),
             engine: assignment.as_ref().and_then(|held| held.engine.clone()),
             model: assignment.and_then(|held| held.model),
             accounts,
             again,
+            clear_job,
         };
         Response::Categorization { categorization }
     }
@@ -4301,6 +4477,9 @@ impl Core {
             let newest = self.catch_up.started.load(Ordering::Acquire);
             self.catch_up.cancelled.fetch_max(newest, Ordering::AcqRel);
             return self.get_categorization(reach).await;
+        }
+        if self.clearing_categories.load(Ordering::Acquire) || self.inbox.category_clear_blocked().unwrap_or(true) {
+            return Response::Error { code: "busy".into(), message: tr("Categories are being removed.").into() };
         }
         if self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() {
             return Response::Error { code: "busy".into(), message: tr("Mail sorting is already running.").into() };
@@ -4428,6 +4607,11 @@ impl Core {
         if self.catch_up.running.load(std::sync::atomic::Ordering::Acquire) {
             return Response::Error { code: "busy".into(), message: tr("Mail sorting is already running.").into() };
         }
+        if self.clearing_categories.load(std::sync::atomic::Ordering::Acquire)
+            || self.inbox.category_clear_blocked().unwrap_or(true)
+        {
+            return Response::Error { code: "busy".into(), message: tr("Categories are being removed.").into() };
+        }
         let (decider, model_in_cloud) =
             match (category_job_decider(&self.settings, &self.ai, &scope).await, scope.again) {
                 (Ok((decider, cloud)), _) => (Some(decider), Some(cloud)),
@@ -4490,6 +4674,12 @@ impl Core {
         let Response::CategoryJob { job: Some(existing) } = self.get_category_job(Some(id), reach).await else {
             return Response::Error { code: "not-found".into(), message: tr("Categorization job not found.").into() };
         };
+        if action == CategoryJobControl::Resume && existing.state == CategoryJobState::Complete {
+            return Response::Error {
+                code: "unsupported".into(),
+                message: tr("This sorting job is already complete.").into(),
+            };
+        }
         let decider = if action == CategoryJobControl::Resume {
             match (category_job_decider(&self.settings, &self.ai, &existing.scope).await, existing.scope.again) {
                 (Ok((decider, _)), _) => Some(decider),
@@ -4508,7 +4698,12 @@ impl Core {
             CategoryJobControl::Cancel if job.state != CategoryJobState::Complete => {
                 job.state = CategoryJobState::Cancelled
             }
-            CategoryJobControl::Resume if matches!(job.state, CategoryJobState::Paused | CategoryJobState::Failed) => {
+            CategoryJobControl::Resume
+                if matches!(
+                    job.state,
+                    CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled
+                ) =>
+            {
                 job.generation += 1;
                 job.state = CategoryJobState::Running;
             }
@@ -4529,9 +4724,6 @@ impl Core {
             drop(active);
             self.spawn_category_worker(id.to_string(), job.generation, decider);
         } else {
-            if active.as_ref().is_some_and(|(running, _)| running == id) && job.state != CategoryJobState::Running {
-                *active = None;
-            }
             drop(active);
         }
         Response::CategoryJob { job: Some(job) }
@@ -4541,6 +4733,220 @@ impl Core {
         let (mail, inbox, ai, worker) =
             (Arc::clone(&self.mail), Arc::clone(&self.inbox), Arc::clone(&self.ai), Arc::clone(&self.category_worker));
         tokio::spawn(category_job_run(mail, inbox, ai, worker, id, generation, decider));
+    }
+
+    async fn preview_clear_categories(&self, reach: Reach<'_>) -> Response {
+        let accounts = match self.mail.category_clear_preview(reach).await {
+            Ok(accounts) => accounts,
+            Err(err) => return err.response(),
+        };
+        let preview = torro_ipc::inbox::CategoryClearPreview {
+            total: accounts.iter().map(|(_, count, _)| count).sum(),
+            accounts: accounts
+                .into_iter()
+                .map(|(account, categorized, _)| torro_ipc::inbox::CategoryClearAccount { account, categorized })
+                .collect(),
+        };
+        Response::CategoryClearPreview { preview }
+    }
+
+    /// Start one all-account reset. Reserving the operation before stopping older sorting jobs
+    /// prevents a new sorter from starting during the handover. The worker begins only after
+    /// both older workers have left any in-flight model answer behind.
+    async fn clear_categories(&self, all_accounts: bool, disable_automatic: bool, reach: Reach<'_>) -> Response {
+        use std::sync::atomic::Ordering;
+        use torro_ipc::inbox::{CategoryClearJob, CategoryClearProgress, CategoryJobState};
+        if !all_accounts {
+            return Response::Error {
+                code: "error".into(),
+                message: tr("Choose all mail accounts to remove every category.").into(),
+            };
+        }
+        if self.clearing_categories.swap(true, Ordering::AcqRel) {
+            return Response::Error {
+                code: "busy".into(),
+                message: tr("Categories are already being removed.").into(),
+            };
+        }
+        match self.inbox.category_clear_blocked() {
+            Ok(true) => {
+                self.clearing_categories.store(false, Ordering::Release);
+                return Response::Error {
+                    code: "busy".into(),
+                    message: tr("Resume or cancel the previous category reset first.").into(),
+                };
+            }
+            Err(err) => {
+                self.clearing_categories.store(false, Ordering::Release);
+                return Response::Error { code: "error".into(), message: err };
+            }
+            Ok(false) => {}
+        }
+        let newest = self.catch_up.started.load(Ordering::Acquire);
+        self.catch_up.cancelled.fetch_max(newest, Ordering::AcqRel);
+        let old = self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some((id, _)) = old {
+            let _ = self.inbox.change_category_job(&id, |job| job.state = CategoryJobState::Cancelled);
+        }
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(65), async {
+            loop {
+                let explicit = self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some();
+                if !explicit && !self.catch_up.running.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        if stopped.is_err() {
+            self.clearing_categories.store(false, Ordering::Release);
+            return Response::Error {
+                code: "busy".into(),
+                message: tr("The previous sorting job is still stopping. Try again shortly.").into(),
+            };
+        }
+        let counts = match self.mail.category_clear_preview(reach).await {
+            Ok(counts) => counts,
+            Err(err) => {
+                self.clearing_categories.store(false, Ordering::Release);
+                return err.response();
+            }
+        };
+        let previous =
+            self.settings.current().ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize).cloned();
+        if disable_automatic && let Some(mut assignment) = previous.clone() {
+            assignment.enabled = false;
+            if let Err(err) =
+                self.settings.set_ai_assignment(torro_core::ai::AiFunction::InboxCategorize, Some(assignment))
+            {
+                self.clearing_categories.store(false, Ordering::Release);
+                return Response::Error { code: "error".into(), message: err };
+            }
+        }
+        let id = match self.inbox.new_category_job_id() {
+            Ok(id) => id.replace("category-job:", "category-clear:"),
+            Err(err) => {
+                if disable_automatic {
+                    let _ = self.settings.set_ai_assignment(torro_core::ai::AiFunction::InboxCategorize, previous);
+                }
+                self.clearing_categories.store(false, Ordering::Release);
+                return Response::Error { code: "error".into(), message: err };
+            }
+        };
+        let now = Utc::now();
+        let job = CategoryClearJob {
+            id: id.clone(),
+            state: CategoryJobState::Running,
+            accounts: counts
+                .into_iter()
+                .map(|(account, categorized, max_sequence)| CategoryClearProgress {
+                    account,
+                    max_sequence,
+                    cursor: 0,
+                    categorized,
+                    removed: 0,
+                })
+                .collect(),
+            disable_automatic,
+            entries_cleared: false,
+            errors: Vec::new(),
+            started_at: now,
+            updated_at: now,
+            generation: 1,
+        };
+        if let Err(err) = self.inbox.save_category_clear_job(&job) {
+            if disable_automatic {
+                let _ = self.settings.set_ai_assignment(torro_core::ai::AiFunction::InboxCategorize, previous);
+            }
+            self.clearing_categories.store(false, Ordering::Release);
+            return Response::Error { code: "error".into(), message: err };
+        }
+        *self.clear_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((id.clone(), 1));
+        self.spawn_clear_worker(id, 1);
+        self.get_categorization(reach).await
+    }
+
+    async fn control_clear_categories(
+        &self,
+        id: &str,
+        action: torro_ipc::inbox::CategoryJobControl,
+        reach: Reach<'_>,
+    ) -> Response {
+        use std::sync::atomic::Ordering;
+        use torro_ipc::inbox::{CategoryJobControl, CategoryJobState};
+        let job = match self.inbox.category_clear_job(Some(id)) {
+            Ok(Some(job)) => job,
+            Ok(None) => {
+                return Response::Error { code: "not-found".into(), message: tr("Category reset not found.").into() };
+            }
+            Err(err) => return Response::Error { code: "error".into(), message: err },
+        };
+        let available = self.mail.accounts_in(reach).await;
+        if job.accounts.iter().any(|account| !available.contains(&account.account)) {
+            return Response::Error { code: "not-found".into(), message: tr("Category reset not found.").into() };
+        }
+        if action == CategoryJobControl::Resume && job.state == CategoryJobState::Complete {
+            return Response::Error {
+                code: "unsupported".into(),
+                message: tr("This category reset is already complete.").into(),
+            };
+        }
+        if action == CategoryJobControl::Resume {
+            if self.clear_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() {
+                return Response::Error {
+                    code: "busy".into(),
+                    message: tr("Categories are already being removed.").into(),
+                };
+            }
+            if self.catch_up.running.load(Ordering::Acquire)
+                || self.category_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+            {
+                return Response::Error { code: "busy".into(), message: tr("Mail sorting is already running.").into() };
+            }
+            self.clearing_categories.store(true, Ordering::Release);
+        }
+        let changed = self.inbox.change_category_clear_job(id, |job| match action {
+            CategoryJobControl::Pause if job.state == CategoryJobState::Running => job.state = CategoryJobState::Paused,
+            CategoryJobControl::Cancel if job.state != CategoryJobState::Complete => {
+                job.state = CategoryJobState::Cancelled
+            }
+            CategoryJobControl::Resume
+                if matches!(
+                    job.state,
+                    CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled
+                ) =>
+            {
+                job.generation += 1;
+                job.state = CategoryJobState::Running;
+            }
+            _ => {}
+        });
+        let job = match changed {
+            Ok(Some(job)) => job,
+            Ok(None) => {
+                return Response::Error { code: "not-found".into(), message: tr("Category reset not found.").into() };
+            }
+            Err(err) => return Response::Error { code: "error".into(), message: err },
+        };
+        if action == CategoryJobControl::Resume && job.state == CategoryJobState::Running {
+            *self.clear_worker.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((id.to_string(), job.generation));
+            self.spawn_clear_worker(id.to_string(), job.generation);
+        } else if action == CategoryJobControl::Cancel {
+            self.clearing_categories.store(false, Ordering::Release);
+        }
+        self.get_categorization(reach).await
+    }
+
+    fn spawn_clear_worker(&self, id: String, generation: u64) {
+        tokio::spawn(category_clear_run(
+            Arc::clone(&self.mail),
+            Arc::clone(&self.inbox),
+            Arc::clone(&self.clear_worker),
+            Arc::clone(&self.clearing_categories),
+            id,
+            generation,
+        ));
     }
 
     /// Answers an `inbox.*` request of `client` (`None` for the app key) after the checks of
@@ -4563,6 +4969,12 @@ impl Core {
         // Muting by a mail message's id (issue #123): as its entry's when it has one, else by the
         // message itself – also after an approval, which pinned the message as it was then.
         let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+        if matches!(&request, Request::SetItemCategory { .. } | Request::ClassifyItem { .. })
+            && (self.clearing_categories.load(std::sync::atomic::Ordering::Acquire)
+                || self.inbox.category_clear_blocked().unwrap_or(true))
+        {
+            return Response::Error { code: "busy".into(), message: tr("Categories are being removed.").into() };
+        }
         // Boxed: the lookup in the mail stores would grow this poll frame (see `handle_within`).
         let (request, pin) = match Box::pin(self.resolve_message(request, reach)).await {
             Ok((request, None)) => (request, pin),
@@ -4634,6 +5046,13 @@ impl Core {
             Request::StartCategoryJob { scope } => Box::pin(self.start_category_job(scope, reach)).await,
             Request::GetCategoryJob { id } => Box::pin(self.get_category_job(id.as_deref(), reach)).await,
             Request::ControlCategoryJob { id, action } => Box::pin(self.control_category_job(&id, action, reach)).await,
+            Request::PreviewClearCategories => Box::pin(self.preview_clear_categories(reach)).await,
+            Request::ClearCategories { all_accounts, disable_automatic } => {
+                Box::pin(self.clear_categories(all_accounts, disable_automatic, reach)).await
+            }
+            Request::ControlClearCategories { id, action } => {
+                Box::pin(self.control_clear_categories(&id, action, reach)).await
+            }
             // The catalogue (task E15.2): the core answers, since the counts and a removal reach
             // the mail stores.
             Request::CreateCategory { group, name, description, model, icon } => {

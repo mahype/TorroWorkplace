@@ -1636,6 +1636,43 @@ impl MailService {
         Ok(store.run(move |store| store.category_job_batch(&selected, cursor, maximum, limit)).await?)
     }
 
+    /// Counts every category assignment in accounts this caller may read.
+    pub async fn category_clear_preview(&self, reach: Reach<'_>) -> Result<Vec<(String, u64, i64)>, MailError> {
+        let mut accounts = Vec::new();
+        for mailbox in self.reachable(reach, None).await {
+            let (count, maximum) = mailbox.store()?.run(|store| store.category_clear_preview()).await?;
+            accounts.push((mailbox.id().to_string(), count, maximum));
+        }
+        Ok(accounts)
+    }
+
+    /// Recount only the accounts frozen into a reset job, without adding newly connected ones.
+    pub async fn category_clear_remaining(&self, accounts: &[String]) -> Result<Vec<(String, u64, i64)>, MailError> {
+        let mut result = Vec::new();
+        for account in accounts {
+            let mailbox = self.mailbox_of(account).await?;
+            let (count, maximum) = mailbox.store()?.run(|store| store.category_clear_preview()).await?;
+            result.push((account.clone(), count, maximum));
+        }
+        Ok(result)
+    }
+
+    /// Clear one bounded account batch, idempotently, leaving every mail and folder in place.
+    pub async fn clear_category_batch(
+        &self,
+        account: &str,
+        cursor: i64,
+        maximum: i64,
+    ) -> Result<(i64, u64), MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        Ok(store.run(move |store| store.clear_category_batch(cursor, maximum, 500)).await?)
+    }
+
+    pub async fn clear_model_answers_batch(&self, account: &str) -> Result<u64, MailError> {
+        let store = self.mailbox_of(account).await?.store()?;
+        Ok(store.run(|store| store.clear_model_answers_batch(500)).await?)
+    }
+
     /// Write an automatic answer only while the mail still has the category the job read.
     pub async fn set_category_if_unchanged(
         &self,

@@ -1049,6 +1049,9 @@ impl PimService {
             | Request::StartCategoryJob { .. }
             | Request::GetCategoryJob { .. }
             | Request::ControlCategoryJob { .. }
+            | Request::PreviewClearCategories
+            | Request::ClearCategories { .. }
+            | Request::ControlClearCategories { .. }
             | Request::CreateCategory { .. }
             | Request::UpdateCategory { .. }
             | Request::RemoveCategory { .. }

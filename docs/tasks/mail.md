@@ -951,7 +951,7 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
   Neustart rekonstruiert den Job aus dem Dienst; leere und Fehlerzustände sind verständlich.
 
 ### M10.5 Alle Kategorien in einem Auftrag entfernen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M10.3 · **Dateien:** `crates/torro-ipc/src/{lib.rs,inbox.rs,api.rs}`,
   `crates/torroworkplace/src/{core.rs,mcp.rs,approvals.rs,audit.rs}`, `crates/torroworkplace/src/mail/{store.rs,service.rs}`,
   `crates/torro-settings-ui/src/{mail.rs,demo.rs}`, `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`

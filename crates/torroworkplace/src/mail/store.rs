@@ -958,6 +958,51 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// All assignments in this account, regardless of folder, read state or source.
+    pub fn category_clear_preview(&self) -> Result<(u64, i64), MailStoreError> {
+        let (count, maximum): (i64, i64) = self.db.query_row(
+            "SELECT count(*), coalesce(max(seq), 0) FROM messages WHERE category IS NOT NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((count.max(0) as u64, maximum))
+    }
+
+    /// Remove up to `limit` category assignments and the two answers from the same model call,
+    /// in one transaction. The cursor is the last row changed; a restart can repeat this safely.
+    /// The search index, bodies, folders, flags, drafts and server mail are untouched.
+    pub fn clear_category_batch(&self, cursor: i64, maximum: i64, limit: u32) -> Result<(i64, u64), MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        let sequences: Vec<i64> = {
+            let mut statement = tx.prepare(
+                "SELECT seq FROM messages WHERE category IS NOT NULL AND seq > ?1 AND seq <= ?2 ORDER BY seq LIMIT ?3",
+            )?;
+            let rows = statement.query_map(params![cursor, maximum, i64::from(limit)], |row| row.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut changed = 0u64;
+        for seq in &sequences {
+            changed += tx.execute(
+                "UPDATE messages SET category = NULL, category_source = NULL, category_confidence = NULL,
+                 needs_reply = NULL, urgency = NULL WHERE seq = ?1 AND category IS NOT NULL",
+                [seq],
+            )? as u64;
+        }
+        tx.commit()?;
+        Ok((sequences.last().copied().unwrap_or(maximum), changed))
+    }
+
+    /// Clear model answers left on messages whose category was already removed separately.
+    /// This is bounded and repeatable after a restart.
+    pub fn clear_model_answers_batch(&self, limit: u32) -> Result<u64, MailStoreError> {
+        let changed = self.db.execute(
+            "UPDATE messages SET needs_reply = NULL, urgency = NULL WHERE seq IN (
+             SELECT seq FROM messages WHERE needs_reply IS NOT NULL OR urgency IS NOT NULL LIMIT ?1)",
+            [i64::from(limit)],
+        )?;
+        Ok(changed as u64)
+    }
+
     /// How much mail of any folder is of `category` (task E15.2): what removing the category
     /// would move.
     pub fn count_category(&self, category: Category) -> Result<u64, MailStoreError> {

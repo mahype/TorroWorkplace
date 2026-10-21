@@ -1745,6 +1745,16 @@ pub enum Request {
     /// Pauses, resumes or cancels the job with `id`. Changes already made remain.
     #[serde(rename = "inbox.control_category_job")]
     ControlCategoryJob { id: String, action: crate::inbox::CategoryJobControl },
+    /// Count category assignments across every accessible mail account before a bulk reset.
+    #[serde(rename = "inbox.preview_clear_categories")]
+    PreviewClearCategories,
+    /// Remove all manual, rule and model category assignments and model answers. Mail, folders
+    /// and sorting rules stay. The caller must explicitly select every account.
+    #[serde(rename = "inbox.clear_categories")]
+    ClearCategories { all_accounts: bool, disable_automatic: bool },
+    /// Pause, resume or cancel the all-account reset. Resume keeps its account cursors.
+    #[serde(rename = "inbox.control_clear_categories")]
+    ControlClearCategories { id: String, action: crate::inbox::CategoryJobControl },
     /// Makes a mail category of the person's own ([`Response::Category`], task E15.1,
     /// `docs/kategorien.md`). Its key is `custom_<n>` and never changes. `error` for a name that is
     /// empty, longer than 60 characters, more than one line or already a category's, for a
@@ -3151,6 +3161,10 @@ pub enum Response {
     /// Persisted categorization job. `None` means no job has been started yet.
     CategoryJob {
         job: Option<crate::inbox::CategoryJob>,
+    },
+    /// Categories a bulk reset would remove, by account.
+    CategoryClearPreview {
+        preview: crate::inbox::CategoryClearPreview,
     },
     /// One mail category as it stands now ([`Request::CreateCategory`],
     /// [`Request::UpdateCategory`]).

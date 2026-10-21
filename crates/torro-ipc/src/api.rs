@@ -1496,6 +1496,9 @@ impl Request {
             Request::StartCategoryJob { .. } => &START_CATEGORY_JOB,
             Request::GetCategoryJob { .. } => &GET_CATEGORY_JOB,
             Request::ControlCategoryJob { .. } => &CONTROL_CATEGORY_JOB,
+            Request::PreviewClearCategories => &PREVIEW_CLEAR_CATEGORIES,
+            Request::ClearCategories { .. } => &CLEAR_CATEGORIES,
+            Request::ControlClearCategories { .. } => &CONTROL_CLEAR_CATEGORIES,
             Request::CreateCategory { .. } => &CREATE_CATEGORY,
             Request::UpdateCategory { .. } => &UPDATE_CATEGORY,
             Request::RemoveCategory { .. } => &REMOVE_CATEGORY,
@@ -1715,6 +1718,9 @@ pub static CATALOGUE: &[&Command] = &[
     &START_CATEGORY_JOB,
     &GET_CATEGORY_JOB,
     &CONTROL_CATEGORY_JOB,
+    &PREVIEW_CLEAR_CATEGORIES,
+    &CLEAR_CATEGORIES,
+    &CONTROL_CLEAR_CATEGORIES,
     &CREATE_CATEGORY,
     &UPDATE_CATEGORY,
     &REMOVE_CATEGORY,
@@ -3115,6 +3121,30 @@ static CONTROL_CATEGORY_JOB: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged.",
+};
+
+static PREVIEW_CLEAR_CATEGORIES: Command = Command {
+    name: "inbox.preview_clear_categories",
+    area: Area::Inbox,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Counts every category assignment in every accessible mail account and folder, including read mail, by account. No mail is changed.",
+};
+
+static CLEAR_CATEGORIES: Command = Command {
+    name: "inbox.clear_categories",
+    area: Area::Inbox,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Starts one resumable job to remove all manual, rule and model category assignments and model answers in every accessible mail account. Requires all_accounts: true and the person's approval. Mail, folders and sorting rules remain. The caller may also switch off automatic categorization; if left on, future mail can gain categories again.",
+};
+
+static CONTROL_CLEAR_CATEGORIES: Command = Command {
+    name: "inbox.control_clear_categories",
+    area: Area::Inbox,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored account cursors. Requires the person's approval.",
 };
 
 // Admin, like `inbox.set_item_category` with `remember`: a category changes how every later mail

@@ -309,6 +309,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ControlCategoryJob { .. } => {
             Vec::new()
         }
+        Request::PreviewClearCategories | Request::ClearCategories { .. } | Request::ControlClearCategories { .. } => Vec::new(),
         // The catalogue and the sorting rules (task E15.1): never a name, a description, a
         // condition's value or a category – a person's own words about their mail. A sorting
         // rule is named by its id only.

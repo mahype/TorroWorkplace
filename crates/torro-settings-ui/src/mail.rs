@@ -49,6 +49,7 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         torro_ipc::Request::GetCategorization,
         torro_ipc::Request::PreviewCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() },
         torro_ipc::Request::GetCategoryJob { id: None },
+        torro_ipc::Request::PreviewClearCategories,
         // The catalogue (task E15.2): what the categories are called and where they stand now.
         torro_ipc::Request::ListCategories { account: None },
         // The sorting rules (task E15.5), listed and edited under Categorization.
@@ -1098,6 +1099,9 @@ pub mod categorization {
         preview: Option<CategoryJobPreview>,
         preview_error: Option<String>,
         pending_scope: Option<CategoryJobScope>,
+        asking_clear: bool,
+        /// `None` means the recommended choice: switch future automatic sorting off.
+        disable_automatic_after_clear: Option<bool>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1129,6 +1133,11 @@ pub mod categorization {
         Again(bool),
         StartJob,
         ControlJob(String, CategoryJobControl),
+        AskClear,
+        ConfirmClear,
+        CloseClear,
+        DisableAutomaticAfterClear(bool),
+        ControlClear(String, CategoryJobControl),
         /// The editor of the categories and the sorting rules (task E15.5).
         Editor(super::editor::Message),
         /// One category shown in the sidebar or not.
@@ -1177,6 +1186,26 @@ pub mod categorization {
             }
             Message::StartJob => Action::send(Request::StartCategoryJob { scope: scope(state) }),
             Message::ControlJob(id, action) => Action::send(Request::ControlCategoryJob { id, action }),
+            Message::AskClear => {
+                state.asking_clear = true;
+                Action::None
+            }
+            Message::CloseClear => {
+                state.asking_clear = false;
+                Action::None
+            }
+            Message::DisableAutomaticAfterClear(on) => {
+                state.disable_automatic_after_clear = Some(on);
+                Action::None
+            }
+            Message::ConfirmClear => {
+                state.asking_clear = false;
+                Action::send(Request::ClearCategories {
+                    all_accounts: true,
+                    disable_automatic: state.disable_automatic_after_clear.unwrap_or(true),
+                })
+            }
+            Message::ControlClear(id, action) => Action::send(Request::ControlClearCategories { id, action }),
             Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
             // Switching on without a model named would store an assignment the core throws away
             // (no account, nothing to ask): the first model that can decide is taken, which is
@@ -1377,7 +1406,11 @@ pub mod categorization {
             ),
             (None, _) => tr("Calculating selection…").to_string(),
         };
-        let running = data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running);
+        let clear_incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
+            matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
+        });
+        let running =
+            clear_incomplete || data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running);
         let start = widgets::text_button(
             None,
             tr("Start sorting"),
@@ -1431,7 +1464,7 @@ pub mod categorization {
                         Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
                     ),
                 ],
-                CategoryJobState::Paused | CategoryJobState::Failed => vec![
+                CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled => vec![
                     widgets::text_button(
                         None,
                         tr("Resume"),
@@ -1445,14 +1478,119 @@ pub mod categorization {
                         Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
                     ),
                 ],
-                CategoryJobState::Cancelled | CategoryJobState::Complete => Vec::new(),
+                CategoryJobState::Complete => Vec::new(),
             };
             if !controls.is_empty() {
                 rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
             }
             page = page.push(widgets::group(tr("Current sorting job"), rows, None));
         }
+        page = page.push(clear_group(state, data));
         page.into()
+    }
+
+    fn clear_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+        let mut rows: Vec<Element<'a, Message>> = Vec::new();
+        let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
+        let incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
+            matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
+        });
+        let ask = widgets::text_button(
+            None,
+            tr("Remove all categories…"),
+            style::button::secondary,
+            (count > 0 && !incomplete).then_some(Message::AskClear),
+        );
+        rows.push(setting_row(
+            None,
+            tr("Categories on mail"),
+            Some(trf("{count} assignments across all accounts and folders", &[("count", &count)])),
+            ask,
+        ));
+        if state.asking_clear {
+            if let Some(preview) = &data.category_clear_preview {
+                for account in &preview.accounts {
+                    rows.push(setting_row(
+                        None,
+                        account_label(data, &account.account),
+                        Some(trf("{count} categories", &[("count", &account.categorized)])),
+                        iced::widget::space().width(0),
+                    ));
+                }
+            }
+            let disable = state.disable_automatic_after_clear.unwrap_or(true);
+            rows.push(setting_row(
+                None,
+                tr("Turn off automatic categorization afterwards"),
+                Some(if disable {
+                    tr("New mail stays uncategorized until you turn sorting on again.").to_string()
+                } else {
+                    tr("New mail may receive categories again after this reset.").to_string()
+                }),
+                switch(disable, Message::DisableAutomaticAfterClear),
+            ));
+            rows.push(setting_row(
+                None, tr("This removes manual, rule and model categories and model answers. Mail, folders and sorting rules remain."),
+                None,
+                iced::widget::row![
+                    widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseClear)),
+                    widgets::text_button(None, tr("Remove categories from all mail"), style::button::secondary,
+                        Some(Message::ConfirmClear)),
+                ].spacing(theme::space::m()),
+            ));
+        }
+        if let Some(job) = &data.categorization.clear_job {
+            let removed: u64 = job.accounts.iter().map(|account| account.removed).sum();
+            let selected: u64 = job.accounts.iter().map(|account| account.categorized).sum();
+            rows.push(setting_row(
+                None,
+                tr("Reset progress"),
+                Some(trf("{done} of {total}", &[("done", &removed), ("total", &selected)])),
+                typo::text(typo::body_strong(), job_state_label(job.state)),
+            ));
+            for error in &job.errors {
+                rows.push(setting_row(None, tr("Error"), Some(error.clone()), iced::widget::space().width(0)));
+            }
+            let controls = match job.state {
+                CategoryJobState::Running => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Pause"),
+                        style::button::secondary,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Pause)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Resume"),
+                        style::button::secondary,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Resume)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Complete => Vec::new(),
+            };
+            if !controls.is_empty() {
+                rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
+            }
+        }
+        widgets::group(
+            tr("Reset categorization"),
+            rows,
+            Some(tr("Only category assignments and model answers are removed; no mail is deleted.").to_string()),
+        )
     }
 
     fn job_state_label(state: CategoryJobState) -> &'static str {
