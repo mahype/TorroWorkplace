@@ -1493,7 +1493,7 @@ impl Kind {
     /// The state those sections keep while they are open (a draft, a removal on its way).
     fn settings_state(self) -> SettingsState {
         match self {
-            Kind::Mail => SettingsState::Mail(settings_mail::State::default()),
+            Kind::Mail => SettingsState::Mail(Box::default()),
             Kind::Notifications | Kind::Hub => SettingsState::Inbox(settings_inbox::State::default()),
         }
     }
@@ -1917,8 +1917,8 @@ struct SettingsPane {
 enum SettingsState {
     /// The Notification Hub and the App Feed: Notifications, Sources, Rules.
     Inbox(settings_inbox::State),
-    /// The mail window: Accounts, Reading.
-    Mail(settings_mail::State),
+    /// The mail window: Accounts, Reading, Categorization, Storage & index.
+    Mail(Box<settings_mail::State>),
 }
 
 /// What a section of the settings reported, over both kinds of window.
@@ -3715,12 +3715,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Refresh | Message::CoreReady => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
+                let settings = self.settings.as_ref().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 return Task::batch([
                     self.fetch_appearance(),
                     self.fetch_look(),
                     self.fetch_ai_ready(),
                     self.zoom.fetch().map(Message::Zoom),
                     self.load(),
+                    settings.unwrap_or_else(Task::none),
                 ]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
@@ -5296,8 +5298,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Task::none()
             }
             Outcome::OpenUrl(url) => self.open_url(url),
-            // No section of these windows asks a question of its own (`Action::Ask`).
-            Outcome::Answer(_) => Task::none(),
+            Outcome::Answer(answer) => {
+                if let Some(pane) = self.settings.as_mut()
+                    && let SettingsState::Mail(state) = &mut pane.sections
+                {
+                    settings_mail::answered(state, &answer);
+                }
+                Task::none()
+            }
             Outcome::ControlCentre(section) => {
                 connect::open_section(&section);
                 Task::none()

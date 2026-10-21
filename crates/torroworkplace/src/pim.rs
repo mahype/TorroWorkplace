@@ -1045,6 +1045,13 @@ impl PimService {
             | Request::ClassifyItem { .. }
             | Request::GetCategorization
             | Request::CatchUpCategories { .. }
+            | Request::PreviewCategoryJob { .. }
+            | Request::StartCategoryJob { .. }
+            | Request::GetCategoryJob { .. }
+            | Request::ControlCategoryJob { .. }
+            | Request::PreviewClearCategories
+            | Request::ClearCategories { .. }
+            | Request::ControlClearCategories { .. }
             | Request::CreateCategory { .. }
             | Request::UpdateCategory { .. }
             | Request::RemoveCategory { .. }
@@ -1214,6 +1221,7 @@ impl PimService {
             | Request::TorroMailAccounts
             | Request::ImportTorroMailAccount { .. }
             | Request::MailFolders { .. }
+            | Request::MailAccountStats { .. }
             | Request::SearchMail { .. }
             | Request::MailIndexStatus { .. }
             | Request::GetMail { .. }
@@ -1224,6 +1232,12 @@ impl PimService {
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
             | Request::SendDraft { .. } => return None,
+            Request::GetMailCachePolicy { .. }
+            | Request::SetMailCachePolicy { .. }
+            | Request::PreviewMailCache { .. }
+            | Request::StartMailCacheJob { .. }
+            | Request::MailCacheJobStatus { .. }
+            | Request::ControlMailCacheJob { .. } => return None,
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. }
             | Request::AiModels { .. }

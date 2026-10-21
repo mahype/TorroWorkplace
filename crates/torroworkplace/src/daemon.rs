@@ -617,6 +617,13 @@ fn describe(request: &Request) -> String {
                 "sort the mail backlog".into()
             }
         }
+        Request::PreviewCategoryJob { .. } => "preview mail sorting".into(),
+        Request::StartCategoryJob { .. } => "start mail sorting job".into(),
+        Request::GetCategoryJob { .. } => "mail sorting job".into(),
+        Request::ControlCategoryJob { id, action } => format!("{action:?} mail sorting job {id}"),
+        Request::PreviewClearCategories => "preview removing mail categories".into(),
+        Request::ClearCategories { .. } => "remove all mail categories".into(),
+        Request::ControlClearCategories { id, action } => format!("{action:?} category reset {id}"),
         // Never a name, a description or a condition (task E15.1).
         Request::CreateCategory { .. } => "create a mail category".into(),
         Request::UpdateCategory { .. } => "change a mail category".into(),
@@ -738,6 +745,7 @@ fn describe(request: &Request) -> String {
         Request::SetModelEnabled { account, enabled: false, .. } => format!("turn off a model of {account}"),
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
+        Request::MailAccountStats { .. } => "mail account statistics".into(),
         Request::SearchMail { .. } => "search mail".into(),
         Request::MailIndexStatus { .. } => "mail index status".into(),
         Request::GetMail { .. } => "get mail".into(),
@@ -787,6 +795,12 @@ fn describe(request: &Request) -> String {
         Request::CreatePdf { .. } => "make a PDF".into(),
         Request::OpenFile { file } => format!("open file {file}"),
         Request::SaveFileAs { file, .. } => format!("save file {file} elsewhere"),
+        Request::GetMailCachePolicy { account } => format!("cache policy of {account}"),
+        Request::SetMailCachePolicy { policy } => format!("set cache policy of {}", policy.account),
+        Request::PreviewMailCache { account, .. } => format!("cache estimate of {account}"),
+        Request::StartMailCacheJob { account, .. } => format!("start cache job for {account}"),
+        Request::MailCacheJobStatus { account } => format!("cache job of {account}"),
+        Request::ControlMailCacheJob { account, .. } => format!("control cache job of {account}"),
     }
 }
 

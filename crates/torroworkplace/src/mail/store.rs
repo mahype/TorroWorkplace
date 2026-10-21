@@ -45,6 +45,9 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
+use torro_ipc::inbox::{CategoryJobPreview, CategoryJobScope};
+use torro_ipc::mail::{MailAccountStats, MailFolderStats};
+use torro_ipc::mail::{MailCacheEstimate, MailCacheJob, MailCacheMode, MailCachePolicy};
 use torro_mail::{
     AttachmentInfo, Category, CategorySource, Flag, Folder, InvitationAnswer, Invite, MailAddress, MailCategory,
     Message, MessageSummary, MessageTraits, Order, Role,
@@ -59,7 +62,9 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 9;
+
+const SCHEMA_V9: &str = "CREATE TABLE IF NOT EXISTS cache_control (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
 /// At most this many bytes of a message's text go into the word index: a log of megabytes is
 /// found by its first half megabyte, and the index stays small.
@@ -138,6 +143,11 @@ ALTER TABLE messages ADD COLUMN needs_reply INTEGER;
 ALTER TABLE messages ADD COLUMN urgency INTEGER;
 CREATE INDEX IF NOT EXISTS messages_by_category ON messages (category, date DESC);";
 
+/// Whether the full text may not be searchable: a limit clipped it, or an older indexed row has
+/// already lost its source text and cannot be verified after this migration.
+const SCHEMA_V8: &str = "ALTER TABLE messages ADD COLUMN index_partial_or_unverified INTEGER NOT NULL DEFAULT 0;
+UPDATE messages SET index_partial_or_unverified = 1 WHERE indexed = 1;";
+
 /// `indexed` of a message whose text is not in the index yet.
 const NOT_INDEXED: i64 = 0;
 /// `indexed` of a message whose text is in the index.
@@ -148,6 +158,25 @@ const NO_TEXT: i64 = 2;
 const FLAG_SEEN: i64 = 1;
 const FLAG_FLAGGED: i64 = 2;
 const FLAG_ANSWERED: i64 = 4;
+
+/// Bound parameters for a selected job scope. Every folder ID is a value, never SQL syntax.
+fn category_job_filter(scope: &CategoryJobScope) -> (String, Vec<Value>) {
+    let mut conditions = vec!["1 = 1".to_string()];
+    let mut values = Vec::new();
+    if !scope.folders.is_empty() {
+        conditions.push(format!("folder_id IN ({})", vec!["?"; scope.folders.len()].join(", ")));
+        values.extend(scope.folders.iter().cloned().map(Value::Text));
+    }
+    if let Some(since) = scope.since {
+        conditions.push("date >= ?".to_string());
+        values.push(Value::Integer(since.timestamp()));
+    }
+    if let Some(before) = scope.before {
+        conditions.push("date < ?".to_string());
+        values.push(Value::Integer(before.timestamp()));
+    }
+    (conditions.join(" AND "), values)
+}
 
 const SCHEMA_V1: &str = "
 CREATE TABLE folders (
@@ -513,6 +542,108 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Local inventory only: a successful account sync does not prove that every server folder
+    /// has been fetched. Dates therefore describe the oldest and newest *known* messages.
+    pub fn account_stats(&self) -> Result<MailAccountStats, MailStoreError> {
+        let mut folders = Vec::new();
+        for folder in self.folders()? {
+            let sql = "SELECT count(*), coalesce(sum((m.flags & 1) <> 0), 0), min(m.date), max(m.date),
+                coalesce(sum(EXISTS(SELECT 1 FROM bodies b WHERE b.seq = m.seq)), 0),
+                coalesce(sum(m.indexed = 1 AND m.index_partial_or_unverified = 0), 0),
+                coalesce(sum(m.indexed = 1 AND m.index_partial_or_unverified <> 0), 0),
+                coalesce(sum(m.indexed = 2), 0), coalesce(sum(m.indexed = 0), 0)
+                FROM messages m WHERE m.folder_id = ?1";
+            let (_total, read, oldest, newest, bodies, indexed_full, indexed_partial, unavailable, awaiting): (
+                i64,
+                i64,
+                Option<i64>,
+                Option<i64>,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+            ) = self.db.query_row(sql, [&folder.id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            })?;
+            let to_date = |seconds: Option<i64>| seconds.and_then(|value| DateTime::from_timestamp(value, 0));
+            folders.push(MailFolderStats {
+                folder,
+                read: u64::try_from(read).unwrap_or(0),
+                oldest_known: to_date(oldest),
+                newest_known: to_date(newest),
+                cached_bodies: u64::try_from(bodies).unwrap_or(0),
+                indexed_full: u64::try_from(indexed_full).unwrap_or(0),
+                indexed_partial_or_unverified: u64::try_from(indexed_partial).unwrap_or(0),
+                text_unavailable: u64::try_from(unavailable).unwrap_or(0),
+                awaiting_index: u64::try_from(awaiting).unwrap_or(0),
+            });
+        }
+        let messages = folders.iter().map(|stats| u64::from(stats.folder.total)).sum();
+        let read = folders.iter().map(|stats| stats.read).sum();
+        let oldest_known = folders.iter().filter_map(|stats| stats.oldest_known).min();
+        let newest_known = folders.iter().filter_map(|stats| stats.newest_known).max();
+        let wal = self.path.with_extension("sqlite-wal");
+        let shm = self.path.with_extension("sqlite-shm");
+        let database_bytes = [&self.path, &wal, &shm]
+            .into_iter()
+            .filter_map(|path| std::fs::metadata(path).ok().map(|meta| meta.len()))
+            .sum();
+        let (oldest_body, body_cache_bytes): (Option<i64>, i64) = self.db.query_row(
+            "SELECT min(m.date), coalesce(sum(length(b.text) + coalesce(length(b.html), 0) + length(b.attachments_json) + length(b.filenames)), 0) FROM bodies b JOIN messages m ON m.seq = b.seq",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let search_index_bytes = self
+            .db
+            .query_row(
+                "SELECT coalesce(sum(pgsize), 0) FROM dbstat WHERE name LIKE 'mail_fts%' OR name LIKE 'mail_tri%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .ok()
+            .map(|bytes| bytes.max(0) as u64);
+        let last_index_run: Option<i64> = self
+            .db
+            .query_row("SELECT value FROM cache_control WHERE key = 'last_index_run'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()?
+            .and_then(|value| value.parse().ok());
+        Ok(MailAccountStats {
+            account: self.account.clone(),
+            messages,
+            read,
+            unread: messages.saturating_sub(read),
+            oldest_known,
+            newest_known,
+            cached_bodies: folders.iter().map(|stats| stats.cached_bodies).sum(),
+            oldest_cached_body: oldest_body.and_then(|seconds| DateTime::from_timestamp(seconds, 0)),
+            body_cache_bytes: body_cache_bytes.max(0) as u64,
+            search_index_bytes,
+            last_index_run: last_index_run.and_then(|seconds| DateTime::from_timestamp(seconds, 0)),
+            indexed_full: folders.iter().map(|stats| stats.indexed_full).sum(),
+            indexed_partial_or_unverified: folders.iter().map(|stats| stats.indexed_partial_or_unverified).sum(),
+            text_unavailable: folders.iter().map(|stats| stats.text_unavailable).sum(),
+            awaiting_index: folders.iter().map(|stats| stats.awaiting_index).sum(),
+            database_bytes,
+            cached_attachments: 0,
+            attachment_cache_bytes: None,
+            last_sync: None,
+            sync_problem: None,
+            folders,
+        })
+    }
+
     /// Id, name, path and role of every folder, without counting their messages: what `in:` of a
     /// search looks for ([`Folder::unread`] and [`Folder::total`] are 0).
     fn folder_names(&self) -> Result<Vec<Folder>, MailStoreError> {
@@ -667,7 +798,10 @@ impl MailStore {
         // The answer has its own column: reading the text again keeps it.
         let invite = body.invite.as_ref().map(|invite| Invite { answered: None, ..invite.clone() });
         let invite = invite.map(|invite| serde_json::to_string(&invite)).transpose()?;
-        tx.execute("UPDATE messages SET invite_json = ?2, indexed = ?3 WHERE seq = ?1", params![seq, invite, INDEXED])?;
+        tx.execute(
+            "UPDATE messages SET invite_json = ?2, indexed = ?3, index_partial_or_unverified = ?4 WHERE seq = ?1",
+            params![seq, invite, INDEXED, index_is_partial(&body.text)],
+        )?;
         refresh_index(&tx, seq, Some(IndexText { body: &body.text, filenames: &names.join(" ") }))?;
         tx.commit()?;
         Ok(true)
@@ -682,7 +816,10 @@ impl MailStore {
         let seq: Option<i64> =
             tx.query_row("SELECT seq FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?;
         let Some(seq) = seq else { return Ok(false) };
-        tx.execute("UPDATE messages SET indexed = ?2 WHERE seq = ?1", params![seq, INDEXED])?;
+        tx.execute(
+            "UPDATE messages SET indexed = ?2, index_partial_or_unverified = ?3 WHERE seq = ?1",
+            params![seq, INDEXED, index_is_partial(text)],
+        )?;
         refresh_index(&tx, seq, Some(IndexText { body: text, filenames: &filenames.join(" ") }))?;
         tx.commit()?;
         Ok(true)
@@ -723,17 +860,30 @@ impl MailStore {
 
     /// How many messages the store holds, and how many of them are done for the index (their text
     /// is in it, or they have none): `mail.index_status`.
+    #[cfg(test)]
     pub fn index_counts(&self) -> Result<(u64, u64), MailStoreError> {
         let sql = "SELECT count(*), coalesce(sum(indexed <> 0), 0) FROM messages";
         let (all, done): (i64, i64) = self.db.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok((u64::try_from(all).unwrap_or(0), u64::try_from(done).unwrap_or(0)))
     }
 
-    /// Every message is done for the index ([`index_counts`](Self::index_counts) equal), asked
-    /// cheaply for every search.
+    /// Separate indexed text from text the server cannot provide (`indexed = 2`).
+    pub fn index_breakdown(&self) -> Result<(u64, u64, u64), MailStoreError> {
+        let sql = "SELECT count(*), coalesce(sum(indexed = 1), 0), coalesce(sum(indexed = 2), 0) FROM messages";
+        let (all, indexed, unavailable): (i64, i64, i64) =
+            self.db.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok((
+            u64::try_from(all).unwrap_or(0),
+            u64::try_from(indexed).unwrap_or(0),
+            u64::try_from(unavailable).unwrap_or(0),
+        ))
+    }
+
+    /// Every message has searchable text. A message known to have no available text keeps a
+    /// search answer incomplete even when the backfill has no more work to do.
     pub fn fully_indexed(&self) -> Result<bool, MailStoreError> {
-        let sql = "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE indexed = ?1)";
-        Ok(self.db.query_row(sql, [NOT_INDEXED], |row| row.get(0))?)
+        let sql = "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE indexed <> ?1)";
+        Ok(self.db.query_row(sql, [INDEXED], |row| row.get(0))?)
     }
 
     /// Keeps what the mail `id` is (task E12.2); `None` takes the category away again. `false`
@@ -748,6 +898,136 @@ impl MailStore {
         let confidence = category.and_then(|held| held.confidence).map(i64::from);
         let sql = "UPDATE messages SET category = ?2, category_source = ?3, category_confidence = ?4 WHERE id = ?1";
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
+    }
+
+    /// Commit a job's decision only if the category still matches the value read before the
+    /// model call. A person's or rule's concurrent change therefore wins, including when the
+    /// model took a long time to answer.
+    pub fn set_category_if_unchanged(
+        &self,
+        id: &str,
+        expected: Option<MailCategory>,
+        category: MailCategory,
+    ) -> Result<bool, MailStoreError> {
+        let expected_key = expected.map(|held| held.category.key());
+        let expected_source = expected.map(|held| match held.source {
+            CategorySource::Rule => "rule",
+            CategorySource::Model => "model",
+            CategorySource::Person => "person",
+        });
+        let source = match category.source {
+            CategorySource::Rule => "rule",
+            CategorySource::Model => "model",
+            CategorySource::Person => "person",
+        };
+        let changed = self.db.execute(
+            "UPDATE messages SET category = ?2, category_source = ?3, category_confidence = ?4
+             WHERE id = ?1 AND category IS ?5 AND category_source IS ?6
+             AND (category_source IS NULL OR category_source = 'model')",
+            params![
+                id,
+                category.category.key(),
+                source,
+                category.confidence.map(i64::from),
+                expected_key,
+                expected_source
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Counts and freezes a user-selected categorization scope. Empty folders mean all folders;
+    /// account filtering is performed by the service before this store is asked.
+    pub fn category_job_preview(&self, scope: &CategoryJobScope) -> Result<(CategoryJobPreview, i64), MailStoreError> {
+        let (where_sql, values) = category_job_filter(scope);
+        let sql = format!(
+            "SELECT count(*), coalesce(sum(category IS NULL), 0),
+             coalesce(sum(category_source = 'model'), 0),
+             coalesce(sum(category IS NOT NULL AND (category_source IS NULL OR category_source <> 'model')), 0)
+             FROM messages WHERE {where_sql}"
+        );
+        let (total, unclassified, automatic, protected): (i64, i64, i64, i64) =
+            self.db.query_row(&sql, params_from_iter(values), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+        let max_sequence: i64 =
+            self.db.query_row("SELECT coalesce(max(seq), 0) FROM messages", [], |row| row.get(0))?;
+        let preview = CategoryJobPreview {
+            total: total.max(0) as u64,
+            unclassified: unclassified.max(0) as u64,
+            automatic: automatic.max(0) as u64,
+            protected: protected.max(0) as u64,
+            eligible: (unclassified + if scope.again { automatic } else { 0 }).max(0) as u64,
+            request_scope: None,
+        };
+        Ok((preview, max_sequence))
+    }
+
+    /// The next small batch after `cursor`, bounded by the store's sequence when the job began.
+    pub fn category_job_batch(
+        &self,
+        scope: &CategoryJobScope,
+        cursor: i64,
+        max_sequence: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, String)>, MailStoreError> {
+        let (filter, mut values) = category_job_filter(scope);
+        let predicate =
+            if scope.again { "(category IS NULL OR category_source = 'model')" } else { "category IS NULL" };
+        values.push(Value::Integer(cursor));
+        values.push(Value::Integer(max_sequence));
+        values.push(Value::Integer(i64::from(limit)));
+        let sql = format!(
+            "SELECT seq, id FROM messages WHERE {filter} AND {predicate} AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(params_from_iter(values), |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// All assignments in this account, regardless of folder, read state or source.
+    pub fn category_clear_preview(&self) -> Result<(u64, i64), MailStoreError> {
+        let (count, maximum): (i64, i64) = self.db.query_row(
+            "SELECT count(*), coalesce(max(seq), 0) FROM messages WHERE category IS NOT NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((count.max(0) as u64, maximum))
+    }
+
+    /// Remove up to `limit` category assignments and the two answers from the same model call,
+    /// in one transaction. The cursor is the last row changed; a restart can repeat this safely.
+    /// The search index, bodies, folders, flags, drafts and server mail are untouched.
+    pub fn clear_category_batch(&self, cursor: i64, maximum: i64, limit: u32) -> Result<(i64, u64), MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        let sequences: Vec<i64> = {
+            let mut statement = tx.prepare(
+                "SELECT seq FROM messages WHERE category IS NOT NULL AND seq > ?1 AND seq <= ?2 ORDER BY seq LIMIT ?3",
+            )?;
+            let rows = statement.query_map(params![cursor, maximum, i64::from(limit)], |row| row.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let mut changed = 0u64;
+        for seq in &sequences {
+            changed += tx.execute(
+                "UPDATE messages SET category = NULL, category_source = NULL, category_confidence = NULL,
+                 needs_reply = NULL, urgency = NULL WHERE seq = ?1 AND category IS NOT NULL",
+                [seq],
+            )? as u64;
+        }
+        tx.commit()?;
+        Ok((sequences.last().copied().unwrap_or(maximum), changed))
+    }
+
+    /// Clear model answers left on messages whose category was already removed separately.
+    /// This is bounded and repeatable after a restart.
+    pub fn clear_model_answers_batch(&self, limit: u32) -> Result<u64, MailStoreError> {
+        let changed = self.db.execute(
+            "UPDATE messages SET needs_reply = NULL, urgency = NULL WHERE seq IN (
+             SELECT seq FROM messages WHERE needs_reply IS NOT NULL OR urgency IS NOT NULL LIMIT ?1)",
+            [i64::from(limit)],
+        )?;
+        Ok(changed as u64)
     }
 
     /// How much mail of any folder is of `category` (task E15.2): what removing the category
@@ -871,18 +1151,162 @@ impl MailStore {
     /// `Message::text` is `None` again until someone fetches it. Returns how many texts went. Run
     /// it after a sync and now and then.
     pub fn prune_bodies(&self, now: DateTime<Utc>) -> Result<usize, MailStoreError> {
+        self.prune_bodies_for(self.cache_policy()?.mode, now, usize::MAX)
+    }
+
+    /// Drop reading texts in bounded steps according to the account policy. The FTS index stays.
+    pub fn prune_bodies_for(
+        &self,
+        mode: MailCacheMode,
+        now: DateTime<Utc>,
+        batch: usize,
+    ) -> Result<usize, MailStoreError> {
+        if mode == MailCacheMode::AllOffline {
+            return Ok(0);
+        }
         let limit = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
         let tx = self.db.unchecked_transaction()?;
         let old: Vec<i64> = {
             let mut statement =
-                tx.prepare("SELECT b.seq FROM bodies b JOIN messages m ON m.seq = b.seq WHERE m.date < ?1")?;
-            statement.query_map([limit], |row| row.get(0))?.collect::<Result<_, _>>()?
+                tx.prepare("SELECT b.seq FROM bodies b JOIN messages m ON m.seq = b.seq JOIN folders f ON f.id = m.folder_id LEFT JOIN drafts d ON d.id = m.id WHERE (?1 = 1 OR m.date < ?2) AND f.role IS NOT 'drafts' AND d.id IS NULL LIMIT ?3")?;
+            statement
+                .query_map(
+                    params![mode == MailCacheMode::HeadersOnly, limit, i64::try_from(batch).unwrap_or(i64::MAX)],
+                    |row| row.get(0),
+                )?
+                .collect::<Result<_, _>>()?
         };
         for seq in &old {
             tx.execute("DELETE FROM bodies WHERE seq = ?1", [seq])?;
         }
         tx.commit()?;
         Ok(old.len())
+    }
+
+    pub fn cache_policy(&self) -> Result<MailCachePolicy, MailStoreError> {
+        let raw: Option<String> = self
+            .db
+            .query_row("SELECT value FROM cache_control WHERE key = 'policy'", [], |row| row.get(0))
+            .optional()?;
+        match raw {
+            Some(raw) => Ok(serde_json::from_str(&raw)?),
+            None => Ok(MailCachePolicy {
+                account: self.account.clone(),
+                mode: MailCacheMode::Recent90Days,
+                prefetch_attachments: false,
+                attachment_retention_days: 1,
+            }),
+        }
+    }
+
+    pub fn note_index_run(&self, now: DateTime<Utc>) -> Result<(), MailStoreError> {
+        self.db.execute("INSERT INTO cache_control (key, value) VALUES ('last_index_run', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [now.timestamp().to_string()])?;
+        Ok(())
+    }
+
+    pub fn set_cache_policy(&self, policy: &MailCachePolicy) -> Result<(), MailStoreError> {
+        self.db.execute("INSERT INTO cache_control (key, value) VALUES ('policy', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [serde_json::to_string(policy)?])?;
+        Ok(())
+    }
+
+    pub fn cache_job(&self) -> Result<Option<MailCacheJob>, MailStoreError> {
+        let raw: Option<String> =
+            self.db.query_row("SELECT value FROM cache_control WHERE key = 'job'", [], |row| row.get(0)).optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into)).transpose()
+    }
+
+    pub fn set_cache_job(&self, job: &MailCacheJob) -> Result<(), MailStoreError> {
+        self.db.execute("INSERT INTO cache_control (key, value) VALUES ('job', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [serde_json::to_string(job)?])?;
+        Ok(())
+    }
+
+    /// Do not let a finishing batch overwrite a pause or a replacement job.
+    pub fn change_cache_job(&self, expected: &MailCacheJob, changed: &MailCacheJob) -> Result<bool, MailStoreError> {
+        Ok(self.db.execute(
+            "UPDATE cache_control SET value = ?2 WHERE key = 'job' AND value = ?1",
+            params![serde_json::to_string(expected)?, serde_json::to_string(changed)?],
+        )? > 0)
+    }
+
+    /// Estimate using the average locally kept text, since IMAP header sizes are not stored.
+    pub fn cache_estimate(&self, mode: MailCacheMode) -> Result<MailCacheEstimate, MailStoreError> {
+        let now = Utc::now();
+        let cutoff = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
+        let (current, bytes): (i64, i64) = self.db.query_row("SELECT count(*), coalesce(sum(length(text) + coalesce(length(html), 0) + length(attachments_json) + length(filenames)), 0) FROM bodies", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let (missing, remove): (i64, i64) = self.db.query_row("SELECT coalesce(sum(b.seq IS NULL AND m.indexed <> 2 AND (?1 = 2 OR (?1 = 1 AND m.date >= ?2))), 0), coalesce(sum(b.seq IS NOT NULL AND (?1 = 0 OR (?1 = 1 AND m.date < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL), 0) FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN drafts d ON d.id = m.id", params![mode as i64, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let average = if current > 0 { bytes.max(0) as u64 / current as u64 } else { 16 * 1024 };
+        Ok(MailCacheEstimate {
+            account: self.account.clone(),
+            current_bodies: current.max(0) as u64,
+            bodies_to_fetch: missing.max(0) as u64,
+            bodies_to_remove: remove.max(0) as u64,
+            estimated_download_bytes: missing.max(0) as u64 * average,
+            estimated_reclaim_bytes: remove.max(0) as u64 * average,
+        })
+    }
+
+    pub fn cached_body_missing(
+        &self,
+        before: Option<i64>,
+        mode: MailCacheMode,
+        limit: u32,
+    ) -> Result<Vec<(i64, MessageRef)>, MailStoreError> {
+        let cutoff = (Utc::now() - Duration::days(BODY_RETENTION_DAYS)).timestamp();
+        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq WHERE b.seq IS NULL AND m.indexed <> 2 AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (?2 = 2 OR (?2 = 1 AND m.date >= ?3)) ORDER BY m.seq DESC LIMIT ?4")?;
+        let rows = statement.query_map(params![before, mode as i64, cutoff, limit], |row| {
+            Ok((
+                row.get(0)?,
+                MessageRef {
+                    id: row.get(1)?,
+                    account: self.account.clone(),
+                    folder: row.get(2)?,
+                    folder_path: row.get(3)?,
+                    uidvalidity: row.get(4)?,
+                    uid: row.get(5)?,
+                    rfc_message_id: row.get(6)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn attachment_messages(
+        &self,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<(i64, MessageRef)>, MailStoreError> {
+        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.has_attachments <> 0 AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) ORDER BY m.seq DESC LIMIT ?2")?;
+        let rows = statement.query_map(params![before, limit], |row| {
+            Ok((
+                row.get(0)?,
+                MessageRef {
+                    id: row.get(1)?,
+                    account: self.account.clone(),
+                    folder: row.get(2)?,
+                    folder_path: row.get(3)?,
+                    uidvalidity: row.get(4)?,
+                    uid: row.get(5)?,
+                    rfc_message_id: row.get(6)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn attachment_message_count(&self) -> Result<u64, MailStoreError> {
+        let count: i64 =
+            self.db.query_row("SELECT count(*) FROM messages WHERE has_attachments <> 0", [], |row| row.get(0))?;
+        Ok(count.max(0) as u64)
+    }
+
+    pub fn reset_index(&self) -> Result<u64, MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        let count = tx.execute(
+            "UPDATE messages SET indexed = 0, index_partial_or_unverified = 0 WHERE indexed = 1 OR indexed = 2",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(count as u64)
     }
 
     /// Moves a message to another folder under its UID there; the id stays (a client may hold on
@@ -1368,6 +1792,25 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 7 && !has_column(&tx, "messages", "category")? {
         tx.execute_batch(SCHEMA_V7)?;
     }
+    if version < 8 && !has_column(&tx, "messages", "index_partial_or_unverified")? {
+        tx.execute_batch(SCHEMA_V8)?;
+        let known: Vec<(i64, bool)> = {
+            let mut statement =
+                tx.prepare("SELECT m.seq, b.text FROM messages m JOIN bodies b ON b.seq = m.seq WHERE m.indexed = 1")?;
+            statement
+                .query_map([], |row| {
+                    let text: String = row.get(1)?;
+                    Ok((row.get(0)?, index_is_partial(&text)))
+                })?
+                .collect::<Result<_, _>>()?
+        };
+        for (seq, partial) in known {
+            tx.execute("UPDATE messages SET index_partial_or_unverified = ?2 WHERE seq = ?1", params![seq, partial])?;
+        }
+    }
+    if version < 9 {
+        tx.execute_batch(SCHEMA_V9)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -1483,6 +1926,10 @@ struct IndexText<'a> {
 /// its text and attachment names (folded, cut at [`INDEX_TEXT_MAX`] and [`TRIGRAM_TEXT_MAX`]).
 /// Without `text` the text already in the index stays: new headers (a sync, a flag) never lose
 /// words of a text that is no longer kept to read.
+fn index_is_partial(text: &str) -> bool {
+    text.len() > INDEX_TEXT_MAX || fold(head(text, INDEX_TEXT_MAX)).len() > TRIGRAM_TEXT_MAX
+}
+
 fn refresh_index(db: &Connection, seq: i64, text: Option<IndexText<'_>>) -> Result<(), MailStoreError> {
     let headers: Option<(String, String, String)> = db
         .query_row("SELECT subject, sender, recipients FROM messages WHERE seq = ?1", [seq], |row| {
@@ -1939,7 +2386,7 @@ mod tests {
         let next: Vec<String> = store.unindexed(10).expect("next").into_iter().map(|(at, _)| at.id).collect();
         assert_eq!(next, std::slice::from_ref(&without));
         assert!(store.mark_unindexable(&without).expect("marked"));
-        assert!(store.unindexed(10).expect("next").is_empty() && store.fully_indexed().expect("asked"));
+        assert!(store.unindexed(10).expect("next").is_empty() && !store.fully_indexed().expect("asked"));
         assert_eq!(search_ids(&store, "kein"), [without], "its headers are searchable");
     }
 

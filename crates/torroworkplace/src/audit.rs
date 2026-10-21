@@ -300,9 +300,16 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ClassifyItem { id: entry }
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
         // Nothing of their own to name: a catalogue, a status, a background run.
-        Request::ListCategories { .. } | Request::GetCategorization | Request::CatchUpCategories { .. } => {
+        Request::ListCategories { .. }
+        | Request::GetCategorization
+        | Request::CatchUpCategories { .. }
+        | Request::PreviewCategoryJob { .. }
+        | Request::StartCategoryJob { .. }
+        | Request::GetCategoryJob { .. }
+        | Request::ControlCategoryJob { .. } => {
             Vec::new()
         }
+        Request::PreviewClearCategories | Request::ClearCategories { .. } | Request::ControlClearCategories { .. } => Vec::new(),
         // The catalogue and the sorting rules (task E15.1): never a name, a description, a
         // condition's value or a category – a person's own words about their mail. A sorting
         // rule is named by its id only.
@@ -399,6 +406,13 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListTools | Request::CreatePdf { .. } => Vec::new(),
         Request::OpenFile { file } | Request::SaveFileAs { file, .. } => vec![random("file", file)],
         mail @ (Request::MailFolders { .. }
+        | Request::MailAccountStats { .. }
+        | Request::GetMailCachePolicy { .. }
+        | Request::SetMailCachePolicy { .. }
+        | Request::PreviewMailCache { .. }
+        | Request::StartMailCacheJob { .. }
+        | Request::MailCacheJobStatus { .. }
+        | Request::ControlMailCacheJob { .. }
         | Request::SearchMail { .. }
         | Request::MailIndexStatus { .. }
         | Request::GetMail { .. }

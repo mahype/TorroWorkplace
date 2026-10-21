@@ -2025,6 +2025,17 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             tr("Sort the mail of the last 30 days into categories again, except what you filed by hand").to_string()
         }
         Request::CatchUpCategories { cancel: true, .. } => tr("Stop sorting mail into categories").to_string(),
+        Request::ClearCategories { disable_automatic: true, .. } => {
+            tr("Remove categories from all mail accounts and turn off automatic categorization").to_string()
+        }
+        Request::ClearCategories { disable_automatic: false, .. } => {
+            tr("Remove categories from all mail accounts; future mail may receive categories again").to_string()
+        }
+        Request::ControlClearCategories { action, .. } => match action {
+            torro_ipc::inbox::CategoryJobControl::Pause => tr("Pause removing all mail categories").to_string(),
+            torro_ipc::inbox::CategoryJobControl::Resume => tr("Resume removing all mail categories").to_string(),
+            torro_ipc::inbox::CategoryJobControl::Cancel => tr("Cancel removing all mail categories").to_string(),
+        },
         // The catalogue (task E15.1). A new category is named as it will be written; one already
         // there by its name in the catalogue, never by what the client sends.
         Request::CreateCategory { group, name, icon, .. } => trf(

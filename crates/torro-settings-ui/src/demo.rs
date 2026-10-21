@@ -22,12 +22,20 @@ use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
+use torro_ipc::inbox::{
+    CategoryClearAccount, CategoryClearJob, CategoryClearPreview, CategoryClearProgress, CategoryJob,
+    CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
+};
+use torro_ipc::mail::{
+    MailAccountStats, MailCacheAction, MailCacheEstimate, MailCacheJob, MailCacheJobState, MailCacheMode,
+    MailCachePolicy, MailFolderStats,
+};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{
     AccountInfo, ClientInfo, FolderChoice, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response,
     RuleHits, ServiceState, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
 };
-use torro_mail::{Endpoint, MailFormat, MailSettings, Notify, Role, Security};
+use torro_mail::{Endpoint, Folder, MailFormat, MailSettings, Notify, Role, Security};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
 use crate::{Answer, Backend};
@@ -49,6 +57,10 @@ const MAIL_ADDRESS: &str = "anna@mailbox.org";
 pub struct Demo {
     settings: Settings,
     sent: Mutex<Vec<Request>>,
+    category_job: Mutex<Option<CategoryJob>>,
+    category_clear_job: Mutex<Option<CategoryClearJob>>,
+    cache_policy: Mutex<Option<MailCachePolicy>>,
+    cache_job: Mutex<Option<MailCacheJob>>,
 }
 
 impl Demo {
@@ -77,7 +89,14 @@ impl Demo {
             tools,
             ..Settings::default()
         };
-        Demo { settings, sent: Mutex::new(Vec::new()) }
+        Demo {
+            settings,
+            sent: Mutex::new(Vec::new()),
+            category_job: Mutex::new(None),
+            category_clear_job: Mutex::new(None),
+            cache_policy: Mutex::new(None),
+            cache_job: Mutex::new(None),
+        }
     }
 
     /// The sample settings it answers `settings.settings` with.
@@ -276,6 +295,102 @@ impl Demo {
             }),
             ntfy: None,
             services: None,
+        }
+    }
+
+    /// Plausible sample numbers for the account inventory; no real mailbox is read in demo mode.
+    fn mail_stats(&self) -> Vec<MailAccountStats> {
+        let account = format!("mail:{MAIL_ADDRESS}");
+        let oldest = Utc.with_ymd_and_hms(2010, 4, 18, 9, 14, 0).single();
+        let newest = Utc.with_ymd_and_hms(2026, 10, 21, 5, 57, 0).single();
+        let folder =
+            |id: &str, name: &str, role, total, unread, read, bodies, full, partial, unavailable, pending, first| {
+                MailFolderStats {
+                    folder: Folder {
+                        id: id.into(),
+                        account: account.clone(),
+                        name: name.into(),
+                        path: name.into(),
+                        role,
+                        unread,
+                        total,
+                    },
+                    read,
+                    oldest_known: first,
+                    newest_known: newest,
+                    cached_bodies: bodies,
+                    indexed_full: full,
+                    indexed_partial_or_unverified: partial,
+                    text_unavailable: unavailable,
+                    awaiting_index: pending,
+                }
+            };
+        vec![MailAccountStats {
+            account: account.clone(),
+            folders: vec![
+                folder(
+                    "f:demo-inbox",
+                    "Inbox",
+                    Some(Role::Inbox),
+                    12_000,
+                    900,
+                    11_100,
+                    8_000,
+                    10_000,
+                    1_500,
+                    100,
+                    400,
+                    Utc.with_ymd_and_hms(2018, 6, 1, 12, 0, 0).single(),
+                ),
+                folder(
+                    "f:demo-archive",
+                    "Archive",
+                    Some(Role::Archive),
+                    12_813,
+                    348,
+                    12_465,
+                    3_000,
+                    11_000,
+                    1_300,
+                    200,
+                    313,
+                    oldest,
+                ),
+            ],
+            messages: 24_813,
+            read: 23_565,
+            unread: 1_248,
+            oldest_known: oldest,
+            newest_known: newest,
+            cached_bodies: 11_000,
+            oldest_cached_body: Utc.with_ymd_and_hms(2026, 7, 23, 8, 0, 0).single(),
+            body_cache_bytes: 440_000_000,
+            search_index_bytes: Some(140_000_000),
+            last_index_run: newest,
+            indexed_full: 21_000,
+            indexed_partial_or_unverified: 2_800,
+            text_unavailable: 300,
+            awaiting_index: 713,
+            database_bytes: 1_500_000_000,
+            cached_attachments: 42,
+            attachment_cache_bytes: Some(260_000_000),
+            last_sync: newest,
+            sync_problem: None,
+        }]
+    }
+
+    /// Deliberately separate all-mail counts from the old 153-message catch-up sample.
+    fn category_job_preview(&self, scope: &CategoryJobScope) -> CategoryJobPreview {
+        let all = scope.since.is_none() && scope.folders.is_empty();
+        let (total, unclassified, automatic, protected) =
+            if all { (24_813, 3_012, 19_516, 2_285) } else { (153, 53, 88, 12) };
+        CategoryJobPreview {
+            total,
+            unclassified,
+            automatic,
+            protected,
+            eligible: unclassified + if scope.again { automatic } else { 0 },
+            request_scope: Some(scope.clone()),
         }
     }
 
@@ -538,6 +653,7 @@ impl Demo {
                 state: torro_ipc::inbox::CatchUpState::NotStarted,
             }],
             again: false,
+            clear_job: self.category_clear_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         }
     }
 
@@ -594,10 +710,164 @@ impl Backend for Demo {
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
+            Request::PreviewClearCategories => Response::CategoryClearPreview {
+                preview: CategoryClearPreview {
+                    accounts: vec![CategoryClearAccount {
+                        account: format!("mail:{MAIL_ADDRESS}"),
+                        categorized: 21_801,
+                    }],
+                    total: 21_801,
+                },
+            },
+            Request::ClearCategories { disable_automatic, .. } => {
+                let now = Utc::now();
+                *self.category_clear_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(CategoryClearJob {
+                        id: "category-clear:demo".into(),
+                        state: CategoryJobState::Running,
+                        accounts: vec![CategoryClearProgress {
+                            account: format!("mail:{MAIL_ADDRESS}"),
+                            max_sequence: 24_813,
+                            cursor: 1_024,
+                            categorized: 21_801,
+                            removed: 1_024,
+                        }],
+                        disable_automatic: *disable_automatic,
+                        entries_cleared: false,
+                        errors: Vec::new(),
+                        started_at: now,
+                        updated_at: now,
+                        generation: 1,
+                    });
+                self.note(request);
+                Response::Categorization { categorization: self.categorization() }
+            }
+            Request::ControlClearCategories { action, .. } => {
+                if let Some(job) =
+                    self.category_clear_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut()
+                {
+                    job.state = match action {
+                        CategoryJobControl::Pause => CategoryJobState::Paused,
+                        CategoryJobControl::Resume => CategoryJobState::Running,
+                        CategoryJobControl::Cancel => CategoryJobState::Cancelled,
+                    };
+                }
+                self.note(request);
+                Response::Categorization { categorization: self.categorization() }
+            }
+            Request::PreviewCategoryJob { scope } => {
+                Response::CategoryJobPreview { preview: self.category_job_preview(scope) }
+            }
+            Request::GetCategoryJob { .. } => Response::CategoryJob {
+                job: self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            },
+            Request::StartCategoryJob { scope } => {
+                let preview = self.category_job_preview(scope);
+                let now = Utc::now();
+                let job = CategoryJob {
+                    id: "category-job:demo".into(),
+                    scope: scope.clone(),
+                    state: CategoryJobState::Running,
+                    accounts: vec![CategoryJobAccount {
+                        account: format!("mail:{MAIL_ADDRESS}"),
+                        max_sequence: preview.total as i64,
+                        cursor: 11,
+                        eligible: preview.eligible,
+                        processed: 11,
+                        changed: 8,
+                        failed: 0,
+                    }],
+                    errors: Vec::new(),
+                    started_at: now,
+                    updated_at: now,
+                    generation: 1,
+                    model_in_cloud: Some(false),
+                };
+                *self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job.clone());
+                self.note(request);
+                Response::CategoryJob { job: Some(job) }
+            }
+            Request::ControlCategoryJob { action, .. } => {
+                let mut stored = self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(job) = stored.as_mut() {
+                    job.state = match action {
+                        CategoryJobControl::Pause => CategoryJobState::Paused,
+                        CategoryJobControl::Resume => CategoryJobState::Running,
+                        CategoryJobControl::Cancel => CategoryJobState::Cancelled,
+                    };
+                }
+                let job = stored.clone();
+                drop(stored);
+                self.note(request);
+                Response::CategoryJob { job }
+            }
             Request::ListCategories { .. } => Response::Categories { categories: self.categories() },
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
+            Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
+            Request::GetMailCachePolicy { account } => Response::MailCachePolicy {
+                policy: self.cache_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone().unwrap_or(
+                    MailCachePolicy {
+                        account: account.clone(),
+                        mode: MailCacheMode::Recent90Days,
+                        prefetch_attachments: false,
+                        attachment_retention_days: 1,
+                    },
+                ),
+            },
+            Request::SetMailCachePolicy { policy } => {
+                *self.cache_policy.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(policy.clone());
+                self.note(request.clone());
+                Response::MailCachePolicy { policy: policy.clone() }
+            }
+            Request::PreviewMailCache { account, mode } => Response::MailCacheEstimate {
+                estimate: MailCacheEstimate {
+                    account: account.clone(),
+                    current_bodies: 11_000,
+                    bodies_to_fetch: match mode {
+                        MailCacheMode::HeadersOnly => 0,
+                        MailCacheMode::Recent90Days => 800,
+                        MailCacheMode::AllOffline => 13_813,
+                    },
+                    bodies_to_remove: match mode {
+                        MailCacheMode::HeadersOnly => 11_000,
+                        MailCacheMode::Recent90Days => 4_000,
+                        MailCacheMode::AllOffline => 0,
+                    },
+                    estimated_download_bytes: 210_000_000,
+                    estimated_reclaim_bytes: 160_000_000,
+                },
+            },
+            Request::StartMailCacheJob { account, action } => {
+                let job = MailCacheJob {
+                    id: "cache:demo".into(),
+                    account: account.clone(),
+                    action: *action,
+                    state: MailCacheJobState::Running,
+                    total: if *action == MailCacheAction::CleanCache { 4_000 } else { 13_813 },
+                    processed: 411,
+                    cursor: None,
+                    estimated_bytes: 210_000_000,
+                    error: None,
+                };
+                *self.cache_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job.clone());
+                self.note(request);
+                Response::MailCacheJob { job: Some(job) }
+            }
+            Request::MailCacheJobStatus { .. } => Response::MailCacheJob {
+                job: self.cache_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            },
+            Request::ControlMailCacheJob { resume, .. } => {
+                let mut job = self.cache_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(job) = job.as_mut() {
+                    job.state = if *resume { MailCacheJobState::Running } else { MailCacheJobState::Paused };
+                }
+                let answer = Response::MailCacheJob { job: job.clone() };
+                drop(job);
+                self.note(request);
+                answer
+            }
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
             Request::TaskCollections => Response::Collections { collections: self.collections(false) },
             Request::ListSources => Response::Sources { sources: self.sources() },
