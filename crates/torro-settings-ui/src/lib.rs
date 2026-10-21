@@ -126,6 +126,8 @@ pub struct Data {
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
     pub accounts: Vec<AccountInfo>,
+    /// Locally known mail inventory from `mail.account_stats`.
+    pub mail_stats: Vec<torro_ipc::mail::MailAccountStats>,
     /// The calendars the suite shows (`calendar.list_calendars`): what the rights editor offers
     /// under "Calendars" ([`rights::Known`]).
     pub calendars: Vec<Collection>,
@@ -193,6 +195,7 @@ impl Data {
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
+            Response::MailAccountStats { accounts } => self.mail_stats = accounts,
             // Both `calendar.list_calendars` and `tasks.list_lists` answer with collections, and
             // the answer does not say which was asked. Each load starts empty ([`load`]), so the
             // answers are merged: a collection with events is a calendar, one with todos a list,

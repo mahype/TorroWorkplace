@@ -22,12 +22,13 @@ use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
+use torro_ipc::mail::{MailAccountStats, MailFolderStats};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{
     AccountInfo, ClientInfo, FolderChoice, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response,
     RuleHits, ServiceState, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
 };
-use torro_mail::{Endpoint, MailFormat, MailSettings, Notify, Role, Security};
+use torro_mail::{Endpoint, Folder, MailFormat, MailSettings, Notify, Role, Security};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
 use crate::{Answer, Backend};
@@ -277,6 +278,83 @@ impl Demo {
             ntfy: None,
             services: None,
         }
+    }
+
+    /// Plausible sample numbers for the account inventory; no real mailbox is read in demo mode.
+    fn mail_stats(&self) -> Vec<MailAccountStats> {
+        let account = format!("mail:{MAIL_ADDRESS}");
+        let oldest = Utc.with_ymd_and_hms(2010, 4, 18, 9, 14, 0).single();
+        let newest = Utc.with_ymd_and_hms(2026, 10, 21, 5, 57, 0).single();
+        let folder =
+            |id: &str, name: &str, role, total, unread, read, bodies, full, partial, unavailable, pending, first| {
+                MailFolderStats {
+                    folder: Folder {
+                        id: id.into(),
+                        account: account.clone(),
+                        name: name.into(),
+                        path: name.into(),
+                        role,
+                        unread,
+                        total,
+                    },
+                    read,
+                    oldest_known: first,
+                    newest_known: newest,
+                    cached_bodies: bodies,
+                    indexed_full: full,
+                    indexed_partial_or_unverified: partial,
+                    text_unavailable: unavailable,
+                    awaiting_index: pending,
+                }
+            };
+        vec![MailAccountStats {
+            account: account.clone(),
+            folders: vec![
+                folder(
+                    "f:demo-inbox",
+                    "Inbox",
+                    Some(Role::Inbox),
+                    12_000,
+                    900,
+                    11_100,
+                    8_000,
+                    10_000,
+                    1_500,
+                    100,
+                    400,
+                    Utc.with_ymd_and_hms(2018, 6, 1, 12, 0, 0).single(),
+                ),
+                folder(
+                    "f:demo-archive",
+                    "Archive",
+                    Some(Role::Archive),
+                    12_813,
+                    348,
+                    12_465,
+                    3_000,
+                    11_000,
+                    1_300,
+                    200,
+                    313,
+                    oldest,
+                ),
+            ],
+            messages: 24_813,
+            read: 23_565,
+            unread: 1_248,
+            oldest_known: oldest,
+            newest_known: newest,
+            cached_bodies: 11_000,
+            indexed_full: 21_000,
+            indexed_partial_or_unverified: 2_800,
+            text_unavailable: 300,
+            awaiting_index: 713,
+            database_bytes: 1_500_000_000,
+            cached_attachments: 42,
+            attachment_cache_bytes: Some(260_000_000),
+            last_sync: newest,
+            sync_problem: None,
+        }]
     }
 
     /// The sample inbox sources (`inbox.list_sources`, task S.20): Talk is muted, so "Sources"
@@ -598,6 +676,7 @@ impl Backend for Demo {
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
+            Request::MailAccountStats { .. } => Response::MailAccountStats { accounts: self.mail_stats() },
             Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
             Request::TaskCollections => Response::Collections { collections: self.collections(false) },
             Request::ListSources => Response::Sources { sources: self.sources() },

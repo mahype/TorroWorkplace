@@ -43,6 +43,7 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
     vec![
         torro_ipc::Request::Settings,
         torro_ipc::Request::Accounts,
+        torro_ipc::Request::MailAccountStats { account: None },
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
         torro_ipc::Request::GetCategorization,
@@ -116,11 +117,12 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Messag
 pub mod accounts {
     use std::collections::BTreeMap;
 
-    use iced::widget::text::Wrapping;
+    use iced::widget::text::{IntoFragment, Wrapping};
     use iced::widget::{column, container, row, space as blank, text_editor};
     use iced::{Alignment, Fill};
     use torro_gui::theme::space;
     use torro_gui::{layout, style, typo, widgets};
+    use torro_ipc::mail::MailAccountStats;
     use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request};
     use torro_mail::{MailFormat, Role};
 
@@ -134,6 +136,7 @@ pub mod accounts {
         /// What is typed into the open account's sender name and signature; `None` on the list of
         /// accounts.
         draft: Option<Draft>,
+        folders_expanded: bool,
     }
 
     /// What a row of this section reports.
@@ -143,6 +146,8 @@ pub mod accounts {
         Open(String),
         /// "‹ Back" from an account's page to the list.
         Back,
+        /// Expand or collapse the account's per-folder local inventory.
+        ToggleFolders,
         /// Typing in the sender name.
         SenderName(String),
         /// Typing in the signature.
@@ -208,11 +213,16 @@ pub mod accounts {
                 // the list stays, and a press after the next load opens it.
                 if let Some(mail) = mail_of(data, &id) {
                     state.draft = Some(Draft::new(&id, mail));
+                    state.folders_expanded = false;
                 }
                 Action::None
             }
             Message::Back => {
                 state.draft = None;
+                Action::None
+            }
+            Message::ToggleFolders => {
+                state.folders_expanded = !state.folders_expanded;
                 Action::None
             }
             Message::SenderName(name) => {
@@ -286,7 +296,8 @@ pub mod accounts {
         match open_draft(state, data) {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
-                Page::new(account_page(draft, mail)).sub_page(label, Message::Back)
+                let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
+                Page::new(account_page(draft, mail, stats, state.folders_expanded)).sub_page(label, Message::Back)
             }
             None => Page::new(list(data)),
         }
@@ -323,12 +334,92 @@ pub mod accounts {
 
     /// One account's page: sender name and signature with "Save", how new mail is written, and the
     /// folder questions the server left open.
-    fn account_page<'a>(draft: &'a Draft, mail: &'a MailView) -> Element<'a, Message> {
-        let mut page = column![sender_groups(draft, mail), writing_group(mail)].spacing(layout::section_gap());
+    fn account_page<'a>(
+        draft: &'a Draft,
+        mail: &'a MailView,
+        stats: Option<&'a MailAccountStats>,
+        folders_expanded: bool,
+    ) -> Element<'a, Message> {
+        let mut page =
+            column![inventory_group(stats, folders_expanded), sender_groups(draft, mail), writing_group(mail)]
+                .spacing(layout::section_gap());
         if !mail.open_roles.is_empty() {
             page = page.push(folders_group(&mail.open_roles));
         }
         page.into()
+    }
+
+    /// The inventory comes entirely from the core; the sidebar's category badges count only
+    /// unread messages and are intentionally not reused as account totals here.
+    fn inventory_group(stats: Option<&MailAccountStats>, folders_expanded: bool) -> Element<'_, Message> {
+        let Some(stats) = stats else {
+            return widgets::group(
+                tr("Mailbox inventory"),
+                vec![row_frame(typo::text(typo::body(), tr("Statistics are not available yet.")), false)],
+                Some(tr("The mail service supplies these numbers from its local store.").to_string()),
+            );
+        };
+        let mut rows = vec![
+            inventory_row(tr("Known mail"), stats.messages.to_string(), None),
+            inventory_row(tr("Read"), stats.read.to_string(), None),
+            inventory_row(tr("Unread"), stats.unread.to_string(), None),
+            inventory_row(tr("Folders"), stats.folders.len().to_string(), None),
+            inventory_row(tr("Oldest known mail"), format_date(stats.oldest_known), None),
+            inventory_row(tr("Newest known mail"), format_date(stats.newest_known), None),
+            inventory_row(tr("Mail texts on this device"), stats.cached_bodies.to_string(), None),
+            inventory_row(tr("Fully indexed"), stats.indexed_full.to_string(), None),
+            inventory_row(tr("Partial or unverified index"), stats.indexed_partial_or_unverified.to_string(), None),
+            inventory_row(tr("Text unavailable"), stats.text_unavailable.to_string(), None),
+            inventory_row(tr("Awaiting indexing"), stats.awaiting_index.to_string(), None),
+            inventory_row(tr("Local database"), byte_size(stats.database_bytes), None),
+            inventory_row(
+                tr("Cached attachments"),
+                stats.cached_attachments.to_string(),
+                stats.attachment_cache_bytes.map(byte_size),
+            ),
+            inventory_row(tr("Last mail sync"), format_date(stats.last_sync), stats.sync_problem.clone()),
+        ];
+        let folder_button = widgets::text_button(
+            None,
+            if folders_expanded { tr("Hide folders") } else { tr("Show folders") },
+            style::button::secondary,
+            Some(Message::ToggleFolders),
+        );
+        rows.push(row_frame(row![blank::horizontal(), folder_button], false));
+        if folders_expanded {
+            for folder in &stats.folders {
+                let counts = torro_core::i18n::trf(
+                    "{unread} unread of {total}",
+                    &[("unread", &folder.folder.unread), ("total", &folder.folder.total)],
+                );
+                rows.push(inventory_row(
+                    folder.folder.name.as_str(),
+                    counts,
+                    folder.oldest_known.map(format_date_value),
+                ));
+            }
+        }
+        widgets::group(
+            tr("Mailbox inventory"),
+            rows,
+            Some(tr("Local known counts across all folders, including read mail. Server totals are not yet verified; dates are the oldest and newest known locally. Sidebar category badges count unread mail only.").to_string()),
+        )
+    }
+
+    fn inventory_row<'a>(label: impl IntoFragment<'a>, value: String, detail: Option<String>) -> Element<'a, Message> {
+        setting_row(None, label, detail, typo::text(typo::body_strong(), value))
+    }
+
+    fn format_date(date: Option<chrono::DateTime<chrono::Utc>>) -> String {
+        date.map_or_else(|| tr("Not known").to_string(), format_date_value)
+    }
+
+    fn format_date_value(date: chrono::DateTime<chrono::Utc>) -> String {
+        date.format("%Y-%m-%d %H:%M UTC").to_string()
+    }
+
+    fn byte_size(bytes: u64) -> String {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 
     /// Sender name and signature, and "Save" under them: it is on only while they differ from what
@@ -761,6 +852,7 @@ mod tests {
             vec![
                 torro_ipc::Request::Settings,
                 torro_ipc::Request::Accounts,
+                torro_ipc::Request::MailAccountStats { account: None },
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,
                 torro_ipc::Request::ListCategories { account: None },

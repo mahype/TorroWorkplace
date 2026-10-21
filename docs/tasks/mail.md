@@ -913,7 +913,7 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
   teilweise synchronisierte Ordner werden korrekt bezeichnet; API/MCP begrenzen Kontenrechte.
 
 ### M10.2 Kontoseite mit Bestand und Ordnern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M10.1 · **Dateien:** `crates/torro-settings-ui/src/{mail.rs,demo.rs}`,
   `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** Mail-Einstellungen › Accounts › Konto nach `docs/prototypes/mail-263/screen-account.png`, mit

@@ -478,6 +478,13 @@ pub fn missing_text(found: &Found) -> Option<String> {
     let open: Vec<&MailIndexProgress> =
         found.index.iter().filter(|account| account.state != IndexState::Complete).collect();
     if open.is_empty() {
+        let unavailable: u64 = found.index.iter().map(|account| account.text_unavailable).sum();
+        if unavailable > 0 {
+            return Some(trf(
+                "Some matches may be missing: {n} messages have no available text. Their headers remain searchable.",
+                &[("n", &unavailable)],
+            ));
+        }
         return Some(tr("Some matches may be missing: older mail is still being indexed.").to_owned());
     }
     let indexed: u64 = open.iter().map(|account| account.indexed).sum();
