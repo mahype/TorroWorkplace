@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="de">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Mail-Backup · Entwurf #267</title></head>
+<body style="margin:0;background:#0c0d0f">
+<div id="torro-backup-mock" aria-label="Entwurf für Mail-Backup und Wiederherstellung">
+  <style>
+    #torro-backup-mock{--tw-bg:light-dark(#f2f3f5,#0c0d0f);--tw-pane:light-dark(#fff,#141518);--tw-side:light-dark(#e8e9ec,#101114);--tw-line:light-dark(#d9dbe0,#2a2c30);--tw-text:light-dark(#1a1c20,#f1f2f4);--tw-sub:light-dark(#636871,#a9adb6);--tw-soft:light-dark(#f5f6f8,#1d1f23);--tw-red:light-dark(#ba1717,#e03838);--tw-redtext:#fff;--tw-green:light-dark(#166d4b,#70d6a7);--tw-warn:light-dark(#855b12,#e6b75b);font:400 14px/1.45 system-ui,-apple-system,sans-serif;color:var(--tw-text);color-scheme:light dark}
+    #torro-backup-mock *{box-sizing:border-box}
+    #torro-backup-mock .tw-stage{background:var(--tw-bg);padding:12px}
+    #torro-backup-mock .tw-window{display:grid;grid-template-columns:184px minmax(0,1fr);background:var(--tw-pane);border:1px solid var(--tw-line);border-radius:12px;overflow:hidden;min-height:640px}
+    #torro-backup-mock .tw-sidebar{background:var(--tw-side);padding:18px 10px;display:flex;flex-direction:column;gap:4px;border-right:1px solid var(--tw-line)}
+    #torro-backup-mock .tw-sidebar .tw-bottom{margin-top:auto;border-top:1px solid var(--tw-line);padding-top:12px}
+    #torro-backup-mock .tw-brand{font-weight:500;padding:6px 10px 23px;display:flex;align-items:center;gap:9px}
+    #torro-backup-mock .tw-logo{display:inline-grid;place-items:center;background:var(--tw-red);color:var(--tw-redtext);width:23px;height:23px;border-radius:5px;font-size:13px}
+    #torro-backup-mock .tw-nav{padding:9px 10px;border-radius:6px;color:var(--tw-sub)}
+    #torro-backup-mock .tw-nav.active{color:var(--tw-text);background:var(--tw-pane)}
+    #torro-backup-mock .tw-main{min-width:0}
+    #torro-backup-mock .tw-head{border-bottom:1px solid var(--tw-line);padding:13px 24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--tw-sub)}
+    #torro-backup-mock .tw-head strong{font-weight:500;color:var(--tw-text)}
+    #torro-backup-mock .tw-head .tw-grow{flex:1}
+    #torro-backup-mock .tw-gear{background:var(--tw-soft);color:var(--tw-text);border-radius:5px;padding:3px 8px}
+    #torro-backup-mock .tw-settings-layout{display:grid;grid-template-columns:156px minmax(0,1fr)}
+    #torro-backup-mock .tw-settings-list{padding:18px 8px;border-right:1px solid var(--tw-line);display:flex;flex-direction:column;gap:3px}
+    #torro-backup-mock .tw-settings-list .tw-foot{margin-top:24px;border-top:1px solid var(--tw-line);padding-top:12px}
+    #torro-backup-mock .tw-content{max-width:735px;padding:25px 24px 34px;margin:0 auto;min-width:0;width:100%}
+    #torro-backup-mock h2{font-size:21px;line-height:1.25;font-weight:500;margin:0 0 4px}
+    #torro-backup-mock h3{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--tw-sub);font-weight:500;margin:0 0 9px}
+    #torro-backup-mock p{margin:0;color:var(--tw-sub)}
+    #torro-backup-mock .tw-screen-tabs{display:flex;gap:7px;flex-wrap:wrap;margin:20px 0 23px;border-bottom:1px solid var(--tw-line)}
+    #torro-backup-mock .tw-screen-tabs button{background:transparent;color:var(--tw-sub);border:0;border-bottom:2px solid transparent;padding:8px 10px;font:inherit}
+    #torro-backup-mock .tw-screen-tabs button[aria-selected="true"]{border-color:var(--tw-red);color:var(--tw-text)}
+    #torro-backup-mock .tw-screen[hidden],#torro-backup-mock .tw-since[hidden]{display:none}
+    #torro-backup-mock .tw-section{margin:0 0 23px}
+    #torro-backup-mock .tw-rows{border-top:1px solid var(--tw-line);border-bottom:1px solid var(--tw-line)}
+    #torro-backup-mock .tw-row{padding:12px 0;display:flex;align-items:center;justify-content:space-between;gap:18px;border-bottom:1px solid var(--tw-line)}
+    #torro-backup-mock .tw-row:last-child{border-bottom:0}
+    #torro-backup-mock .tw-row>div:first-child{min-width:0}
+    #torro-backup-mock .tw-label{font-weight:500}
+    #torro-backup-mock .tw-detail{font-size:12px;color:var(--tw-sub);margin-top:2px}
+    #torro-backup-mock .tw-choice{display:flex;align-items:flex-start;gap:9px;padding:11px 0}
+    #torro-backup-mock .tw-choice+.tw-choice{border-top:1px solid var(--tw-line)}
+    #torro-backup-mock input[type=radio],#torro-backup-mock input[type=checkbox]{accent-color:var(--tw-red);margin:3px 0 0;flex:none}
+    #torro-backup-mock button,#torro-backup-mock select,#torro-backup-mock input{font:inherit}
+    #torro-backup-mock button{cursor:pointer}
+    #torro-backup-mock .tw-button{background:var(--tw-soft);color:var(--tw-text);border:1px solid var(--tw-line);border-radius:6px;padding:8px 13px;white-space:normal;text-align:center}
+    #torro-backup-mock .tw-button.primary{background:var(--tw-red);color:var(--tw-redtext);border-color:var(--tw-red)}
+    #torro-backup-mock .tw-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+    #torro-backup-mock select,#torro-backup-mock input[type=date]{background:var(--tw-soft);color:var(--tw-text);border:1px solid var(--tw-line);border-radius:6px;padding:8px;min-width:150px;max-width:100%}
+    #torro-backup-mock .tw-note{font-size:12px;background:var(--tw-soft);padding:11px 12px;border-left:3px solid var(--tw-warn);margin-top:13px;color:var(--tw-text)}
+    #torro-backup-mock .tw-file{display:flex;gap:10px;align-items:center;min-width:0}
+    #torro-backup-mock .tw-file-icon{font-size:12px;background:var(--tw-soft);border:1px solid var(--tw-line);border-radius:5px;padding:7px;flex:none}
+    #torro-backup-mock .tw-file-text{min-width:0;overflow-wrap:anywhere}
+    #torro-backup-mock .tw-meta{display:flex;gap:18px;flex-wrap:wrap;padding:13px 0;border-bottom:1px solid var(--tw-line)}
+    #torro-backup-mock .tw-meta strong{font-size:18px;font-weight:500;display:block}
+    #torro-backup-mock .tw-meta span{font-size:12px;color:var(--tw-sub)}
+    #torro-backup-mock .tw-status{color:var(--tw-green);font-weight:500}
+    #torro-backup-mock .tw-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+    #torro-backup-mock .tw-table th,#torro-backup-mock .tw-table td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--tw-line)}
+    #torro-backup-mock .tw-table th{font-weight:500;color:var(--tw-sub)}
+    #torro-backup-mock .tw-table td:last-child,#torro-backup-mock .tw-table th:last-child{text-align:right}
+    #torro-backup-mock .tw-progress{height:7px;background:var(--tw-soft);border-radius:6px;overflow:hidden;margin:12px 0 5px}
+    #torro-backup-mock .tw-progress>span{display:block;background:var(--tw-red);height:100%;width:68%}
+    #torro-backup-mock .tw-terminal{font:12px/1.5 ui-monospace,SFMono-Regular,monospace;background:var(--tw-soft);padding:12px;overflow-wrap:anywhere;white-space:pre-wrap}
+    @media(max-width:850px){#torro-backup-mock .tw-window{grid-template-columns:145px minmax(0,1fr)}#torro-backup-mock .tw-settings-layout{grid-template-columns:130px minmax(0,1fr)}}
+    @media(max-width:700px){#torro-backup-mock .tw-window{display:block}#torro-backup-mock .tw-sidebar{display:none}#torro-backup-mock .tw-content{padding:20px 16px 26px}#torro-backup-mock .tw-head{padding:12px 16px}#torro-backup-mock .tw-row{align-items:flex-start;flex-direction:column;gap:8px}#torro-backup-mock .tw-row select,#torro-backup-mock .tw-row input[type=date]{width:100%}}
+    @media(max-width:540px){#torro-backup-mock .tw-settings-layout{display:block}#torro-backup-mock .tw-settings-list{display:none}}
+  </style>
+  <div class="tw-stage"><div class="tw-window">
+    <aside class="tw-sidebar" aria-label="Mail-Navigation">
+      <div class="tw-brand"><span class="tw-logo">T</span>Mail</div>
+      <div class="tw-nav">Alle Postfächer</div><div class="tw-nav">Posteingang</div><div class="tw-nav">Gesendet</div><div class="tw-nav">Entwürfe</div><div class="tw-nav">Archiv</div><div class="tw-nav">Papierkorb</div>
+      <div class="tw-nav tw-bottom">mail@example.org</div>
+    </aside>
+    <main class="tw-main">
+      <div class="tw-head"><strong>← Einstellungen</strong><span>›</span><span>Konten</span><span>›</span><span>mail@example.org</span><span class="tw-grow"></span><span class="tw-gear" aria-label="Einstellungen geöffnet">⚙</span></div>
+      <div class="tw-settings-layout">
+        <aside class="tw-settings-list" aria-label="Mail-Einstellungen"><div class="tw-nav active">Konten</div><div class="tw-nav">Lesen</div><div class="tw-nav">Kategorisierung</div><div class="tw-nav">Tastenkürzel</div><div class="tw-nav tw-foot">Erscheinungsbild ↗</div><div class="tw-nav">Alle Einstellungen ↗</div></aside>
+        <div class="tw-content">
+        <h2>Backup &amp; Wiederherstellung</h2><p>Beispielansicht für ein verbundenes IMAP-Konto</p>
+        <div class="tw-screen-tabs" role="tablist" aria-label="Ansichten des Entwurfs">
+          <button type="button" role="tab" aria-selected="true" aria-controls="tw-backup" data-screen="backup">Backup einrichten</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="tw-progress" data-screen="progress">Fortschritt</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="tw-restore" data-screen="restore">Restore</button>
+          <button type="button" role="tab" aria-selected="false" aria-controls="tw-test" data-screen="test">Testlauf-Ergebnis</button>
+        </div>
+        <section class="tw-screen" id="tw-backup" role="tabpanel">
+          <div class="tw-section"><h3>Quelle</h3>
+            <label class="tw-choice"><input type="radio" name="tw-source" value="server" checked><span><span class="tw-label">Alle E-Mails auf dem IMAP-Server</span><span class="tw-detail" style="display:block">Alle erreichbaren Ordner, inklusive Gesendet, Entwürfe, Spam und Papierkorb.</span></span></label>
+            <label class="tw-choice"><input type="radio" name="tw-source" value="local"><span><span class="tw-label">Nur vollständig lokal gespeicherte E-Mails</span><span class="tw-detail" style="display:block">Ohne Netzabruf. Nachrichten mit nur lokalem Header fehlen und werden ausgewiesen.</span></span></label>
+            <div class="tw-note" id="tw-source-note" aria-live="polite">Servermodus: Das Archiv wird erst nach Prüfung aller gefundenen Nachrichten als vollständig markiert.</div>
+          </div>
+          <div class="tw-section"><h3>Zeitraum</h3><div class="tw-rows">
+            <div class="tw-row"><div><div class="tw-label">Nachrichten</div><div class="tw-detail">Das IMAP-Eingangsdatum zählt, nicht das Datum im Mail-Header.</div></div><select id="tw-period" aria-label="Backup-Zeitraum"><option value="all">Ohne Datumsgrenze</option><option value="since">Ab Datum</option></select></div>
+            <div class="tw-row tw-since" id="tw-since" hidden><div class="tw-label">Einschließlich</div><input type="date" value="2024-01-01" aria-label="Erstes Datum"></div>
+            <div class="tw-row"><div><div class="tw-label">Zieldatei</div><div class="tw-detail">Offenes ZIP mit EML-Dateien und Manifest</div></div><button type="button" class="tw-button">Speicherort wählen…</button></div>
+          </div></div>
+          <div class="tw-actions"><button type="button" class="tw-button primary" data-jump="progress">Backup erstellen</button><button type="button" class="tw-button" data-jump="restore">Archiv wiederherstellen…</button></div>
+        </section>
+        <section class="tw-screen" id="tw-progress" role="tabpanel" hidden>
+          <div class="tw-section"><h3>Backup läuft</h3><div class="tw-label">INBOX · Nachricht 1.324 von 1.940</div><div class="tw-progress" role="progressbar" aria-valuenow="68" aria-valuemin="0" aria-valuemax="100" aria-label="Beispielhafter Fortschritt"><span></span></div><div class="tw-detail">1.324 E-Mails · 186 MB · Prüfsummen werden erfasst</div></div>
+          <div class="tw-section"><h3>Ordner</h3><table class="tw-table"><thead><tr><th>Ordner</th><th>Status</th><th>Nachrichten</th></tr></thead><tbody><tr><td>INBOX</td><td>Wird gesichert</td><td>1.940</td></tr><tr><td>Sent</td><td>Wartet</td><td>3.208</td></tr><tr><td>Archive / 2024</td><td>Wartet</td><td>1.876</td></tr><tr><td>Trash</td><td>Wartet</td><td>177</td></tr></tbody></table></div>
+          <div class="tw-note">Bei nicht lesbaren oder währenddessen gelöschten Mails lautet das Ergebnis „unvollständig“ mit Fehlerbericht.</div>
+          <div class="tw-actions"><button type="button" class="tw-button" data-jump="backup">Zurück zur Einrichtung</button></div>
+        </section>
+        <section class="tw-screen" id="tw-restore" role="tabpanel" hidden>
+          <div class="tw-section"><h3>Archiv</h3><div class="tw-rows"><div class="tw-row"><div class="tw-file"><div class="tw-file-icon">ZIP</div><div class="tw-file-text"><div class="tw-label">mail-example-2026-10-21.zip</div><div class="tw-detail">8.412 Nachrichten · 12 Ordner · Manifest und Prüfsummen</div></div></div><button type="button" class="tw-button">Datei wählen…</button></div></div></div>
+          <div class="tw-section"><h3>Ziel</h3><div class="tw-rows"><div class="tw-row"><div><div class="tw-label">IMAP-Konto</div><div class="tw-detail">Server vergibt beim Rückspielen neue UIDs.</div></div><select aria-label="Zielkonto"><option>mail@example.org</option><option>Anderes Konto…</option></select></div><div class="tw-row"><div><div class="tw-label">Vorhandene Nachrichten</div><div class="tw-detail">Gleiche Nachrichten im selben Ordner nicht erneut anlegen.</div></div><select aria-label="Duplikatstrategie"><option>Vorhandene überspringen</option><option>Alles hinzufügen</option></select></div></div></div>
+          <div class="tw-note">Ein Testlauf liest Archiv und Zielkonto. Er legt keine Ordner an und fügt keine E-Mail hinzu.</div>
+          <div class="tw-actions"><button type="button" class="tw-button primary" data-jump="test">Testlauf starten</button><button type="button" class="tw-button">Restore ausführen…</button></div>
+        </section>
+        <section class="tw-screen" id="tw-test" role="tabpanel" hidden>
+          <div class="tw-status">✓ Testlauf abgeschlossen · keine Änderungen am Server</div>
+          <div class="tw-meta"><div><strong>8.412</strong><span>Archiv-Einträge geprüft</span></div><div><strong>12</strong><span>Ordner zugeordnet</span></div><div><strong>0</strong><span>Prüfsummenfehler</span></div></div>
+          <div class="tw-section" style="margin-top:22px"><h3>Voraussichtliche Aktionen</h3><table class="tw-table"><thead><tr><th>Archivordner</th><th>Zielordner</th><th>Aktion</th></tr></thead><tbody><tr><td>INBOX</td><td>INBOX</td><td>1.726 hinzufügen</td></tr><tr><td>Sent</td><td>Sent</td><td>3.208 hinzufügen</td></tr><tr><td>Archive / 2024</td><td>Archive / 2024</td><td>Ordner anlegen</td></tr><tr><td>Trash</td><td>Trash</td><td>177 prüfen</td></tr></tbody></table></div>
+          <div class="tw-note">Schätzung nach dem Stand des Zielkontos beim Testlauf. Vor dem echten Restore wird erneut geprüft.</div>
+          <div class="tw-actions"><button type="button" class="tw-button" data-jump="restore">Zuordnung ändern</button><button type="button" class="tw-button primary">Restore ausführen…</button></div>
+        </section>
+        </div>
+      </div>
+    </main>
+  </div></div>
+  <script>
+    (()=>{
+      const root=document.getElementById('torro-backup-mock');
+      const tabs=[...root.querySelectorAll('[data-screen]')];
+      const screens=[...root.querySelectorAll('.tw-screen')];
+      function show(name){tabs.forEach(tab=>tab.setAttribute('aria-selected',String(tab.dataset.screen===name)));screens.forEach(screen=>screen.hidden=screen.id!==`tw-${name}`);}
+      tabs.forEach(tab=>tab.addEventListener('click',()=>show(tab.dataset.screen)));
+      root.querySelectorAll('[data-jump]').forEach(button=>button.addEventListener('click',()=>show(button.dataset.jump)));
+      root.querySelector('#tw-period').addEventListener('change',event=>{root.querySelector('#tw-since').hidden=event.target.value!=='since';});
+      root.querySelectorAll('input[name="tw-source"]').forEach(input=>input.addEventListener('change',()=>{root.querySelector('#tw-source-note').textContent=input.value==='local'?'Lokalmodus: Nur als Originaldatei vollständig vorhandene Mails werden gesichert. Fehlende Originale erscheinen im Bericht.':'Servermodus: Das Archiv wird erst nach Prüfung aller gefundenen Nachrichten als vollständig markiert.';}));
+    })();
+  </script>
+</div>
+
+</body></html>

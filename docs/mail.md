@@ -92,6 +92,11 @@ allen Apps gleich.
 
 > **Entschieden 2026-10-12:** keine eigene App. Was hier steht (Größenklassen, Schreibfenster,
 > Einladungen), gilt für die Mail-Tiefe im Eingang `torroinbox` ([eingang.md](eingang.md)).
+>
+> **Aktualisierung 2026-10-21 (#267):** Die untenstehende Aussage, es gebe keine eigenen
+> Kontoeinstellungen im Mail-Fenster, ist durch [settings.md](settings.md) überholt.
+> Mail-spezifische Einstellungen liegen hinter dem Zahnrad des Eingang/Mail-Fensters;
+> Backup & Restore liegt dort unter Konten → Konto ([Konzept](mail-backup.md)).
 
 Arbeitsname `torromail` (siehe offene Entscheidungen). Eigener Prozess, Iced, `torro_gui::shell`,
 spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
