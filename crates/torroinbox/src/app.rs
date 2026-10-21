@@ -3715,12 +3715,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Refresh | Message::CoreReady => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
+                let settings = self.settings.as_ref().map(|pane| pane.host.reload().map(Message::SettingsHost));
                 return Task::batch([
                     self.fetch_appearance(),
                     self.fetch_look(),
                     self.fetch_ai_ready(),
                     self.zoom.fetch().map(Message::Zoom),
                     self.load(),
+                    settings.unwrap_or_else(Task::none),
                 ]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
@@ -5271,8 +5273,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Task::none()
             }
             Outcome::OpenUrl(url) => self.open_url(url),
-            // No section of these windows asks a question of its own (`Action::Ask`).
-            Outcome::Answer(_) => Task::none(),
+            Outcome::Answer(answer) => {
+                if let Some(pane) = self.settings.as_mut()
+                    && let SettingsState::Mail(state) = &mut pane.sections
+                {
+                    settings_mail::answered(state, &answer);
+                }
+                Task::none()
+            }
             Outcome::ControlCentre(section) => {
                 connect::open_section(&section);
                 Task::none()

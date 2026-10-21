@@ -941,7 +941,7 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
   Zuordnungen noch den Jobstand; normale neue Mail und zwei Clients können keine Kategorie überschreiben.
 
 ### M10.4 Kategorisierungsseite mit Umfang und Fortschritt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M10.3 · **Dateien:** `crates/torro-settings-ui/src/{mail.rs,demo.rs}`,
   `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** `docs/prototypes/mail-263/screen-sort.png`: Konto/Ordner/Zeitraum/Modell wählen,

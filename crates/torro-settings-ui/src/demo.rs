@@ -22,6 +22,9 @@ use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
+use torro_ipc::inbox::{
+    CategoryJob, CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
+};
 use torro_ipc::mail::{MailAccountStats, MailFolderStats};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{
@@ -50,6 +53,7 @@ const MAIL_ADDRESS: &str = "anna@mailbox.org";
 pub struct Demo {
     settings: Settings,
     sent: Mutex<Vec<Request>>,
+    category_job: Mutex<Option<CategoryJob>>,
 }
 
 impl Demo {
@@ -78,7 +82,7 @@ impl Demo {
             tools,
             ..Settings::default()
         };
-        Demo { settings, sent: Mutex::new(Vec::new()) }
+        Demo { settings, sent: Mutex::new(Vec::new()), category_job: Mutex::new(None) }
     }
 
     /// The sample settings it answers `settings.settings` with.
@@ -355,6 +359,21 @@ impl Demo {
             last_sync: newest,
             sync_problem: None,
         }]
+    }
+
+    /// Deliberately separate all-mail counts from the old 153-message catch-up sample.
+    fn category_job_preview(&self, scope: &CategoryJobScope) -> CategoryJobPreview {
+        let all = scope.since.is_none() && scope.folders.is_empty();
+        let (total, unclassified, automatic, protected) =
+            if all { (24_813, 3_012, 19_516, 2_285) } else { (153, 53, 88, 12) };
+        CategoryJobPreview {
+            total,
+            unclassified,
+            automatic,
+            protected,
+            eligible: unclassified + if scope.again { automatic } else { 0 },
+            request_scope: Some(scope.clone()),
+        }
     }
 
     /// The sample inbox sources (`inbox.list_sources`, task S.20): Talk is muted, so "Sources"
@@ -672,6 +691,52 @@ impl Backend for Demo {
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
+            Request::PreviewCategoryJob { scope } => {
+                Response::CategoryJobPreview { preview: self.category_job_preview(scope) }
+            }
+            Request::GetCategoryJob { .. } => Response::CategoryJob {
+                job: self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
+            },
+            Request::StartCategoryJob { scope } => {
+                let preview = self.category_job_preview(scope);
+                let now = Utc::now();
+                let job = CategoryJob {
+                    id: "category-job:demo".into(),
+                    scope: scope.clone(),
+                    state: CategoryJobState::Running,
+                    accounts: vec![CategoryJobAccount {
+                        account: format!("mail:{MAIL_ADDRESS}"),
+                        max_sequence: preview.total as i64,
+                        cursor: 11,
+                        eligible: preview.eligible,
+                        processed: 11,
+                        changed: 8,
+                        failed: 0,
+                    }],
+                    errors: Vec::new(),
+                    started_at: now,
+                    updated_at: now,
+                    generation: 1,
+                    model_in_cloud: Some(false),
+                };
+                *self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job.clone());
+                self.note(request);
+                Response::CategoryJob { job: Some(job) }
+            }
+            Request::ControlCategoryJob { action, .. } => {
+                let mut stored = self.category_job.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(job) = stored.as_mut() {
+                    job.state = match action {
+                        CategoryJobControl::Pause => CategoryJobState::Paused,
+                        CategoryJobControl::Resume => CategoryJobState::Running,
+                        CategoryJobControl::Cancel => CategoryJobState::Cancelled,
+                    };
+                }
+                let job = stored.clone();
+                drop(stored);
+                self.note(request);
+                Response::CategoryJob { job }
+            }
             Request::ListCategories { .. } => Response::Categories { categories: self.categories() },
             Request::ListSortRules => Response::SortRules { rules: self.sort_rules() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },

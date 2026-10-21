@@ -47,6 +47,8 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
         torro_ipc::Request::GetCategorization,
+        torro_ipc::Request::PreviewCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() },
+        torro_ipc::Request::GetCategoryJob { id: None },
         // The catalogue (task E15.2): what the categories are called and where they stand now.
         torro_ipc::Request::ListCategories { account: None },
         // The sorting rules (task E15.5), listed and edited under Categorization.
@@ -94,8 +96,13 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
 /// (task E15.5), asking first when something typed would go. `None` leaves it to the window,
 /// which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    editor::escape(&state.categorization)
+    editor::escape(&state.categorization.editor)
         .map(|message| Message::Categorization(categorization::Message::Editor(message)))
+}
+
+/// The answer of a one-off preview request for the currently selected sorting scope.
+pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    categorization::answered(&mut state.categorization, answer);
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -948,7 +955,7 @@ mod tests {
         let nothing =
             categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &none);
         assert!(matches!(nothing, Action::None), "nothing on, nothing to switch on");
-        let _ = categorization::view(&none);
+        let _ = categorization::view(&Default::default(), &none);
     }
 
     /// PR review #242: a model assigned for sorting mail that is turned off in Accounts is not shown
@@ -982,7 +989,7 @@ mod tests {
             ..Data::default()
         };
         assert_eq!(categorization::assigned_off(&off), Some((engine.to_string(), "nimble (decides)".to_string())));
-        let _ = categorization::view(&off);
+        let _ = categorization::view(&Default::default(), &off);
         let Action::ControlCentre(section) =
             categorization::update::<()>(&mut Default::default(), categorization::Message::ManageModels, &off)
         else {
@@ -1071,14 +1078,36 @@ pub mod categorization {
     use torro_gui::icon;
     use torro_gui::theme::palette;
     use torro_gui::{layout, style, theme, typo, widgets};
-    use torro_ipc::Request;
+    use torro_ipc::inbox::{CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
+    use torro_ipc::{Request, Response};
     use torro_mail::Category;
 
     use super::*;
     use crate::parts::{choice, pressable, setting_row, switch};
 
-    /// The section's state: the editor's open page (task E15.5).
-    pub type State = super::editor::State;
+    /// Form choices remain local; the actual job and its progress always come from the service.
+    #[derive(Debug, Default)]
+    pub struct State {
+        pub(super) editor: super::editor::State,
+        all_accounts: bool,
+        accounts: Vec<String>,
+        all_folders: bool,
+        folders: Vec<String>,
+        period: Period,
+        again: bool,
+        preview: Option<CategoryJobPreview>,
+        preview_error: Option<String>,
+        pending_scope: Option<CategoryJobScope>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Period {
+        #[default]
+        All,
+        Days30,
+        Days90,
+        Year,
+    }
 
     /// What a row of this section reports.
     #[derive(Debug, Clone)]
@@ -1091,6 +1120,15 @@ pub mod categorization {
         CatchUp(bool),
         /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
         SortAgain,
+        /// Change the scope of the explicit sorting job and refresh its preview.
+        AllAccounts,
+        ToggleAccount(String),
+        AllFolders,
+        ToggleFolder(String),
+        Period(Period),
+        Again(bool),
+        StartJob,
+        ControlJob(String, CategoryJobControl),
         /// The editor of the categories and the sorting rules (task E15.5).
         Editor(super::editor::Message),
         /// One category shown in the sidebar or not.
@@ -1102,7 +1140,43 @@ pub mod categorization {
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         let held = assignment(data);
         match message {
-            Message::Editor(message) => super::editor::update(state, message, data),
+            Message::Editor(message) => super::editor::update(&mut state.editor, message, data),
+            Message::AllAccounts => {
+                state.all_accounts = true;
+                state.accounts.clear();
+                preview_action(state)
+            }
+            Message::ToggleAccount(account) => {
+                state.all_accounts = false;
+                toggle(&mut state.accounts, account);
+                if state.accounts.is_empty() {
+                    state.all_accounts = true;
+                }
+                preview_action(state)
+            }
+            Message::AllFolders => {
+                state.all_folders = true;
+                state.folders.clear();
+                preview_action(state)
+            }
+            Message::ToggleFolder(folder) => {
+                state.all_folders = false;
+                toggle(&mut state.folders, folder);
+                if state.folders.is_empty() {
+                    state.all_folders = true;
+                }
+                preview_action(state)
+            }
+            Message::Period(period) => {
+                state.period = period;
+                preview_action(state)
+            }
+            Message::Again(again) => {
+                state.again = again;
+                preview_action(state)
+            }
+            Message::StartJob => Action::send(Request::StartCategoryJob { scope: scope(state) }),
+            Message::ControlJob(id, action) => Action::send(Request::ControlCategoryJob { id, action }),
             Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
             // Switching on without a model named would store an assignment the core throws away
             // (no account, nothing to ask): the first model that can decide is taken, which is
@@ -1150,37 +1224,267 @@ pub mod categorization {
     /// The section's page: the list, or the open page of a category or a sorting rule with
     /// "‹ Back" (task E15.5).
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
-        match super::editor::page(state, data) {
+        match super::editor::page(&state.editor, data) {
             Some((name, body, save)) => {
                 let back = Message::Editor(super::editor::Message::Back);
                 Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)])
             }
-            None => Page::new(view(data)),
+            None => Page::new(view(state, data)),
         }
     }
 
-    pub fn view(data: &Data) -> Element<'_, Message> {
+    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let held = assignment(data);
         let on = held.is_ready();
         let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
         let sorting = widgets::group(
             tr("Categorization"),
-            vec![switch_row, catch_up_row(data), sort_again_row(data)],
-            Some(
-                tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.")
-                    .to_string(),
-            ),
+            vec![switch_row],
+            Some(match data.settings.mail_to_cloud {
+                true => tr("The chosen model sorts mail. Mail may leave this computer; no message is moved or deleted, and categories can be changed by hand.").to_string(),
+                false => tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.").to_string(),
+            }),
         );
         let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
         let sorting_rules = super::editor::rules_group(data).map(Message::Editor);
         // The rules before the long list of categories: they change more often. "Always for this
         // sender?" keeps its senders among them (task E15.3), so no link to the Notification Hub.
         // Whether the sidebar shows a category is on its page (task E15.5), not a second list.
-        let mut page = column![sorting, models, sorting_rules].spacing(layout::section_gap());
+        let mut page = column![sorting, models, job_group(state, data), sorting_rules].spacing(layout::section_gap());
         for group in super::editor::categories_groups(data) {
             page = page.push(group.map(Message::Editor));
         }
         page.into()
+    }
+
+    fn toggle(selected: &mut Vec<String>, id: String) {
+        if let Some(position) = selected.iter().position(|held| held == &id) {
+            selected.remove(position);
+        } else {
+            selected.push(id);
+        }
+    }
+
+    fn scope(state: &State) -> CategoryJobScope {
+        let days = match state.period {
+            Period::All => None,
+            Period::Days30 => Some(30),
+            Period::Days90 => Some(90),
+            Period::Year => Some(365),
+        };
+        CategoryJobScope {
+            accounts: if state.all_accounts { Vec::new() } else { state.accounts.clone() },
+            folders: if state.all_folders { Vec::new() } else { state.folders.clone() },
+            since: days.map(|days| chrono::Utc::now() - chrono::Duration::days(days)),
+            before: None,
+            again: state.again,
+            engine: None,
+            model: None,
+        }
+    }
+
+    fn preview_action<A>(state: &mut State) -> Action<A> {
+        state.preview = None;
+        state.preview_error = None;
+        let scope = scope(state);
+        state.pending_scope = Some(scope.clone());
+        Action::Ask(Request::PreviewCategoryJob { scope })
+    }
+
+    /// The host delivers the answer of the currently selected scope without replacing all
+    /// settings data. The service alone counts; the form stores no derived totals.
+    pub fn answered(state: &mut State, answer: &Result<Response, String>) {
+        match answer {
+            Ok(Response::CategoryJobPreview { preview }) if preview.request_scope == state.pending_scope => {
+                state.preview = Some(preview.clone());
+                state.preview_error = None;
+                state.pending_scope = None;
+            }
+            Err(problem) => {
+                state.preview_error = Some(problem.clone());
+                state.pending_scope = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn job_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+        use iced::widget::column;
+        let all_accounts = state.all_accounts || state.accounts.is_empty();
+        let mut account_rows: Vec<Element<'a, Message>> =
+            vec![choice(tr("All mail accounts").to_string(), all_accounts, Message::AllAccounts)];
+        for stats in &data.mail_stats {
+            account_rows.push(choice(
+                account_label(data, &stats.account),
+                !all_accounts && state.accounts.contains(&stats.account),
+                Message::ToggleAccount(stats.account.clone()),
+            ));
+        }
+        let accounts = widgets::group(
+            tr("Mail accounts"),
+            account_rows,
+            Some(tr("Choose one or more accounts, or all accounts.").to_string()),
+        );
+
+        let all_folders = state.all_folders || state.folders.is_empty();
+        let mut folder_rows: Vec<Element<'a, Message>> =
+            vec![choice(tr("All folders").to_string(), all_folders, Message::AllFolders)];
+        for stats in &data.mail_stats {
+            if !all_accounts && !state.accounts.contains(&stats.account) {
+                continue;
+            }
+            for folder in &stats.folders {
+                folder_rows.push(choice(
+                    format!("{} · {}", account_label(data, &stats.account), folder.folder.name),
+                    !all_folders && state.folders.contains(&folder.folder.id),
+                    Message::ToggleFolder(folder.folder.id.clone()),
+                ));
+            }
+        }
+        let folders = widgets::group(tr("Folders to sort"), folder_rows, None);
+        let period = widgets::group(
+            tr("Time span"),
+            vec![
+                choice(tr("All known mail").to_string(), state.period == Period::All, Message::Period(Period::All)),
+                choice(tr("Last 30 days").to_string(), state.period == Period::Days30, Message::Period(Period::Days30)),
+                choice(tr("Last 90 days").to_string(), state.period == Period::Days90, Message::Period(Period::Days90)),
+                choice(tr("Last year").to_string(), state.period == Period::Year, Message::Period(Period::Year)),
+                setting_row(
+                    None,
+                    tr("Recheck model categories"),
+                    Some(tr("Manual choices and sorting rules remain protected.").to_string()),
+                    switch(state.again, Message::Again),
+                ),
+            ],
+            None,
+        );
+        let preview = if state.pending_scope.is_some() || state.preview_error.is_some() {
+            None
+        } else {
+            state.preview.as_ref().or(data.category_job_preview.as_ref())
+        };
+        let preview_words = match (preview, state.preview_error.as_ref()) {
+            (_, Some(problem)) => problem.clone(),
+            (Some(preview), _) => trf(
+                "{eligible} to sort · {unclassified} without a category · {automatic} automatic · {protected} protected · {total} total",
+                &[
+                    ("eligible", &preview.eligible),
+                    ("unclassified", &preview.unclassified),
+                    ("automatic", &preview.automatic),
+                    ("protected", &preview.protected),
+                    ("total", &preview.total),
+                ],
+            ),
+            (None, _) => tr("Calculating selection…").to_string(),
+        };
+        let running = data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running);
+        let start = widgets::text_button(
+            None,
+            tr("Start sorting"),
+            style::button::secondary,
+            (!running && preview.is_some_and(|preview| preview.eligible > 0)).then_some(Message::StartJob),
+        );
+        let summary = widgets::group(
+            tr("Preview"),
+            vec![
+                setting_row(None, tr("Selected mail"), Some(preview_words), start),
+                setting_row(None, tr("Model location"), Some(job_model_note(data)), iced::widget::space().width(0)),
+            ],
+            Some(
+                tr("The preview and progress count all selected mail. Sidebar badges count unread mail only.")
+                    .to_string(),
+            ),
+        );
+        let mut page = column![accounts, folders, period, summary].spacing(layout::section_gap());
+        if let Some(job) = &data.category_job {
+            let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
+            let processed: u64 = job.accounts.iter().map(|account| account.processed).sum();
+            let mut rows = vec![setting_row(
+                None,
+                tr("Sorting progress"),
+                Some(trf("{done} of {total}", &[("done", &processed), ("total", &total)])),
+                typo::text(typo::body_strong(), job_state_label(job.state)),
+            )];
+            for account in &job.accounts {
+                rows.push(setting_row(
+                    None,
+                    account_label(data, &account.account),
+                    Some(trf("{done} of {total}", &[("done", &account.processed), ("total", &account.eligible)])),
+                    typo::text(typo::body(), account.changed.to_string()),
+                ));
+            }
+            for error in &job.errors {
+                rows.push(setting_row(None, tr("Error"), Some(error.clone()), iced::widget::space().width(0)));
+            }
+            let controls = match job.state {
+                CategoryJobState::Running => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Pause"),
+                        style::button::secondary,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Pause)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Paused | CategoryJobState::Failed => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Resume"),
+                        style::button::secondary,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Resume)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Cancelled | CategoryJobState::Complete => Vec::new(),
+            };
+            if !controls.is_empty() {
+                rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
+            }
+            page = page.push(widgets::group(tr("Current sorting job"), rows, None));
+        }
+        page.into()
+    }
+
+    fn job_state_label(state: CategoryJobState) -> &'static str {
+        match state {
+            CategoryJobState::Running => tr("Running"),
+            CategoryJobState::Paused => tr("Paused"),
+            CategoryJobState::Cancelled => tr("Cancelled"),
+            CategoryJobState::Complete => tr("Complete"),
+            CategoryJobState::Failed => tr("Failed"),
+        }
+    }
+
+    fn job_model_note(data: &Data) -> String {
+        if let Some(cloud) = data.category_job.as_ref().and_then(|job| job.model_in_cloud) {
+            return match cloud {
+                true => tr("Cloud model: mail content leaves this computer.").to_string(),
+                false => tr("Local model: mail content stays on this computer.").to_string(),
+            };
+        }
+        let held = assignment(data);
+        let remote = data
+            .decider_models
+            .iter()
+            .find(|(engine, model)| {
+                held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
+            })
+            .and_then(|(_, model)| model.remote);
+        match remote {
+            Some(true) => tr("Cloud model: mail content leaves this computer.").to_string(),
+            Some(false) => tr("Local model: mail content stays on this computer.").to_string(),
+            None => tr("Choose a decision model above.").to_string(),
+        }
     }
 
     /// The models that may sort mail: every AI account's models that decide and are turned on for
@@ -1288,71 +1592,5 @@ pub mod categorization {
                     .to_owned()
             }
         }
-    }
-
-    /// "Sort again" (task E15.5): the window anew after new rules or descriptions, but what was
-    /// filed by hand. It works with the rules alone, so it is there without a model too; while a
-    /// run goes, "Catch up" shows how far and stops it.
-    fn sort_again_row<'a>(data: &'a Data) -> Element<'a, Message> {
-        let running =
-            data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
-        let button = widgets::text_button(
-            None,
-            tr("Sort again"),
-            style::button::secondary,
-            (!running).then_some(Message::SortAgain),
-        );
-        setting_row(
-            None,
-            tr("Sort everything again"),
-            Some(tr("After new rules or descriptions. What you filed by hand stays.").to_owned()),
-            button,
-        )
-    }
-
-    /// "Catch up": how far the backlog has come, and the button to start or stop it.
-    fn catch_up_row<'a>(data: &'a Data) -> Element<'a, Message> {
-        let (done, total) = data
-            .categorization
-            .accounts
-            .iter()
-            .fold((0u64, 0u64), |(done, total), held| (done + held.done, total + held.messages));
-        let running =
-            data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
-        // Sorting again (task E15.5) counts what it went through, the backlog what has a category.
-        let again = data.categorization.again;
-        let words = if total == 0 {
-            tr("Not started").to_owned()
-        } else if done >= total && again {
-            tr("Sorted again").to_owned()
-        } else if done >= total {
-            tr("Done").to_owned()
-        } else {
-            trf("{done} of {total}", &[("done", &done), ("total", &done.max(total))])
-        };
-        let mut value = iced::widget::row![typo::text(typo::body(), words)]
-            .spacing(theme::space::m())
-            .align_y(iced::Alignment::Center);
-        if running {
-            value = value.push(widgets::text_button(
-                None,
-                tr("Cancel"),
-                style::button::ghost,
-                Some(Message::CatchUp(true)),
-            ));
-        } else {
-            value = value.push(widgets::text_button(
-                None,
-                tr("Catch up now"),
-                style::button::secondary,
-                Some(Message::CatchUp(false)),
-            ));
-        }
-        setting_row(
-            None,
-            tr("Catch up"),
-            Some(tr("The inbox of the last 30 days, at most 500 messages per account.").to_owned()),
-            value,
-        )
     }
 }

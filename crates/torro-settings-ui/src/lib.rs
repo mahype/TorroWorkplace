@@ -140,6 +140,9 @@ pub struct Data {
     /// How the sorting of mail by a model stands (`inbox.get_categorization`, task E12.10): the
     /// backlog per account.
     pub categorization: torro_ipc::inbox::Categorization,
+    /// The latest explicit sorting job and the default all-mail preview.
+    pub category_job: Option<torro_ipc::inbox::CategoryJob>,
+    pub category_job_preview: Option<torro_ipc::inbox::CategoryJobPreview>,
     /// The catalogue of mail categories (`inbox.list_categories`, task E15.2): what each one is
     /// called and which group it stands in now. Empty from a load that did not ask for it.
     pub categories: Vec<torro_ipc::inbox::CategoryInfo>,
@@ -191,6 +194,8 @@ impl Data {
             }
             Response::AiAssignments { assignments } => self.assignments = assignments,
             Response::Categorization { categorization } => self.categorization = categorization,
+            Response::CategoryJob { job } => self.category_job = job,
+            Response::CategoryJobPreview { preview } => self.category_job_preview = Some(preview),
             Response::Categories { categories } => self.categories = categories,
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
