@@ -888,3 +888,106 @@ M9.5 ──── M9.8 ─────────┘
 ### Später zu M9
 - Antworten und Weiterleiten mit dem HTML der Vorlage (zitiert als HTML), Schreiben mit einfacher Formatierung.
 - Schalter „Load pictures from the web“ (immer / pro Absender / nie), falls das Laden stört.
+
+## M10: Mail-Bestand, Kategorisierungsaufträge und lokaler Speicher (Issue #263)
+
+Die Gestaltung steht in `docs/prototypes/mail-263/`. Die Werte dort sind Beispieldaten. Der Kern liefert echte
+Zahlen und führt alle Änderungen aus. Die Aufgaben werden in der angegebenen Reihenfolge bearbeitet; jede neue
+Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vorhandenen Befehle bleiben lesbar.
+
+### M10.1 Konto- und Ordnerstatistik im Kern
+- [x] erledigt (2026-10-21): lokale Konto- und Ordnerzahlen, Datumsgrenzen, getrennte Indexzustände und zuordenbarer Anhangscache über `mail.account_stats`; nicht belegte Servervollständigkeit bleibt ausdrücklich offen.
+- **Modell:** Opus · **Braucht:** M2.6, M8.1 · **Dateien:** `crates/torro-ipc/src/{lib.rs,mail.rs,api.rs}`,
+  `crates/torroworkplace/src/mail/{store.rs,service.rs,read.rs}`, `crates/torroworkplace/src/mcp.rs`,
+  `crates/torro-settings-ui/src/demo.rs`, `docs/api-reference.md`
+- **Oberfläche:** Kontoseite (M10.2). **API:** neuer lesender Request `MailAccountStats` ·
+  `mail.account_stats` · Read. **MCP:** `mail_account_stats`.
+- Der Store zählt Mails, gesehen/ungesehen, Ordner, ältestes/neuestes Datum, lokal vorhandene Texte und die drei
+  disjunkten Indexzustände „vollständig“, „teilweise“, „ohne Text“. Je Ordner dieselben Zähler. Serverseitig
+  gemeldete Ordnerzahlen nur dann als Serverzahlen ausgeben, wenn sie tatsächlich vom Server stammen; sonst die
+  lokalen Zahlen ausdrücklich als solche kennzeichnen. Unvollständige Synchronisierung markiert älteste/neuste
+  Zeit als „bekannt“ statt als vollständig. Größen von SQLite und Anhangscache separat ausweisen.
+- Ein Leserequest gibt nur Konten in Reichweite zurück; keine fremden Zahlen über `inbox`-Rechte. Bestehendes
+  `mail.index_status` bleibt verträglich, zeigt aber „ohne Text“ nicht länger als vollständig indiziert an.
+- **Abnahme:** 24.813 = 23.565 + 1.248 und Indexzustände summieren sich immer zur lokalen Mailzahl; leere und
+  teilweise synchronisierte Ordner werden korrekt bezeichnet; API/MCP begrenzen Kontenrechte.
+
+### M10.2 Kontoseite mit Bestand und Ordnern
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M10.1 · **Dateien:** `crates/torro-settings-ui/src/{mail.rs,demo.rs}`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Mail-Einstellungen › Accounts › Konto nach `docs/prototypes/mail-263/screen-account.png`, mit
+  Gesamtzahl, gelesen/ungelesen, Ordnerzahl, ältester/neuster bekannter Mail, Sync-Zustand, lokaler Abdeckung
+  und aufklappbaren Ordnerzahlen. Unterschied zwischen Server-, lokalen und ungelesenen Zahlen im Text erklären.
+- **API/MCP:** `mail.account_stats` aus M10.1; keine eigene Zählung in der Oberfläche.
+- **Abnahme:** Breit/Mittel/Schmal sowie leer, lädt, unvollständig und Fehler; sichtbare Zahlen entsprechen der
+  API-Antwort und die Kontoauswahl verliert keine bestehenden Absender-/Signaturfelder.
+
+### M10.3 Steuerbarer, fortsetzbarer Kategorisierungsauftrag
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M10.1, E12.6 · **Dateien:** `crates/torro-ipc/src/{lib.rs,inbox.rs,api.rs}`,
+  `crates/torroworkplace/src/{core.rs,mcp.rs,categorize.rs}`, `crates/torroworkplace/src/mail/{store.rs,service.rs}`,
+  `crates/torroworkplace/src/approvals.rs`, `crates/torroworkplace/src/audit.rs`, `docs/api-reference.md`,
+  `docs/kategorien.md`
+- **Oberfläche:** Umfang, Vorschau und Laufstand (M10.4). **API:** gezielte `inbox.*`-Requests zum Vorberechnen,
+  Starten und Steuern (Pause/Fortsetzen/Abbruch) eines Auftrags sowie zum Lesen seines Zustands; Zugriff Read
+  für Vorschau/Status, Write für Start/Steuerung. **MCP:** gleichnamige `inbox_*`-Tools.
+- Konten, Ordner und Zeitraum einschließlich „alle“ wählen; die bisherige 30-Tage-/500er-Grenze bleibt nur
+  voreingestellter Umfang des alten Befehls. Vorschau trennt offen, automatisch kategorisiert und manuell/per
+  Regel geschützt. Erneutes Prüfen betrifft nur automatische Kategorien. Ein Job mit Kennung, festgehaltenem
+  Umfang, Fortschritt und Fehlern bleibt nach Neustart fortsetzbar. In Batches arbeiten; Kategorie nur setzen,
+  wenn ihre Quelle seit dem Lesen nicht manuell oder durch Regel geändert wurde. Modell und Cloud-Ort zeigen.
+- **Abnahme:** Alle Mails sind ohne festes Limit erreichbar; Abbruch und Neustart verlieren weder manuelle
+  Zuordnungen noch den Jobstand; normale neue Mail und zwei Clients können keine Kategorie überschreiben.
+
+### M10.4 Kategorisierungsseite mit Umfang und Fortschritt
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M10.3 · **Dateien:** `crates/torro-settings-ui/src/{mail.rs,demo.rs}`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** `docs/prototypes/mail-263/screen-sort.png`: Konto/Ordner/Zeitraum/Modell wählen,
+  Zahlenvorschau, Modellstandort und tatsächlichen Jobstand samt Fehlern, Pause, Fortsetzen, Abbruch zeigen.
+- **API/MCP:** M10.3-Befehle; kein lokaler Jobzustand außer Formularwerten.
+- **Abnahme:** Seitenleisten-Badges als ungelesen und Vorschau/Fortschritt als alle Mails erklärt; ein
+  Neustart rekonstruiert den Job aus dem Dienst; leere und Fehlerzustände sind verständlich.
+
+### M10.5 Alle Kategorien in einem Auftrag entfernen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M10.3 · **Dateien:** `crates/torro-ipc/src/{lib.rs,inbox.rs,api.rs}`,
+  `crates/torroworkplace/src/{core.rs,mcp.rs,approvals.rs,audit.rs}`, `crates/torroworkplace/src/mail/{store.rs,service.rs}`,
+  `crates/torro-settings-ui/src/{mail.rs,demo.rs}`, `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`
+- **Oberfläche:** Bestätigung nach `docs/prototypes/mail-263/screen-reset.png` mit Anzahl je Konto; danach
+  Fortschritt. **API:** `inbox.clear_categories` · Delete mit ausdrücklichem Umfang „alle Konten“ und Option,
+  die automatische Kategorisierung auszuschalten; `inbox.get_categorization` liest den Jobstand.
+  **MCP:** `inbox_clear_categories` (zentrale Freigabe für Delete).
+- Automatische und manuelle Kategorien sowie zugehörige Modellantworten entfernen, ohne Mails, Ordner oder
+  Sortierregeln zu löschen. Vorher laufende Sortierjobs beenden; während des Löschens darf keiner neu starten.
+  Der Auftrag ist in Batches wiederaufnehmbar. Ohne deaktivierte Automatik können neue/erneut verarbeitete Mails
+  wieder Kategorien erhalten; der Dialog sagt dies ausdrücklich.
+- **Abnahme:** Der Auftrag entfernt sämtliche Kategoriequellen aller zugänglichen Konten, zählt die Änderungen,
+  ist nach Abbruch/Neustart nachvollziehbar und lässt Maildaten und Regeln unverändert.
+
+### M10.6 Cache-Strategie und Indexwartung im Kern
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M10.1 · **Dateien:** `crates/torro-ipc/src/{lib.rs,mail.rs,api.rs}`,
+  `crates/torroworkplace/src/{core.rs,mcp.rs}`, `crates/torroworkplace/src/mail/{mod.rs,store.rs,service.rs,sync.rs,read.rs}`,
+  `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/approvals.rs`, `crates/torroworkplace/src/audit.rs`,
+  `docs/api-reference.md`, `docs/mail.md`
+- **Oberfläche:** Cache- und Indexseite (M10.7). **API:** `mail.get_cache_policy` Read,
+  `mail.set_cache_policy` Admin, `mail.start_cache_job` Write und `mail.cache_job_status` Read.
+  **MCP:** entsprechende `mail_*`-Tools.
+- Je Konto „nur Kopfzeilen“, „letzte 90 Tage“ oder „alles offline“; Indextexte bleiben unabhängig von
+  Lesetext-Retention. Optionales Anhangs-Nachladen mit separater Aufbewahrung. Speicherbedarf vor Anwendung
+  abschätzen. Fehlende Texte laden, Index neu aufbauen oder entbehrlichen Cache bereinigen; keine Entwürfe,
+  Sendejournale oder Servermails löschen. Jobs mit Kennung, Fortschritt und Wiederaufnahme.
+- **Abnahme:** Wechsel der Strategie und Neustart behalten die Wahl; Offline-/Indexzähler entsprechen dem
+  tatsächlichen Bestand; Bereinigung verliert keine Entwürfe und zeigt vorher ihre Wirkung.
+
+### M10.7 Cache- und Indexseite
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M10.6 · **Dateien:** `crates/torro-settings-ui/src/{mail.rs,demo.rs}`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** `docs/prototypes/mail-263/screen-storage.png`: Strategie, getrennte Speichergrößen,
+  vollständig/teilweise/ohne Text, ältester lokaler Mailtext und Wartungsaktionen samt Vorschau/Fortschritt.
+- **API/MCP:** M10.1 und M10.6; alle Änderungen gehen über den Dienst.
+- **Abnahme:** Der Nutzer erkennt, was vollständig offline lesbar und durchsuchbar ist; ein Fehler oder eine
+  langsame Wartung blockiert die Kontoeinstellungen nicht; Breit/Mittel/Schmal und Hell/Dunkel geprüft.

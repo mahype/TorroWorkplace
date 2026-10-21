@@ -29,12 +29,13 @@ use crate::{Action, Data, Page, Section};
 mod editor;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
-pub const SECTIONS: [Section; 3] = [
+pub const SECTIONS: [Section; 4] = [
     // Accounts is first: the gear lands on who the mail comes from.
     Section { id: "accounts", icon: Icon::Mail, label: "Accounts" },
     Section { id: "reading", icon: Icon::MailOpen, label: "Reading" },
     // What incoming mail is sorted into (task E12.10, `docs/kategorien.md`).
     Section { id: "categorization", icon: Icon::Tag, label: "Categorization" },
+    Section { id: "storage", icon: Icon::Archive, label: "Storage & index" },
 ];
 
 /// What one load of these sections needs: the suite-wide settings (Reading) and every account with
@@ -43,9 +44,13 @@ pub fn wanted() -> Vec<torro_ipc::Request> {
     vec![
         torro_ipc::Request::Settings,
         torro_ipc::Request::Accounts,
+        torro_ipc::Request::MailAccountStats { account: None },
         // "Categorization" (task E12.10): what is assigned and how far the backlog has come.
         torro_ipc::Request::AiAssignments,
         torro_ipc::Request::GetCategorization,
+        torro_ipc::Request::PreviewCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() },
+        torro_ipc::Request::GetCategoryJob { id: None },
+        torro_ipc::Request::PreviewClearCategories,
         // The catalogue (task E15.2): what the categories are called and where they stand now.
         torro_ipc::Request::ListCategories { account: None },
         // The sorting rules (task E15.5), listed and edited under Categorization.
@@ -60,6 +65,7 @@ pub struct State {
     pub accounts: accounts::State,
     /// Categorization: the page of a category or a sorting rule that is open (task E15.5).
     pub categorization: categorization::State,
+    pub storage: storage::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -68,6 +74,7 @@ pub enum Message {
     Accounts(accounts::Message),
     Reading(reading::Message),
     Categorization(categorization::Message),
+    Storage(storage::Message),
 }
 
 /// What a section's widget reported, and what the host is to do about it.
@@ -76,6 +83,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::Accounts(message) => accounts::update(&mut state.accounts, message, data),
         Message::Reading(message) => reading::update(message),
         Message::Categorization(message) => categorization::update(&mut state.categorization, message, data),
+        Message::Storage(message) => storage::update(&mut state.storage, message, data),
     }
 }
 
@@ -85,6 +93,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
     match section {
         "reading" => wrap(Page::new(reading::view(data)), Message::Reading),
         "categorization" => wrap(categorization::page(&state.categorization, data), Message::Categorization),
+        "storage" => wrap(storage::page(&state.storage, data), Message::Storage),
         _ => wrap(accounts::page(&state.accounts, data), Message::Accounts),
     }
 }
@@ -93,8 +102,14 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str) -> Page<'a, Mes
 /// (task E15.5), asking first when something typed would go. `None` leaves it to the window,
 /// which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    editor::escape(&state.categorization)
+    editor::escape(&state.categorization.editor)
         .map(|message| Message::Categorization(categorization::Message::Editor(message)))
+}
+
+/// The answer of a one-off preview request for the currently selected sorting scope.
+pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>) {
+    categorization::answered(&mut state.categorization, answer);
+    storage::answered(&mut state.storage, answer);
 }
 
 /// One section's page with its messages wrapped in [`Message`].
@@ -116,11 +131,12 @@ fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Messag
 pub mod accounts {
     use std::collections::BTreeMap;
 
-    use iced::widget::text::Wrapping;
+    use iced::widget::text::{IntoFragment, Wrapping};
     use iced::widget::{column, container, row, space as blank, text_editor};
     use iced::{Alignment, Fill};
     use torro_gui::theme::space;
     use torro_gui::{layout, style, typo, widgets};
+    use torro_ipc::mail::MailAccountStats;
     use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request};
     use torro_mail::{MailFormat, Role};
 
@@ -134,6 +150,7 @@ pub mod accounts {
         /// What is typed into the open account's sender name and signature; `None` on the list of
         /// accounts.
         draft: Option<Draft>,
+        folders_expanded: bool,
     }
 
     /// What a row of this section reports.
@@ -143,6 +160,8 @@ pub mod accounts {
         Open(String),
         /// "‹ Back" from an account's page to the list.
         Back,
+        /// Expand or collapse the account's per-folder local inventory.
+        ToggleFolders,
         /// Typing in the sender name.
         SenderName(String),
         /// Typing in the signature.
@@ -208,11 +227,16 @@ pub mod accounts {
                 // the list stays, and a press after the next load opens it.
                 if let Some(mail) = mail_of(data, &id) {
                     state.draft = Some(Draft::new(&id, mail));
+                    state.folders_expanded = false;
                 }
                 Action::None
             }
             Message::Back => {
                 state.draft = None;
+                Action::None
+            }
+            Message::ToggleFolders => {
+                state.folders_expanded = !state.folders_expanded;
                 Action::None
             }
             Message::SenderName(name) => {
@@ -286,7 +310,8 @@ pub mod accounts {
         match open_draft(state, data) {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
-                Page::new(account_page(draft, mail)).sub_page(label, Message::Back)
+                let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
+                Page::new(account_page(draft, mail, stats, state.folders_expanded)).sub_page(label, Message::Back)
             }
             None => Page::new(list(data)),
         }
@@ -323,12 +348,92 @@ pub mod accounts {
 
     /// One account's page: sender name and signature with "Save", how new mail is written, and the
     /// folder questions the server left open.
-    fn account_page<'a>(draft: &'a Draft, mail: &'a MailView) -> Element<'a, Message> {
-        let mut page = column![sender_groups(draft, mail), writing_group(mail)].spacing(layout::section_gap());
+    fn account_page<'a>(
+        draft: &'a Draft,
+        mail: &'a MailView,
+        stats: Option<&'a MailAccountStats>,
+        folders_expanded: bool,
+    ) -> Element<'a, Message> {
+        let mut page =
+            column![inventory_group(stats, folders_expanded), sender_groups(draft, mail), writing_group(mail)]
+                .spacing(layout::section_gap());
         if !mail.open_roles.is_empty() {
             page = page.push(folders_group(&mail.open_roles));
         }
         page.into()
+    }
+
+    /// The inventory comes entirely from the core; the sidebar's category badges count only
+    /// unread messages and are intentionally not reused as account totals here.
+    fn inventory_group(stats: Option<&MailAccountStats>, folders_expanded: bool) -> Element<'_, Message> {
+        let Some(stats) = stats else {
+            return widgets::group(
+                tr("Mailbox inventory"),
+                vec![row_frame(typo::text(typo::body(), tr("Statistics are not available yet.")), false)],
+                Some(tr("The mail service supplies these numbers from its local store.").to_string()),
+            );
+        };
+        let mut rows = vec![
+            inventory_row(tr("Known mail"), stats.messages.to_string(), None),
+            inventory_row(tr("Read"), stats.read.to_string(), None),
+            inventory_row(tr("Unread"), stats.unread.to_string(), None),
+            inventory_row(tr("Folders"), stats.folders.len().to_string(), None),
+            inventory_row(tr("Oldest known mail"), format_date(stats.oldest_known), None),
+            inventory_row(tr("Newest known mail"), format_date(stats.newest_known), None),
+            inventory_row(tr("Mail texts on this device"), stats.cached_bodies.to_string(), None),
+            inventory_row(tr("Fully indexed"), stats.indexed_full.to_string(), None),
+            inventory_row(tr("Partial or unverified index"), stats.indexed_partial_or_unverified.to_string(), None),
+            inventory_row(tr("Text unavailable"), stats.text_unavailable.to_string(), None),
+            inventory_row(tr("Awaiting indexing"), stats.awaiting_index.to_string(), None),
+            inventory_row(tr("Local database"), byte_size(stats.database_bytes), None),
+            inventory_row(
+                tr("Cached attachments"),
+                stats.cached_attachments.to_string(),
+                stats.attachment_cache_bytes.map(byte_size),
+            ),
+            inventory_row(tr("Last mail sync"), format_date(stats.last_sync), stats.sync_problem.clone()),
+        ];
+        let folder_button = widgets::text_button(
+            None,
+            if folders_expanded { tr("Hide folders") } else { tr("Show folders") },
+            style::button::secondary,
+            Some(Message::ToggleFolders),
+        );
+        rows.push(row_frame(row![blank::horizontal(), folder_button], false));
+        if folders_expanded {
+            for folder in &stats.folders {
+                let counts = torro_core::i18n::trf(
+                    "{unread} unread of {total}",
+                    &[("unread", &folder.folder.unread), ("total", &folder.folder.total)],
+                );
+                rows.push(inventory_row(
+                    folder.folder.name.as_str(),
+                    counts,
+                    folder.oldest_known.map(format_date_value),
+                ));
+            }
+        }
+        widgets::group(
+            tr("Mailbox inventory"),
+            rows,
+            Some(tr("Local known counts across all folders, including read mail. Server totals are not yet verified; dates are the oldest and newest known locally. Sidebar category badges count unread mail only.").to_string()),
+        )
+    }
+
+    fn inventory_row<'a>(label: impl IntoFragment<'a>, value: String, detail: Option<String>) -> Element<'a, Message> {
+        setting_row(None, label, detail, typo::text(typo::body_strong(), value))
+    }
+
+    fn format_date(date: Option<chrono::DateTime<chrono::Utc>>) -> String {
+        date.map_or_else(|| tr("Not known").to_string(), format_date_value)
+    }
+
+    fn format_date_value(date: chrono::DateTime<chrono::Utc>) -> String {
+        date.format("%Y-%m-%d %H:%M UTC").to_string()
+    }
+
+    fn byte_size(bytes: u64) -> String {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 
     /// Sender name and signature, and "Save" under them: it is on only while they differ from what
@@ -708,6 +813,327 @@ pub mod reading {
     }
 }
 
+pub mod storage {
+    use iced::Element;
+    use iced::widget::{column, row, space as blank};
+    use torro_core::i18n::{tr, trf};
+    use torro_gui::{layout, style, typo, widgets};
+    use torro_ipc::mail::{MailCacheAction, MailCacheEstimate, MailCacheJobState, MailCacheMode, MailCachePolicy};
+    use torro_ipc::{Request, Response};
+
+    use super::*;
+    use crate::parts::row_frame;
+
+    #[derive(Debug, Default)]
+    pub struct State {
+        account: Option<String>,
+        pending_mode: Option<MailCacheMode>,
+        estimate: Option<MailCacheEstimate>,
+        cleanup_preview: Option<MailCacheEstimate>,
+        previewing_cleanup: bool,
+        error: Option<String>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum Message {
+        Account(String),
+        Preview(MailCacheMode),
+        Apply,
+        Retention(u32),
+        Prefetch(bool),
+        Job(MailCacheAction),
+        PreviewCleanup,
+        Pause(String),
+        Resume(String),
+        Refresh,
+    }
+
+    fn selected<'a>(state: &'a State, data: &'a Data) -> Option<&'a str> {
+        state
+            .account
+            .as_deref()
+            .filter(|id| data.mail_stats.iter().any(|stats| stats.account == *id))
+            .or_else(|| data.mail_stats.first().map(|stats| stats.account.as_str()))
+    }
+
+    pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
+        match message {
+            Message::Account(account) => {
+                state.account = Some(account);
+                state.pending_mode = None;
+                state.estimate = None;
+                state.cleanup_preview = None;
+                Action::None
+            }
+            Message::Preview(mode) => {
+                let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
+                state.pending_mode = Some(mode);
+                state.estimate = None;
+                state.cleanup_preview = None;
+                state.error = None;
+                state.previewing_cleanup = false;
+                Action::Ask(Request::PreviewMailCache { account, mode })
+            }
+            Message::Apply => {
+                let (Some(account), Some(mode), Some(estimate)) =
+                    (selected(state, data), state.pending_mode, &state.estimate)
+                else {
+                    return Action::None;
+                };
+                if estimate.account != account {
+                    return Action::None;
+                }
+                if data
+                    .mail_cache_jobs
+                    .iter()
+                    .any(|job| job.account == account && job.state == MailCacheJobState::Running)
+                {
+                    return Action::None;
+                }
+                let mut policy = policy(data, account);
+                policy.mode = mode;
+                let account = account.to_string();
+                state.pending_mode = None;
+                state.estimate = None;
+                state.cleanup_preview = None;
+                Action::Send(vec![
+                    Request::SetMailCachePolicy { policy },
+                    Request::StartMailCacheJob { account, action: MailCacheAction::ApplyPolicy },
+                ])
+            }
+            Message::Retention(days) => {
+                let Some(account) = selected(state, data) else { return Action::None };
+                let mut policy = policy(data, account);
+                policy.attachment_retention_days = days;
+                Action::send(Request::SetMailCachePolicy { policy })
+            }
+            Message::Prefetch(enabled) => {
+                let Some(account) = selected(state, data) else { return Action::None };
+                let mut policy = policy(data, account);
+                policy.prefetch_attachments = enabled;
+                Action::send(Request::SetMailCachePolicy { policy })
+            }
+            Message::Job(action) => {
+                let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
+                if action == MailCacheAction::CleanCache
+                    && !state.cleanup_preview.as_ref().is_some_and(|estimate| estimate.account == account)
+                {
+                    return Action::None;
+                }
+                state.cleanup_preview = None;
+                Action::send(Request::StartMailCacheJob { account, action })
+            }
+            Message::PreviewCleanup => {
+                let Some(account) = selected(state, data).map(str::to_string) else { return Action::None };
+                let mode = policy(data, &account).mode;
+                state.previewing_cleanup = true;
+                state.cleanup_preview = None;
+                state.error = None;
+                Action::Ask(Request::PreviewMailCache { account, mode })
+            }
+            Message::Pause(id) => {
+                let Some(account) = selected(state, data) else { return Action::None };
+                Action::send(Request::ControlMailCacheJob { account: account.to_string(), id, resume: false })
+            }
+            Message::Resume(id) => {
+                let Some(account) = selected(state, data) else { return Action::None };
+                Action::send(Request::ControlMailCacheJob { account: account.to_string(), id, resume: true })
+            }
+            Message::Refresh => Action::Send(Vec::new()),
+        }
+    }
+
+    pub fn answered(state: &mut State, answer: &Result<Response, String>) {
+        match answer {
+            Ok(Response::MailCacheEstimate { estimate }) => {
+                if state.previewing_cleanup {
+                    state.cleanup_preview = Some(estimate.clone());
+                } else {
+                    state.estimate = Some(estimate.clone());
+                }
+                state.previewing_cleanup = false;
+                state.error = None;
+            }
+            Err(error) if state.pending_mode.is_some() || state.previewing_cleanup => {
+                state.error = Some(error.clone());
+                state.previewing_cleanup = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn policy(data: &Data, account: &str) -> MailCachePolicy {
+        data.mail_cache_policies.iter().find(|policy| policy.account == account).cloned().unwrap_or(MailCachePolicy {
+            account: account.to_string(),
+            mode: MailCacheMode::Recent90Days,
+            prefetch_attachments: false,
+            attachment_retention_days: 1,
+        })
+    }
+
+    fn button<'a>(label: &'static str, message: Option<Message>) -> Element<'a, Message> {
+        widgets::text_button(None, tr(label), style::button::secondary, message)
+    }
+
+    fn line<'a>(label: &'static str, value: String) -> Element<'a, Message> {
+        row_frame(
+            row![typo::text(typo::body(), tr(label)), blank::horizontal(), typo::text(typo::body_strong(), value)],
+            false,
+        )
+    }
+
+    pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
+        let Some(account) = selected(state, data) else {
+            return Page::new(widgets::empty_state(
+                tr("No mail account"),
+                tr("Add a mail account in Torro Workplace, under Accounts."),
+            ));
+        };
+        let current = policy(data, account);
+        let stats = data.mail_stats.iter().find(|stats| stats.account == account);
+        let mut account_rows = Vec::new();
+        for stats in &data.mail_stats {
+            let label = data
+                .accounts
+                .iter()
+                .find(|held| held.id == stats.account)
+                .map_or(stats.account.as_str(), |held| held.label.as_str());
+            account_rows.push(row_frame(
+                row![
+                    typo::text(typo::body_strong(), label.to_string()),
+                    blank::horizontal(),
+                    button(
+                        if stats.account == account { "Selected" } else { "Open" },
+                        (stats.account != account).then(|| Message::Account(stats.account.clone()))
+                    )
+                ],
+                false,
+            ));
+        }
+        let mut page = column![widgets::group(tr("Mail account"), account_rows, None)].spacing(layout::section_gap());
+        let mut policy_rows = vec![
+            line(
+                "Current strategy",
+                match current.mode {
+                    MailCacheMode::HeadersOnly => tr("Headers only"),
+                    MailCacheMode::Recent90Days => tr("Last 90 days"),
+                    MailCacheMode::AllOffline => tr("All mail offline"),
+                }
+                .to_string(),
+            ),
+            row_frame(button("Headers only", Some(Message::Preview(MailCacheMode::HeadersOnly))), false),
+            row_frame(button("Last 90 days", Some(Message::Preview(MailCacheMode::Recent90Days))), false),
+            row_frame(button("All mail offline", Some(Message::Preview(MailCacheMode::AllOffline))), false),
+        ];
+        if let Some(estimate) = state.estimate.as_ref().filter(|estimate| estimate.account == account) {
+            policy_rows.push(line(
+                "To download (estimate)",
+                format!("{} · {} MiB", estimate.bodies_to_fetch, estimate.estimated_download_bytes / 1_048_576),
+            ));
+            policy_rows.push(line(
+                "To remove (estimate)",
+                format!("{} · {} MiB", estimate.bodies_to_remove, estimate.estimated_reclaim_bytes / 1_048_576),
+            ));
+            policy_rows.push(row_frame(
+                row![
+                    blank::horizontal(),
+                    button(
+                        "Apply strategy",
+                        (!data
+                            .mail_cache_jobs
+                            .iter()
+                            .any(|job| job.account == account && job.state == MailCacheJobState::Running))
+                        .then_some(Message::Apply)
+                    )
+                ],
+                false,
+            ));
+        }
+        if let Some(error) = &state.error {
+            policy_rows.push(row_frame(typo::text(typo::body(), error.clone()), false));
+        }
+        page = page.push(widgets::group(tr("Offline strategy"), policy_rows, Some(tr("Estimates use the average size of local mail texts; actual downloads may differ. Search text remains independent of offline reading texts.").to_string())));
+
+        if let Some(stats) = stats {
+            page = page.push(widgets::group(tr("Local storage & index"), vec![
+                line("Mail texts on this device", stats.cached_bodies.to_string()),
+                line("Body cache", format!("{} MiB", stats.body_cache_bytes / 1_048_576)),
+                line("Search index", stats.search_index_bytes.map_or_else(|| tr("Not known").to_string(), |bytes| format!("{} MiB", bytes / 1_048_576))),
+                line("Last index run", stats.last_index_run.map_or_else(|| tr("Not known").to_string(), |date| date.format("%Y-%m-%d %H:%M UTC").to_string())),
+                line("Oldest local mail text", stats.oldest_cached_body.map_or_else(|| tr("Not known").to_string(), |date| date.format("%Y-%m-%d %H:%M UTC").to_string())),
+                line("Fully indexed", stats.indexed_full.to_string()),
+                line("Partial or unverified index", stats.indexed_partial_or_unverified.to_string()),
+                line("Text unavailable", stats.text_unavailable.to_string()),
+                line("Awaiting indexing", stats.awaiting_index.to_string()),
+                line("Local database", format!("{} MiB", stats.database_bytes / 1_048_576)),
+                line("Cached attachments", format!("{} · {} MiB", stats.cached_attachments, stats.attachment_cache_bytes.unwrap_or(0) / 1_048_576)),
+            ], Some(tr("Local known counts. Fully indexed means searchable; only cached mail texts are readable without a connection.").to_string())));
+        }
+        page = page.push(widgets::group(tr("Attachment cache"), vec![
+            line("Keep downloaded attachments", trf("{days} days", &[("days", &current.attachment_retention_days)])),
+            row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(8), false),
+            line("Prefetch attachments", if current.prefetch_attachments { tr("On") } else { tr("Off") }.to_string()),
+            row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(8), false),
+        ], Some(tr("Newly fetched mail can also download its attachment parts. Existing mail can be fetched by a maintenance job. Files have separate retention and can be large.").to_string())));
+        let job = data.mail_cache_jobs.iter().find(|job| job.account == account);
+        let running = job.is_some_and(|job| job.state == MailCacheJobState::Running);
+        let mut job_rows = vec![
+            row_frame(
+                button(
+                    "Download missing mail texts",
+                    (!running).then_some(Message::Job(MailCacheAction::FetchMissingBodies)),
+                ),
+                false,
+            ),
+            row_frame(
+                button("Download attachments", (!running).then_some(Message::Job(MailCacheAction::FetchAttachments))),
+                false,
+            ),
+            row_frame(
+                button("Rebuild search index", (!running).then_some(Message::Job(MailCacheAction::RebuildIndex))),
+                false,
+            ),
+            row_frame(button("Preview cleanup", (!running).then_some(Message::PreviewCleanup)), false),
+        ];
+        if let Some(estimate) = state.cleanup_preview.as_ref().filter(|estimate| estimate.account == account) {
+            job_rows.push(line(
+                "To remove (estimate)",
+                format!("{} · {} MiB", estimate.bodies_to_remove, estimate.estimated_reclaim_bytes / 1_048_576),
+            ));
+            job_rows.push(row_frame(
+                button("Clean up cache", (!running).then_some(Message::Job(MailCacheAction::CleanCache))),
+                false,
+            ));
+        }
+        if let Some(job) = job {
+            let state_label = match job.state {
+                MailCacheJobState::Running => tr("Running"),
+                MailCacheJobState::Paused => tr("Paused"),
+                MailCacheJobState::Complete => tr("Complete"),
+                MailCacheJobState::Failed => tr("Failed"),
+            };
+            job_rows.push(line("Current job", format!("{} · {} / {}", state_label, job.processed, job.total)));
+            if let Some(error) = &job.error {
+                job_rows.push(row_frame(typo::text(typo::body(), error.clone()), false));
+            }
+            job_rows.push(row_frame(
+                row![
+                    button("Refresh", Some(Message::Refresh)),
+                    button("Pause", running.then(|| Message::Pause(job.id.clone()))),
+                    button(
+                        "Resume",
+                        matches!(job.state, MailCacheJobState::Paused | MailCacheJobState::Failed)
+                            .then(|| Message::Resume(job.id.clone()))
+                    ),
+                ]
+                .spacing(8),
+                false,
+            ));
+        }
+        Page::new(page.push(widgets::group(tr("Maintenance"), job_rows, Some(tr("Jobs keep their progress after a restart. Mail, drafts, folders, and server copies are not deleted.").to_string()))))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -743,7 +1169,7 @@ mod tests {
     #[test]
     fn the_sections_are_reachable_by_their_words() {
         let ids: Vec<&str> = SECTIONS.iter().map(|section| section.id).collect();
-        assert_eq!(ids, ["accounts", "reading", "categorization"]);
+        assert_eq!(ids, ["accounts", "reading", "categorization", "storage"]);
         assert_eq!(SECTIONS[0].name(), tr("Accounts"));
         assert_eq!(SECTIONS[2].name(), tr("Categorization"), "task E12.10");
         let (mut host, _) = Host::new(Arc::new(Demo::new()), SECTIONS.to_vec(), wanted());
@@ -761,8 +1187,12 @@ mod tests {
             vec![
                 torro_ipc::Request::Settings,
                 torro_ipc::Request::Accounts,
+                torro_ipc::Request::MailAccountStats { account: None },
                 torro_ipc::Request::AiAssignments,
                 torro_ipc::Request::GetCategorization,
+                torro_ipc::Request::PreviewCategoryJob { scope: torro_ipc::inbox::CategoryJobScope::default() },
+                torro_ipc::Request::GetCategoryJob { id: None },
+                torro_ipc::Request::PreviewClearCategories,
                 torro_ipc::Request::ListCategories { account: None },
                 torro_ipc::Request::ListSortRules,
             ]
@@ -850,13 +1280,13 @@ mod tests {
         let Action::Send(requests) = on else { panic!("a request") };
         let [torro_ipc::Request::SetAiAssignment { model, .. }] = requests.as_slice() else { panic!("one assignment") };
         assert_eq!(model.as_deref(), Some("on"), "the model that is off is not offered");
-        let _ = categorization::view(&data);
+        let _ = categorization::view(&Default::default(), &data);
 
         let none = Data { decider_models: vec![decider("off", false)], ..Data::default() };
         let nothing =
             categorization::update::<()>(&mut Default::default(), categorization::Message::Enabled(true), &none);
         assert!(matches!(nothing, Action::None), "nothing on, nothing to switch on");
-        let _ = categorization::view(&none);
+        let _ = categorization::view(&Default::default(), &none);
     }
 
     /// PR review #242: a model assigned for sorting mail that is turned off in Accounts is not shown
@@ -890,7 +1320,7 @@ mod tests {
             ..Data::default()
         };
         assert_eq!(categorization::assigned_off(&off), Some((engine.to_string(), "nimble (decides)".to_string())));
-        let _ = categorization::view(&off);
+        let _ = categorization::view(&Default::default(), &off);
         let Action::ControlCentre(section) =
             categorization::update::<()>(&mut Default::default(), categorization::Message::ManageModels, &off)
         else {
@@ -900,7 +1330,7 @@ mod tests {
 
         let gone = Data { decider_models: vec![decider("other", true)], ..off.clone() };
         assert_eq!(categorization::assigned_off(&gone), Some((engine.to_string(), "nimble".to_string())), "gone");
-        let _ = categorization::view(&gone);
+        let _ = categorization::view(&Default::default(), &gone);
         let on = Data { decider_models: vec![decider("nimble", true)], ..off.clone() };
         assert_eq!(categorization::assigned_off(&on), None);
         let unloaded = Data { decider_models: Vec::new(), ..off.clone() };
@@ -973,20 +1403,46 @@ mod tests {
 /// nothing then ([`assigned_off`]) –, and "Manage models…" ends the group, the way to turn it on.
 pub mod categorization {
     use iced::Theme;
+    use iced::widget::text::Wrapping;
     use iced::widget::{column, svg};
     use torro_core::ai::{AiAssignment, AiFunction, AiModel};
     use torro_core::i18n::trf;
     use torro_gui::icon;
     use torro_gui::theme::palette;
     use torro_gui::{layout, style, theme, typo, widgets};
-    use torro_ipc::Request;
+    use torro_ipc::inbox::{CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState};
+    use torro_ipc::{Request, Response};
     use torro_mail::Category;
 
     use super::*;
-    use crate::parts::{choice, pressable, setting_row, switch};
+    use crate::parts::{choice, pressable, row_frame, setting_row, switch};
 
-    /// The section's state: the editor's open page (task E15.5).
-    pub type State = super::editor::State;
+    /// Form choices remain local; the actual job and its progress always come from the service.
+    #[derive(Debug, Default)]
+    pub struct State {
+        pub(super) editor: super::editor::State,
+        all_accounts: bool,
+        accounts: Vec<String>,
+        all_folders: bool,
+        folders: Vec<String>,
+        period: Period,
+        again: bool,
+        preview: Option<CategoryJobPreview>,
+        preview_error: Option<String>,
+        pending_scope: Option<CategoryJobScope>,
+        asking_clear: bool,
+        /// `None` means the recommended choice: switch future automatic sorting off.
+        disable_automatic_after_clear: Option<bool>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Period {
+        #[default]
+        All,
+        Days30,
+        Days90,
+        Year,
+    }
 
     /// What a row of this section reports.
     #[derive(Debug, Clone)]
@@ -999,6 +1455,20 @@ pub mod categorization {
         CatchUp(bool),
         /// "Sort again" (task E15.5): the whole window anew, after new rules or descriptions.
         SortAgain,
+        /// Change the scope of the explicit sorting job and refresh its preview.
+        AllAccounts,
+        ToggleAccount(String),
+        AllFolders,
+        ToggleFolder(String),
+        Period(Period),
+        Again(bool),
+        StartJob,
+        ControlJob(String, CategoryJobControl),
+        AskClear,
+        ConfirmClear,
+        CloseClear,
+        DisableAutomaticAfterClear(bool),
+        ControlClear(String, CategoryJobControl),
         /// The editor of the categories and the sorting rules (task E15.5).
         Editor(super::editor::Message),
         /// One category shown in the sidebar or not.
@@ -1010,7 +1480,63 @@ pub mod categorization {
     pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> {
         let held = assignment(data);
         match message {
-            Message::Editor(message) => super::editor::update(state, message, data),
+            Message::Editor(message) => super::editor::update(&mut state.editor, message, data),
+            Message::AllAccounts => {
+                state.all_accounts = true;
+                state.accounts.clear();
+                preview_action(state)
+            }
+            Message::ToggleAccount(account) => {
+                state.all_accounts = false;
+                toggle(&mut state.accounts, account);
+                if state.accounts.is_empty() {
+                    state.all_accounts = true;
+                }
+                preview_action(state)
+            }
+            Message::AllFolders => {
+                state.all_folders = true;
+                state.folders.clear();
+                preview_action(state)
+            }
+            Message::ToggleFolder(folder) => {
+                state.all_folders = false;
+                toggle(&mut state.folders, folder);
+                if state.folders.is_empty() {
+                    state.all_folders = true;
+                }
+                preview_action(state)
+            }
+            Message::Period(period) => {
+                state.period = period;
+                preview_action(state)
+            }
+            Message::Again(again) => {
+                state.again = again;
+                preview_action(state)
+            }
+            Message::StartJob => Action::send(Request::StartCategoryJob { scope: scope(state) }),
+            Message::ControlJob(id, action) => Action::send(Request::ControlCategoryJob { id, action }),
+            Message::AskClear => {
+                state.asking_clear = true;
+                Action::None
+            }
+            Message::CloseClear => {
+                state.asking_clear = false;
+                Action::None
+            }
+            Message::DisableAutomaticAfterClear(on) => {
+                state.disable_automatic_after_clear = Some(on);
+                Action::None
+            }
+            Message::ConfirmClear => {
+                state.asking_clear = false;
+                Action::send(Request::ClearCategories {
+                    all_accounts: true,
+                    disable_automatic: state.disable_automatic_after_clear.unwrap_or(true),
+                })
+            }
+            Message::ControlClear(id, action) => Action::send(Request::ControlClearCategories { id, action }),
             Message::SortAgain => Action::send(Request::CatchUpCategories { cancel: false, again: true }),
             // Switching on without a model named would store an assignment the core throws away
             // (no account, nothing to ask): the first model that can decide is taken, which is
@@ -1058,37 +1584,396 @@ pub mod categorization {
     /// The section's page: the list, or the open page of a category or a sorting rule with
     /// "‹ Back" (task E15.5).
     pub fn page<'a>(state: &'a State, data: &'a Data) -> Page<'a, Message> {
-        match super::editor::page(state, data) {
+        match super::editor::page(&state.editor, data) {
             Some((name, body, save)) => {
                 let back = Message::Editor(super::editor::Message::Back);
                 Page::new(body.map(Message::Editor)).sub_page(name, back).actions(vec![save.map(Message::Editor)])
             }
-            None => Page::new(view(data)),
+            None => Page::new(view(state, data)),
         }
     }
 
-    pub fn view(data: &Data) -> Element<'_, Message> {
+    pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         let held = assignment(data);
         let on = held.is_ready();
         let switch_row = setting_row(None, tr("Sort mail into categories"), None, switch(on, Message::Enabled));
         let sorting = widgets::group(
             tr("Categorization"),
-            vec![switch_row, catch_up_row(data), sort_again_row(data)],
-            Some(
-                tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.")
-                    .to_string(),
-            ),
+            vec![switch_row],
+            Some(match data.settings.mail_to_cloud {
+                true => tr("The chosen model sorts mail. Mail may leave this computer; no message is moved or deleted, and categories can be changed by hand.").to_string(),
+                false => tr("A model on your computer says what each mail is. No mail leaves this computer, nothing is hidden, moved or deleted, and you can change any category by hand.").to_string(),
+            }),
         );
         let models = widgets::group(tr("Model"), model_rows(data, &held), Some(model_note(data)));
         let sorting_rules = super::editor::rules_group(data).map(Message::Editor);
         // The rules before the long list of categories: they change more often. "Always for this
         // sender?" keeps its senders among them (task E15.3), so no link to the Notification Hub.
         // Whether the sidebar shows a category is on its page (task E15.5), not a second list.
-        let mut page = column![sorting, models, sorting_rules].spacing(layout::section_gap());
+        let mut page = column![sorting, models, job_group(state, data), sorting_rules].spacing(layout::section_gap());
         for group in super::editor::categories_groups(data) {
             page = page.push(group.map(Message::Editor));
         }
         page.into()
+    }
+
+    fn toggle(selected: &mut Vec<String>, id: String) {
+        if let Some(position) = selected.iter().position(|held| held == &id) {
+            selected.remove(position);
+        } else {
+            selected.push(id);
+        }
+    }
+
+    fn scope(state: &State) -> CategoryJobScope {
+        let days = match state.period {
+            Period::All => None,
+            Period::Days30 => Some(30),
+            Period::Days90 => Some(90),
+            Period::Year => Some(365),
+        };
+        CategoryJobScope {
+            accounts: if state.all_accounts { Vec::new() } else { state.accounts.clone() },
+            folders: if state.all_folders { Vec::new() } else { state.folders.clone() },
+            since: days.map(|days| chrono::Utc::now() - chrono::Duration::days(days)),
+            before: None,
+            again: state.again,
+            engine: None,
+            model: None,
+        }
+    }
+
+    fn preview_action<A>(state: &mut State) -> Action<A> {
+        state.preview = None;
+        state.preview_error = None;
+        let scope = scope(state);
+        state.pending_scope = Some(scope.clone());
+        Action::Ask(Request::PreviewCategoryJob { scope })
+    }
+
+    /// The host delivers the answer of the currently selected scope without replacing all
+    /// settings data. The service alone counts; the form stores no derived totals.
+    pub fn answered(state: &mut State, answer: &Result<Response, String>) {
+        match answer {
+            Ok(Response::CategoryJobPreview { preview }) if preview.request_scope == state.pending_scope => {
+                state.preview = Some(preview.clone());
+                state.preview_error = None;
+                state.pending_scope = None;
+            }
+            Err(problem) => {
+                state.preview_error = Some(problem.clone());
+                state.pending_scope = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn job_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+        use iced::widget::column;
+        let all_accounts = state.all_accounts || state.accounts.is_empty();
+        let mut account_rows: Vec<Element<'a, Message>> =
+            vec![choice(tr("All mail accounts").to_string(), all_accounts, Message::AllAccounts)];
+        for stats in &data.mail_stats {
+            account_rows.push(choice(
+                account_label(data, &stats.account),
+                !all_accounts && state.accounts.contains(&stats.account),
+                Message::ToggleAccount(stats.account.clone()),
+            ));
+        }
+        let accounts = widgets::group(
+            tr("Mail accounts"),
+            account_rows,
+            Some(tr("Choose one or more accounts, or all accounts.").to_string()),
+        );
+
+        let all_folders = state.all_folders || state.folders.is_empty();
+        let mut folder_rows: Vec<Element<'a, Message>> =
+            vec![choice(tr("All folders").to_string(), all_folders, Message::AllFolders)];
+        for stats in &data.mail_stats {
+            if !all_accounts && !state.accounts.contains(&stats.account) {
+                continue;
+            }
+            for folder in &stats.folders {
+                folder_rows.push(choice(
+                    format!("{} · {}", account_label(data, &stats.account), folder.folder.name),
+                    !all_folders && state.folders.contains(&folder.folder.id),
+                    Message::ToggleFolder(folder.folder.id.clone()),
+                ));
+            }
+        }
+        let folders = widgets::group(tr("Folders to sort"), folder_rows, None);
+        let period = widgets::group(
+            tr("Time span"),
+            vec![
+                choice(tr("All known mail").to_string(), state.period == Period::All, Message::Period(Period::All)),
+                choice(tr("Last 30 days").to_string(), state.period == Period::Days30, Message::Period(Period::Days30)),
+                choice(tr("Last 90 days").to_string(), state.period == Period::Days90, Message::Period(Period::Days90)),
+                choice(tr("Last year").to_string(), state.period == Period::Year, Message::Period(Period::Year)),
+                setting_row(
+                    None,
+                    tr("Recheck model categories"),
+                    Some(tr("Manual choices and sorting rules remain protected.").to_string()),
+                    switch(state.again, Message::Again),
+                ),
+            ],
+            None,
+        );
+        let preview = if state.pending_scope.is_some() || state.preview_error.is_some() {
+            None
+        } else {
+            state.preview.as_ref().or(data.category_job_preview.as_ref())
+        };
+        let preview_words = match (preview, state.preview_error.as_ref()) {
+            (_, Some(problem)) => problem.clone(),
+            (Some(preview), _) => trf(
+                "{eligible} to sort · {unclassified} without a category · {automatic} automatic · {protected} protected · {total} total",
+                &[
+                    ("eligible", &preview.eligible),
+                    ("unclassified", &preview.unclassified),
+                    ("automatic", &preview.automatic),
+                    ("protected", &preview.protected),
+                    ("total", &preview.total),
+                ],
+            ),
+            (None, _) => tr("Calculating selection…").to_string(),
+        };
+        let clear_incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
+            matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
+        });
+        let running =
+            clear_incomplete || data.category_job.as_ref().is_some_and(|job| job.state == CategoryJobState::Running);
+        let start = widgets::text_button(
+            None,
+            tr("Start sorting"),
+            style::button::secondary,
+            (!running && preview.is_some_and(|preview| preview.eligible > 0)).then_some(Message::StartJob),
+        );
+        let summary = widgets::group(
+            tr("Preview"),
+            vec![
+                row_frame(
+                    column![
+                        typo::text(typo::body_strong(), tr("Selected mail")),
+                        typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
+                    ]
+                    .spacing(4),
+                    false,
+                ),
+                row_frame(start, false),
+                setting_row(None, tr("Model location"), Some(job_model_note(data)), iced::widget::space().width(0)),
+            ],
+            Some(
+                tr("The preview and progress count all selected mail. Sidebar badges count unread mail only.")
+                    .to_string(),
+            ),
+        );
+        let mut page = column![accounts, folders, period, summary].spacing(layout::section_gap());
+        if let Some(job) = &data.category_job {
+            let total: u64 = job.accounts.iter().map(|account| account.eligible).sum();
+            let processed: u64 = job.accounts.iter().map(|account| account.processed).sum();
+            let mut rows = vec![setting_row(
+                None,
+                tr("Sorting progress"),
+                Some(trf("{done} of {total}", &[("done", &processed), ("total", &total)])),
+                typo::text(typo::body_strong(), job_state_label(job.state)),
+            )];
+            for account in &job.accounts {
+                rows.push(setting_row(
+                    None,
+                    account_label(data, &account.account),
+                    Some(trf("{done} of {total}", &[("done", &account.processed), ("total", &account.eligible)])),
+                    typo::text(typo::body(), account.changed.to_string()),
+                ));
+            }
+            for error in &job.errors {
+                rows.push(setting_row(None, tr("Error"), Some(error.clone()), iced::widget::space().width(0)));
+            }
+            let controls = match job.state {
+                CategoryJobState::Running => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Pause"),
+                        style::button::secondary,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Pause)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Resume"),
+                        style::button::secondary,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Resume)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlJob(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Complete => Vec::new(),
+            };
+            if !controls.is_empty() {
+                rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
+            }
+            page = page.push(widgets::group(tr("Current sorting job"), rows, None));
+        }
+        page = page.push(clear_group(state, data));
+        page.into()
+    }
+
+    fn clear_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+        let mut rows: Vec<Element<'a, Message>> = Vec::new();
+        let count = data.category_clear_preview.as_ref().map(|preview| preview.total).unwrap_or(0);
+        let incomplete = data.categorization.clear_job.as_ref().is_some_and(|job| {
+            matches!(job.state, CategoryJobState::Running | CategoryJobState::Paused | CategoryJobState::Failed)
+        });
+        let ask = widgets::text_button(
+            None,
+            tr("Remove all categories…"),
+            style::button::secondary,
+            (count > 0 && !incomplete).then_some(Message::AskClear),
+        );
+        rows.push(setting_row(
+            None,
+            tr("Categories on mail"),
+            Some(trf("{count} assignments across all accounts and folders", &[("count", &count)])),
+            ask,
+        ));
+        if state.asking_clear {
+            if let Some(preview) = &data.category_clear_preview {
+                for account in &preview.accounts {
+                    rows.push(setting_row(
+                        None,
+                        account_label(data, &account.account),
+                        Some(trf("{count} categories", &[("count", &account.categorized)])),
+                        iced::widget::space().width(0),
+                    ));
+                }
+            }
+            let disable = state.disable_automatic_after_clear.unwrap_or(true);
+            rows.push(setting_row(
+                None,
+                tr("Turn off automatic categorization afterwards"),
+                Some(if disable {
+                    tr("New mail stays uncategorized until you turn sorting on again.").to_string()
+                } else {
+                    tr("New mail may receive categories again after this reset.").to_string()
+                }),
+                switch(disable, Message::DisableAutomaticAfterClear),
+            ));
+            rows.push(row_frame(
+                typo::text(
+                    typo::body(),
+                    tr("This removes manual, rule and model categories and model answers. Mail, folders and sorting rules remain."),
+                )
+                .wrapping(Wrapping::WordOrGlyph),
+                false,
+            ));
+            rows.push(row_frame(
+                iced::widget::row![
+                    widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseClear)),
+                    widgets::text_button(
+                        None,
+                        tr("Remove categories from all mail"),
+                        style::button::secondary,
+                        Some(Message::ConfirmClear)
+                    ),
+                ]
+                .spacing(theme::space::m()),
+                false,
+            ));
+        }
+        if let Some(job) = &data.categorization.clear_job {
+            let removed: u64 = job.accounts.iter().map(|account| account.removed).sum();
+            let selected: u64 = job.accounts.iter().map(|account| account.categorized).sum();
+            rows.push(setting_row(
+                None,
+                tr("Reset progress"),
+                Some(trf("{done} of {total}", &[("done", &removed), ("total", &selected)])),
+                typo::text(typo::body_strong(), job_state_label(job.state)),
+            ));
+            for error in &job.errors {
+                rows.push(setting_row(None, tr("Error"), Some(error.clone()), iced::widget::space().width(0)));
+            }
+            let controls = match job.state {
+                CategoryJobState::Running => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Pause"),
+                        style::button::secondary,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Pause)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Paused | CategoryJobState::Failed | CategoryJobState::Cancelled => vec![
+                    widgets::text_button(
+                        None,
+                        tr("Resume"),
+                        style::button::secondary,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Resume)),
+                    ),
+                    widgets::text_button(
+                        None,
+                        tr("Cancel"),
+                        style::button::ghost,
+                        Some(Message::ControlClear(job.id.clone(), CategoryJobControl::Cancel)),
+                    ),
+                ],
+                CategoryJobState::Complete => Vec::new(),
+            };
+            if !controls.is_empty() {
+                rows.push(iced::widget::row(controls).spacing(theme::space::m()).into());
+            }
+        }
+        widgets::group(
+            tr("Reset categorization"),
+            rows,
+            Some(tr("Only category assignments and model answers are removed; no mail is deleted.").to_string()),
+        )
+    }
+
+    fn job_state_label(state: CategoryJobState) -> &'static str {
+        match state {
+            CategoryJobState::Running => tr("Running"),
+            CategoryJobState::Paused => tr("Paused"),
+            CategoryJobState::Cancelled => tr("Cancelled"),
+            CategoryJobState::Complete => tr("Complete"),
+            CategoryJobState::Failed => tr("Failed"),
+        }
+    }
+
+    fn job_model_note(data: &Data) -> String {
+        if let Some(cloud) = data.category_job.as_ref().and_then(|job| job.model_in_cloud) {
+            return match cloud {
+                true => tr("Cloud model: mail content leaves this computer.").to_string(),
+                false => tr("Local model: mail content stays on this computer.").to_string(),
+            };
+        }
+        let held = assignment(data);
+        let remote = data
+            .decider_models
+            .iter()
+            .find(|(engine, model)| {
+                held.engine.as_deref() == Some(engine.as_str()) && held.model.as_deref() == Some(model.id.as_str())
+            })
+            .and_then(|(_, model)| model.remote);
+        match remote {
+            Some(true) => tr("Cloud model: mail content leaves this computer.").to_string(),
+            Some(false) => tr("Local model: mail content stays on this computer.").to_string(),
+            None => tr("Choose a decision model above.").to_string(),
+        }
     }
 
     /// The models that may sort mail: every AI account's models that decide and are turned on for
@@ -1196,71 +2081,5 @@ pub mod categorization {
                     .to_owned()
             }
         }
-    }
-
-    /// "Sort again" (task E15.5): the window anew after new rules or descriptions, but what was
-    /// filed by hand. It works with the rules alone, so it is there without a model too; while a
-    /// run goes, "Catch up" shows how far and stops it.
-    fn sort_again_row<'a>(data: &'a Data) -> Element<'a, Message> {
-        let running =
-            data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
-        let button = widgets::text_button(
-            None,
-            tr("Sort again"),
-            style::button::secondary,
-            (!running).then_some(Message::SortAgain),
-        );
-        setting_row(
-            None,
-            tr("Sort everything again"),
-            Some(tr("After new rules or descriptions. What you filed by hand stays.").to_owned()),
-            button,
-        )
-    }
-
-    /// "Catch up": how far the backlog has come, and the button to start or stop it.
-    fn catch_up_row<'a>(data: &'a Data) -> Element<'a, Message> {
-        let (done, total) = data
-            .categorization
-            .accounts
-            .iter()
-            .fold((0u64, 0u64), |(done, total), held| (done + held.done, total + held.messages));
-        let running =
-            data.categorization.accounts.iter().any(|held| held.state == torro_ipc::inbox::CatchUpState::Running);
-        // Sorting again (task E15.5) counts what it went through, the backlog what has a category.
-        let again = data.categorization.again;
-        let words = if total == 0 {
-            tr("Not started").to_owned()
-        } else if done >= total && again {
-            tr("Sorted again").to_owned()
-        } else if done >= total {
-            tr("Done").to_owned()
-        } else {
-            trf("{done} of {total}", &[("done", &done), ("total", &done.max(total))])
-        };
-        let mut value = iced::widget::row![typo::text(typo::body(), words)]
-            .spacing(theme::space::m())
-            .align_y(iced::Alignment::Center);
-        if running {
-            value = value.push(widgets::text_button(
-                None,
-                tr("Cancel"),
-                style::button::ghost,
-                Some(Message::CatchUp(true)),
-            ));
-        } else {
-            value = value.push(widgets::text_button(
-                None,
-                tr("Catch up now"),
-                style::button::secondary,
-                Some(Message::CatchUp(false)),
-            ));
-        }
-        setting_row(
-            None,
-            tr("Catch up"),
-            Some(tr("The inbox of the last 30 days, at most 500 messages per account.").to_owned()),
-            value,
-        )
     }
 }

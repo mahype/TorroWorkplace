@@ -9,9 +9,10 @@
 //! checked before anything is read); `Rights::outbound` decides whether `mail.send_draft` runs,
 //! waits for a person, or is `forbidden`.
 
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use torro_mail::{DraftAttachment, Role};
+use torro_mail::{DraftAttachment, Folder, Role};
 
 use crate::{Request, Response};
 
@@ -133,17 +134,147 @@ pub struct MailIndexProgress {
     pub account: String,
     /// How many messages the core keeps of this account (headers of every folder).
     pub messages: u64,
-    /// Of them, how many have their text in the index (or are known to have none to read).
+    /// Of them, how many actually have their text in the index.
     pub indexed: u64,
+    /// Messages whose text could not be read from the server. Their headers remain searchable.
+    #[serde(default)]
+    pub text_unavailable: u64,
     /// What the core is doing about the rest.
     pub state: IndexState,
+}
+
+/// Counts from the local mail store for one folder. Server completeness is not implied.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailFolderStats {
+    pub folder: Folder,
+    pub read: u64,
+    pub oldest_known: Option<DateTime<Utc>>,
+    pub newest_known: Option<DateTime<Utc>>,
+    pub cached_bodies: u64,
+    pub indexed_full: u64,
+    /// Text is truncated by index limits or completeness cannot be verified for older data.
+    pub indexed_partial_or_unverified: u64,
+    pub text_unavailable: u64,
+    pub awaiting_index: u64,
+}
+
+/// A mail account's locally known inventory. Dates are deliberately only *known* dates:
+/// synchronization does not currently persist proof that every server folder is complete.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailAccountStats {
+    pub account: String,
+    pub folders: Vec<MailFolderStats>,
+    pub messages: u64,
+    pub read: u64,
+    pub unread: u64,
+    pub oldest_known: Option<DateTime<Utc>>,
+    pub newest_known: Option<DateTime<Utc>>,
+    pub cached_bodies: u64,
+    /// Oldest message whose complete reading text is kept locally.
+    #[serde(default)]
+    pub oldest_cached_body: Option<DateTime<Utc>>,
+    /// Approximate bytes occupied by reading texts; separate from the search index.
+    #[serde(default)]
+    pub body_cache_bytes: u64,
+    /// SQLite pages used by the word and trigram search indexes, when `dbstat` is available.
+    #[serde(default)]
+    pub search_index_bytes: Option<u64>,
+    #[serde(default)]
+    pub last_index_run: Option<DateTime<Utc>>,
+    pub indexed_full: u64,
+    pub indexed_partial_or_unverified: u64,
+    pub text_unavailable: u64,
+    pub awaiting_index: u64,
+    pub database_bytes: u64,
+    /// Fetched attachments that the cache can attribute to this account.
+    pub cached_attachments: u64,
+    /// Older untagged cache entries cannot be attributed and expire within 24 hours.
+    pub attachment_cache_bytes: Option<u64>,
+    pub last_sync: Option<DateTime<Utc>>,
+    pub sync_problem: Option<String>,
+}
+
+/// How many message bodies an account keeps for offline reading. Search text is independent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[repr(i64)]
+pub enum MailCacheMode {
+    HeadersOnly = 0,
+    #[default]
+    Recent90Days = 1,
+    AllOffline = 2,
+}
+
+/// Per-account local storage choice, persisted with the mail store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MailCachePolicy {
+    pub account: String,
+    pub mode: MailCacheMode,
+    /// Fetch attachment parts in advance, separately from message texts.
+    #[serde(default)]
+    pub prefetch_attachments: bool,
+    /// Attachment files are removed after this many days; 1 by default.
+    #[serde(default = "default_attachment_days")]
+    pub attachment_retention_days: u32,
+}
+
+fn default_attachment_days() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MailCacheAction {
+    ApplyPolicy,
+    FetchMissingBodies,
+    FetchAttachments,
+    RebuildIndex,
+    CleanCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MailCacheJobState {
+    Running,
+    Paused,
+    Complete,
+    Failed,
+}
+
+/// A durable, resumable maintenance operation on one mail account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailCacheJob {
+    pub id: String,
+    pub account: String,
+    pub action: MailCacheAction,
+    pub state: MailCacheJobState,
+    pub total: u64,
+    pub processed: u64,
+    /// Last inspected store sequence for a resumable body fetch.
+    #[serde(default)]
+    pub cursor: Option<i64>,
+    /// Estimated bytes affected before starting; actual storage may differ.
+    pub estimated_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Dry-run counts for a cache choice or maintenance job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailCacheEstimate {
+    pub account: String,
+    pub current_bodies: u64,
+    pub bodies_to_fetch: u64,
+    pub bodies_to_remove: u64,
+    pub estimated_download_bytes: u64,
+    pub estimated_reclaim_bytes: u64,
 }
 
 /// What the core does about the texts not yet in an account's index ([`MailIndexProgress`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IndexState {
-    /// Every message is indexed.
+    /// Every message has either indexed text or a known unavailable text; inspect both counts.
     Complete,
     /// The core is fetching the missing texts from the server, newest first.
     Indexing,
@@ -254,8 +385,15 @@ impl Request {
     pub fn mail_account(&self) -> Option<&str> {
         match self {
             Request::MailFolders { account }
+            | Request::MailAccountStats { account }
             | Request::SearchMail { account, .. }
             | Request::MailIndexStatus { account } => account.as_deref(),
+            Request::GetMailCachePolicy { account }
+            | Request::PreviewMailCache { account, .. }
+            | Request::StartMailCacheJob { account, .. }
+            | Request::MailCacheJobStatus { account }
+            | Request::ControlMailCacheJob { account, .. } => Some(account),
+            Request::SetMailCachePolicy { policy } => Some(&policy.account),
             Request::SaveDraft { draft } => Some(draft.account.as_str()),
             _ => None,
         }
@@ -413,8 +551,13 @@ mod tests {
             serde_json::json!({"id": "m:1", "subject": [{"text": "Ihre "}, {"text": "Stromrechnung", "hit": true}]})
         );
         assert_eq!(serde_json::from_value::<MailHighlight>(json).expect("parses"), highlight);
-        let progress =
-            MailIndexProgress { account: "mail:a@b.c".into(), messages: 10, indexed: 4, state: IndexState::Waiting };
+        let progress = MailIndexProgress {
+            account: "mail:a@b.c".into(),
+            messages: 10,
+            indexed: 4,
+            text_unavailable: 0,
+            state: IndexState::Waiting,
+        };
         let json = serde_json::to_value(&progress).expect("json");
         assert_eq!(json["state"], "waiting");
         assert_eq!(serde_json::to_value(IncompleteReason::Indexing).expect("json"), "indexing");

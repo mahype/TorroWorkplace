@@ -126,6 +126,10 @@ pub struct Data {
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
     pub accounts: Vec<AccountInfo>,
+    /// Locally known mail inventory from `mail.account_stats`.
+    pub mail_stats: Vec<torro_ipc::mail::MailAccountStats>,
+    pub mail_cache_policies: Vec<torro_ipc::mail::MailCachePolicy>,
+    pub mail_cache_jobs: Vec<torro_ipc::mail::MailCacheJob>,
     /// The calendars the suite shows (`calendar.list_calendars`): what the rights editor offers
     /// under "Calendars" ([`rights::Known`]).
     pub calendars: Vec<Collection>,
@@ -138,6 +142,11 @@ pub struct Data {
     /// How the sorting of mail by a model stands (`inbox.get_categorization`, task E12.10): the
     /// backlog per account.
     pub categorization: torro_ipc::inbox::Categorization,
+    /// The latest explicit sorting job and the default all-mail preview.
+    pub category_job: Option<torro_ipc::inbox::CategoryJob>,
+    pub category_job_preview: Option<torro_ipc::inbox::CategoryJobPreview>,
+    /// Counts for the explicit all-account category reset confirmation.
+    pub category_clear_preview: Option<torro_ipc::inbox::CategoryClearPreview>,
     /// The catalogue of mail categories (`inbox.list_categories`, task E15.2): what each one is
     /// called and which group it stands in now. Empty from a load that did not ask for it.
     pub categories: Vec<torro_ipc::inbox::CategoryInfo>,
@@ -189,10 +198,22 @@ impl Data {
             }
             Response::AiAssignments { assignments } => self.assignments = assignments,
             Response::Categorization { categorization } => self.categorization = categorization,
+            Response::CategoryJob { job } => self.category_job = job,
+            Response::CategoryJobPreview { preview } => self.category_job_preview = Some(preview),
+            Response::CategoryClearPreview { preview } => self.category_clear_preview = Some(preview),
             Response::Categories { categories } => self.categories = categories,
             Response::SortRules { rules } => self.sort_rules = rules,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
+            Response::MailAccountStats { accounts } => self.mail_stats = accounts,
+            Response::MailCachePolicy { policy } => {
+                self.mail_cache_policies.retain(|held| held.account != policy.account);
+                self.mail_cache_policies.push(policy);
+            }
+            Response::MailCacheJob { job: Some(job) } => {
+                self.mail_cache_jobs.retain(|held| held.account != job.account);
+                self.mail_cache_jobs.push(job);
+            }
             // Both `calendar.list_calendars` and `tasks.list_lists` answer with collections, and
             // the answer does not say which was asked. Each load starts empty ([`load`]), so the
             // answers are merged: a collection with events is a calendar, one with todos a list,
@@ -233,6 +254,12 @@ impl Data {
     /// what the first round brought.
     pub fn follow_up(&self) -> Vec<Request> {
         let mut wanted: Vec<Request> = assistant::models_request(self).into_iter().collect();
+        if !self.mail_stats.is_empty() {
+            for account in &self.mail_stats {
+                wanted.push(Request::GetMailCachePolicy { account: account.account.clone() });
+                wanted.push(Request::MailCacheJobStatus { account: account.account.clone() });
+            }
+        }
         // Only a load that wants the assignments pays for asking every AI server: the control
         // centre keeps the one request it always had.
         if self.assignments.is_empty() {

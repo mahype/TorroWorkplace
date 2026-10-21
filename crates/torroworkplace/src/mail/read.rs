@@ -12,9 +12,9 @@
 //! (`Access::Read`), so this check is the one before the handler runs, also for an approved run
 //! (`Core::run_approved` ends in `handle_within` as well).
 //!
-//! **Cache first.** The store holds the headers of every message and the texts of the last
-//! [`BODY_RETENTION_DAYS`] days. A message without its text is fetched from the server with
-//! `BODY.PEEK[]` (never marked read) and its text kept with `MailStore::set_body`.
+//! **Cache first.** The store holds headers and reading texts according to the account's policy
+//! (default [`BODY_RETENTION_DAYS`] days). A missing text is fetched with `BODY.PEEK[]` (never
+//! marked read); the fetched result can be shown even in headers-only mode without retaining it.
 //!
 //! **HTML** (task M8.1): the store keeps the cleaned HTML part beside the text (`mime::read`
 //! cleans it). `mail.get_message` hands it out only with `include_html`; when the store has the
@@ -119,6 +119,7 @@ pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request
     }
     let answered = match request {
         Request::MailFolders { account } => list_folders(mail, reach, account.as_deref()).await,
+        Request::MailAccountStats { account } => account_stats(mail, reach, account.as_deref()).await,
         Request::SearchMail {
             account,
             folder,
@@ -176,6 +177,27 @@ async fn list_folders(mail: &MailService, reach: Reach<'_>, account: Option<&str
         folders.extend(store.run(|store| store.folders()).await.map_err(store_failed)?);
     }
     Ok(Response::MailFolders { folders })
+}
+
+async fn account_stats(mail: &MailService, reach: Reach<'_>, account: Option<&str>) -> Answer<Response> {
+    let mut accounts = Vec::new();
+    for (id, store) in scoped(mail, reach, account).await? {
+        let mut stats = store.run(|store| store.account_stats()).await.map_err(store_failed)?;
+        let status = mail.account_sync_status(&id).await;
+        stats.last_sync = status.0;
+        stats.sync_problem = status.1;
+        if let Some(cache) = mail.attachment_cache() {
+            let account = id.clone();
+            let (count, bytes) = tokio::task::spawn_blocking(move || cache.account_usage(&account))
+                .await
+                .map_err(|_| no_attachment_folder())?
+                .map_err(store_failed)?;
+            stats.cached_attachments = count;
+            stats.attachment_cache_bytes = Some(bytes);
+        }
+        accounts.push(stats);
+    }
+    Ok(Response::MailAccountStats { accounts })
 }
 
 /// The stores of the accounts `reach` sees; only `account`'s when it is given (`not-found` when
@@ -665,7 +687,12 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
         .store
         .run(move |store| {
             store.set_body(&id, &body)?;
-            store.message(&id)
+            let message = store.message(&id)?;
+            let policy = store.cache_policy()?;
+            if policy.mode != torro_ipc::mail::MailCacheMode::AllOffline {
+                store.prune_bodies_for(policy.mode, Utc::now(), usize::MAX)?;
+            }
+            Ok(message)
         })
         .await
         .map_err(store_failed)?
@@ -926,7 +953,10 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
     let name = attachment.filename.clone().unwrap_or_default();
     let bytes = attachment.bytes;
     let size = bytes.len() as u64;
-    let path = tokio::task::spawn_blocking(move || cache.store(&name, &bytes))
+    let account = located.account.clone();
+    let message = id.to_string();
+    let part = part.to_string();
+    let path = tokio::task::spawn_blocking(move || cache.store_for_part(&account, &message, &part, &name, &bytes))
         .await
         .map_err(|_| no_attachment_folder())?
         .map_err(store_failed)?;

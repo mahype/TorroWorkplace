@@ -103,6 +103,8 @@ pub struct Rows<'a> {
     /// Id of the entry under the cursor (and in the panel, when it is open): highlighted, with its
     /// action bar shown.
     pub selected: Option<&'a str>,
+    /// Message ids selected in the mail window, including mail represented by inbox entries.
+    pub selected_mail: &'a [String],
     /// "Now", for the times ("16:40", "Yesterday 16:40").
     pub now: DateTime<Utc>,
     /// Registered by the selected row (`row`) and its buttons that open a menu (issue #122); a bare
@@ -344,7 +346,8 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 /// unless the rows are bare ([`Rows::bare`], the mail window: no buttons, as high as unchosen). A
 /// click opens it in the panel.
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
-    let selected = rows.selected == Some(item.id.as_str());
+    let cursor = rows.selected == Some(item.id.as_str());
+    let selected = cursor || mail_selected(item, rows);
     let actions = rows.anchors.mark(true, row_actions(item, rows));
     let height = entry_row_height(item, rows);
     let content = if item.source.kind == SourceKind::Mail {
@@ -363,7 +366,12 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
         row
     };
     // The menus and dialogs of the keys hang at the selected row – in a bare list it has nothing else.
-    if selected { widgets::anchored(&rows.anchors.row, row) } else { row }
+    if cursor { widgets::anchored(&rows.anchors.row, row) } else { row }
+}
+
+/// A bulk selection stores message ids, while these rows carry inbox entry ids.
+fn mail_selected(item: &Item, rows: &Rows<'_>) -> bool {
+    matches!(item.link.as_ref(), Some(Link::Mail { message }) if rows.selected_mail.contains(message))
 }
 
 /// What the strip of `item`'s row in `rows` holds ([`entry_row`]): its action bar
@@ -679,7 +687,8 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     if !rows.look.cards() || item.source.kind != SourceKind::Mail {
         return entry_row(item, rows, width);
     }
-    let selected = rows.selected == Some(item.id.as_str());
+    let cursor = rows.selected == Some(item.id.as_str());
+    let selected = cursor || mail_selected(item, rows);
     let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
     let card = MailCard {
         lines,
@@ -689,7 +698,7 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     };
     let card: Element<'a, Message> =
         mouse_area(mail_card(card, width)).on_right_press(Message::ContextEntry(item.id.clone())).into();
-    if selected { widgets::anchored(&rows.anchors.row, card) } else { card }
+    if cursor { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 
 /// A row of the list `height` high (including its line): `content` with 16 at the sides, centred
@@ -1589,6 +1598,7 @@ mod tests {
         for (accounts, bare) in accounts.into_iter().flat_map(|accounts| [(accounts.clone(), false), (accounts, true)])
         {
             let rows = Rows {
+                selected_mail: &[],
                 categories: &[],
                 view: &view,
                 selected: Some("demo-1"),
@@ -1611,6 +1621,7 @@ mod tests {
     /// `rows` of the list `view` with the cursor on `selected`, bare or not ([`Rows::bare`]).
     fn rows_on<'a>(view: &'a View, selected: &'a str, bare: bool) -> Rows<'a> {
         Rows {
+            selected_mail: &[],
             categories: &[],
             view,
             selected: Some(selected),
@@ -1820,6 +1831,7 @@ mod tests {
         items.push(mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"));
         items.push(Item { count: 3, state: State::Seen, ..mail("", "x@y.z", "anna@example.org") });
         let rows = Rows {
+            selected_mail: &[],
             categories: &[],
             view: &view,
             selected: Some("demo-1"),
@@ -1882,6 +1894,7 @@ mod tests {
         let view = View::Overview;
         for look in [Look::Rows, Look::Cards] {
             let rows = Rows {
+                selected_mail: &[],
                 categories: &[],
                 view: &view,
                 selected: Some(item.id.as_str()),

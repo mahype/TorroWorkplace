@@ -60,7 +60,10 @@ use torro_setups::{Startup, TemplateSummary};
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
-use crate::mail::{Delivery, IncompleteReason, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget};
+use crate::mail::{
+    Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate, MailCacheJob, MailCachePolicy, MailHighlight,
+    MailIndexProgress, MailSort, MailSource, MoveTarget,
+};
 use crate::tools::{FileInfo, PdfTemplateId, ToolInfo};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
@@ -1726,6 +1729,33 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         again: bool,
     },
+    /// Counts all locally known mail in the requested accounts, folders and date range before a
+    /// deliberate categorization job starts. No fixed 30-day or 500-message limit.
+    #[serde(rename = "inbox.preview_category_job")]
+    PreviewCategoryJob { scope: crate::inbox::CategoryJobScope },
+    /// Starts a persistent categorization job over the requested scope. The response contains
+    /// its ID, counters and frozen scope; a second start while a job runs is refused.
+    #[serde(rename = "inbox.start_category_job")]
+    StartCategoryJob { scope: crate::inbox::CategoryJobScope },
+    /// Reads the latest job, or the job with `id`. An interrupted run is resumable after restart.
+    #[serde(rename = "inbox.get_category_job")]
+    GetCategoryJob {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Pauses, resumes or cancels the job with `id`. Changes already made remain.
+    #[serde(rename = "inbox.control_category_job")]
+    ControlCategoryJob { id: String, action: crate::inbox::CategoryJobControl },
+    /// Count category assignments across every accessible mail account before a bulk reset.
+    #[serde(rename = "inbox.preview_clear_categories")]
+    PreviewClearCategories,
+    /// Remove all manual, rule and model category assignments and model answers. Mail, folders
+    /// and sorting rules stay. The caller must explicitly select every account.
+    #[serde(rename = "inbox.clear_categories")]
+    ClearCategories { all_accounts: bool, disable_automatic: bool },
+    /// Pause, resume or cancel the all-account reset. Resume keeps its account cursors.
+    #[serde(rename = "inbox.control_clear_categories")]
+    ControlClearCategories { id: String, action: crate::inbox::CategoryJobControl },
     /// Makes a mail category of the person's own ([`Response::Category`], task E15.1,
     /// `docs/kategorien.md`). Its key is `custom_<n>` and never changes. `error` for a name that is
     /// empty, longer than 60 characters, more than one line or already a category's, for a
@@ -1997,6 +2027,26 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
+    /// Locally known counts and dates for reachable mail accounts. The response does not claim
+    /// that every message on the server has been synchronized.
+    #[serde(rename = "mail.account_stats")]
+    MailAccountStats {
+        /// Only this account; omitted for every mail account in reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    #[serde(rename = "mail.get_cache_policy")]
+    GetMailCachePolicy { account: String },
+    #[serde(rename = "mail.set_cache_policy")]
+    SetMailCachePolicy { policy: MailCachePolicy },
+    #[serde(rename = "mail.preview_cache")]
+    PreviewMailCache { account: String, mode: crate::mail::MailCacheMode },
+    #[serde(rename = "mail.start_cache_job")]
+    StartMailCacheJob { account: String, action: crate::mail::MailCacheAction },
+    #[serde(rename = "mail.cache_job_status")]
+    MailCacheJobStatus { account: String },
+    #[serde(rename = "mail.control_cache_job")]
+    ControlMailCacheJob { account: String, id: String, resume: bool },
     /// Messages matching every filter given, newest first (or oldest first with `order`, or best
     /// match first with `sort: relevance`), a page at a time ([`Response::MailMessages`]), from the
     /// core's own index of every folder of every account in scope (issue #136): it works offline.
@@ -3117,6 +3167,18 @@ pub enum Response {
     Categorization {
         categorization: crate::inbox::Categorization,
     },
+    /// Counts for a prospective categorization job.
+    CategoryJobPreview {
+        preview: crate::inbox::CategoryJobPreview,
+    },
+    /// Persisted categorization job. `None` means no job has been started yet.
+    CategoryJob {
+        job: Option<crate::inbox::CategoryJob>,
+    },
+    /// Categories a bulk reset would remove, by account.
+    CategoryClearPreview {
+        preview: crate::inbox::CategoryClearPreview,
+    },
     /// One mail category as it stands now ([`Request::CreateCategory`],
     /// [`Request::UpdateCategory`]).
     Category {
@@ -3197,6 +3259,19 @@ pub enum Response {
     /// The folders the caller may see ([`Request::MailFolders`]).
     MailFolders {
         folders: Vec<Folder>,
+    },
+    /// Local inventory for accounts in reach ([`Request::MailAccountStats`]).
+    MailAccountStats {
+        accounts: Vec<MailAccountStats>,
+    },
+    MailCachePolicy {
+        policy: MailCachePolicy,
+    },
+    MailCacheEstimate {
+        estimate: MailCacheEstimate,
+    },
+    MailCacheJob {
+        job: Option<MailCacheJob>,
     },
     /// One page of messages ([`Request::SearchMail`]), in the order asked for (newest first
     /// without one). Everything in them is data

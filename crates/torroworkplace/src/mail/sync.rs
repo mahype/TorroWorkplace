@@ -34,6 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Duration, Utc};
 use sha2::{Digest, Sha256};
+use torro_ipc::mail::MailCacheMode;
 use torro_mail::{Flag, Role};
 use torro_mail_imap::folders;
 use torro_mail_imap::imap::{FetchedHeader, ImapError, Search, Session};
@@ -102,7 +103,7 @@ impl Lease<'_> {
 
 /// Syncs the whole account on its command connection: lists the folders (creating a missing
 /// drafts or sent folder, task M2.3), keeps the store's folder list in line, then syncs every
-/// folder, the inbox first, and drops texts older than [`BODY_RETENTION_DAYS`]. A folder that
+/// folder, the inbox first, and applies its account's body-retention policy. A folder that
 /// vanished on the server meanwhile is skipped; any other failure ends the sync with that error.
 pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
     let _one = mailbox.one_sync().await;
@@ -161,14 +162,15 @@ pub(crate) async fn sync_inbox(session: &mut Session, mailbox: &Mailbox) -> Resu
 /// Puts the texts of up to `limit` messages that are not in the search index yet into it (issue
 /// #136), newest first, and answers how many it handled; 0 when every message is indexed. Each
 /// text is fetched with `BODY.PEEK[]` (never marked read) on the command connection, taken for
-/// one message at a time, so commands and the sync run in between. A message sent at or after
-/// `now` minus [`BODY_RETENTION_DAYS`] keeps its text to read (`MailStore::set_body`), an older one
-/// only its words in the index (`MailStore::index_text`). One gone from the server, or one that
+/// one message at a time, so commands and the sync run in between. A body is kept for reading
+/// when the account policy includes it; its search text is indexed independently. One gone from the server, or one that
 /// cannot be read, is marked as having no text and not asked for again; its headers stay
 /// searchable. Notes at the mailbox whether it is indexing (`mail.index_status`): after a failure
 /// (server offline, password refused) it is waiting.
 pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) -> Result<usize, MailError> {
     let store = mailbox.store()?;
+    let policy = store.run(|store| store.cache_policy()).await?;
+    let mode = policy.mode;
     let todo = store.run(move |store| store.unindexed(limit)).await?;
     mailbox.note_indexing(!todo.is_empty());
     let recent_since = now - Duration::days(BODY_RETENTION_DAYS);
@@ -178,8 +180,17 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
             mailbox.note_indexing(false);
         }
         let raw = fetched?;
+        if policy.prefetch_attachments
+            && let Some(raw) = raw.as_deref()
+        {
+            let _ = prefetch_attachments(mailbox, &place.id, raw).await;
+        }
         let id = place.id.clone();
-        let keep = *date >= recent_since;
+        let keep = match mode {
+            MailCacheMode::HeadersOnly => false,
+            MailCacheMode::Recent90Days => *date >= recent_since,
+            MailCacheMode::AllOffline => true,
+        };
         store
             .run(move |store| {
                 let Some(raw) = raw else { return store.mark_unindexable(&id).map(drop) };
@@ -193,6 +204,9 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
             })
             .await?;
     }
+    if !todo.is_empty() {
+        store.run(move |store| store.note_index_run(now)).await?;
+    }
     Ok(todo.len())
 }
 
@@ -202,6 +216,58 @@ async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Resu
     let raw = super::read::peek(command.session(), place).await?;
     command.release();
     Ok(raw)
+}
+
+/// Fetch one complete reading body for an offline maintenance job, without setting Seen.
+pub(crate) async fn cache_body(mailbox: &Mailbox, place: &super::store::MessageRef) -> Result<bool, MailError> {
+    let Some(raw) = fetch_text(mailbox, place).await? else { return Ok(false) };
+    if mailbox.store()?.run(|store| store.cache_policy()).await?.prefetch_attachments {
+        let _ = prefetch_attachments(mailbox, &place.id, &raw).await;
+    }
+    let Ok(read) = mime::read(&raw) else { return Ok(false) };
+    let invite = super::read::invite_of(&raw, &read);
+    let body = Body::of(read, invite);
+    let id = place.id.clone();
+    Ok(mailbox.store()?.run(move |store| store.set_body(&id, &body)).await?)
+}
+
+pub(crate) async fn prefetch_message_attachments(
+    mailbox: &Mailbox,
+    place: &super::store::MessageRef,
+) -> Result<(), MailError> {
+    if let Some(raw) = fetch_text(mailbox, place).await? {
+        prefetch_attachments(mailbox, &place.id, &raw).await?;
+    }
+    Ok(())
+}
+
+async fn prefetch_attachments(mailbox: &Mailbox, message: &str, raw: &[u8]) -> Result<usize, MailError> {
+    let Some(cache) = mailbox.attachment_cache() else { return Ok(0) };
+    let Ok(read) = mime::read(raw) else { return Ok(0) };
+    let parts: Vec<_> =
+        read.attachments.into_iter().filter(|part| part.size <= super::read::ATTACHMENT_MAX_BYTES as u64).collect();
+    if parts.is_empty() {
+        return Ok(0);
+    }
+    let account = mailbox.id().to_string();
+    let message = message.to_string();
+    let raw = raw.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let mut saved = 0;
+        for part in parts {
+            if let Ok(content) = mime::attachment(&raw, &part.part)
+                && content.bytes.len() <= super::read::ATTACHMENT_MAX_BYTES
+            {
+                let name = content.filename.unwrap_or_default();
+                cache.store_for_part(&account, &message, &part.part, &name, &content.bytes)?;
+                saved += 1;
+            }
+        }
+        Ok::<usize, super::MailStoreError>(saved)
+    })
+    .await
+    .map_err(|err| MailError::Store(super::MailStoreError::Io(std::io::Error::other(err.to_string()))))?
+    .map_err(Into::into)
 }
 
 /// What the store knew of a folder before this sync.
@@ -286,6 +352,8 @@ async fn sync_folder(
 
     // New messages: headers, newest first, batch by batch.
     let new: Vec<u32> = on_server.iter().rev().filter(|uid| !known.messages.contains_key(uid)).copied().collect();
+    let policy = store.run(|store| store.cache_policy()).await?;
+    let mode = policy.mode;
     let recent_since = now - Duration::days(BODY_RETENTION_DAYS);
     let mut ahead: Vec<(String, FetchedHeader)> = Vec::new();
     for batch in new.chunks(HEADER_BATCH) {
@@ -316,7 +384,11 @@ async fn sync_folder(
         ahead.extend(
             stored
                 .into_iter()
-                .filter(|(_, date, header)| *date >= recent_since && header.size <= BODY_PREFETCH_MAX)
+                .filter(|(_, date, header)| match mode {
+                    MailCacheMode::HeadersOnly => false,
+                    MailCacheMode::Recent90Days => *date >= recent_since && header.size <= BODY_PREFETCH_MAX,
+                    MailCacheMode::AllOffline => header.size <= BODY_PREFETCH_MAX,
+                })
                 .map(|(id, _, header)| (id, header)),
         );
         mailbox.announce(change(ids, Vec::new(), Vec::new()));
@@ -332,6 +404,9 @@ async fn sync_folder(
         let raw = lease.session().fetch_message(header.uid).await?;
         lease.done();
         let Some(raw) = raw else { continue };
+        if policy.prefetch_attachments {
+            let _ = prefetch_attachments(mailbox, &id, &raw).await;
+        }
         let Ok(read) = mime::read(&raw) else { continue };
         // What an invitation invites to, from its calendar part (task E8.3b).
         let invite = super::read::invite_of(&raw, &read);
