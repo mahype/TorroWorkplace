@@ -64,8 +64,42 @@ Bytezahl, SHA-256, `INTERNALDATE`, Flags/Keywords und Herkunfts-UID/`UIDVALIDITY
 Ausnahmen und Inventarvergleich. UIDs sind Hinweise zur Herkunft, keine beim Restore
 übertragbaren Identitäten. `messages.csv` wiederholt die wichtigsten Spalten für Menschen.
 `SHA256SUMS` umfasst alle EMLs und die drei Metadateien; es umfasst sich selbst nicht.
-`README.txt` beschreibt Öffnen, Prüfen und Grenzen. Schema/Version und Feldsemantik werden
+`messages.csv` hat die Spalten `folder_id,message_id,path,internal_date,bytes,sha256` in
+dieser Reihenfolge; fehlende Datumswerte bleiben leer. `README.txt` beschreibt Öffnen,
+Prüfen und Grenzen. Schema/Version und Feldsemantik werden
 mit einem anonymen Beispielarchiv und einem dokumentierten JSON-Schema festgeschrieben.
+
+**Vertrag v1 (MB.1):** Ein [anonymes Beispielarchiv](../crates/torro-mail-backup/tests/fixtures/sample-v1.zip),
+sein [Manifest](../crates/torro-mail-backup/tests/fixtures/manifest-v1.json)
+und sein [JSON-Schema](../crates/torro-mail-backup/tests/fixtures/manifest-v1.schema.json)
+liegen als geprüfte Fixtures im Repository. Das ZIP lässt sich mit `unzip` öffnen und
+seine `.eml` ohne Torro als Rohmail lesen. `source` ist `server` oder `local`, `status`
+ist `complete` oder `incomplete`. `since` ist ein inklusiver Kalendertag oder `null`.
+`started_at` und `finished_at` sind UTC-Zeitpunkte; pro Mail ist `internal_date` mit
+Zeitzone gespeichert. `folders[].id` und `messages[].id` sind fortlaufende archivinterne
+Kennungen, während `folders[].path` den tatsächlichen IMAP-Namen als Daten enthält.
+`messages[].path` muss exakt zu den beiden Kennungen passen. `uid` und `uid_validity`
+sind entweder beide gesetzt oder beide leer; die UID darf je Ordner nur einmal vorkommen.
+Jeder auswählbare Ordner eines vollständigen Archivs hat eine `inventory` mit Prüfzeit,
+Zahl der passenden Quellnachrichten und bei Server-Backups einem SHA-256 der sortierten
+UIDs (jeweils vier Bytes in Netzwerk-Reihenfolge). Der Prüfer gleicht diese Angaben
+gegen die gespeicherten Nachrichten ab. Bei lokalen Backups enthält die Inventur nur
+die Zahl der vollständig verfügbaren Originale. `role` hält die erkannte Ordnerrolle,
+sofern eine vorliegt.
+`counts` stimmt mit den Tabellen und der Summe der EML-Bytezahlen überein. Das Feld
+`warnings` trägt ausdrücklich gemeldete Lücken. Die aktuell geprüfte ZIP-Struktur enthält
+genau die vier oben gezeigten Metadateien und die referenzierten EMLs; andere Einträge,
+doppelte Pfade und nicht zum Manifest passende Prüfsummen werden abgewiesen.
+
+Die Sicherheitsgrenzen des v1-Prüfers liegen bei 100.000 Ordnern, 10 Millionen
+Nachrichten und 1 PiB logischer Maildaten je Archiv sowie 256 MiB Manifest und 512 MiB
+Indexdatei. Wird eine Grenze erreicht, meldet der Prüfer einen Fehler; er bescheinigt
+einem solchen Archiv keine Vollständigkeit. Die Grenzen werden mit der Schreib-Engine
+abgeglichen, bevor sie freigeschaltet wird.
+Eine Offline-Prüfung kann die Konsistenz und Unversehrtheit des Archivs belegen, aber
+ohne erneute Serverabfrage nicht unabhängig beweisen, welche Mails auf dem IMAP-Server
+zum Sicherungszeitpunkt existierten. `complete` ist deshalb der dokumentierte Befund
+des Backup-Laufs samt Inventur, kein Versprechen eines atomaren Server-Snapshots.
 
 Grenzen: Serverinterne Zustände wie MODSEQ, ACLs, Quota, Threads und anbieterspezifische
 Labels außerhalb der IMAP-Flags gehören nicht zum portablen Kernformat. Unterstützte

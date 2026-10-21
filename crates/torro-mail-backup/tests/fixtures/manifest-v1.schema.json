@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "description": "The portable description of one ZIP archive; the message bodies remain separate EML files.",
+  "type": "object",
+  "properties": {
+    "account": {
+      "$ref": "#/$defs/Account"
+    },
+    "counts": {
+      "$ref": "#/$defs/Counts"
+    },
+    "finished_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "folders": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Folder"
+      }
+    },
+    "format": {
+      "type": "string"
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Message"
+      }
+    },
+    "since": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date"
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "$ref": "#/$defs/Status"
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "warnings": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "version",
+    "status",
+    "source",
+    "started_at",
+    "account",
+    "folders",
+    "messages",
+    "counts"
+  ],
+  "$defs": {
+    "Account": {
+      "description": "Only descriptive account data; secret fields are not part of the format.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "server": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address"
+      ]
+    },
+    "Counts": {
+      "description": "Counts for a quick report, checked against the actual tables.",
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "folders": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "messages": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "folders",
+        "messages",
+        "bytes"
+      ]
+    },
+    "Folder": {
+      "description": "One selectable or reported IMAP folder; `path` is data, never a ZIP member name.",
+      "type": "object",
+      "properties": {
+        "delimiter": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "inventory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Inventory"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selectable": {
+          "type": "boolean"
+        },
+        "uid_validity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "path",
+        "selectable"
+      ]
+    },
+    "Inventory": {
+      "description": "The final eligible source inventory for a folder. Server UID hashes use sorted big-endian\nfour-byte UIDs, with SHA-256 of the empty sequence for an empty folder.",
+      "type": "object",
+      "properties": {
+        "checked_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "eligible_messages": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "uid_set_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "checked_at",
+        "eligible_messages"
+      ]
+    },
+    "Message": {
+      "description": "One archived folder occurrence of a message, with original IMAP metadata where available.",
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "flags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "folder_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "internal_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "uid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "uid_validity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "folder_id",
+        "path",
+        "bytes",
+        "sha256"
+      ]
+    },
+    "Source": {
+      "description": "Which bodies the archive was drawn from.",
+      "type": "string",
+      "enum": [
+        "server",
+        "local"
+      ]
+    },
+    "Status": {
+      "description": "Complete means every eligible message was read and verified against a stable inventory.",
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete"
+      ]
+    }
+  }
+}

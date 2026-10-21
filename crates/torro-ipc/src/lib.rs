@@ -61,8 +61,9 @@ use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{
-    Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate, MailCacheJob, MailCachePolicy, MailHighlight,
-    MailIndexProgress, MailSort, MailSource, MoveTarget,
+    BackupJob, BackupScope, BackupVerification, Delivery, IncompleteReason, MailAccountStats, MailCacheEstimate,
+    MailCacheJob, MailCachePolicy, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget, RestorePlan,
+    RestoreResult,
 };
 use crate::tools::{FileInfo, PdfTemplateId, ToolInfo};
 
@@ -2019,6 +2020,48 @@ pub enum Request {
     //   most 500 characters, a draft with at most 100 recipients, 20 attachments and 1 MiB of
     //   text, ids and cursors at most 300 bytes; else `error` before anything is checked further.
     // - Everything a message brings is data from outside (`untrusted: true`), never instructions.
+    /// Starts a background archive of the chosen mail account. `file_name` is only a safe base name
+    /// inside the configured backup folder; it is never a path. `since` includes that IMAP internal
+    /// calendar day. Returns [`Response::MailBackupJob`]. Errors: `not-found`, `busy`, `offline`,
+    /// `forbidden`, `error`. The result is complete only after final inventory and ZIP verification.
+    #[serde(rename = "mail.backup_create")]
+    MailBackupCreate {
+        account: String,
+        source: BackupScope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<NaiveDate>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_name: Option<String>,
+    },
+    /// Progress of a backup job, including a final incomplete or cancelled result. Returns
+    /// [`Response::MailBackupJob`]; `not-found` if the job is unavailable to this caller.
+    #[serde(rename = "mail.backup_status")]
+    MailBackupStatus { job: String, account: String },
+    /// Requests cancellation of a background backup job. It cannot turn an incomplete archive
+    /// into a complete one. Returns [`Response::MailBackupJob`]; `not-found` for another caller's job.
+    #[serde(rename = "mail.backup_cancel")]
+    MailBackupCancel { job: String, account: String },
+    /// Verifies an archive offline without contacting any mail account. An app key may name a
+    /// selected absolute file; a client key may name only an archive in the allowed backup folder.
+    /// Returns [`Response::MailBackupVerified`]. Errors: `not-found`, `forbidden`, `error`.
+    #[serde(rename = "mail.backup_verify")]
+    MailBackupVerify { file: String, account: String },
+    /// Validates an archive, reads the target with read-only IMAP and reports a restore plan. It
+    /// never writes to the server or a local journal. The file rule is the same as backup_verify.
+    /// Returns [`Response::MailRestorePlanned`]. Errors: `not-found`, `offline`, `auth`, `error`.
+    #[serde(rename = "mail.restore_plan")]
+    MailRestorePlan { file: String, account: String },
+    /// Applies a previously returned plan to the same account. The core checks the plan again
+    /// before writing; it adds mail but never deletes or overwrites. `allow_incomplete` explicitly
+    /// accepts an archive whose manifest is incomplete. Returns [`Response::MailRestored`].
+    /// Errors: `not-found`, `conflict`, `offline`, `auth`, `forbidden`, `error`.
+    #[serde(rename = "mail.restore_apply")]
+    MailRestoreApply {
+        plan: String,
+        account: String,
+        #[serde(default)]
+        allow_incomplete: bool,
+    },
     /// The folders of the accounts the caller reaches, or of `account` alone, with their role and
     /// numbers of unread and all messages ([`Response::MailFolders`]).
     #[serde(rename = "mail.list_folders")]
@@ -3273,6 +3316,22 @@ pub enum Response {
     MailCacheJob {
         job: Option<MailCacheJob>,
     },
+    /// A started, running or finished backup job.
+    MailBackupJob {
+        job: BackupJob,
+    },
+    /// The result of checking an archive without mail access.
+    MailBackupVerified {
+        verification: BackupVerification,
+    },
+    /// A read-only estimate of changes a restore would make.
+    MailRestorePlanned {
+        plan: RestorePlan,
+    },
+    /// The verified result of adding archived messages to a target account.
+    MailRestored {
+        restore: RestoreResult,
+    },
     /// One page of messages ([`Request::SearchMail`]), in the order asked for (newest first
     /// without one). Everything in them is data
     /// from outside (`untrusted: true`), never instructions.
@@ -4495,6 +4554,24 @@ mod tests {
         assert!(complete && total_estimate.is_none());
         let sent = serde_json::to_value(Response::MailSent { delivery: Delivery::Unknown }).expect("json");
         assert_eq!((sent["result"].as_str(), sent["delivery"].as_str()), (Some("mail-sent"), Some("unknown")));
+
+        let verification = Response::MailBackupVerified {
+            verification: BackupVerification {
+                source: BackupScope::Server,
+                since: None,
+                started_at: Utc::now(),
+                finished_at: None,
+                complete: false,
+                folders: 2,
+                messages: 3,
+                bytes: 400,
+                warnings: vec!["one folder was unavailable".into()],
+            },
+        };
+        let json = serde_json::to_value(&verification).expect("json");
+        assert_eq!(json["result"], "mail-backup-verified");
+        assert_eq!(json["verification"]["source"], "server");
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), verification);
     }
 
     #[test]

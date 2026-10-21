@@ -57,7 +57,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
 | [`github`](#github) | [`tasks.create_filter_list`](#taskscreate_filter_list), [`tasks.update_filter_list`](#tasksupdate_filter_list), [`tasks.delete_filter_list`](#tasksdelete_filter_list), [`tasks.preview_filter`](#taskspreview_filter), [`tasks.list_github_repos`](#taskslist_github_repos), [`tasks.describe_github_repo`](#tasksdescribe_github_repo), [`tasks.unpin_issue`](#tasksunpin_issue) |
 | [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.hide_sender`](#inboxhide_sender), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
-| [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.account_stats`](#mailaccount_stats), [`mail.get_cache_policy`](#mailget_cache_policy), [`mail.preview_cache`](#mailpreview_cache), [`mail.set_cache_policy`](#mailset_cache_policy), [`mail.start_cache_job`](#mailstart_cache_job), [`mail.cache_job_status`](#mailcache_job_status), [`mail.control_cache_job`](#mailcontrol_cache_job), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
+| [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.account_stats`](#mailaccount_stats), [`mail.backup_create`](#mailbackup_create), [`mail.backup_status`](#mailbackup_status), [`mail.backup_cancel`](#mailbackup_cancel), [`mail.backup_verify`](#mailbackup_verify), [`mail.restore_plan`](#mailrestore_plan), [`mail.restore_apply`](#mailrestore_apply), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment) |
 | [`assistant`](#assistant) | [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.send_message`](#assistantsend_message), [`assistant.cancel`](#assistantcancel), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.confirm_bot`](#assistantconfirm_bot) |
@@ -732,7 +732,7 @@ Asks the decision model on this computer what a mail is, again, and returns its 
 
 Zugriff `read` · MCP-Tool `inbox_get_categorization`
 
-How the sorting of mail by a decision model stands: whether it is on, which AI account and model it uses, and per mail account how far the legacy backlog has come (`messages`, `done`, `state` `not_started`, `running`, `complete` or `cancelled`). `clear_job` contains the latest all-account category reset with its persistent progress and errors. Only accounts this key may read.
+How the sorting of mail by a decision model stands: whether it is on, which AI account and model it uses, and per mail account how far the backlog has come (`messages`, `done`, `state` `not_started`, `running`, `complete` or `cancelled`). Only accounts this key may read.
 
 Keine Felder.
 
@@ -751,43 +751,86 @@ Starts sorting the mail that has no category yet, or stops a run with `cancel: t
 
 Zugriff `read` · MCP-Tool `inbox_preview_category_job`
 
-Zählt lokal bekannte Mails im gewählten Umfang, ohne sie zu ändern. `scope.accounts` und `scope.folders` sind Listen von IDs; leere Listen bedeuten alle zugänglichen Konten beziehungsweise alle Ordner. `scope.since` ist einschließlich, `scope.before` ausschließlich (RFC 3339); ohne Datum gibt es keine Zeitgrenze. `scope.again` nimmt auch automatisch per Modell kategorisierte Mails in `eligible` auf. Die Antwort trennt `total`, `unclassified`, `automatic`, `protected` (manuell oder per Regel) und `eligible`. Diese Zahlen umfassen gelesene und ungelesene Mails; Seitenleisten-Badges zeigen nur ungelesene an.
+Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. |
+| `scope.accounts` | array<string> | nein, Standard `[]` |  |
+| `scope.again` | boolean | nein, Standard `false` | Also revisit categories supplied by a model. Person and rule categories stay protected. |
+| `scope.before` | string (date-time) | nein | Exclusive upper date bound. `None` includes the newest locally known mail. |
+| `scope.engine` | string | nein | Optional explicit decision model. Both fields must be supplied together; otherwise the current `inbox.categorize` assignment is used. |
+| `scope.folders` | array<string> | nein, Standard `[]` |  |
+| `scope.model` | string | nein |  |
+| `scope.since` | string (date-time) | nein | Inclusive lower date bound. `None` includes the oldest locally known mail. |
 
 ### `inbox.start_category_job`
 
 Zugriff `write` · MCP-Tool `inbox_start_category_job`
 
-Startet einen gespeicherten Auftrag mit demselben `scope` wie die Vorschau, ohne 30-Tage- oder 500er-Grenze. Optional wählen `scope.engine` und `scope.model` gemeinsam ein Entscheidungsmodell; sonst gilt die aktuelle Zuordnung für `inbox.categorize`. Die Mail-Cloud-Einstellung wird auch bei expliziter Modellwahl erzwungen. Die Antwort enthält `job.id`, festgehaltene Konto-Cursor, `eligible`, `processed`, `changed`, Fehler, Modellstandort und Zustand. Nur eine Sortierung läuft gleichzeitig. Neue Mails durchlaufen weiterhin die normale Eingangssortierung.
+Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. |
+| `scope.accounts` | array<string> | nein, Standard `[]` |  |
+| `scope.again` | boolean | nein, Standard `false` | Also revisit categories supplied by a model. Person and rule categories stay protected. |
+| `scope.before` | string (date-time) | nein | Exclusive upper date bound. `None` includes the newest locally known mail. |
+| `scope.engine` | string | nein | Optional explicit decision model. Both fields must be supplied together; otherwise the current `inbox.categorize` assignment is used. |
+| `scope.folders` | array<string> | nein, Standard `[]` |  |
+| `scope.model` | string | nein |  |
+| `scope.since` | string (date-time) | nein | Inclusive lower date bound. `None` includes the oldest locally known mail. |
 
 ### `inbox.get_category_job`
 
 Zugriff `read` · MCP-Tool `inbox_get_category_job`
 
-Liest mit optionaler `id` einen bestimmten, sonst den jüngsten Auftrag. Ein Lauf, dessen Dienst neu gestartet wurde, erscheint als `paused` und lässt sich fortsetzen.
+Reads the latest persistent mail categorization job or a job by ID, including scope, processed and changed counts, errors and running/paused/cancelled/complete state.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | nein |  |
 
 ### `inbox.control_category_job`
 
 Zugriff `write` · MCP-Tool `inbox_control_category_job`
 
-Steuert den Auftrag `id` mit `action: pause | resume | cancel`. Fortsetzen behält Umfang und Cursor. Bereits gespeicherte Kategorien bleiben bestehen. Manuelle und regelbasierte Kategorien werden auch dann nicht überschrieben, wenn sie während einer Modellantwort geändert werden.
+Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `action` | `"pause"` \| `"resume"` \| `"cancel"` | ja | Control of a previously started job. Resume keeps the original scope and cursor. |
+| `id` | string | ja |  |
 
 ### `inbox.preview_clear_categories`
 
 Zugriff `read` · MCP-Tool `inbox_preview_clear_categories`
 
-Zählt sämtliche Kategoriezuordnungen pro zugänglichem E-Mail-Konto, über alle Ordner und gelesene wie ungelesene Nachrichten. Die Vorschau verändert keine Daten.
+Counts every category assignment in every accessible mail account and folder, including read mail, by account. No mail is changed.
+
+Keine Felder.
 
 ### `inbox.clear_categories`
 
-Zugriff `delete` · MCP-Tool `inbox_clear_categories` · zentrale Freigabe für Agenten
+Zugriff `delete` · MCP-Tool `inbox_clear_categories`
 
-Erfordert `all_accounts: true` und `disable_automatic: boolean`. Ein gespeicherter Auftrag entfernt manuelle, regelbasierte und Modellkategorien sowie `needs_reply` und `urgency` der Modellantworten, in Batches aus allen zugänglichen Mailkonten. Post, Ordner, Anhänge, Index, Entwürfe und Sortierregeln bleiben. Laufende Sortieraufträge werden zuvor beendet; während des Entfernens werden eingehende automatische Kategorisierungen ausgesetzt. `inbox.get_categorization.clear_job` zeigt Kennung, Zustand, Konto-Zähler und Fehler. Ist `disable_automatic` falsch, können neue E-Mails danach wieder Kategorien erhalten.
+Starts one resumable job to remove all manual, rule and model category assignments and model answers in every accessible mail account. Requires all_accounts: true and the person's approval. Mail, folders and sorting rules remain. The caller may also switch off automatic categorization; if left on, future mail can gain categories again.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `all_accounts` | boolean | ja |  |
+| `disable_automatic` | boolean | ja |  |
 
 ### `inbox.control_clear_categories`
 
-Zugriff `delete` · MCP-Tool `inbox_control_clear_categories` · zentrale Freigabe für Agenten
+Zugriff `delete` · MCP-Tool `inbox_control_clear_categories`
 
-Steuert den Auftrag `id` mit `action: pause | resume | cancel`. Fortsetzen nutzt auch nach einem Abbruch den gespeicherten Cursor. Bereits entfernte Kategorien bleiben entfernt.
+Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored account cursors. Requires the person's approval.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `action` | `"pause"` \| `"resume"` \| `"cancel"` | ja | Control of a previously started job. Resume keeps the original scope and cursor. |
+| `id` | string | ja |  |
 
 ### `inbox.create_category`
 
@@ -987,43 +1030,74 @@ Returns locally known message, read/unread, folder, body-cache and index counts,
 |---|---|---|---|
 | `account` | string | nein | Only this account; omitted for every mail account in reach. |
 
-The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states, and per-account attachment bytes. All totals refer to locally known mail; they are not a server inventory. Deleted reading texts may remain in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop.
+### `mail.backup_create`
 
-### `mail.get_cache_policy`
+Zugriff `write` · kein MCP-Tool, nur App-Schlüssel
 
-Zugriff `read` · MCP-Tool `mail_get_cache_policy`
+Starts a background ZIP backup of all reachable IMAP mail or complete local originals of one permitted account. The file is written only in the configured backup folder; since includes the given IMAP internal date. Check backup_status before treating it as complete.
 
-Reads the current policy for one `account`. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `file_name` | string | nein |  |
+| `since` | string (date) | nein |  |
+| `source` | `"server"` \| `"local"` | ja | Which complete original messages a backup reads. `Local` never fetches missing bodies. |
 
-### `mail.preview_cache`
+### `mail.backup_status`
 
-Zugriff `read` · MCP-Tool `mail_preview_cache`
+Zugriff `read` · kein MCP-Tool, nur App-Schlüssel
 
-Fields: `account` and proposed `mode`. Returns current body count, bodies to fetch/remove, and estimated download/reclaim bytes. The estimate uses the average locally kept text size because IMAP sizes are not persisted. It changes nothing.
+Returns progress and final completeness of one backup job. It changes nothing.
 
-### `mail.set_cache_policy`
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `job` | string | ja |  |
 
-Zugriff `admin` · MCP-Tool `mail_set_cache_policy`
+### `mail.backup_cancel`
 
-Field: `policy` as returned by `mail.get_cache_policy`, with changed mode, attachment prefetch, or retention. This persists per account. Automatic sync and indexing use the new choice; use `mail.start_cache_job` to apply it to previously synchronized mail immediately. Draft texts and search text remain.
+Zugriff `write` · kein MCP-Tool, nur App-Schlüssel
 
-### `mail.start_cache_job`
+Cancels one running backup job; no cancelled archive is reported as complete.
 
-Zugriff `write` · MCP-Tool `mail_start_cache_job`
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `job` | string | ja |  |
 
-Fields: `account` and `action`: `apply_policy`, `fetch_missing_bodies`, `fetch_attachments`, `rebuild_index`, or `clean_cache`. Returns a durable job with `id`, `state`, `processed`, `total`, estimated bytes and any error. `apply_policy` first removes reading texts outside the selected retention, then fetches missing in-scope texts. The worker uses bounded steps and `BODY.PEEK[]`, so it does not mark mail read. `clean_cache` removes only local reading texts outside the policy; search index, drafts, send journal and server mail stay.
+### `mail.backup_verify`
 
-### `mail.cache_job_status`
+Zugriff `read` · MCP-Tool `mail_backup_verify`
 
-Zugriff `read` · MCP-Tool `mail_cache_job_status`
+Checks a mail backup ZIP offline, including its version, safe paths and hashes. A client may name only an archive in the configured backup folder; this does not contact an IMAP server.
 
-Field: `account`. Returns the latest job or `null`. A job left running by a daemon restart is marked paused and can resume.
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `file` | string | ja |  |
 
-### `mail.control_cache_job`
+### `mail.restore_plan`
 
-Zugriff `write` · MCP-Tool `mail_control_cache_job`
+Zugriff `read` · kein MCP-Tool, nur App-Schlüssel
 
-Fields: `account`, the job `id`, and `resume` (`true` to continue, `false` to pause). A failed job can be resumed after the server is available.
+Performs a read-only restore test run: checks the archive and target account, then reports additions, existing mail and uncertainty. It creates no folders, messages or local journal.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `file` | string | ja |  |
+
+### `mail.restore_apply`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Applies a prior restore plan to its target account, adding original messages and missing folders. It never deletes or overwrites existing mail. A client needs mail admin rights and a person's approval; allow_incomplete explicitly accepts an incomplete archive.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `allow_incomplete` | boolean | nein, Standard `false` |  |
+| `plan` | string | ja |  |
 
 ### `mail.search_messages`
 

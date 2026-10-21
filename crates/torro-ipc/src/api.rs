@@ -1535,6 +1535,12 @@ impl Request {
             Request::StartMailCacheJob { .. } => &START_CACHE_JOB,
             Request::MailCacheJobStatus { .. } => &CACHE_JOB_STATUS,
             Request::ControlMailCacheJob { .. } => &CONTROL_CACHE_JOB,
+            Request::MailBackupCreate { .. } => &MAIL_BACKUP_CREATE,
+            Request::MailBackupStatus { .. } => &MAIL_BACKUP_STATUS,
+            Request::MailBackupCancel { .. } => &MAIL_BACKUP_CANCEL,
+            Request::MailBackupVerify { .. } => &MAIL_BACKUP_VERIFY,
+            Request::MailRestorePlan { .. } => &MAIL_RESTORE_PLAN,
+            Request::MailRestoreApply { .. } => &MAIL_RESTORE_APPLY,
             Request::SearchMail { .. } => &SEARCH_MESSAGES,
             Request::MailIndexStatus { .. } => &INDEX_STATUS,
             Request::GetMail { .. } => &GET_MESSAGE,
@@ -1744,6 +1750,12 @@ pub static CATALOGUE: &[&Command] = &[
     &GET_QUIET,
     &LIST_FOLDERS,
     &ACCOUNT_STATS,
+    &MAIL_BACKUP_CREATE,
+    &MAIL_BACKUP_STATUS,
+    &MAIL_BACKUP_CANCEL,
+    &MAIL_BACKUP_VERIFY,
+    &MAIL_RESTORE_PLAN,
+    &MAIL_RESTORE_APPLY,
     &SEARCH_MESSAGES,
     &INDEX_STATUS,
     &GET_MESSAGE,
@@ -3370,6 +3382,56 @@ static GET_STATS: Command = Command {
 // description that hands out mail says that its content is data, never instructions (security
 // rule 5 of the inbox, the same for mail).
 
+// Backup and restore (#267) share Mail rights. The core constrains client file names to an
+// allowed folder and checks the named account before touching the file or the server.
+static MAIL_BACKUP_CREATE: Command = Command {
+    name: "mail.backup_create",
+    area: Area::Mail,
+    access: Access::Write,
+    mcp: Mcp::Never,
+    description: "Starts a background ZIP backup of all reachable IMAP mail or complete local originals of one permitted account. The file is written only in the configured backup folder; since includes the given IMAP internal date. Check backup_status before treating it as complete.",
+};
+
+static MAIL_BACKUP_STATUS: Command = Command {
+    name: "mail.backup_status",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Never,
+    description: "Returns progress and final completeness of one backup job. It changes nothing.",
+};
+
+static MAIL_BACKUP_CANCEL: Command = Command {
+    name: "mail.backup_cancel",
+    area: Area::Mail,
+    access: Access::Write,
+    mcp: Mcp::Never,
+    description: "Cancels one running backup job; no cancelled archive is reported as complete.",
+};
+
+static MAIL_BACKUP_VERIFY: Command = Command {
+    name: "mail.backup_verify",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Checks a mail backup ZIP offline, including its version, safe paths and hashes. A client may name only an archive in the configured backup folder; this does not contact an IMAP server.",
+};
+
+static MAIL_RESTORE_PLAN: Command = Command {
+    name: "mail.restore_plan",
+    area: Area::Mail,
+    access: Access::Read,
+    mcp: Mcp::Never,
+    description: "Performs a read-only restore test run: checks the archive and target account, then reports additions, existing mail and uncertainty. It creates no folders, messages or local journal.",
+};
+
+static MAIL_RESTORE_APPLY: Command = Command {
+    name: "mail.restore_apply",
+    area: Area::Mail,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Applies a prior restore plan to its target account, adding original messages and missing folders. It never deletes or overwrites existing mail. A client needs mail admin rights and a person's approval; allow_incomplete explicitly accepts an incomplete archive.",
+};
+
 static LIST_FOLDERS: Command = Command {
     name: "mail.list_folders",
     area: Area::Mail,
@@ -4301,6 +4363,21 @@ mod tests {
             },
             Request::MailFolders { account: None },
             Request::MailAccountStats { account: None },
+            Request::MailBackupCreate {
+                account: "mail:anna@mailbox.org".into(),
+                source: crate::mail::BackupScope::Server,
+                since: None,
+                file_name: Some("mail-backup.zip".into()),
+            },
+            Request::MailBackupStatus { job: "job-1".into(), account: "mail:anna@mailbox.org".into() },
+            Request::MailBackupCancel { job: "job-1".into(), account: "mail:anna@mailbox.org".into() },
+            Request::MailBackupVerify { file: "mail-backup.zip".into(), account: "mail:anna@mailbox.org".into() },
+            Request::MailRestorePlan { file: "mail-backup.zip".into(), account: "mail:anna@mailbox.org".into() },
+            Request::MailRestoreApply {
+                plan: "plan-1".into(),
+                account: "mail:anna@mailbox.org".into(),
+                allow_incomplete: false,
+            },
             Request::SearchMail {
                 account: Some("mail:anna@mailbox.org".into()),
                 folder: None,
@@ -4507,6 +4584,13 @@ mod tests {
                         // Switching a tool on through settings.set_setting is kept back by value
                         // (`only_people_switch_a_tool_on`).
                         | "tools.save_file_as"
+                        // Backup creation and restore are contractual requests until their
+                        // engines land; only offline verify is an active MCP tool in MB.1.
+                        | "mail.backup_create"
+                        | "mail.backup_status"
+                        | "mail.backup_cancel"
+                        | "mail.restore_plan"
+                        | "mail.restore_apply"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
@@ -5962,15 +6046,44 @@ mod tests {
         assert_eq!(access(Request::DeleteMail { ids: ids(), permanent: false }), Access::Delete);
         assert_eq!(access(Request::SendDraft { id: "m:2".into() }), Access::Write);
         assert_eq!(
+            access(Request::MailBackupVerify { file: "archive.zip".into(), account: "mail:anna@example.org".into() }),
+            Access::Read
+        );
+        assert_eq!(
+            access(Request::MailBackupCreate {
+                account: "mail:anna@example.org".into(),
+                source: crate::mail::BackupScope::Local,
+                since: None,
+                file_name: None,
+            }),
+            Access::Write
+        );
+        assert_eq!(
+            access(Request::MailRestoreApply {
+                plan: "plan-1".into(),
+                account: "mail:anna@example.org".into(),
+                allow_incomplete: false,
+            }),
+            Access::Admin
+        );
+        assert_eq!(
             access(Request::GetMail { id: "m:1".into(), include_body: false, include_html: false }),
             Access::Read
         );
 
         let mail: Vec<&str> = CATALOGUE.iter().filter(|c| c.area == Area::Mail).map(|c| c.name).collect();
         // Issue #136: mail.index_status reads how far the search index is.
-        assert_eq!(mail.len(), 12);
+        assert_eq!(mail.len(), 18);
         assert_eq!(INDEX_STATUS.access, Access::Read);
-        assert!(CATALOGUE.iter().filter(|c| c.area == Area::Mail).all(|c| c.mcp == Mcp::Tool));
+        assert!(
+            CATALOGUE
+                .iter()
+                .filter(|c| c.area == Area::Mail
+                    && !c.name.starts_with("mail.backup_")
+                    && !c.name.starts_with("mail.restore_"))
+                .all(|c| c.mcp == Mcp::Tool)
+        );
+        assert_eq!(MAIL_BACKUP_VERIFY.mcp, Mcp::Tool);
         assert!(Area::Mail.grantable() && Area::Mail.prefix() == "mail");
         assert_eq!((CONNECT_MAIL.access, CONNECT_MAIL.mcp), (Access::Admin, Mcp::Never));
         assert_eq!((UPDATE_MAIL_ACCOUNT.access, UPDATE_MAIL_ACCOUNT.mcp), (Access::Admin, Mcp::Tool));

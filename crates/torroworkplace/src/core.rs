@@ -8,6 +8,7 @@
 //! log without any content ([`crate::audit`]).
 
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock, PoisonError};
 
 use chrono::{Local, Utc};
@@ -18,6 +19,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
 use torro_ipc::api::{Access, Area, Selection};
 use torro_ipc::assistant::Mode;
+use torro_ipc::mail::{BackupScope, BackupVerification};
 use torro_ipc::{API_VERSION, AccountInfo, Door, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_mail::MailSettings;
 use torro_mail_imap::discover::{LoginHint, MailDiscoverer, MailDiscovery};
@@ -88,6 +90,37 @@ pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: 
 fn start_setup(_section: Section) -> Result<(), String> {
     let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
     SystemLauncher.spawn(&setup_command(program)).map(|_| ()).map_err(|err| err.to_string())
+}
+
+/// A client may name only one ordinary ZIP in the core's managed backup folder. The app key may
+/// use a file-picker path. This is a provisional fixed folder until the per-account choice of MB.6.
+fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Response> {
+    let not_found =
+        || Response::Error { code: "not-found".into(), message: tr("Backup archive is not available.").into() };
+    if file.is_empty() {
+        return Err(not_found());
+    }
+    if matches!(reach, Reach::Suite) {
+        return Ok(PathBuf::from(file));
+    }
+    let path = Path::new(file);
+    if path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+        || path.extension().is_none_or(|extension| extension != "zip")
+    {
+        return Err(not_found());
+    }
+    let root = crate::mail::MailDirs::for_workplace().ok_or_else(not_found)?.data.join("backups");
+    let root = root.canonicalize().map_err(|_| not_found())?;
+    let path = root.join(file);
+    if !path.symlink_metadata().is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink()) {
+        return Err(not_found());
+    }
+    let path = path.canonicalize().map_err(|_| not_found())?;
+    if path.parent() != Some(root.as_path()) {
+        return Err(not_found());
+    }
+    Ok(path)
 }
 
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
@@ -3910,6 +3943,58 @@ impl Core {
                     Err(err) => err.response(),
                 }
             }
+            Request::MailBackupVerify { file, account } => match backup_file_for_verify(&file, reach) {
+                Ok(path) => {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let opened = std::fs::File::open(path).map_err(|_| None)?;
+                        torro_mail_backup::verify_archive(opened).map_err(Some)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(checked))
+                            if torro_mail::account_id(&checked.account).ok().as_deref() == Some(account.as_str()) =>
+                        {
+                            Response::MailBackupVerified {
+                                verification: BackupVerification {
+                                    source: match checked.source {
+                                        torro_mail_backup::format::Source::Server => BackupScope::Server,
+                                        torro_mail_backup::format::Source::Local => BackupScope::Local,
+                                    },
+                                    since: checked.since,
+                                    started_at: checked.started_at,
+                                    finished_at: checked.finished_at,
+                                    complete: checked.complete,
+                                    folders: checked.folders,
+                                    messages: checked.messages,
+                                    bytes: checked.bytes,
+                                    warnings: checked.warnings,
+                                },
+                            }
+                        }
+                        Ok(Ok(_)) => Response::Error {
+                            code: "not-found".into(),
+                            message: tr("Backup archive is not available for this account.").into(),
+                        },
+                        Ok(Err(None)) => Response::Error {
+                            code: "not-found".into(),
+                            message: tr("Backup archive is not available.").into(),
+                        },
+                        Ok(Err(Some(_))) | Err(_) => Response::Error {
+                            code: "error".into(),
+                            message: tr("Backup archive failed verification.").into(),
+                        },
+                    }
+                }
+                Err(response) => response,
+            },
+            Request::MailBackupCreate { .. }
+            | Request::MailBackupStatus { .. }
+            | Request::MailBackupCancel { .. }
+            | Request::MailRestorePlan { .. }
+            | Request::MailRestoreApply { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: tr("Mail backup or restore is not available yet.").into(),
+            },
             // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
@@ -8258,6 +8343,73 @@ mod tests {
             Response::Error { code, .. } => code,
             other => panic!("expected an error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn backup_verify_paths_are_confined_for_client_keys() {
+        let rights = RightsTemplate::FullAccess.rights();
+        let reach = Reach::Client(&rights);
+        for file in ["/tmp/archive.zip", "../archive.zip", "sub/archive.zip", "archive.eml", ""] {
+            assert_eq!(code(&backup_file_for_verify(file, reach).expect_err(file)), "not-found", "{file}");
+        }
+        let selected = tempfile::tempdir().expect("selected file directory").path().join("archive.zip");
+        assert_eq!(backup_file_for_verify(selected.to_str().expect("UTF-8 test path"), Reach::Suite), Ok(selected));
+    }
+
+    #[tokio::test]
+    async fn backup_verify_reports_a_missing_selected_file() {
+        let dir = tempfile::tempdir().expect("test directory");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let missing = dir.path().join("missing.zip");
+        let answer = ask(
+            &core,
+            Some(&app_key),
+            Request::MailBackupVerify {
+                file: missing.to_string_lossy().into_owned(),
+                account: "mail:anna@example.org".into(),
+            },
+        )
+        .await;
+        assert_eq!(code(&answer), "not-found");
+    }
+
+    #[tokio::test]
+    async fn backup_verify_checks_a_selected_portable_zip() {
+        let dir = tempfile::tempdir().expect("test directory");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let archive = dir.path().join("mail.zip");
+        std::fs::write(&archive, include_bytes!("../../torro-mail-backup/tests/fixtures/sample-v1.zip"))
+            .expect("write portable archive");
+        let answer = ask(
+            &core,
+            Some(&app_key),
+            Request::MailBackupVerify {
+                file: archive.to_string_lossy().into_owned(),
+                account: "mail:anna@example.org".into(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                &answer,
+                Response::MailBackupVerified {
+                    verification: BackupVerification { complete: true, messages: 1, bytes: 57, .. }
+                }
+            ),
+            "{answer:?}"
+        );
+        let other = ask(
+            &core,
+            Some(&app_key),
+            Request::MailBackupVerify {
+                file: archive.to_string_lossy().into_owned(),
+                account: "mail:bob@example.org".into(),
+            },
+        )
+        .await;
+        assert_eq!(code(&other), "not-found");
     }
 
     #[tokio::test]

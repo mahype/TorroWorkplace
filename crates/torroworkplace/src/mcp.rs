@@ -1424,6 +1424,30 @@ mod tests {
     }
 
     #[test]
+    fn backup_verify_is_the_only_active_backup_tool_in_the_first_slice() {
+        let request = request_for(
+            "mail_backup_verify",
+            args(json!({"file": "anna-2026.zip", "account": "mail:anna@example.org"})),
+            &Utc,
+        );
+        assert_eq!(
+            request,
+            Ok(Request::MailBackupVerify { file: "anna-2026.zip".into(), account: "mail:anna@example.org".into() })
+        );
+        let names: BTreeSet<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
+        assert!(names.contains("mail_backup_verify"));
+        for pending in [
+            "mail_backup_create",
+            "mail_backup_status",
+            "mail_backup_cancel",
+            "mail_restore_plan",
+            "mail_restore_apply",
+        ] {
+            assert!(!names.contains(pending));
+        }
+    }
+
+    #[test]
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);
         assert_eq!(zoom, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: json!(1.25) }));

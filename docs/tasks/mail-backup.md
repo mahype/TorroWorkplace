@@ -14,10 +14,12 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
 
 ### MB.1 Archivvertrag und API-Grundlage
 
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.3, M2.7 · **Dateien:** `Cargo.toml`, `Cargo.lock`,
   neu `crates/torro-mail-backup/{Cargo.toml,src/lib.rs,src/format.rs,tests/fixtures/**}`,
-  `crates/torro-ipc/src/{lib,api,mail}.rs`, `crates/torroworkplace/src/{core,mcp}.rs`,
+  `crates/torro-ipc/src/{lib,api,mail}.rs`, `crates/torroworkplace/Cargo.toml`,
+  `crates/torroworkplace/src/{core,mcp,pim,audit,daemon}.rs`,
+  `crates/torro-core/src/i18n/de.rs`,
   `docs/{mail-backup,api,api-reference}.md`
 - Versioniertes Manifest, sichere Archivpfade und Quoten festlegen. Eine kleine anonyme
   Beispielstruktur dokumentieren und mit Schema-/Serde-Tests prüfen. Dateiname und

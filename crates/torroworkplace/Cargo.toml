@@ -33,6 +33,7 @@ torro-ntfy.workspace = true
 # Mail accounts (task M2.1 sets them up for M2.2 to M3.3).
 torro-mail.workspace = true
 torro-mail-imap.workspace = true
+torro-mail-backup.workspace = true
 torro-ipc.workspace = true
 torro-tui.workspace = true
 torro-wm.workspace = true

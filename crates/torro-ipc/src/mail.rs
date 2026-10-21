@@ -9,12 +9,91 @@
 //! checked before anything is read); `Rights::outbound` decides whether `mail.send_draft` runs,
 //! waits for a person, or is `forbidden`.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_mail::{DraftAttachment, Folder, Role};
 
 use crate::{Request, Response};
+
+/// Which complete original messages a backup reads. `Local` never fetches missing bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupScope {
+    Server,
+    Local,
+}
+
+/// What the background backup job is currently doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupPhase {
+    Queued,
+    Counting,
+    Reading,
+    Verifying,
+    Complete,
+    Incomplete,
+    Cancelled,
+}
+
+/// Progress and final result of one backup job; `archive` is an opaque name in the allowed folder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupJob {
+    pub id: String,
+    pub account: String,
+    pub source: BackupScope,
+    pub phase: BackupPhase,
+    pub folders: u64,
+    pub messages: u64,
+    pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Offline verification result for an archive. Counts include folder occurrences of messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupVerification {
+    pub source: BackupScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<NaiveDate>,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+    pub complete: bool,
+    pub folders: u64,
+    pub messages: u64,
+    pub bytes: u64,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Read-only estimate of what a restore would do at the time of the test run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestorePlan {
+    pub id: String,
+    pub account: String,
+    pub complete_archive: bool,
+    pub folders_to_create: u64,
+    pub messages_to_add: u64,
+    pub already_present: u64,
+    pub uncertain: u64,
+    pub bytes_to_add: u64,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+/// Verified outcome of a real restore; uncertain entries must be investigated before retrying.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreResult {
+    pub added: u64,
+    pub skipped: u64,
+    pub uncertain: u64,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
 
 /// At most this many messages in one call (`ids` of `mail.set_flags`, `mail.move_messages`,
 /// `mail.delete_messages`).
@@ -321,6 +400,14 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         return refuse(format!("an id, folder, cursor or attachment part may hold at most {MAX_ID_BYTES} bytes"));
     }
     match request {
+        Request::MailBackupCreate { file_name: Some(file_name), .. }
+            if file_name.is_empty()
+                || file_name.starts_with('.')
+                || !file_name.ends_with(".zip")
+                || file_name.chars().any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | ':')) =>
+        {
+            refuse("backup file_name must be a plain .zip base name".into())
+        }
         Request::SetMailFlags { ids, .. } | Request::MoveMail { ids, .. } | Request::DeleteMail { ids, .. } => {
             if ids.is_empty() {
                 return refuse("name at least one message in ids".into());
@@ -363,6 +450,10 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
         Request::SearchMail { folder, cursor, .. } => folder.iter().chain(cursor).map(String::as_str).collect(),
         Request::MoveMail { to: MoveTarget::Folder(folder), .. } => vec![folder],
         Request::GetMailAttachment { attachment, .. } => vec![attachment],
+        Request::MailBackupCreate { file_name, .. } => file_name.iter().map(String::as_str).collect(),
+        Request::MailBackupStatus { job, .. } | Request::MailBackupCancel { job, .. } => vec![job],
+        Request::MailBackupVerify { file, .. } | Request::MailRestorePlan { file, .. } => vec![file],
+        Request::MailRestoreApply { plan, .. } => vec![plan],
         Request::SaveDraft { draft } => draft
             .attachments
             .iter()
@@ -394,6 +485,12 @@ impl Request {
             | Request::MailCacheJobStatus { account }
             | Request::ControlMailCacheJob { account, .. } => Some(account),
             Request::SetMailCachePolicy { policy } => Some(&policy.account),
+            Request::MailBackupCreate { account, .. }
+            | Request::MailBackupStatus { account, .. }
+            | Request::MailBackupCancel { account, .. }
+            | Request::MailBackupVerify { account, .. }
+            | Request::MailRestorePlan { account, .. }
+            | Request::MailRestoreApply { account, .. } => Some(account.as_str()),
             Request::SaveDraft { draft } => Some(draft.account.as_str()),
             _ => None,
         }
@@ -468,6 +565,15 @@ mod tests {
         assert!(refused(&search(10, Some("x".repeat(MAX_QUERY_CHARS + 1)))));
         assert_eq!(limit_refusal(&Request::Ping), None);
 
+        for file_name in ["../escape.zip", "sub/archive.zip", "sub\\archive.zip", ".hidden.zip", "archive.txt"] {
+            assert!(refused(&Request::MailBackupCreate {
+                account: "mail:anna@example.org".into(),
+                source: BackupScope::Server,
+                since: None,
+                file_name: Some(file_name.into()),
+            }));
+        }
+
         let long = "m".repeat(MAX_ID_BYTES + 1);
         assert!(refused(&Request::GetMail { id: long.clone(), include_body: true, include_html: false }));
         assert!(refused(&Request::GetMailAttachment { id: "m:1".into(), attachment: long.clone() }));
@@ -528,6 +634,8 @@ mod tests {
         assert_eq!(search(10, None).mail_account(), None);
         let status = Request::MailIndexStatus { account: Some("mail:anna@example.org".into()) };
         assert_eq!((status.mail_account(), status.message_ids().len()), (Some("mail:anna@example.org"), 0));
+        let archive = Request::MailBackupVerify { file: "backup.zip".into(), account: "mail:anna@example.org".into() };
+        assert_eq!((archive.mail_account(), archive.message_ids().len()), (Some("mail:anna@example.org"), 0));
         let get = Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() };
         assert_eq!(get.message_ids(), ["m:1"]);
         assert!(Request::Accounts.message_ids().is_empty() && Request::Accounts.mail_account().is_none());

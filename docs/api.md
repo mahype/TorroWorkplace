@@ -182,6 +182,28 @@ Die Stufe hängt teils vom Request ab (`Request::operation()`):
 - `respond_to_invitation` (E8.3b, ¹⁶) verschickt eine Antwort an den Organisator und gilt darum wie
   `send_draft`: `Write` und „Nach außen“ (`Command::is_outbound`).
 
+**Mail-Backup #267 (MB.1):** `mail.backup_verify` ist bereits ein nutzbarer Offline-Befehl
+mit `Read` auf `mail` und einem explizit freigegebenen `account`. Vor dem Öffnen prüft der
+Dienst die Kontenreichweite. Mit App-Schlüssel kann `file` ein vom Dateidialog gewählter
+Pfad sein. Script- und Agentenschlüssel dürfen nur den einfachen Namen einer `.zip`-Datei
+im verwalteten Mail-Backup-Ordner übergeben (`<Mail-Daten>/backups`); Unterordner,
+absolute Pfade, Symlinks und andere Endungen liefern `not-found`. Der Inhalt wird ohne
+Extraktion und ohne Netzwerk gegen Manifest, SHA-256-Liste und EML-Hashes geprüft. Die
+Antwort nennt Quelle, Datumsgrenze, Start/Ende, `complete`, Ordner, Mails, Bytes und Warnungen, nie Mailinhalte oder
+Zugangsdaten. Ein gültiges Archiv eines anderen Kontos liefert ebenfalls `not-found`.
+Die externe Verfügbarkeit des gewählten Archivs ist Sache des Speicherorts; der Dienst
+verspricht nur eine Prüfung der Datei zum Zeitpunkt des Aufrufs.
+
+`mail.backup_create` (`Write`), `mail.backup_status` (`Read`),
+`mail.backup_cancel` (`Write`), `mail.restore_plan` (`Read`) und
+`mail.restore_apply` (`Admin`, mit gesonderter Freigabe für das Zielkonto) haben bereits
+versionierte Request- und Antworttypen. Bis die jeweiligen Engines in MB.2–MB.5
+fertig sind, antwortet der Kern mit `unsupported`; sie sind deshalb vorläufig keine
+MCP-Tools. Die CLI und Mail-Kontoeinstellungen folgen in MB.6. Ein Client kann keinen
+beliebigen Ausgabe- oder Restore-Pfad setzen; `file_name` ist nur ein Basisname im
+verwalteten Ordner. Die Rechte und das Zielkonto werden vor Datei- oder Serverzugriff
+geprüft. Der Restore-Testlauf wird ohne lokale oder IMAP-Schreibzugriffe implementiert.
+
 Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
 100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst
 `error`, bevor jemand gefragt wird (`torro_ipc::mail::limit_refusal`). `update_mail_account` mit

@@ -2101,6 +2101,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("signature \"{start}\"", "Signatur „{start}“"),
     ("tasks", "Aufgaben"),
     ("{role} → \"{path}\"", "{role} → „{path}“"),
+    // Mail backup and restore (#267, MB.1)
+    ("Backup archive is not available.", "Das Backup-Archiv ist nicht verfügbar."),
+    ("Backup archive is not available for this account.", "Das Backup-Archiv ist für dieses Konto nicht verfügbar."),
+    ("Backup archive failed verification.", "Die Prüfung des Backup-Archivs ist fehlgeschlagen."),
+    ("Mail backup or restore is not available yet.", "Mail-Backup oder Wiederherstellung ist noch nicht verfügbar."),
     // Mail rights on the agents page (M3.4)
     ("Always", "Immer"),
     ("Ask me each time", "Jedes Mal fragen"),
