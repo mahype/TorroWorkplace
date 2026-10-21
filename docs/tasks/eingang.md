@@ -3798,6 +3798,64 @@ Alle Aufgaben fassen den Katalog oder dieselben Crates an und laufen nacheinande
   „Sort again“ schickt `again: true`. Oberflächentexte über `tr("…")`. Sichtprüfung mit Agent
   `torro-design-review` (schmal, mittel, breit, hell und dunkel). Übersetzungen in `de.rs`.
 
+## E16 Lesestatus in Mail-Listen (Issue #270, Plan 2026-10-21)
+
+Gewählt ist der blaue Punkt links vom Avatar aus Variante A des
+[Lesestatus-Mockups](../prototypes/inbox/mail-lesestatus.html). Die vorhandenen
+Innenabstände nehmen den Punkt auf; Avatar, Textbeginn, Zeilen- und Kartenmaße ändern sich beim
+Lesen nicht. Regeln: [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche:
+Skill `torro-design`. Der Lesestatus kommt weiter aus `Item::state` bzw. `Flag::Seen`; keine neue
+Schnittstelle, kein Request, kein Katalogeintrag und kein MCP-Tool.
+
+```text
+E16.1 semantische Farbe ── E16.2 Mail-Zeilen und -Karten
+```
+
+### E16.1 Eigenen Farbwert für ungelesene Mail einführen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
+  `crates/torro-core/src/design/{scheme,rules}.rs`, `crates/torro-gui/src/theme.rs`,
+  `color-schemes/*/color-scheme.toml` (nur wo nötig), `docs/design-pakete.md`
+- `Palette::unread` als eigenständigen blauen Statuswert in Kern und GUI einführen; Standardwerte
+  `#66A3FF` (dunkel) und `#2563D8` (hell) festlegen. `scheme::PALETTE_KEYS` und `Palette::slot_mut` erlauben einen
+  optionalen Paketwert; ohne ihn gilt der Standardwert. Kalender-, Diagramm-, Kategorie-, Fokus-
+  und Markenfarben bleiben ihren Rollen vorbehalten.
+- `rules::colours` prüft `unread` mit mindestens 3:1 gegen `panel`, `hover`, `selected` und `raised`
+  (Zeilen und Karten). Die gelieferten Farbschemata laden und nur diejenigen mit unzureichendem
+  Kontrast um einen eigenen blauen Wert ergänzen. Die Paketspezifikation nennt Rolle, Fallback und
+  Kontrastregel; ältere eigene Farbschemata mit abweichenden Flächen können einen eigenen Wert
+  benötigen.
+- **Abnahme:** Unit-Tests für beide Standardmodi, optionalen Paketwert und Ablehnung zu schwacher
+  Werte; `the_shipped_colour_schemes_stay_valid` besteht mit sämtlichen mitgelieferten Schemata.
+
+### E16.2 Punkt links und stabile Typografie in allen Mail-Ansichten
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E16.1 · **Dateien:** `crates/torroinbox/src/{list,mail,hub}.rs`,
+  `crates/torro-gui/src/widgets.rs` (Kartenkopf mit wählbarer Schriftstufe)
+- `list::avatar` zeichnet nur noch Initialen und Kontofläche; den Parameter `new` aus Signatur und
+  Aufrufern entfernen. Die Mail-Zeile zeichnet den 8px-Punkt (`space::s()`) im linken Innenabstand
+  von `list::sized_row` über einen neuen Parameter `unread: bool`, mit reserviertem Platz auch im
+  gelesenen Zustand. `entry_row`, `mail::message_row` und `hub::entry_row` liefern den Status;
+  `notifications::entry_row` bleibt eine normale Hinweiszeile. Falls ein eigenes Design weniger
+  linken Innenabstand hat, wird der nötige Platz für beide Zustände gleichermaßen reserviert.
+- `list::mail_content` setzt Absender und Betreff nur bei ungelesener Mail kräftig. Der Absender
+  behält für beide Gewichte dieselbe, mit `body_strong` berechnete Zellenbreite, damit Domain, Zeit
+  und Metadaten nicht horizontal springen. Vorschau, Trefferhervorhebung und Kontopunkt behalten
+  ihre bisherigen Rollen.
+- `list::mail_card` und `hub::sort_card` zeichnen den Punkt links im Karteninnenabstand, ohne den
+  Inhalt oder die Breitenrechnung (`card_inner`, `preview_lines`) zu ändern. Für den Kartentitel
+  erlaubt `widgets::card_head_with_level` zusätzlich zu `card_head` `body` bei gelesen und `body_strong` bei
+  ungelesen, ohne andere Kartenköpfe umzuschalten. `list::mail_card_height` und die Zeilenhöhe
+  bleiben unverändert. Klicks, Auswahlrahmen und rechter Mausklick funktionieren trotz Punkt.
+- **Abnahme:** Bestehende Tests für Öffnen/`Flag::Seen` und manuelles Zurücksetzen bestehen; neue
+  gezielte Tests decken Statusableitung, feste Breiten und Höhen sowie die Karten-Vorschau ab.
+  Sichtprüfung mit `torro-design-review`: hell/dunkel, schmal/breit, Standard und mitgelieferte
+  Designs/Farbschemata, Zeile und Karte, ausgewählt/hover/Mehrfachauswahl. Punkt verschwindet beim
+  Öffnen sofort und erscheint nach „Mark unread“ wieder; andere Inhalte verrutschen nicht.
+  Abschließend `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace` und `TORRO_LANG=de cargo test --workspace`; vor dem PR zusätzlich
+  `scripts/ci-local.sh`.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur
