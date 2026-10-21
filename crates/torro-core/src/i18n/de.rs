@@ -2119,6 +2119,46 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Local mail headers without an original were omitted.",
         "Lokale Mail-Einträge ohne vollständiges Original wurden ausgelassen:",
     ),
+    // Restore plan and journal (#267, MB.5)
+    (
+        "This archive is incomplete; restoring it needs separate confirmation.",
+        "Dieses Archiv ist unvollständig; die Wiederherstellung muss gesondert bestätigt werden.",
+    ),
+    ("Restore will create folder:", "Die Wiederherstellung legt diesen Ordner an:"),
+    ("Nontransferable IMAP flags will be omitted:", "Nicht übertragbare IMAP-Markierungen werden ausgelassen:"),
+    (
+        "Existing mail has different date or flags; it will not be changed:",
+        "Vorhandene Mails mit anderem Datum oder anderen Markierungen bleiben unverändert:",
+    ),
+    (
+        "Some destination folders cannot be read or selected.",
+        "Einige Zielordner können nicht gelesen oder ausgewählt werden.",
+    ),
+    (
+        "An earlier mail upload is unconfirmed; inspect the target before retrying.",
+        "Ein früherer Mail-Upload ist unbestätigt; prüfe das Ziel vor einem erneuten Versuch.",
+    ),
+    (
+        "Mail upload was not confirmed; the restore journal prevents an automatic duplicate.",
+        "Der Mail-Upload wurde nicht bestätigt; das Wiederherstellungsjournal verhindert eine automatische Doppelung.",
+    ),
+    (
+        "Mail upload could not be checked; the restore journal prevents an automatic duplicate.",
+        "Der Mail-Upload konnte nicht geprüft werden; das Wiederherstellungsjournal verhindert eine automatische Doppelung.",
+    ),
+    (
+        "Confirm restoring this incomplete archive first.",
+        "Bestätige zuerst die Wiederherstellung dieses unvollständigen Archivs.",
+    ),
+    (
+        "The archive or target changed. Run the restore test again.",
+        "Archiv oder Ziel haben sich geändert. Starte den Wiederherstellungstest erneut.",
+    ),
+    ("Restore plan is no longer available.", "Der Wiederherstellungsplan ist nicht mehr verfügbar."),
+    (
+        "Mail restore could not be completed; check the archive and target account.",
+        "Die Mail-Wiederherstellung konnte nicht abgeschlossen werden. Prüfe Archiv und Zielkonto.",
+    ),
     // Mail rights on the agents page (M3.4)
     ("Always", "Immer"),
     ("Ask me each time", "Jedes Mal fragen"),

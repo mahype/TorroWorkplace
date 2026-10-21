@@ -81,8 +81,23 @@ pub struct RestorePlan {
     pub already_present: u64,
     pub uncertain: u64,
     pub bytes_to_add: u64,
+    /// Exact archive-to-target folder mapping and counts for the review table.
+    #[serde(default)]
+    pub folders: Vec<RestoreFolderPlan>,
     #[serde(default)]
     pub warnings: Vec<String>,
+}
+
+/// One folder row of a read-only restore test run. Paths are descriptive data, never ZIP paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreFolderPlan {
+    pub archive_path: String,
+    pub target_path: String,
+    pub create: bool,
+    pub messages_to_add: u64,
+    pub already_present: u64,
+    pub uncertain: u64,
+    pub bytes_to_add: u64,
 }
 
 /// Verified outcome of a real restore; uncertain entries must be investigated before retrying.
@@ -547,6 +562,17 @@ mod tests {
 
     fn refused(request: &Request) -> bool {
         matches!(limit_refusal(request), Some(Response::Error { code, .. }) if code == "error")
+    }
+
+    #[test]
+    fn restore_folder_rows_are_optional_for_older_plan_responses() {
+        let old = serde_json::json!({
+            "id": "plan-1", "account": "mail:anna@example.org", "complete_archive": true,
+            "folders_to_create": 0, "messages_to_add": 1, "already_present": 0,
+            "uncertain": 0, "bytes_to_add": 57, "warnings": []
+        });
+        let plan: RestorePlan = serde_json::from_value(old).expect("older plan response");
+        assert!(plan.folders.is_empty());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Portable, versioned mail backup archives shared by the daemon's backup and restore paths.
 
 pub mod format;
+pub mod restore;
 mod verify;
 pub mod writer;
 

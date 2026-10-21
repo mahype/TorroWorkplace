@@ -1424,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn backup_verify_is_the_only_active_backup_tool_in_the_first_slice() {
+    fn backup_verify_and_restore_tools_map_to_their_scoped_requests() {
         let request = request_for(
             "mail_backup_verify",
             args(json!({"file": "anna-2026.zip", "account": "mail:anna@example.org"})),
@@ -1436,13 +1436,29 @@ mod tests {
         );
         let names: BTreeSet<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
         assert!(names.contains("mail_backup_verify"));
-        for pending in [
-            "mail_backup_create",
-            "mail_backup_status",
-            "mail_backup_cancel",
-            "mail_restore_plan",
-            "mail_restore_apply",
-        ] {
+        assert!(names.contains("mail_restore_plan"));
+        assert!(names.contains("mail_restore_apply"));
+        assert_eq!(
+            request_for(
+                "mail_restore_plan",
+                args(json!({"file": "anna-2026.zip", "account": "mail:anna@example.org"})),
+                &Utc
+            ),
+            Ok(Request::MailRestorePlan { file: "anna-2026.zip".into(), account: "mail:anna@example.org".into() })
+        );
+        assert_eq!(
+            request_for(
+                "mail_restore_apply",
+                args(json!({"plan": "plan-1", "account": "mail:anna@example.org", "allow_incomplete": false})),
+                &Utc
+            ),
+            Ok(Request::MailRestoreApply {
+                plan: "plan-1".into(),
+                account: "mail:anna@example.org".into(),
+                allow_incomplete: false
+            })
+        );
+        for pending in ["mail_backup_create", "mail_backup_status", "mail_backup_cancel"] {
             assert!(!names.contains(pending));
         }
     }

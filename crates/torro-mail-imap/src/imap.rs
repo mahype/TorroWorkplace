@@ -795,6 +795,35 @@ impl Session {
         Ok(appended.flatten())
     }
 
+    /// APPEND an archived EML without buffering it as one `Vec`, retaining its original
+    /// INTERNALDATE and every transferable flag/keyword. `input` must provide exactly `bytes`.
+    pub async fn append_backup<R: io::Read + Send>(
+        &mut self,
+        path: &str,
+        input: &mut R,
+        bytes: u64,
+        flags: &[String],
+        internal_date: Option<DateTime<FixedOffset>>,
+    ) -> Result<Option<AppendUid>, ImapError> {
+        if flags.iter().any(|flag| !backup_flag_transferable(flag)) {
+            return Err(ImapError::Protocol("archive holds a nontransferable IMAP flag".into()));
+        }
+        let date = internal_date.map(|date| date.format("%d-%b-%Y %H:%M:%S %z").to_string());
+        let reply = self.wire.append_stream(path, input, bytes, flags, date.as_deref()).await?;
+        if reply.outcome.status != Status::Ok {
+            return Err(refused(&reply.outcome, "APPEND"));
+        }
+        Ok((reply.outcome.code_name() == Some("APPENDUID"))
+            .then(|| {
+                let mut numbers = reply.outcome.code_args().split_whitespace().map(str::parse::<u32>);
+                match (numbers.next(), numbers.next()) {
+                    (Some(Ok(uid_validity)), Some(Ok(uid))) => Some(AppendUid { uid_validity, uid }),
+                    _ => None,
+                }
+            })
+            .flatten())
+    }
+
     /// Waits up to `max` for the server to report a change in the open folder (`IDLE`, then
     /// `DONE`). On servers without IDLE it sleeps for `max` and asks with `NOOP`. The session is
     /// usable again afterwards. See [`Session`] for what dropping the future does.
@@ -981,6 +1010,18 @@ fn flag_atom(flag: Flag) -> &'static str {
         Flag::Flagged => "\\Flagged",
         Flag::Answered => "\\Answered",
     }
+}
+
+/// Flags safe to send as IMAP atoms in a restore. `\Recent` is server-owned and `\Deleted`
+/// could expunge a restored message; unsupported system flags are reported and omitted.
+pub fn backup_flag_transferable(flag: &str) -> bool {
+    if flag.starts_with('\\') {
+        return matches!(flag, "\\Seen" | "\\Answered" | "\\Flagged" | "\\Draft");
+    }
+    !flag.is_empty()
+        && flag.bytes().all(|byte| {
+            (0x21..=0x7e).contains(&byte) && !matches!(byte, b'(' | b')' | b'{' | b'%' | b'*' | b'"' | b'\\' | b']')
+        })
 }
 
 /// The suite's flags in a `FLAGS (…)` list, and whether `\Deleted` is among them.
@@ -1582,6 +1623,67 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Wire<S> {
         line.extend_from_slice(b"\r\n");
         self.write(&line).await?;
         let outcome = self.finish(&tag, &mut data, logout).await?;
+        Ok(Reply { data, outcome })
+    }
+
+    /// The restore variant of APPEND: writes the literal from a `Read` source in bounded blocks.
+    async fn append_stream<R: io::Read + Send>(
+        &mut self,
+        path: &str,
+        input: &mut R,
+        bytes: u64,
+        flags: &[String],
+        internal_date: Option<&str>,
+    ) -> Result<Reply, ImapError> {
+        if path.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0)) {
+            return Err(ImapError::Protocol("a folder name holds a line break".into()));
+        }
+        let tag = self.start()?;
+        let mut data = Vec::new();
+        let mut line = format!("{tag} APPEND ").into_bytes();
+        if path.bytes().all(|byte| (0x20..0x7f).contains(&byte)) {
+            line.push(b'"');
+            for byte in path.bytes() {
+                if matches!(byte, b'"' | b'\\') {
+                    line.push(b'\\');
+                }
+                line.push(byte);
+            }
+            line.push(b'"');
+        } else {
+            line.extend_from_slice(format!("{{{}}}\r\n", path.len()).as_bytes());
+            self.write(&line).await?;
+            line.clear();
+            if let Some(outcome) = self.await_continue(&tag, &mut data).await? {
+                self.busy = false;
+                return Ok(Reply { data, outcome });
+            }
+            self.write(path.as_bytes()).await?;
+        }
+        if !flags.is_empty() {
+            line.extend_from_slice(format!(" ({})", flags.join(" ")).as_bytes());
+        }
+        if let Some(date) = internal_date {
+            line.extend_from_slice(format!(" \"{date}\"").as_bytes());
+        }
+        line.extend_from_slice(format!(" {{{bytes}}}\r\n").as_bytes());
+        self.write(&line).await?;
+        if let Some(outcome) = self.await_continue(&tag, &mut data).await? {
+            self.busy = false;
+            return Ok(Reply { data, outcome });
+        }
+        let mut left = bytes;
+        let mut chunk = [0u8; LITERAL_CHUNK];
+        while left > 0 {
+            let count = left.min(LITERAL_CHUNK as u64) as usize;
+            input
+                .read_exact(&mut chunk[..count])
+                .map_err(|_| ImapError::Offline("restore source ended during APPEND".into()))?;
+            self.write(&chunk[..count]).await?;
+            left -= count as u64;
+        }
+        self.write(b"\r\n").await?;
+        let outcome = self.finish(&tag, &mut data, false).await?;
         Ok(Reply { data, outcome })
     }
 

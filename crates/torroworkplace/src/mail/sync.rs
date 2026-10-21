@@ -582,7 +582,7 @@ fn unreadable() -> ReadMessage {
 /// fixed script, so a sync can run against it as against a real server: sign-in (`LOGIN`), `LIST`
 /// with SPECIAL-USE, `SELECT` with CONDSTORE, `UID SEARCH`, `UID FETCH` (headers, flags with
 /// `CHANGEDSINCE`, whole messages), `IDLE` with push, `NOOP`, `LOGOUT`, and for the mail commands
-/// (task M3.2) `STATUS`, `APPEND`, `UID STORE`, `UID COPY` and `EXPUNGE` (no MOVE, no UIDPLUS: the
+/// (task M3.2) `STATUS`, `CREATE`, `APPEND`, `UID STORE`, `UID COPY` and `EXPUNGE` (no MOVE, no UIDPLUS: the
 /// client takes its fallbacks). Tests change the world
 /// ([`FakeImap::add`], [`FakeImap::set_flags`], …) and cut connections; idling clients hear of
 /// every change.
@@ -678,6 +678,7 @@ pub(crate) mod fake {
         /// Counts cuts; every open connection ends on one.
         cuts: watch::Sender<u64>,
         backup_change: Arc<Mutex<Option<(String, String)>>>,
+        drop_after_append: Arc<Mutex<bool>>,
     }
 
     impl FakeImap {
@@ -712,6 +713,7 @@ pub(crate) mod fake {
                 changes: watch::Sender::new(0),
                 cuts: watch::Sender::new(0),
                 backup_change: Arc::new(Mutex::new(None)),
+                drop_after_append: Arc::new(Mutex::new(false)),
             };
             let accepting = server.clone();
             tokio::spawn(async move {
@@ -762,6 +764,11 @@ pub(crate) mod fake {
         /// Injects an incoming message when the next backup body chunk is served.
         pub(crate) fn add_on_backup_chunk(&self, folder: &str, raw: &str) {
             *self.backup_change.lock().expect("backup change") = Some((folder.into(), raw.into()));
+        }
+
+        /// Store the next APPEND literal, then lose the connection before acknowledging it.
+        pub(crate) fn drop_after_next_append(&self) {
+            *self.drop_after_append.lock().expect("append cut") = true;
         }
 
         /// Sets the flags of message `uid` in `folder`, as another mail program would.
@@ -926,6 +933,7 @@ pub(crate) mod fake {
                         answer
                     }
                     "STATUS" => self.status(&tag, &quoted(&rest["STATUS ".len()..])),
+                    "CREATE" => self.create(&tag, &rest),
                     "EXPUNGE" => self.expunge_deleted(&tag, selected.as_deref()),
                     "APPEND" => match self.append(&mut reader, &mut writer, &tag, &rest).await {
                         Some(answer) => answer,
@@ -1027,6 +1035,29 @@ pub(crate) mod fake {
             )
         }
 
+        fn create(&self, tag: &str, rest: &str) -> String {
+            let path = quoted(&rest["CREATE ".len()..]);
+            if path.is_empty() {
+                return format!("{tag} BAD empty folder name");
+            }
+            let mut world = self.world();
+            if world.folders.iter().any(|folder| folder.path == path) {
+                return format!("{tag} NO [ALREADYEXISTS] folder exists");
+            }
+            let uidvalidity = world.folders.iter().map(|folder| folder.uidvalidity).max().unwrap_or(10) + 1;
+            world.folders.push(Folder {
+                path,
+                attributes: "\\HasNoChildren".into(),
+                uidvalidity,
+                next_uid: 1,
+                modseq: 1,
+                messages: Vec::new(),
+            });
+            drop(world);
+            self.changed();
+            format!("{tag} OK folder created")
+        }
+
         /// `APPEND "path" (flags) {n}`: asks for the literal, reads it and files it. `None` when
         /// the connection broke.
         async fn append<R, W>(&self, reader: &mut R, writer: &mut W, tag: &str, rest: &str) -> Option<String>
@@ -1043,6 +1074,12 @@ pub(crate) mod fake {
                 .and_then(|(_, after)| after.split_once(')'))
                 .map(|(list, _)| list.split_whitespace().map(str::to_string).collect())
                 .unwrap_or_default();
+            let received = arguments
+                .rsplit_once("\" {")
+                .and_then(|(prefix, _)| prefix.rsplit_once('"'))
+                .and_then(|(_, date)| DateTime::parse_from_str(date, "%d-%b-%Y %H:%M:%S %z").ok())
+                .map(|date| date.with_timezone(&Utc))
+                .unwrap_or_else(Utc::now);
             write(writer, "+ go ahead").await.ok()?;
             let mut raw = vec![0u8; size];
             reader.read_exact(&mut raw).await.ok()?;
@@ -1057,9 +1094,12 @@ pub(crate) mod fake {
                 let uid = folder.next_uid;
                 folder.next_uid += 1;
                 folder.modseq = modseq;
-                folder.messages.push(Message { uid, flags, modseq, raw, received: Utc::now(), withheld: false });
+                folder.messages.push(Message { uid, flags, modseq, raw, received, withheld: false });
             }
             self.changed();
+            if std::mem::take(&mut *self.drop_after_append.lock().expect("append cut")) {
+                return None;
+            }
             Some(format!("{tag} OK APPEND completed"))
         }
 

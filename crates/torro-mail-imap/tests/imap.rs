@@ -12,7 +12,7 @@ use imap_support::{Server, Step, expect, send, serve, trust};
 use torro_core::account::Secret;
 use torro_mail::{Flag, Role, Security};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
-use torro_mail_imap::imap::{AppendUid, IdleEvent, ImapError, Search, Session};
+use torro_mail_imap::imap::{AppendUid, IdleEvent, ImapError, Search, Session, backup_flag_transferable};
 
 const LOGIN: &str = "anna@example.org";
 const PASSWORD: &str = "hunter2";
@@ -78,6 +78,53 @@ async fn backup_reads_exact_original_in_read_only_bounded_parts() {
     assert_eq!(original, b"ABCDEFGHI");
     let received = server.received().await;
     assert!(!received.iter().any(|line| line.contains("SELECT ") || line.contains("STORE ")));
+}
+
+#[tokio::test]
+async fn restore_append_streams_raw_bytes_with_date_and_keywords() {
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 APPEND \"INBOX\" (\\Seen $Work) \"20-Oct-2026 09:00:00 -0700\" {9}"),
+        send("+ ready"),
+        Step::Literal(9),
+        expect(""),
+        send("a2 OK [APPENDUID 42 8] added"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let date = chrono::DateTime::parse_from_rfc3339("2026-10-20T09:00:00-07:00").expect("date");
+    let mut raw = std::io::Cursor::new(b"ABCDEFGHI");
+    let appended = session
+        .append_backup("INBOX", &mut raw, 9, &["\\Seen".into(), "$Work".into()], Some(date))
+        .await
+        .expect("appended");
+    assert_eq!(appended, Some(AppendUid { uid_validity: 42, uid: 8 }));
+    assert!(backup_flag_transferable("$Work"));
+    assert!(!backup_flag_transferable("\\Deleted"));
+    assert!(!backup_flag_transferable("bad flag"));
+}
+
+#[tokio::test]
+async fn restore_append_uses_a_mailbox_literal_for_unicode_names() {
+    let path = "Archiv/Grüße";
+    let mut steps = signed_in("");
+    steps.extend([
+        expect(&format!("a2 APPEND {{{}}}", path.len())),
+        send("+ mailbox"),
+        Step::Literal(path.len()),
+        expect(" (\\Seen) {4}"),
+        send("+ message"),
+        Step::Literal(4),
+        expect(""),
+        send("a2 OK stored"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let mut raw = std::io::Cursor::new(b"EML!".as_slice());
+    assert_eq!(session.append_backup(path, &mut raw, 4, &["\\Seen".into()], None).await.expect("append"), None);
+    let lines = server.received().await;
+    assert!(lines.iter().any(|line| line.contains("Archiv/Grüße")));
+    assert!(lines.iter().any(|line| line.contains("EML!")));
 }
 
 fn roles(list: &FolderList) -> Vec<(Role, &str, &str)> {

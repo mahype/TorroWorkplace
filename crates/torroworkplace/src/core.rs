@@ -43,7 +43,7 @@ use crate::audit::Audit;
 use crate::categorize;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
-use crate::mail::backup::{BackupJobs, BackupRunError};
+use crate::mail::backup::{BackupJobs, BackupRunError, RestorePlans};
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
@@ -122,6 +122,33 @@ fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Respo
         return Err(not_found());
     }
     Ok(path)
+}
+
+fn restore_error_response(error: BackupRunError) -> Response {
+    match error {
+        BackupRunError::Mail(error) => error.response(),
+        BackupRunError::Imap(torro_mail_imap::imap::ImapError::Auth(_)) => {
+            Response::Error { code: "auth".into(), message: tr("Password was refused").into() }
+        }
+        BackupRunError::Imap(torro_mail_imap::imap::ImapError::Offline(_)) => {
+            Response::Error { code: "offline".into(), message: tr("The server cannot be reached.").into() }
+        }
+        BackupRunError::Incomplete("incomplete restore archive was not confirmed") => Response::Error {
+            code: "conflict".into(),
+            message: tr("Confirm restoring this incomplete archive first.").into(),
+        },
+        BackupRunError::Incomplete(_) => Response::Error {
+            code: "conflict".into(),
+            message: tr("The archive or target changed. Run the restore test again.").into(),
+        },
+        BackupRunError::Archive(_) => {
+            Response::Error { code: "error".into(), message: tr("Backup archive failed verification.").into() }
+        }
+        _ => Response::Error {
+            code: "error".into(),
+            message: tr("Mail restore could not be completed; check the archive and target account.").into(),
+        },
+    }
 }
 
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
@@ -1685,6 +1712,7 @@ pub struct Core {
     mail: Arc<MailService>,
     /// Progress and cancellation for archive jobs in this core process.
     backup_jobs: BackupJobs,
+    restore_plans: RestorePlans,
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
@@ -1773,6 +1801,7 @@ impl Core {
             ntfy: Arc::new(NtfyAccounts::system()),
             mail,
             backup_jobs: BackupJobs::default(),
+            restore_plans: RestorePlans::default(),
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
             settle_done: crate::sources::settle_done,
@@ -4025,9 +4054,46 @@ impl Core {
                     Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
                 }
             },
-            Request::MailRestorePlan { .. } | Request::MailRestoreApply { .. } => Response::Error {
-                code: "unsupported".into(),
-                message: tr("Mail backup or restore is not available yet.").into(),
+            Request::MailRestorePlan { file, account } => match self.mail.config(&account).await {
+                Err(error) => error.response(),
+                Ok(_) => match backup_file_for_verify(&file, reach) {
+                    Err(response) => response,
+                    Ok(path) => match Box::pin(self.restore_plans.plan(&self.mail, file, &path, &account)).await {
+                        Ok(plan) => Response::MailRestorePlanned { plan },
+                        Err(error) => restore_error_response(error),
+                    },
+                },
+            },
+            Request::MailRestoreApply { plan, account, allow_incomplete } => match self.mail.config(&account).await {
+                Err(error) => error.response(),
+                Ok(_) => match self.restore_plans.file_for(&account, &plan) {
+                    None => Response::Error {
+                        code: "not-found".into(),
+                        message: tr("Restore plan is no longer available.").into(),
+                    },
+                    Some(file) => match backup_file_for_verify(&file, reach) {
+                        Err(response) => response,
+                        Ok(path) => match crate::mail::MailDirs::for_workplace() {
+                            None => Response::Error {
+                                code: "error".into(),
+                                message: tr("Mail cannot be kept on this device.").into(),
+                            },
+                            Some(dirs) => match Box::pin(self.restore_plans.apply(
+                                &self.mail,
+                                &dirs,
+                                &path,
+                                &account,
+                                &plan,
+                                allow_incomplete,
+                            ))
+                            .await
+                            {
+                                Ok(restore) => Response::MailRestored { restore },
+                                Err(error) => restore_error_response(error),
+                            },
+                        },
+                    },
+                },
             },
             // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
             // sees only, so an id of another account is `not-found` before anything is read.
@@ -8444,6 +8510,45 @@ mod tests {
         )
         .await;
         assert_eq!(code(&other), "not-found");
+    }
+
+    #[tokio::test]
+    async fn restore_plan_request_is_read_only_and_bound_to_its_account() {
+        use crate::account::github::tests::MemoryTokens;
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+
+        let dir = tempfile::tempdir().expect("test directory");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let archive = dir.path().join("mail.zip");
+        std::fs::write(&archive, include_bytes!("../../torro-mail-backup/tests/fixtures/sample-v1.zip"))
+            .expect("portable ZIP");
+        let answer = ask(
+            &core,
+            Some(&app_key),
+            Request::MailRestorePlan { file: archive.to_string_lossy().into_owned(), account: account.id.clone() },
+        )
+        .await;
+        assert!(matches!(answer, Response::MailRestorePlanned { plan } if plan.messages_to_add == 1));
+        let other = ask(
+            &core,
+            Some(&app_key),
+            Request::MailRestorePlan {
+                file: archive.to_string_lossy().into_owned(),
+                account: "mail:bob@example.org".into(),
+            },
+        )
+        .await;
+        assert_eq!(code(&other), "not-found");
+        assert!(!server.lines().iter().any(|line| line.contains(" APPEND ") || line.contains(" CREATE ")));
+        assert!(!dir.path().join("data/mail/restore-journals").exists());
     }
 
     #[tokio::test]

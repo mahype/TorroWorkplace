@@ -92,12 +92,16 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
 
 ### MB.5 Testlauf und echter Restore
 
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MB.3, MB.4 · **Dateien:**
-  `crates/torro-mail-backup/src/{verify,restore}.rs`,
+  `crates/torro-mail-backup/src/{lib,verify,restore}.rs`,
   `crates/torro-mail-imap/src/imap.rs`, `crates/torro-mail-imap/tests/{imap,imap_support/**}.rs`,
   `crates/torroworkplace/src/mail/{backup,mod}.rs`,
-  `crates/torroworkplace/src/{core,mcp}.rs`, `docs/{mail-backup,api}.md`
+  `crates/torroworkplace/src/{core,mcp}.rs`, `docs/{mail-backup,api}.md`.
+  **Technische Ergänzungen:** `crates/torro-core/src/i18n/de.rs` (Restore-Meldungen),
+  `crates/torroworkplace/src/mail/sync.rs` (CREATE/APPEND im IMAP-Testserver),
+  `crates/torro-ipc/src/{api,mail}.rs` (MCP-Freischaltung und strukturierte Ordnerdetails),
+  `docs/api-reference.md` (generierter Katalogabgleich).
 - Planen mit offline Integritätsprüfung und ausschließlich `EXAMINE`/read-only
   Zielabfragen; auch lokal kein Journal im Testlauf. Ordner-Mapping und Unklarheiten
   ausgeben. Echt: vor jeder Schreibphase erneut prüfen, fehlende Ordner erstellen,

@@ -3426,7 +3426,7 @@ static MAIL_RESTORE_PLAN: Command = Command {
     name: "mail.restore_plan",
     area: Area::Mail,
     access: Access::Read,
-    mcp: Mcp::Never,
+    mcp: Mcp::Tool,
     description: "Performs a read-only restore test run: checks the archive and target account, then reports additions, existing mail and uncertainty. It creates no folders, messages or local journal.",
 };
 
@@ -3434,7 +3434,7 @@ static MAIL_RESTORE_APPLY: Command = Command {
     name: "mail.restore_apply",
     area: Area::Mail,
     access: Access::Admin,
-    mcp: Mcp::Never,
+    mcp: Mcp::Tool,
     description: "Applies a prior restore plan to its target account, adding original messages and missing folders. It never deletes or overwrites existing mail. A client needs mail admin rights and a person's approval; allow_incomplete explicitly accepts an incomplete archive.",
 };
 
@@ -4621,8 +4621,6 @@ mod tests {
                         | "mail.backup_create"
                         | "mail.backup_status"
                         | "mail.backup_cancel"
-                        | "mail.restore_plan"
-                        | "mail.restore_apply"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.

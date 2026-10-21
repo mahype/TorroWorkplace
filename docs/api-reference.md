@@ -57,7 +57,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`tasks`](#tasks) | [`tasks.list_lists`](#taskslist_lists), [`tasks.list_todos`](#taskslist_todos), [`tasks.save_todo`](#taskssave_todo), [`tasks.delete_todo`](#tasksdelete_todo), [`tasks.move_todo`](#tasksmove_todo), [`tasks.create_todo_from_mail`](#taskscreate_todo_from_mail), [`tasks.create_list`](#taskscreate_list), [`tasks.add_link`](#tasksadd_link) |
 | [`github`](#github) | [`tasks.create_filter_list`](#taskscreate_filter_list), [`tasks.update_filter_list`](#tasksupdate_filter_list), [`tasks.delete_filter_list`](#tasksdelete_filter_list), [`tasks.preview_filter`](#taskspreview_filter), [`tasks.list_github_repos`](#taskslist_github_repos), [`tasks.describe_github_repo`](#tasksdescribe_github_repo), [`tasks.unpin_issue`](#tasksunpin_issue) |
 | [`inbox`](#inbox) | [`inbox.list_items`](#inboxlist_items), [`inbox.get_item`](#inboxget_item), [`inbox.open_item`](#inboxopen_item), [`inbox.create_task_from_item`](#inboxcreate_task_from_item), [`inbox.create_event_from_item`](#inboxcreate_event_from_item), [`inbox.suggest_task_from_item`](#inboxsuggest_task_from_item), [`inbox.suggest_event_from_item`](#inboxsuggest_event_from_item), [`inbox.list_sources`](#inboxlist_sources), [`inbox.post_item`](#inboxpost_item), [`inbox.resolve_items`](#inboxresolve_items), [`inbox.set_item_done`](#inboxset_item_done), [`inbox.snooze_item`](#inboxsnooze_item), [`inbox.set_item_lane`](#inboxset_item_lane), [`inbox.mute_source`](#inboxmute_source), [`inbox.list_categories`](#inboxlist_categories), [`inbox.set_item_category`](#inboxset_item_category), [`inbox.classify_item`](#inboxclassify_item), [`inbox.get_categorization`](#inboxget_categorization), [`inbox.catch_up_categories`](#inboxcatch_up_categories), [`inbox.preview_category_job`](#inboxpreview_category_job), [`inbox.start_category_job`](#inboxstart_category_job), [`inbox.get_category_job`](#inboxget_category_job), [`inbox.control_category_job`](#inboxcontrol_category_job), [`inbox.preview_clear_categories`](#inboxpreview_clear_categories), [`inbox.clear_categories`](#inboxclear_categories), [`inbox.control_clear_categories`](#inboxcontrol_clear_categories), [`inbox.create_category`](#inboxcreate_category), [`inbox.update_category`](#inboxupdate_category), [`inbox.remove_category`](#inboxremove_category), [`inbox.list_sort_rules`](#inboxlist_sort_rules), [`inbox.create_sort_rule`](#inboxcreate_sort_rule), [`inbox.update_sort_rule`](#inboxupdate_sort_rule), [`inbox.remove_sort_rule`](#inboxremove_sort_rule), [`inbox.move_sort_rule`](#inboxmove_sort_rule), [`inbox.hide_sender`](#inboxhide_sender), [`inbox.list_mute_options`](#inboxlist_mute_options), [`inbox.mute_item`](#inboxmute_item), [`inbox.list_rules`](#inboxlist_rules), [`inbox.remove_rule`](#inboxremove_rule), [`inbox.get_stats`](#inboxget_stats), [`inbox.get_quiet`](#inboxget_quiet) |
-| [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.account_stats`](#mailaccount_stats), [`mail.backup_create`](#mailbackup_create), [`mail.backup_status`](#mailbackup_status), [`mail.backup_cancel`](#mailbackup_cancel), [`mail.backup_verify`](#mailbackup_verify), [`mail.restore_plan`](#mailrestore_plan), [`mail.restore_apply`](#mailrestore_apply), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
+| [`mail`](#mail) | [`mail.list_folders`](#maillist_folders), [`mail.account_stats`](#mailaccount_stats), [`mail.get_cache_policy`](#mailget_cache_policy), [`mail.set_cache_policy`](#mailset_cache_policy), [`mail.preview_cache`](#mailpreview_cache), [`mail.start_cache_job`](#mailstart_cache_job), [`mail.cache_job_status`](#mailcache_job_status), [`mail.control_cache_job`](#mailcontrol_cache_job), [`mail.backup_create`](#mailbackup_create), [`mail.backup_status`](#mailbackup_status), [`mail.backup_cancel`](#mailbackup_cancel), [`mail.backup_verify`](#mailbackup_verify), [`mail.restore_plan`](#mailrestore_plan), [`mail.restore_apply`](#mailrestore_apply), [`mail.search_messages`](#mailsearch_messages), [`mail.index_status`](#mailindex_status), [`mail.get_message`](#mailget_message), [`mail.get_thread`](#mailget_thread), [`mail.get_attachment`](#mailget_attachment), [`mail.set_flags`](#mailset_flags), [`mail.move_messages`](#mailmove_messages), [`mail.delete_messages`](#maildelete_messages), [`mail.save_draft`](#mailsave_draft), [`mail.send_draft`](#mailsend_draft), [`mail.respond_to_invitation`](#mailrespond_to_invitation) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment) |
 | [`assistant`](#assistant) | [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.send_message`](#assistantsend_message), [`assistant.cancel`](#assistantcancel), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.confirm_bot`](#assistantconfirm_bot) |
@@ -1030,6 +1030,74 @@ Returns locally known message, read/unread, folder, body-cache and index counts,
 |---|---|---|---|
 | `account` | string | nein | Only this account; omitted for every mail account in reach. |
 
+### `mail.get_cache_policy`
+
+Zugriff `read` · MCP-Tool `mail_get_cache_policy`
+
+Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+
+### `mail.set_cache_policy`
+
+Zugriff `admin` · MCP-Tool `mail_set_cache_policy`
+
+Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `policy` | object | ja | Per-account local storage choice, persisted with the mail store. |
+| `policy.account` | string | ja |  |
+| `policy.attachment_retention_days` | integer | nein, Standard `1` | Attachment files are removed after this many days; 1 by default. |
+| `policy.mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+| `policy.prefetch_attachments` | boolean | nein, Standard `false` | Fetch attachment parts in advance, separately from message texts. |
+
+### `mail.preview_cache`
+
+Zugriff `read` · MCP-Tool `mail_preview_cache`
+
+Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+
+### `mail.start_cache_job`
+
+Zugriff `write` · MCP-Tool `mail_start_cache_job`
+
+Starts a resumable cache or index maintenance job for one account. A job has progress and never deletes server mail or drafts.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `action` | `"apply_policy"` \| `"fetch_missing_bodies"` \| `"fetch_attachments"` \| `"rebuild_index"` \| `"clean_cache"` | ja |  |
+
+### `mail.cache_job_status`
+
+Zugriff `read` · MCP-Tool `mail_cache_job_status`
+
+Reads the durable cache maintenance job of one account with progress and error.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+
+### `mail.control_cache_job`
+
+Zugriff `write` · MCP-Tool `mail_control_cache_job`
+
+Pauses or resumes a cache maintenance job by id.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `id` | string | ja |  |
+| `resume` | boolean | ja |  |
+
 ### `mail.backup_create`
 
 Zugriff `write` · kein MCP-Tool, nur App-Schlüssel
@@ -1078,7 +1146,7 @@ Checks a mail backup ZIP offline, including its version, safe paths and hashes. 
 
 ### `mail.restore_plan`
 
-Zugriff `read` · kein MCP-Tool, nur App-Schlüssel
+Zugriff `read` · MCP-Tool `mail_restore_plan`
 
 Performs a read-only restore test run: checks the archive and target account, then reports additions, existing mail and uncertainty. It creates no folders, messages or local journal.
 
@@ -1089,7 +1157,7 @@ Performs a read-only restore test run: checks the archive and target account, th
 
 ### `mail.restore_apply`
 
-Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+Zugriff `admin` · MCP-Tool `mail_restore_apply`
 
 Applies a prior restore plan to its target account, adding original messages and missing folders. It never deletes or overwrites existing mail. A client needs mail admin rights and a person's approval; allow_incomplete explicitly accepts an incomplete archive.
 

@@ -182,7 +182,7 @@ Die Stufe hängt teils vom Request ab (`Request::operation()`):
 - `respond_to_invitation` (E8.3b, ¹⁶) verschickt eine Antwort an den Organisator und gilt darum wie
   `send_draft`: `Write` und „Nach außen“ (`Command::is_outbound`).
 
-**Mail-Backup #267 (MB.1):** `mail.backup_verify` ist bereits ein nutzbarer Offline-Befehl
+**Mail-Backup #267:** `mail.backup_verify` ist ein Offline-Befehl
 mit `Read` auf `mail` und einem explizit freigegebenen `account`. Vor dem Öffnen prüft der
 Dienst die Kontenreichweite. Mit App-Schlüssel kann `file` ein vom Dateidialog gewählter
 Pfad sein. Script- und Agentenschlüssel dürfen nur den einfachen Namen einer `.zip`-Datei
@@ -194,15 +194,20 @@ Zugangsdaten. Ein gültiges Archiv eines anderen Kontos liefert ebenfalls `not-f
 Die externe Verfügbarkeit des gewählten Archivs ist Sache des Speicherorts; der Dienst
 verspricht nur eine Prüfung der Datei zum Zeitpunkt des Aufrufs.
 
-`mail.backup_create` (`Write`), `mail.backup_status` (`Read`),
-`mail.backup_cancel` (`Write`), `mail.restore_plan` (`Read`) und
-`mail.restore_apply` (`Admin`, mit gesonderter Freigabe für das Zielkonto) haben bereits
-versionierte Request- und Antworttypen. Bis die jeweiligen Engines in MB.2–MB.5
-fertig sind, antwortet der Kern mit `unsupported`; sie sind deshalb vorläufig keine
-MCP-Tools. Die CLI und Mail-Kontoeinstellungen folgen in MB.6. Ein Client kann keinen
+`mail.backup_create` (`Write`), `mail.backup_status` (`Read`) und
+`mail.backup_cancel` (`Write`) starten und steuern die Sicherung eines Kontos.
+`mail.restore_plan` (`Read`) verifiziert das Archiv und liest den Zielserver ausschließlich
+mit read-only IMAP-Befehlen. Der Testlauf erstellt auch lokal kein Journal.
+`mail.restore_apply` (`Admin`, mit gesonderter Freigabe für das Zielkonto) nimmt nur eine
+noch gültige Plan-ID desselben Kontos an, verifiziert das Archiv erneut und prüft den
+Zielbestand vor dem Schreiben. Unvollständige Archive brauchen `allow_incomplete: true`.
+Die Antwort zählt hinzugefügte, übersprungene und unklare Nachrichten; unbestätigte
+Uploads werden journalisiert und nicht blind wiederholt. Ein Client kann keinen
 beliebigen Ausgabe- oder Restore-Pfad setzen; `file_name` ist nur ein Basisname im
 verwalteten Ordner. Die Rechte und das Zielkonto werden vor Datei- oder Serverzugriff
-geprüft. Der Restore-Testlauf wird ohne lokale oder IMAP-Schreibzugriffe implementiert.
+geprüft. MCP bietet `mail_restore_plan` und `mail_restore_apply` auf denselben Requests;
+für das echte Einspielen braucht ein Agent Mail-Adminrechte und eine persönliche
+Freigabe. Die CLI und Mail-Kontoeinstellungen folgen in MB.6.
 
 Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
 100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst

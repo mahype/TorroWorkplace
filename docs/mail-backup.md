@@ -152,17 +152,29 @@ bleiben erhalten.
 Der Testlauf validiert das Archiv offline und liest das Zielkonto nur mit IMAP-Kommandos,
 die keinen Zustand ändern (`EXAMINE` statt `SELECT`, kein `APPEND`, `CREATE`, `STORE` oder
 `SUBSCRIBE`). Er legt auch lokal keine Restore-Journaldatei an. Er meldet geplante
-Ordnerzuordnung, „hinzufügen“, „bereits vorhanden“ und „unklar“ pro Ordner sowie
-Größe, Konflikte und nicht übertragbare Metadaten. Das Ergebnis ist eine Schätzung zum
+je Archivordner den exakten Zielpfad, ob er angelegt wird, und die Zähler „hinzufügen“,
+„bereits vorhanden“ und „unklar“ samt Größe. Zusätzlich nennt er nicht übertragbare
+Flags und abweichende Metadaten bereits
+vorhandener Rohmails. Vorhandene Nachrichten bleiben auch bei anderem Datum oder
+anderen Flags unverändert. Ordner werden zunächst nur auf
+exakt gleiche IMAP-Pfade abgebildet. Ein dort vorhandener, nicht auswählbarer Ordner
+macht die betroffenen Nachrichten unklar. Das Ergebnis ist eine Schätzung zum
 Zeitpunkt des Testlaufs; vor echtem Schreiben wird es erneut geprüft.
 
 Der echte Restore validiert vorab erneut und fügt standardmäßig nur hinzu. Er erstellt
 fehlende Ordner nach ausdrücklicher Bestätigung, führt `APPEND` mit den Originalbytes,
 übertragbaren Flags/Keywords und `INTERNALDATE` aus und prüft das Ergebnis. Er löscht
-und überschreibt keine vorhandenen Mails. Die Kombination aus Archiv-ID,
-Ordnerzuordnung und Hash ist die Wiederaufnahme-Identität; ein Journal protokolliert
-bestätigte Anhänge. Bei verlorener Verbindung zwischen `APPEND` und Bestätigung wird der
-Eintrag als unklar markiert und im Ziel abgeglichen, bevor er erneut angehängt werden darf.
+und überschreibt keine vorhandenen Mails. Die Kombination aus Konto und Manifest-Hash
+benennt das private Restore-Journal. Vor jedem `APPEND` speichert es den Archiv-Eintrag
+und die zuvor gezählte Anzahl gleicher Rohmails. Erst wenn eine erneute read-only
+Zielprüfung eine zusätzliche Kopie bestätigt, wird der ausstehende Eintrag entfernt.
+Bei verlorener Verbindung zwischen `APPEND` und Bestätigung bleibt der Eintrag unklar.
+Ein Folgelauf gleicht ihn gegen die Kopienzahl ab und sendet ihn bei verbleibender
+Unklarheit nicht automatisch erneut.
+Wenn ein anderer Client genau zwischen Zielprüfung und `APPEND` dieselbe Nachricht
+einliefert, kann IMAP keine atomare Dublettenprüfung garantieren; mehrere neue UIDs
+werden deshalb als unklar gemeldet. Für eine eindeutige Wiederherstellung sollte
+währenddessen kein zweiter Client in die Zielordner schreiben.
 `Message-ID` allein ist kein Duplikatschlüssel: Sie kann fehlen oder mehrfach vorkommen.
 Unvollständige Archive erfordern eine eigene Bestätigung und werden im Ergebnis so markiert.
 
