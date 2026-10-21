@@ -1,6 +1,6 @@
 //! Publish a verified mail ZIP in the core's private backup directory without exposing partial files.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Seek, SeekFrom, Write};
@@ -18,8 +18,9 @@ use torro_mail_backup::{ArchiveError, VerifiedArchive, verify_archive};
 use torro_mail_imap::folders;
 use torro_mail_imap::imap::{ImapError, Search};
 
-use super::MailDirs;
 use super::service::{MailError, MailService};
+use super::store::LocalOriginal;
+use super::{MailDirs, MailStoreError};
 
 #[derive(Debug)]
 pub(crate) enum BackupFileError {
@@ -129,6 +130,7 @@ fn reject_symlink(path: &Path) -> io::Result<()> {
 #[derive(Debug)]
 pub(crate) enum BackupRunError {
     Mail(MailError),
+    Store(MailStoreError),
     Imap(ImapError),
     Archive(ArchiveError),
     File(BackupFileError),
@@ -143,6 +145,7 @@ impl fmt::Display for BackupRunError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Mail(error) => write!(f, "mail account: {error}"),
+            Self::Store(error) => write!(f, "local originals: {error}"),
             Self::Imap(error) => write!(f, "IMAP source: {error}"),
             Self::Archive(error) => write!(f, "archive: {error}"),
             Self::File(error) => write!(f, "backup file: {error}"),
@@ -164,7 +167,7 @@ impl BackupRunError {
             Self::Imap(_) => tr("The mail server answered unexpectedly.").into(),
             Self::Incomplete(_) => tr("Mail backup is incomplete because the source changed.").into(),
             Self::Cancelled => tr("Mail backup was cancelled.").into(),
-            Self::File(_) | Self::Archive(_) | Self::Io(_) | Self::Random => {
+            Self::File(_) | Self::Archive(_) | Self::Store(_) | Self::Io(_) | Self::Random => {
                 tr("Mail backup could not be completed.").into()
             }
             Self::Busy => tr("A backup for this mail account is already running.").into(),
@@ -175,6 +178,12 @@ impl BackupRunError {
 impl From<MailError> for BackupRunError {
     fn from(error: MailError) -> Self {
         Self::Mail(error)
+    }
+}
+
+impl From<MailStoreError> for BackupRunError {
+    fn from(error: MailStoreError) -> Self {
+        Self::Store(error)
     }
 }
 
@@ -242,9 +251,6 @@ impl BackupJobs {
         since: Option<NaiveDate>,
         filename: Option<String>,
     ) -> Result<BackupJob, BackupRunError> {
-        if source != BackupScope::Server {
-            return Err(BackupRunError::Incomplete("local originals are not available yet"));
-        }
         let mut random = [0u8; 16];
         getrandom::fill(&mut random).map_err(|_| BackupRunError::Random)?;
         let id = random.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
@@ -285,7 +291,10 @@ impl BackupJobs {
         let jobs = self.clone();
         tokio::spawn(async move {
             let progress = BackupProgress { jobs: &jobs, id: &id, state: &state };
-            let result = run_server_backup(mail, dirs, &account, since, &filename, progress).await;
+            let result = match source {
+                BackupScope::Server => run_server_backup(mail, dirs, &account, since, &filename, progress).await,
+                BackupScope::Local => run_local_backup(mail, dirs, &account, since, &filename, progress).await,
+            };
             let mut entries = jobs.entries.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(entry) = entries.get_mut(&id) {
                 match result {
@@ -549,6 +558,190 @@ async fn run_server_backup(
     Ok(published)
 }
 
+/// A local backup reads only retained RFC-822 originals. Its two paged metadata scans detect
+/// concurrent depot changes; each BLOB is read through SQLite in bounded chunks.
+async fn run_local_backup(
+    mail: Arc<MailService>,
+    dirs: MailDirs,
+    account: &str,
+    since: Option<NaiveDate>,
+    filename: &str,
+    progress: BackupProgress<'_>,
+) -> Result<VerifiedArchive, BackupRunError> {
+    let BackupProgress { jobs, id: job_id, state } = progress;
+    let address =
+        account.strip_prefix(torro_mail::ACCOUNT_PREFIX).ok_or(BackupRunError::Incomplete("invalid account id"))?;
+    check_cancel(state)?;
+    jobs.phase(job_id, BackupPhase::Counting);
+    let store = mail.store(account).await?;
+    let started_at = Utc::now();
+    let mut folder_counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut folder_validities: HashMap<String, Option<u32>> = HashMap::new();
+    let mut first_digest = Sha256::new();
+    let mut after = 0i64;
+    loop {
+        check_cancel(state)?;
+        let page = store.run(move |db| db.local_originals_page(after, 256)).await?;
+        if page.is_empty() {
+            break;
+        }
+        for original in page {
+            after = original.seq;
+            if since.is_some_and(|day| original.internal_date.date_naive() < day) {
+                continue;
+            }
+            *folder_counts.entry(original.folder_path.clone()).or_default() += 1;
+            folder_validities
+                .entry(original.folder_path.clone())
+                .and_modify(|validity| {
+                    if *validity != Some(original.uid_validity) {
+                        *validity = None;
+                    }
+                })
+                .or_insert(Some(original.uid_validity));
+            hash_local_metadata(&mut first_digest, &original);
+        }
+    }
+    let missing = store.run(move |db| db.known_missing_originals(since)).await?;
+    let mut folder_ids = HashMap::new();
+    let folders = folder_counts
+        .iter()
+        .enumerate()
+        .map(|(at, (path, _count))| {
+            let id = format!("f{:06}", at + 1);
+            folder_ids.insert(path.clone(), id.clone());
+            Folder {
+                id,
+                name: path.clone(),
+                path: path.clone(),
+                delimiter: None,
+                selectable: true,
+                role: path.eq_ignore_ascii_case("INBOX").then(|| "inbox".into()),
+                uid_validity: folder_validities.get(path).copied().flatten(),
+                inventory: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let warnings = if missing == 0 {
+        Vec::new()
+    } else {
+        vec![format!("{} {missing}", tr("Local mail headers without an original were omitted."))]
+    };
+    let manifest = Manifest {
+        format: FORMAT.into(),
+        version: VERSION,
+        status: Status::Incomplete,
+        source: Source::Local,
+        since,
+        started_at,
+        finished_at: None,
+        account: Account { address: address.into(), server: None },
+        counts: Counts { folders: folders.len() as u64, messages: 0, bytes: 0 },
+        folders,
+        messages: Vec::new(),
+        warnings,
+    };
+    jobs.progress(job_id, manifest.counts.folders, 0, 0);
+    let mut pending = PendingBackup::new(&dirs, filename)?;
+    let spool_dir = pending.directory().to_path_buf();
+    let mut writer = ArchiveWriter::new(pending.file_mut(), manifest)?;
+    let mut second_digest = Sha256::new();
+    let mut after = 0i64;
+    jobs.phase(job_id, BackupPhase::Reading);
+    loop {
+        check_cancel(state)?;
+        let page = store.run(move |db| db.local_originals_page(after, 256)).await?;
+        if page.is_empty() {
+            break;
+        }
+        for original in page {
+            after = original.seq;
+            if since.is_some_and(|day| original.internal_date.date_naive() < day) {
+                continue;
+            }
+            hash_local_metadata(&mut second_digest, &original);
+            let mut spool = tempfile::tempfile_in(&spool_dir)?;
+            let mut digest = Sha256::new();
+            let mut offset = 0u64;
+            while offset < original.bytes {
+                check_cancel(state)?;
+                let count = (original.bytes - offset).min(64 * 1024) as usize;
+                let seq = original.seq;
+                let chunk = store.run(move |db| db.original_chunk(seq, offset, count)).await?;
+                let Some(chunk) = chunk else {
+                    return Err(BackupRunError::Incomplete("local original disappeared"));
+                };
+                if chunk.len() != count {
+                    return Err(BackupRunError::Incomplete("local original was truncated"));
+                }
+                digest.update(&chunk);
+                spool.write_all(&chunk)?;
+                offset += count as u64;
+            }
+            let hash = digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+            if hash != original.sha256 {
+                return Err(BackupRunError::Incomplete("local original hash changed"));
+            }
+            spool.seek(SeekFrom::Start(0))?;
+            let id = folder_ids.get(&original.folder_path).ok_or(BackupRunError::Incomplete("local folder changed"))?;
+            let provenance =
+                folder_validities.get(&original.folder_path).copied().flatten() == Some(original.uid_validity);
+            writer.add_message(
+                id,
+                spool,
+                MessageMetadata {
+                    uid: provenance.then_some(original.uid),
+                    uid_validity: provenance.then_some(original.uid_validity),
+                    internal_date: Some(original.internal_date),
+                    flags: original.flags,
+                    expected_bytes: Some(original.bytes),
+                },
+            )?;
+            let counts = &writer.manifest_mut().counts;
+            jobs.progress(job_id, counts.folders, counts.messages, counts.bytes);
+        }
+    }
+    let mut final_digest = Sha256::new();
+    let mut after = 0i64;
+    loop {
+        check_cancel(state)?;
+        let page = store.run(move |db| db.local_originals_page(after, 256)).await?;
+        if page.is_empty() {
+            break;
+        }
+        for original in page {
+            after = original.seq;
+            if !since.is_some_and(|day| original.internal_date.date_naive() < day) {
+                hash_local_metadata(&mut final_digest, &original);
+            }
+        }
+    }
+    let first = first_digest.finalize();
+    if first != second_digest.finalize()
+        || first != final_digest.finalize()
+        || missing != store.run(move |db| db.known_missing_originals(since)).await?
+    {
+        return Err(BackupRunError::Incomplete("local originals changed during backup"));
+    }
+    let checked_at = Utc::now();
+    for folder in &mut writer.manifest_mut().folders {
+        let count = folder_counts.get(&folder.path).copied().unwrap_or(0);
+        folder.inventory = Some(Inventory { checked_at, eligible_messages: count, uid_set_sha256: None });
+    }
+    check_cancel(state)?;
+    jobs.phase(job_id, BackupPhase::Verifying);
+    writer.finish(Status::Complete, Utc::now())?;
+    state
+        .compare_exchange(RUNNING, COMMITTING, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| BackupRunError::Cancelled)?;
+    let (_, published) = pending.publish()?;
+    Ok(published)
+}
+
+fn hash_local_metadata(hash: &mut Sha256, original: &LocalOriginal) {
+    hash.update(format!("{original:?}\n").as_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
@@ -561,8 +754,8 @@ mod tests {
     use torro_ipc::mail::{BackupJob, BackupPhase, BackupScope};
 
     use super::{
-        BackupFileError, BackupJobs, BackupProgress, CANCELLED, COMMITTING, JobEntry, RUNNING, run_server_backup,
-        uid_inventory_hash, write_verified_backup,
+        BackupFileError, BackupJobs, BackupProgress, CANCELLED, COMMITTING, JobEntry, RUNNING, run_local_backup,
+        run_server_backup, uid_inventory_hash, write_verified_backup,
     };
     use crate::account::github::tests::MemoryTokens;
     use crate::mail::MailDirs;
@@ -786,5 +979,50 @@ mod tests {
             .is_err()
         );
         assert!(!root.path().join("data/mail/backups/missing.zip").exists());
+    }
+
+    #[tokio::test]
+    async fn local_backup_works_with_no_reachable_imap_server_and_reads_originals_in_chunks() {
+        use torro_mail::{Endpoint, Security};
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let endpoint = Endpoint { host: "127.0.0.1".into(), port: 9, security: Security::Tls };
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &endpoint);
+        store_accounts(root.path(), &secrets, &[(&account, PASSWORD)]);
+        let mail = Arc::new(service_in(root.path(), &secrets));
+        mail.reload().await;
+        let original = format!("From: a@example.org\r\n\r\n{}\r\n", "x".repeat(140_000));
+        let now = Utc::now();
+        let store = mail.store(&account.id).await.expect("local store");
+        store
+            .run(move |db| {
+                db.save_original(
+                    "INBOX",
+                    1,
+                    5,
+                    now.fixed_offset(),
+                    &["\\Seen".into(), "$Work".into()],
+                    original.as_bytes(),
+                )
+            })
+            .await
+            .expect("original retained");
+        let jobs = BackupJobs::default();
+        let state = AtomicU8::new(RUNNING);
+        let report = run_local_backup(
+            mail,
+            dirs(root.path()),
+            &account.id,
+            None,
+            "local.zip",
+            BackupProgress { jobs: &jobs, id: "local", state: &state },
+        )
+        .await
+        .expect("offline local archive");
+        assert!(report.complete);
+        assert_eq!(report.messages, 1);
+        assert!(report.bytes > 140_000);
+        assert!(root.path().join("data/mail/backups/local.zip").exists());
     }
 }

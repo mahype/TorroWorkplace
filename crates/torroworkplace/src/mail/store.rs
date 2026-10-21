@@ -15,10 +15,10 @@
 //! [`MailStore::note_uidvalidity`], which drops every message of the folder (rows, texts and index
 //! entries) and keeps the folder and its id.
 //!
-//! **What is kept** is decided here, not by the person: headers of everything, texts to read for
-//! [`BODY_RETENTION_DAYS`] (see [`MailStore::prune_bodies`]), and the words of every text in the
-//! search index for as long as the message is kept (issue #136). Attachments are not in the
-//! database; see `AttachmentCache`.
+//! **What is kept** follows the account's cache policy: headers of known messages, selected
+//! readable texts, and search words (issue #136). In `AllOffline`, full RFC-822 originals also
+//! enter the independent `originals` table; deleting text cache or stale headers does not delete
+//! them. Attachments extracted for previews stay outside the database; see `AttachmentCache`.
 //!
 //! **Invitations** (task E8.3b): what an invitation invites to is read from its `text/calendar` part
 //! wherever a whole message is read (the sync's texts, `mail.get_message`), kept with the text
@@ -41,7 +41,7 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
@@ -62,9 +62,24 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA_V9: &str = "CREATE TABLE IF NOT EXISTS cache_control (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
+
+/// Independent of `messages` and `bodies`: cache pruning, UID resets and header sync may not
+/// delete the only locally held RFC-822 original. Removing the account removes this database.
+const SCHEMA_V10: &str = "CREATE TABLE IF NOT EXISTS originals (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    folder_path TEXT NOT NULL,
+    uidvalidity INTEGER NOT NULL,
+    uid INTEGER NOT NULL,
+    internal_date TEXT NOT NULL,
+    flags_json TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    raw BLOB NOT NULL,
+    UNIQUE(folder_path, uidvalidity, uid)
+);";
 
 /// At most this many bytes of a message's text go into the word index: a log of megabytes is
 /// found by its first half megabyte, and the index stays small.
@@ -298,6 +313,19 @@ pub struct MessageRef {
     pub rfc_message_id: Option<String>,
 }
 
+/// A fully held local RFC-822 original; its bytes are fetched separately to keep page reads small.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalOriginal {
+    pub seq: i64,
+    pub folder_path: String,
+    pub uid_validity: u32,
+    pub uid: u32,
+    pub internal_date: DateTime<FixedOffset>,
+    pub flags: Vec<String>,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
 /// What [`MailStore::note_uidvalidity`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UidValidity {
@@ -483,6 +511,108 @@ impl MailStore {
     #[allow(dead_code, reason = "used from the mail commands, task M3.1")]
     pub fn account(&self) -> &str {
         &self.account
+    }
+
+    /// Keep the exact bytes separately from the disposable body and header cache. The caller
+    /// explicitly opts into this storage policy; no MIME decoding or line-ending rewrite occurs.
+    pub fn save_original(
+        &self,
+        folder_path: &str,
+        uid_validity: u32,
+        uid: u32,
+        internal_date: DateTime<FixedOffset>,
+        flags: &[String],
+        raw: &[u8],
+    ) -> Result<(), MailStoreError> {
+        let bytes = i64::try_from(raw.len()).map_err(|_| MailStoreError::Corrupt("original too large".into()))?;
+        let sha256 = Sha256::digest(raw).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        self.db.execute(
+            "INSERT INTO originals (folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256, raw)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(folder_path, uidvalidity, uid) DO UPDATE SET
+               internal_date = excluded.internal_date, flags_json = excluded.flags_json,
+               bytes = excluded.bytes, sha256 = excluded.sha256, raw = excluded.raw",
+            params![
+                folder_path,
+                uid_validity,
+                uid,
+                internal_date.to_rfc3339(),
+                serde_json::to_string(flags)?,
+                bytes,
+                sha256,
+                raw
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A bounded metadata page of complete originals, stable by insertion sequence.
+    pub fn local_originals_page(&self, after: i64, limit: u32) -> Result<Vec<LocalOriginal>, MailStoreError> {
+        let mut statement = self.db.prepare(
+            "SELECT seq, folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256
+             FROM originals WHERE seq > ?1 ORDER BY seq LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![after, limit], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+            ))
+        })?;
+        let mut originals = Vec::new();
+        for row in rows {
+            let (seq, folder_path, uid_validity, uid, date, flags, bytes, sha256) = row?;
+            let internal_date = DateTime::parse_from_rfc3339(&date)
+                .map_err(|_| MailStoreError::Corrupt("invalid original INTERNALDATE".into()))?;
+            let flags = serde_json::from_str(&flags)?;
+            let bytes =
+                u64::try_from(bytes).map_err(|_| MailStoreError::Corrupt("invalid original byte count".into()))?;
+            originals.push(LocalOriginal { seq, folder_path, uid_validity, uid, internal_date, flags, bytes, sha256 });
+        }
+        Ok(originals)
+    }
+
+    #[cfg(test)]
+    pub fn original_bytes(&self, seq: i64) -> Result<Option<Vec<u8>>, MailStoreError> {
+        Ok(self.db.query_row("SELECT raw FROM originals WHERE seq = ?1", [seq], |row| row.get(0)).optional()?)
+    }
+
+    /// Reads at most `count` bytes without materializing the SQLite BLOB in process memory.
+    pub fn original_chunk(&self, seq: i64, offset: u64, count: usize) -> Result<Option<Vec<u8>>, MailStoreError> {
+        if count == 0 || count > 64 * 1024 {
+            return Err(MailStoreError::Corrupt("invalid original chunk size".into()));
+        }
+        let start = i64::try_from(offset)
+            .ok()
+            .and_then(|offset| offset.checked_add(1))
+            .ok_or_else(|| MailStoreError::Corrupt("invalid original offset".into()))?;
+        Ok(self
+            .db
+            .query_row(
+                "SELECT substr(raw, ?2, ?3) FROM originals WHERE seq = ?1",
+                params![seq, start, count as i64],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Known headers without a corresponding complete original. `messages.date` is a best-effort
+    /// proxy for INTERNALDATE here because the missing original has no stored IMAP metadata.
+    pub fn known_missing_originals(&self, since: Option<NaiveDate>) -> Result<u64, MailStoreError> {
+        let cutoff = since.and_then(|day| day.and_hms_opt(0, 0, 0)).map(|at| at.and_utc().timestamp());
+        let count: i64 = self.db.query_row(
+            "SELECT count(*) FROM messages m JOIN folders f ON f.id = m.folder_id
+             LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid
+             WHERE o.seq IS NULL AND (?1 IS NULL OR m.date >= ?1)",
+            [cutoff],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
     }
 
     fn restrict_files(&self) -> Result<(), MailStoreError> {
@@ -1233,7 +1363,7 @@ impl MailStore {
         let now = Utc::now();
         let cutoff = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
         let (current, bytes): (i64, i64) = self.db.query_row("SELECT count(*), coalesce(sum(length(text) + coalesce(length(html), 0) + length(attachments_json) + length(filenames)), 0) FROM bodies", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let (missing, remove): (i64, i64) = self.db.query_row("SELECT coalesce(sum(b.seq IS NULL AND m.indexed <> 2 AND (?1 = 2 OR (?1 = 1 AND m.date >= ?2))), 0), coalesce(sum(b.seq IS NOT NULL AND (?1 = 0 OR (?1 = 1 AND m.date < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL), 0) FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN drafts d ON d.id = m.id", params![mode as i64, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let (missing, remove): (i64, i64) = self.db.query_row("SELECT coalesce(sum(m.indexed <> 2 AND (b.seq IS NULL OR (?1 = 2 AND o.seq IS NULL)) AND (?1 = 2 OR (?1 = 1 AND m.date >= ?2))), 0), coalesce(sum(b.seq IS NOT NULL AND (?1 = 0 OR (?1 = 1 AND m.date < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL), 0) FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid LEFT JOIN drafts d ON d.id = m.id", params![mode as i64, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let average = if current > 0 { bytes.max(0) as u64 / current as u64 } else { 16 * 1024 };
         Ok(MailCacheEstimate {
             account: self.account.clone(),
@@ -1252,7 +1382,7 @@ impl MailStore {
         limit: u32,
     ) -> Result<Vec<(i64, MessageRef)>, MailStoreError> {
         let cutoff = (Utc::now() - Duration::days(BODY_RETENTION_DAYS)).timestamp();
-        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq WHERE b.seq IS NULL AND m.indexed <> 2 AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (?2 = 2 OR (?2 = 1 AND m.date >= ?3)) ORDER BY m.seq DESC LIMIT ?4")?;
+        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid WHERE (b.seq IS NULL OR (?2 = 2 AND o.seq IS NULL)) AND m.indexed <> 2 AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (?2 = 2 OR (?2 = 1 AND m.date >= ?3)) ORDER BY m.seq DESC LIMIT ?4")?;
         let rows = statement.query_map(params![before, mode as i64, cutoff, limit], |row| {
             Ok((
                 row.get(0)?,
@@ -1810,6 +1940,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     }
     if version < 9 {
         tx.execute_batch(SCHEMA_V9)?;
+    }
+    if version < 10 {
+        tx.execute_batch(SCHEMA_V10)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;

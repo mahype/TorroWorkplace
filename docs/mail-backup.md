@@ -20,13 +20,15 @@ Ordner werden im Manifest mit Grund erfasst; wenn dort Nachrichten vermutet werd
 Vollständigkeit unklar und niemals stillschweigend „100 %“.
 
 „Lokal“ meint nur Nachrichten, deren **vollständige RFC-822-Originalbytes** auf dem Gerät
-vorliegen. Die aktuelle Mail-Datenbank speichert Header, abgeleitete Texte und temporär
-Bodies, aber keine verlässlich vollständige EML für jede Zeile. Ein neues Originaldepot
-speichert rohe Nachrichten gezielt, mit eigener Belegungs- und Aufbewahrungsregel. Bestehende
-Cache-Zeilen ohne Original werden gezählt und im Ergebnis als „nicht lokal wiederherstellbar“
-ausgewiesen. Das Backup holt im Lokal-Modus nichts nachträglich vom Server. Diese Arbeit
-berührt die Cache-Steuerung aus #263; Schema und Aufbewahrungsentscheidungen sind vor der
-Umsetzung damit abzugleichen.
+vorliegen. Der lokale Text- und Suchcache enthält für ältere Bestände nicht verlässlich
+eine EML. Im Modus „Alle Mailtexte offline“ (#263) hält das unabhängige Originaldepot nun
+beim Abruf die Rohbytes, SHA-256, Ordner/UIDVALIDITY/UID, `INTERNALDATE` und Flags/Keywords
+in der kontobezogenen SQLite-Datei. Ein Cache-Auftrag holt auch bereits vorhandene Texte
+erneut, wenn deren Original noch fehlt. Das Depot wird weder beim Pruning von Texten noch
+beim Entfernen veralteter Header geleert; es wird mit dem Konto entfernt. Sein Platzbedarf
+wächst daher bis zur Größe der aufbewahrten Originalnachrichten. Andere Cache-Modi legen
+keine neuen Originale an. Bestehende Header ohne Original werden gezählt und im lokalen
+Backup-Bericht als ausgelassen ausgewiesen. Das Backup holt im Lokal-Modus nichts vom Server.
 
 „Vollständig“ bedeutet: Alle beim ersten Inventar gefundenen passenden Ordner/UIDs liegen
 nach Integritätsprüfung im Archiv, und ein Schlussinventar hat keine ungeklärte Abweichung.
@@ -134,6 +136,16 @@ und alle auswählbaren UID-Inventare erneut. Ein solcher Abbruch veröffentlicht
 Datei. Das archivierte UID-Inventar wird mit den geschriebenen EML-Einträgen verglichen;
 ein vollständiges Archiv wird zusätzlich offline gegen seine Hashes geprüft. Der Job meldet
 Zähler, Phase und Abbruchstatus; `verify` benötigt weder Kontozugang noch Netzwerk.
+
+Die Lokalquelle (MB.4) inventarisiert das Originaldepot seitenweise und liest jede EML
+als höchstens 64-KiB-BLOB-Stücke in eine temporäre Datei. Gespeicherte SHA-256 und Länge
+müssen stimmen. Ein Schlussinventar nach allen EML-Lesevorgängen und ein erneuter Lückenzähler erkennen
+Änderungen während des Backups; bei Abweichung erscheint keine fertige ZIP. Ein lokales
+Archiv mit `complete` bescheinigt die vollständige Sicherung der **vorhandenen Originale**,
+nicht der bekannten Header ohne Original. Deren Zahl steht als Warnung im Manifest und
+Job-Bericht. Bei älteren lokalen Originalen aus verschiedenen UIDVALIDITY-Generationen
+desselben Ordners bleibt die Herkunfts-UID im Archiv leer; Rohbytes und Ordnerzuordnung
+bleiben erhalten.
 
 ## Testlauf und Restore
 

@@ -2115,6 +2115,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Das Mail-Backup ist unvollständig, weil sich die Quelle geändert hat.",
     ),
     ("Mail backup was cancelled.", "Das Mail-Backup wurde abgebrochen."),
+    (
+        "Local mail headers without an original were omitted.",
+        "Lokale Mail-Einträge ohne vollständiges Original wurden ausgelassen:",
+    ),
     // Mail rights on the agents page (M3.4)
     ("Always", "Immer"),
     ("Ask me each time", "Jedes Mal fragen"),

@@ -148,6 +148,12 @@ Was wir aus TorroMail außerdem **nicht** übernehmen: Regeln je Ordner für Age
 ist die Cache-Strategie je Konto unter Mail-Einstellungen › Storage & index wählbar:
 nur Kopfzeilen, Mailtexte der letzten 90 Tage oder alle Mailtexte offline. Der Suchindex bleibt
 unabhängig vom Lesecache; Anhänge haben eigene Vorladeoption und Aufbewahrung.
+Im Modus „alle Mailtexte offline“ hält der Dienst seit #267 zusätzlich die vollständigen
+RFC-822-Originalbytes mit Prüfsumme in einer unabhängigen SQLite-Tabelle je Konto. Der
+Cache-Auftrag ergänzt fehlende Originale auch für bereits zwischengespeicherte Texte.
+Das Originaldepot überlebt das Löschen von Textcache und veralteten Headern, benötigt
+entsprechend dauerhaft Speicherplatz und wird erst mit dem Konto entfernt. Nur diese
+Originale sind Quelle eines lokalen ZIP-Backups; fehlende Originale werden ausgewiesen.
 
 ## Architektur: Mail im Kern
 

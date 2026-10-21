@@ -74,11 +74,14 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
 
 ### MB.4 Lokale Originale und Lokalquelle
 
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MB.2 und Abstimmung mit #263 · **Dateien:**
   `crates/torroworkplace/src/mail/{store,backup,mod}.rs`,
   `crates/torroworkplace/src/mail/store_corpus.rs`,
-  `crates/torroworkplace/src/mail/tests.rs`, `docs/{mail-backup,mail}.md`
+  `crates/torroworkplace/src/mail/tests.rs`, `docs/{mail-backup,mail}.md`.
+  **Freigegebene technische Ergänzungen:** `crates/torroworkplace/src/mail/{sync,read}.rs`
+  (Rohbytes beim IMAP-Lesen im Originaldepot sichern), `crates/torro-core/src/i18n/de.rs`
+  (deutsche Meldung für lokal fehlende Originale).
 - Originaldepot für rohe EMLs mit Hash, Ordnerbezug, Größen-/Aufbewahrungsregel und
   migrationsverträglichem Index. Lokal-Backup liest ausschließlich dieses Depot;
   bestehende Header-/Body-Zeilen ohne Original erscheinen als fehlend. Keine heimliche

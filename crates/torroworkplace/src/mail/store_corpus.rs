@@ -142,6 +142,32 @@ fn put(store: &MailStore, folder: &str, uid: u32, raw: &[u8], flags: Vec<Flag>, 
     id
 }
 
+#[test]
+fn original_depot_survives_cache_and_header_removal() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (store, folders) = store_in(dir.path());
+    let now = Utc::now();
+    let raw = b"From: a@example.org\r\nSubject: Keep original\r\n\r\nExact bytes\r\n";
+    put(&store, &folders["INBOX"], 7, raw, vec![Flag::Seen], now);
+    put(&store, &folders["INBOX"], 8, b"From: b@example.org\r\n\r\nNot retained\r\n", vec![], now);
+    store
+        .save_original("INBOX", 1, 7, now.fixed_offset(), &["\\Seen".into(), "$Work".into()], raw)
+        .expect("original saved");
+    let before = store.local_originals_page(0, 10).expect("listed");
+    assert_eq!(before.len(), 1);
+    assert_eq!(before[0].bytes, raw.len() as u64);
+    assert_eq!(before[0].flags, vec!["\\Seen", "$Work"]);
+    assert_eq!(store.original_bytes(before[0].seq).expect("read"), Some(raw.to_vec()));
+    assert_eq!(store.known_missing_originals(None).expect("gap count"), 1);
+    let fetch = store.cached_body_missing(None, torro_ipc::mail::MailCacheMode::AllOffline, 10).expect("offline work");
+    assert_eq!(fetch.iter().map(|(_, place)| place.uid).collect::<Vec<_>>(), vec![8]);
+
+    store.prune_bodies(now + Duration::days(100)).expect("body cache pruned");
+    store.retain_folders(&[]).expect("headers removed");
+    assert_eq!(store.local_originals_page(0, 10).expect("listed").len(), 1);
+    assert_eq!(store.original_bytes(before[0].seq).expect("read"), Some(raw.to_vec()));
+}
+
 const FILLER_WORDS: [&str; 26] = [
     "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliett", "kilo", "lima",
     "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform", "victor", "whiskey", "xray",

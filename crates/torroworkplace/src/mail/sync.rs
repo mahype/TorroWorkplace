@@ -214,8 +214,35 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
 async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Result<Option<Vec<u8>>, MailError> {
     let mut command = mailbox.command().await?;
     let raw = super::read::peek(command.session(), place).await?;
+    let retain = mailbox.store()?.run(|store| store.cache_policy()).await?.mode == MailCacheMode::AllOffline;
+    let metadata = if retain && raw.is_some() {
+        command.session().fetch_backup_metadata(&[place.uid]).await?.into_iter().find(|item| item.uid == place.uid)
+    } else {
+        None
+    };
     command.release();
-    Ok(raw)
+    match (metadata, raw) {
+        (Some(metadata), Some(raw)) => {
+            let path = place.folder_path.clone();
+            let validity = place.uidvalidity;
+            let saved = mailbox
+                .store()?
+                .run(move |store| {
+                    store.save_original(
+                        &path,
+                        validity,
+                        metadata.uid,
+                        metadata.internal_date,
+                        &metadata.flags,
+                        &raw,
+                    )?;
+                    Ok(raw)
+                })
+                .await?;
+            Ok(Some(saved))
+        }
+        (_, raw) => Ok(raw),
+    }
 }
 
 /// Fetch one complete reading body for an offline maintenance job, without setting Seen.
@@ -402,8 +429,31 @@ async fn sync_folder(
             return Ok(());
         }
         let raw = lease.session().fetch_message(header.uid).await?;
+        let metadata = if mode == MailCacheMode::AllOffline && raw.is_some() {
+            lease.session().fetch_backup_metadata(&[header.uid]).await?.into_iter().find(|item| item.uid == header.uid)
+        } else {
+            None
+        };
         lease.done();
         let Some(raw) = raw else { continue };
+        let raw = if let Some(metadata) = metadata {
+            let path = target.path.clone();
+            store
+                .run(move |store| {
+                    store.save_original(
+                        &path,
+                        uidvalidity,
+                        metadata.uid,
+                        metadata.internal_date,
+                        &metadata.flags,
+                        &raw,
+                    )?;
+                    Ok(raw)
+                })
+                .await?
+        } else {
+            raw
+        };
         if policy.prefetch_attachments {
             let _ = prefetch_attachments(mailbox, &id, &raw).await;
         }
@@ -1354,6 +1404,57 @@ mod tests {
         assert_eq!(bodies.len(), 90 + 1, "texts of the last 90 days only");
         let stores: Vec<String> = server.lines().into_iter().filter(|line| line.contains(" UID STORE ")).collect();
         assert!(stores.is_empty(), "syncing never marks mail read: {stores:?}");
+    }
+
+    #[tokio::test]
+    async fn all_offline_sync_retains_exact_original_and_keyword_for_local_backup() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let raw = fake::mail("Original", 0, None);
+        server.add("INBOX", &raw, &["\\Seen", "$Work"]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        store
+            .run(|db| {
+                let mut policy = db.cache_policy()?;
+                policy.mode = MailCacheMode::AllOffline;
+                db.set_cache_policy(&policy)
+            })
+            .await
+            .expect("all offline");
+
+        sync_account(&mailbox).await.expect("synced");
+        let originals = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
+        assert_eq!(originals.len(), 1);
+        assert_eq!(originals[0].flags, vec!["$Work", "\\Seen"]);
+        let seq = originals[0].seq;
+        assert_eq!(store.run(move |db| db.original_bytes(seq)).await.expect("read"), Some(raw.into_bytes()));
+    }
+
+    #[tokio::test]
+    async fn switching_to_all_offline_refetches_an_existing_body_without_an_original() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("Previously cached", 0, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        sync_account(&mailbox).await.expect("recent text synced");
+        let store = mailbox.store().expect("store");
+        assert!(store.run(|db| db.local_originals_page(0, 10)).await.expect("listed").is_empty());
+        store
+            .run(|db| {
+                let mut policy = db.cache_policy()?;
+                policy.mode = MailCacheMode::AllOffline;
+                db.set_cache_policy(&policy)
+            })
+            .await
+            .expect("all offline");
+        let todo = store
+            .run(|db| db.cached_body_missing(None, MailCacheMode::AllOffline, 10))
+            .await
+            .expect("missing originals");
+        assert_eq!(todo.len(), 1);
+        assert!(cache_body(&mailbox, &todo[0].1).await.expect("fetched"));
+        assert_eq!(store.run(|db| db.local_originals_page(0, 10)).await.expect("listed").len(), 1);
     }
 
     #[tokio::test]

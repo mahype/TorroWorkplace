@@ -705,8 +705,35 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
 async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
     let mut command = mail.command(&located.account).await.map_err(|err| Box::new(err.response()))?;
     let raw = peek(command.session(), &located.place).await.map_err(|err| Box::new(err.response()))?;
+    let retain = located.store.run(|store| store.cache_policy()).await.map_err(store_failed)?.mode
+        == torro_ipc::mail::MailCacheMode::AllOffline;
+    let metadata = if retain && raw.is_some() {
+        command
+            .session()
+            .fetch_backup_metadata(&[located.place.uid])
+            .await
+            .map_err(|err| Box::new(MailError::from(err).response()))?
+            .into_iter()
+            .find(|item| item.uid == located.place.uid)
+    } else {
+        None
+    };
     command.release();
-    raw.ok_or_else(no_message)
+    let raw = raw.ok_or_else(no_message)?;
+    if let Some(metadata) = metadata {
+        let path = located.place.folder_path.clone();
+        let validity = located.place.uidvalidity;
+        located
+            .store
+            .run(move |store| {
+                store.save_original(&path, validity, metadata.uid, metadata.internal_date, &metadata.flags, &raw)?;
+                Ok(raw)
+            })
+            .await
+            .map_err(store_failed)
+    } else {
+        Ok(raw)
+    }
 }
 
 /// `BODY.PEEK[]` of the message at `place`, opening its folder first unless it is open. `None`
