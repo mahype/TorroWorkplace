@@ -100,15 +100,21 @@ impl Tool {
     }
 }
 
+/// Commands with an MCP tool the assistant's model is never offered nor may call ([`callable`]).
+/// `calendar.map_preview` answers a PNG in Base64, which as a tool result would blow the limit of
+/// what a result may hold and say nothing a model can read; the editor shows the map, and the model
+/// has the event's `geo` and `location` (finding 9 of the review of #278).
+const NOT_FOR_MODELS: [&str; 1] = ["calendar.map_preview"];
+
 /// Every command with an MCP tool, as the model sees it: the MCP tool's name, description and
-/// input schema. Built once.
+/// input schema, without [`NOT_FOR_MODELS`]. Built once.
 fn catalogue() -> &'static [Tool] {
     static TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
     TOOLS.get_or_init(|| {
         let mcp = crate::mcp::tools();
         CATALOGUE
             .iter()
-            .filter(|command| command.mcp == Mcp::Tool)
+            .filter(|command| command.mcp == Mcp::Tool && !NOT_FOR_MODELS.contains(&command.name))
             .filter_map(|command| {
                 let name = command.tool_name();
                 let tool = mcp.iter().find(|tool| tool.name == name)?;
@@ -172,7 +178,8 @@ pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
 }
 
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
-/// can grant (so never `system`, `clients` or `approvals`) other than `assistant`. Whether its rights
+/// can grant (so never `system`, `clients` or `approvals`) other than `assistant`, and none of
+/// [`NOT_FOR_MODELS`] (`calendar_map_preview`: its picture does not fit a tool result). Whether its rights
 /// and the conversation allow it is checked after this: `without` by the loop, the rights by the
 /// core, which answers `forbidden`. `None` for every other name, also of a real command: the model
 /// learns there is no such tool.
@@ -647,6 +654,9 @@ mod tests {
         assert!(callable("assistant_send_message").is_none() && callable("accounts_connect_ai").is_none());
         assert!(callable("assistant_update_profile").is_none(), "never its own profile");
         assert!(callable("assistant_remember").is_some() && callable("assistant_forget").is_some());
+        // A map is a picture: neither offered nor callable, whatever the rights.
+        assert!(callable("calendar_map_preview").is_none() && callable("calendar_search_places").is_some());
+        assert!(named(&everything, "calendar_map_preview").is_none());
     }
 
     #[test]
