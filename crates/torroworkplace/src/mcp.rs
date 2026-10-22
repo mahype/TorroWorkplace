@@ -833,7 +833,8 @@ struct EventInput {
     /// Only with `event`, and needed when it is an occurrence of a series (`recurring: true`):
     /// `occurrence` changes only it, `following` it and all after it (the series is split there),
     /// `series` all of them. Send the occurrence with its `href`, `etag` and `recurrence_id` as
-    /// read and `repeat` unchanged; `repeat: null` with `series` ends the series.
+    /// read and `repeat` unchanged; `repeat: null` and `recurring: false` with `series` or
+    /// `following` end the series there, `repeat: null` alone keeps the rule.
     scope: Option<SeriesScope>,
     /// Short form: id of the calendar (from list_calendars).
     collection: Option<String>,
