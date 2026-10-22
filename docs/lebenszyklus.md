@@ -125,6 +125,29 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
   `--chat`, `--listen`, `--voice-*`, `--reminders`, `--settings`, `--template`, `--demo`. Im Eingang zählen
   auch `--lane` und `--source` als Ziel: Vorlagen bringen Fenster einer Spur oder Quelle zurück, und das sind
   eigene Fenster. Ein einfacher Start von Hub, Mail oder App Feed hat dagegen je seinen Kanal.
+- **Steuerzentrale mit Seite: eigenes Fenster.** Der Kanal kennt nur `show`; eine laufende Steuerzentrale
+  bliebe auf ihrer Seite. Deshalb zählen auch `--section`, `--setup`, `--setup-if-open` und `--step` als Ziel:
+  „Connect …“ und „Open Settings“ in den Apps, Tray › „Manage workspaces…“ und `accounts.connect_github` bzw.
+  `accounts.connect_ntfy` öffnen die Seite in einem eigenen Fenster, auch neben einer offenen Steuerzentrale
+  (wie vor #279 auf macOS). Nur `torroworkplace ui` ohne diese Schalter (und `--section overview`) ist
+  Einzelinstanz. Der Dienst holt eine offene Steuerzentrale nur noch für die Einrichtung beim ersten Start nach
+  vorn (Übersicht, unter Hyprland über die genaue Fensterklasse).
+- **Vorlagen verschieben laufende Apps der Suite.** Ein Fenster der Suite, dessen gespeicherter Start kein Ziel
+  hat (`torrocalendar`, `torroinbox --view mail`, `open -n -a <Bündel>` ohne `--args …`), lädt immer als
+  „verschieben“, auch aus Vorlagen, die vor #279 „neu starten“ gespeichert haben: Ein neuer Prozess würde nur an
+  das laufende Fenster übergeben und enden, und die Vorlage liefe nach 15 s in „no window appeared“. Erkannt wird
+  die Suite an jedem Namen, den ein Fenstermanager ihr gibt (Fensterklasse, Bundle-ID
+  `io.github.mahype.<fensterklasse>`, Programmdatei mit oder ohne `.exe`). Das Fenster darf überall liegen, auch
+  schon auf dem Ziel: „Hinzufügen“ nimmt es dort, „Ersetzen“ lässt es offen, statt es zu schließen und mit dem
+  Neustart um die Wette laufen zu lassen. Unter AeroSpace und GlazeWM tragen Nebenfenster denselben Namen; ihr
+  Startbefehl (mit Ziel) schließt sie aus. Läuft die App nicht, startet die Vorlage sie wie bisher. Fenster mit
+  Ziel (`--task=…`, `--message=…`, `--lane`, `--source`, `--chat`, …) starten weiter neu.
+- **Assistent aus dem Bündel.** Neben dem Service-Bündel liegt keine App, und launchd hat sie nicht im `PATH`.
+  Chat-Fenster (`assistant.open_window`) startet der Dienst deshalb wie `apps.open_app`: über das Bündel mit
+  `open -n -a <Bündel> --args --chat …`, sonst das Programm. Die Sprachfunktion (`torroassistant --listen`, deren
+  Ausgabe der Dienst liest) läuft mit dem Programm im Bündel, sonst neben dem Dienst bzw. aus dem `PATH`. Auch
+  sonst sucht der Dienst Programme der Suite (`core::sibling`) wie die Apps zuerst neben sich, dann auf macOS
+  im Bündel, dann im `PATH`.
 - **Eingang als drei Programme.** `torroinbox` ist Bibliothek und Programm; `torro-inbox-mail` und
   `torro-inbox-notifications` setzen `--view` und starten die Bibliothek. Der Dienst startet Mail und App Feed
   über ihr eigenes Programm, wenn es da ist, sonst über `torroinbox --view …`. Das Verfassen bleibt bei
@@ -139,8 +162,9 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
   startet das Release.
 - **macOS: Steuerzentrale aus dem Bündel.** Einrichtung, Steuerzentrale und Vorlagen-Dialog startet der Dienst
   aus „Torro Workplace.app“, nie aus seinem eigenen (Service-)Bündel, immer mit `-n`. Aus dem Service-Bündel
-  liefen sie ohne Dock-Icon und mit der Bundle-ID des Dienstes; eine zweite Steuerzentrale übergibt über den
-  Instanz-Kanal an die erste.
+  liefen sie ohne Dock-Icon und mit der Bundle-ID des Dienstes. Alle diese Starts tragen eine Seite, die
+  Einrichtung oder eine Vorlage und öffnen ein eigenes Fenster; nur eine einfache zweite Steuerzentrale übergibt
+  über den Instanz-Kanal an die erste.
 - **Windows.** Jede App startet den Dienst losgelöst und ohne Konsole (`DETACHED_PROCESS |
   CREATE_NEW_PROCESS_GROUP`). Die Programme sind GUI-Programme ohne Konsolenfenster; ein Fehler beim Start
   landet in einer Datei im State-Verzeichnis des Eingangs statt in einer Konsole.
@@ -202,6 +226,16 @@ eigenem `TORRO_STATE_HOME`; sonst sprechen Dienst und App über verschiedene Soc
 - [ ] ⌘Q, rotes Fenster-Symbol und Dock › Beenden schließen die App. Der Dienst bleibt im Tray.
 - [ ] Doppelklick auf „Torro Workplace“ bei laufendem Dienst öffnet die Steuerzentrale (nicht nur den Dienst).
 - [ ] Eingang: ein Fenster mit `--lane info` bzw. `--source …` öffnet neben dem einfachen Hub-Fenster.
+- [ ] Vorlage mit Kalender (vor #279 gespeichert oder neu) bei laufendem Kalender laden, in „Hinzufügen“ und
+      „Ersetzen“, Kalender einmal auf einem anderen Workspace und einmal schon auf dem Ziel: Das Fenster wird
+      verschoben bzw. bleibt, kein „no window appeared“, kein zweiter Kalender. Ohne laufenden Kalender startet er.
+- [ ] Vorlage mit Aufgaben-Hauptfenster, während nur ein `--task`-Fenster offen ist (AeroSpace): Das
+      Hauptfenster startet, das Aufgaben-Fenster bleibt, wo es ist.
+- [ ] Dienst aus dem Service-Bündel (Release oder Dev-Bündel, nicht aus dem Terminal): Assistent › neues
+      Chat-Fenster öffnet sich; Sprachfunktion einschalten: kein „torroassistant is not installed“.
+- [ ] Steuerzentrale offen (Übersicht), dann in einer App „Connect …“ bzw. „Open Settings“, Tray › „Manage
+      workspaces…“: Es öffnet ein eigenes Fenster auf der Seite bzw. in der Einrichtung; die offene bleibt.
+      Ein zweiter einfacher Start der Steuerzentrale holt dagegen die offene nach vorn.
 - [ ] Tray › Quit; eine Agenten-Sitzung ruft ein Torro-Tool: Antwort `offline`, der Dienst bleibt aus. Dann eine
       App öffnen: Der Dienst läuft wieder.
 - [ ] Ein Release in `/Applications` neben dem Entwicklungs-Build: Der Dienst startet die Apps aus dem Release.
@@ -213,6 +247,8 @@ eigenem `TORRO_STATE_HOME`; sonst sprechen Dienst und App über verschiedene Soc
       Icon und Name.
 - [ ] Jede App aus dem Launcher ohne laufenden Dienst starten: Der Dienst startet mit.
 - [ ] Zweiter Start (Launcher, Terminal, Tray) holt das Fenster nach vorn, auch aus dem App-Umschalter.
+- [ ] Vorlage mit laufendem Kalender in „Hinzufügen“ und „Ersetzen“ laden: Das Fenster wird verschoben bzw. bleibt
+      auf dem Ziel, kein „no window appeared“.
 - [ ] Hyprland erkennt die Fensterklasse (`hyprctl clients`) und Fensterregeln greifen.
 - [ ] Fenster schließen lässt den Dienst im Tray laufen; Tray › Quit beendet ihn, ein MCP-Aufruf startet ihn
       nicht neu.
