@@ -12,9 +12,10 @@
 //! The channel can only ever bring a window to the front. The listening app reads at most
 //! [`MAX_LINE`] bytes, takes exactly `show` and drops everything else; arguments, targets, paths and
 //! environment never go over it, and its answer holds no state. Only the user reaches it: on Unix the
-//! socket is 0600 in a 0700 directory, on Windows the pipe refuses remote clients and the client
-//! connects with the security quality of service "identification", so a program holding the name
-//! cannot act as the user. Whoever holds the name can keep a window from opening, nothing more.
+//! socket is 0600 in a 0700 directory, on Windows the pipe has the access list of the core's pipe
+//! (the user alone, [`torro_ipc::pipe::user_only_listener`]) and refuses remote clients, and the
+//! client connects with the security quality of service "identification", so a program holding the
+//! name cannot act as the user. Whoever holds the name can keep a window from opening, nothing more.
 //! Anything that goes wrong (no state directory, a path too long for a socket, a name held by a
 //! program that does not answer) starts the app without a channel ([`Claim::Without`]), as before.
 //!
@@ -284,8 +285,9 @@ mod channel {
     use std::path::Path;
     use std::time::Duration;
 
-    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions};
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
     use tokio::time::Instant;
+    use torro_ipc::pipe::UserOnlyListener;
 
     use super::{Opening, TRIES, WAIT, answer, knock, knocked};
 
@@ -297,17 +299,18 @@ mod channel {
     const ERROR_PIPE_BUSY: i32 = 231;
 
     /// Reaches the app listening on the pipe `path` or creates it: knocks first; when there is no
-    /// such pipe, creates its first instance (`FILE_FLAG_FIRST_PIPE_INSTANCE`), so a name someone
-    /// else holds is never joined.
-    pub(super) async fn open(path: &Path) -> Opening<NamedPipeServer> {
+    /// such pipe, creates it for the user alone as its first instance
+    /// ([`torro_ipc::pipe::user_only_listener`]: the access list of the core's pipe, remote clients
+    /// refused, `FILE_FLAG_FIRST_PIPE_INSTANCE`), so a name someone else holds is never joined.
+    pub(super) async fn open(path: &Path) -> Opening<UserOnlyListener> {
         for _ in 0..TRIES {
             match connect(path).await {
                 Ok(Some(pipe)) => return knocked(knock(pipe).await),
                 Ok(None) => {}
                 Err(err) => return Opening::Without(err.to_string()),
             }
-            match ServerOptions::new().first_pipe_instance(true).reject_remote_clients(true).create(path) {
-                Ok(server) => return Opening::Listening(server),
+            match torro_ipc::pipe::user_only_listener(path) {
+                Ok(listener) => return Opening::Listening(listener),
                 // Another start created it a moment ago (or someone holds it): knock there.
                 Err(err) if err.kind() == ErrorKind::PermissionDenied => {}
                 Err(err) => return Opening::Without(err.to_string()),
@@ -332,21 +335,17 @@ mod channel {
         }
     }
 
-    /// Answers every client of the pipe `path` in turn ([`answer`]), opening the next instance
-    /// before it answers one, until the process ends or no next instance can be made.
-    pub(super) async fn serve(path: &Path, mut server: NamedPipeServer, on_show: impl Fn() + Send + 'static) {
+    /// Answers every client of the pipe `path` in turn ([`answer`]) until the process ends. Each
+    /// `accept` opens the next instance, with the same access list, before it hands out a client.
+    pub(super) async fn serve(path: &Path, listener: UserOnlyListener, on_show: impl Fn() + Send + 'static) {
         loop {
-            let connected = server.connect().await;
-            let next = match ServerOptions::new().reject_remote_clients(true).create(path) {
-                Ok(next) => next,
+            match listener.accept().await {
+                Ok(client) => answer(&client, &on_show).await,
+                // Out of handles and the like pass; the window stays either way.
                 Err(err) => {
-                    eprintln!("the single-instance channel {} stopped: {err}", path.display());
-                    return;
+                    eprintln!("the single-instance channel {} failed to accept: {err}", path.display());
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-            };
-            let client = std::mem::replace(&mut server, next);
-            if connected.is_ok() {
-                answer(client, &on_show).await;
             }
         }
     }
@@ -587,6 +586,19 @@ mod windows_tests {
         assert_eq!(claim_with_inbox(&unique_pipe("mail")).0, Claim::Shown);
         mail_shows.recv_timeout(Duration::from_secs(3)).expect("the mail window got show");
         assert!(hub_shows.try_recv().is_err(), "the hub did not");
+    }
+
+    #[test]
+    fn a_silent_listener_does_not_hold_up_the_start() {
+        let path = unique_pipe("silent");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let _squatter = runtime
+            .block_on(async { torro_ipc::pipe::user_only_listener(&path) })
+            .expect("a listener that never answers");
+
+        let started = std::time::Instant::now();
+        assert_eq!(claim_with_inbox(&path).0, Claim::Without, "starts without a channel");
+        assert!(started.elapsed() < Duration::from_secs(3), "{:?}", started.elapsed());
     }
 
     #[test]
