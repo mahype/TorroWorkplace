@@ -735,7 +735,11 @@ es im Kommentar der `design.toml`):
   `--design console`; alle Workspace-Tests mit den neuen Werten; `scripts/design-check.sh` sauber.
 
 ### L.35 Mail und Eingang: Listendarstellung und Lesespalte
-- [ ] erledigt
+- [x] erledigt (2026-10-23: `list::RowLook` aus `ListLook`, Zeilen in `rows` mit Avatar `[list] avatar` (0: kein Avatar,
+  auch nicht im Kopf des Lesers) und `preview_lines`, in `line` feste Spalten `mail_line`/`notice_line`; gewählte Zeile
+  `fill` mit Text und farbigen Marken in `on_accent` (`list::mark_colour`); die Kachel der Hinweise ist `size::tile()`;
+  der Kopf des Lesers steht auf der Achse der Lesespalte. Abweichung: im Paneel gelten Lesebreite und Rand oben/unten,
+  seitlich bleibt der Rand des Paneels, damit der Text mit Titel und Kopf auf einer Linie steht)
 - **Modell:** Opus · **Braucht:** L.34 · **Dateien:** `crates/torroinbox/src/{list,mail,hub,notifications,overview,app}.rs`
 - `list::sized_row`, `list::mail_content` und die Zeilen der Hinweise folgen `layout::list()`: `Rows` wie heute mit
   Avatar `list.avatar` (0 = ohne, der Platz entfällt, der Text beginnt am Rand der Zeile; auch im Kopf des Lesers),

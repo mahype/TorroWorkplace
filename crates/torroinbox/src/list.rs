@@ -18,6 +18,19 @@
 //!
 //! Both start their text at the same x: the notice's tile stands centred in the avatar's width.
 //!
+//! **The design's list look** (issue #291, task L.35, `layout::list()`): the same cells in the same
+//! order in every design, only drawn another way ([`RowLook`]):
+//!
+//! - `style = "rows"` (Standard, Compact): the rows above, the avatar `[list] avatar` wide – 0 draws
+//!   none and its place goes to the text ([`lead_in`]) –, the preview on `preview_lines` lines.
+//! - `style = "line"` (Console): one line per entry, [`size::row_message()`] or [`size::row_notice()`]
+//!   high, in fixed columns without a column head – a mail's marks · date · sender · subject
+//!   ([`mail_line`]), a notice's source · time · title ([`notice_line`]).
+//! - `style = "cards"`: the mail window's cards (below); every other list keeps its rows.
+//! - `separators`: a hairline below each row or none; `selection`: the chosen row with a bar of the
+//!   accent colour at its left, or the whole row in the accent with its text, icons and coloured marks
+//!   in `on_accent` ([`mark_colour`]).
+//!
 //! The row under the cursor carries its **action bar** in a strip below its lines
 //! (`widgets::row_actions_strip`, [`with_strip`]): Task (`t`), Done (`e`), Later (`s`) and Hide
 //! (`m`) – only what works for the entry, as in the panel ([`actions`]). Nothing floats over a row;
@@ -76,6 +89,7 @@ use iced::widget::{
     button, center, column, container, mouse_area, responsive, row, rule, scrollable, space as blank, svg,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
+use torro_core::design::{ListLook, ListSelection, ListStyle};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, radius, size, space};
@@ -166,18 +180,100 @@ pub(crate) fn cell_gap() -> f32 {
     space::m()
 }
 
-/// Width of the bar at the left of the selected row, as `widgets::list_row` draws it.
+/// Width of the bar at the left of the selected row, as `widgets::selection_bar` draws it.
 const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
 
-/// Edge of the avatar of a mail row, and the width the marks of all rows take, so the text of mail
-/// and of notices starts at the same x.
-pub(crate) fn mark_width() -> f32 {
-    size::control()
+/// How a row of a list draws its selection and its line in the list look `look` (issue #291,
+/// `[list]`, `layout::list()`): worked out apart from the widgets, so the tests can check every look
+/// without switching the process's design. [`sized_row`] draws what it says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RowLook {
+    /// The bar of the accent colour at the row's left (`selection = "bar"`, the chosen row): it takes
+    /// its width from the row's left padding, so the cells do not move.
+    pub bar: bool,
+    /// The chosen row in `accent`, its text, icons and coloured marks in `on_accent`
+    /// (`selection = "fill"`, [`mark_colour`]).
+    pub fill: bool,
+    /// A hairline below the row, inside its height (`separators`).
+    pub line: bool,
 }
 
-/// Edge of a notice's tile with the source's icon.
+impl RowLook {
+    /// The look of a row that is `selected` (under the cursor, in the reader, or chosen with others)
+    /// or not, in `look`.
+    pub(crate) fn of(look: ListLook, selected: bool) -> RowLook {
+        let (bar, fill) = match (selected, look.selection) {
+            (false, _) => (false, false),
+            (true, ListSelection::Bar) => (true, false),
+            (true, ListSelection::Fill) => (false, true),
+        };
+        RowLook { bar, fill, line: look.separators }
+    }
+}
+
+/// `colour` for a coloured mark in a row – the unread dot, a flag, a mail's category, an account's
+/// dot, a waiting notice's icon – drawn in the theme `t`: `on_accent` inside the chosen row of a design
+/// with `[list] selection = "fill"` (issue #291; confirmed with the draft of task L.32: a coloured mark
+/// on the accent would not read), else `colour` as it is. The cells of such a row are drawn in
+/// `theme::on_accent_theme`, which stays itself – that is how a mark knows where it stands.
+pub(crate) fn mark_colour(t: &Theme, colour: Color) -> Color {
+    if theme::on_accent_theme(t) == *t { palette(t).on_accent } else { colour }
+}
+
+/// Width of the lead of a row in the list look `look` – a mail's avatar, a notice's tile – so the text
+/// of mail and of notices starts at the same x: the avatar's edge (`[list] avatar`, 40 in the
+/// standard), at least the tile's. A design without an avatar (`avatar = 0`) gives a mail row no lead:
+/// its text starts at the row's edge; a notice keeps its tile, the source is no decoration.
+pub(crate) fn lead_in(look: ListLook, mail: bool) -> f32 {
+    match (look.avatar > 0.0, mail) {
+        (true, _) => look.avatar.max(tile()),
+        (false, true) => 0.0,
+        (false, false) => tile(),
+    }
+}
+
+/// [`lead_in`] with the gap after it, as the text of a row of `style = "rows"` starts; nothing
+/// without a lead.
+fn lead_room_in(look: ListLook, mail: bool) -> f32 {
+    let lead = lead_in(look, mail);
+    if lead > 0.0 { lead + space::m() } else { 0.0 }
+}
+
+/// The width the marks of a notice row take in the active design (its tile, [`lead_in`]), in which
+/// the folded "Info" of the overview centres its chevron.
+pub(crate) fn mark_width() -> f32 {
+    lead_in(layout::list(), false)
+}
+
+/// Edge of a notice's tile with the source's icon ([`size::tile()`], the "notice row" of the tiles:
+/// 28 in the standard, 20 in Console, so it fits a line).
 pub(crate) fn tile() -> f32 {
-    size::control_sm()
+    size::tile()
+}
+
+/// How many marks the marks column of a line holds (`style = "line"`): what the mail is, an invitation,
+/// an attachment and a flag – every mark a mail can carry, so the column is as wide in every row.
+const LINE_MARKS: usize = 4;
+
+/// The share of a line's free room the sender's column takes; the subject gets the rest. Fixed for
+/// the whole list, so the columns stand one under the other.
+const LINE_SENDER_SHARE: f32 = 0.3;
+
+/// Width of the marks column of a line ([`mail_line`], [`notice_line`]): [`LINE_MARKS`] small icons
+/// with [`space::xs()`] between them; a notice's tile stands in it.
+pub(crate) fn line_marks_width() -> f32 {
+    (LINE_MARKS as f32 * icon::SIZE_SM + (LINE_MARKS - 1) as f32 * space::xs()).max(tile())
+}
+
+/// Width of the date column of a line: the widest time a row shows on most days – "Yesterday 23:59"
+/// or a short date – in `META`, tabular, in the language shown. A wider one ("until Wed, 14 Oct" in
+/// "Snoozed") ends in "…".
+pub(crate) fn line_date_width() -> f32 {
+    let level = typo::meta().tabular();
+    let yesterday = trf("Yesterday {time}", &[("time", &"23:59")]);
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).map(|day| datetime::format_short_date(day, day));
+    let widest = day.iter().map(|day| typo::text_width(day, level)).fold(typo::text_width(&yesterday, level), f32::max);
+    widest.ceil()
 }
 
 /// Edge of the unread dot in the left inset.
@@ -246,7 +342,8 @@ pub fn groups(items: &[Item]) -> Vec<(Group, Range<usize>)> {
 }
 
 /// The height of `item`'s row ([`entry_row`]): [`message_height`] for mail,
-/// [`size::row_notice()`] for every other entry.
+/// [`size::row_notice()`] for every other entry – in every list style: a design that draws lists as one
+/// line (`style = "line"`) makes both one line high (Console: 24).
 pub fn row_height_of(item: &Item) -> f32 {
     if item.source.kind == SourceKind::Mail { message_height() } else { size::row_notice() }
 }
@@ -287,15 +384,23 @@ pub fn row_span_in(items: &[Item], index: usize, look: Look, width: f32, bare: b
         let above = items[..index].iter().map(|item| height_of(item, look, width));
         return Some(card_span(above, height_of(item, look, width)));
     }
-    let above: f32 = items[..index].iter().map(row_height_of).sum();
-    let groups = groups(items);
     // Every head is shorter by `head_trim()` ([`without_top`]).
-    let head = group_head() - head_trim();
+    rows_span(items, index, row_height_of, group_head() - head_trim(), strip_height_in(bare))
+}
+
+/// The span of row `index` in a list of rows (not cards) whose rows are as high as `height` says, under
+/// group heads `head` high, the cursor's row with a strip `strip` high below it ([`row_span_in`]):
+/// apart from the active design, so the tests can check the heights of every design (issue #291 –
+/// Console's rows are one line of 24). `None` past the end.
+fn rows_span(items: &[Item], index: usize, height: impl Fn(&Item) -> f32, head: f32, strip: f32) -> Option<(f32, f32)> {
+    let item = items.get(index)?;
+    let above: f32 = items[..index].iter().map(&height).sum();
+    let groups = groups(items);
     let heads = groups.iter().filter(|(_, range)| range.start <= index).count() as f32;
     let top = above + heads * head;
     let first = groups.iter().any(|(_, range)| range.start == index);
     // Row `index` is the cursor's: it carries the strip with its actions unless it is bare ([`entry_row`]).
-    Some((if first { top - head } else { top }, top + row_height_of(item) + strip_height_in(bare)))
+    Some((if first { top - head } else { top }, top + height(item) + strip))
 }
 
 /// The list, scrolling; the empty state of the view when there are no entries.
@@ -428,10 +533,20 @@ pub(crate) fn with_strip<'a>(
         &actions,
         if mail_selected.is_some() { mail_words_room(width) } else { words_room(width) },
     );
-    let left = mail_selected.map_or(0.0, mail_row_left);
+    let look = layout::list();
+    let left = mail_selected.map_or(0.0, |selected| mail_row_left(RowLook::of(look, selected).bar));
     let strip = container(widgets::row_actions_strip(actions, words))
-        .padding(Padding::new(0.0).left(left + mark_width() + space::m()));
+        .padding(Padding::new(0.0).left(left + strip_indent_in(look, mail_selected.is_some())));
     column![content, strip].spacing(space::s()).into()
+}
+
+/// How far in from the start of a row's cells its strip of actions starts ([`with_strip`]): where the
+/// text starts – after the lead in `style = "rows"` ([`lead_room_in`]), at the first column of a line.
+fn strip_indent_in(look: ListLook, mail: bool) -> f32 {
+    match look.style {
+        ListStyle::Line => 0.0,
+        ListStyle::Rows | ListStyle::Cards => lead_room_in(look, mail),
+    }
 }
 
 /// What the action bar of `item` offers, in its order (task E3.9), as the panel does:
@@ -608,7 +723,7 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     let MailCard { lines, chips, selected, on_press } = card;
     let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, .. } = lines;
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
-    let hit_colour = hits.map_or(Color::TRANSPARENT, |hits| hits.text);
+    let hit_colour = hits.map(|hits| hits.text);
     let lead = avatar(&name, account, size::avatar());
     let account_name = account_shown(account_name, domain.as_deref());
     let meta: Vec<String> =
@@ -725,9 +840,13 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     if cursor { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 
-/// A row of the list `height` high (including its line): `content` with the design's inset,
-/// centred in the height, the bar at the left while `selected`, a line below. Mail content
-/// includes its own marker slot, so `Some(unread)` suppresses the button's ordinary left inset.
+/// A row of the list `height` high (including its line, if the design draws one): `content` with the
+/// design's inset, centred in the height. How it shows follows the design's list look ([`RowLook`],
+/// issue #291): a line below or none; the `selected` row with the bar of the accent colour at its left
+/// (`widgets::selection_bar`), or in the accent – its content draws its text in `on_accent` itself
+/// ([`mail_content`], [`notice_content`]: `widgets::row_content` around the lines, not around a strip
+/// of buttons). Mail content includes its own marker slot, so `Some(unread)` suppresses the button's
+/// ordinary left inset.
 pub(crate) fn sized_row<'a>(
     content: Element<'a, Message>,
     selected: bool,
@@ -735,9 +854,11 @@ pub(crate) fn sized_row<'a>(
     on_press: Message,
     height: f32,
 ) -> Element<'a, Message> {
+    let parts = RowLook::of(layout::list(), selected);
     let pad = layout::row_padding();
-    let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
-    let height = height - size::HAIRLINE;
+    // The bar takes its width from the padding, so the cells do not move when the row is chosen.
+    let left = if parts.bar { pad.left - SELECTED_BAR } else { pad.left };
+    let height = height - if parts.line { size::HAIRLINE } else { 0.0 };
     let content: Element<'a, Message> = container(content).center_y(Fill).into();
     let body: Element<'a, Message> = button(content)
         .width(Fill)
@@ -746,21 +867,16 @@ pub(crate) fn sized_row<'a>(
         .style(style::button::list_row(selected))
         .on_press(on_press)
         .into();
-    let line: Element<'a, Message> = if selected {
-        let bar = container(blank()).width(SELECTED_BAR).height(height).style(|t: &Theme| container::Style {
-            background: Some(palette(t).text_3.into()),
-            ..container::Style::default()
-        });
-        row![bar, body].into()
-    } else {
-        body
-    };
-    column![line, rule::horizontal(size::HAIRLINE).style(style::rule)].into()
+    let body: Element<'a, Message> = if parts.bar { row![widgets::selection_bar(height), body].into() } else { body };
+    if parts.line { column![body, rule::horizontal(size::HAIRLINE).style(style::rule)].into() } else { body }
 }
 
-fn mail_row_left(selected: bool) -> f32 {
+/// The marker slot at the left of a mail row – the row's padding, at least the unread dot with
+/// [`space::xs()`] at its sides –, less the selection's bar while one is drawn (`bar`), so the dot and
+/// the text stay where they are.
+fn mail_row_left(bar: bool) -> f32 {
     let left = layout::row_padding().left.max(new_dot() + 2.0 * space::xs());
-    if selected { left - SELECTED_BAR } else { left }
+    if bar { left - SELECTED_BAR } else { left }
 }
 
 fn unread_dot<'a>() -> Element<'a, Message> {
@@ -768,7 +884,7 @@ fn unread_dot<'a>() -> Element<'a, Message> {
         .width(new_dot())
         .height(new_dot())
         .style(|t: &Theme| container::Style {
-            background: Some(Background::Color(palette(t).unread)),
+            background: Some(Background::Color(mark_colour(t, palette(t).unread))),
             border: border::rounded(new_dot() / 2.0),
             ..container::Style::default()
         })
@@ -793,15 +909,21 @@ fn sender_cell(name: &str, room: f32) -> (String, f32) {
     (shown, width)
 }
 
-/// The width the lines of a row `width` wide have beside the mark: minus the row's sides, the mark
-/// and the gap after it. Never negative.
+/// The width the lines of a notice row `width` wide have beside its tile: minus the row's sides, the
+/// tile and the gap after it ([`lead_room_in`]). Never negative.
 pub fn words_room(width: f32) -> f32 {
     let pad = layout::row_padding();
-    (width - pad.left - pad.right - mark_width() - space::m()).max(0.0)
+    (width - pad.left - pad.right - lead_room_in(layout::list(), false)).max(0.0)
+}
+
+/// The width the lines of a mail row `width` wide have in `look`: minus the marker slot, the right
+/// padding and the avatar with its gap – all of it without an avatar (`avatar = 0`). Never negative.
+fn mail_words_room_in(look: ListLook, width: f32) -> f32 {
+    (width - mail_row_left(false) - layout::row_padding().right - lead_room_in(look, true)).max(0.0)
 }
 
 fn mail_words_room(width: f32) -> f32 {
-    (words_room(width) - (mail_row_left(false) - layout::row_padding().left)).max(0.0)
+    mail_words_room_in(layout::list(), width)
 }
 
 /// One line of a row: `text` taking the free width (clipped, in case the estimate runs over),
@@ -879,13 +1001,14 @@ impl Hits<'_> {
 }
 
 /// `line` in `level`, coloured by `colour`, with `words` stressed ([`Hits`]): their weight one step
-/// up and in `hit_colour`. A line without a match is plain text.
+/// up and in `hit_colour` – or, with `None` (the chosen row in the accent, issue #291), in the line's
+/// own colour, which is `on_accent` there. A line without a match is plain text.
 fn marked<'a>(
     line: String,
     level: Level,
     colour: fn(&Theme) -> iced::widget::text::Style,
     words: &[String],
-    hit_colour: Color,
+    hit_colour: Option<Color>,
 ) -> Element<'a, Message> {
     let spans = crate::search::spans_of(&line, words);
     if !spans.iter().any(|span| span.hit) {
@@ -896,7 +1019,11 @@ fn marked<'a>(
         .into_iter()
         .map(|span| {
             let piece = iced::widget::span(span.text);
-            if span.hit { piece.font(stressed).color(hit_colour) } else { piece }
+            match (span.hit, hit_colour) {
+                (true, Some(colour)) => piece.font(stressed).color(colour),
+                (true, None) => piece.font(stressed),
+                (false, _) => piece,
+            }
         })
         .collect();
     iced::widget::rich_text(spans)
@@ -935,14 +1062,30 @@ pub(crate) fn account_shown(account_name: Option<String>, domain: Option<&str>) 
     account_name.filter(|account| domain != Some(account.as_str()))
 }
 
-/// The content of a mail row `width` wide (task E3.9): unread marker slot, avatar, then sender · domain · (marks) ·
-/// time, subject (· count), preview (· account, unless it is the sender's domain: [`account_shown`]).
+/// The content of a mail row `width` wide, as the design's list look draws it (issue #291): its rows
+/// ([`mail_rows`]) or one line ([`mail_line`]); on the `selected` row of a design with
+/// `selection = "fill"` in `on_accent` (`widgets::row_content`).
 pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
-    let room = mail_words_room(width);
+    let look = layout::list();
+    let content = match look.style {
+        ListStyle::Line => mail_line(look, lines, width, selected),
+        ListStyle::Rows | ListStyle::Cards => mail_rows(look, lines, width, selected),
+    };
+    widgets::row_content(content, selected)
+}
+
+/// A mail row `width` wide in `look` (task E3.9, `style = "rows"`): unread marker slot, the avatar
+/// (`[list] avatar`; none at 0, its place goes to the text), then sender · domain · (marks) · time,
+/// subject (· count), the preview on `preview_lines` lines (· account on the last, unless it is the
+/// sender's domain: [`account_shown`]).
+fn mail_rows<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
+    let parts = RowLook::of(look, selected);
+    let room = mail_words_room_in(look, width);
     let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
-    let hit_colour = hits.map_or(Color::TRANSPARENT, |hits| hits.text);
+    // On the accent the matches keep the row's own colour (`on_accent`) and stand out by weight.
+    let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
 
     // Sender, then the domain in what is left, then the marks and the time.
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
@@ -967,27 +1110,87 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32, selected: bool)
     let subject = marked(typo::ellipsize(&subject, level, subject_room), level, theme::text, &words, hit_colour);
     let second = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
 
-    // The preview, with the account from two accounts on.
+    // The preview on the design's lines, with the account from two accounts on at the end of the last.
     let account_room = account_name.as_deref().map_or(0.0, |name| {
         (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(room / 3.0)
     });
-    let preview = preview.map(|text| typo::ellipsize(&text, typo::body(), room - account_room)).unwrap_or_default();
-    let preview = marked(preview, typo::body(), theme::text_2, &words, hit_colour);
-    let ends = account_name
+    let mut previews: Vec<String> = preview
+        .map(|text| clamp_lines(&text, typo::body(), room - account_room, preview_count(look)))
+        .unwrap_or_default();
+    if previews.is_empty() {
+        // A mail without text keeps the row's lines: the subject stays where it is.
+        previews.push(String::new());
+    }
+    let last = previews.len() - 1;
+    let mut ends: Vec<Element<'a, Message>> = account_name
         .map(|name| account_cell(account, typo::ellipsize(&name, typo::meta(), account_room - cell_gap())))
         .into_iter()
         .collect();
-    let words = column![first, second, line(preview, ends)].width(Fill);
-    let marker: Element<'a, Message> = if new { unread_dot() } else { blank().into() };
-    let marker = container(marker)
-        .width(mail_row_left(selected))
-        .height(mark_width())
-        // The selection bar takes space from this slot; the dot stays at the same absolute x.
-        .padding(Padding::ZERO.right(if selected { SELECTED_BAR } else { 0.0 }))
-        .align_x(iced::Center)
-        .align_y(iced::Center);
-    let content = row![avatar(&name, account, mark_width()), words].spacing(space::m()).align_y(Alignment::Start);
+    let mut text_lines = column![first, second].width(Fill);
+    for (at, text) in previews.into_iter().enumerate() {
+        let text = marked(text, typo::body(), theme::text_2, &words, hit_colour);
+        text_lines = text_lines.push(line(text, if at == last { std::mem::take(&mut ends) } else { Vec::new() }));
+    }
+    let lead = lead_in(look, true);
+    let marker = marker_slot(new, parts.bar, lead.max(typo::line_height(level)));
+    let content: Element<'a, Message> = if look.avatar > 0.0 {
+        let face = container(avatar(&name, account, look.avatar)).center_x(lead);
+        row![face, text_lines].spacing(space::m()).align_y(Alignment::Start).into()
+    } else {
+        // No avatar: its place goes to the text, which starts at the row's edge.
+        text_lines.into()
+    };
     row![marker, content].align_y(Alignment::Start).into()
+}
+
+/// How many lines the preview of a mail row takes in `look` (`[list] preview_lines`, 1 or 2).
+fn preview_count(look: ListLook) -> usize {
+    usize::from(look.preview_lines.clamp(1, 2))
+}
+
+/// The marker slot of a mail row ([`mail_row_left`] wide, `height` high): the unread dot centred in it
+/// while the mail is `new`. The selection's `bar` takes its width from this slot; the dot stays at the
+/// same x.
+fn marker_slot<'a>(new: bool, bar: bool, height: f32) -> Element<'a, Message> {
+    let marker: Element<'a, Message> = if new { unread_dot() } else { blank().into() };
+    container(marker)
+        .width(mail_row_left(bar))
+        .height(height)
+        .padding(Padding::ZERO.right(if bar { SELECTED_BAR } else { 0.0 }))
+        .align_x(iced::Center)
+        .align_y(iced::Center)
+        .into()
+}
+
+/// A mail as one line `width` wide in `look` (`style = "line"`, Console, issue #291): the marker slot
+/// with the unread dot, then fixed columns without a column head – the marks ([`line_marks_width`]:
+/// what the mail is, an invitation, an attachment, a flag), the date ([`line_date_width`]), the sender
+/// ([`LINE_SENDER_SHARE`] of the free room) and the subject with the number of messages from two on.
+/// The preview, the domain and the account have no room on one line.
+pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
+    let parts = RowLook::of(look, selected);
+    let MailLines { name, time, marks, subject, new, count, hits, .. } = lines;
+    let words = hits.map(|hits| hits.words()).unwrap_or_default();
+    let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
+    let level = mail_text_level(new);
+    let gap = cell_gap();
+    let (marks_width, date_width) = (line_marks_width(), line_date_width());
+    let room = (width - mail_row_left(false) - layout::row_padding().right).max(0.0);
+    let free = (room - marks_width - date_width - 3.0 * gap).max(0.0);
+    let sender_width = (free * LINE_SENDER_SHARE).floor();
+    let subject_room = (free - sender_width - gap - count.as_deref().map_or(0.0, pill_width)).max(0.0);
+
+    let marks = row(marks.into_iter().map(|(mark, _)| mark)).spacing(space::xs()).align_y(Alignment::Center);
+    let marks = container(marks).width(marks_width).clip(true);
+    let date = typo::ellipsize(&time, typo::meta().tabular(), date_width);
+    let date = container(time_cell(date)).width(date_width).clip(true);
+    let sender = typo::text(level, typo::ellipsize(&name, level, sender_width)).style(theme::text);
+    let sender = container(sender.wrapping(Wrapping::None)).width(sender_width).clip(true);
+    let subject = marked(typo::ellipsize(&subject, level, subject_room), level, theme::text, &words, hit_colour);
+    let subject = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
+    let cells = row![marks, date, sender, subject].spacing(gap).align_y(Alignment::Center).width(Fill);
+    let marker = marker_slot(new, parts.bar, typo::line_height(level));
+    row![marker, cells].align_y(Alignment::Center).into()
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -1003,15 +1206,26 @@ pub(crate) fn lines_top(height: f32, lines: usize) -> f32 {
     lines_top_for(height, lines, typo::line_height(typo::body()))
 }
 
-/// [`lines_top`] for lines `line` high.
+/// [`lines_top`] for lines `line` high: the row's line below is no part of it, where the design draws
+/// one (`[list] separators`).
 fn lines_top_for(height: f32, lines: usize, line: f32) -> f32 {
-    (height - size::HAIRLINE - lines as f32 * line) / 2.0
+    let rule = if layout::list().separators { size::HAIRLINE } else { 0.0 };
+    (height - rule - lines as f32 * line) / 2.0
 }
 
-/// How many lines of text `item`'s row has: three for mail, two for a notice with a text, else one.
+/// How many lines of text `item`'s row has in the active design ([`line_count_in`]).
 pub(crate) fn line_count(item: &Item) -> usize {
-    if item.source.kind == SourceKind::Mail {
-        3
+    line_count_in(layout::list(), item)
+}
+
+/// How many lines of text `item`'s row has in `look`: one in a line (`style = "line"`); else for mail
+/// the sender's and the subject's and the preview's (`preview_lines`), two for a notice with a text,
+/// one without.
+pub(crate) fn line_count_in(look: ListLook, item: &Item) -> usize {
+    if look.style == ListStyle::Line {
+        1
+    } else if item.source.kind == SourceKind::Mail {
+        2 + preview_count(look)
     } else if words(item).1.is_some_and(|text| !text.is_empty()) {
         2
     } else {
@@ -1019,9 +1233,21 @@ pub(crate) fn line_count(item: &Item) -> usize {
     }
 }
 
-/// The content of any other entry's row: the source's tile, then title (· count) · time, and the
-/// text below.
+/// The content of any other entry's row `width` wide, as the design's list look draws it (issue
+/// #291): its rows ([`notice_rows`]) or one line ([`notice_line`]); while it is under the cursor in a
+/// design with `selection = "fill"` in `on_accent` (`widgets::row_content`).
 pub(crate) fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+    let look = layout::list();
+    let content = match look.style {
+        ListStyle::Line => notice_line(item, rows, width),
+        ListStyle::Rows | ListStyle::Cards => notice_rows(look, item, rows, width),
+    };
+    widgets::row_content(content, rows.selected == Some(item.id.as_str()))
+}
+
+/// A notice row in `look` (`style = "rows"`): the source's tile in the lead ([`lead_in`]), then title
+/// (· count) · time, and the text below.
+fn notice_rows<'a>(look: ListLook, item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let room = words_room(width);
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
     let time = time_text(item, rows.view, rows.now);
@@ -1037,17 +1263,38 @@ pub(crate) fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) ->
         words = words
             .push(container(typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::None)).clip(true));
     }
-    let mark = container(source_tile(item)).center_x(mark_width());
+    let mark = container(source_tile(item)).center_x(lead_in(look, false));
     row![mark, words].spacing(space::m()).align_y(Alignment::Center).into()
 }
 
+/// A notice as one line `width` wide (`style = "line"`, Console, issue #291), in the columns of a mail
+/// line ([`mail_line`]): the source's tile in the marks column, the time in the date column, then the
+/// title (· count) over the columns of sender and subject. Its text has no room on one line.
+pub(crate) fn notice_line<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+    let pad = layout::row_padding();
+    let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
+    let gap = cell_gap();
+    let (marks_width, date_width) = (line_marks_width(), line_date_width());
+    let count = (item.count > 1).then(|| item.count.to_string());
+    let room = (width - pad.left - pad.right).max(0.0);
+    let title_room = (room - marks_width - date_width - 2.0 * gap - count.as_deref().map_or(0.0, pill_width)).max(0.0);
+    let tile = container(source_tile(item)).width(marks_width).align_y(iced::Center);
+    let time = typo::ellipsize(&time_text(item, rows.view, rows.now), typo::meta().tabular(), date_width);
+    let time = container(time_cell(time)).width(date_width).clip(true);
+    let (title, _) = words(item);
+    let title =
+        typo::text(level, typo::ellipsize(&title, level, title_room)).style(theme::text).wrapping(Wrapping::None);
+    let title = line(title, count.map(|count| widgets::pill(None, count)).into_iter().collect());
+    row![tile, time, title].spacing(gap).align_y(Alignment::Center).width(Fill).into()
+}
+
 /// The source's icon of `item` on a small tile (`raised`, `line` frame): in the attention colour
-/// while it waits, else `text_2`.
+/// while it waits (`on_accent` in a chosen row in the accent, [`mark_colour`]), else `text_2`.
 pub(crate) fn source_tile<'a>(item: &Item) -> Element<'a, Message> {
     let waiting = is_waiting(item);
     let mark = icon::icon(source_icon(&item.source), icon::SIZE).style(move |t: &Theme, _| {
         let p = palette(t);
-        svg::Style { color: Some(if waiting { p.attention_text } else { p.text_2 }) }
+        svg::Style { color: Some(if waiting { mark_colour(t, p.attention_text) } else { p.text_2 }) }
     });
     container(mark)
         .center(tile())
@@ -1062,8 +1309,8 @@ pub(crate) fn source_tile<'a>(item: &Item) -> Element<'a, Message> {
         .into()
 }
 
-/// The round avatar of a mail row or card, `edge` wide ([`mark_width`] in a row, [`size::avatar()`]
-/// on a card, [`size::avatar_lg()`] in the reader): the initials of `name` ([`initials`], `CAPTION`,
+/// The round avatar of a mail row or card, `edge` wide (`[list] avatar` in a row, [`size::avatar()`]
+/// on a card, [`size::pill()`] in the reader): the initials of `name` ([`initials`], `CAPTION`,
 /// `text`) on the colour of the account at `account` ([`account_index`]) tinted over the panel, or
 /// on `raised` for an account not listed.
 pub(crate) fn avatar<'a>(name: &str, account: Option<usize>, edge: f32) -> Element<'a, Message> {
@@ -1088,7 +1335,7 @@ pub(crate) fn avatar<'a>(name: &str, account: Option<usize>, edge: f32) -> Eleme
 fn account_cell<'a>(account: Option<usize>, name: String) -> Element<'a, Message> {
     let dot = container(blank()).width(space::s()).height(space::s()).style(move |t: &Theme| {
         let p = palette(t);
-        let colour = account.map_or(p.text_3, |i| p.calendar[i % p.calendar.len()]);
+        let colour = account.map_or(p.text_3, |i| mark_colour(t, p.calendar[i % p.calendar.len()]));
         container::Style {
             background: Some(Background::Color(colour)),
             border: border::rounded(space::s() / 2.0),
@@ -2020,6 +2267,142 @@ mod tests {
             for width in [0.0, 240.0, 360.0, 480.0, 720.0] {
                 let _ = entry_card(&item, &rows, width);
                 let _ = entry_row(&item, &rows, width);
+            }
+        }
+    }
+
+    /// A built-in design (issue #291) from its embedded file: the process draws with the standard, and
+    /// the tests of this binary share it, so the others are read, never switched to.
+    fn built_in(id: &str) -> torro_core::design::Design {
+        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+    }
+
+    /// Issue #291 (task L.35): how a row shows its selection and its line follows the design – a bar
+    /// and hairlines in Standard and Compact, the whole row in the accent without lines in Console –,
+    /// and only the chosen row is marked.
+    #[test]
+    fn a_row_shows_its_selection_as_the_design_says() {
+        assert_eq!(layout::list(), built_in("torro").list, "the process draws with the standard");
+        for id in ["torro", "compact"] {
+            let look = built_in(id).list;
+            assert_eq!(RowLook::of(look, true), RowLook { bar: true, fill: false, line: true }, "{id}");
+            assert_eq!(RowLook::of(look, false), RowLook { bar: false, fill: false, line: true }, "{id}");
+        }
+        let console = built_in("console").list;
+        assert_eq!(RowLook::of(console, true), RowLook { bar: false, fill: true, line: false });
+        assert_eq!(RowLook::of(console, false), RowLook { bar: false, fill: false, line: false });
+        // The bar takes its width from the marker slot: the dot and the text stay where they are.
+        assert_eq!(mail_row_left(true) + SELECTED_BAR, mail_row_left(false));
+    }
+
+    /// Issue #291 (task L.35): in the chosen row drawn in the accent every text and every coloured mark
+    /// is `on_accent` – the cells are drawn in `theme::on_accent_theme` –, elsewhere a mark keeps its
+    /// colour; in light and dark mode.
+    #[test]
+    fn a_chosen_row_in_the_accent_draws_text_and_marks_in_on_accent() {
+        for window in [theme::theme(), theme::light()] {
+            let p = palette(&window);
+            let on = theme::on_accent_theme(&window);
+            assert_eq!(mark_colour(&on, p.unread), p.on_accent, "the unread dot");
+            assert_eq!(mark_colour(&on, p.attention), p.on_accent, "a flag, a waiting notice");
+            assert_eq!(mark_colour(&on, p.category[1]), p.on_accent, "a mail's category");
+            let text = palette(&on);
+            assert_eq!([text.text, text.text_2, text.text_3], [p.on_accent; 3], "sender, subject, time");
+            assert_eq!(mark_colour(&window, p.unread), p.unread, "elsewhere the mark keeps its colour");
+            assert!(p.on_accent.relative_contrast(p.accent) >= 4.5, "readable on the accent");
+        }
+    }
+
+    /// Issue #291 (task L.35): a mail row's avatar is the design's (`[list] avatar`); without one its
+    /// place goes to the text – the row's words get the avatar's width and its gap –, a notice keeps
+    /// its tile, and the reader's head follows the rows (`mail::head_avatar_in`).
+    #[test]
+    fn without_an_avatar_the_text_starts_at_the_rows_edge() {
+        let standard = layout::list();
+        assert_eq!((lead_in(standard, true), lead_in(standard, false)), (40.0, 40.0), "the standard's avatar");
+        assert_eq!(lead_in(built_in("compact").list, true), 28.0, "Compact's");
+        let none = ListLook { avatar: 0.0, ..standard };
+        assert_eq!(lead_in(none, true), 0.0, "no avatar, no lead");
+        assert_eq!(lead_room_in(none, true), 0.0, "and no gap after it");
+        assert_eq!(lead_in(none, false), tile(), "a notice keeps its tile");
+        for width in [480.0, 720.0] {
+            let gained = mail_words_room_in(none, width) - mail_words_room_in(standard, width);
+            assert_eq!(gained, 40.0 + space::m(), "at {width}: the avatar's place goes to the text");
+        }
+        assert_eq!(strip_indent_in(none, true), 0.0, "the strip starts where the text does");
+        assert_eq!(built_in("console").list.avatar, 0.0, "Console draws none");
+    }
+
+    /// Issue #291 (task L.35): row heights and the cursor's spans per list style – rows of three lines
+    /// (the preview on `preview_lines`) in Standard and Compact, one line of `row_message` (24) for mail
+    /// and notices in Console, under the same heads, bare or with the hub's strip.
+    #[test]
+    fn rows_and_lines_have_their_heights_and_spans() {
+        let notice = demo::sample(now()).remove(0);
+        let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let (standard, console) = (built_in("torro"), built_in("console"));
+        assert_eq!(line_count_in(standard.list, &entry), 3, "sender, subject, one line of preview");
+        assert_eq!(line_count_in(ListLook { preview_lines: 2, ..standard.list }, &entry), 4, "two of preview");
+        assert_eq!(line_count_in(standard.list, &notice), 2, "a notice with a text");
+        assert_eq!(line_count_in(console.list, &entry), 1, "a mail on one line");
+        assert_eq!(line_count_in(console.list, &notice), 1, "a notice on one line");
+        assert_eq!(line_count(&entry), 3, "the process draws the standard");
+
+        // Console: every row one line of 24, which holds the line of text (18).
+        let (message, notice_height) = (console.size.row_message, console.size.row_notice);
+        assert_eq!((message, notice_height), (24.0, 24.0));
+        assert!(console.size.row_message >= console.typo.body.line, "the line fits");
+        let mut items: Vec<Item> = demo::sample(now()).into_iter().filter(|i| i.state.is_open()).collect();
+        items.sort_by_key(|item| !is_waiting(item));
+        items.push(entry.clone());
+        let waiting = items.iter().filter(|item| is_waiting(item)).count();
+        let height = |item: &Item| if item.source.kind == SourceKind::Mail { message } else { notice_height };
+        let head = console.size.row_group - size::HAIRLINE;
+        let last = items.len() - 1;
+        let top = 2.0 * head + last as f32 * 24.0;
+        assert_eq!(rows_span(&items, last, height, head, 0.0), Some((top, top + 24.0)), "a bare line");
+        assert_eq!(rows_span(&items, 0, height, head, 0.0), Some((0.0, head + 24.0)), "the first shows its head");
+        let other = head + waiting as f32 * 24.0;
+        assert_eq!(rows_span(&items, waiting, height, head, 7.0), Some((other, other + head + 24.0 + 7.0)), "strip");
+        assert_eq!(rows_span(&items, items.len(), height, head, 0.0), None);
+        // The standard's rows through the same arithmetic as the list's own spans.
+        let standard_height = |item: &Item| row_height_of(item);
+        assert_eq!(
+            rows_span(&items, last, standard_height, group_head() - head_trim(), 0.0),
+            row_span_in(&items, last, Look::Rows, 480.0, true)
+        );
+    }
+
+    /// Issue #291 (task L.35): a line's columns stand one under the other – marks, date, sender,
+    /// subject at fixed widths –, every mark of a mail fits its column, and lines and rows build in
+    /// every look and width, chosen or not.
+    #[test]
+    fn lines_have_fixed_columns_and_every_look_builds() {
+        assert!(line_marks_width() >= LINE_MARKS as f32 * icon::SIZE_SM, "every mark of a mail");
+        assert!(line_marks_width() >= tile(), "a notice's tile");
+        let yesterday = trf("Yesterday {time}", &[("time", &"23:59")]);
+        assert!(line_date_width() >= typo::text_width(&yesterday, typo::meta().tabular()), "a date in full");
+
+        let view = View::ForMe;
+        let notice = demo::sample(now()).remove(0);
+        let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let looks = [
+            layout::list(),
+            built_in("compact").list,
+            built_in("console").list,
+            ListLook { avatar: 0.0, preview_lines: 2, ..layout::list() },
+        ];
+        for look in looks {
+            for selected in [true, false] {
+                let rows = rows_on(&view, if selected { "demo-1" } else { "someone" }, true);
+                for width in [0.0, 240.0, 600.0] {
+                    let lines =
+                        || MailLines { marks: vec![(blank().into(), icon::SIZE_SM)], ..MailLines::of(&entry, &rows) };
+                    let _ = mail_rows(look, lines(), width, selected);
+                    let _ = mail_line(look, lines(), width, selected);
+                    let _ = notice_rows(look, &notice, &rows, width);
+                    let _ = notice_line(&notice, &rows, width);
+                }
             }
         }
     }
