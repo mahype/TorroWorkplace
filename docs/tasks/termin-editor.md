@@ -188,7 +188,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   über `Request`; fmt, clippy, test.
 
 ## TE.6 MCP-Werkzeuge
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** TE.4, TE.5 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - `calendar_save_event`: `scope` ist neben `event` erlaubt (Ausnahme von „nur `event`“), in der kurzen Form
   verboten (die legt nur an); kurze Form zusätzlich `repeat` (`freq`, `interval`, `weekdays`, `until`,
