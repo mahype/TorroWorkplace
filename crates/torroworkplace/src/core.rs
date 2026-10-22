@@ -15702,7 +15702,6 @@ mod tests {
         nowhere(dir.path(), MAIL_PASSWORD, &[&asked, &connected]);
 
         // The server shows another certificate than the one trusted now (as if it got a new one).
-        let logins = server.logins();
         let mut changed = stored.clone();
         if let Some(mail) = changed[0].mail.as_mut() {
             mail.trusted_certificates = vec![nobody_shows];
@@ -15722,6 +15721,11 @@ mod tests {
         let problem = core.mail.account_sync_status(ANNA_MAIL).await.1;
         let message = tr("The certificate of the mail server changed. Check it in Server settings.");
         assert_eq!(problem.as_deref(), Some(message));
+        // Counted only now: the first sync's second connection may still sign in until the reload. The
+        // sync below surely connects after the count, with the certificate that is not trusted.
+        let logins = server.logins();
+        let synced = core.mail.sync_all(Reach::Suite).await;
+        assert!(matches!(synced, Err(crate::mail::service::MailError::Untrusted(_))), "{synced:?}");
         assert_eq!(server.logins(), logins, "no login at the server");
     }
 
