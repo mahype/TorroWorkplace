@@ -882,7 +882,13 @@ impl Mailbox {
             open_roles: self.open_roles.lock().unwrap_or_else(PoisonError::into_inner).clone(),
             mail,
             calendars: None,
-            trusted_certificates: self.config.trusted_certificates.clone(),
+            // In the account's form, also one written into `accounts.json` by hand.
+            trusted_certificates: self
+                .config
+                .trusted_certificates
+                .iter()
+                .filter_map(|pin| torro_mail::account::certificate_fingerprint(pin))
+                .collect(),
         };
         AccountInfo {
             id: self.account.id.clone(),

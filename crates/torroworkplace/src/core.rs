@@ -6864,8 +6864,13 @@ impl Core {
         let stored_pins = existing
             .and_then(|account| Some(stored_fingerprints(&account.mail.as_ref()?.trusted_certificates)))
             .unwrap_or_default();
+        // Each pin once: the request may name one fingerprint in two spellings.
         let mut offered_pins = stored_pins.clone();
-        offered_pins.extend(confirmed.into_iter().filter(|pin| !stored_pins.contains(pin)));
+        for pin in confirmed {
+            if !offered_pins.contains(&pin) {
+                offered_pins.push(pin);
+            }
+        }
         let mut config = torro_mail::MailAccountConfig {
             address: address.trim().to_string(),
             sender_name,

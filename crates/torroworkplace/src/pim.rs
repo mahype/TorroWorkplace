@@ -4794,8 +4794,7 @@ pub(crate) mod tests {
 
     /// The certificate of [`fake_tls_server`]: `self-signed.der` of `torro-mail-imap`'s fixtures,
     /// for `mail.home.arpa`, signed by itself, as on a server at home.
-    pub(crate) const SELF_SIGNED_DER: &[u8] =
-        include_bytes!("../../torro-mail-imap/tests/fixtures/imap-tls/self-signed.der");
+    pub(crate) const SELF_SIGNED_DER: &[u8] = include_bytes!("../tests/fixtures/tls/self-signed.der");
 
     /// [`SELF_SIGNED_DER`] as a fingerprint.
     pub(crate) fn self_signed() -> torro_mail_imap::tls::Fingerprint {
@@ -4810,7 +4809,7 @@ pub(crate) mod tests {
         reply: impl Fn(&Seen) -> Reply + Send + Sync + 'static,
     ) -> (String, Arc<std::sync::Mutex<Vec<Seen>>>) {
         use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-        const KEY: &[u8] = include_bytes!("../../torro-mail-imap/tests/fixtures/imap-tls/self-signed.key.der");
+        const KEY: &[u8] = include_bytes!("../tests/fixtures/tls/self-signed.key.der");
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(KEY.to_vec()));
         let config = rustls::ServerConfig::builder_with_provider(provider)
