@@ -146,6 +146,10 @@ pub struct Editor {
     /// The form handed out with the save under way, or with the last one that failed: it is not
     /// sent again until something changes.
     sent: Option<Form>,
+    /// The band's scope when the last save went out: a save that fails takes the band back to it, so
+    /// a change typed for "This event" is not sent again for "All" chosen meanwhile (the second
+    /// review of PR #294).
+    sent_scope: SeriesScope,
     /// A save is under way; the next one waits for its answer (new etag).
     saving: bool,
     /// The title as an editor widget; `form.title` mirrors its text on one line.
@@ -713,6 +717,7 @@ impl Editor {
             base: form.clone(),
             form,
             sent: None,
+            sent_scope: SeriesScope::Occurrence,
             saving: false,
             menu: false,
             confirm_delete: false,
@@ -1270,9 +1275,15 @@ impl Editor {
         self.request_save(false)
     }
 
-    /// The app's answer to a failed [`Action::Save`]: the form stays, the next change tries again.
+    /// The app's answer to a failed [`Action::Save`]: the form stays, the next change tries again,
+    /// with the scope the failed save went out with ([`Editor::choose_scope`] switched the band while
+    /// it was under way).
     pub fn save_failed(&mut self) {
         self.saving = false;
+        if self.scope != self.sent_scope {
+            self.scope = self.sent_scope;
+            self.reset = 0;
+        }
     }
 
     /// Whether `saved`, the answer to a save, belongs to this editor's save under way. A series
@@ -1393,6 +1404,7 @@ impl Editor {
         }
         self.saving = true;
         self.sent = Some(self.form.clone());
+        self.sent_scope = self.scope;
         Action::Save(event, self.save_scope())
     }
 
@@ -3390,6 +3402,15 @@ mod tests {
         assert_eq!(moved.form.repeat.as_ref(), occurrence().repeat.as_deref(), "the rule stays on Tuesdays");
         let answer = Event { recurrence_id: occurrence().recurrence_id, ..event };
         assert!(matches!(store(&mut moved, answer, "\"11\""), Action::None), "no save for all events follows");
+
+        // A save that fails takes the band back: the next change goes to this event, not to all.
+        let mut failing = Editor::edit(&occurrence(), &calendars());
+        failing.update(Message::Location("Room 12".into()));
+        let _ = saves_with(&mut failing, Message::Scope(SeriesScope::Series));
+        failing.save_failed();
+        assert_eq!(failing.scope, SeriesScope::Occurrence);
+        failing.update(Message::Location("Room 13".into()));
+        assert_eq!(saves_with(&mut failing, Message::Flush).1, Some(SeriesScope::Occurrence));
     }
 
     #[test]
