@@ -826,7 +826,11 @@ pub enum Request {
     /// another calendar together with `occurrence` or `following` is `unsupported`. The answer is
     /// the occurrence with the same `recurrence_id`, for `following` the first event of the new
     /// series; its `reset` counts the changed events of the series that were reset (task TE.4).
-    /// Until task TE.4 every occurrence stays `unsupported`, also with `scope`.
+    /// A save that removes events of the series (a shorter or removed rule, reset exceptions) needs
+    /// the right to delete and waits for approval like `calendar.delete_event`. Errors: `not-found`
+    /// (no such occurrence: reload), `conflict` (the series changed meanwhile), `unsupported`
+    /// (switching between all-day and timed for `following`/`series`, a rule that cannot be counted
+    /// for `following`), `error` (no `href` or `etag`).
     #[serde(rename = "calendar.save_event")]
     SaveEvent {
         event: Event,
@@ -838,8 +842,8 @@ pub enum Request {
     },
     /// Deletes the event; answered with [`Response::Ok`]. An occurrence of a series needs `scope`
     /// like [`Request::SaveEvent`]: `occurrence` deletes only it, `following` ends the series
-    /// before it, `series` deletes all of them; without one it stays `unsupported`. Until task TE.4
-    /// every occurrence stays `unsupported`, also with `scope`.
+    /// before it, `series` deletes all of them; without one it stays `unsupported`. Errors as for
+    /// [`Request::SaveEvent`].
     #[serde(rename = "calendar.delete_event")]
     DeleteEvent {
         event: Event,

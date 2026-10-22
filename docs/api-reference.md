@@ -330,7 +330,7 @@ Finds places for an event's location: first matching locations of events in the 
 
 Zugriff `read` · MCP-Tool `calendar_map_preview`
 
-Draws a small map (PNG, Base64 in `png`) around the point `geo`, at most 800 x 400, e.g. to show where an event is. Sends the numbers of the tiles around the point (so where it is) to the tile service set in the settings (OpenStreetMap unless changed). Fails with `unsupported` while maps are off in the settings, `busy` when the service asks to wait, `offline` when it cannot be reached.
+Draws a small map around the point `geo`, at most 800 x 400, e.g. to show where an event is. Sends the numbers of the tiles around the point (so where it is) to the tile service set in the settings (OpenStreetMap unless changed). Fails with `unsupported` while maps are off in the settings, `busy` when the service asks to wait, `offline` when it cannot be reached. The API answers a PNG, Base64 in `png`; MCP returns it as an image.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

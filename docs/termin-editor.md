@@ -163,6 +163,7 @@ Kacheln, zu Photon, zu den Regeln von Nominatim und „© OpenStreetMap contribu
 | `status` | `STATUS` | `confirmed`, `tentative`, `cancelled`; `None` = nicht angegeben |
 | `geo` | `GEO` | Breite und Länge des Ortes |
 | `organizer`, `attendees` | `ORGANIZER`, `ATTENDEE` | nur lesen (K.26), beim Speichern unverändert |
+| `exceptions` | `RECURRENCE-ID` der Ausnahmen | nur lesen: geänderte Vorkommen der Serie, vom Dienst aus dem Rohobjekt gesetzt; daraus zählt der Editor vorab, wie viele „folgende“ zurücksetzt (Entscheidung bei der Umsetzung, 2026-10-22) |
 
 `recurring` bleibt (verträglich), ist `true` genau dann, wenn `recurrence_id` oder `repeat` gesetzt ist.
 

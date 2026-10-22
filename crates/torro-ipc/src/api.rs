@@ -2002,11 +2002,11 @@ static MAP_PREVIEW: Command = Command {
     area: Area::Calendar,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Draws a small map (PNG, Base64 in `png`) around the point `geo`, at most 800 x 400, e.g. to show \
+    description: "Draws a small map around the point `geo`, at most 800 x 400, e.g. to show \
                   where an event is. Sends the numbers of the tiles around the point (so where it is) to the tile \
                   service set in the settings (OpenStreetMap unless changed). Fails with `unsupported` while maps \
                   are off in the settings, `busy` when the service asks to wait, `offline` when it cannot be \
-                  reached.",
+                  reached. The API answers a PNG, Base64 in `png`; MCP returns it as an image.",
 };
 
 static LIST_REMINDERS: Command = Command {
