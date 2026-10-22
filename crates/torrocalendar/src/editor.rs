@@ -25,10 +25,16 @@
 //! change); every save of it carries that scope, "This event" at first. The repeat can only change
 //! for following or all events (the row is off with a tooltip for "This event"), and only all events
 //! can end the series ("Never"). Changing time, length or rule of "Following" resets the changed
-//! occurrences after this one; the band says how many before ([`Editor::resets`], the condition of
+//! occurrences after this one; with "All", a new rule or a move to other days resets those the new
+//! series no longer has. The band says how many before ([`Editor::resets`], the condition of
 //! `series::resets` in the CalDAV crate, counted from `Event::exceptions`) and, after the save, the
-//! number the core reports. A series cannot switch between all day and timed for following or all
-//! events (the core answers `unsupported`), so the switch is off there.
+//! number the core reports. A new start date for following or all events moves a rule whose days
+//! came from the old one (weekly on its weekday, monthly on its day or n-th weekday, yearly on its
+//! date), as Google and Apple do; a rule on days of its own stays and the band warns before the save
+//! when the new date is none of them. A series cannot switch between all day and timed for following
+//! or all events (the core answers `unsupported`), so the switch is off there. An occurrence whose
+//! rule could not be read (`recurring` without `repeat`) changes only alone: "Following" and "All"
+//! are off with the reason as tooltip, so a save never ends the series without a word.
 //!
 //! Errors stay hidden until Enter asks for a save. Then the field that is wrong is marked, the
 //! message stands under it and the app gets an [`Action::Focus`] for it; from then on the message
@@ -82,6 +88,7 @@ use torro_gui::typo::text_width;
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, collection_color};
 use torro_gui::{style, typo};
 use torro_ipc::Place;
+use torro_ipc::pim::MAX_PLACE_QUERY_CHARS;
 use torro_pim::model::{Attendee, EventStatus, Geo, PartStat, Repeat, SeriesScope};
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, Event, EventTime, Transparency};
 
@@ -109,6 +116,9 @@ const DEFAULT_END: &str = "10:00";
 
 /// Why an event can only be looked at.
 const READ_ONLY_CALENDAR: &str = "This calendar is read-only";
+
+/// Why an occurrence changes alone: its series rule could not be read (`Editor::rule_unknown`).
+const UNKNOWN_RULE: &str = "The repeat of this series could not be read, so changes apply to this event only";
 
 /// How many zones the search of the zone menu lists at most.
 const ZONE_RESULTS: usize = 40;
@@ -163,6 +173,9 @@ pub struct Editor {
     machine_zone: Option<String>,
     /// How many changed occurrences the last save reset, as the core counted them.
     reset: u32,
+    /// The rule [`Editor::follow_start`] moved with a new start date: while the form still holds it
+    /// (or the stored one), the rule goes on following the date; a rule the person picked stays.
+    followed: Option<Repeat>,
     /// The maps settings (task TE.8): off until the app hands them over ([`Editor::set_maps`]).
     maps: Maps,
     /// The query of the place search under way; its answer comes to [`Editor::places_found`].
@@ -184,8 +197,21 @@ pub struct Editor {
 enum PlaceNote {
     /// Maps are off: "Turn on maps in Settings".
     MapsOff,
-    /// The search failed, in the core's words.
-    Failed(String),
+    /// The location is longer than a search may be ([`MAX_PLACE_QUERY_CHARS`]); nothing was sent.
+    TooLong,
+    /// The search failed: a translated sentence for why ([`PlaceFailure::message`]).
+    Failed(PlaceFailure),
+}
+
+impl PlaceNote {
+    /// The quiet line, translated.
+    fn words(&self) -> String {
+        match self {
+            PlaceNote::MapsOff => tr("Turn on maps in Settings").to_string(),
+            PlaceNote::TooLong => trf("A place search takes at most {n} characters", &[("n", &MAX_PLACE_QUERY_CHARS)]),
+            PlaceNote::Failed(failure) => failure.message().to_string(),
+        }
+    }
 }
 
 /// The small map of a point, as the core drew it.
@@ -589,9 +615,14 @@ impl Form {
 
 /// The start of `event` on the wall clock of its zone; an all-day event starts at midnight.
 fn wall_start(event: &Event) -> NaiveDateTime {
-    match event.start {
+    wall_of(event.start, event.time_zone.as_deref())
+}
+
+/// An event time on the wall clock of `zone`; a day at its midnight.
+fn wall_of(time: EventTime, zone: Option<&str>) -> NaiveDateTime {
+    match time {
         EventTime::Date(day) => day.and_time(NaiveTime::MIN),
-        EventTime::DateTime(at) => zone::wall(at, event.time_zone.as_deref()),
+        EventTime::DateTime(at) => zone::wall(at, zone),
     }
 }
 
@@ -684,6 +715,7 @@ impl Editor {
             zone_query: String::new(),
             machine_zone: zone::machine(),
             reset: 0,
+            followed: None,
             maps: Maps::default(),
             searched: None,
             place_note: None,
@@ -743,7 +775,10 @@ impl Editor {
                     return self.request_save(false);
                 }
             }
-            Message::StartDate(value) => self.form.start_date = value,
+            Message::StartDate(value) => {
+                self.form.start_date = value;
+                self.follow_start();
+            }
             Message::StartTime(value) => self.form.start_time = value,
             Message::EndDate(value) => self.form.end_date = value,
             Message::EndTime(value) => self.form.end_time = value,
@@ -868,8 +903,13 @@ impl Editor {
     }
 
     /// The scope of the next changes. "This event" cannot carry a new rule: one chosen for following
-    /// or all events but not saved yet goes back.
+    /// or all events but not saved yet goes back. Following or all events take a new start date's
+    /// days ([`Editor::follow_start`]). An occurrence whose rule could not be read stays with "This
+    /// event" ([`Editor::rule_unknown`]).
     fn choose_scope(&mut self, scope: SeriesScope) -> Action {
+        if scope != SeriesScope::Occurrence && self.rule_unknown() {
+            return Action::None;
+        }
         self.scope = scope;
         self.reset = 0;
         if scope == SeriesScope::Occurrence
@@ -877,7 +917,53 @@ impl Editor {
         {
             self.form.repeat = original.repeat.as_deref().cloned();
         }
+        self.follow_start();
         Action::None
+    }
+
+    /// With "Following" or "All", a rule whose days came from the stored start moves with a new start
+    /// date, as in Google and Apple ([`repeat::follow`]): the stored rule, moved from the stored start
+    /// date to the one typed. Only while the form holds the stored rule or one this moved itself – a
+    /// rule the person picked stays. A rule on days of its own stays too; the band warns when the new
+    /// date is not one of them ([`Editor::date_off_rule`]). A date that cannot be read changes nothing.
+    fn follow_start(&mut self) {
+        if self.occurrence().is_none() || self.scope == SeriesScope::Occurrence {
+            return;
+        }
+        let (Some(new), Some(old)) =
+            (parse_date(&self.form.start_date, self.today), parse_date(&self.base.start_date, self.today))
+        else {
+            return;
+        };
+        let Some(stored) = self.base.repeat.as_ref() else { return };
+        let untouched =
+            self.form.repeat.as_ref() == Some(stored) || (self.followed.is_some() && self.form.repeat == self.followed);
+        if let Some(moved) = repeat::follow(stored, old, new).filter(|_| untouched) {
+            self.followed = Some(moved.clone());
+            self.form.repeat = Some(moved);
+        }
+    }
+
+    /// Whether the band should warn before the save that the rule does not move with the date: with
+    /// "Following" or "All", a start date other than the stored one that is not one of the days of
+    /// the rule in the form (or a custom rule, which cannot tell).
+    fn date_off_rule(&self) -> bool {
+        if self.occurrence().is_none() || self.scope == SeriesScope::Occurrence {
+            return false;
+        }
+        let (Some(new), Some(old)) =
+            (parse_date(&self.form.start_date, self.today), parse_date(&self.base.start_date, self.today))
+        else {
+            return false;
+        };
+        new != old && self.form.repeat.as_ref().is_some_and(|rule| !repeat::fits(rule, new, new))
+    }
+
+    /// Whether the stored occurrence's series rule could not be read: `recurring` without `repeat`
+    /// (the core knew no raw object for it). Changes then go to this event alone – a save with
+    /// "Following" or "All" would carry no rule and end the series without a word.
+    fn rule_unknown(&self) -> bool {
+        self.occurrence().is_some_and(|event| event.repeat.is_none())
     }
 
     /// The rule `choice` from the menu or the card, with the end of the rule there is; saved at once
@@ -986,6 +1072,11 @@ impl Editor {
             self.say_maps_off();
             return self.request_save(true);
         }
+        // The core takes no longer search (`calendar.search_places`); say so here, in words.
+        if query.chars().count() > MAX_PLACE_QUERY_CHARS {
+            self.place_note = Some(PlaceNote::TooLong);
+            return self.request_save(true);
+        }
         self.close_menus();
         self.place_note = None;
         self.searched = Some(query.clone());
@@ -1036,7 +1127,8 @@ impl Editor {
     /// The app's answer to [`Action::SearchPlaces`] for `query`: the suggestions open under the
     /// location (also when there are none: "No places found" and "Use … as written"). An answer to
     /// an older search, or for text typed over since, is dropped. `MapsOff` says once that maps are
-    /// off; any other failure stands as a quiet line under the location.
+    /// off; any other failure stands as a quiet line under the location, in a translated sentence
+    /// ([`PlaceFailure::message`]), never in the core's English words.
     pub fn places_found(&mut self, query: &str, answer: Result<Vec<Place>, PlaceFailure>) {
         if self.searched.as_deref() != Some(query) {
             return;
@@ -1054,7 +1146,7 @@ impl Editor {
                 self.maps.enabled = false;
                 self.say_maps_off();
             }
-            Err(PlaceFailure::Other(message)) => self.place_note = Some(PlaceNote::Failed(message)),
+            Err(failure) => self.place_note = Some(PlaceNote::Failed(failure)),
         }
     }
 
@@ -1144,11 +1236,11 @@ impl Editor {
         self.saving && self.original.as_ref().is_none_or(|event| event.uid == saved.uid || event.recurring)
     }
 
-    /// How many changed occurrences after this one the change in the form would reset, before it is
-    /// saved: with "Following", once time, length or rule differ from the stored occurrence, the
-    /// changed occurrences after it (`series::resets` in the CalDAV crate counts the same); with
-    /// "All", every other changed occurrence when the rule goes. 0 otherwise. The core's own count
-    /// comes back with the save ([`Editor::stored`]).
+    /// How many changed occurrences the change in the form would reset, before it is saved, with the
+    /// condition of `series::resets` in the CalDAV crate: with "Following", once time, length or rule
+    /// differ from the stored occurrence, the changed occurrences after it; with "All", see
+    /// [`Editor::resets_of_all`]. 0 otherwise. The core's own count comes back with the save
+    /// ([`Editor::stored`]).
     pub fn resets(&self) -> u32 {
         let Some(original) = &self.original else { return 0 };
         let Some(key) = original.recurrence_id else { return 0 };
@@ -1156,11 +1248,36 @@ impl Editor {
             SeriesScope::Occurrence => 0,
             SeriesScope::Following if self.changes_grid(original) => self.changed_after(original, key),
             SeriesScope::Following => 0,
-            SeriesScope::Series if self.form.repeat.is_none() && original.repeat.is_some() => {
-                original.exceptions.iter().filter(|other| instant_of(**other) != instant_of(key)).count() as u32
-            }
-            SeriesScope::Series => 0,
+            SeriesScope::Series => self.resets_of_all(original, key),
         }
+    }
+
+    /// What "All" resets: nothing while time, length and rule stay; with the rule gone, every changed
+    /// occurrence but this one; else those whose day, moved as the series moves, is no longer one of
+    /// the rule's days ([`repeat::fits`]; the core keeps those that still fall on an event of the new
+    /// series). Only a new time or length on the same days resets nothing; a custom rule that changed
+    /// or moves to other days counts them all, as nothing here can tell.
+    fn resets_of_all(&self, original: &Event, key: EventTime) -> u32 {
+        if !self.changes_grid(original) {
+            return 0;
+        }
+        let others: Vec<EventTime> =
+            original.exceptions.iter().copied().filter(|other| instant_of(*other) != instant_of(key)).collect();
+        let Some(rule) = self.form.repeat.as_ref() else {
+            return if original.repeat.is_some() { others.len() as u32 } else { 0 };
+        };
+        let Ok(event) = self.form.build(self.today, Some(original)) else { return 0 };
+        let (from, to) = (wall_start(original), wall_start(&event));
+        let same_rule = repeat::same(Some(rule), original.repeat.as_deref(), from.date());
+        if same_rule && from.date() == to.date() {
+            return 0;
+        }
+        let shift = to - from;
+        let zone = original.time_zone.as_deref();
+        others
+            .into_iter()
+            .filter(|other| !repeat::fits(rule, to.date(), (wall_of(*other, zone) + shift).date()))
+            .count() as u32
     }
 
     /// The changed occurrences of `original`'s series after the one at `key`.
@@ -1196,9 +1313,11 @@ impl Editor {
         self.original.as_ref().filter(|event| event.recurring)
     }
 
-    /// The scope a save carries: the band's for an occurrence, none for any other event.
+    /// The scope a save carries: the band's for an occurrence, none for any other event; "This event"
+    /// for an occurrence whose rule could not be read ([`Editor::rule_unknown`]).
     fn save_scope(&self) -> Option<SeriesScope> {
-        self.occurrence().map(|_| self.scope)
+        let scope = if self.rule_unknown() { SeriesScope::Occurrence } else { self.scope };
+        self.occurrence().map(|_| scope)
     }
 
     /// Whether the form differs from what is stored and from what was last handed out.
@@ -1417,10 +1536,12 @@ impl Editor {
     /// read-only calendar.
     fn band(&self) -> Option<Element<'_, Message>> {
         self.occurrence().filter(|_| self.read_only.is_none())?;
+        // A series whose rule could not be read changes this event alone (`rule_unknown`).
+        let open = !self.rule_unknown();
         let scopes = [
-            (tr("This event"), Message::Scope(SeriesScope::Occurrence)),
-            (tr("Following"), Message::Scope(SeriesScope::Following)),
-            (tr("All"), Message::Scope(SeriesScope::Series)),
+            (tr("This event"), Some(Message::Scope(SeriesScope::Occurrence))),
+            (tr("Following"), open.then_some(Message::Scope(SeriesScope::Following))),
+            (tr("All"), open.then_some(Message::Scope(SeriesScope::Series))),
         ];
         let chosen = match self.scope {
             SeriesScope::Occurrence => 0,
@@ -1433,9 +1554,11 @@ impl Editor {
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
-        let head = row![container(label).width(Length::Fill), widgets::segmented(scopes, chosen)]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
+        let mut control = widgets::segmented_maybe(scopes, chosen);
+        if !open {
+            control = widgets::with_tooltip(control, tr(UNKNOWN_RULE));
+        }
+        let head = row![container(label).width(Length::Fill), control].spacing(space::s()).align_y(Alignment::Center);
         let mut band = column![head].spacing(space::xs());
         if let Some(note) = self.band_note() {
             band = band.push(note);
@@ -1444,47 +1567,63 @@ impl Editor {
         Some(column![band, rule::horizontal(size::HAIRLINE).style(style::rule)].into())
     }
 
-    /// What the scope resets, for the band: the count before a change is saved ([`Editor::resets`]),
-    /// the core's count after a save, and with "Following" what a change of time or rule would
-    /// reset; `None` when nothing is reset.
+    /// The quiet lines of the band: that the rule does not move with a new date
+    /// ([`Editor::date_off_rule`]), and what the scope resets – the count before a change is saved
+    /// ([`Editor::resets`]), the core's count after a save, and with "Following" what a change of
+    /// time or rule would reset. `None` when there is nothing to say.
     fn band_note(&self) -> Option<Element<'_, Message>> {
-        let original = self.occurrence()?;
-        let pending = self.resets();
-        let words = if pending > 0 {
-            match (self.scope, pending) {
-                (SeriesScope::Series, 1) => tr("Ending the series resets 1 changed event").to_string(),
-                (SeriesScope::Series, n) => trf("Ending the series resets {n} changed events", &[("n", &n)]),
-                (_, 1) => tr("1 changed event after this date is reset").to_string(),
-                (_, n) => trf("{n} changed events after this date are reset", &[("n", &n)]),
-            }
-        } else if self.reset > 0 {
-            match self.reset {
-                1 => tr("1 changed event was reset").to_string(),
-                n => trf("{n} changed events were reset", &[("n", &n)]),
-            }
-        } else {
-            let key = original.recurrence_id?;
-            let after = self.changed_after(original, key);
-            match (self.scope, after) {
-                (SeriesScope::Following, 1) => {
-                    tr("Changing time or repeat resets 1 changed event after this date").to_string()
-                }
-                (SeriesScope::Following, n) if n > 1 => {
-                    trf("Changing time or repeat resets {n} changed events after this date", &[("n", &n)])
-                }
-                _ => return None,
-            }
-        };
-        let mark = icon(Icon::Info, icon::SIZE_SM).style(|_, _| svg::Style { color: Some(theme::attention()) });
-        Some(
+        let mut lines: Vec<String> = Vec::new();
+        if self.date_off_rule() {
+            lines.push(tr("The repeat stays on its days; check that it fits the new date").to_string());
+        }
+        lines.extend(self.reset_words());
+        if lines.is_empty() {
+            return None;
+        }
+        let line = |words: String| -> Element<'_, Message> {
+            let mark = icon(Icon::Info, icon::SIZE_SM).style(|_, _| svg::Style { color: Some(theme::attention()) });
             row![
                 container(mark).center_y(typo::meta().line_height.to_absolute(typo::meta().size)),
                 typo::text(typo::meta(), words).style(theme::text_2)
             ]
             .spacing(space::s())
             .align_y(Alignment::Start)
-            .into(),
-        )
+            .into()
+        };
+        Some(column(lines.into_iter().map(line)).spacing(space::xs()).into())
+    }
+
+    /// What the scope resets, in words, or `None` when nothing is reset ([`Editor::band_note`]).
+    fn reset_words(&self) -> Option<String> {
+        let original = self.occurrence()?;
+        let pending = self.resets();
+        if pending > 0 {
+            let ends = self.form.repeat.is_none();
+            return Some(match (self.scope, pending) {
+                (SeriesScope::Series, 1) if ends => tr("Ending the series resets 1 changed event").to_string(),
+                (SeriesScope::Series, n) if ends => trf("Ending the series resets {n} changed events", &[("n", &n)]),
+                (SeriesScope::Series, 1) => tr("This change resets 1 changed event").to_string(),
+                (SeriesScope::Series, n) => trf("This change resets {n} changed events", &[("n", &n)]),
+                (_, 1) => tr("1 changed event after this date is reset").to_string(),
+                (_, n) => trf("{n} changed events after this date are reset", &[("n", &n)]),
+            });
+        }
+        if self.reset > 0 {
+            return Some(match self.reset {
+                1 => tr("1 changed event was reset").to_string(),
+                n => trf("{n} changed events were reset", &[("n", &n)]),
+            });
+        }
+        let key = original.recurrence_id?;
+        match (self.scope, self.changed_after(original, key)) {
+            (SeriesScope::Following, 1) => {
+                Some(tr("Changing time or repeat resets 1 changed event after this date").to_string())
+            }
+            (SeriesScope::Following, n) if n > 1 => {
+                Some(trf("Changing time or repeat resets {n} changed events after this date", &[("n", &n)]))
+            }
+            _ => None,
+        }
     }
 
     /// "● Work › Wed, 7 Oct": the calendar with its colour and the day the event starts on.
@@ -1636,6 +1775,8 @@ impl Editor {
         let open = matches!(self.popup, Some(Popup::Repeat | Popup::Custom(_)));
         if open {
             widgets::anchored(anchor, line)
+        } else if editable && self.rule_unknown() {
+            widgets::with_tooltip(line, tr(UNKNOWN_RULE))
         } else if editable && !can {
             widgets::with_tooltip(line, tr("Choose Following or All to change the repeat"))
         } else {
@@ -1726,8 +1867,7 @@ impl Editor {
         }
         let note = match (&self.searched, &self.place_note) {
             (Some(_), _) => Some(tr("Searching…").to_string()),
-            (None, Some(PlaceNote::MapsOff)) => Some(tr("Turn on maps in Settings").to_string()),
-            (None, Some(PlaceNote::Failed(message))) => Some(message.clone()),
+            (None, Some(note)) => Some(note.words()),
             (None, None) => None,
         };
         if let Some(note) = note {
@@ -2283,6 +2423,7 @@ mod tests {
 
     use torro_gui::datetime::to_utc;
     use torro_pim::CollectionKind;
+    use torro_pim::model::{RepeatDay, Weekday};
 
     use super::*;
 
@@ -3249,6 +3390,145 @@ mod tests {
         let (next, _) = saves_with(&mut editor, Message::Flush);
         assert_eq!((next.href.as_deref(), next.etag.as_deref()), (Some("/work/split-1.ics"), Some("\"1\"")));
         assert_eq!(next.repeat, answer.repeat, "the stored rule goes back unchanged");
+    }
+
+    /// Review of #278 (6): an occurrence whose rule could not be read (`recurring` without `repeat`)
+    /// changes alone – a save with "Following" or "All" would carry no rule and end the series.
+    #[test]
+    fn an_occurrence_without_a_readable_rule_changes_alone() {
+        let unread = Event { repeat: None, ..occurrence() };
+        let mut editor = Editor::edit(&unread, &calendars());
+        for scope in [SeriesScope::Following, SeriesScope::Series] {
+            assert!(matches!(editor.update(Message::Scope(scope)), Action::None));
+            assert_eq!(editor.scope, SeriesScope::Occurrence, "{scope:?} is off");
+        }
+        assert!(matches!(editor.update(Message::ToggleRepeat), Action::None) && editor.popup.is_none());
+        assert!(matches!(editor.update(Message::PickRepeat(None)), Action::None));
+        assert!(editor.band().is_some(), "the band still shows, with the reason");
+        editor.update(Message::StartTime("09:30".into()));
+        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        assert_eq!((event.repeat, scope), (None, Some(SeriesScope::Occurrence)));
+        // Never with another scope, however it got there.
+        editor.scope = SeriesScope::Series;
+        assert_eq!(editor.save_scope(), Some(SeriesScope::Occurrence));
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    /// Review of #278 (7): with "Following" or "All", a new start date moves a rule whose days came
+    /// from the old one (Google, Apple); a rule the person picked stays; a rule on days of its own
+    /// stays and the band warns before the save.
+    #[test]
+    fn a_new_date_moves_a_rule_taken_from_the_old_one() {
+        let wednesday = vec![RepeatDay { day: Weekday::Wednesday, nth: None }];
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::StartDate("14.10.2026".into()));
+        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "This event keeps the rule");
+        editor.update(Message::Scope(SeriesScope::Following));
+        assert_eq!(editor.form.repeat.as_ref().map(|r| r.weekdays.clone()), Some(wednesday.clone()), "taken over");
+        // Half-typed dates on the way do not stick: the rule is always moved from the stored one.
+        for typed in ["1", "15.10.", "14.10.2026"] {
+            editor.update(Message::StartDate(typed.into()));
+        }
+        editor.update(Message::EndDate("14.10.2026".into()));
+        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        assert_eq!(event.repeat.map(|r| r.weekdays), Some(wednesday.clone()));
+        assert_eq!(
+            (event.start, scope),
+            (EventTime::DateTime(to_utc(at(2026, 10, 14, 10, 0))), Some(SeriesScope::Following))
+        );
+        assert!(!editor.date_off_rule(), "the rule fits the new date");
+
+        // All events: the changed occurrences move along to Wednesdays and stay.
+        let mut all = Editor::edit(&occurrence(), &calendars());
+        all.update(Message::Scope(SeriesScope::Series));
+        all.update(Message::StartDate("14.10.2026".into()));
+        all.update(Message::EndDate("14.10.2026".into()));
+        assert_eq!(all.form.repeat.as_ref().map(|r| r.weekdays.clone()), Some(wednesday));
+        assert!(all.check().is_ok() && all.changes_grid(&occurrence()), "a change of the grid");
+        assert_eq!(all.resets(), 0);
+
+        // A rule the person picked stays.
+        let mut picked = Editor::edit(&occurrence(), &calendars());
+        picked.update(Message::Scope(SeriesScope::Following));
+        let daily = repeat::shortlist(day(2026, 10, 13))[0].clone();
+        let _ = saves_with(&mut picked, Message::PickRepeat(Some(Box::new(daily.clone()))));
+        picked.update(Message::StartDate("15.10.2026".into()));
+        assert_eq!(picked.form.repeat, Some(daily));
+
+        // A rule on days of its own (Tue and Thu) stays; the band warns while the date is off it.
+        let days = |all: &[Weekday]| all.iter().map(|day| RepeatDay { day: *day, nth: None }).collect::<Vec<_>>();
+        let rule = Repeat {
+            weekdays: days(&[Weekday::Tuesday, Weekday::Thursday]),
+            rule: String::new(),
+            ..repeat::shortlist(day(2026, 10, 13))[2].clone()
+        };
+        let own = Event { repeat: Some(Box::new(rule.clone())), ..occurrence() };
+        let mut editor = Editor::edit(&own, &calendars());
+        editor.update(Message::Scope(SeriesScope::Series));
+        editor.update(Message::StartDate("14.10.2026".into()));
+        assert_eq!(editor.form.repeat.as_ref(), Some(&rule));
+        assert!(editor.date_off_rule() && editor.band_note().is_some(), "Wednesday is none of its days");
+        editor.update(Message::StartDate("15.10.2026".into()));
+        assert!(!editor.date_off_rule(), "Thursday is");
+    }
+
+    /// Review of #278 (8): "All" with a new rule or a move to other days counts before the save the
+    /// changed occurrences the new series no longer has (the condition of `series::resets`).
+    #[test]
+    fn all_with_a_new_rule_counts_what_it_resets_before_the_save() {
+        let start = day(2026, 10, 13);
+        let mut all = Editor::edit(&occurrence(), &calendars());
+        all.update(Message::Scope(SeriesScope::Series));
+        all.form.repeat = Some(repeat::shortlist(start)[3].clone());
+        assert_eq!(all.resets(), 2, "every two weeks: a week before and a week after fall out of step");
+        let _ = all.band_note().expect("the band says so before the save");
+        all.form.repeat = Some(repeat::shortlist(start)[0].clone());
+        assert_eq!(all.resets(), 0, "every day still has them all");
+        all.form.repeat = Some(repeat::shortlist(start)[4].clone());
+        assert_eq!(all.resets(), 3, "the second Tuesday of the month has none of them");
+
+        // Days of its own, moved to Wednesday: the Tuesdays become Wednesdays, which it does not have.
+        let mut moved = Editor::edit(&occurrence(), &calendars());
+        moved.update(Message::Scope(SeriesScope::Series));
+        let tue_thu =
+            vec![RepeatDay { day: Weekday::Tuesday, nth: None }, RepeatDay { day: Weekday::Thursday, nth: None }];
+        moved.form.repeat =
+            Some(Repeat { weekdays: tue_thu, rule: String::new(), ..repeat::shortlist(start)[2].clone() });
+        moved.update(Message::StartDate("14.10.2026".into()));
+        moved.update(Message::EndDate("14.10.2026".into()));
+        assert_eq!(moved.resets(), 3);
+    }
+
+    /// Review of #278 (9): a location longer than a search may be is not sent, and every failure is
+    /// said in a translated sentence, never in the core's English words.
+    #[test]
+    fn a_too_long_place_is_not_searched_and_failures_are_said_in_words() {
+        let mut editor = with_maps();
+        editor.update(Message::Location("x".repeat(MAX_PLACE_QUERY_CHARS + 1)));
+        assert!(!matches!(editor.update(Message::SearchPlaces), Action::SearchPlaces(_)));
+        assert_eq!(editor.place_note, Some(PlaceNote::TooLong));
+        assert_eq!(
+            PlaceNote::TooLong.words(),
+            trf("A place search takes at most {n} characters", &[("n", &MAX_PLACE_QUERY_CHARS)])
+        );
+        let longest = "ä".repeat(MAX_PLACE_QUERY_CHARS);
+        editor.update(Message::Location(longest.clone()));
+        assert!(matches!(editor.update(Message::SearchPlaces), Action::SearchPlaces(_)), "characters, not bytes");
+        editor.places_found(&longest, Err(PlaceFailure::from_code("error")));
+        assert_eq!(
+            editor.place_note.as_ref().map(PlaceNote::words),
+            Some(tr("The place search did not work. Try again later.").to_string())
+        );
+        let _ = editor.panel(&Anchor::new(), |m| m);
+        let codes = [
+            ("busy", tr("Too many place searches. Try again in a moment.")),
+            ("offline", tr("The place search service cannot be reached.")),
+            ("something new", tr("The place search did not work. Try again later.")),
+        ];
+        for (code, words) in codes {
+            assert_eq!(PlaceFailure::from_code(code).message(), words, "{code}");
+        }
+        assert_eq!(PlaceFailure::from_code("unsupported"), PlaceFailure::MapsOff);
     }
 
     #[test]

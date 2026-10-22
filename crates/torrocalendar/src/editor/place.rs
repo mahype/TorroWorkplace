@@ -29,13 +29,43 @@ pub const MAP_HEIGHT: u16 = 104;
 /// Where the attribution of the map leads (ODbL).
 pub(super) const OSM_COPYRIGHT: &str = "https://www.openstreetmap.org/copyright";
 
-/// Why a place search shows no suggestions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Why a place search shows no suggestions. The editor says it in a translated sentence
+/// ([`Failure::message`]), never in the core's English `message`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
     /// Maps are off in the settings (the core's `unsupported`): nothing was sent.
     MapsOff,
-    /// Any other failure, in the core's words (`busy`, `offline`, `error`), for a quiet line.
-    Other(String),
+    /// Searches came too fast, or the service asks to wait (`busy`).
+    Busy,
+    /// The service cannot be reached (`offline`).
+    Offline,
+    /// The core did not answer (it may still be starting).
+    NoAnswer,
+    /// Any other failure (`error`, an answer that is no list of places).
+    Other,
+}
+
+impl Failure {
+    /// The failure for the error `code` of `calendar.search_places`; an unknown code is [`Failure::Other`].
+    pub fn from_code(code: &str) -> Failure {
+        match code {
+            "unsupported" => Failure::MapsOff,
+            "busy" => Failure::Busy,
+            "offline" => Failure::Offline,
+            _ => Failure::Other,
+        }
+    }
+
+    /// The quiet line under the location, translated: what happened and what to do.
+    pub(super) fn message(self) -> &'static str {
+        match self {
+            Failure::MapsOff => tr("Turn on maps in Settings"),
+            Failure::Busy => tr("Too many place searches. Try again in a moment."),
+            Failure::Offline => tr("The place search service cannot be reached."),
+            Failure::NoAnswer => tr("Torro Workplace isn't responding. It may still be starting."),
+            Failure::Other => tr("The place search did not work. Try again later."),
+        }
+    }
 }
 
 /// The address "Open in Maps" opens for `location` (as typed) at `geo` with the app the settings

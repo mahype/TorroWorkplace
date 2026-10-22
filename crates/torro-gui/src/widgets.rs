@@ -495,13 +495,28 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
     options: impl IntoIterator<Item = (L, M)>,
     active: usize,
 ) -> Element<'a, M> {
+    segmented_maybe(options.into_iter().map(|(label, message)| (label, Some(message))), active)
+}
+
+/// A [`segmented`] control in which a segment may be off: `(label, None)` is drawn at 40 % and takes
+/// no click (a choice that does not apply now; say why in a tooltip around the control). Frame,
+/// height and the active segment as in [`segmented`].
+///
+/// ```ignore
+/// let scopes = [(tr("This event"), Some(Message::Scope(One))), (tr("All"), None)];
+/// widgets::with_tooltip(widgets::segmented_maybe(scopes, 0), tr("Why All is off"))
+/// ```
+pub fn segmented_maybe<'a, M: Clone + 'a, L: IntoFragment<'a>>(
+    options: impl IntoIterator<Item = (L, Option<M>)>,
+    active: usize,
+) -> Element<'a, M> {
     let inner = size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
     let segments = options.into_iter().enumerate().map(|(i, (label, message))| {
         button(container(typo::text(typo::caption(), label).wrapping(Wrapping::None)).center_y(Fill))
             .height(inner)
             .padding(style::button_padding())
             .style(style::button::segment(i == active))
-            .on_press(message)
+            .on_press_maybe(message)
             .into()
     });
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()

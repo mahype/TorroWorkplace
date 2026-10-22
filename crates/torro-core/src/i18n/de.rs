@@ -4086,6 +4086,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("start", "Beginn"),
     ("weeks", "Wochen"),
     ("© OpenStreetMap", "© OpenStreetMap"),
+    // Event editor: review of #278
+    (
+        "The repeat of this series could not be read, so changes apply to this event only",
+        "Die Wiederholung dieser Serie ließ sich nicht lesen, daher gelten Änderungen nur für diesen Termin",
+    ),
+    (
+        "The repeat stays on its days; check that it fits the new date",
+        "Die Wiederholung bleibt auf ihren Tagen; prüf, ob sie zum neuen Datum passt",
+    ),
+    ("This change resets 1 changed event", "Diese Änderung setzt 1 geänderten Termin zurück"),
+    ("This change resets {n} changed events", "Diese Änderung setzt {n} geänderte Termine zurück"),
+    ("A place search takes at most {n} characters", "Eine Ortssuche nimmt höchstens {n} Zeichen"),
+    (
+        "The place search did not work. Try again later.",
+        "Die Ortssuche hat nicht geklappt. Versuch es später noch einmal.",
+    ),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),

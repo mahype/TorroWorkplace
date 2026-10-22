@@ -1297,9 +1297,9 @@ impl App {
         )
     }
 
-    /// Looks `query` up for the editor open now (the core's `search_places`, task TE.8). `unsupported`
-    /// means maps are off; other errors come back in the core's words. The demo suggests its fixed
-    /// places and sends nothing.
+    /// Looks `query` up for the editor open now (the core's `search_places`, task TE.8). An error comes
+    /// back by its code (`editor::PlaceFailure::from_code`: `unsupported` means maps are off), never in
+    /// the core's English words. The demo suggests its fixed places and sends nothing.
     fn search_places(&self, query: String) -> Task<Message> {
         let edit = self.edits;
         let Source::Core(client) = &self.source else {
@@ -1311,16 +1311,9 @@ impl App {
             async move {
                 match torro_ipc::client::call(&socket, &request).await {
                     Ok(torro_ipc::Response::Places { places }) => Ok(places),
-                    Ok(torro_ipc::Response::Error { code, .. }) if code == "unsupported" => {
-                        Err(editor::PlaceFailure::MapsOff)
-                    }
-                    Ok(torro_ipc::Response::Error { message, .. }) => Err(editor::PlaceFailure::Other(message)),
-                    Ok(_) => Err(editor::PlaceFailure::Other(
-                        tr("The place search service gave no usable answer.").to_string(),
-                    )),
-                    Err(_) => Err(editor::PlaceFailure::Other(
-                        tr("Torro Workplace isn't responding. It may still be starting.").to_string(),
-                    )),
+                    Ok(torro_ipc::Response::Error { code, .. }) => Err(editor::PlaceFailure::from_code(&code)),
+                    Ok(_) => Err(editor::PlaceFailure::Other),
+                    Err(_) => Err(editor::PlaceFailure::NoAnswer),
                 }
             },
             move |answer| Message::Places(edit, query.clone(), answer),

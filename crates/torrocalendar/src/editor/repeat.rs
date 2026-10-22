@@ -168,6 +168,160 @@ pub(super) fn keeping_end(pattern: &Repeat, current: Option<&Repeat>) -> Repeat 
     Repeat { end, ..pattern.clone() }
 }
 
+/// The rule `rule` of a series whose event moves from `old` to `new` (with "Following" or "All"),
+/// when its days were taken from `old`, as Google and Apple move it: weekly on exactly `old`'s
+/// weekday → on `new`'s; monthly on `old`'s day of the month (or the last day) or on its n-th
+/// weekday → on `new`'s; yearly on `old`'s date → on `new`'s. A rule that leaves its days to the start
+/// (`FREQ=WEEKLY` alone, daily) moves by itself and comes back as it is, as does any rule when the
+/// date stays. Interval and end stay; a changed rule loses its stored text (it is a new rule).
+///
+/// `None` for a rule on days of its own (Mon and Wed, the 1st and 15th) and a custom one: it stays as
+/// it is, and [`fits`] tells whether `new` is still one of its days.
+pub(super) fn follow(rule: &Repeat, old: NaiveDate, new: NaiveDate) -> Option<Repeat> {
+    if rule.custom {
+        return None;
+    }
+    if old == new {
+        return Some(rule.clone());
+    }
+    let mut moved = rule.clone();
+    let derived = match rule.freq {
+        RepeatFreq::Daily => rule.weekdays.is_empty() && rule.month_days.is_empty() && rule.months.is_empty(),
+        RepeatFreq::Weekly if !rule.month_days.is_empty() || !rule.months.is_empty() => false,
+        RepeatFreq::Weekly => match rule.weekdays.as_slice() {
+            [] => true,
+            [RepeatDay { day, nth: None }] if *day == weekday_of(old) => {
+                moved.weekdays = vec![every(weekday_of(new))];
+                true
+            }
+            _ => false,
+        },
+        RepeatFreq::Monthly if !rule.months.is_empty() => false,
+        RepeatFreq::Monthly => match (rule.weekdays.as_slice(), rule.month_days.as_slice()) {
+            ([], []) => true,
+            ([], [-1]) if last_of_month(old) => {
+                moved.month_days = vec![if last_of_month(new) { -1 } else { day_of(new) }];
+                true
+            }
+            ([], [day]) if *day == day_of(old) => {
+                moved.month_days = vec![day_of(new)];
+                true
+            }
+            ([RepeatDay { day, nth: Some(nth) }], []) if *day == weekday_of(old) && is_nth(*nth, old) => {
+                let nth = if *nth == -1 && in_last_week(new) { -1 } else { nth_in_month(new) };
+                moved.weekdays = vec![RepeatDay { day: weekday_of(new), nth: Some(nth) }];
+                true
+            }
+            _ => false,
+        },
+        RepeatFreq::Yearly if !rule.weekdays.is_empty() => false,
+        RepeatFreq::Yearly => match (rule.months.as_slice(), rule.month_days.as_slice()) {
+            (months, days)
+                if months.len() <= 1
+                    && days.len() <= 1
+                    && months.iter().all(|m| u32::from(*m) == old.month())
+                    && days.iter().all(|d| *d == day_of(old)) =>
+            {
+                if !months.is_empty() {
+                    moved.months = vec![month_of(new)];
+                }
+                if !days.is_empty() {
+                    moved.month_days = vec![day_of(new)];
+                }
+                true
+            }
+            _ => false,
+        },
+    };
+    if !derived {
+        return None;
+    }
+    if (&moved.weekdays, &moved.month_days, &moved.months) != (&rule.weekdays, &rule.month_days, &rule.months) {
+        moved.rule = String::new();
+    }
+    Some(moved)
+}
+
+/// Whether `date` is one of the days of `rule` for a series with an event on `anchor`: on its
+/// weekday, day of the month, n-th weekday or month as the rule names them (what the rule leaves to
+/// the start taken from `anchor`), every `interval` days, weeks (from Monday), months or years
+/// counted from `anchor`. The end is not looked at. A custom rule fits nothing: nothing here can tell.
+pub(super) fn fits(rule: &Repeat, anchor: NaiveDate, date: NaiveDate) -> bool {
+    if rule.custom {
+        return false;
+    }
+    let r = normal(rule, anchor);
+    let every = i64::from(r.interval.max(1));
+    let on_weekday = |days: &[RepeatDay]| days.iter().any(|d| d.day == weekday_of(date) && d.nth.is_none());
+    match r.freq {
+        RepeatFreq::Daily => {
+            (date - anchor).num_days().rem_euclid(every) == 0 && (r.weekdays.is_empty() || on_weekday(&r.weekdays))
+        }
+        RepeatFreq::Weekly => {
+            let monday = |day: NaiveDate| day - Duration::days(i64::from(day.weekday().num_days_from_monday()));
+            ((monday(date) - monday(anchor)).num_days() / 7).rem_euclid(every) == 0 && on_weekday(&r.weekdays)
+        }
+        RepeatFreq::Monthly => {
+            let months =
+                i64::from(date.year() - anchor.year()) * 12 + i64::from(date.month()) - i64::from(anchor.month());
+            months.rem_euclid(every) == 0 && on_day_of_month(&r, date)
+        }
+        RepeatFreq::Yearly => {
+            i64::from(date.year() - anchor.year()).rem_euclid(every) == 0
+                && (r.months.is_empty() || r.months.contains(&month_of(date)))
+                && on_day_of_month(&r, date)
+        }
+    }
+}
+
+/// Whether `date` is on a day of the month `r` names: one of its weekdays (the n-th from the start
+/// or, negative, from the end of the month), else one of its days of the month (negative from the
+/// end).
+fn on_day_of_month(r: &Repeat, date: NaiveDate) -> bool {
+    if !r.weekdays.is_empty() {
+        return r.weekdays.iter().any(|d| d.day == weekday_of(date) && d.nth.is_none_or(|nth| is_nth(nth, date)));
+    }
+    let last = i64::from(days_in_month(date));
+    r.month_days.iter().any(|&day| {
+        let day = i64::from(day);
+        let at = if day < 0 { last + 1 + day } else { day };
+        at == i64::from(date.day())
+    })
+}
+
+/// Whether `date` is the `nth` such weekday of its month: counted from the start (1 to 5), or,
+/// negative, from the end (-1 the last).
+fn is_nth(nth: i8, date: NaiveDate) -> bool {
+    let from_start = (date.day() - 1) / 7 + 1;
+    let from_end = (days_in_month(date) - date.day()) / 7 + 1;
+    match nth {
+        n if n > 0 => u32::from(n.unsigned_abs()) == from_start,
+        n => u32::from(n.unsigned_abs()) == from_end,
+    }
+}
+
+/// Whether `date` lies in the last seven days of its month, so its weekday is the month's last.
+fn in_last_week(date: NaiveDate) -> bool {
+    is_nth(-1, date)
+}
+
+/// How many days the month of `date` has.
+fn days_in_month(date: NaiveDate) -> u32 {
+    (28..=31).rev().find(|day| date.with_day(*day).is_some()).unwrap_or(28)
+}
+
+/// The day of the month of `date`, as a rule names it.
+fn day_of(date: NaiveDate) -> i8 {
+    // 1 to 31: the cast keeps the value.
+    date.day() as i8
+}
+
+/// The month of `date`, as a rule names it.
+fn month_of(date: NaiveDate) -> u8 {
+    // 1 to 12: the cast keeps the value.
+    date.month() as u8
+}
+
 /// The sentence for `repeat` of a series starting on `start`: "Every week on Tue, until 22 Dec",
 /// "Every month on the fourth Tue, 10 times", "Every weekday"; "Custom rule" for a rule the editor
 /// cannot show.
@@ -709,6 +863,84 @@ mod tests {
             "a new choice keeps the end"
         );
         assert!(same(None, None, start) && !same(Some(&read), None, start));
+    }
+
+    /// Review of #278: a rule whose days came from the old start moves with a new start date, as in
+    /// Google and Apple; a rule on days of its own stays.
+    #[test]
+    fn a_rule_taken_from_the_start_moves_with_it() {
+        // Tuesday 13 October 2026 (second Tuesday) to Wednesday 14 and Thursday 29 (last Thursday).
+        let (old, wed, last_thu) = (day(2026, 10, 13), day(2026, 10, 14), day(2026, 10, 29));
+        let stored = |r: Repeat| Repeat { rule: "FROM-THE-SERVER".into(), end: RepeatEnd::Count(5), ..r };
+
+        let weekly = stored(shortlist(old)[2].clone());
+        let moved = follow(&weekly, old, wed).expect("weekly on the old weekday follows");
+        assert_eq!(moved.weekdays, [every(Weekday::Wednesday)]);
+        assert_eq!((moved.end, moved.rule.as_str()), (RepeatEnd::Count(5), ""), "the end stays, the text goes");
+        assert_eq!(follow(&weekly, old, old), Some(weekly.clone()), "no move, no change");
+        let biweekly = stored(shortlist(old)[3].clone());
+        assert_eq!(
+            follow(&biweekly, old, wed).map(|r| (r.interval, r.weekdays)),
+            Some((2, vec![every(Weekday::Wednesday)]))
+        );
+        let plain = rule_of(RepeatFreq::Weekly, 1, Vec::new(), Vec::new());
+        assert_eq!(follow(&plain, old, wed), Some(plain.clone()), "FREQ=WEEKLY alone moves by itself");
+        let daily = shortlist(old)[0].clone();
+        assert_eq!(follow(&daily, old, wed), Some(daily.clone()));
+
+        let nth = stored(monthly(old));
+        assert_eq!(
+            follow(&nth, old, wed).map(|r| r.weekdays),
+            Some(vec![RepeatDay { day: Weekday::Wednesday, nth: Some(2) }])
+        );
+        assert_eq!(
+            follow(&nth, old, last_thu).map(|r| r.weekdays),
+            Some(vec![RepeatDay { day: Weekday::Thursday, nth: Some(-1) }])
+        );
+        let by_day = rule_of(RepeatFreq::Monthly, 1, Vec::new(), vec![13]);
+        assert_eq!(follow(&by_day, old, wed).map(|r| r.month_days), Some(vec![14]));
+        let last_day = monthly(day(2026, 10, 31));
+        assert_eq!(follow(&last_day, day(2026, 10, 31), day(2026, 11, 30)).map(|r| r.month_days), Some(vec![-1]));
+        let yearly =
+            Repeat { months: vec![10], month_days: vec![13], ..rule_of(RepeatFreq::Yearly, 1, vec![], vec![]) };
+        let moved = follow(&yearly, old, day(2026, 11, 2)).expect("yearly on the old date follows");
+        assert_eq!((moved.months, moved.month_days), (vec![11], vec![2]));
+
+        // Days of its own stay: Tue and Thu, the 1st and the 13th, a custom rule.
+        let own = rule_of(RepeatFreq::Weekly, 1, vec![every(Weekday::Tuesday), every(Weekday::Thursday)], vec![]);
+        assert_eq!(follow(&own, old, wed), None);
+        assert_eq!(follow(&rule_of(RepeatFreq::Monthly, 1, vec![], vec![1, 13]), old, wed), None);
+        assert_eq!(follow(&Repeat { custom: true, ..weekly }, old, wed), None);
+    }
+
+    /// Review of #278: which days a rule has, for the warning before a move and the changed events
+    /// "All" resets.
+    #[test]
+    fn a_day_fits_a_rule_or_not() {
+        let tue = day(2026, 10, 13);
+        let weekly = shortlist(tue)[2].clone();
+        assert!(fits(&weekly, tue, day(2026, 10, 20)) && fits(&weekly, tue, day(2026, 10, 6)));
+        assert!(!fits(&weekly, tue, day(2026, 10, 14)), "a Wednesday is no Tuesday");
+        let biweekly = shortlist(tue)[3].clone();
+        assert!(fits(&biweekly, tue, day(2026, 10, 27)) && !fits(&biweekly, tue, day(2026, 10, 20)));
+        assert!(!fits(&biweekly, tue, day(2026, 10, 6)), "a week before is out of step too");
+        let own = rule_of(RepeatFreq::Weekly, 1, vec![every(Weekday::Tuesday), every(Weekday::Thursday)], vec![]);
+        assert!(fits(&own, tue, day(2026, 10, 15)) && !fits(&own, tue, day(2026, 10, 14)));
+        assert!(fits(&shortlist(tue)[0], tue, day(2026, 10, 14)), "every day");
+        assert!(fits(&shortlist(tue)[1], tue, day(2026, 10, 16)) && !fits(&shortlist(tue)[1], tue, day(2026, 10, 17)));
+
+        let second_tue = monthly(tue);
+        assert!(fits(&second_tue, tue, day(2026, 11, 10)) && !fits(&second_tue, tue, day(2026, 11, 3)));
+        let last_day = monthly(day(2026, 10, 31));
+        assert!(
+            fits(&last_day, day(2026, 10, 31), day(2026, 11, 30))
+                && !fits(&last_day, day(2026, 10, 31), day(2026, 11, 29))
+        );
+        let yearly = shortlist(tue)[5].clone();
+        assert!(fits(&yearly, tue, day(2027, 10, 13)) && !fits(&yearly, tue, day(2027, 10, 14)));
+        assert!(!fits(&Repeat { custom: true, ..weekly.clone() }, tue, tue), "a custom rule cannot tell");
+        assert_eq!(days_in_month(day(2028, 2, 3)), 29);
+        assert!(in_last_week(day(2026, 10, 27)) && !in_last_week(day(2026, 10, 20)));
     }
 
     #[test]
