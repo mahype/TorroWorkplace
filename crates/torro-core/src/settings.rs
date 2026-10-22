@@ -515,14 +515,15 @@ impl Maps {
     /// also names `{z}`, `{x}` and `{y}`. An address equal to `stored` is not checked again: a file
     /// edited by hand must not block switching maps off.
     pub fn check_changes(&self, stored: &Maps) -> Result<(), String> {
-        if self.geocoder != stored.geocoder {
-            plain_address(&self.geocoder).map_err(|why| format!("the place search address {why}"))?;
+        if self.geocoder != stored.geocoder
+            && let Some(why) = address_problem(&self.geocoder, false)
+        {
+            return Err(format!("the place search address is refused: {why}"));
         }
-        if self.tiles != stored.tiles {
-            plain_address(&self.tiles).map_err(|why| format!("the map tile address {why}"))?;
-            if !["{z}", "{x}", "{y}"].iter().all(|part| self.tiles.contains(part)) {
-                return Err("the map tile address must name {z}, {x} and {y}".into());
-            }
+        if self.tiles != stored.tiles
+            && let Some(why) = address_problem(&self.tiles, true)
+        {
+            return Err(format!("the map tile address is refused: {why}"));
         }
         Ok(())
     }
@@ -551,24 +552,33 @@ impl Maps {
     }
 }
 
-/// Why `address` is no plain web address for [`Maps::check_changes`], as the end of a sentence.
-fn plain_address(address: &str) -> Result<(), String> {
+/// Why `address` may not be used for maps (`tiles`: as the map tile address), as a sentence for
+/// people that [`crate::i18n::tr`] translates; `None` when it may. `http` or `https` with a host, no
+/// query (`?`), no fragment (`#`), no sign-in (`user@`) and no spaces; the tile address also names
+/// `{z}`, `{x}` and `{y}`. The settings page shows it in the language of the suite, the API in
+/// English (the review of PR #294).
+pub fn address_problem(address: &str, tiles: bool) -> Option<&'static str> {
     let rest = address.strip_prefix("https://").or_else(|| address.strip_prefix("http://"));
-    let Some(rest) = rest else { return Err("must start with https:// or http://".into()) };
+    let Some(rest) = rest else { return Some("The address must start with https:// or http://.") };
     let host = rest.split('/').next().unwrap_or_default();
     if host.is_empty() {
-        return Err("names no server".into());
+        return Some("The address names no server.");
     }
     if host.contains('@') {
-        return Err("may not carry a sign-in (user@): services with a key of their own come later".into());
+        return Some("The address may not carry a sign-in (user@). Services with a key of their own come later.");
     }
     if address.contains(['?', '#']) {
-        return Err("may not carry a query (?…) or a fragment (#…): services with a key of their own come later".into());
+        return Some(
+            "The address may not carry a query (?…) or a fragment (#…). Services with a key of their own come later.",
+        );
     }
     if address.chars().any(char::is_whitespace) {
-        return Err("may not contain spaces".into());
+        return Some("The address may not contain spaces.");
     }
-    Ok(())
+    if tiles && !["{z}", "{x}", "{y}"].iter().all(|part| address.contains(part)) {
+        return Some("The map tile address must name {z}, {x} and {y}.");
+    }
+    None
 }
 
 /// `maps` as written, or the defaults (off) when it does not read; a file edited by hand keeps its

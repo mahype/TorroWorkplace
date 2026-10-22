@@ -630,7 +630,7 @@ impl Custom {
     ) -> Element<'a, Message> {
         let built = self.build(start, today, until);
         let problem = built.as_ref().err().copied().filter(|_| self.attempted);
-        let labels = [tr("Every"), tr("On"), tr("Ends")];
+        let labels = [tr("Every"), trc("date", "On"), tr("Ends")];
         let width = labels.iter().map(|l| text_width(l, typo::meta())).fold(0.0, f32::max).ceil();
         let label = move |text: &'static str| -> Element<'a, Message> {
             container(typo::text(typo::meta(), text).style(theme::text_3)).width(width).into()
@@ -667,7 +667,7 @@ impl Custom {
                         widgets::with_tooltip(chip, full(*day))
                     })
                     .collect();
-                what = what.push(line(tr("On"), widgets::chip_row(chips)));
+                what = what.push(line(trc("date", "On"), widgets::chip_row(chips)));
             }
             RepeatFreq::Monthly => {
                 let by_day = on_month_days(&[if last_of_month(start) { -1 } else { start.day() as i8 }]);
@@ -676,7 +676,7 @@ impl Custom {
                     widgets::choice_chip(by_day, None::<Mark>, !self.by_weekday, Some(edit(Edit::ByWeekday(false)))),
                     widgets::choice_chip(by_weekday, None::<Mark>, self.by_weekday, Some(edit(Edit::ByWeekday(true)))),
                 ];
-                what = what.push(line(tr("On"), widgets::chip_row(chips)));
+                what = what.push(line(trc("date", "On"), widgets::chip_row(chips)));
             }
             RepeatFreq::Daily | RepeatFreq::Yearly => {}
         }

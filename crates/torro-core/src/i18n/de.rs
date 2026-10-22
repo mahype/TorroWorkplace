@@ -3950,6 +3950,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("System maps app (geo:)", "Karten-App des Systems (geo:)"),
     ("Press Enter to save", "Zum Speichern Enter drücken"),
     ("Not saved: {reason}", "Nicht gespeichert: {reason}"),
+    ("The address must start with https:// or http://.", "Die Adresse muss mit https:// oder http:// beginnen."),
+    ("The address names no server.", "Die Adresse nennt keinen Server."),
+    (
+        "The address may not carry a sign-in (user@). Services with a key of their own come later.",
+        "Die Adresse darf keine Anmeldung (user@) enthalten. Dienste mit eigenem Schlüssel kommen später.",
+    ),
+    (
+        "The address may not carry a query (?…) or a fragment (#…). Services with a key of their own come later.",
+        "Die Adresse darf keine Abfrage (?…) und keinen Anker (#…) enthalten. Dienste mit eigenem Schlüssel kommen später.",
+    ),
+    ("The address may not contain spaces.", "Die Adresse darf keine Leerzeichen enthalten."),
+    ("The map tile address must name {z}, {x} and {y}.", "Die Adresse der Kartenkacheln muss {z}, {x} und {y} nennen."),
+    ("The address cannot be used.", "Die Adresse kann nicht verwendet werden."),
     (
         "Off until you turn it on. The place search service gets what you search for and the IP address of this computer; the map tile service gets the coordinates of the place. Both are services of others with their own rules, and nothing promises they are available.",
         "Aus, bis du es einschaltest. Der Dienst für die Ortssuche bekommt, wonach du suchst, und die IP-Adresse dieses Rechners; der Kartendienst bekommt die Koordinaten des Ortes. Beides sind Dienste anderer mit eigenen Regeln, und niemand sagt zu, dass sie erreichbar sind.",
