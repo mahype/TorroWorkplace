@@ -910,22 +910,35 @@ impl Editor {
     }
 
     /// The scope of the next changes. "This event" cannot carry a new rule: one chosen for following
-    /// or all events but not saved yet goes back. Following or all events take a new start date's
-    /// days ([`Editor::follow_start`]). An occurrence whose rule could not be read stays with "This
-    /// event" ([`Editor::rule_unknown`]).
+    /// or all events but not saved yet goes back. "Never" belongs to "All" only ([`Editor::can_end_series`]):
+    /// with another scope the stored rule comes back, so ending the series never goes out with
+    /// "Following" (the second review of #278, finding 6). While a save that ends the series is under
+    /// way the scope stays: the answer decides whether there is a series left. Following or all events
+    /// take a new start date's days ([`Editor::follow_start`]). An occurrence whose rule could not be
+    /// read stays with "This event" ([`Editor::rule_unknown`]).
     fn choose_scope(&mut self, scope: SeriesScope) -> Action {
         if scope != SeriesScope::Occurrence && self.rule_unknown() {
             return Action::None;
         }
+        if scope != self.scope && self.ending_series() {
+            return Action::None;
+        }
         self.scope = scope;
         self.reset = 0;
-        if scope == SeriesScope::Occurrence
-            && let Some(original) = &self.original
+        if let Some(original) = &self.original
+            && (scope == SeriesScope::Occurrence || (scope != SeriesScope::Series && self.form.repeat.is_none()))
         {
             self.form.repeat = original.repeat.as_deref().cloned();
         }
         self.follow_start();
         Action::None
+    }
+
+    /// A save is under way that ends the series ("Never" with "All").
+    fn ending_series(&self) -> bool {
+        self.saving
+            && self.occurrence().is_some_and(|original| original.repeat.is_some())
+            && self.sent.as_ref().is_some_and(|sent| sent.repeat.is_none())
     }
 
     /// With "Following" or "All", a rule whose days came from the stored start moves with a new start
@@ -1303,14 +1316,19 @@ impl Editor {
             || !repeat::same(self.form.repeat.as_ref(), original.repeat.as_deref(), start)
     }
 
-    /// The event the form describes today, or why it cannot be saved yet.
+    /// The event the form describes today, or why it cannot be saved yet. An occurrence ends its
+    /// series (`recurring: false`) only with "All" ([`Editor::save_scope`]): with another scope a form
+    /// without a rule keeps the series, however the form got there (the second review of #278,
+    /// finding 6).
     fn check(&self) -> Result<Event, Problem> {
-        let event = self.form.build(self.today, self.original.as_ref())?;
-        if let Some(original) = self.occurrence()
-            && self.scope != SeriesScope::Occurrence
-            && event.all_day() != original.all_day()
-        {
-            return Err(Problem::AllDaySeries);
+        let mut event = self.form.build(self.today, self.original.as_ref())?;
+        if let Some(original) = self.occurrence() {
+            if self.scope != SeriesScope::Occurrence && event.all_day() != original.all_day() {
+                return Err(Problem::AllDaySeries);
+            }
+            if self.save_scope() != Some(SeriesScope::Series) {
+                event.recurring = original.recurring;
+            }
         }
         Ok(event)
     }
@@ -3336,6 +3354,59 @@ mod tests {
         let (created, scope) =
             saves_with(&mut draft, Message::PickRepeat(Some(Box::new(repeat::shortlist(start)[4].clone()))));
         assert!(created.repeat.is_some() && scope.is_none());
+    }
+
+    /// The second review of #278, finding 6: "Never" with "All", then "Following" – the stored rule
+    /// comes back, and no save with another scope than "All" ends the series. While the save that
+    /// ends it is under way, the scope stays.
+    #[test]
+    fn never_goes_out_only_with_all_events() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Scope(SeriesScope::Series));
+        let (ending, scope) = saves_with(&mut editor, Message::PickRepeat(None));
+        assert_eq!((ending.repeat.is_none(), ending.recurring, scope), (true, false, Some(SeriesScope::Series)));
+        assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
+        assert_eq!(editor.scope, SeriesScope::Series, "the scope stays while the series is being ended");
+        // The save failed: now the scope may change, and "Never" goes with it.
+        editor.save_failed();
+        editor.update(Message::Scope(SeriesScope::Following));
+        assert_eq!(editor.scope, SeriesScope::Following);
+        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "the stored rule is back");
+        editor.update(Message::Location("Room 8".into()));
+        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        assert_eq!(scope, Some(SeriesScope::Following));
+        assert!(event.recurring && event.repeat.is_some(), "the series goes on: {event:?}");
+
+        // However the form lost its rule, only "All" sends the end of the series.
+        let mut forced = Editor::edit(&occurrence(), &calendars());
+        forced.update(Message::Scope(SeriesScope::Following));
+        forced.form.repeat = None;
+        let built = forced.check().expect("valid");
+        assert!(built.recurring, "Following keeps the series");
+        forced.scope = SeriesScope::Series;
+        assert!(!forced.check().expect("valid").recurring, "All ends it");
+    }
+
+    /// The second review of #278, findings 2 and 3: on an occurrence moved by itself (10:00 to
+    /// 14:00), "Following" with a new title resets nothing, as the core counts it; another time resets
+    /// the changed occurrences after it, as the core does.
+    #[test]
+    fn following_on_a_moved_occurrence_counts_as_the_core_does() {
+        let key = occurrence().recurrence_id.expect("a key");
+        let moved = Event {
+            start: EventTime::DateTime(to_utc(at(2026, 10, 13, 14, 0))),
+            end: Some(EventTime::DateTime(to_utc(at(2026, 10, 13, 14, 45)))),
+            exceptions: [occurrence().exceptions, vec![key]].concat(),
+            ..occurrence()
+        };
+        let mut editor = Editor::edit(&moved, &calendars());
+        editor.update(Message::Scope(SeriesScope::Following));
+        set_title(&mut editor, "Product sync");
+        assert_eq!(editor.resets(), 0, "a new title keeps the clock of the series");
+        editor.update(Message::StartTime("13:30".into()));
+        assert_eq!(editor.resets(), 2, "a new time: the two changed occurrences after it");
+        editor.update(Message::StartTime("14:00".into()));
+        assert_eq!(editor.resets(), 0, "back at its own time");
     }
 
     #[test]
