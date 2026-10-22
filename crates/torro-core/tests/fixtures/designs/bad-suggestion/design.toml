@@ -5,4 +5,3 @@ format = 1
 name = "Bad suggestion"
 version = "1.0.0"
 font = "IBM Plex"
-color_scheme = "nord"

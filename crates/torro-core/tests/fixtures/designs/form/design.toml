@@ -7,7 +7,6 @@ version = "2.1.0"
 author = "Torro tests"
 description = "Every key set once"
 font = "plex"
-color_scheme = "torro"
 mail_view = "text"
 
 [type.micro]

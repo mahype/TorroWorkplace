@@ -3529,6 +3529,12 @@ impl Core {
             Request::OpenFile { file } | Request::SaveFileAs { file, .. } => {
                 Facts { name: self.tools.file(file, Maker::App).await.map(|file| file.title), ..Facts::default() }
             }
+            // What choosing the design also sets (task L.33), looked up in the design and the fonts
+            // folder with the rule the run applies again; never the design's name or the client's words.
+            Request::SetSetting { key: SettingKey::Design, value } => Facts {
+                design: value.as_str().map(|id| self.settings.design_suggestions(id)).unwrap_or_default(),
+                ..Facts::default()
+            },
             request => self.pim.facts(request).await,
         }
     }
@@ -7533,8 +7539,9 @@ impl Core {
     }
 
     /// `settings.list_designs` (task L.3): every design with what the control centre and agents
-    /// need to choose one, with the font and colour scheme it suggests (task L.22). Packs hold no
-    /// secrets, so every reader sees all of them.
+    /// need to choose one, with the font and mail view it suggests (tasks L.22, L.33) and its density
+    /// (`Design::density_level`; `balanced` for one that can't be used). Packs hold no secrets, so
+    /// every reader sees all of them.
     fn list_designs(&self) -> Vec<torro_ipc::DesignInfo> {
         let chosen = self.settings.current().design;
         listed_in(self.settings.designs(), torro_core::design::list)
@@ -7543,6 +7550,7 @@ impl Core {
                 valid: pack.valid(),
                 problems: problems_of(&pack),
                 active: pack.id == chosen,
+                density: pack.result.as_ref().map(|design| design.density_level()).unwrap_or_default(),
                 id: pack.id,
                 name: pack.about.name,
                 version: pack.about.version,
@@ -7550,7 +7558,7 @@ impl Core {
                 description: pack.about.description,
                 standard: pack.standard,
                 font: pack.about.font,
-                color_scheme: pack.about.color_scheme,
+                mail_view: pack.about.mail_view,
             })
             .collect()
     }
@@ -7589,6 +7597,7 @@ impl Core {
                 valid: scheme.valid(),
                 problems: problems_of(&scheme),
                 active: scheme.id == chosen,
+                dark_only: scheme.result.as_ref().is_ok_and(|found| found.dark_only),
                 id: scheme.id,
                 name: scheme.about.name,
                 version: scheme.about.version,
@@ -9694,7 +9703,7 @@ mod tests {
         let airy = data.join("designs").join("airy").join("design.toml");
         let text = std::fs::read_to_string(&airy).expect("design.toml");
         let suggesting =
-            text.replace("author = \"Anna\"\n", "author = \"Anna\"\nfont = \"plain\"\ncolor_scheme = \"nord\"\n");
+            text.replace("author = \"Anna\"\n", "author = \"Anna\"\nfont = \"plain\"\nmail_view = \"text\"\n");
         std::fs::write(&airy, suggesting).expect("design.toml");
 
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
@@ -9716,7 +9725,10 @@ mod tests {
         assert!(color_schemes[2].valid && color_schemes[2].version == "1.0.0");
         let Response::Designs { designs } = core.handle(Request::ListDesigns).await else { panic!("designs") };
         let airy = designs.iter().find(|design| design.id == "airy").expect("listed");
-        assert_eq!((airy.font.as_deref(), airy.color_scheme.as_deref()), (Some("plain"), Some("nord")));
+        assert_eq!(
+            (airy.font.as_deref(), airy.mail_view),
+            (Some("plain"), Some(torro_core::settings::MailFormat::Text))
+        );
         assert!(designs.iter().all(|design| design.id != "nord"), "only designs");
 
         let choose = |key, id: &str| Request::SetSetting { key, value: serde_json::json!(id) };
@@ -9744,6 +9756,70 @@ mod tests {
         let kept = settings(&core).await;
         assert_eq!((kept.font.as_str(), kept.color_scheme.as_str()), ("plain", "nord"));
         assert_eq!(kept.appearance, torro_core::theme::Appearance::Dark);
+    }
+
+    /// Task L.33: the designs name their density and what they suggest, a colour scheme whether it is
+    /// dark only. Choosing Console sets its mail view, and its font only once a valid font of that id
+    /// is there; a client's approval names exactly that, looked up by the core.
+    #[tokio::test]
+    async fn choosing_a_design_sets_its_suggestions_and_the_approval_names_them() {
+        use torro_core::design::DensityLevel;
+        use torro_core::settings::MailFormat;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let data = settings_file(dir.path()).with_file_name("");
+        let night = data.join("color-schemes").join("night");
+        std::fs::create_dir_all(&night).expect("scheme folder");
+        let toml = "format = 1\ndark_only = true\n[about]\nname = \"Night\"\nversion = \"1.0.0\"\n";
+        std::fs::write(night.join("color-scheme.toml"), toml).expect("toml");
+
+        let Response::Designs { designs } = core.handle(Request::ListDesigns).await else { panic!("designs") };
+        let looks: Vec<(&str, DensityLevel)> = designs.iter().map(|d| (d.id.as_str(), d.density)).collect();
+        assert_eq!(
+            looks,
+            [("torro", DensityLevel::Balanced), ("compact", DensityLevel::Dense), ("console", DensityLevel::VeryDense)]
+        );
+        let console = &designs[2];
+        assert_eq!((console.font.as_deref(), console.mail_view), (Some("jetbrains-mono"), Some(MailFormat::Text)));
+        assert_eq!((designs[0].font.as_deref(), designs[0].mail_view), (None, None), "the standard suggests nothing");
+        let Response::ColorSchemes { color_schemes } = core.handle(Request::ListColorSchemes).await else {
+            panic!("colour schemes")
+        };
+        let dark: Vec<(&str, bool)> = color_schemes.iter().map(|s| (s.id.as_str(), s.dark_only)).collect();
+        assert_eq!(dark, [("torro", false), ("night", true)]);
+
+        // A client asks; the summary names what the core also sets, here only the mail view.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        let choose = || Request::SetSetting { key: SettingKey::Design, value: serde_json::json!("console") };
+        let change = trf("Change the setting {key} to {value}", &[("key", &"Design"), ("value", &"'console'")]);
+        let asked = waits(ask(&core, Some(&key), choose()).await);
+        let text = trf("also sets the mail view to {view}", &[("view", &"text")]);
+        assert_eq!(asked.summary, format!("{change}; {text}"), "no font jetbrains-mono: the mail view alone");
+
+        let font = data.join("fonts").join("jetbrains-mono");
+        std::fs::create_dir_all(&font).expect("font folder");
+        let toml = "format = 1\n[about]\nname = \"JetBrains Mono\"\nversion = \"1.0.0\"\n";
+        std::fs::write(font.join("font.toml"), toml).expect("toml");
+        let asked = waits(ask(&core, Some(&key), choose()).await);
+        let both = trf(
+            "also sets the font to \"{font}\" and the mail view to {view}",
+            &[("font", &"jetbrains-mono"), ("view", &"text")],
+        );
+        assert_eq!(asked.summary, format!("{change}; {both}"));
+
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        let chosen = settings(&core).await;
+        assert_eq!(
+            (chosen.design.as_str(), chosen.font.as_str(), chosen.mail_view, chosen.color_scheme.as_str()),
+            ("console", "jetbrains-mono", MailFormat::Text, "torro"),
+            "the run sets the design, its font and its mail view, never the colour scheme"
+        );
+        let again = waits(ask(&core, Some(&key), choose()).await);
+        assert_eq!(again.summary, change, "the same design again sets nothing more");
     }
 
     #[tokio::test]

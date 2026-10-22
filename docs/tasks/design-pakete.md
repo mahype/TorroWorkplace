@@ -667,7 +667,10 @@ es im Kommentar der `design.toml`):
 - **Abnahme:** Entwurf vom Menschen bestätigt (Kommentar im Issue mit Datum).
 
 ### L.33 Dienst, API, MCP: Vorschläge greifen, Dichte, nur dunkel
-- [ ] erledigt
+- [x] erledigt (2026-10-22: Regel in `SettingsStore` (`DesignSuggestions`, `design_suggestions`), dieselbe für die
+  Freigabe über `Facts::design`; `DensityLevel` trägt die Wire-Form selbst; freigegeben zusätzlich angepasst: die
+  Demo-Daten in `crates/torroworkplace/src/ui/launch.rs` (nur Felder und zwei Doc-Zeilen) und als Testdaten
+  `color_scheme` aus den Fixtures `form` und `bad-suggestion` in `crates/torro-core/tests/fixtures/designs/`)
 - **Modell:** Opus · **Braucht:** L.31 · **Dateien:** `crates/torro-core/src/design.rs`,
   `crates/torro-core/src/design/pack.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{settings_service,core,approvals,mcp}.rs`, `crates/torroworkplace/src/ui/general.rs` (nur

@@ -157,15 +157,14 @@ pub struct About {
     pub version: String,
     pub author: Option<String>,
     pub description: Option<String>,
-    /// Designs only (`[about] font`): the id of the font the design is meant for, a suggestion that
-    /// chooses nothing. A valid id or [`STANDARD_ID`]; whether that font exists is not checked (each
-    /// part is checked on its own). Always `None` for fonts and colour schemes.
+    /// Designs only (`[about] font`): the id of the font the design is meant for. A valid id or
+    /// [`STANDARD_ID`]; whether that font exists is not checked here (each part is checked on its
+    /// own). The core service sets it when the design is chosen, and only when the font loads valid
+    /// (task L.33); after that the font is chosen freely. Always `None` for fonts and colour schemes.
+    /// Colours never belong to a design: `[about] color_scheme` is an unknown key since task L.33.
     pub font: Option<String>,
-    /// Designs only (`[about] color_scheme`): the id of the colour scheme the design is meant for, as
-    /// [`About::font`]. Leaves the format with task L.33: colours never belong to a design.
-    pub color_scheme: Option<String>,
     /// Designs only (`[about] mail_view`, issue #291): how the design suggests a mail with HTML shows in
-    /// the reader – `text` for Console. A suggestion like [`About::font`]; the core service applies it
+    /// the reader – `text` for Console. A suggestion like [`About::font`]; the core service sets it
     /// when the design is chosen (task L.33). Always `None` for fonts and colour schemes.
     pub mail_view: Option<MailFormat>,
 }
@@ -555,11 +554,16 @@ pub enum ListSelection {
 /// How much a design shows at once, for the list of designs (task L.33, `DesignInfo::density`):
 /// decided by the height of a mail row ([`Design::density_level`]), so a design can't put itself
 /// in the wrong class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// On the wire (`DesignInfo::density`) in snake case: `"airy"`, `"balanced"`, `"dense"`,
+/// `"very_dense"`; [`DensityLevel::Balanced`] is the default, so a reply without it still reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DensityLevel {
     /// A mail row of 110 or more.
     Airy,
     /// 88 to 109 (Standard: 100).
+    #[default]
     Balanced,
     /// 56 to 87 (Compact: 76).
     Dense,
@@ -1413,6 +1417,16 @@ mod tests {
         assert_eq!([level(109.0), level(88.0)], [DensityLevel::Balanced; 2]);
         assert_eq!([level(87.0), level(56.0)], [DensityLevel::Dense; 2]);
         assert_eq!([level(55.0), level(24.0)], [DensityLevel::VeryDense; 2]);
+    }
+
+    /// Task L.33: the wire form of the density level in `DesignInfo::density`, `balanced` by default.
+    #[test]
+    fn the_density_level_is_written_in_snake_case() {
+        let words = [DensityLevel::Airy, DensityLevel::Balanced, DensityLevel::Dense, DensityLevel::VeryDense]
+            .map(|level| serde_json::to_value(level).expect("a word"));
+        assert_eq!(words, ["airy", "balanced", "dense", "very_dense"]);
+        let read: DensityLevel = serde_json::from_value(serde_json::json!("very_dense")).expect("a level");
+        assert_eq!((read, DensityLevel::default()), (DensityLevel::VeryDense, DensityLevel::Balanced));
     }
 
     /// `colour` as `0xRRGGBB`.

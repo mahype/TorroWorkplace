@@ -40,9 +40,10 @@
 //! The one each part is drawn with has a frame and a check mark. Choosing a tile is
 //! [`Action::Choose`]: the shell draws its own window with it at once and saves it
 //! (`settings.set_setting design | font | color_scheme`); no question first. Choosing a design
-//! changes neither font nor colour scheme; when the design drawn suggests others than the active
-//! ones (`DesignInfo::font`, `DesignInfo::color_scheme`), their tiles say "Suggested" under the name
-//! with "Suggested for {design}" in the tooltip, and a click chooses them like any other.
+//! lets the core set the font and mail view it suggests too (task L.33), never the colour scheme;
+//! when the design drawn suggests another font than the active one (`DesignInfo::font`), its tile
+//! says "Suggested" under the name with "Suggested for {design}" in the tooltip, and a click chooses
+//! it like any other.
 //!
 //! An entry that breaks a rule is a greyed-out tile with an alert mark in place of the sample. A
 //! click on it shows, under its grid, its name, "Can't be used:" and every reason in full,
@@ -769,7 +770,7 @@ pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
         color_mode(settings.appearance),
         designs(state, settings),
         fonts(state, settings, suggested.as_ref()),
-        schemes(state, settings, suggested.as_ref()),
+        schemes(state, settings),
         interface
     ]
     .spacing(layout::section_gap())
@@ -858,17 +859,15 @@ fn fonts<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Sugges
 }
 
 /// The block "Colour scheme": the heading with "Open color schemes folder", the grid, the reasons
-/// of the one opened, and its sentence; the colour scheme the drawn design suggests says so.
-fn schemes<'a>(state: &'a State, settings: &'a Settings, suggested: Option<&Suggestion<'a>>) -> Element<'a, Message> {
-    let (mark, design) = suggested.map_or((None, ""), |s| (s.scheme, s.design));
+/// of the one opened, and its sentence. A design never suggests one (task L.33).
+fn schemes<'a>(state: &'a State, settings: &'a Settings) -> Element<'a, Message> {
     let failed = tr("The color schemes can't be listed.");
     let body = listing(&state.schemes, failed, Part::ColorScheme, state, |entries, open| {
         let drawn = drawn(entries, &settings.color_scheme);
         let one = |entry: &'a SchemeEntry| {
             let info = &entry.info;
             let tip = byline([Some(info.version.as_str()), info.author.as_deref()]);
-            let (note, tip) = noted(mark == Some(info.id.as_str()), design, tip);
-            tile(entry, Part::ColorScheme, info.id == drawn, open, note, tip, || scheme_sample(entry))
+            tile(entry, Part::ColorScheme, info.id == drawn, open, None, tip, || scheme_sample(entry))
         };
         entries.iter().map(one).collect()
     });
@@ -970,13 +969,12 @@ fn opened<'a, I: Listed, T>(
 }
 
 /// What the design drawn suggests and is not drawn: the name of the design, for the tooltip, and the
-/// ids of the font and the colour scheme it suggests (`DesignInfo::font`, `color_scheme`), each only
-/// when it is listed, can be used and is not the one drawn.
+/// id of the font it suggests (`DesignInfo::font`), only when it is listed, can be used and is not
+/// the one drawn.
 #[derive(Debug, PartialEq, Eq)]
 struct Suggestion<'a> {
     design: &'a str,
     font: Option<&'a str>,
-    scheme: Option<&'a str>,
 }
 
 /// The [`Suggestion`] of the design drawn; `None` while the designs are not listed.
@@ -984,11 +982,7 @@ fn suggestion<'a>(state: &'a State, settings: &'a Settings) -> Option<Suggestion
     let designs = state.designs.as_ref()?.as_ref().ok()?;
     let id = drawn(designs, &settings.design);
     let info = &designs.iter().find(|entry| entry.info.id == id)?.info;
-    Some(Suggestion {
-        design: &info.name,
-        font: other(info.font.as_deref(), &state.fonts, &settings.font),
-        scheme: other(info.color_scheme.as_deref(), &state.schemes, &settings.color_scheme),
-    })
+    Some(Suggestion { design: &info.name, font: other(info.font.as_deref(), &state.fonts, &settings.font) })
 }
 
 /// `suggested` if the list has it as usable and it is not the one drawn of `chosen`.
@@ -1412,23 +1406,24 @@ mod tests {
         assert_eq!(drawn(ok(&state.schemes).expect("schemes"), "neon"), "torro");
     }
 
-    /// Task L.23: the tiles of the font and the colour scheme the drawn design suggests say so, as
-    /// long as they are not drawn, are listed and can be used; the standard suggests nothing.
+    /// Task L.23: the tile of the font the drawn design suggests says so, as long as it is not drawn,
+    /// is listed and can be used; the standard suggests nothing, and since task L.33 no design
+    /// suggests a colour scheme.
     #[test]
     fn the_suggestions_of_the_drawn_design_are_marked() {
         let state = demo();
         let mut settings = Settings { design: "harbor".into(), ..Settings::default() };
         let marked = suggestion(&state, &settings).expect("listed");
-        assert_eq!(marked, Suggestion { design: "Harbor", font: Some("tabular"), scheme: Some("harbor") });
+        assert_eq!(marked, Suggestion { design: "Harbor", font: Some("tabular") });
 
         settings.font = "tabular".into();
         assert_eq!(suggestion(&state, &settings).map(|s| s.font), Some(None), "drawn already");
         settings.design = "paper".into();
         let paper = suggestion(&state, &settings).expect("listed");
-        assert_eq!((paper.font, paper.scheme), (None, Some("paper")), "Paper suggests no font");
+        assert_eq!(paper, Suggestion { design: "Paper", font: None }, "Paper suggests nothing");
         settings.design = "neon".into();
         let standard = suggestion(&state, &settings).expect("listed");
-        assert_eq!(standard, Suggestion { design: "Standard", font: None, scheme: None }, "a broken one is not drawn");
+        assert_eq!(standard, Suggestion { design: "Standard", font: None }, "a broken one is not drawn");
         assert_eq!(suggestion(&State::default(), &settings), None);
 
         let (note, tip) = noted(true, "Harbor", Some("1.2.0".into()));

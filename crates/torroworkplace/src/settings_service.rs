@@ -9,7 +9,8 @@
 //! Hidden collections are applied by `pim.rs`, which reads [`SettingsStore::current`] on every
 //! request. A design (task L.3), a font and a colour scheme (task L.22) are checked against the rules
 //! of `torro_core::design` before they are stored, each in its own folder; the apps follow the
-//! settings themselves.
+//! settings themselves. Choosing another design with `set_setting` also sets the font and the mail
+//! view it suggests, in the same write ([`DesignSuggestions`], task L.33); whole settings never do.
 //!
 //! The file is not looked up here but handed in ([`SettingsStore`]): the daemon uses the user's
 //! `settings.json`, tests a file in a temp directory, so no test reads or writes the real one
@@ -219,18 +220,62 @@ impl SettingsStore {
 
     /// Sets one setting (`Request::SetSetting`). The value is checked against the key before the
     /// file is read; a value that does not fit is an error and changes nothing.
+    ///
+    /// A design that differs from the stored one also sets what it suggests, in the same write under
+    /// the same lock ([`SettingsStore::design_suggestions`], task L.33): the font when it loads valid,
+    /// the mail view when the design names one. The same design again changes nothing.
     pub fn set(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
         let change = Change::parse(key, value)?;
-        self.change(|settings| change.apply(settings))
+        self.change(|settings| self.apply_with_suggestions(change, settings))
     }
 
     /// Like [`SettingsStore::set`], for clients: a PDF folder or a template's logo is written only
     /// when it is removed or equals the stored one, read under the same lock as the write. The core
     /// refuses a new path before (point 9, `Core::switches_on_for_people`); this keeps a path a
-    /// person removed between that check and the write removed.
+    /// person removed between that check and the write removed. A design sets its suggestions as in
+    /// [`SettingsStore::set`].
     pub fn set_by_client(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
         let change = Change::parse(key, value)?;
-        self.change(|settings| change.limited_for_clients(settings).apply(settings))
+        self.change(|settings| {
+            let change = change.limited_for_clients(settings);
+            self.apply_with_suggestions(change, settings)
+        })
+    }
+
+    /// What choosing the design `id` with `set_setting` would set besides the design, against the
+    /// settings as stored now (task L.33): for the summary of an approval (`approvals::Facts`), which
+    /// must name what really changes. The run decides again under the lock ([`SettingsStore::set`]),
+    /// with the same rule.
+    pub fn design_suggestions(&self, id: &str) -> DesignSuggestions {
+        self.suggestions_against(&self.current(), id)
+    }
+
+    /// The rule of [`SettingsStore::design_suggestions`] against `settings`: nothing when `id` is the
+    /// stored design or does not load valid; else the design's font when that font loads valid
+    /// (the same check as choosing it, [`SettingsStore::check_part`]) and its mail view, each only
+    /// when it differs from the stored one. Only these two: never the colour scheme, never words
+    /// from the design's folder.
+    fn suggestions_against(&self, settings: &Settings, id: &str) -> DesignSuggestions {
+        if settings.design == id {
+            return DesignSuggestions::default();
+        }
+        let Some(chosen) = self.designs().and_then(|dir| design::load(dir, id).ok()) else {
+            return DesignSuggestions::default();
+        };
+        let font = chosen.about.font.filter(|font| *font != settings.font && self.check_part(Part::Font, font).is_ok());
+        let mail_view = chosen.about.mail_view.filter(|view| *view != settings.mail_view);
+        DesignSuggestions { font, mail_view }
+    }
+
+    /// Applies `change` to `settings` and, for a design that differs from the one in `settings`, what
+    /// it suggests ([`SettingsStore::suggestions_against`], judged before the change).
+    fn apply_with_suggestions(&self, change: Change, settings: &mut Settings) {
+        let suggested = match &change {
+            Change::Design(id) => self.suggestions_against(settings, id),
+            _ => DesignSuggestions::default(),
+        };
+        change.apply(settings);
+        suggested.apply(settings);
     }
 
     /// Shows or hides one collection in all apps (`Request::SetCollectionShown`). Whether the id
@@ -412,6 +457,30 @@ impl SettingsStore {
     /// tests can check the decision without the system call.
     fn login_item_change(&self, old: &Settings, new: &Settings) -> Option<bool> {
         (self.applies_login_item && old.start_at_login != new.start_at_login).then_some(new.start_at_login)
+    }
+}
+
+/// What choosing another design with `set_setting design` sets besides the design (task L.33): the
+/// font and the mail view the design suggests (`[about] font`, `[about] mail_view`), each only when
+/// it is set and would change. Built only by [`SettingsStore::design_suggestions`], which looks them
+/// up in the design and checks the font; never from a client's text.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DesignSuggestions {
+    /// The id of the font the design suggests, set only when that font loads valid now.
+    pub font: Option<String>,
+    /// How a mail with HTML shows, as the design suggests.
+    pub mail_view: Option<MailFormat>,
+}
+
+impl DesignSuggestions {
+    /// Puts what is suggested into `settings`; leaves the rest.
+    fn apply(self, settings: &mut Settings) {
+        if let Some(font) = self.font {
+            settings.font = font;
+        }
+        if let Some(view) = self.mail_view {
+            settings.mail_view = view;
+        }
     }
 }
 
@@ -1314,6 +1383,81 @@ mod tests {
         fs::remove_dir_all(store.designs().expect("folder").join("teal")).expect("remove the pack");
         store.set(SettingKey::Appearance, &json!("dark")).expect("the design is not checked again");
         assert_eq!(store.current().design, "teal", "kept as chosen; the apps fall back to the standard");
+    }
+
+    /// Task L.33: choosing Console sets its mail view at once, its font only while a valid font of
+    /// that id is there; the standard suggests nothing, so going back keeps both.
+    #[test]
+    fn choosing_a_design_sets_its_mail_view_and_its_font_only_when_it_loads() {
+        let (_dir, store) = store();
+        store.set(SettingKey::Design, &json!("console")).expect("built in");
+        let chosen = store.current();
+        assert_eq!((chosen.design.as_str(), chosen.mail_view), ("console", MailFormat::Text));
+        assert_eq!(chosen.font, "torro", "jetbrains-mono is not there: the font stays");
+        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
+        let back = store.current();
+        assert_eq!((back.font.as_str(), back.mail_view), ("torro", MailFormat::Text), "the standard suggests nothing");
+
+        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
+        store.set_by_client(SettingKey::Design, &json!("console")).expect("built in");
+        let chosen = store.current();
+        assert_eq!((chosen.font.as_str(), chosen.mail_view), ("jetbrains-mono", MailFormat::Text), "a client too");
+        assert_eq!(chosen.color_scheme, "torro", "never the colour scheme");
+
+        // A broken font of that id is not set.
+        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
+        store.set(SettingKey::Font, &json!("torro")).expect("the standard font");
+        part(
+            &store,
+            Part::Font,
+            "jetbrains-mono",
+            "font.toml",
+            "[fonts.text]\nfamily = \"Gone\"\nregular = \"Gone.ttf\"\n",
+        );
+        store.set(SettingKey::Design, &json!("console")).expect("the design is valid");
+        assert_eq!(store.current().font, "torro", "a font that breaks a rule stays unchosen");
+    }
+
+    /// Task L.33: after the design was chosen, font and mail view are free; choosing the same design
+    /// again changes nothing, and whole settings set exactly what they carry.
+    #[test]
+    fn the_same_design_again_and_whole_settings_apply_no_suggestions() {
+        let (_dir, store) = store();
+        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
+        store.set(SettingKey::Design, &json!("console")).expect("built in");
+        store.set(SettingKey::Font, &json!("torro")).expect("chosen freely");
+        store.set(SettingKey::MailView, &json!("html")).expect("chosen freely");
+        let before = store.current();
+        store.set(SettingKey::Design, &json!("console")).expect("the same design");
+        assert_eq!(store.current(), before, "nothing changed");
+
+        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
+        let whole = Settings { design: "console".into(), ..store.current() };
+        store.update(whole.clone()).expect("written");
+        assert_eq!(store.current(), whole, "update_settings sets exactly what it sends");
+        store.set(SettingKey::Design, &json!("torro")).expect("the standard");
+        store.update_keeping_hidden(Settings { design: "console".into(), ..store.current() }).expect("written");
+        let kept = store.current();
+        assert_eq!((kept.font.as_str(), kept.mail_view), ("torro", MailFormat::Html), "a client's way neither");
+    }
+
+    /// Task L.33: what an approval's summary names, looked up in the design and the fonts folder.
+    #[test]
+    fn the_suggestions_name_only_what_would_change() {
+        let (_dir, store) = store();
+        let text_only = DesignSuggestions { font: None, mail_view: Some(MailFormat::Text) };
+        assert_eq!(store.design_suggestions("console"), text_only, "no such font: the mail view alone");
+        part(&store, Part::Font, "jetbrains-mono", "font.toml", "");
+        let both = DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: Some(MailFormat::Text) };
+        assert_eq!(store.design_suggestions("console"), both);
+        let nothing = DesignSuggestions::default();
+        assert_eq!(store.design_suggestions("torro"), nothing, "the chosen design changes nothing");
+        assert_eq!(store.design_suggestions("compact"), nothing, "Compact suggests nothing");
+        assert_eq!(store.design_suggestions("gone"), nothing, "a design that is not there");
+        store.set(SettingKey::MailView, &json!("text")).expect("valid");
+        let font_only = DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: None };
+        assert_eq!(store.design_suggestions("console"), font_only, "the mail view is text already");
+        assert_eq!(store.current().design, "torro", "looking up changes nothing");
     }
 
     #[test]

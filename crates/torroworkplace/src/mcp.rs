@@ -1706,6 +1706,17 @@ mod tests {
         assert_eq!(chosen, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Design, value: json!("plex") }));
         let set = tools().iter().find(|t| t.name == "settings_set_setting").and_then(|t| t.description.clone());
         assert!(set.is_some_and(|text| text.contains("`design`")), "set_setting names the design");
+        // Task L.33: the tools say that choosing a design sets its font and mail view, never the colour
+        // scheme, and that whole settings set none of it.
+        let text = |name: &str| tools().iter().find(|t| t.name == name).and_then(|t| t.description.clone());
+        let set = text("settings_set_setting").expect("a description");
+        assert!(
+            set.contains("also sets `font`") && set.contains("`mail_view`") && set.contains("the colour scheme never")
+        );
+        let listed = text("settings_list_designs").expect("a description");
+        assert!(listed.contains("`density`") && listed.contains("`mailView`") && !listed.contains("colorScheme"));
+        assert!(text("settings_list_color_schemes").is_some_and(|text| text.contains("`darkOnly`")));
+        assert!(text("settings_update_settings").is_some_and(|text| text.contains("none of the design's suggestions")));
     }
 
     /// Task L.22: fonts and colour schemes are listed read-only, their text is data, and both are

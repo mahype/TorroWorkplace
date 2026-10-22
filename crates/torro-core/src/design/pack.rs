@@ -272,10 +272,9 @@ pub(super) struct AboutFile {
     pub(super) version: Option<String>,
     pub(super) author: Option<String>,
     pub(super) description: Option<String>,
-    /// Designs only: the suggested font.
+    /// Designs only: the suggested font. (`color_scheme` is unknown since task L.33: colours never
+    /// belong to a design.)
     pub(super) font: Option<String>,
-    /// Designs only: the suggested colour scheme.
-    pub(super) color_scheme: Option<String>,
     /// Designs only: the suggested way to show mail (`"html"`, `"text"`); another word fails in the
     /// third pass with its line.
     pub(super) mail_view: Option<MailFormat>,
@@ -290,7 +289,6 @@ impl AboutFile {
             author: self.author.clone(),
             description: self.description.clone(),
             font: self.font.clone(),
-            color_scheme: self.color_scheme.clone(),
             mail_view: self.mail_view,
         }
     }
@@ -436,9 +434,7 @@ fn known(path: &str, key: &str) -> Option<bool> {
             "about" | "type" | "space" | "radius" | "layout" | "size" | "list" => TABLE,
             _ => None,
         },
-        "about" => {
-            value(["name", "version", "author", "description", "font", "color_scheme", "mail_view"].contains(&key))
-        }
+        "about" => value(["name", "version", "author", "description", "font", "mail_view"].contains(&key)),
         "type" => LEVEL_KEYS.contains(&key).then_some(true),
         p if p.strip_prefix("type.").is_some_and(|level| LEVEL_KEYS.contains(&level)) => {
             value(["font", "size", "line", "weight"].contains(&key))
@@ -477,12 +473,10 @@ fn from_text(id: &str, text: &str, about: &mut About) -> Result<(DesignFile, Vec
     *about = file.about.about(id);
     let mut problems = Vec::new();
     header(file.format, &file.about, &mut problems);
-    for (key, suggested) in [("about.font", &file.about.font), ("about.color_scheme", &file.about.color_scheme)] {
-        if let Some(suggested) = suggested
-            && !(is_valid_id(suggested) || suggested == STANDARD_ID)
-        {
-            problems.push(DesignError::BadSuggestion { key: key.into(), id: suggested.clone() });
-        }
+    if let Some(suggested) = &file.about.font
+        && !(is_valid_id(suggested) || suggested == STANDARD_ID)
+    {
+        problems.push(DesignError::BadSuggestion { key: "about.font".into(), id: suggested.clone() });
     }
     Ok((file, problems))
 }
@@ -752,7 +746,7 @@ mod tests {
         let data = Data::with(Part::Design, &["form"]);
         let design = load(&data.dir(Part::Design), "form").expect("valid");
         assert_eq!((design.about.version.as_str(), design.about.author.as_deref()), ("2.1.0", Some("Torro tests")));
-        assert_eq!((design.about.font.as_deref(), design.about.color_scheme.as_deref()), (Some("plex"), Some("torro")));
+        assert_eq!(design.about.font.as_deref(), Some("plex"));
         assert_eq!(design.about.mail_view, Some(MailFormat::Text));
         assert_eq!(
             design.typo.title,
@@ -822,6 +816,21 @@ mod tests {
 
         written(&data, "misspelt", "[list]\nstyles = \"rows\"\n");
         assert_eq!(problems(&dir, "misspelt"), [DesignError::UnknownKey { key: "list.styles".into() }]);
+    }
+
+    /// Task L.33: colours never belong to a design, so `[about] color_scheme` is an unknown key; the
+    /// font and the mail view are still suggested.
+    #[test]
+    fn a_design_suggests_no_colour_scheme() {
+        let data = Data::new();
+        let dir = data.dir(Part::Design);
+        let text = "format = 1\n[about]\nname = \"x\"\nversion = \"1\"\ncolor_scheme = \"nord\"\n";
+        data.write(Part::Design, "tinted", text);
+        assert_eq!(problems(&dir, "tinted"), [DesignError::UnknownKey { key: "about.color_scheme".into() }]);
+        let text = "format = 1\n[about]\nname = \"x\"\nversion = \"1\"\nfont = \"plain\"\nmail_view = \"text\"\n";
+        data.write(Part::Design, "plain", text);
+        let about = load(&dir, "plain").expect("valid").about;
+        assert_eq!((about.font.as_deref(), about.mail_view), (Some("plain"), Some(MailFormat::Text)));
     }
 
     /// Issue #291: the numbers of `[list]` are held to their rules when read from a file.

@@ -513,8 +513,8 @@ fn sample_about(name: &str, version: &str, description: &str) -> torro_core::des
 /// once, and one that breaks rules and says so:
 ///
 /// - designs: "Harbor" (the standard's form under its own name, so the demo can show it chosen
-///   without changing the window; it suggests the font "Tabular" and the colour scheme "Harbor"),
-///   "Paper" (rounder and roomier, suggests the colour scheme "Paper"), "Neon" (broken);
+///   without changing the window; it suggests the font "Tabular"), "Paper" (rounder and roomier,
+///   suggests nothing), "Neon" (broken);
 /// - fonts: "Tabular" (Inter's tabular cut as text font: the only other family the demo has without
 ///   a folder), "Brush" (broken);
 /// - colour schemes: "Harbor" (teal accent, cool surfaces), "Paper" (warm light surfaces, blue
@@ -540,13 +540,13 @@ fn demo_designs() -> Vec<DesignEntry> {
         problems: Vec::new(),
         active: false,
         font: design.about.font.clone(),
-        color_scheme: design.about.color_scheme.clone(),
+        mail_view: design.about.mail_view,
+        density: design.density_level(),
     };
     let sample = |id: &str, about| Design { id: id.into(), about, ..Design::standard() };
     let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "The standard's form, own suggestions"));
-    (harbor.about.font, harbor.about.color_scheme) = (Some("tabular".into()), Some("harbor".into()));
+    harbor.about.font = Some("tabular".into());
     let mut paper = sample("paper", sample_about("Paper", "0.9.1", "Rounder and roomier"));
-    paper.about.color_scheme = Some("paper".into());
     paper.radius = Radius { xs: 6.0, sm: 8.0, md: 10.0, lg: 14.0 };
     paper.space = Space { xs: 6.0, s: 10.0, m: 14.0, l: 20.0, xl: 28.0, xxl: 40.0 };
     let neon = DesignInfo {
@@ -567,7 +567,8 @@ fn demo_designs() -> Vec<DesignEntry> {
         .collect(),
         active: false,
         font: None,
-        color_scheme: None,
+        mail_view: None,
+        density: Default::default(),
     };
     let mut designs: Vec<Design> = vec![Design::standard(), harbor, paper];
     let forced = torro_gui::design::active();
@@ -646,6 +647,7 @@ fn demo_schemes() -> Vec<SchemeEntry> {
         valid: true,
         problems: Vec::new(),
         active: false,
+        dark_only: scheme.dark_only,
     };
     let sample = |id: &str, about| ColorScheme { id: id.into(), about, ..ColorScheme::standard() };
     let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "Teal accent, cool surfaces"));
@@ -679,6 +681,7 @@ fn demo_schemes() -> Vec<SchemeEntry> {
         .map(ToString::to_string)
         .collect(),
         active: false,
+        dark_only: false,
     };
     let mut schemes = vec![ColorScheme::standard(), harbor, paper];
     let forced = torro_gui::scheme::active();
