@@ -1977,7 +1977,7 @@ static SAVE_EVENT: Command = Command {
                   sent without `etag`: reload), `unsupported` (moving with `occurrence` or `following`, switching \
                   a series between all-day and timed, a rule that cannot be counted for `following`), `error` \
                   (`scope` without `href`, a `repeat.rule` that is not one line of RRULE and not the stored \
-                  one).",
+                  one, `repeat` fields outside their ranges or `nth` on a daily or weekly rule).",
 };
 
 static DELETE_EVENT: Command = Command {
@@ -2000,7 +2000,8 @@ static SEARCH_PLACES: Command = Command {
     description: "Finds places for an event's location: first matching locations of events in the calendars you \
                   may read, then places from the place search service set in the settings (Photon unless \
                   changed), each with label, detail and coordinates (`geo`) for the event's `location` and \
-                  `geo`. Sends `query` and the computer's IP address to that service. Fails with `unsupported` \
+                  `geo`. Sends `query`, the coordinates of `near` (Photon only) and the computer's IP address to \
+                  that service. Fails with `unsupported` \
                   while maps are off in the settings; with `busy` when searching more than once a second, when all \
                   clients together searched 10 times within a minute, or for an hour after the service refused \
                   with 403 or 429; with `offline` when it cannot be reached. When the service gives no answer but \

@@ -2291,13 +2291,27 @@ impl PimService {
     /// and goes back with it on every save, and the writer keeps the stored rule (the second review of
     /// #278, finding 1). The stored rule is read only for a text that fails the check: from the cache
     /// ([`stored_rule_of`]), else from the server; nothing is written before.
+    ///
+    /// The fields of a rule that is not custom are checked the same way
+    /// ([`torro_pim_caldav::recur::check_fields`]: `BYMONTH=13`, `COUNT=0`, `FREQ=WEEKLY;BYDAY=2MO` …);
+    /// they pass when they are those of the stored rule, which then goes back as stored (the review
+    /// of PR #294).
     async fn rule_refused(&self, event: &Event) -> Result<(), WriteError> {
         let Some(repeat) = event.repeat.as_deref() else { return Ok(()) };
-        let Err(why) = torro_pim_caldav::recur::check(&repeat.rule) else { return Ok(()) };
-        if self.stored_rule(event).await.is_some_and(|stored| stored.trim() == repeat.rule.trim()) {
+        if let Err(why) = torro_pim_caldav::recur::check(&repeat.rule) {
+            if self.stored_rule(event).await.is_some_and(|stored| stored.trim() == repeat.rule.trim()) {
+                return Ok(());
+            }
+            return Err(refused("error", format!("repeat.rule is no valid RRULE value: {why}")));
+        }
+        if repeat.custom {
             return Ok(());
         }
-        Err(refused("error", format!("repeat.rule is no valid RRULE value: {why}")))
+        let Err(why) = torro_pim_caldav::recur::check_fields(repeat) else { return Ok(()) };
+        if self.stored_rule(event).await.is_some_and(|stored| torro_pim_caldav::recur::keeps_stored(&stored, repeat)) {
+            return Ok(());
+        }
+        Err(refused("error", format!("the repeat fields make no valid rule: {why}")))
     }
 
     /// The rule text the server stores for the event at `event.href`: from the cache when it holds the
@@ -7050,6 +7064,38 @@ END:VCALENDAR
             let new = Event { href: None, etag: None, recurring: false, recurrence_id: None, ..sent };
             let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
             assert_eq!(code_of(&response), "error", "a new event: {response:?}");
+        }
+        let seen = lines(&record);
+        assert!(seen.iter().all(|line| line.starts_with("GET ")), "nothing written: {seen:?}");
+    }
+
+    /// The review of PR #294: fields out of their ranges (`BYMONTH=13`, `COUNT=0`, a weekly rule on
+    /// the second Monday) are `error` with every scope and for a new event, before anything is written.
+    #[tokio::test]
+    async fn repeat_fields_out_of_range_are_refused_before_anything_is_written() {
+        use torro_pim::model::{RepeatDay, RepeatEnd, Weekday};
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let occurrence = second_of_series(&base, "\"1\"");
+        let weekly = torro_pim_caldav::recur::read("FREQ=WEEKLY", None);
+        let wrong = [
+            torro_pim::model::Repeat { months: vec![13], ..weekly.clone() },
+            torro_pim::model::Repeat { end: RepeatEnd::Count(0), ..weekly.clone() },
+            torro_pim::model::Repeat {
+                weekdays: vec![RepeatDay { day: Weekday::Monday, nth: Some(2) }],
+                ..weekly.clone()
+            },
+        ];
+        for repeat in wrong {
+            let sent = Event { repeat: Some(Box::new(repeat.clone())), ..occurrence.clone() };
+            for scope in [SeriesScope::Following, SeriesScope::Series] {
+                let request = Request::SaveEvent { event: sent.clone(), scope: Some(scope) };
+                let response = service.handle_within(request, Reach::Suite).await;
+                assert_eq!(code_of(&response), "error", "{repeat:?}, {scope:?}: {response:?}");
+            }
+            let new = Event { href: None, etag: None, recurring: false, recurrence_id: None, ..sent };
+            let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
+            assert_eq!(code_of(&response), "error", "a new event, {repeat:?}: {response:?}");
         }
         let seen = lines(&record);
         assert!(seen.iter().all(|line| line.starts_with("GET ")), "nothing written: {seen:?}");
