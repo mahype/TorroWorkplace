@@ -991,3 +991,152 @@ Funktion hat Oberfläche, Request mit Katalogeintrag und MCP-Weg. Die bereits vo
 - **API/MCP:** M10.1 und M10.6; alle Änderungen gehen über den Dienst.
 - **Abnahme:** Der Nutzer erkennt, was vollständig offline lesbar und durchsuchbar ist; ein Fehler oder eine
   langsame Wartung blockiert die Kontoeinstellungen nicht; Breit/Mittel/Schmal und Hell/Dunkel geprüft.
+
+## M11: Eigene Mail-Server und selbst signierte Zertifikate (Issue #284)
+
+Entschieden in der Planung (2026-10-22): Bei Mail-Konten gilt jeder Server, den ein Mensch über
+`accounts.connect_mail` einträgt (nur App-Schlüssel), wie er ist: öffentlich, lokales Netz oder dieser Rechner;
+kein Schalter. Ein Zertifikat, dem das System nicht vertraut, bestätigt der Mensch einmal; das Konto merkt sich
+genau dieses Zertifikat (SHA-256 des Server-Zertifikats); die Rückfrage gibt es überall, bei einem Host mit
+öffentlicher Adresse mit deutlicher Warnung (in der Planung entschieden). Reine CalDAV-Konten (`connect_caldav`), die
+Dienstsuche und `torro-htmlview` bleiben unverändert. Konzept: [mail.md](../mail.md), Sicherheitsregel
+[api.md](../api.md) Fußnote ⁷ und „Was nie nach außen geht“, Punkt 5.
+
+```
+M11.1 ─┬─ M11.3 ── M11.4
+M11.2 ─┘
+```
+
+M11.1 und M11.2 sind unabhängig voneinander. M11.4 braucht nur die Typen aus M11.1 und die Demo-Antworten; sie
+läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
+
+### M11.1 API und Kontodaten: gemerkte Zertifikate
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/account.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/audit.rs`, `docs/api-reference.md`; nur das neue Feld (leer) in den Literalen von
+  `MailAccountConfig`, `Request::ConnectMail` und `MailView`: `crates/torro-core/src/account.rs`,
+  `crates/torroworkplace/src/{core,pim,clients}.rs`, `crates/torroworkplace/src/mail/service.rs`,
+  `crates/torroworkplace/src/ui/{accounts,launch,wizard}.rs`, `crates/torro-settings-ui/src/demo.rs`
+- **Oberfläche:** M11.4. **API:** `Request::ConnectMail` · `accounts.connect_mail` · Admin (Feld neu).
+  **MCP:** Never, wie bisher (Geheimnis, „Was nie nach außen geht“, 5).
+- `MailAccountConfig` bekommt `trusted_certificates: Vec<String>` (`#[serde(default, skip_serializing_if =
+  "Vec::is_empty")]`, alte `accounts.json` laden unverändert): SHA-256 der Server-Zertifikate, denen ein Mensch
+  vertraut hat, in Großbuchstaben-Hex mit `:` (`AB:CD:…`, 95 Zeichen). Doc-Kommentar: gilt für IMAP, SMTP und
+  CalDAV des Kontos; höchstens 8, das älteste fällt heraus.
+- `Request::ConnectMail` bekommt `trusted_certificates: Vec<String>` (`#[serde(default, skip_serializing_if =
+  "Vec::is_empty")]`): Fingerabdrücke, die der Mensch gerade bestätigt hat; der Kern nimmt sie zu den gespeicherten
+  hinzu, wenn ein Server des Kontos es bei dieser Anmeldung gezeigt hat (M11.3). Ein Eintrag, der nicht das
+  Format von oben hat, ist `error`, bevor ein Server gefragt wird. Doc-Kommentar von `ConnectMail`: Satz „checks that every server's host is on the public
+  internet“ und „a host that is not on the public internet (`localhost` included)“ ersetzen durch: jeder Host geht;
+  neue Antwort `Response::UntrustedCertificate`.
+- Neue Antwort `Response::UntrustedCertificate { service: String, host: String, sha256: String, public: bool }`
+  (`result: "untrusted_certificate"`, verträglich): `service` ist `IMAP`, `SMTP` oder `CalDAV`; `public`, wenn eine
+  Adresse des Hosts öffentlich ist (dann warnt die Oberfläche deutlich); das Passwort ging nicht hinaus, nichts
+  wurde gespeichert. Auch Antwort von `accounts.import_torromail_account`.
+- `audit::outcome`: `UntrustedCertificate` ergibt `untrusted_certificate`, nicht `ok`.
+- `MailView` bekommt `trusted_certificates: Vec<String>` (`#[serde(default)]`); kein Geheimnis.
+- Katalog `CONNECT_MAIL` (`api.rs`): Beschreibung um „any server a person typed, also on the local network; a
+  certificate the system does not trust is answered with untrusted_certificate and works once the person trusts
+  it“ ergänzen. `Access`, `Mcp` bleiben.
+- Der Kern reicht das Feld in dieser Aufgabe nur durch (`MailSignIn` in `core.rs`), ohne Verhalten.
+- **Abnahme:** Serde-Test: `accounts.json` ohne das Feld lädt, leeres Feld wird nicht geschrieben;
+  `ConnectMail` ohne Feld wird gelesen; `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md`
+  committet; `outcome` mit der neuen Antwort; Tabellen-Test der Rechte und `names_follow_the_rules` grün (Client-Schlüssel weiter `forbidden`).
+
+### M11.2 TLS: einem bestätigten Zertifikat vertrauen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail-imap/src/{tls,imap,smtp,lib}.rs`
+  (`tls.rs` neu), `crates/torro-mail-imap/Cargo.toml` (`sha2.workspace = true`); nur die `match` auf die neuen
+  Varianten in `crates/torroworkplace/src/mail/{send,service,sync}.rs`
+- **Oberfläche/API/MCP:** keine; Bibliothek für M11.3.
+- Neu `tls.rs`: `Fingerprint([u8; 32])` (SHA-256 des DER des Server-Zertifikats) mit `Display`/`FromStr` im
+  Format von M11.1 (Kleinbuchstaben und fehlende `:` beim Lesen erlaubt). `tls_config` zieht aus `imap.rs` hierher
+  und wird `pub fn client_config(trust: &Trust) -> Result<(ClientConfig, Seen), …>` (als Wert: reqwest nimmt ihn
+  so in `use_preconfigured_tls`; ALPN `h2`, `http/1.1` setzt, wer ihn für HTTP nutzt). `Seen` meldet nach einem
+  fehlgeschlagenen Handshake den Fingerabdruck des abgelehnten Zertifikats (`Seen::rejected()`) und, welcher Pin
+  angenommen wurde (`Seen::accepted()`); `Session` und `SmtpSubmitter` geben den angenommenen Pin weiter, damit
+  M11.3 nur benutzte speichert.
+- `Trust` (öffentliches Enum, Änderung freigegeben) bekommt `Pinned { base: Box<Trust>, pins: Vec<Fingerprint> }`
+  und `Trust::with_pins(self, Vec<Fingerprint>) -> Trust` (ohne Pins unverändert). Eigener `ServerCertVerifier`:
+  passt der Fingerabdruck zu einem Pin, gilt das Zertifikat ohne Prüfung von Name und Ablauf (selbst signierte
+  Zertifikate nennen oft einen anderen Namen); sonst entscheidet `base`, bei Ablehnung merkt `Seen` den
+  Fingerabdruck. Handshake-Signaturen immer mit dem Provider prüfen (`verify_tls12_signature`,
+  `verify_tls13_signature`).
+- `ImapError::Untrusted(Fingerprint)`: wenn `Seen` nach dem Handshake etwas meldet (`Session::connect_to`,
+  `handshake`). Vorläufig im Kern: `ImapError::Untrusted` wie `Protocol`, `SmtpError::Untrusted` beim Versand wie
+  `SmtpError::Tls` („nicht angenommen, nichts gesendet“, nie `unknown`, `send.rs` `smtp_refusal`), in
+  `SignInError::smtp`/`imap` wie `Failed`; M11.3 ersetzt das.
+- SMTP (lettre nimmt keinen eigenen Verifier): `SmtpSubmitter::trusting(Vec<Fingerprint>)` (additiv). Erst wie
+  heute mit dem System; scheitert TLS, eine neue Verbindung mit `dangerous_accept_invalid_certs(true)`, dann
+  `peer_certificate()` hashen: Pin → weiter, sonst `abort` und `SmtpError::Untrusted(Fingerprint)`. Kein `AUTH`
+  und kein `MAIL FROM` vor diesem Vergleich, auch bei STARTTLS.
+- **Abnahme:** Tests mit dem lokalen Test-Server (selbst signiertes Zertifikat, `tests/fixtures/`): ohne Pin
+  `Untrusted` mit dem richtigen Fingerabdruck und der Server sah kein Login; mit Pin Anmeldung; mit falschem Pin
+  `Untrusted`; dasselbe für SMTP (TLS und STARTTLS); `Fingerprint` liest und schreibt das Format.
+
+### M11.3 Kern: jeder eingetragene Server, gemerkte Zertifikate
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M11.1, M11.2 · **Dateien:** `crates/torroworkplace/src/mail/service.rs`,
+  `crates/torroworkplace/src/{core,pim}.rs`, `crates/torro-core/src/i18n/de.rs`, `docs/api.md`, `docs/mail.md`
+- **Oberfläche:** M11.4. **API/MCP:** M11.1.
+- `service.rs`: `Connector::system()` lässt jede Adresse zu; `public_addresses` → `addresses`, `check_public` →
+  `check_host`. Auflösen einmal und Verbinden genau mit diesen Adressen bleibt. `MailError::NotPublic` und
+  `SignInError::NotPublic` bleiben nur für `Connector::nowhere()` (Texte neutral: „cannot be used“). Modul-Doc
+  „Security“ neu: Server kommen nur von Menschen.
+- Trust je Konto: `connector.trust.with_pins(…)` aus `config.trusted_certificates` (bei `check_sign_in` die
+  gespeicherten plus die der Anfrage) für IMAP (`Connector::connect`, `check_sign_in`) und SMTP (`check_smtp`,
+  `MailService::smtp` mit `SmtpSubmitter::trusting`).
+- Neu `SignInError::Untrusted(Service, Fingerprint)` aus `ImapError::Untrusted` / `SmtpError::Untrusted`;
+  `connect_mail` antwortet damit `Response::UntrustedCertificate` mit dem Host des Dienstes und `public`
+  (`discover::is_public` über die aufgelösten Adressen). Gespeichert werden genau die Pins, die bei dieser Anmeldung
+  angenommen wurden (`Seen::accepted()`); lief CalDAV nicht mit, bleiben die übrigen gespeicherten dazu (sie können
+  zu CalDAV gehören). Höchstens 8. So räumt jedes erneute Verbinden („Server settings…“, „Change password…“)
+  nicht mehr benutzte Zertifikate weg, und ein Fingerabdruck, den kein Server zeigte, wird nie gespeichert. `import_torromail_account` läuft über `connect_mail`
+  (`MailSignIn` mit leerem Feld) und bekommt dieselbe Antwort, nichts Eigenes.
+- Abgleich: `MailError::Untrusted(Fingerprint)`, API-Code `auth`, Meldung ohne Fingerabdruck „The certificate of
+  the mail server changed. Check it in Server settings.“; am Konto `Trouble::SignInNeeded`, weil ein Mensch handeln
+  muss (wie bei einem fehlenden Passwort). Trotzdem weiter versuchen wie bei `Offline`: TLS scheitert vor dem
+  Login, kein Server sperrt das Konto, und ein zurückgesetztes Zertifikat heilt sich so von selbst.
+- CalDAV des Mail-Kontos: `Core::check_caldav` ohne Adressprüfung über `CalDavClient::new(http, …)` (nicht
+  `pinned`, das kein TLS von außen nimmt); `http` gebaut wie `torro_pim_caldav::http_client()` (User-Agent,
+  Timeouts) mit `no_proxy()` und `use_preconfigured_tls(client_config(trust))`, ALPN gesetzt; scheitert die Anmeldung und `Seen` meldet etwas →
+  `SignInError::Untrusted(Service::CalDav, …)`. `pim.rs`: `public_http` entfällt; `http_for` gibt für Mail-Konten
+  einen Client mit dem Trust des Kontos (je Konto gebaut und im Slot gehalten, ohne Pins der gemeinsame `http`).
+  `pinned_public` und `connect_caldav` bleiben.
+- Tests umdrehen/ergänzen: `the_core_connects_only_to_public_mail_servers` (service.rs) → private, Loopback und
+  ein Name auf eine lokale Adresse gehen; `the_calendars_of_a_mail_account_are_fetched_from_public_addresses_only`
+  (pim.rs) → Kalenderteil auf `localhost` gleicht ab; neu im Kern: `connect_mail` gegen einen Server mit selbst
+  signiertem Zertifikat → `UntrustedCertificate`, erneut mit Fingerabdruck → verbunden und gespeichert; danach
+  anderes Zertifikat → Problem am Konto, kein Login am Server. Bestehende Tests, dass Erkennung
+  (`only_public_addresses_pass`, Mail-Erkennung) und Client-Schlüssel (`connect_mail` → `forbidden`) streng
+  bleiben, unverändert grün.
+- Doku: `docs/api.md` Fußnote ⁷ („Kalender später hinzufügen“: „wie bei M2.7b (öffentlicher Host …)“) und „Was nie
+  nach außen geht“, Punkt 5 (Server und vertraute Zertifikate eines Mail-Kontos setzt nur ein Mensch);
+  `docs/mail.md` neuer Abschnitt „Eigene Server und Zertifikate“.
+- **Abnahme:** die Tests oben; `TORRO_LANG=de cargo test --workspace` grün; `torro-api-review` ohne Befund.
+
+### M11.4 Steuerzentrale: Zertifikat bestätigen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M11.1, M11.3 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts,launch}.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** „Add account“ › Mail, Kontoseite („Server settings…“, „Change password…“), Übernahme aus
+  TorroMail. **API:** M11.1. **MCP:** Never.
+- Wizard: auf `Response::UntrustedCertificate` neuer Schritt `Step::MailCertificate`: Titel „Trust this
+  certificate?“, Satz „The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this
+  is your own server.“; bei `public` darüber eine Warnung mit Icon in `attention` (Farbe nur im Icon): „This server
+  is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection.
+  Never trust it for a mail provider.“; Fingerabdruck in einer `widgets::group`-Zeile (`typo::meta()`, `.tabular()`, umbrechend);
+  „Back“ (zum Passwort) und Primärknopf „Trust certificate“, der `ConnectMail` mit dem Fingerabdruck erneut
+  schickt. Dafür behält `Mail` das Passwort, solange die Antwort `UntrustedCertificate` ist; bei jeder anderen
+  Antwort, „Back“ oder Schließen wird es gelöscht (`connect_request` nimmt sonst weiter mit `mem::take`).
+- Kontoseite: „Server settings“ und „Change password“ zeigen dieselbe Rückfrage im Dialog (Fingerabdruck über dem
+  Fuß, „Save“/„Change password“ wird „Trust certificate“); gleiche Passwort-Regel. In der Verbindungsgruppe eine
+  Zeile „Trusted certificate“ je Eintrag aus `MailView::trusted_certificates` (gekürzt mit Tooltip).
+- TorroMail-Übernahme: `UntrustedCertificate` zeigt an der Zeile „The certificate is not trusted.“ und „Enter
+  password“ (Mail-Weg, dort die Rückfrage).
+- Demo (`launch.rs`): Fake-`ConnectMail` antwortet `UntrustedCertificate` für einen Host auf `.lan` (`public:
+  false`) bzw. `.example` (`public: true`) ohne Fingerabdruck; neue `--open`-Zustände `wizard-mail-certificate` und
+  `wizard-mail-certificate-public`.
+- **Abnahme:** UI-Tests: Antwort → Schritt mit Host und Fingerabdruck, Warnung nur bei `public`; „Trust certificate“ schickt `ConnectMail`
+  mit Passwort und Fingerabdruck; „Back“ löscht das Passwort; Kontoseite ebenso. Sichtprüfung (`torro-design`)
+  von `wizard-mail-certificate`, `wizard-mail-certificate-public` und `account-detail` in Schmal, Mittel, Breit, hell und dunkel.
