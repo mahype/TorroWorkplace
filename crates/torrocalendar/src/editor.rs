@@ -916,6 +916,12 @@ impl Editor {
     /// way the scope stays: the answer decides whether there is a series left. Following or all events
     /// take a new start date's days ([`Editor::follow_start`]). An occurrence whose rule could not be
     /// read stays with "This event" ([`Editor::rule_unknown`]).
+    ///
+    /// What was typed under the old scope and not saved yet is saved with the old scope first, so a
+    /// title typed for "This event" does not land on the whole series because "All" was clicked
+    /// before the save (the review of PR #294). While a save is under way such a change cannot go out
+    /// yet, so the scope stays until the answer; a form that cannot be saved yet (a date half typed)
+    /// goes with the scope chosen next.
     fn choose_scope(&mut self, scope: SeriesScope) -> Action {
         if scope != SeriesScope::Occurrence && self.rule_unknown() {
             return Action::None;
@@ -923,6 +929,11 @@ impl Editor {
         if scope != self.scope && self.ending_series() {
             return Action::None;
         }
+        let switching = scope != self.scope;
+        if switching && self.saving && self.changed() && self.check().is_ok() {
+            return Action::None;
+        }
+        let pending = if switching { self.request_save(false) } else { Action::None };
         self.scope = scope;
         self.reset = 0;
         if let Some(original) = &self.original
@@ -931,7 +942,7 @@ impl Editor {
             self.form.repeat = original.repeat.as_deref().cloned();
         }
         self.follow_start();
-        Action::None
+        pending
     }
 
     /// A save is under way that ends the series ("Never" with "All").
@@ -3311,6 +3322,41 @@ mod tests {
     }
 
     #[test]
+    fn a_change_typed_before_another_scope_is_chosen_keeps_its_scope() {
+        // Typed for "This event", "All" clicked before the save: the title goes to this event only.
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Location("Room 5".into()));
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Series));
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 5"), Some(SeriesScope::Occurrence)));
+        assert_eq!(editor.scope, SeriesScope::Series, "the band shows the new scope");
+        let _ = store(&mut editor, event, "\"8\"");
+        editor.update(Message::Location("Room 6".into()));
+        assert_eq!(saves_with(&mut editor, Message::Flush).1, Some(SeriesScope::Series), "what follows goes to all");
+
+        // And back: typed for "All", "This event" clicked before the save.
+        let mut back = Editor::edit(&occurrence(), &calendars());
+        back.update(Message::Scope(SeriesScope::Series));
+        back.update(Message::Location("Room 7".into()));
+        assert_eq!(saves_with(&mut back, Message::Scope(SeriesScope::Occurrence)).1, Some(SeriesScope::Series));
+
+        // While a save is under way, a change typed since keeps the scope until the answer.
+        let mut busy = Editor::edit(&occurrence(), &calendars());
+        busy.update(Message::Location("Room 8".into()));
+        let (event, _) = saves_with(&mut busy, Message::Flush);
+        busy.update(Message::Location("Room 9".into()));
+        assert!(matches!(busy.update(Message::Scope(SeriesScope::Series)), Action::None));
+        assert_eq!(busy.scope, SeriesScope::Occurrence, "the scope waits for the answer");
+        let (event, scope) = match store(&mut busy, event, "\"9\"") {
+            Action::Save(event, scope) => (event, scope),
+            other => panic!("expected the pending change to be saved, got {other:?}"),
+        };
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 9"), Some(SeriesScope::Occurrence)));
+        let _ = store(&mut busy, event, "\"10\"");
+        assert!(matches!(busy.update(Message::Scope(SeriesScope::Series)), Action::None), "nothing left to save");
+        assert_eq!(busy.scope, SeriesScope::Series);
+    }
+
+    #[test]
     fn the_repeat_of_an_occurrence_changes_only_for_following_or_all_events() {
         let start = day(2026, 10, 13);
         let mut editor = Editor::edit(&occurrence(), &calendars());
@@ -3664,14 +3710,13 @@ mod tests {
         editor.update(Message::Scope(SeriesScope::Series));
         assert!(matches!(editor.update(Message::AllDay(true)), Action::None));
         assert!(!editor.form.all_day, "the switch is off");
-        // A switch made for this event alone is not sent for all of them.
+        // A switch made for this event alone is not sent for all of them: choosing "All" saves it for
+        // this event first.
         editor.update(Message::Scope(SeriesScope::Occurrence));
         editor.form.all_day = true;
-        editor.update(Message::Scope(SeriesScope::Series));
-        assert_eq!(problem(&editor), Problem::AllDaySeries);
-        editor.update(Message::Scope(SeriesScope::Occurrence));
-        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Series));
         assert!(event.all_day() && scope == Some(SeriesScope::Occurrence));
+        assert_eq!(problem(&editor), Problem::AllDaySeries, "until the answer, the form is no change for all");
     }
 
     #[test]
