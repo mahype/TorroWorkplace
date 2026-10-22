@@ -14,10 +14,18 @@
 //! An event's reminders (task ER1.1, `docs/erinnerungen.md`) are its `VALARM` components with
 //! `ACTION:DISPLAY` or `AUDIO` ([`alarm`]). Mail alarms, `ACTION:NONE` (Apple's placeholder) and
 //! alarms whose `TRIGGER` cannot be read are not the model's: they are left out, not reported.
+//!
+//! What the server's expansion loses (task TE.3, `docs/termin-editor.md` decisions 1 and 2) comes
+//! from the stored object of each `href` ([`ObjectFacts`]): the rule of the series, the zones of
+//! its `DTSTART`s and which occurrences were changed. Nextcloud (Sabre) gives every occurrence it
+//! expands a `RECURRENCE-ID` (its start, in UTC; a changed one keeps its own) and turns every time
+//! into UTC, dropping the `VTIMEZONE`s (`Sabre\VObject\Component\VCalendar::expand`,
+//! `Recur\EventIterator::getEventObject`); the fixture `nextcloud-expand-series.xml` shows it.
+//! For a server that leaves the key out, [`ObjectFacts::complete`] derives it.
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
-use torro_pim::model::{Attendee, AttendeeRole, EventStatus, Geo, Link, PartStat};
+use torro_pim::model::{Attendee, AttendeeRole, EventStatus, Geo, Link, PartStat, Repeat, RepeatEnd, RepeatFreq};
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Todo, Transparency};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
@@ -59,6 +67,116 @@ pub fn is_series(ics: &str) -> bool {
         });
     }
     series
+}
+
+/// What the stored object of one `href` (read without expansion, `CalDavClient::objects`) says
+/// about the events the server expanded from it (task TE.3): the rule and zone of the series' main
+/// event and its changed occurrences. Read once per object with [`ObjectFacts::read`], then put on
+/// every occurrence with [`ObjectFacts::complete`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ObjectFacts {
+    /// The rule of the main event (the VEVENT without `RECURRENCE-ID`): its `RRULE` read with
+    /// [`crate::recur::read`] in the zone of its `DTSTART`, marked custom when the event also has
+    /// extra dates (`RDATE`), an `EXRULE` or more than one `RRULE`. Extra dates without a rule give
+    /// a custom rule with empty text (its `freq` then means nothing). `None` for a single event and
+    /// for an object holding only changed occurrences.
+    pub repeat: Option<Repeat>,
+    /// The IANA zone of the main event's `DTSTART` (as [`Event::time_zone`]); `None` for an all-day
+    /// or UTC start, a zone chrono-tz does not know, or no main event.
+    pub zone: Option<String>,
+    /// The changed occurrences, in the stored order.
+    pub exceptions: Vec<Exception>,
+}
+
+/// One changed occurrence in a stored object (a VEVENT with `RECURRENCE-ID`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exception {
+    /// Which occurrence it replaces (`RECURRENCE-ID`), as an instant or a day.
+    pub recurrence_id: EventTime,
+    /// Where it starts now (`DTSTART`).
+    pub start: EventTime,
+    /// The IANA zone of its `DTSTART`, as [`ObjectFacts::zone`].
+    pub zone: Option<String>,
+}
+
+impl ObjectFacts {
+    /// The facts of the stored iCalendar object `ics`. Only VEVENTs count; one without a readable
+    /// `DTSTART`, a changed occurrence whose `RECURRENCE-ID` cannot be read and every main event
+    /// after the first are left out.
+    pub fn read(ics: &str) -> ObjectFacts {
+        let mut facts = ObjectFacts::default();
+        let mut has_main = false;
+        for_each_component(ics, "VEVENT", |props, _| {
+            let Some(dtstart) = find(props, "DTSTART") else { return };
+            let Some(start) = parse_time(dtstart) else { return };
+            let tz = matches!(start, EventTime::DateTime(_)).then(|| dtstart.param("TZID").and_then(zone)).flatten();
+            let zone = tz.map(|tz| tz.name().to_string());
+            match find(props, "RECURRENCE-ID") {
+                Some(key) => {
+                    if let Some(recurrence_id) = parse_time(key) {
+                        facts.exceptions.push(Exception { recurrence_id, start, zone });
+                    }
+                }
+                None if !has_main => {
+                    has_main = true;
+                    facts.zone = zone;
+                    facts.repeat = main_rule(props, tz);
+                }
+                None => {}
+            }
+        });
+        facts
+    }
+
+    /// Puts what the server's expansion lost on `event`, an occurrence of this object (or the
+    /// object's single event):
+    ///
+    /// - `recurrence_id`, when the server left it out and the object is a series: the changed
+    ///   occurrence that starts where `event` starts, else `event.start` (an occurrence the rule
+    ///   made starts at its key).
+    /// - `time_zone`: the zone of the changed occurrence with that key, else of the main event;
+    ///   left as it is when the object names none.
+    /// - `repeat`: the rule of the series, the same on every occurrence; and `recurring` for an
+    ///   occurrence of a series, so it stays true exactly when `recurrence_id` or `repeat` is set.
+    pub fn complete(&self, event: &mut Event) {
+        let series = self.repeat.is_some() || !self.exceptions.is_empty();
+        if series && event.recurrence_id.is_none() {
+            let changed = self.exceptions.iter().find(|exception| exception.start == event.start);
+            event.recurrence_id = Some(changed.map_or(event.start, |exception| exception.recurrence_id));
+        }
+        let changed =
+            event.recurrence_id.and_then(|key| self.exceptions.iter().find(|exception| exception.recurrence_id == key));
+        let zone = changed.map_or(&self.zone, |exception| &exception.zone);
+        if let Some(zone) = zone.as_ref().filter(|_| !event.all_day()) {
+            event.time_zone = Some(zone.clone());
+        }
+        event.repeat = self.repeat.clone().map(Box::new);
+        event.recurring |= event.recurrence_id.is_some() || event.repeat.is_some();
+    }
+}
+
+/// The rule of a main event with the properties `props` and the zone `tz` of its `DTSTART`, as
+/// [`ObjectFacts::repeat`] describes it.
+fn main_rule(props: &[Property<'_>], tz: Option<Tz>) -> Option<Repeat> {
+    let count = |name: &str| props.iter().filter(|p| p.name.eq_ignore_ascii_case(name)).count();
+    let first = find(props, "RRULE");
+    let more = count("RRULE") > 1 || count("RDATE") > 0 || count("EXRULE") > 0;
+    let mut repeat = match first {
+        Some(rule) => crate::recur::read(rule.value, tz),
+        None if more => Repeat {
+            freq: RepeatFreq::Daily,
+            interval: 1,
+            weekdays: Vec::new(),
+            month_days: Vec::new(),
+            months: Vec::new(),
+            end: RepeatEnd::Never,
+            rule: String::new(),
+            custom: true,
+        },
+        None => return None,
+    };
+    repeat.custom |= more;
+    Some(repeat)
 }
 
 /// Calls `visit` with the own properties of every top-level `component` in `ics` and the
@@ -205,7 +323,8 @@ pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], col
         transparency: transparency(get("TRANSP")),
         alarms: alarms.iter().filter_map(|props| alarm(props)).collect(),
         recurrence_id: get("RECURRENCE-ID").and_then(parse_time),
-        // The rule is read with the raw objects of a series (task TE.3).
+        // An occurrence the server expanded has lost the rule: the core adds it from the stored
+        // object ([`ObjectFacts::complete`], task TE.3).
         repeat: None,
         time_zone: matches!(start, EventTime::DateTime(_))
             .then(|| dtstart.param("TZID").and_then(zone))
@@ -834,5 +953,45 @@ RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert_eq!(event.recurrence_id, Some(utc(2026, 10, 13, 8, 0)));
         assert!(event.recurring);
         assert_eq!(one(NEXTCLOUD_BERLIN).recurrence_id, None);
+    }
+
+    // The stored object of a series (task TE.3).
+
+    fn facts(extra: &str) -> ObjectFacts {
+        ObjectFacts::read(&NEXTCLOUD_BERLIN.replace("STATUS:CONFIRMED", extra))
+    }
+
+    #[test]
+    fn extra_dates_and_exclusion_rules_make_the_rule_custom() {
+        let weekly = facts("RRULE:FREQ=WEEKLY;BYDAY=TU").repeat.expect("a rule");
+        assert!(!weekly.custom);
+        assert_eq!(facts("RRULE:FREQ=WEEKLY;BYDAY=TU").zone.as_deref(), Some("Europe/Berlin"));
+        for extra in [
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\r\nRDATE;TZID=Europe/Berlin:20261016T100000",
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\r\nEXRULE:FREQ=MONTHLY;BYDAY=1TU",
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\r\nRRULE:FREQ=WEEKLY;BYDAY=TH",
+        ] {
+            let repeat = facts(extra).repeat.expect("a rule");
+            assert!(repeat.custom, "{extra}");
+            assert_eq!(repeat.rule, "FREQ=WEEKLY;BYDAY=TU", "the first rule's text: {extra}");
+        }
+        let dates_only = facts("RDATE;TZID=Europe/Berlin:20261016T100000").repeat.expect("a series");
+        assert!(dates_only.custom && dates_only.rule.is_empty());
+        assert_eq!(facts("SEQUENCE:3"), ObjectFacts { zone: Some("Europe/Berlin".into()), ..ObjectFacts::default() });
+    }
+
+    #[test]
+    fn an_object_of_changed_occurrences_only_has_no_rule() {
+        let only = facts("RECURRENCE-ID;TZID=Europe/Berlin:20261013T090000");
+        assert_eq!((&only.repeat, &only.zone), (&None, &None));
+        let key = utc(2026, 10, 13, 7, 0);
+        assert_eq!(
+            only.exceptions,
+            [Exception { recurrence_id: key, start: utc(2026, 10, 13, 8, 0), zone: Some("Europe/Berlin".into()) }]
+        );
+        let mut occurrence = Event { time_zone: None, recurring: false, ..one(NEXTCLOUD_BERLIN) };
+        only.complete(&mut occurrence);
+        assert_eq!(occurrence.recurrence_id, Some(key), "found by its start");
+        assert_eq!((occurrence.time_zone.as_deref(), occurrence.recurring), (Some("Europe/Berlin"), true));
     }
 }

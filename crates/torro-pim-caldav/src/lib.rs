@@ -10,7 +10,9 @@
 //! - `discover`: finding the CalDAV service of a mail address without signing in (task M7.1).
 //! - `write`: iCalendar output and ETag-guarded PUT/DELETE (task K.4).
 //! - `ical`: reading iCalendar; [`parse_events`] also reads the event of an invitation that came
-//!   by mail (task E8.3b).
+//!   by mail (task E8.3b), [`ObjectFacts`] what a stored object says about the occurrences the
+//!   server expanded from it (task TE.3).
+//! - `recur`: the rule of a series, `RRULE` to `torro_pim::model::Repeat` and back (task TE.3).
 //!
 //! `sync-collection` and the `torro_pim::Provider` implementation come with the SQLite cache.
 
@@ -18,12 +20,13 @@ mod client;
 pub mod discover;
 mod ical;
 pub mod nextcloud;
+pub mod recur;
 pub mod write;
 
 use std::time::Duration;
 
-pub use client::{CalDavClient, Services};
-pub use ical::parse_events;
+pub use client::{CalDavClient, RawObject, Services};
+pub use ical::{Exception, ObjectFacts, parse_events};
 use torro_pim::ProviderError;
 
 /// Where and as whom to connect. The password lives in the system keychain and reaches the

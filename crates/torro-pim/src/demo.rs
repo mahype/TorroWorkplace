@@ -32,7 +32,8 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{GITHUB_KIND, account_of, local_id};
 use crate::model::{
-    ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState, SeriesScope,
+    ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, Repeat, RepeatDay, RepeatEnd,
+    RepeatFreq, ReviewState, SeriesScope, Weekday,
 };
 use crate::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, move_plan};
 use crate::{
@@ -302,8 +303,14 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     ];
     let mut events = sample_events(monday);
     for (n, item) in events.iter_mut().enumerate() {
-        item.href = Some(format!("{}evt-{}.ics", url_of(&item.collection), n + 1));
-        item.etag = Some(format!("\"sample-evt-{}\"", n + 1));
+        // A series is one object on a server (task TE.3): every occurrence has its href and version.
+        if item.repeat.is_some() {
+            item.href = Some(format!("{}{}.ics", url_of(&item.collection), item.uid));
+            item.etag = Some(format!("\"sample-{}\"", item.uid));
+        } else {
+            item.href = Some(format!("{}evt-{}.ics", url_of(&item.collection), n + 1));
+            item.etag = Some(format!("\"sample-evt-{}\"", n + 1));
+        }
     }
     let mut todos = sample_todos(today);
     for (n, item) in todos.iter_mut().enumerate() {
@@ -638,16 +645,31 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
     let day = |offset: u64| monday + Days::new(offset);
     let mut events = Vec::new();
 
-    // The daily standup is one series: the same uid, one occurrence per weekday, read-only. Its
-    // call and board are links (issue #126: links in the details open, a call gets "Join").
+    // The daily standup is one series: the same uid and href, one occurrence per weekday, each
+    // with its key and the rule, as a server expands it (task TE.3). Its call and board are links
+    // (issue #126: links in the details open, a call gets "Join").
+    let workdays = [Weekday::Monday, Weekday::Tuesday, Weekday::Wednesday, Weekday::Thursday, Weekday::Friday];
+    let every_workday = Repeat {
+        freq: RepeatFreq::Weekly,
+        interval: 1,
+        weekdays: workdays.map(|day| RepeatDay { day, nth: None }).to_vec(),
+        month_days: Vec::new(),
+        months: Vec::new(),
+        end: RepeatEnd::Never,
+        rule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR".into(),
+        custom: false,
+    };
     for offset in [0, 1, 2, 3, 4, 7, 8, 9, 10, 11] {
+        let start = at(day(offset), 9, 30);
         events.push(Event {
             recurring: true,
+            recurrence_id: Some(start),
+            repeat: Some(Box::new(every_workday.clone())),
             location: Some("https://cloud.example.org/call/daily7k2p".into()),
             description: Some(
                 "What I did, what I will do, what blocks me. Board: https://example.org/board/sprint-12.".into(),
             ),
-            ..event(WORK, "daily-standup@torro-demo", "Daily Standup", at(day(offset), 9, 30), at(day(offset), 9, 45))
+            ..event(WORK, "daily-standup@torro-demo", "Daily Standup", start, at(day(offset), 9, 45))
         });
     }
 
@@ -954,7 +976,8 @@ impl PimSource for DemoSource {
         Ok(self.lock().todos.clone())
     }
 
-    /// The scope of a series is ignored for now (task TE.1): every occurrence is its own event here.
+    /// The scope of a series is ignored for now (task TE.1): every occurrence is its own event here,
+    /// found by its href and its key (`recurrence_id`), as all occurrences share the href.
     async fn save_event(&self, mut event: Event, _scope: Option<SeriesScope>) -> Result<Event, ProviderError> {
         let mut data = self.lock();
         data.next_id += 1;
@@ -969,7 +992,10 @@ impl PimSource for DemoSource {
                 data.events.push(event.clone());
             }
             Some(href) => {
-                let Some(slot) = data.events.iter_mut().find(|e| e.href.as_deref() == Some(href.as_str())) else {
+                let key = event.recurrence_id;
+                let found =
+                    data.events.iter_mut().find(|e| e.href.as_deref() == Some(href.as_str()) && e.recurrence_id == key);
+                let Some(slot) = found else {
                     return Err(ProviderError::Other(format!("No event at {href}")));
                 };
                 if slot.etag != event.etag {
@@ -985,7 +1011,8 @@ impl PimSource for DemoSource {
     async fn delete_event(&self, event: Event, _scope: Option<SeriesScope>) -> Result<(), ProviderError> {
         let mut data = self.lock();
         let before = data.events.len();
-        data.events.retain(|e| e.href != event.href || e.uid != event.uid);
+        // One occurrence of a series only, like its save.
+        data.events.retain(|e| e.href != event.href || e.uid != event.uid || e.recurrence_id != event.recurrence_id);
         if data.events.len() == before { Err(ProviderError::Other("No such event".into())) } else { Ok(()) }
     }
 
@@ -1369,11 +1396,16 @@ mod tests {
         let (collections, events, todos) = sample(sunday());
         let filter_list = |id: &str| collections.iter().any(|c| c.id == id && c.source.is_some());
         let mut hrefs = HashSet::new();
+        let mut occurrences = HashSet::new();
         for e in &events {
             let href = e.href.as_deref().expect("sample event has an href");
             assert!(href.starts_with(url_of(&e.collection)) && href.ends_with(".ics"), "{href}");
             assert!(e.etag.is_some(), "{href}");
-            assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
+            // The occurrences of a series share their href; each has its own key.
+            assert!(occurrences.insert((href.to_owned(), e.recurrence_id)), "duplicate occurrence {href}");
+            if e.recurrence_id.is_none() || !hrefs.contains(href) {
+                assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
+            }
         }
         for t in &todos {
             let href = t.href.as_deref().expect("sample task has an href");
@@ -1594,8 +1626,13 @@ mod tests {
         days.sort();
         days.dedup();
         assert_eq!(days.len(), 10, "one occurrence per day");
+        let hrefs: HashSet<Option<&str>> = standups.iter().map(|e| e.href.as_deref()).collect();
+        assert_eq!(hrefs.len(), 1, "one object for the whole series, as on a server");
         for e in standups {
             assert!(e.recurring);
+            assert_eq!(e.recurrence_id, Some(e.start), "each occurrence is keyed by its start");
+            let repeat = e.repeat.as_deref().expect("the rule is on every occurrence");
+            assert_eq!((repeat.freq, repeat.weekdays.len(), repeat.custom), (RepeatFreq::Weekly, 5, false));
             let (start, end) = timed_bounds(e).expect("standup is timed");
             let (start, end) = (start.with_timezone(&Local), end.with_timezone(&Local));
             assert_eq!((start.hour(), start.minute()), (9, 30));
@@ -1749,6 +1786,24 @@ mod tests {
         let elsewhere = source.todos().await.expect("todos").into_iter().find(|t| t.collection != GROCERIES);
         let moved = after[0].clone();
         assert!(matches!(source.move_todo(moved, elsewhere).await, Err(ProviderError::Other(_))));
+    }
+
+    /// The occurrences of the standup share their href (task TE.3): a change or a delete of one
+    /// finds it by its key and leaves the others alone.
+    #[tokio::test]
+    async fn one_occurrence_of_the_series_is_changed_and_deleted_alone() {
+        let source = DemoSource::new(sunday());
+        let series = |events: Vec<Event>| -> Vec<Event> {
+            events.into_iter().filter(|e| e.uid == "daily-standup@torro-demo").collect()
+        };
+        let all = series(source.lock().events.clone());
+        let second = Event { summary: "Standup, later".into(), ..all[1].clone() };
+        let saved = source.save_event(second, Some(SeriesScope::Occurrence)).await.expect("saved");
+        let now = series(source.lock().events.clone());
+        assert_eq!(now.iter().filter(|e| e.summary == "Standup, later").count(), 1);
+        assert_eq!(now[0].summary, "Daily Standup", "the first occurrence is untouched");
+        source.delete_event(saved, Some(SeriesScope::Occurrence)).await.expect("deleted");
+        assert_eq!(series(source.lock().events.clone()).len(), all.len() - 1, "only that one is gone");
     }
 
     fn source_with_calendar() -> DemoSource {

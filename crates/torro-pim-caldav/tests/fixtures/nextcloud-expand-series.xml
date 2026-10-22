@@ -1,0 +1,121 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/standup.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>"8b1a9953c4611296a827abf8c47804d7"</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+PRODID:-//IDN nextcloud.com//Calendar app 5.2.1//EN
+CALSCALE:GREGORIAN
+VERSION:2.0
+BEGIN:VEVENT
+CREATED:20260901T120000Z
+DTSTAMP:20261016T081500Z
+LAST-MODIFIED:20261016T081500Z
+SEQUENCE:3
+UID:9c1f4e2a-7b3d-4c8e-a1f0-5d2b6e8f0a13
+DTSTART:20261019T073000Z
+DTEND:20261019T074500Z
+STATUS:CONFIRMED
+SUMMARY:Daily Standup
+LOCATION:https://cloud.example.org/call/daily7k2p
+RECURRENCE-ID:20261019T073000Z
+END:VEVENT
+BEGIN:VEVENT
+CREATED:20260901T120000Z
+DTSTAMP:20261016T081500Z
+LAST-MODIFIED:20261016T081500Z
+SEQUENCE:4
+UID:9c1f4e2a-7b3d-4c8e-a1f0-5d2b6e8f0a13
+DTSTART:20261020T080000Z
+DTEND:20261020T081500Z
+STATUS:CONFIRMED
+SUMMARY:Daily Standup (from London)
+LOCATION:https://cloud.example.org/call/daily7k2p
+RECURRENCE-ID:20261020T073000Z
+END:VEVENT
+BEGIN:VEVENT
+CREATED:20260901T120000Z
+DTSTAMP:20261016T081500Z
+LAST-MODIFIED:20261016T081500Z
+SEQUENCE:3
+UID:9c1f4e2a-7b3d-4c8e-a1f0-5d2b6e8f0a13
+DTSTART:20261022T073000Z
+DTEND:20261022T074500Z
+STATUS:CONFIRMED
+SUMMARY:Daily Standup
+LOCATION:https://cloud.example.org/call/daily7k2p
+RECURRENCE-ID:20261022T073000Z
+END:VEVENT
+BEGIN:VEVENT
+CREATED:20260901T120000Z
+DTSTAMP:20261016T081500Z
+LAST-MODIFIED:20261016T081500Z
+SEQUENCE:3
+UID:9c1f4e2a-7b3d-4c8e-a1f0-5d2b6e8f0a13
+DTSTART:20261023T073000Z
+DTEND:20261023T074500Z
+STATUS:CONFIRMED
+SUMMARY:Daily Standup
+LOCATION:https://cloud.example.org/call/daily7k2p
+RECURRENCE-ID:20261023T073000Z
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/birthday-ben.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>"c4ca4238a0b923820dcc509a6f75849b"</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+PRODID:-//IDN nextcloud.com//Calendar app 5.2.1//EN
+CALSCALE:GREGORIAN
+VERSION:2.0
+BEGIN:VEVENT
+CREATED:20200110T090000Z
+DTSTAMP:20200110T090000Z
+LAST-MODIFIED:20200110T090000Z
+UID:5e7c2b14-3d9a-4f61-b8e0-2a4c6d8f1b35
+DTSTART;VALUE=DATE:20261021
+DTEND;VALUE=DATE:20261022
+SUMMARY:Ben's birthday
+TRANSP:TRANSPARENT
+RECURRENCE-ID;VALUE=DATE:20261021
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/lunch.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>"eccbc87e4b5ce2fe28308fd9f2a7baf3"</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+PRODID:-//IDN nextcloud.com//Calendar app 5.2.1//EN
+CALSCALE:GREGORIAN
+VERSION:2.0
+BEGIN:VEVENT
+CREATED:20261012T150000Z
+DTSTAMP:20261012T150000Z
+LAST-MODIFIED:20261012T150000Z
+SEQUENCE:0
+UID:a2f8d6c4-1e3b-4a5d-9c7e-0b2d4f6a8c13
+DTSTART:20261022T103000Z
+DTEND:20261022T113000Z
+SUMMARY:Lunch with Carla
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+</d:multistatus>

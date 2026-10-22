@@ -16,6 +16,13 @@
 //!   months ahead, fetched on start, every 5 minutes, after a `Sync` request and after
 //!   sign-in. Reads are answered from the cache, so the apps never wait for the network;
 //!   ranges outside the window are fetched from the server directly.
+//! - **Series** (task TE.3, `docs/termin-editor.md` decisions 1 and 2): the server expands them into
+//!   occurrences, which lose rule and zones on the way. So the cache also holds the stored object
+//!   of every `href` with events in the window ([`Slot::objects`]), fetched after the expansion with
+//!   one `calendar-multiget` per calendar for the hrefs whose ETag is new ([`stale_hrefs`]); hrefs
+//!   gone from the window are forgotten ([`held_objects`]). Every occurrence then gets `repeat`,
+//!   `time_zone` and, where the server left it out, `recurrence_id` from its object
+//!   ([`complete_events`]).
 //! - Writes go to the server first (ETag-guarded) and update the cache with the answer.
 //!   Series are refused until series editing exists, because writing one occurrence back would
 //!   overwrite the whole series. The core decides what a series is, not the client (task
@@ -114,7 +121,7 @@ use torro_pim::{
 use torro_pim_caldav::discover::{self, DiscoverError, Discoverer, NoDns};
 use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
-use torro_pim_caldav::{CalDavAccount, CalDavClient, Services};
+use torro_pim_caldav::{CalDavAccount, CalDavClient, ObjectFacts, RawObject, Services};
 use torro_pim_github::api::{self as github_api, MAX_MATCHES};
 use torro_pim_github::lists::{self, FilterFile};
 use torro_pim_github::{Api, FilterList, IssueRef, address, item, scope};
@@ -168,6 +175,11 @@ struct Slot {
     /// token ([`PimService::reconcile_links`]).
     private: Vec<String>,
     events: Vec<Event>,
+    /// The stored object of every `href` in `events`, not expanded (task TE.3): what the rule,
+    /// the zones and the changed occurrences of a series are. Fetched only when its ETag is new,
+    /// dropped when its href leaves `events`; a write drops the object it changed until the next
+    /// sync fetches it again, so an object here always matches the ETag it was read with.
+    objects: HashMap<String, RawObject>,
     /// The range `events` covers; `None` before the first successful sync.
     window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     todos: Vec<Todo>,
@@ -196,6 +208,7 @@ impl Slot {
             collections: Vec::new(),
             private: Vec::new(),
             events: Vec::new(),
+            objects: HashMap::new(),
             window: None,
             todos: Vec::new(),
             wipe_checked: false,
@@ -1990,16 +2003,18 @@ impl PimService {
     /// password runs the remote wipe check.
     async fn sync_account(&self, id: &str) -> Result<(), ProviderError> {
         let _running = self.syncing.lock().await;
-        let (client, nextcloud, wanted, ocs) = self
+        let (client, nextcloud, wanted, ocs, known) = self
             .state
             .read()
             .await
             .slot(id)
             .and_then(|slot| {
-                Some((slot.client.clone()?, slot.is_nextcloud(), slot.services(), slot.capabilities_due(Utc::now())))
+                let known = slot.objects.iter().map(|(href, object)| (href.clone(), object.etag.clone())).collect();
+                let due = slot.capabilities_due(Utc::now());
+                Some((slot.client.clone()?, slot.is_nextcloud(), slot.services(), due, known))
             })
             .ok_or_else(not_connected)?;
-        let result = fetch_all(&client, id, nextcloud, wanted).await;
+        let result = fetch_all(&client, id, nextcloud, wanted, &known).await;
         // Only after CalDAV took the app password: a refused one must not be tried a second time
         // (Nextcloud's brute-force protection would count it against the person).
         let capabilities = match (&result, ocs) {
@@ -2018,7 +2033,7 @@ impl PimService {
             return Err(not_connected());
         };
         match result {
-            Ok(Fetched { collections, private, events, window, todos }) => {
+            Ok(Fetched { collections, private, mut events, objects, window, todos }) => {
                 // Before the collections reach the cache, so no app sees them shown first.
                 if let Some(wanted) = slot.choice.take() {
                     for collection in collections.iter().filter(|c| !chosen(wanted, c.kind)) {
@@ -2029,6 +2044,8 @@ impl PimService {
                 }
                 slot.collections = collections;
                 slot.private = private;
+                slot.objects = held_objects(std::mem::take(&mut slot.objects), objects, &events);
+                complete_events(&mut events, &slot.objects);
                 slot.events = events;
                 slot.window = Some(window);
                 slot.todos = todos;
@@ -2093,12 +2110,18 @@ impl PimService {
                 }
             }
         }
-        // Outside the cached window: ask the servers.
+        // Outside the cached window: ask the servers. A series that also reaches into the window
+        // gets its rule and zones from the object held for it; others go without.
         for (account, client, mine) in ask {
+            let mut found = Vec::new();
             for (id, url) in mine {
-                let found = client.events(&url, start, end).await.map_err(|err| Failed::at(&account, err))?;
-                events.extend(found.into_iter().map(|e| Event { collection: id.clone(), ..e }));
+                let fetched = client.events(&url, start, end).await.map_err(|err| Failed::at(&account, err))?;
+                found.extend(fetched.into_iter().map(|e| Event { collection: id.clone(), ..e }));
             }
+            if let Some(slot) = self.state.read().await.slot(&account) {
+                complete_events(&mut found, &slot.objects);
+            }
+            events.extend(found);
         }
         Ok(events)
     }
@@ -2132,6 +2155,9 @@ impl PimService {
                 holder.client.delete_event(&old).await.map_err(|err| Failed::at(&holder.account, err))?;
                 if let Some(slot) = self.state.write().await.slot_mut(&holder.account) {
                     slot.events.retain(|e| e.href != old.href);
+                    if let Some(href) = &old.href {
+                        slot.objects.remove(href);
+                    }
                 }
                 new
             }
@@ -2148,6 +2174,10 @@ impl PimService {
         if let Some(slot) = self.state.write().await.slot_mut(&place.account) {
             slot.events.retain(|e| e.href != saved.href);
             slot.events.push(saved.clone());
+            // The held object is of the version before: the next sync fetches the new one.
+            if let Some(href) = &saved.href {
+                slot.objects.remove(href);
+            }
         }
         Ok(saved)
     }
@@ -2167,6 +2197,9 @@ impl PimService {
         place.client.delete_event(&gone).await.map_err(|err| Failed::at(&place.account, err))?;
         if let Some(slot) = self.state.write().await.slot_mut(&place.account) {
             slot.events.retain(|e| e.href != gone.href);
+            if let Some(href) = &gone.href {
+                slot.objects.remove(href);
+            }
         }
         Ok(())
     }
@@ -3643,6 +3676,9 @@ struct Fetched {
     /// The ids of the private ones among `collections` ([`Slot::private`]).
     private: Vec<String>,
     events: Vec<Event>,
+    /// The stored objects fetched in this sync: those of the hrefs whose ETag was new
+    /// ([`stale_hrefs`]); the others are still in [`Slot::objects`].
+    objects: Vec<RawObject>,
     window: (DateTime<Utc>, DateTime<Utc>),
     todos: Vec<Todo>,
 }
@@ -3651,12 +3687,14 @@ struct Fetched {
 /// collection ids with the account in front. Nextcloud's placeholder names are translated only
 /// for a `nextcloud` account: on another server they are what the user named the collection.
 /// With `wanted` (a mail account, task M2.7) only the collections of those services are kept, and
-/// the others are not even read.
+/// the others are not even read. `known` holds the ETag of every stored object the cache has (by
+/// href, task TE.3): only the others are fetched, one `calendar-multiget` per calendar.
 async fn fetch_all(
     client: &CalDavClient,
     account: &str,
     nextcloud: bool,
     wanted: Option<Services>,
+    known: &HashMap<String, Option<String>>,
 ) -> Result<Fetched, ProviderError> {
     let today = Local::now().date_naive();
     let start = today - Span::days(WINDOW_BACK_DAYS);
@@ -3671,6 +3709,7 @@ async fn fetch_all(
         .collect();
     let mut collections: Vec<Collection> = listed.into_iter().map(|(collection, _)| collection).collect();
     let mut events = Vec::new();
+    let mut objects = Vec::new();
     let mut todos = Vec::new();
     for collection in &mut collections {
         if let Some(name) = placeholder_name(&collection.name).filter(|_| nextcloud) {
@@ -3680,6 +3719,9 @@ async fn fetch_all(
         let id = collection_id(account, &url);
         if collection.kind.has_events() {
             let found = client.events(&url, window.0, window.1).await?;
+            let stale = stale_hrefs(&found, known);
+            // Boxed: the multiget's future would otherwise sit inline in every sync's future.
+            objects.extend(Box::pin(client.objects(&url, &stale)).await?);
             events.extend(found.into_iter().map(|e| Event { collection: id.clone(), ..e }));
         }
         if collection.kind.has_todos() {
@@ -3687,7 +3729,55 @@ async fn fetch_all(
         }
         collection.id = id;
     }
-    Ok(Fetched { collections, private, events, window, todos })
+    Ok(Fetched { collections, private, events, objects, window, todos })
+}
+
+/// The hrefs of `events` whose stored object must be fetched (task TE.3): each once, in the order
+/// of `events`, unless `known` holds it with the ETag the event came with. An event without an ETag
+/// always counts as new: nothing tells whether the held object is still the one stored.
+fn stale_hrefs(events: &[Event], known: &HashMap<String, Option<String>>) -> Vec<String> {
+    let mut stale: Vec<String> = Vec::new();
+    for event in events {
+        let Some(href) = &event.href else { continue };
+        let current = event.etag.is_some() && known.get(href) == Some(&event.etag);
+        if !current && !stale.contains(href) {
+            stale.push(href.clone());
+        }
+    }
+    stale
+}
+
+/// The stored objects to hold after a sync (task TE.3): for every href of `events`, the one just
+/// `fetched`, else the one held before (`old`); objects of hrefs no event names any more are
+/// forgotten.
+fn held_objects(
+    mut old: HashMap<String, RawObject>,
+    fetched: Vec<RawObject>,
+    events: &[Event],
+) -> HashMap<String, RawObject> {
+    let mut fetched: HashMap<String, RawObject> =
+        fetched.into_iter().map(|object| (object.href.clone(), object)).collect();
+    let mut held = HashMap::new();
+    for href in events.iter().filter_map(|event| event.href.as_ref()) {
+        if held.contains_key(href) {
+            continue;
+        }
+        if let Some(object) = fetched.remove(href).or_else(|| old.remove(href)) {
+            held.insert(href.clone(), object);
+        }
+    }
+    held
+}
+
+/// Puts on every event of `events` what its stored object in `objects` says (task TE.3,
+/// [`ObjectFacts::complete`]): the rule, the zone and, where the server left it out, the key of
+/// the occurrence. Each object is read once; an event without a held object stays as it is.
+fn complete_events(events: &mut [Event], objects: &HashMap<String, RawObject>) {
+    let mut facts: HashMap<&str, ObjectFacts> = HashMap::new();
+    for event in events {
+        let Some(object) = event.href.as_deref().and_then(|href| objects.get(href)) else { continue };
+        facts.entry(object.href.as_str()).or_insert_with(|| ObjectFacts::read(&object.ics)).complete(event);
+    }
 }
 
 /// Whether a collection of `kind` serves a service of `wanted` (task M7.1): one with events and
@@ -6236,5 +6326,161 @@ pub(crate) mod tests {
         assert_eq!(slot.described.len(), MAX_DESCRIBED);
         assert_eq!(slot.described("o/r1"), Some(details(1)), "kept as the newest");
         assert_eq!(slot.described("o/r2"), None);
+    }
+
+    // Series (task TE.3): the stored objects next to the expanded occurrences.
+
+    /// A calendar-query answer (expanded) or a multiget answer with `items` (href, ETag,
+    /// iCalendar) under `work`.
+    macro_rules! dav_answer {
+        ($(($href:literal, $etag:literal, $ics:literal)),* $(,)?) => {
+            concat!(
+                r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+                $(
+                    "<d:response><d:href>/remote.php/dav/calendars/anna/work/", $href, "</d:href><d:propstat><d:prop>",
+                    "<d:getetag>\"", $etag, "\"</d:getetag><c:calendar-data>", $ics,
+                    "</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+                )*
+                "</d:multistatus>"
+            )
+        };
+    }
+
+    const STANDUP_OCCURRENCE: &str = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20261019T073000Z\nSUMMARY:Standup\nRECURRENCE-ID:20261019T073000Z\nEND:VEVENT\nEND:VCALENDAR\n";
+    const EXPANDED_FIRST: &str = dav_answer!(
+        (
+            "standup.ics",
+            "s1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20261019T073000Z\nSUMMARY:Standup\nRECURRENCE-ID:20261019T073000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+        (
+            "lunch.ics",
+            "l1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:lunch\nDTSTART:20261022T103000Z\nSUMMARY:Lunch\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+    );
+    const STORED_FIRST: &str = dav_answer!(
+        (
+            "standup.ics",
+            "s1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART;TZID=Europe/Berlin:20261019T093000\nRRULE:FREQ=WEEKLY;BYDAY=MO\nSUMMARY:Standup\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+        (
+            "lunch.ics",
+            "l1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:lunch\nDTSTART;TZID=Europe/Berlin:20261022T123000\nSUMMARY:Lunch\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+    );
+    /// The standup became daily (new ETag), the lunch was deleted.
+    const EXPANDED_LATER: &str = dav_answer!((
+        "standup.ics",
+        "s2",
+        "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20261019T073000Z\nSUMMARY:Standup\nRECURRENCE-ID:20261019T073000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+    ),);
+    const STORED_LATER: &str = dav_answer!((
+        "standup.ics",
+        "s2",
+        "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART;TZID=Europe/Berlin:20261019T093000\nRRULE:FREQ=DAILY\nSUMMARY:Standup\nEND:VEVENT\nEND:VCALENDAR\n"
+    ),);
+
+    /// A Nextcloud with the calendar `work` that answers the expansion and the multiget from
+    /// `later` on with the second version of its events.
+    fn server_with_series(later: Arc<std::sync::atomic::AtomicBool>) -> impl Fn(&Seen) -> Reply + Send + Sync {
+        move |seen| {
+            let later = later.load(std::sync::atomic::Ordering::SeqCst);
+            match seen.method.as_str() {
+                "REPORT" if seen.body.contains("calendar-multiget") => {
+                    (207, None, if later { STORED_LATER } else { STORED_FIRST })
+                }
+                "REPORT" if seen.body.contains("name=\"VEVENT\"") => {
+                    (207, None, if later { EXPANDED_LATER } else { EXPANDED_FIRST })
+                }
+                _ => healthy_server(seen),
+            }
+        }
+    }
+
+    /// The bodies of the multigets the fake server saw.
+    fn multigets(record: &std::sync::Mutex<Vec<Seen>>) -> Vec<String> {
+        let seen = record.lock().expect("record");
+        seen.iter().filter(|s| s.body.contains("calendar-multiget")).map(|s| s.body.clone()).collect()
+    }
+
+    /// Task TE.3: after the expansion the core fetches the stored objects of the hrefs whose ETag
+    /// is new, in one multiget per calendar, puts rule and zone on every occurrence, fetches nothing
+    /// when nothing changed and forgets the object of an href that is gone.
+    #[tokio::test]
+    async fn only_objects_with_a_new_etag_are_fetched_and_gone_ones_are_forgotten() {
+        let later = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (base, record) = fake_server(server_with_series(Arc::clone(&later))).await;
+        let service = service_on(&base).await;
+        let held = |service: &PimService| {
+            let state = service.state.try_read().expect("no sync running");
+            let mut hrefs: Vec<String> =
+                state.accounts[0].objects.keys().map(|h| h.rsplit('/').next().unwrap_or("").to_string()).collect();
+            hrefs.sort();
+            (hrefs, state.accounts[0].events.clone())
+        };
+
+        service.sync().await.expect("synced");
+        let asked = multigets(&record);
+        assert_eq!(asked.len(), 1, "one multiget for the calendar");
+        assert!(asked[0].contains("work/standup.ics</d:href>") && asked[0].contains("work/lunch.ics</d:href>"));
+        assert!(!asked[0].contains("expand"), "the stored objects as they are");
+        let (hrefs, events) = held(&service);
+        assert_eq!(hrefs, ["lunch.ics", "standup.ics"]);
+        let standup = events.iter().find(|e| e.uid == "standup").expect("standup");
+        let rule = standup.repeat.as_deref().map(|r| r.rule.as_str());
+        assert_eq!((rule, standup.time_zone.as_deref()), (Some("FREQ=WEEKLY;BYDAY=MO"), Some("Europe/Berlin")));
+        assert!(standup.recurring && standup.recurrence_id.is_some());
+        let lunch = events.iter().find(|e| e.uid == "lunch").expect("lunch");
+        assert_eq!((lunch.repeat.as_ref(), lunch.time_zone.as_deref()), (None, Some("Europe/Berlin")));
+
+        service.sync().await.expect("synced again");
+        assert_eq!(multigets(&record).len(), 1, "nothing changed, nothing fetched");
+        let (_, events) = held(&service);
+        assert!(events.iter().any(|e| e.repeat.is_some()), "the held objects still complete the occurrences");
+
+        later.store(true, std::sync::atomic::Ordering::SeqCst);
+        service.sync().await.expect("synced after the change");
+        let asked = multigets(&record);
+        assert_eq!(asked.len(), 2);
+        assert!(asked[1].contains("work/standup.ics</d:href>") && !asked[1].contains("lunch"), "only the new ETag");
+        let (hrefs, events) = held(&service);
+        assert_eq!(hrefs, ["standup.ics"], "the lunch's object is forgotten");
+        let rule = events[0].repeat.as_deref().map(|r| r.rule.as_str());
+        assert_eq!(rule, Some("FREQ=DAILY"));
+    }
+
+    #[test]
+    fn stale_hrefs_are_named_once_and_events_without_an_etag_always_count() {
+        let event = |href: Option<&str>, etag: Option<&str>| Event {
+            href: href.map(String::from),
+            etag: etag.map(String::from),
+            ..parse_one(STANDUP_OCCURRENCE)
+        };
+        let known: HashMap<String, Option<String>> =
+            [("a".to_string(), Some("1".to_string())), ("b".to_string(), None)].into();
+        let events = [
+            event(Some("a"), Some("1")),
+            event(Some("a"), Some("1")),
+            event(Some("b"), None),
+            event(Some("c"), Some("1")),
+            event(Some("c"), Some("1")),
+            event(None, None),
+            event(Some("a"), Some("2")),
+        ];
+        assert_eq!(stale_hrefs(&events, &known), ["b", "c", "a"]);
+        let object = |href: &str, ics: &str| RawObject { href: href.into(), etag: None, ics: ics.into() };
+        let old: HashMap<String, RawObject> =
+            [("a".to_string(), object("a", "old")), ("gone".to_string(), object("gone", "old"))].into();
+        let held = held_objects(old, vec![object("c", "new")], &events);
+        let mut kept: Vec<(&str, &str)> = held.values().map(|o| (o.href.as_str(), o.ics.as_str())).collect();
+        kept.sort();
+        assert_eq!(kept, [("a", "old"), ("c", "new")], "b was not found, gone is forgotten");
+    }
+
+    fn parse_one(ics: &str) -> Event {
+        torro_pim_caldav::parse_events(ics, "/cal/").remove(0)
     }
 }

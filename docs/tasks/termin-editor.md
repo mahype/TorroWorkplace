@@ -104,7 +104,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   liest sich wieder gleich; Sommer-/Winterzeit-Test; fmt, clippy, test (auch `TORRO_LANG=de`).
 
 ## TE.3 Serien lesen: Rohobjekte und Regel
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert`) · **Braucht:** TE.2 · **Dateien:** `crates/torro-pim-caldav/src/{client,ical}.rs`,
   `crates/torro-pim-caldav/src/recur.rs` (neu), `crates/torroworkplace/src/pim.rs`, Fixtures
 - `recur.rs`: `RRULE` ↔ `Repeat` (lesen, schreiben, `custom` bei `BYSETPOS`, `BYHOUR`, `BYMINUTE`, `BYWEEKNO`,

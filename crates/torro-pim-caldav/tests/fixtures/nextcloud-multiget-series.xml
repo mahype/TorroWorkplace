@@ -1,0 +1,151 @@
+<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:cal="urn:ietf:params:xml:ns:caldav" xmlns:cs="http://calendarserver.org/ns/" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/standup.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>"8b1a9953c4611296a827abf8c47804d7"</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+PRODID:-//IDN nextcloud.com//Calendar app 5.2.1//EN
+CALSCALE:GREGORIAN
+VERSION:2.0
+BEGIN:VEVENT
+CREATED:20260901T120000Z
+DTSTAMP:20261016T081500Z
+LAST-MODIFIED:20261016T081500Z
+SEQUENCE:3
+UID:9c1f4e2a-7b3d-4c8e-a1f0-5d2b6e8f0a13
+DTSTART;TZID=Europe/Berlin:20260907T093000
+DTEND;TZID=Europe/Berlin:20260907T094500
+STATUS:CONFIRMED
+SUMMARY:Daily Standup
+LOCATION:https://cloud.example.org/call/daily7k2p
+RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR
+EXDATE;TZID=Europe/Berlin:20261021T093000
+END:VEVENT
+BEGIN:VEVENT
+CREATED:20260901T120000Z
+DTSTAMP:20261016T081500Z
+LAST-MODIFIED:20261016T081500Z
+SEQUENCE:4
+UID:9c1f4e2a-7b3d-4c8e-a1f0-5d2b6e8f0a13
+DTSTART;TZID=Europe/London:20261020T090000
+DTEND;TZID=Europe/London:20261020T091500
+STATUS:CONFIRMED
+SUMMARY:Daily Standup (from London)
+LOCATION:https://cloud.example.org/call/daily7k2p
+RECURRENCE-ID;TZID=Europe/Berlin:20261020T093000
+END:VEVENT
+BEGIN:VTIMEZONE
+TZID:Europe/Berlin
+BEGIN:DAYLIGHT
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+TZNAME:CEST
+DTSTART:19700329T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+TZNAME:CET
+DTSTART:19701025T030000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VTIMEZONE
+TZID:Europe/London
+BEGIN:DAYLIGHT
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0100
+TZNAME:BST
+DTSTART:19700329T010000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0000
+TZNAME:GMT
+DTSTART:19701025T020000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+END:STANDARD
+END:VTIMEZONE
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/birthday-ben.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>"c4ca4238a0b923820dcc509a6f75849b"</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+PRODID:-//IDN nextcloud.com//Calendar app 5.2.1//EN
+CALSCALE:GREGORIAN
+VERSION:2.0
+BEGIN:VEVENT
+CREATED:20200110T090000Z
+DTSTAMP:20200110T090000Z
+LAST-MODIFIED:20200110T090000Z
+UID:5e7c2b14-3d9a-4f61-b8e0-2a4c6d8f1b35
+DTSTART;VALUE=DATE:19851021
+DTEND;VALUE=DATE:19851022
+SUMMARY:Ben's birthday
+TRANSP:TRANSPARENT
+RRULE:FREQ=YEARLY
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/lunch.ics</d:href>
+  <d:propstat>
+   <d:prop>
+    <d:getetag>"eccbc87e4b5ce2fe28308fd9f2a7baf3"</d:getetag>
+    <cal:calendar-data>BEGIN:VCALENDAR
+PRODID:-//IDN nextcloud.com//Calendar app 5.2.1//EN
+CALSCALE:GREGORIAN
+VERSION:2.0
+BEGIN:VEVENT
+CREATED:20261012T150000Z
+DTSTAMP:20261012T150000Z
+LAST-MODIFIED:20261012T150000Z
+SEQUENCE:0
+UID:a2f8d6c4-1e3b-4a5d-9c7e-0b2d4f6a8c13
+DTSTART;TZID=Europe/Berlin:20261022T123000
+DTEND;TZID=Europe/Berlin:20261022T133000
+SUMMARY:Lunch with Carla
+END:VEVENT
+BEGIN:VTIMEZONE
+TZID:Europe/Berlin
+BEGIN:DAYLIGHT
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+TZNAME:CEST
+DTSTART:19700329T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+TZNAME:CET
+DTSTART:19701025T030000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+END:STANDARD
+END:VTIMEZONE
+END:VCALENDAR
+</cal:calendar-data>
+   </d:prop>
+   <d:status>HTTP/1.1 200 OK</d:status>
+  </d:propstat>
+ </d:response>
+ <d:response>
+  <d:href>/remote.php/dav/calendars/anna/work/gone.ics</d:href>
+  <d:status>HTTP/1.1 404 Not Found</d:status>
+ </d:response>
+</d:multistatus>

@@ -14,6 +14,10 @@
 //!
 //! A sign-in to a host the core checked first connects to the checked addresses only
 //! ([`CalDavClient::pinned`], task M2.7b), so the name cannot point elsewhere for the connection.
+//!
+//! Besides the expanded occurrences ([`CalDavClient::events`]), the stored objects themselves come
+//! by `calendar-multiget` ([`CalDavClient::objects`], task TE.3): the core keeps them per `href` for
+//! the rule, the zones and the changed occurrences of a series.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -81,6 +85,19 @@ impl Resolve for PinnedDns {
             Ok(addresses)
         })
     }
+}
+
+/// One stored iCalendar object as the server holds it, not expanded (task TE.3,
+/// [`CalDavClient::objects`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawObject {
+    /// Absolute URL of the resource, as [`CalDavClient::events`] reports it in `Event::href`.
+    pub href: String,
+    /// Version of the resource, quotes as the server sends them; `None` when it sent none.
+    pub etag: Option<String>,
+    /// The iCalendar object (`calendar-data`), every VEVENT of it: the main event with its rule and
+    /// the changed occurrences.
+    pub ics: String,
 }
 
 /// What a CalDAV account offers, as its collections show it (task M7.1): calendars (events,
@@ -250,6 +267,34 @@ impl CalDavClient {
         );
         let xml = self.request("REPORT", &url, "1", &body).await?;
         events_in_answer(&xml, collection)
+    }
+
+    /// The stored objects at `hrefs` in `collection`, as they are (task TE.3): one
+    /// `calendar-multiget` REPORT (RFC 4791 section 7.9) **without** `expand`, so rule, zones and
+    /// changed occurrences stay. Each comes with its `href` (absolute, as [`CalDavClient::events`]
+    /// reports it) and ETag. An href the server no longer has is left out of the answer; an href
+    /// off this account's server is not asked for. No request at all for an empty `hrefs`.
+    /// Errors: `Auth`, `Offline`, `Other` as for [`CalDavClient::events`].
+    pub async fn objects(&self, collection: &str, hrefs: &[String]) -> Result<Vec<RawObject>, ProviderError> {
+        let url = Url::parse(collection).map_err(|err| ProviderError::Other(err.to_string()))?;
+        let paths: Vec<String> = hrefs
+            .iter()
+            .filter_map(|href| url.join(href.trim()).ok())
+            .filter_map(|href| self.on_server(href).ok())
+            .map(|href| format!("<d:href>{}</d:href>", xml_escaped(href.path())))
+            .collect();
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = format!(
+            r#"<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  {}
+</c:calendar-multiget>"#,
+            paths.join("\n  ")
+        );
+        let xml = self.request("REPORT", &url, "0", &body).await?;
+        objects_in_answer(&xml, collection)
     }
 
     /// All tasks of `collection` (task K.3), with `href` and `etag` set.
@@ -459,6 +504,22 @@ fn events_in_answer(xml: &str, collection: &str) -> Result<Vec<Event>, ProviderE
     Ok(events)
 }
 
+/// The stored objects of a `calendar-multiget` answer for `collection`; a response without an
+/// href or without `calendar-data` (an href the server does not have) is left out.
+fn objects_in_answer(xml: &str, collection: &str) -> Result<Vec<RawObject>, ProviderError> {
+    let base = Url::parse(collection).map_err(|err| ProviderError::Other(err.to_string()))?;
+    let objects = calendar_items(xml, &base)?
+        .into_iter()
+        .filter_map(|item| Some(RawObject { href: item.href?, etag: item.etag, ics: item.data }))
+        .collect();
+    Ok(objects)
+}
+
+/// `text` safe inside an XML element: `&`, `<` and `>` escaped.
+fn xml_escaped(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
 /// The tasks of a calendar query answer for `collection`, each with the `href` and `etag`
 /// of the resource it was parsed from.
 fn todos_in_answer(xml: &str, collection: &str) -> Result<Vec<Todo>, ProviderError> {
@@ -555,6 +616,118 @@ END:VCALENDAR
             Some("https://cloud.example.org/remote.php/dav/calendars/anna/personal/other.ics")
         );
         assert_eq!(events[1].etag.as_deref(), Some("\"def456\""));
+    }
+
+    // Series (task TE.3): the stored objects next to the expanded occurrences.
+
+    const WORK: &str = "https://cloud.example.org/remote.php/dav/calendars/anna/work/";
+    const EXPANDED: &str = include_str!("../tests/fixtures/nextcloud-expand-series.xml");
+    const STORED: &str = include_str!("../tests/fixtures/nextcloud-multiget-series.xml");
+
+    fn utc(day: u32, hour: u32, minute: u32) -> torro_pim::EventTime {
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 10, day).and_then(|d| d.and_hms_opt(hour, minute, 0));
+        torro_pim::EventTime::DateTime(at.expect("a time").and_utc())
+    }
+
+    /// The occurrences of `expanded` completed with the stored objects of the multiget fixture,
+    /// as the core does after a sync.
+    fn completed(expanded: &str) -> Vec<Event> {
+        let objects = objects_in_answer(STORED, WORK).expect("multiget answer parses");
+        let mut events = events_in_answer(expanded, WORK).expect("expand answer parses");
+        for event in &mut events {
+            let stored = objects.iter().find(|o| Some(&o.href) == event.href.as_ref()).expect("its object");
+            crate::ObjectFacts::read(&stored.ics).complete(event);
+        }
+        events
+    }
+
+    #[test]
+    fn the_stored_objects_come_from_a_multiget_answer() {
+        let objects = objects_in_answer(STORED, WORK).expect("answer parses");
+        let found: Vec<(&str, Option<&str>)> =
+            objects.iter().map(|o| (o.href.trim_start_matches(WORK), o.etag.as_deref())).collect();
+        assert_eq!(
+            found,
+            [
+                ("standup.ics", Some("\"8b1a9953c4611296a827abf8c47804d7\"")),
+                ("birthday-ben.ics", Some("\"c4ca4238a0b923820dcc509a6f75849b\"")),
+                ("lunch.ics", Some("\"eccbc87e4b5ce2fe28308fd9f2a7baf3\"")),
+            ],
+            "the href the server no longer has is left out"
+        );
+        assert!(objects[0].ics.contains("RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"));
+        assert!(objects[0].ics.contains("RECURRENCE-ID;TZID=Europe/Berlin:20261020T093000"), "not expanded");
+    }
+
+    /// Nextcloud (Sabre) gives every expanded occurrence a `RECURRENCE-ID` in UTC: its start for
+    /// one the rule made, the stored key for a changed one, a day for an all-day series; a single
+    /// event gets none. Times lose their zone, which comes back from the stored object.
+    #[test]
+    fn expanded_occurrences_carry_their_key_and_get_rule_and_zone_from_the_stored_object() {
+        let events = completed(EXPANDED);
+        let standups: Vec<&Event> = events.iter().filter(|e| e.summary.starts_with("Daily Standup")).collect();
+        let keys: Vec<Option<torro_pim::EventTime>> = standups.iter().map(|e| e.recurrence_id).collect();
+        assert_eq!(keys, [Some(utc(19, 7, 30)), Some(utc(20, 7, 30)), Some(utc(22, 7, 30)), Some(utc(23, 7, 30))]);
+        assert_eq!(standups[1].start, utc(20, 8, 0), "the changed one moved, its key stayed");
+        let zones: Vec<Option<&str>> = standups.iter().map(|e| e.time_zone.as_deref()).collect();
+        assert_eq!(zones, [Some("Europe/Berlin"), Some("Europe/London"), Some("Europe/Berlin"), Some("Europe/Berlin")]);
+        for standup in &standups {
+            let repeat = standup.repeat.as_deref().expect("the rule is on every occurrence");
+            assert_eq!(repeat.rule, "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR");
+            assert!(standup.recurring && !repeat.custom);
+            assert_eq!(standup.href.as_deref(), Some(format!("{WORK}standup.ics").as_str()), "one href for all");
+        }
+
+        let birthday = events.iter().find(|e| e.summary == "Ben's birthday").expect("birthday");
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 21).map(torro_pim::EventTime::Date);
+        assert_eq!((birthday.recurrence_id, birthday.time_zone.as_deref()), (day, None));
+        assert_eq!(birthday.repeat.as_deref().map(|r| r.freq), Some(torro_pim::model::RepeatFreq::Yearly));
+
+        let lunch = events.iter().find(|e| e.summary == "Lunch with Carla").expect("lunch");
+        assert_eq!((lunch.recurrence_id, lunch.repeat.as_ref(), lunch.recurring), (None, None, false));
+        assert_eq!(lunch.time_zone.as_deref(), Some("Europe/Berlin"), "a single event gets its zone back");
+    }
+
+    /// A server that expands without `RECURRENCE-ID`: the key comes from the stored object.
+    #[test]
+    fn a_missing_recurrence_id_is_derived_from_the_stored_object() {
+        let without: String =
+            EXPANDED.lines().filter(|line| !line.starts_with("RECURRENCE-ID")).collect::<Vec<_>>().join("\n");
+        assert!(events_in_answer(&without, WORK).expect("parses").iter().all(|e| e.recurrence_id.is_none()));
+        let derived: Vec<(Option<torro_pim::EventTime>, bool)> =
+            completed(&without).iter().map(|e| (e.recurrence_id, e.recurring)).collect();
+        let reported: Vec<(Option<torro_pim::EventTime>, bool)> =
+            completed(EXPANDED).iter().map(|e| (e.recurrence_id, e.recurring)).collect();
+        assert_eq!(derived, reported);
+    }
+
+    #[tokio::test]
+    async fn objects_are_fetched_in_one_multiget_without_expanding() {
+        let server = httpmock::MockServer::start_async().await;
+        let collection = server.url("/remote.php/dav/calendars/anna/work/");
+        let multiget = server
+            .mock_async(|when, then| {
+                when.path("/remote.php/dav/calendars/anna/work/")
+                    .header("depth", "0")
+                    .body_includes("<c:calendar-multiget")
+                    .body_includes("<d:href>/remote.php/dav/calendars/anna/work/standup.ics</d:href>")
+                    .body_includes("<d:href>/remote.php/dav/calendars/anna/work/a&amp;b.ics</d:href>")
+                    .body_excludes("expand")
+                    .body_excludes("elsewhere");
+                then.status(207).body(STORED);
+            })
+            .await;
+        let account = CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
+        let client = CalDavClient::new(reqwest::Client::new(), &account, Secret::new("secret")).expect("client");
+        let hrefs = [
+            format!("{collection}standup.ics"),
+            "/remote.php/dav/calendars/anna/work/a&b.ics".to_string(),
+            "https://elsewhere.example.org/x.ics".to_string(),
+        ];
+        let objects = client.objects(&collection, &hrefs).await.expect("objects");
+        assert_eq!((multiget.calls_async().await, objects.len()), (1, 3), "one request for all");
+        assert!(client.objects(&collection, &[]).await.expect("nothing").is_empty());
+        assert_eq!(multiget.calls_async().await, 1, "nothing asked for, nothing sent");
     }
 
     #[test]
