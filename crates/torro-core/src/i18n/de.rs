@@ -3977,7 +3977,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("After", "Nach"),
     ("All events", "Alle Termine"),
     ("Busy", "Belegt"),
-    ("Changes apply to", "Änderungen gelten für"),
+    ("Changes apply to", "Gilt für"),
     (
         "Changing time or repeat resets 1 changed event after this date",
         "Eine neue Zeit oder Wiederholung setzt 1 geänderten Termin nach diesem Datum zurück",

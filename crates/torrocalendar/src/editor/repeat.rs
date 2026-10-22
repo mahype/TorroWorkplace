@@ -652,8 +652,12 @@ impl Custom {
             RepeatFreq::Yearly => 3,
         };
         let every_field = field(&self.every, "1", "000", problem == Some(Problem::Every), |v| edit(Edit::Every(v)));
-        let every_row =
-            row![every_field, widgets::segmented(units, unit)].spacing(space::s()).align_y(Alignment::Center);
+        // A longer translation puts the units under the number rather than past the card's edge.
+        let every_row = row![every_field, widgets::segmented(units, unit)]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(space::s());
         let mut what = column![line(tr("Every"), every_row.into())].spacing(space::s());
 
         match self.freq {
@@ -777,6 +781,23 @@ pub(super) fn until_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The design review of PR #294: the line "Every" holds the number and the units, wrapped under
+    /// each other where they do not fit beside the label in the card.
+    #[test]
+    fn the_every_line_fits_the_card() {
+        let padding = layout::panel_padding();
+        let inner = widgets::POPOVER_WIDTH - padding.left - padding.right;
+        let labels = [tr("Every"), trc("date", "On"), tr("Ends")];
+        let label = labels.iter().map(|l| text_width(l, typo::meta())).fold(0.0, f32::max).ceil();
+        let level = typo::body().tabular();
+        let number = text_width("000", level) + style::INPUT_PADDING.left + style::INPUT_PADDING.right + space::s();
+        let units = widgets::segmented_width(&[tr("Day"), tr("Week"), tr("Month"), tr("Year")]);
+        let room = inner - label - space::s();
+        assert!(number.max(units) <= room, "{} > {room}", number.max(units));
+        let ends = widgets::segmented_width(&[tr("Never"), trc("date", "On"), tr("After")]);
+        assert!(ends <= room, "{ends} > {room}");
+    }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).expect("a date")

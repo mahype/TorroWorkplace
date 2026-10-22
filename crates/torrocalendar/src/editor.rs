@@ -1959,9 +1959,9 @@ impl Editor {
         for (index, alarm) in self.form.alarms.iter().enumerate() {
             let words = remind::day_before_words(alarm.trigger, start, |at| zone::wall(at, self.shown_zone()))
                 .unwrap_or_else(|| alarm_when(alarm.trigger));
-            let label = typo::text(typo::body(), words).style(theme::text).wrapping(Wrapping::None);
-            let mut value =
-                row![container(label).width(Length::Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
+            // Cut with "…" and the whole time as tooltip, never silently (the design review of PR #294).
+            let label = widgets::ellipsized(typo::body(), words, theme::text);
+            let mut value = row![container(label).width(Length::Fill)].spacing(space::s()).align_y(Alignment::Center);
             if let Some(style) = alarm.style {
                 value = value
                     .push(typo::text(typo::body(), style_word(style)).style(theme::text_3).wrapping(Wrapping::None));
@@ -1977,13 +1977,8 @@ impl Editor {
             rows.push((Mark::Icon(mark), value.into(), None));
         }
         if self.form.alarms.is_empty() {
-            let quiet = row![
-                typo::text(typo::body(), tr("Default reminder")).style(theme::text_2).wrapping(Wrapping::None),
-                typo::text(typo::body(), tr("from Settings")).style(theme::text_3).wrapping(Wrapping::None),
-            ]
-            .spacing(space::s());
-            let quiet = container(quiet).width(Length::Fill).clip(true);
-            rows.push((Mark::Icon(Icon::Bell), quiet.into(), None));
+            let quiet = two_part(tr("Default reminder").to_string(), tr("from Settings").to_string(), theme::text_2);
+            rows.push((Mark::Icon(Icon::Bell), quiet, None));
         }
         if editable {
             let add = typo::text(typo::body(), tr("Add reminder")).style(theme::text_2);
@@ -2030,7 +2025,13 @@ impl Editor {
         if !faces.is_empty() || more > 0 {
             value = value.push(widgets::avatar_stack(&faces, more));
         }
-        value = value.push(typo::text(typo::body(), who).style(theme::text_3).wrapping(Wrapping::None));
+        // Cut with "…"; the tooltip around the line names everyone (the design review of PR #294).
+        let who = iced::widget::responsive(move |room| {
+            let shown = typo::ellipsize(&who, typo::body(), room.width);
+            typo::text(typo::body(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+        })
+        .height(Length::Shrink);
+        value = value.push(who);
         let value = widgets::with_tooltip(container(value).width(Length::Fill).clip(true), everyone_once.join(", "));
         let line = widgets::prop_line(tr("People"), None, value, None);
         let note =
@@ -2236,13 +2237,22 @@ fn status_words(status: EventStatus) -> (Icon, &'static str) {
 /// in `text_3`. Where they do not fit, the quiet part goes and the city is cut with "…"
 /// ([`typo::ellipsize`]); then the whole value shows as tooltip, never cut silently.
 fn zone_value<'a>(city: String, quiet: String) -> Element<'a, Message> {
+    two_part(city, quiet, theme::text)
+}
+
+/// `city` (the first part) in `colour`, then `quiet` in `text_3`, cut as [`zone_value`] cuts them.
+fn two_part<'a>(
+    city: String,
+    quiet: String,
+    colour: fn(&iced::Theme) -> iced::widget::text::Style,
+) -> Element<'a, Message> {
     let level = typo::body();
     let whole = if quiet.is_empty() { city.clone() } else { format!("{city} · {quiet}") };
     iced::widget::responsive(move |room| {
         let quiet_width = if quiet.is_empty() { 0.0 } else { text_width(&quiet, level) + space::s() };
         let both = text_width(&city, level) + quiet_width <= room.width;
         let shown = if both { city.clone() } else { typo::ellipsize(&city, level, room.width) };
-        let mut line = row![typo::text(level, shown.clone()).style(theme::text).wrapping(Wrapping::None)]
+        let mut line = row![typo::text(level, shown.clone()).style(colour).wrapping(Wrapping::None)]
             .spacing(space::s())
             .align_y(Alignment::Center);
         if both && !quiet.is_empty() {
@@ -2282,9 +2292,10 @@ fn zone_list_height() -> f32 {
     style::MENU_ITEM_HEIGHT * 8.0
 }
 
-/// A line between the groups of rows.
+/// A line between the groups of rows: with the column's spacing 16 above and below it, the gap
+/// between groups the design rules ask for (the design review of PR #294).
 fn divider<'a>() -> Element<'a, Message> {
-    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
+    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::s(), 0.0]).into()
 }
 
 /// The name of someone invited, else their address.
