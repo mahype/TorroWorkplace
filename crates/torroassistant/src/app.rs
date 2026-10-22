@@ -275,6 +275,9 @@ pub struct Stream {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see `shell::titlebar`).
     DragWindow,
+    /// Another start of the assistant asked for its main window (issue #279,
+    /// [`torro_gui::instance`]): bring it to the front.
+    Raise,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     /// Every [`REFRESH`]: ask for everything again.
@@ -733,6 +736,9 @@ impl App {
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             self.zoom.subscription().map(Message::Zoom),
             self.design.subscription().map(Message::Design),
+            // A second start of the assistant brings the main window to the front (issue #279); a
+            // chat window has no channel, so nothing ever arrives there.
+            torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
         // Only while an answer runs (or a message is on its way): a window at rest asks rarely.
         if self.transcript.running() || self.sending {
@@ -803,6 +809,7 @@ impl App {
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::Resized(size) => self.size = size,
             Message::CoreReady => {
                 self.waiting = false;

@@ -39,6 +39,11 @@
 //! with the ones it does (exit 64). Only a person opens the settings – no entry of the inbox and
 //! no command of the core can ([`app::App::open_entry`]).
 //!
+//! One window of each kind per person (issue #279, [`torro_gui::instance`], channel by the kind's
+//! window class): a second plain start of a kind brings its running window to the front and ends;
+//! a start on a mail (`--message`), a slice (`--lane`, `--source`), the settings (`--settings`), the
+//! compose window (`--compose`) or the demo opens its window as before ([`instance_of`]).
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206): the hulls
 //! [`update`] and [`view`] here measure, so the app's own code stays as it is.
@@ -64,7 +69,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iced::{Element, Task};
+use torro_core::AppId;
 use torro_core::timing;
+use torro_gui::instance::Claim;
 use torro_gui::source::Source;
 use torro_inbox::InboxSource;
 use torro_inbox::demo::DemoSource;
@@ -101,6 +108,12 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // Before the core is started: a second start only brings the first window of its kind forward.
+    if let Some(app) = instance_of(&launch)
+        && torro_gui::instance::claim(app) == Claim::Shown
+    {
+        return ExitCode::SUCCESS;
+    }
     // The suite's settings (appearance, zoom) and "open another app" come from the core; with
     // `--demo` there is none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
@@ -119,6 +132,20 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
+/// #279): the entry of `--view` (hub, mail, notifications) for a plain start; `None` for a start on a
+/// mail (`--message`), on a slice (`--lane`, `--source`, which a workspace template brings back as
+/// windows of their own), the settings (`--settings`), the compose window (`--compose`) and the demo.
+fn instance_of(launch: &Launch) -> Option<AppId> {
+    let own_window = launch.demo
+        || launch.compose.is_some()
+        || launch.message.is_some()
+        || launch.view.is_some()
+        || matches!(launch.shown, notifications::Shown::Only(_))
+        || launch.settings.is_some();
+    (!own_window).then_some(launch.kind.app())
 }
 
 /// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
@@ -249,5 +276,32 @@ mod tests {
             assert!(start_message(&args(bad)).is_err(), "{bad:?}");
         }
         assert!(start_message(&args(&[&format!("--message=m:{}", "a".repeat(MESSAGE_MAX))])).is_err(), "too long");
+    }
+
+    /// Issue #279: each of the three plain windows is one per person, by its own window class.
+    #[test]
+    fn only_plain_starts_are_single_instances_of_their_kind() {
+        let of = |line: &[&str]| {
+            let args = args(line);
+            let mut launch = Launch::parse(&args).expect("valid parameters");
+            launch.message = start_message(&args).expect("a valid mail id");
+            instance_of(&launch)
+        };
+        assert_eq!(of(&[]), Some(AppId::INBOX));
+        assert_eq!(of(&["--view", "hub"]), Some(AppId::INBOX));
+        assert_eq!(of(&["--view", "mail"]), Some(AppId::INBOX_MAIL));
+        assert_eq!(of(&["--view", "notifications"]), Some(AppId::INBOX_NOTIFICATIONS));
+        for exception in [
+            &["--demo"][..],
+            &["--view", "mail", "--demo"],
+            &["--view", "mail", "--message=m:0a1b"],
+            &["--view", "mail", "--compose"],
+            &["--lane", "info"],
+            &["--view", "notifications", "--source", "script:backup"],
+            &["--view", "mail", "--settings", "reading"],
+            &["--settings", "rules"],
+        ] {
+            assert_eq!(of(exception), None, "{exception:?}");
+        }
     }
 }

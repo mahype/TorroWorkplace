@@ -116,8 +116,9 @@ fn is_on(value: &bool) -> bool {
 }
 
 /// Named pipe names on Windows, where the core listens on a pipe instead of a socket file.
+/// Public for [`pipe::user_sid`] only: `torro_gui::instance` names its pipes after the user too.
 #[cfg(windows)]
-pub(crate) mod pipe {
+pub mod pipe {
     use std::path::Path;
     use std::sync::OnceLock;
 
@@ -131,7 +132,7 @@ pub(crate) mod pipe {
     }
 
     /// The SID of the account this process runs as (`S-1-5-21-…`), looked up once per process.
-    pub(crate) fn user_sid() -> Option<&'static str> {
+    pub fn user_sid() -> Option<&'static str> {
         static SID: OnceLock<Option<String>> = OnceLock::new();
         SID.get_or_init(look_up_user_sid).as_deref()
     }

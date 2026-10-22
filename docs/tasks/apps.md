@@ -64,7 +64,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
   wieder.
 
 ### AP.2 Eine Instanz je App
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (lokaler Kanal, Iced-Subscription, alle Apps) · **Braucht:** AP.1 · **Dateien:**
   `crates/torro-gui/src/instance.rs` (neu), `crates/torro-gui/src/lib.rs`, `crates/torro-ipc/src/lib.rs`
   (nur `pipe::user_sid` öffentlich machen, falls nötig), `crates/torrocalendar/src/main.rs`,

@@ -555,6 +555,9 @@ pub struct App {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// Another start of the calendar asked for this window (issue #279, [`torro_gui::instance`]):
+    /// bring it to the front.
+    Raise,
     /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
     /// load follows either way.
     CoreReady,
@@ -801,7 +804,9 @@ impl App {
         // Zoom keys work everywhere, glance views and open panels included.
         // The design pack polls the core every 2 s itself and wakes the window only for a change.
         let design = self.design.subscription().map(Message::Design);
-        let mut all = vec![system, resize, self.zoom.subscription().map(Message::Zoom), design];
+        // A second start of the calendar brings this window to the front (issue #279), in every size.
+        let raise = torro_gui::instance::subscription().map(|()| Message::Raise);
+        let mut all = vec![system, resize, self.zoom.subscription().map(Message::Zoom), design, raise];
         if !self.waiting {
             all.push(tick);
         }
@@ -898,6 +903,7 @@ impl App {
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::CoreReady => {
                 self.waiting = false;
                 return self.fetch_account();

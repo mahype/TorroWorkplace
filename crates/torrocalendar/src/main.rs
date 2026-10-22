@@ -17,6 +17,10 @@
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.
 //!
+//! One calendar window per person (issue #279, [`torro_gui::instance`]): a second plain start brings
+//! the running window to the front and ends; starts for a helper or a view of their own (the
+//! reminder, `--settings`, `--demo`) open their window as before ([`instance_of`]).
+//!
 //! On Windows the app is a GUI program without a console window; a failed start is written to
 //! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]).
 
@@ -36,6 +40,7 @@ use iced::{Element, Task};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
+use torro_gui::instance::Claim;
 
 const APP: AppId = AppId::CALENDAR;
 
@@ -73,6 +78,12 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // Before the core is started: a second start only brings the first window to the front.
+    if let Some(app) = instance_of(&args, &launch)
+        && torro_gui::instance::claim(app) == Claim::Shown
+    {
+        return ExitCode::SUCCESS;
+    }
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&source, &launch.forced());
@@ -91,6 +102,14 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
+/// #279): the calendar's for a plain start, `None` for the reminder (`--reminders`), the settings
+/// (`--settings`) and the demo, which the visual checks start next to the real window.
+fn instance_of(args: &[String], launch: &app::Launch) -> Option<AppId> {
+    let own_window = args.iter().any(|arg| arg == "--demo") || reminder::Launch::wanted(args);
+    (!own_window && launch.settings.is_none()).then_some(APP)
 }
 
 /// The binary runs as `torro-reminder`: the reminder window's agent app on macOS.
@@ -157,5 +176,20 @@ mod tests {
         assert_eq!(file, dir.join(START_ERROR_FILE));
         assert_eq!(std::fs::read_to_string(&file).expect("read"), "second\n");
         std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// Issue #279: only the plain calendar window is one per person.
+    #[test]
+    fn only_a_plain_start_is_a_single_instance() {
+        let of = |line: &[&str]| {
+            let args: Vec<String> = line.iter().map(|arg| (*arg).to_string()).collect();
+            let launch = app::Launch::parse(&args).expect("valid parameters");
+            instance_of(&args, &launch)
+        };
+        assert_eq!(of(&[]), Some(AppId::CALENDAR));
+        assert_eq!(of(&["--appearance", "dark"]), Some(AppId::CALENDAR));
+        for exception in [&["--demo"][..], &["--demo", "--open", "week"], &["--settings", "night"], &["--reminders"]] {
+            assert_eq!(of(exception), None, "{exception:?}");
+        }
     }
 }

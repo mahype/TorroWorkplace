@@ -21,6 +21,10 @@
 //! (task C.9); `--voice-status` and `--voice-test` answer the core's `settings.voice_status` and
 //! `settings.test_voice` ([`voice::cli`]).
 //!
+//! One main window per person (issue #279, [`torro_gui::instance`]): a second plain start brings the
+//! running one to the front and ends; chat windows (`--chat`, `--bot`), the settings (`--settings`),
+//! the voice modes and the demo start as before ([`instance_of`]).
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when the conversations first came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.
@@ -40,7 +44,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use iced::{Element, Task};
+use torro_core::AppId;
 use torro_core::timing;
+use torro_gui::instance::Claim;
 use torro_gui::source::Source;
 
 use crate::app::{App, CHAT, CHAT_SIZE, MAIN, Message};
@@ -71,6 +77,12 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // Before the core is started: a second start only brings the main window to the front.
+    if let Some(app) = instance_of(&args, &launch)
+        && torro_gui::instance::claim(app) == Claim::Shown
+    {
+        return ExitCode::SUCCESS;
+    }
     // Appearance, zoom, design and "open another app" come from the core; with `--demo` there is
     // none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
@@ -83,6 +95,15 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
+/// #279): the main window's for a plain start; `None` for a chat window (`--chat`, `--bot`), the
+/// settings (`--settings`), a voice mode without window (`--listen`, `--voice-*`) and the demo.
+fn instance_of(args: &[String], launch: &Launch) -> Option<AppId> {
+    let voice = !matches!(voice::cli::Mode::parse(args), Ok(None));
+    let own_window = voice || launch.demo || launch.window != Window::Main || launch.settings.is_some();
+    (!own_window).then_some(MAIN)
 }
 
 /// The demo for a start state: the first start without the assistant's client, no AI account, no
@@ -135,4 +156,32 @@ fn view(app: &App) -> Element<'_, Message> {
     timing::once("first frame");
     timing::slow("view", started);
     element
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #279: only the plain main window is one per person.
+    #[test]
+    fn only_a_plain_start_is_a_single_instance() {
+        let of = |line: &[&str]| {
+            let args: Vec<String> = line.iter().map(|arg| (*arg).to_string()).collect();
+            let launch = Launch::parse(&args).expect("valid parameters");
+            instance_of(&args, &launch)
+        };
+        assert_eq!(of(&[]), Some(AppId::ASSISTANT));
+        assert_eq!(of(&["--appearance", "dark"]), Some(AppId::ASSISTANT));
+        for exception in [
+            &["--demo"][..],
+            &["--chat", "new"],
+            &["--bot=1a2b3c4d"],
+            &["--settings", "voice"],
+            &["--listen"],
+            &["--voice-status"],
+            &["--voice-test"],
+        ] {
+            assert_eq!(of(exception), None, "{exception:?}");
+        }
+    }
 }
