@@ -154,15 +154,25 @@ fn nobody_listens(socket: &Path) -> bool {
 /// such pipe" means nobody: a busy pipe (all instances connected) has a core, and a name held by
 /// another program would refuse a new core as well. A socket that is no pipe name (the user's SID
 /// unknown) is one no core can listen on, so none is started for it.
+///
+/// Opened with the security quality of service "identification", as every client of the suite opens
+/// a pipe (`torro_ipc::client`, `torro_gui::instance`): a program holding the name may learn who asks,
+/// but not act as the user. std adds `SECURITY_SQOS_PRESENT` itself.
 #[cfg(windows)]
 fn nobody_listens(socket: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    /// `SECURITY_IDENTIFICATION` from `winnt.h`, as a number like in `instance.rs`.
+    const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
     const PIPES: &str = r"\\.\pipe\";
     let is_pipe =
         socket.to_str().and_then(|path| path.get(..PIPES.len())).is_some_and(|start| start.eq_ignore_ascii_case(PIPES));
     if !is_pipe {
         return false;
     }
-    match std::fs::OpenOptions::new().read(true).write(true).open(socket) {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).security_qos_flags(SECURITY_IDENTIFICATION);
+    match options.open(socket) {
         Ok(_) => false,
         Err(err) => err.kind() == std::io::ErrorKind::NotFound,
     }
