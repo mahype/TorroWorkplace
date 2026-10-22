@@ -177,6 +177,12 @@ pub enum Icon {
     TextQuote,
     /// The segment "HTML" of the mail reader's view switch (task E11.1); "Text" is [`Icon::AlignLeft`].
     Code,
+    /// The time zone of an event (task TE.7).
+    Globe,
+    /// "Show as: Busy" of an event (task TE.7): the time is taken.
+    CircleSlash,
+    /// "Show as: Free" of an event (task TE.7): the time stays open.
+    Circle,
 }
 
 impl Icon {
@@ -282,6 +288,9 @@ impl Icon {
         Icon::ListOrdered,
         Icon::TextQuote,
         Icon::Code,
+        Icon::Globe,
+        Icon::CircleSlash,
+        Icon::Circle,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -397,6 +406,9 @@ impl Icon {
             Icon::ListOrdered => include_bytes!("../assets/icons/list-ordered.svg"),
             Icon::TextQuote => include_bytes!("../assets/icons/text-quote.svg"),
             Icon::Code => include_bytes!("../assets/icons/code.svg"),
+            Icon::Globe => include_bytes!("../assets/icons/globe.svg"),
+            Icon::CircleSlash => include_bytes!("../assets/icons/circle-slash.svg"),
+            Icon::Circle => include_bytes!("../assets/icons/circle.svg"),
         }
     }
 }

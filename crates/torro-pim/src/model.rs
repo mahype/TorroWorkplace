@@ -158,6 +158,14 @@ pub struct Event {
     /// like [`Event::organizer`]: the suite sends no invitations.
     #[serde(default)]
     pub attendees: Vec<Attendee>,
+    /// The changed occurrences of the series (iCalendar `RECURRENCE-ID` of each exception in the
+    /// stored object), the same on every occurrence; empty for an event that is not part of a series
+    /// or a series without changed occurrences. Read only: the core fills it in from the stored
+    /// object, and a save ignores it. The event editor counts with it how many changed events a
+    /// change of "this and following" would reset, before it is made (`docs/termin-editor.md`,
+    /// decision 4).
+    #[serde(default)]
+    pub exceptions: Vec<EventTime>,
 }
 
 impl Event {

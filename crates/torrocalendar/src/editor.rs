@@ -1,56 +1,78 @@
 //! Creating and editing an event (task K.12 in `docs/tasks/kalender-aufgaben.md`), shown in the
-//! side panel since task U.4 in `docs/tasks/design.md`.
+//! side panel since task U.4 in `docs/tasks/design.md`, with the fields, the repeat and the scope of
+//! a change since task TE.7 (`docs/termin-editor.md`, layout A).
 //!
-//! The editor is the content of a `torro_gui::panel` ([`Editor::panel`]), laid out like the task
-//! detail: the path "● Work › Wed, 7 Oct", the title as a large borderless field (`HEADLINE`,
-//! wraps), then the properties as rows – "When" (start and end with date and time side by side,
-//! all day), "Calendar", "Location" – and the notes as a quiet field. The footer holds "Delete
-//! event" (`danger`, asks once). The app places the panel beside the calendar (wide) or over it
-//! (medium, narrow); see `torro_gui::panel::place`.
+//! The editor is the content of a `torro_gui::panel` ([`Editor::panel`]), laid out like Linear's
+//! properties: the path "● Work › Wed, 7 Oct", the title as a large borderless field (`HEADLINE`,
+//! wraps), then one row per property with its name in front (`widgets::prop_line`), in groups
+//! divided by a line – Start, End, All day, Repeat, Time zone, Calendar, Show as, Status | Location,
+//! Link | Reminders, People | Notes – then the links found. The footer holds "Preview reminder" and
+//! "Delete event" (`danger`, asks once; for a series with three buttons, one per scope). The app
+//! places the panel beside the calendar (wide) or over it (medium, narrow); see
+//! `torro_gui::panel::place`. Repeat, time zone, "Show as" and status are chosen in menus under their
+//! row ([`Editor::layer`]); "Custom…" of the repeat opens the card "Custom repeat" ([`repeat`]).
 //!
 //! Saving works like the task detail: there is no Save button. A change of a property (all day,
-//! calendar) is saved at once; typing is saved a moment after it stops (the app sends
+//! calendar, repeat …) is saved at once; typing is saved a moment after it stops (the app sends
 //! [`Message::Flush`] while [`Editor::wants_autosave`] holds), on Enter in a field and when the
-//! panel is left ([`Editor::leave`]). Every save is the same [`Action::Save`] the dialog sent
-//! before (the core's `save_event`, which checks the etag). Only one save is under way at a time:
-//! the next one waits for the answer and its new etag ([`Editor::stored`]). A new event is a draft
-//! until its first valid state (it needs a title); that state is saved and creates it, and from
-//! then on it is edited like any other.
+//! panel is left ([`Editor::leave`]). Every save is an [`Action::Save`] (the core's `save_event`,
+//! which checks the etag). Only one save is under way at a time: the next one waits for the answer
+//! and its new etag ([`Editor::stored`]). A new event is a draft until its first valid state (it
+//! needs a title); that state is saved and creates it, and from then on it is edited like any other.
+//!
+//! **Series** (task TE.7, decisions 3 to 6 of the concept): an occurrence shows the band "Changes
+//! apply to: This event · Following · All" under the head (Outlook: the scope is chosen before the
+//! change); every save of it carries that scope, "This event" at first. The repeat can only change
+//! for following or all events (the row is off with a tooltip for "This event"), and only all events
+//! can end the series ("Never"). Changing time, length or rule of "Following" resets the changed
+//! occurrences after this one; the band says how many before ([`Editor::resets`], the condition of
+//! `series::resets` in the CalDAV crate, counted from `Event::exceptions`) and, after the save, the
+//! number the core reports. A series cannot switch between all day and timed for following or all
+//! events (the core answers `unsupported`), so the switch is off there.
 //!
 //! Errors stay hidden until Enter asks for a save. Then the field that is wrong is marked, the
 //! message stands under it and the app gets an [`Action::Focus`] for it; from then on the message
 //! follows the input live. (Iced 0.14 reports no "field left" event, so leaving a field alone does
 //! not validate it.) A state that cannot be saved is not saved, also not when the panel is left.
 //!
-//! Recurring occurrences (`event.recurring`) and events of read-only calendars show the same panel
-//! with plain values instead of fields, a note why, and no footer. Location and notes stay
-//! selectable there (read-only text editors: a selection and ⌘C / Ctrl+C work, typing does not).
+//! Events of read-only calendars show the same rows with plain values, a note why, and no footer.
+//! Location and notes stay selectable there (read-only text editors: a selection and ⌘C / Ctrl+C
+//! work, typing does not).
 //!
 //! Links in the location and the notes (issue #126, `torro_gui::links`) are listed under the notes
 //! in "Links", each a row that opens it; a video call (Zoom, Teams, Meet, Talk …) comes first with
-//! a "Join" button. Only `http`, `https` and `mailto` are opened ([`Action::OpenLink`]). "Copy
-//! notes" puts the whole notes on the clipboard ([`Action::Copy`]).
+//! a "Join" button. Only `http`, `https` and `mailto` are opened ([`Action::OpenLink`]); the "Link"
+//! of the event opens only `http` and `https`. "Copy notes" puts the whole notes on the clipboard
+//! ([`Action::Copy`]). People (organiser and invitees) are only shown: the suite sends no
+//! invitations, the server tells them about changes.
 //!
 //! The form works on strings, as the user typed them. [`Form::build`] turns it into an
 //! [`Event`]: all-day events store an exclusive end date, so the form's inclusive end date
-//! gets one day added on save and one day taken off when an event is shown.
+//! gets one day added on save and one day taken off when an event is shown. Times are on the wall
+//! clock of the event's time zone ([`zone`]).
 
-use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
+mod repeat;
+mod zone;
+
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, svg, text, text_editor, text_input, toggler};
+use iced::widget::{column, container, row, rule, scrollable, svg, text, text_editor, text_input, toggler};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Theme, keyboard};
-use torro_core::i18n::{tr, trf};
-use torro_gui::datetime::{format_date, format_time, parse_date, parse_time, to_local, to_utc};
+use torro_core::i18n::{tr, trc, trf};
+use torro_gui::datetime::{format_date, format_time, parse_date, parse_time};
 use torro_gui::icon::{self, Icon, icon};
 use torro_gui::links;
 use torro_gui::panel::{self, Panel};
-use torro_gui::theme::{self, palette, space};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::typo::text_width;
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, collection_color};
 use torro_gui::{style, typo};
-use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, Event, EventTime};
+use torro_pim::model::{Attendee, EventStatus, PartStat, Repeat, SeriesScope};
+use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, Event, EventTime, Transparency};
 
 use crate::views::short_date;
+
+pub use repeat::Edit as CustomEdit;
 
 /// Id of the title field: the app focuses it when a new event opens ([`Action::Focus`] does the
 /// same for a field with a problem).
@@ -60,6 +82,8 @@ const START_DATE_ID: &str = "editor-start-date";
 const START_TIME_ID: &str = "editor-start-time";
 const END_DATE_ID: &str = "editor-end-date";
 const END_TIME_ID: &str = "editor-end-time";
+/// The search of the time zone menu, focused when it opens.
+const ZONE_SEARCH_ID: &str = "editor-zone-search";
 
 /// Start and end time shown for an all-day event, so that switching it to timed gives
 /// sensible values.
@@ -67,18 +91,22 @@ const DEFAULT_START: &str = "09:00";
 const DEFAULT_END: &str = "10:00";
 
 /// Why an event can only be looked at.
-const RECURRING: &str = "Recurring events cannot be edited yet";
 const READ_ONLY_CALENDAR: &str = "This calendar is read-only";
+
+/// How many zones the search of the zone menu lists at most.
+const ZONE_RESULTS: usize = 40;
+/// How many avatars "People" shows before "+n".
+const AVATARS: usize = 3;
 
 /// The editor's state: the event as stored, the form as typed, and where saving stands.
 #[derive(Debug, Clone)]
 pub struct Editor {
-    /// The event as last stored; the base of the next save (keeps uid, href and etag). `None`
-    /// while a new event is a draft that has not been created yet.
+    /// The event as last stored; the base of the next save (keeps uid, href, etag and the key of an
+    /// occurrence). `None` while a new event is a draft that has not been created yet.
     original: Option<Event>,
     /// The calendars to pick from.
     choices: Vec<CalendarChoice>,
-    /// Why the event can only be looked at (recurring, read-only calendar); `None` = editable.
+    /// Why the event can only be looked at (a read-only calendar); `None` = editable.
     read_only: Option<&'static str>,
     /// Today, for dates typed without a year.
     today: NaiveDate,
@@ -112,6 +140,31 @@ pub struct Editor {
     alarm_menu: bool,
     /// How the next reminder added shows: `None` for its calendar's style.
     alarm_style: Option<AlarmStyle>,
+    /// Which events of the series a change of an occurrence reaches; "This event" at first.
+    scope: SeriesScope,
+    /// The menu or card open under a property row (task TE.7).
+    popup: Option<Popup>,
+    /// What is typed in the search of the zone menu.
+    zone_query: String,
+    /// This computer's time zone, read once.
+    machine_zone: Option<String>,
+    /// How many changed occurrences the last save reset, as the core counted them.
+    reset: u32,
+}
+
+/// A menu or card under a property row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Popup {
+    /// The "Repeat" menu with the short list.
+    Repeat,
+    /// The card "Custom repeat", as typed.
+    Custom(repeat::Custom),
+    /// The time zone menu with its search.
+    Zone,
+    /// "Show as": busy or free.
+    ShowAs,
+    /// "Status": confirmed, tentative, cancelled.
+    Status,
 }
 
 /// A calendar in the calendar menu: the id that goes into the event, the name that is shown.
@@ -144,10 +197,12 @@ pub enum Message {
     EndDate(String),
     EndTime(String),
     Location(String),
+    /// The event's link as typed (task TE.7).
+    Url(String),
     Notes(text_editor::Action),
     /// Selecting in the read-only location; edits are ignored.
     LocationText(text_editor::Action),
-    /// A link of the "Links" section, or "Join".
+    /// A link of the "Links" section, "Join", or the event's link.
     OpenLink(String),
     /// "Copy notes": the whole notes to the clipboard.
     CopyNotes,
@@ -161,17 +216,48 @@ pub enum Message {
     RemoveAlarm(usize),
     /// "Preview reminder": show the event's reminder now (`calendar.preview_reminder`).
     PreviewReminder,
+    /// The band "Changes apply to" of an occurrence: which events the next changes reach.
+    Scope(SeriesScope),
+    /// The "Repeat" row: open its menu, or close it.
+    ToggleRepeat,
+    /// A rule from the "Repeat" menu; `None` is "Never" (only all events of a series can end it).
+    PickRepeat(Option<Box<Repeat>>),
+    /// "Custom…" in the "Repeat" menu: the card "Custom repeat".
+    OpenCustom,
+    /// A field of the card "Custom repeat", or its Done and Cancel.
+    Custom(CustomEdit),
+    /// The "Time zone" row: open its menu, or close it.
+    ToggleZones,
+    /// What is typed in the search of the zone menu.
+    ZoneQuery(String),
+    /// A zone picked in the menu, by its IANA name.
+    PickZone(String),
+    /// Enter in the search of the zone menu: the first zone it lists.
+    ZoneFirst,
+    /// The "Show as" row: open its menu, or close it.
+    ToggleShowAs,
+    /// Busy or free, from the "Show as" menu.
+    ShowAs(Transparency),
+    /// The "Status" row: open its menu, or close it.
+    ToggleStatus,
+    /// A status from the "Status" menu.
+    Status(EventStatus),
+    /// A click beside an open menu or card: close it.
+    ClosePopup,
     /// Enter in a field: save now, and show what is missing if that is not possible.
     Save,
     /// Save what changed, quietly (the autosave tick, Escape in a field).
     Flush,
     /// "Delete event": ask first.
     Delete,
-    ConfirmDelete,
+    /// The answer to the question: delete, for an occurrence with this scope (`None` for an event
+    /// that is not part of a series).
+    ConfirmDelete(Option<SeriesScope>),
     CancelDelete,
     /// The panel's ✕ or a click beside it.
     Close,
-    /// Escape: closes the innermost open thing (calendar menu, delete question, then the panel).
+    /// Escape: closes the innermost open thing (a menu or card, the delete question, then the
+    /// panel).
     Escape,
 }
 
@@ -179,13 +265,18 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum Action {
     None,
-    /// Save this event (the core's `save_event`); report the answer with [`Editor::stored`] or
-    /// [`Editor::save_failed`].
-    Save(Event),
-    Delete(Event),
+    /// Save this event (the core's `save_event`) with this scope: `Some` for an occurrence of a
+    /// series, as the band "Changes apply to" says, `None` for any other event. Report the answer
+    /// with [`Editor::stored`] (the event as stored and the number of changed occurrences the core
+    /// reset) or [`Editor::save_failed`].
+    Save(Event, Option<SeriesScope>),
+    /// Delete this event (the core's `delete_event`) with this scope: `Some` for an occurrence,
+    /// `None` for any other event.
+    Delete(Event, Option<SeriesScope>),
     /// Close the panel; the app saves [`Editor::leave`] first.
     Close,
-    /// Give the keyboard focus to the input with this id (the first one with a problem).
+    /// Give the keyboard focus to the input with this id (the first one with a problem, the search
+    /// of the zone menu).
     Focus(&'static str),
     /// Open this address in the browser. It passed `torro_gui::links::openable`; check it again
     /// right before opening.
@@ -208,6 +299,8 @@ pub enum Problem {
     EndTime,
     EndBeforeStart,
     EndDateBeforeStart,
+    /// All events of a series, or the following ones, cannot switch between all day and timed.
+    AllDaySeries,
 }
 
 /// The group of the form a problem belongs to, which is where its message is shown.
@@ -224,15 +317,16 @@ impl Problem {
         match self {
             Problem::ChooseCalendar | Problem::CalendarMove => Field::Calendar,
             Problem::TitleEmpty => Field::Title,
-            Problem::StartDate | Problem::StartTime => Field::Start,
+            Problem::StartDate | Problem::StartTime | Problem::AllDaySeries => Field::Start,
             Problem::EndDate | Problem::EndTime | Problem::EndBeforeStart | Problem::EndDateBeforeStart => Field::End,
         }
     }
 
-    /// The input to mark and focus. The calendar is a menu, which has no focus to give.
+    /// The input to mark and focus. The calendar is a menu and "All day" a switch, which have no
+    /// focus to give.
     fn input(self) -> Option<&'static str> {
         match self {
-            Problem::ChooseCalendar | Problem::CalendarMove => None,
+            Problem::ChooseCalendar | Problem::CalendarMove | Problem::AllDaySeries => None,
             Problem::TitleEmpty => Some(TITLE_ID),
             Problem::StartDate => Some(START_DATE_ID),
             Problem::StartTime => Some(START_TIME_ID),
@@ -252,6 +346,7 @@ impl Problem {
             Problem::EndTime => tr("End time is not valid, e.g. 15:30"),
             Problem::EndBeforeStart => tr("The end must be after the start"),
             Problem::EndDateBeforeStart => tr("The end date must not be before the start date"),
+            Problem::AllDaySeries => tr("Only this event can switch between all day and timed"),
         }
     }
 }
@@ -262,6 +357,7 @@ pub struct Form {
     title: String,
     calendar: Option<CalendarChoice>,
     all_day: bool,
+    /// On the wall clock of [`Form::time_zone`].
     start_date: String,
     start_time: String,
     /// Inclusive for all-day events: the last day the event covers.
@@ -271,6 +367,16 @@ pub struct Form {
     notes: String,
     /// The event's own reminders (task ER2.3), in their order.
     alarms: Vec<Alarm>,
+    /// The rule of the series; `None` for an event that does not repeat (task TE.7).
+    repeat: Option<Repeat>,
+    /// The IANA zone the times are in; `None` for this computer's zone.
+    time_zone: Option<String>,
+    /// The event's link, as typed.
+    url: String,
+    /// Busy or free.
+    transparency: Transparency,
+    /// Confirmed, tentative or cancelled; `None` when the event does not say.
+    status: Option<EventStatus>,
 }
 
 impl Form {
@@ -293,6 +399,11 @@ impl Form {
             location: String::new(),
             notes: String::new(),
             alarms: Vec::new(),
+            repeat: None,
+            time_zone: None,
+            url: String::new(),
+            transparency: Transparency::Opaque,
+            status: None,
         }
     }
 
@@ -310,20 +421,21 @@ impl Form {
         }
     }
 
-    /// The form for an existing event, in local time. An event without an end gets one
-    /// hour; an all-day end date is shown inclusive.
+    /// The form for an existing event, on the wall clock of its zone. An event without an end gets
+    /// one hour; an all-day end date is shown inclusive.
     pub fn from_event(event: &Event, calendar: Option<CalendarChoice>) -> Form {
-        let start = local_start(event);
+        let zone = event.time_zone.as_deref();
+        let start = wall_start(event);
         let end = if event.all_day() {
             let last = match event.end {
                 Some(EventTime::Date(day)) => day - Duration::days(1),
-                Some(EventTime::DateTime(at)) => to_local(at).date(),
+                Some(EventTime::DateTime(at)) => zone::wall(at, zone).date(),
                 None => start.date(),
             };
             last.max(start.date()).and_time(NaiveTime::MIN)
         } else {
             match event.end {
-                Some(EventTime::DateTime(at)) => to_local(at),
+                Some(EventTime::DateTime(at)) => zone::wall(at, zone),
                 _ => start + Duration::hours(1),
             }
         };
@@ -332,11 +444,17 @@ impl Form {
         form.location = event.location.clone().unwrap_or_default();
         form.notes = event.description.clone().unwrap_or_default();
         form.alarms = event.alarms.clone();
+        form.repeat = event.repeat.as_deref().cloned();
+        form.time_zone = event.time_zone.clone();
+        form.url = event.url.clone().unwrap_or_default();
+        form.transparency = event.transparency;
+        form.status = event.status;
         form
     }
 
     /// The event this form describes. `original` is the event being edited: its uid, href,
-    /// etag and recurrence are kept. `today` resolves dates typed without a year.
+    /// etag, key of the occurrence and what the form does not show (people, coordinates) are kept.
+    /// `today` resolves dates typed without a year.
     pub fn build(&self, today: NaiveDate, original: Option<&Event>) -> Result<Event, Problem> {
         let calendar = self.calendar.as_ref().ok_or(Problem::ChooseCalendar)?;
         // The server copy of an event lives in its calendar; moving it is not supported yet.
@@ -349,6 +467,7 @@ impl Form {
         }
         let start_date = parse_date(&self.start_date, today).ok_or(Problem::StartDate)?;
         let end_date = parse_date(&self.end_date, today).ok_or(Problem::EndDate)?;
+        let zone = self.time_zone.as_deref();
         let (start, end) = if self.all_day {
             if end_date < start_date {
                 return Err(Problem::EndDateBeforeStart);
@@ -361,7 +480,7 @@ impl Form {
             if end <= start {
                 return Err(Problem::EndBeforeStart);
             }
-            (EventTime::DateTime(to_utc(start)), EventTime::DateTime(to_utc(end)))
+            (EventTime::DateTime(zone::instant(start, zone)), EventTime::DateTime(zone::instant(end, zone)))
         };
 
         let mut event = original.cloned().unwrap_or_else(|| Event {
@@ -375,7 +494,7 @@ impl Form {
             location: None,
             description: None,
             recurring: false,
-            transparency: torro_pim::Transparency::Opaque,
+            transparency: Transparency::Opaque,
             alarms: Vec::new(),
             recurrence_id: None,
             repeat: None,
@@ -385,6 +504,7 @@ impl Form {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         });
         event.summary = title.to_string();
         event.start = start;
@@ -392,21 +512,43 @@ impl Form {
         event.location = non_empty(&self.location);
         event.description = non_empty(&self.notes);
         event.alarms = self.alarms.clone();
+        event.repeat = self.repeat.clone().map(Box::new);
+        event.time_zone = self.time_zone.clone();
+        event.url = non_empty(&self.url);
+        event.transparency = self.transparency;
+        event.status = self.status;
         Ok(event)
     }
 }
 
-/// The local start of `event`; an all-day event starts at midnight.
-fn local_start(event: &Event) -> NaiveDateTime {
+/// The start of `event` on the wall clock of its zone; an all-day event starts at midnight.
+fn wall_start(event: &Event) -> NaiveDateTime {
     match event.start {
         EventTime::Date(day) => day.and_time(NaiveTime::MIN),
-        EventTime::DateTime(at) => to_local(at),
+        EventTime::DateTime(at) => zone::wall(at, event.time_zone.as_deref()),
+    }
+}
+
+/// The instant of an event time, a day at its midnight in UTC: for comparing keys of occurrences
+/// as the core does.
+fn instant_of(time: EventTime) -> DateTime<Utc> {
+    match time {
+        EventTime::DateTime(at) => at,
+        EventTime::Date(day) => day.and_time(NaiveTime::MIN).and_utc(),
     }
 }
 
 fn non_empty(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_string())
+}
+
+/// Whether `url` is a web address the "Link" row may open (`http`, `https`; not `mailto`, which the
+/// links in the notes may).
+fn web_link(url: &str) -> bool {
+    let url = url.trim();
+    let lower = url.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://")) && links::openable(url)
 }
 
 /// The writable calendars to offer. The event's own calendar is kept even when it is not
@@ -437,19 +579,14 @@ impl Editor {
     }
 
     /// The editor of the stored `event`; `calendars` are all event calendars (the writable ones
-    /// are offered, the event of a read-only one opens read-only, as does a recurring occurrence).
+    /// are offered, the event of a read-only one opens read-only). An occurrence of a series opens
+    /// with the scope "This event".
     pub fn edit(event: &Event, calendars: &[Collection]) -> Editor {
         let choices = calendar_choices(calendars, Some(&event.collection));
         let calendar = choices.iter().find(|c| c.id == event.collection).cloned();
         let form = Form::from_event(event, calendar);
-        let read_only = if event.recurring {
-            Some(RECURRING)
-        } else if calendars.iter().any(|c| c.id == event.collection && !c.writable) {
-            Some(READ_ONLY_CALENDAR)
-        } else {
-            None
-        };
-        Editor::with(Some(event.clone()), choices, read_only, local_start(event).date(), form)
+        let read_only = calendars.iter().any(|c| c.id == event.collection && !c.writable).then_some(READ_ONLY_CALENDAR);
+        Editor::with(Some(event.clone()), choices, read_only, wall_start(event).date(), form)
     }
 
     fn with(
@@ -478,6 +615,11 @@ impl Editor {
             attempted: false,
             alarm_menu: false,
             alarm_style: None,
+            scope: SeriesScope::Occurrence,
+            popup: None,
+            zone_query: String::new(),
+            machine_zone: zone::machine(),
+            reset: 0,
         }
     }
 
@@ -490,7 +632,7 @@ impl Editor {
         if matches!(message, Message::CopyNotes) {
             return Action::Copy(self.form.notes.clone());
         }
-        // A series or a read-only calendar: location and notes can be selected, the panel closes.
+        // A read-only calendar: location and notes can be selected, the panel closes.
         if self.read_only.is_some() {
             return match message {
                 Message::Notes(action) if !action.is_edit() => {
@@ -517,19 +659,22 @@ impl Editor {
                 return self.request_save(false);
             }
             Message::ToggleCalendars => {
-                self.confirm_delete = false;
+                self.close_menus();
                 self.menu = !self.menu && self.can_choose_calendar();
             }
             Message::CloseMenu => self.menu = false,
             Message::AllDay(on) => {
-                self.form.all_day = on;
-                return self.request_save(false);
+                if self.can_switch_all_day() {
+                    self.form.all_day = on;
+                    return self.request_save(false);
+                }
             }
             Message::StartDate(value) => self.form.start_date = value,
             Message::StartTime(value) => self.form.start_time = value,
             Message::EndDate(value) => self.form.end_date = value,
             Message::EndTime(value) => self.form.end_time = value,
             Message::Location(value) => self.form.location = value,
+            Message::Url(value) => self.form.url = value,
             Message::Notes(action) => {
                 self.notes.perform(action);
                 self.form.notes = self.notes.text();
@@ -539,21 +684,22 @@ impl Editor {
             Message::Save => return self.request_save(true),
             Message::Flush => return self.request_save(false),
             Message::Delete => {
-                self.menu = false;
+                self.close_menus();
                 self.confirm_delete = self.original.is_some();
             }
-            Message::ConfirmDelete => {
+            Message::ConfirmDelete(scope) => {
                 self.confirm_delete = false;
                 if let Some(event) = &self.original {
-                    return Action::Delete(event.clone());
+                    let scope = if event.recurring { Some(scope.unwrap_or(SeriesScope::Occurrence)) } else { None };
+                    return Action::Delete(event.clone(), scope);
                 }
             }
             Message::CancelDelete => self.confirm_delete = false,
             Message::Close => return Action::Close,
             Message::ToggleAlarms => {
-                self.confirm_delete = false;
-                self.menu = false;
-                self.alarm_menu = !self.alarm_menu && self.read_only.is_none();
+                let open = self.alarm_menu;
+                self.close_menus();
+                self.alarm_menu = !open;
             }
             Message::AlarmStyle(style) => self.alarm_style = style,
             Message::AddAlarm(trigger) => {
@@ -565,7 +711,7 @@ impl Editor {
                 return self.request_save(false);
             }
             Message::RemoveAlarm(index) => {
-                if index < self.form.alarms.len() && self.read_only.is_none() {
+                if index < self.form.alarms.len() {
                     self.form.alarms.remove(index);
                     return self.request_save(false);
                 }
@@ -575,8 +721,51 @@ impl Editor {
                     return Action::Preview(href);
                 }
             }
+            Message::Scope(scope) => return self.choose_scope(scope),
+            Message::ToggleRepeat => self.toggle(Popup::Repeat, self.can_change_repeat()),
+            Message::PickRepeat(choice) => {
+                self.popup = None;
+                return self.set_repeat(choice.map(|rule| *rule));
+            }
+            Message::OpenCustom => {
+                if self.can_change_repeat() {
+                    let card = repeat::Custom::new(self.form.repeat.as_ref(), self.start_date());
+                    self.popup = Some(Popup::Custom(card));
+                }
+            }
+            Message::Custom(edit) => return self.custom(edit),
+            Message::ToggleZones => {
+                self.zone_query.clear();
+                self.toggle(Popup::Zone, true);
+                if self.popup == Some(Popup::Zone) {
+                    return Action::Focus(ZONE_SEARCH_ID);
+                }
+            }
+            Message::ZoneQuery(query) => self.zone_query = query,
+            Message::PickZone(name) => return self.set_zone(name),
+            Message::ZoneFirst => {
+                let first = zone::search(&self.zone_query, 1).first().map(|name| name.to_string());
+                if let Some(name) = first.or_else(|| self.machine_zone.clone()) {
+                    return self.set_zone(name);
+                }
+            }
+            Message::ToggleShowAs => self.toggle(Popup::ShowAs, true),
+            Message::ShowAs(transparency) => {
+                self.popup = None;
+                self.form.transparency = transparency;
+                return self.request_save(false);
+            }
+            Message::ToggleStatus => self.toggle(Popup::Status, true),
+            Message::Status(status) => {
+                self.popup = None;
+                self.form.status = Some(status);
+                return self.request_save(false);
+            }
+            Message::ClosePopup => self.popup = None,
             Message::Escape => {
-                if self.alarm_menu {
+                if self.popup.is_some() {
+                    self.popup = None;
+                } else if self.alarm_menu {
                     self.alarm_menu = false;
                 } else if self.menu {
                     self.menu = false;
@@ -588,6 +777,92 @@ impl Editor {
             }
         }
         Action::None
+    }
+
+    /// Closes every menu, card and the delete question.
+    fn close_menus(&mut self) {
+        self.popup = None;
+        self.menu = false;
+        self.alarm_menu = false;
+        self.confirm_delete = false;
+    }
+
+    /// Opens `popup` when `allowed` and it is not open, else closes it; other menus close.
+    fn toggle(&mut self, popup: Popup, allowed: bool) {
+        let open = self.popup.as_ref() == Some(&popup);
+        self.close_menus();
+        if allowed && !open {
+            self.popup = Some(popup);
+        }
+    }
+
+    /// The scope of the next changes. "This event" cannot carry a new rule: one chosen for following
+    /// or all events but not saved yet goes back.
+    fn choose_scope(&mut self, scope: SeriesScope) -> Action {
+        self.scope = scope;
+        self.reset = 0;
+        if scope == SeriesScope::Occurrence
+            && let Some(original) = &self.original
+        {
+            self.form.repeat = original.repeat.as_deref().cloned();
+        }
+        Action::None
+    }
+
+    /// The rule `choice` from the menu or the card, with the end of the rule there is; saved at once
+    /// when it differs. `None` ends the series, which only all its events can.
+    fn set_repeat(&mut self, choice: Option<Repeat>) -> Action {
+        if !self.can_change_repeat() || (choice.is_none() && !self.can_end_series()) {
+            return Action::None;
+        }
+        let start = self.start_date();
+        if repeat::same(choice.as_ref(), self.form.repeat.as_ref(), start) {
+            return Action::None;
+        }
+        self.form.repeat = choice;
+        self.request_save(false)
+    }
+
+    /// A field of the card "Custom repeat"; Done takes the rule when it can be read, Cancel leaves it.
+    fn custom(&mut self, edit: CustomEdit) -> Action {
+        let (start, today, all_day) = (self.start_date(), self.today, self.form.all_day);
+        let zone = self.form.time_zone.clone();
+        let until = move |day: NaiveDate| repeat::until_of(day, all_day, |wall| zone::instant(wall, zone.as_deref()));
+        let Some(Popup::Custom(card)) = self.popup.as_mut() else { return Action::None };
+        match edit {
+            CustomEdit::Cancel => self.popup = None,
+            CustomEdit::Done => {
+                card.update(CustomEdit::Done);
+                if let Ok(rule) = card.build(start, today, until) {
+                    self.popup = None;
+                    let current = self.form.repeat.as_ref().filter(|current| !current.custom);
+                    // An unchanged rule keeps its stored text.
+                    let rule = match current {
+                        Some(current) if repeat::same(Some(current), Some(&rule), start) => current.clone(),
+                        _ => rule,
+                    };
+                    return self.set_repeat(Some(rule));
+                }
+            }
+            edit => card.update(edit),
+        }
+        Action::None
+    }
+
+    /// The zone `name` from the menu, saved at once when it differs. This computer's zone stays "no
+    /// zone of its own" for an event that had none.
+    fn set_zone(&mut self, name: String) -> Action {
+        self.popup = None;
+        let value = if self.base.time_zone.is_none() && self.machine_zone.as_deref() == Some(name.as_str()) {
+            None
+        } else {
+            Some(name)
+        };
+        if value == self.form.time_zone {
+            return Action::None;
+        }
+        self.form.time_zone = value;
+        self.request_save(false)
     }
 
     /// The event as last stored: the one the panel shows, for marking it in the calendar. `None`
@@ -603,22 +878,30 @@ impl Editor {
         !self.saving && self.read_only.is_none() && self.changed() && self.check().is_ok()
     }
 
-    /// The event to save when the panel is closed or replaced: the form if it changed, can be
-    /// saved and no save is under way. A form that cannot be saved (no title, a date that cannot
-    /// be read) is dropped, as Linear drops an empty title; so is a draft nobody named.
-    pub fn leave(&self) -> Option<Event> {
-        if self.wants_autosave() { self.check().ok() } else { None }
+    /// The event to save, with its scope, when the panel is closed or replaced: the form if it
+    /// changed, can be saved and no save is under way. A form that cannot be saved (no title, a date
+    /// that cannot be read) is dropped, as Linear drops an empty title; so is a draft nobody named.
+    pub fn leave(&self) -> Option<(Event, Option<SeriesScope>)> {
+        if self.wants_autosave() { self.check().ok().map(|event| (event, self.save_scope())) } else { None }
     }
 
     /// The app's answer to [`Action::Save`]: `saved` is the event as stored (with its uid, href
-    /// and new etag; for a new event the first time). The form stays as typed – the user may have
-    /// typed on – and what changed meanwhile is sent next.
-    pub fn stored(&mut self, saved: &Event) -> Action {
+    /// and new etag; for a new event the first time; after "Following" split a series, the first
+    /// occurrence of the new one, with its new href), `reset` the number of changed occurrences the
+    /// core reset (`Response::Event.reset`, 0 where it cannot tell). The form stays as typed – the
+    /// user may have typed on – and what changed meanwhile is sent next. A rule the server writes its
+    /// own way (the rest of a count after a split) is taken as stored unless it changed since.
+    pub fn stored(&mut self, saved: &Event, reset: u32) -> Action {
         self.saving = false;
-        self.original = Some(saved.clone());
+        self.reset = reset;
         if let Some(sent) = self.sent.take() {
-            self.base = sent;
+            let rule = saved.repeat.as_deref().cloned();
+            if self.form.repeat == sent.repeat {
+                self.form.repeat = rule.clone();
+            }
+            self.base = Form { repeat: rule, ..sent };
         }
+        self.original = Some(saved.clone());
         self.request_save(false)
     }
 
@@ -627,14 +910,67 @@ impl Editor {
         self.saving = false;
     }
 
-    /// Whether `saved`, the answer to a save, belongs to this editor's save under way.
+    /// Whether `saved`, the answer to a save, belongs to this editor's save under way. A series
+    /// split with "Following" answers with a new uid.
     pub fn awaits(&self, saved: &Event) -> bool {
-        self.saving && self.original.as_ref().is_none_or(|event| event.uid == saved.uid)
+        self.saving && self.original.as_ref().is_none_or(|event| event.uid == saved.uid || event.recurring)
+    }
+
+    /// How many changed occurrences after this one the change in the form would reset, before it is
+    /// saved: with "Following", once time, length or rule differ from the stored occurrence, the
+    /// changed occurrences after it (`series::resets` in the CalDAV crate counts the same); with
+    /// "All", every other changed occurrence when the rule goes. 0 otherwise. The core's own count
+    /// comes back with the save ([`Editor::stored`]).
+    pub fn resets(&self) -> u32 {
+        let Some(original) = &self.original else { return 0 };
+        let Some(key) = original.recurrence_id else { return 0 };
+        match self.scope {
+            SeriesScope::Occurrence => 0,
+            SeriesScope::Following if self.changes_grid(original) => self.changed_after(original, key),
+            SeriesScope::Following => 0,
+            SeriesScope::Series if self.form.repeat.is_none() && original.repeat.is_some() => {
+                original.exceptions.iter().filter(|other| instant_of(**other) != instant_of(key)).count() as u32
+            }
+            SeriesScope::Series => 0,
+        }
+    }
+
+    /// The changed occurrences of `original`'s series after the one at `key`.
+    fn changed_after(&self, original: &Event, key: EventTime) -> u32 {
+        original.exceptions.iter().filter(|other| instant_of(**other) > instant_of(key)).count() as u32
+    }
+
+    /// Whether the form moves `original`, makes it longer or shorter, or repeats it otherwise. A form
+    /// that cannot be saved changes nothing yet.
+    fn changes_grid(&self, original: &Event) -> bool {
+        let Ok(event) = self.form.build(self.today, Some(original)) else { return false };
+        let length = |e: &Event| e.end.map(|end| instant_of(end) - instant_of(e.start));
+        let start = self.start_date();
+        event.start != original.start
+            || length(&event) != length(original)
+            || !repeat::same(self.form.repeat.as_ref(), original.repeat.as_deref(), start)
     }
 
     /// The event the form describes today, or why it cannot be saved yet.
     fn check(&self) -> Result<Event, Problem> {
-        self.form.build(self.today, self.original.as_ref())
+        let event = self.form.build(self.today, self.original.as_ref())?;
+        if let Some(original) = self.occurrence()
+            && self.scope != SeriesScope::Occurrence
+            && event.all_day() != original.all_day()
+        {
+            return Err(Problem::AllDaySeries);
+        }
+        Ok(event)
+    }
+
+    /// The stored event when it is an occurrence of a series.
+    fn occurrence(&self) -> Option<&Event> {
+        self.original.as_ref().filter(|event| event.recurring)
+    }
+
+    /// The scope a save carries: the band's for an occurrence, none for any other event.
+    fn save_scope(&self) -> Option<SeriesScope> {
+        self.occurrence().map(|_| self.scope)
     }
 
     /// Whether the form differs from what is stored and from what was last handed out.
@@ -660,7 +996,7 @@ impl Editor {
         }
         self.saving = true;
         self.sent = Some(self.form.clone());
-        Action::Save(event)
+        Action::Save(event, self.save_scope())
     }
 
     /// The first problem, once Enter asked for a save; before that the form stays quiet.
@@ -674,26 +1010,71 @@ impl Editor {
         self.original.is_none() && self.choices.len() > 1
     }
 
+    /// The rule can change for a single event and, for an occurrence, for following or all events.
+    fn can_change_repeat(&self) -> bool {
+        self.read_only.is_none() && (self.occurrence().is_none() || self.scope != SeriesScope::Occurrence)
+    }
+
+    /// "Never" ends a series only for all its events (the core takes no rule away from an
+    /// occurrence or a split).
+    fn can_end_series(&self) -> bool {
+        self.occurrence().is_none() || self.scope == SeriesScope::Series
+    }
+
+    /// An occurrence switches between all day and timed only alone ("This event").
+    fn can_switch_all_day(&self) -> bool {
+        self.read_only.is_none() && (self.occurrence().is_none() || self.scope == SeriesScope::Occurrence)
+    }
+
+    /// The start date as typed, or the day the editor opened on while it cannot be read.
+    fn start_date(&self) -> NaiveDate {
+        parse_date(&self.form.start_date, self.today).unwrap_or(self.day)
+    }
+
+    /// The zone the times are shown in: the event's, else this computer's.
+    fn shown_zone(&self) -> Option<&str> {
+        self.form.time_zone.as_deref().or(self.machine_zone.as_deref())
+    }
+
     // -----------------------------------------------------------------------------------------
     // View
     // -----------------------------------------------------------------------------------------
 
     /// The side panel with this event, its messages wrapped with `wrap` (`Message::Editor`):
-    /// path, title, the property sections and the footer. `anchor` is registered by the calendar
-    /// row while its menu is open; pass the same one to [`Editor::layer`]. Hand the panel to
-    /// `torro_gui::panel::place`.
+    /// path, the band "Changes apply to" for an occurrence, title, the property rows and the footer.
+    /// `anchor` is registered by the row whose menu is open; pass the same one to [`Editor::layer`].
+    /// Hand the panel to `torro_gui::panel::place`.
     pub fn panel<'a, M: Clone + 'a>(&'a self, anchor: &Anchor, wrap: fn(Message) -> M) -> Panel<'a, M> {
         let (title, body) = match self.read_only {
-            Some(reason) => (self.read_only_title(reason), self.read_only_body()),
-            None => (self.title_view(), self.form_body(anchor)),
+            Some(reason) => (self.read_only_title(reason), self.body(anchor, false)),
+            None => (self.title_view(), self.body(anchor, true)),
         };
-        panel::panel(self.path().map(wrap), title.map(wrap), body.map(wrap), wrap(Message::Close))
-            .footer(self.footer().into_iter().map(|element| element.map(wrap)).collect())
+        let mut panel = panel::panel(self.path().map(wrap), title.map(wrap), body.map(wrap), wrap(Message::Close))
+            .footer(self.footer().into_iter().map(|element| element.map(wrap)).collect());
+        if let Some(band) = self.band() {
+            panel = panel.bar(band.map(wrap));
+        }
+        panel
     }
 
-    /// The open calendar menu as a floating layer under the calendar row (`anchor`), or `None`.
-    /// Hand it to `torro_gui::panel::place` as its layer; a click beside it closes it.
+    /// The open menu or card as a floating layer under its row (`anchor`), or `None`. Hand it to
+    /// `torro_gui::panel::place` as its layer; a click beside it closes it.
     pub fn layer<'a, M: Clone + 'a>(&'a self, anchor: &Anchor, wrap: fn(Message) -> M) -> Option<Element<'a, M>> {
+        let below = |card: Element<'a, Message>, close: Message| {
+            Some(widgets::floating(anchor, Placement::Below(Align::Start), card, close).map(wrap))
+        };
+        match &self.popup {
+            Some(Popup::Repeat) => return below(self.repeat_menu(), Message::ClosePopup),
+            Some(Popup::Custom(card)) => {
+                let (all_day, zone) = (self.form.all_day, self.form.time_zone.clone());
+                let until = move |day| repeat::until_of(day, all_day, |wall| zone::instant(wall, zone.as_deref()));
+                return below(card.view(self.start_date(), self.today, until), Message::ClosePopup);
+            }
+            Some(Popup::Zone) => return below(self.zone_menu(), Message::ClosePopup),
+            Some(Popup::ShowAs) => return below(self.show_as_menu(), Message::ClosePopup),
+            Some(Popup::Status) => return below(self.status_menu(), Message::ClosePopup),
+            None => {}
+        }
         if self.alarm_menu {
             return Some(self.alarm_layer(anchor).map(wrap));
         }
@@ -710,6 +1091,90 @@ impl Editor {
             .collect();
         let menu = widgets::menu(vec![MenuSection::titled(tr("Calendar"), items)]);
         Some(widgets::floating(anchor, Placement::Below(Align::Start), menu, Message::CloseMenu).map(wrap))
+    }
+
+    /// The "Repeat" menu: "Never" (where the series may end), the short list for the start date, and
+    /// "Custom…". The rule there is now is marked.
+    fn repeat_menu(&self) -> Element<'_, Message> {
+        let start = self.start_date();
+        let current = self.form.repeat.as_ref();
+        let mut items = Vec::new();
+        if self.can_end_series() {
+            items.push(text_item(tr("Never"), Message::PickRepeat(None)).current(current.is_none()));
+        }
+        let mut matched = current.is_none();
+        for choice in repeat::shortlist(start) {
+            let on = current.is_some_and(|current| repeat::same_pattern(current, &choice, start));
+            matched |= on;
+            let pick = repeat::keeping_end(&choice, current);
+            items.push(
+                text_item(repeat::pattern(&choice, start), Message::PickRepeat(Some(Box::new(pick)))).current(on),
+            );
+        }
+        let custom = MenuItem::new(Icon::SlidersHorizontal, tr("Custom…"), Message::OpenCustom).current(!matched);
+        widgets::menu(vec![MenuSection::titled(tr("Repeat"), items), MenuSection::new(vec![custom])])
+    }
+
+    /// The time zone menu: a search over the IANA names, this computer's zone, the event's zone, and
+    /// what the search finds (at most [`ZONE_RESULTS`]).
+    fn zone_menu(&self) -> Element<'_, Message> {
+        let search = text_input(tr("Search time zones"), &self.zone_query)
+            .id(ZONE_SEARCH_ID)
+            .on_input(Message::ZoneQuery)
+            .on_submit(Message::ZoneFirst)
+            .padding(style::INPUT_PADDING)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
+            .style(style::text_input);
+        let shown = self.shown_zone();
+        let item = |name: &str| {
+            MenuItem::new(Icon::Globe, zone::readable(name), Message::PickZone(name.to_string()))
+                .current(shown == Some(name))
+        };
+        let mut list = column![container(search).padding(Padding::new(space::xs()))];
+        if let Some(machine) = &self.machine_zone {
+            list = list.push(caption(tr("Your time zone"))).push(widgets::menu_item(item(machine)));
+        }
+        if let Some(own) = self.form.time_zone.as_deref().filter(|own| Some(*own) != self.machine_zone.as_deref()) {
+            list = list.push(caption(tr("This event"))).push(widgets::menu_item(item(own)));
+        }
+        let found = zone::search(&self.zone_query, ZONE_RESULTS);
+        if !found.is_empty() {
+            let rows = column(found.into_iter().map(|name| widgets::menu_item(item(name))));
+            let rows = scrollable(rows)
+                .direction(scrollable::Direction::Vertical(style::scrollbar()))
+                .style(style::scrollable)
+                .height(Length::Shrink);
+            list = list.push(caption(tr("Time zones"))).push(container(rows).max_height(zone_list_height()));
+        } else if !self.zone_query.trim().is_empty() {
+            let none = typo::text(typo::body(), tr("No time zone found")).style(theme::text_3);
+            list = list.push(container(none).padding(style::ITEM_PADDING.top(space::s()).bottom(space::s())));
+        }
+        container(list).width(widgets::menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+    }
+
+    /// "Show as": busy or free.
+    fn show_as_menu(&self) -> Element<'_, Message> {
+        let item = |transparency: Transparency| {
+            let (mark, label) = show_as(transparency);
+            MenuItem::new(mark, label, Message::ShowAs(transparency)).current(self.form.transparency == transparency)
+        };
+        widgets::menu(vec![MenuSection::titled(
+            tr("Show as"),
+            vec![item(Transparency::Opaque), item(Transparency::Transparent)],
+        )])
+    }
+
+    /// "Status": confirmed, tentative, cancelled.
+    fn status_menu(&self) -> Element<'_, Message> {
+        let shown = self.form.status.unwrap_or(EventStatus::Confirmed);
+        let item = |status: EventStatus| {
+            let (mark, label) = status_words(status);
+            MenuItem::new(mark, label, Message::Status(status)).current(shown == status)
+        };
+        let items = vec![item(EventStatus::Confirmed), item(EventStatus::Tentative), item(EventStatus::Cancelled)];
+        widgets::menu(vec![MenuSection::titled(tr("Status"), items)])
     }
 
     /// The menu "Add reminder" (task ER2.3): when, then how it shows; a time adds it at once in the
@@ -734,38 +1199,85 @@ impl Editor {
         widgets::floating(anchor, Placement::Below(Align::Start), menu, Message::ToggleAlarms)
     }
 
-    /// The rows of "Reminders": a chip per reminder (with ✕ where it can be changed), "Add reminder",
-    /// and a quiet note when the event has none of its own.
-    fn alarm_rows(&self, anchor: &Anchor, editable: bool) -> Vec<Element<'_, Message>> {
-        let mut rows: Vec<Element<'_, Message>> = Vec::new();
-        for (index, alarm) in self.form.alarms.iter().enumerate() {
-            let label = typo::text(typo::body(), alarm_label(alarm)).style(theme::text);
-            let mut value = row![label].spacing(space::s()).align_y(Alignment::Center);
-            if editable {
-                value =
-                    value.push(widgets::icon_button(Icon::X, tr("Remove reminder"), Some(Message::RemoveAlarm(index))));
+    /// The band "Changes apply to: This event · Following · All" of an occurrence, with what the
+    /// scope resets in a quiet line under it: before a change of time or rule, after the save, or
+    /// while one is about to be saved. `None` for an event that is not part of a series and in a
+    /// read-only calendar.
+    fn band(&self) -> Option<Element<'_, Message>> {
+        self.occurrence().filter(|_| self.read_only.is_none())?;
+        let scopes = [
+            (tr("This event"), Message::Scope(SeriesScope::Occurrence)),
+            (tr("Following"), Message::Scope(SeriesScope::Following)),
+            (tr("All"), Message::Scope(SeriesScope::Series)),
+        ];
+        let chosen = match self.scope {
+            SeriesScope::Occurrence => 0,
+            SeriesScope::Following => 1,
+            SeriesScope::Series => 2,
+        };
+        let label = row![
+            icon(Icon::Repeat, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).text_3) }),
+            typo::text(typo::body(), tr("Changes apply to")).style(theme::text_2).wrapping(Wrapping::None),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let head = row![container(label).width(Length::Fill), widgets::segmented(scopes, chosen)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+        let mut band = column![head].spacing(space::xs());
+        if let Some(note) = self.band_note() {
+            band = band.push(note);
+        }
+        let band = container(band).width(Length::Fill).padding([space::s(), space::l()]);
+        Some(column![band, rule::horizontal(size::HAIRLINE).style(style::rule)].into())
+    }
+
+    /// What the scope resets, for the band: the count before a change is saved ([`Editor::resets`]),
+    /// the core's count after a save, and with "Following" what a change of time or rule would
+    /// reset; `None` when nothing is reset.
+    fn band_note(&self) -> Option<Element<'_, Message>> {
+        let original = self.occurrence()?;
+        let pending = self.resets();
+        let words = if pending > 0 {
+            match (self.scope, pending) {
+                (SeriesScope::Series, 1) => tr("Ending the series resets 1 changed event").to_string(),
+                (SeriesScope::Series, n) => trf("Ending the series resets {n} changed events", &[("n", &n)]),
+                (_, 1) => tr("1 changed event after this date is reset").to_string(),
+                (_, n) => trf("{n} changed events after this date are reset", &[("n", &n)]),
             }
-            let mark = match alarm.style {
-                Some(AlarmStyle::FullScreen) => Icon::Eye,
-                _ => Icon::Bell,
-            };
-            rows.push(widgets::prop_row(Some(Mark::Icon(mark)), value, None));
-        }
-        if self.form.alarms.is_empty() {
-            let quiet = typo::text(typo::body(), tr("The default reminder of the settings")).style(theme::text_3);
-            rows.push(widgets::prop_row(Some(Mark::Icon(Icon::Bell)), quiet, None));
-        }
-        if editable {
-            let add = typo::text(typo::body(), tr("Add reminder")).style(theme::text_2);
-            let add = widgets::prop_row(Some(Mark::Icon(Icon::Plus)), add, Some(Message::ToggleAlarms));
-            rows.push(if self.alarm_menu { widgets::anchored(anchor, add) } else { add });
-        }
-        rows
+        } else if self.reset > 0 {
+            match self.reset {
+                1 => tr("1 changed event was reset").to_string(),
+                n => trf("{n} changed events were reset", &[("n", &n)]),
+            }
+        } else {
+            let key = original.recurrence_id?;
+            let after = self.changed_after(original, key);
+            match (self.scope, after) {
+                (SeriesScope::Following, 1) => {
+                    tr("Changing time or repeat resets 1 changed event after this date").to_string()
+                }
+                (SeriesScope::Following, n) if n > 1 => {
+                    trf("Changing time or repeat resets {n} changed events after this date", &[("n", &n)])
+                }
+                _ => return None,
+            }
+        };
+        let mark = icon(Icon::Info, icon::SIZE_SM).style(|_, _| svg::Style { color: Some(theme::attention()) });
+        Some(
+            row![
+                container(mark).center_y(typo::meta().line_height.to_absolute(typo::meta().size)),
+                typo::text(typo::meta(), words).style(theme::text_2)
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Start)
+            .into(),
+        )
     }
 
     /// "● Work › Wed, 7 Oct": the calendar with its colour and the day the event starts on.
     fn path(&self) -> Element<'_, Message> {
-        let day = parse_date(&self.form.start_date, self.today).unwrap_or(self.day);
+        let day = self.start_date();
         match &self.form.calendar {
             Some(choice) => panel::path(Some(Mark::Dot(choice_color(choice))), [choice.name.clone(), short_date(day)]),
             None => panel::path(None, [short_date(day)]),
@@ -802,44 +1314,299 @@ impl Editor {
         title.into()
     }
 
-    /// The editable properties: "When", "Calendar", "Location", "Notes".
-    fn form_body(&self, anchor: &Anchor) -> Element<'_, Message> {
+    /// The property rows in their groups, each divided by a line: when and how (Start, End, All
+    /// day, Repeat, Time zone, Calendar, Show as, Status), where (Location, Link), who and what is
+    /// said (Reminders, People), then Notes and Links. `editable` shows inputs and menus; read-only
+    /// shows the values, leaves out what is not set, and lets location and notes be selected.
+    fn body(&self, anchor: &Anchor, editable: bool) -> Element<'_, Message> {
+        let shown = self.shown_problem();
+        let problem_in = |field: Field| shown.filter(|problem| problem.field() == field);
+
+        let mut when = vec![
+            widgets::prop_line(tr("Start"), None, self.moment_value(true, editable), None),
+            widgets::prop_line(tr("End"), None, self.moment_value(false, editable), None),
+        ];
+        when.extend(problem_in(Field::End).map(field_problem));
+        when.insert(1, column(problem_in(Field::Start).map(field_problem)).into());
+        when.push(self.all_day_line(editable));
+        when.push(self.repeat_line(anchor, editable));
+        if !self.form.all_day {
+            when.push(self.zone_line(anchor, editable));
+        }
+        when.push(self.calendar_line(anchor, editable));
+        when.extend(problem_in(Field::Calendar).map(field_problem));
+        when.push(self.show_as_line(anchor, editable));
+        when.push(self.status_line(anchor, editable));
+
+        let mut place = Vec::new();
+        if editable {
+            place.push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), self.location_input(), None));
+        } else if !self.form.location.trim().is_empty() {
+            let text = selectable(&self.location, Message::LocationText, |t| palette(t).text);
+            place.push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), text, None));
+        }
+        if let Some(link) = self.link_line(editable) {
+            place.push(link);
+        }
+
+        let mut who =
+            if editable || !self.form.alarms.is_empty() { self.alarm_lines(anchor, editable) } else { Vec::new() };
+        who.extend(self.people_lines());
+
+        let mut body = column![column(when)].spacing(space::s());
+        for group in [place, who] {
+            if !group.is_empty() {
+                body = body.push(divider()).push(column(group));
+            }
+        }
+        let notes = if editable {
+            Some(self.notes_editor())
+        } else {
+            (!self.form.notes.trim().is_empty()).then(|| selectable(&self.notes, Message::Notes, |t| palette(t).text_2))
+        };
+        if let Some(notes) = notes {
+            body = body.push(divider()).push(widgets::prop_section(tr("Notes"), self.notes_rows(notes)));
+        }
+        if let Some(links) = self.links_section() {
+            body = body.push(links);
+        }
+        body.into()
+    }
+
+    /// Start (`start`) or end: date and time inputs side by side, or the value as text.
+    fn moment_value(&self, start: bool, editable: bool) -> Element<'_, Message> {
         let form = &self.form;
+        let (date, time) = if start { (&form.start_date, &form.start_time) } else { (&form.end_date, &form.end_time) };
+        if !editable {
+            let value = if form.all_day { date.clone() } else { format!("{date}  {time}") };
+            return value_text(value);
+        }
         let shown = self.shown_problem();
         let invalid = |input: &str| shown.is_some_and(|problem| problem.input() == Some(input));
-        let problem_in = |field: Field| shown.filter(|problem| problem.field() == field);
-        let width = label_width();
+        let (date_id, time_id) = if start { (START_DATE_ID, START_TIME_ID) } else { (END_DATE_ID, END_TIME_ID) };
+        let date = if start {
+            Input::new(tr("Date"), date, Message::StartDate, date_id, invalid(date_id))
+        } else {
+            Input::new(tr("Date"), date, Message::EndDate, date_id, invalid(date_id))
+        };
+        let time = if start {
+            Input::new(tr("Time"), time, Message::StartTime, time_id, invalid(time_id))
+        } else {
+            Input::new(tr("Time"), time, Message::EndTime, time_id, invalid(time_id))
+        };
+        moment(form.all_day, date, time)
+    }
 
-        let start = moment(
-            form.all_day,
-            Input::new(tr("Date"), &form.start_date, Message::StartDate, START_DATE_ID, invalid(START_DATE_ID)),
-            Input::new(tr("Time"), &form.start_time, Message::StartTime, START_TIME_ID, invalid(START_TIME_ID)),
+    /// "All day" with its switch; the row toggles it too. Off in a read-only event and for following
+    /// or all events of a series (with the reason as tooltip).
+    fn all_day_line(&self, editable: bool) -> Element<'_, Message> {
+        let on = self.form.all_day;
+        let can = editable && self.can_switch_all_day();
+        let mut switch = toggler(on).size(style::CHECK_SIZE).style(style::toggler);
+        if can {
+            switch = switch.on_toggle(Message::AllDay);
+        }
+        // In line with the text of the inputs above it.
+        let switch = container(switch).padding(Padding::ZERO.left(style::INPUT_PADDING.left));
+        let line = widgets::prop_line(tr("All day"), None, switch, can.then_some(Message::AllDay(!on)));
+        if editable && !can { widgets::with_tooltip(line, Problem::AllDaySeries.message()) } else { line }
+    }
+
+    /// "Repeat" with the sentence of the rule ("Never" without one); opens the menu where the rule
+    /// can change, else says why in a tooltip.
+    fn repeat_line(&self, anchor: &Anchor, editable: bool) -> Element<'_, Message> {
+        let start = self.start_date();
+        let value = match &self.form.repeat {
+            Some(rule) => widgets::prop_value(repeat::sentence(rule, start)),
+            None => widgets::prop_placeholder(tr("Never")),
+        };
+        let can = editable && self.can_change_repeat();
+        let line = widgets::prop_line(
+            tr("Repeat"),
+            Some(Mark::Icon(Icon::Repeat)),
+            value,
+            can.then_some(Message::ToggleRepeat),
         );
-        let end = moment(
-            form.all_day,
-            Input::new(tr("Date"), &form.end_date, Message::EndDate, END_DATE_ID, invalid(END_DATE_ID)),
-            Input::new(tr("Time"), &form.end_time, Message::EndTime, END_TIME_ID, invalid(END_TIME_ID)),
+        let open = matches!(self.popup, Some(Popup::Repeat | Popup::Custom(_)));
+        if open {
+            widgets::anchored(anchor, line)
+        } else if editable && !can {
+            widgets::with_tooltip(line, tr("Choose Following or All to change the repeat"))
+        } else {
+            line
+        }
+    }
+
+    /// "Time zone": the city of the zone, its abbreviation and "your time zone" for this computer's.
+    fn zone_line(&self, anchor: &Anchor, editable: bool) -> Element<'_, Message> {
+        let name = self.shown_zone();
+        let at = self.check().ok().map_or_else(Utc::now, |event| instant_of(event.start));
+        let city = name.map_or_else(|| tr("This computer's time zone").to_string(), zone::city);
+        let mut quiet: Vec<String> = name.and_then(|name| zone::abbreviation(name, at)).into_iter().collect();
+        if name.is_some() && name == self.machine_zone.as_deref() {
+            quiet.push(tr("your time zone").to_string());
+        }
+        let value = row![
+            typo::text(typo::body(), city).style(theme::text).wrapping(Wrapping::None),
+            typo::text(typo::body(), quiet.join(" · ")).style(theme::text_3).wrapping(Wrapping::None),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let value = container(value).width(Length::Fill).clip(true);
+        let line = widgets::prop_line(
+            tr("Time zone"),
+            Some(Mark::Icon(Icon::Globe)),
+            value,
+            editable.then_some(Message::ToggleZones),
         );
-        let mut when = vec![labelled(width, tr("Start"), start, None)];
-        when.extend(problem_in(Field::Start).map(|problem| field_problem(width, problem)));
-        when.push(labelled(width, tr("End"), end, None));
-        when.extend(problem_in(Field::End).map(|problem| field_problem(width, problem)));
-        when.push(all_day_row(width, form.all_day, true));
+        if self.popup == Some(Popup::Zone) { widgets::anchored(anchor, line) } else { line }
+    }
 
-        let mut calendar = vec![self.calendar_row(anchor)];
-        calendar.extend(problem_in(Field::Calendar).map(|problem| field_problem(width, problem)));
+    /// "Calendar" with its dot; a draft with more than one calendar opens the menu from here.
+    fn calendar_line(&self, anchor: &Anchor, editable: bool) -> Element<'_, Message> {
+        let on_press = (editable && self.can_choose_calendar()).then_some(Message::ToggleCalendars);
+        let line = match &self.form.calendar {
+            Some(choice) => widgets::prop_line(tr("Calendar"), None, calendar_value(choice), on_press),
+            None => widgets::prop_line(
+                tr("Calendar"),
+                Some(Mark::Icon(Icon::Calendar)),
+                widgets::prop_placeholder(tr("Choose a calendar")),
+                on_press,
+            ),
+        };
+        if self.menu { widgets::anchored(anchor, line) } else { line }
+    }
 
-        let location = text_input(tr("Add location"), &form.location)
+    /// "Show as": busy or free.
+    fn show_as_line(&self, anchor: &Anchor, editable: bool) -> Element<'_, Message> {
+        let (mark, label) = show_as(self.form.transparency);
+        let on_press = editable.then_some(Message::ToggleShowAs);
+        let line = widgets::prop_line(tr("Show as"), Some(Mark::Icon(mark)), widgets::prop_value(label), on_press);
+        if self.popup == Some(Popup::ShowAs) { widgets::anchored(anchor, line) } else { line }
+    }
+
+    /// "Status": confirmed (also when the event does not say), tentative or cancelled.
+    fn status_line(&self, anchor: &Anchor, editable: bool) -> Element<'_, Message> {
+        let (mark, label) = status_words(self.form.status.unwrap_or(EventStatus::Confirmed));
+        let on_press = editable.then_some(Message::ToggleStatus);
+        let line = widgets::prop_line(tr("Status"), Some(Mark::Icon(mark)), widgets::prop_value(label), on_press);
+        if self.popup == Some(Popup::Status) { widgets::anchored(anchor, line) } else { line }
+    }
+
+    /// The location as a quiet field; Enter saves.
+    fn location_input(&self) -> Element<'_, Message> {
+        text_input(tr("Add location"), &self.form.location)
             .on_input(Message::Location)
             .on_submit(Message::Save)
             .padding(Padding::ZERO)
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .style(bare_input);
-        let location = widgets::prop_row(Some(Mark::Icon(Icon::MapPin)), location, None);
+            .style(bare_input)
+            .into()
+    }
 
-        let notes = text_editor(&self.notes)
+    /// "Link": a quiet field with "Open link" beside a web address; read-only the address, which
+    /// opens when it is a web address. `None` read-only without a link.
+    fn link_line(&self, editable: bool) -> Option<Element<'_, Message>> {
+        let url = self.form.url.trim();
+        let open = web_link(url).then(|| Message::OpenLink(url.to_string()));
+        let mark = Some(Mark::Icon(Icon::Link));
+        if !editable {
+            return (!url.is_empty()).then(|| widgets::prop_line(tr("Link"), mark, widgets::prop_value(url), open));
+        }
+        let field = text_input(tr("Add link"), &self.form.url)
+            .on_input(Message::Url)
+            .on_submit(Message::Save)
+            .padding(Padding::ZERO)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
+            .style(bare_input);
+        let mut value = row![field].spacing(space::s()).align_y(Alignment::Center);
+        if let Some(open) = open {
+            value = value.push(widgets::icon_button(Icon::ArrowUpRight, tr("Open link"), Some(open)));
+        }
+        Some(widgets::prop_line(tr("Link"), mark, value, None))
+    }
+
+    /// The rows of "Reminders": a row per reminder (with ✕ where it can be changed), "Add
+    /// reminder", and a quiet note when the event has none of its own. Only the first row carries
+    /// the name.
+    fn alarm_lines(&self, anchor: &Anchor, editable: bool) -> Vec<Element<'_, Message>> {
+        let mut rows: Vec<(Mark, Element<'_, Message>, Option<Message>)> = Vec::new();
+        for (index, alarm) in self.form.alarms.iter().enumerate() {
+            let label = typo::text(typo::body(), alarm_label(alarm)).style(theme::text);
+            let mut value = row![container(label).width(Length::Fill)].spacing(space::s()).align_y(Alignment::Center);
+            if editable {
+                value =
+                    value.push(widgets::icon_button(Icon::X, tr("Remove reminder"), Some(Message::RemoveAlarm(index))));
+            }
+            let mark = match alarm.style {
+                Some(AlarmStyle::FullScreen) => Icon::Eye,
+                _ => Icon::Bell,
+            };
+            rows.push((Mark::Icon(mark), value.into(), None));
+        }
+        if self.form.alarms.is_empty() {
+            let quiet = typo::text(typo::body(), tr("The default reminder of the settings")).style(theme::text_3);
+            rows.push((Mark::Icon(Icon::Bell), quiet.into(), None));
+        }
+        if editable {
+            let add = typo::text(typo::body(), tr("Add reminder")).style(theme::text_2);
+            rows.push((Mark::Icon(Icon::Plus), add.into(), Some(Message::ToggleAlarms)));
+        }
+        let last = rows.len().saturating_sub(1);
+        rows.into_iter()
+            .enumerate()
+            .map(|(i, (mark, value, on_press))| {
+                let name = if i == 0 { tr("Reminders") } else { "" };
+                let line = widgets::prop_line(name, Some(mark), value, on_press);
+                if editable && i == last && self.alarm_menu { widgets::anchored(anchor, line) } else { line }
+            })
+            .collect()
+    }
+
+    /// "People": the avatars of those who come (at most three and "+n") and who organises, with the
+    /// whole list as tooltip, and under it that the server tells them about changes. Only shown,
+    /// never changed. Empty without invitees.
+    fn people_lines(&self) -> Vec<Element<'_, Message>> {
+        let Some(event) = self.original.as_ref() else { return Vec::new() };
+        if event.attendees.is_empty() && event.organizer.is_none() {
+            return Vec::new();
+        }
+        let colour = self.form.calendar.as_ref().map_or(collection_color(None), choice_color);
+        let coming: Vec<&Attendee> = event.attendees.iter().filter(|a| a.partstat != PartStat::Declined).collect();
+        let faces: Vec<(&str, Color)> =
+            coming.iter().take(AVATARS).filter_map(|a| initial(a)).map(|letter| (letter, colour)).collect();
+        let more = coming.len().saturating_sub(faces.len());
+        let who = match event.organizer.as_deref().and_then(person_name) {
+            Some(name) => trf("{name} organizes", &[("name", &name)]),
+            None => trf("{n} people", &[("n", &event.attendees.len())]),
+        };
+        let everyone: Vec<String> =
+            event.organizer.as_deref().into_iter().chain(&event.attendees).filter_map(person_name).collect();
+        let mut everyone_once: Vec<String> = Vec::new();
+        for name in everyone {
+            if !everyone_once.contains(&name) {
+                everyone_once.push(name);
+            }
+        }
+        let mut value = row![].spacing(space::s()).align_y(Alignment::Center);
+        if !faces.is_empty() || more > 0 {
+            value = value.push(widgets::avatar_stack(&faces, more));
+        }
+        value = value.push(typo::text(typo::body(), who).style(theme::text_3).wrapping(Wrapping::None));
+        let value = widgets::with_tooltip(container(value).width(Length::Fill).clip(true), everyone_once.join(", "));
+        let line = widgets::prop_line(tr("People"), None, value, None);
+        let note =
+            typo::text(typo::meta(), tr("People in this event get an update from your server")).style(theme::text_3);
+        vec![line, container(note).padding(Padding::ZERO.left(value_left()).bottom(space::xs())).into()]
+    }
+
+    /// The notes as a quiet field that wraps.
+    fn notes_editor(&self) -> Element<'_, Message> {
+        text_editor(&self.notes)
             .placeholder(tr("Add notes …"))
             .on_action(Message::Notes)
             .key_binding(|press| match press.key.as_ref() {
@@ -852,20 +1619,8 @@ impl Editor {
             .line_height(typo::body().line_height)
             .padding(Padding::ZERO)
             .wrapping(Wrapping::WordOrGlyph)
-            .style(|t, s| bare_editor(t, s, palette(t).text_2));
-
-        let body = column![
-            widgets::prop_section(tr("When"), when),
-            widgets::prop_section(tr("Calendar"), calendar),
-            widgets::prop_section(tr("Location"), vec![location]),
-            widgets::prop_section(tr("Reminders"), self.alarm_rows(anchor, true)),
-            widgets::prop_section(tr("Notes"), self.notes_rows(notes.into())),
-        ]
-        .spacing(space::l());
-        match self.links_section() {
-            Some(links) => body.push(links).into(),
-            None => body.into(),
-        }
+            .style(|t, s| bare_editor(t, s, palette(t).text_2))
+            .into()
     }
 
     /// The rows of "Notes": the notes, then "Copy notes" ("Copied" right after a press) when there
@@ -905,64 +1660,15 @@ impl Editor {
         found
     }
 
-    /// The calendar with its dot; a draft with more than one calendar opens the menu from here.
-    fn calendar_row(&self, anchor: &Anchor) -> Element<'_, Message> {
-        let on_press = self.can_choose_calendar().then_some(Message::ToggleCalendars);
-        let row = match &self.form.calendar {
-            Some(choice) => widgets::prop_row(None, calendar_value(choice), on_press),
-            None => widgets::prop_row(
-                Some(Mark::Icon(Icon::Calendar)),
-                typo::text(typo::body(), tr("Choose a calendar")).style(theme::text_3),
-                on_press,
-            ),
-        };
-        if self.menu { widgets::anchored(anchor, row) } else { row }
-    }
-
-    /// The title of a series or of an event in a read-only calendar, with the reason under it.
+    /// The title of an event in a read-only calendar, with the reason under it.
     fn read_only_title(&self, reason: &'static str) -> Element<'_, Message> {
         let note = typo::text(typo::meta(), tr(reason)).style(theme::text_2);
         column![panel::title(self.form.title.as_str()), note].spacing(space::s()).into()
     }
 
-    /// The same sections as the form, with the values as text; location and notes only when set,
-    /// and selectable; then the links.
-    fn read_only_body(&self) -> Element<'_, Message> {
-        let form = &self.form;
-        let width = label_width();
-        let at = |date: &str, time: &str| {
-            if form.all_day { date.to_string() } else { format!("{date}  {time}") }
-        };
-        let when = vec![
-            labelled(width, tr("Start"), value_text(at(&form.start_date, &form.start_time)), None),
-            labelled(width, tr("End"), value_text(at(&form.end_date, &form.end_time)), None),
-            all_day_row(width, form.all_day, false),
-        ];
-        let calendar = form.calendar.as_ref().map(|choice| widgets::prop_row(None, calendar_value(choice), None));
-        let mut body = column![widgets::prop_section(tr("When"), when)].spacing(space::l());
-        if let Some(calendar) = calendar {
-            body = body.push(widgets::prop_section(tr("Calendar"), vec![calendar]));
-        }
-        if !form.location.trim().is_empty() {
-            let place = selectable(&self.location, Message::LocationText, |t| palette(t).text);
-            let row = widgets::prop_row(Some(Mark::Icon(Icon::MapPin)), place, None);
-            body = body.push(widgets::prop_section(tr("Location"), vec![row]));
-        }
-        if !form.alarms.is_empty() {
-            body = body.push(widgets::prop_section(tr("Reminders"), self.alarm_rows(&Anchor::new(), false)));
-        }
-        if !form.notes.trim().is_empty() {
-            let notes = selectable(&self.notes, Message::Notes, |t| palette(t).text_2);
-            body = body.push(widgets::prop_section(tr("Notes"), self.notes_rows(notes)));
-        }
-        match self.links_section() {
-            Some(links) => body.push(links).into(),
-            None => body.into(),
-        }
-    }
-
-    /// "Delete event" for a stored event that can be edited; after the first press the question
-    /// with Delete and Cancel. Drafts and read-only events have no footer.
+    /// "Preview reminder" and "Delete event" for a stored event that can be edited; after "Delete
+    /// event" the question with Delete and Cancel, for a series with one button per scope. Drafts
+    /// and read-only events have no footer.
     fn footer(&self) -> Vec<Element<'_, Message>> {
         if self.read_only.is_some() || self.original.is_none() {
             return Vec::new();
@@ -976,14 +1682,56 @@ impl Editor {
             );
             return vec![
                 preview,
-                widgets::text_button(None, tr("Delete event"), style::button::danger, Some(Message::Delete)),
+                iced::widget::space::horizontal().into(),
+                widgets::text_button(
+                    Some(Icon::Trash2),
+                    tr("Delete event"),
+                    style::button::danger,
+                    Some(Message::Delete),
+                ),
             ];
         }
-        vec![
-            typo::text(typo::body(), tr("Really delete?")).style(theme::text_2).into(),
-            widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete)),
+        if self.occurrence().is_none() {
+            return vec![
+                typo::text(typo::body(), tr("Really delete?")).style(theme::text_2).into(),
+                widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete(None))),
+                widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
+            ];
+        }
+        vec![self.series_question()]
+    }
+
+    /// The question before deleting an occurrence: which events go, one button per scope, and
+    /// Cancel (Escape).
+    fn series_question(&self) -> Element<'_, Message> {
+        let title = trf("Delete “{title}”?", &[("title", &self.form.title.trim())]);
+        let why = tr("It is part of a series. Other apps and your phone see the change.");
+        let scope = |label: &'static str,
+                     scope: SeriesScope,
+                     look: fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style,
+                     mark: Option<Icon>| {
+            widgets::text_button(mark, label, look, Some(Message::ConfirmDelete(Some(scope))))
+        };
+        let cancel = row![
             widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
+            widgets::kbd("Esc"),
         ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+        let buttons = row![
+            scope(tr("Only this event"), SeriesScope::Occurrence, style::button::secondary, None),
+            scope(tr("This and following"), SeriesScope::Following, style::button::secondary, None),
+            scope(tr("All events"), SeriesScope::Series, style::button::danger, Some(Icon::Trash2)),
+            cancel,
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(space::s());
+        column![typo::text(typo::body_strong(), title), typo::text(typo::meta(), why).style(theme::text_2), buttons,]
+            .spacing(space::xs())
+            .width(Length::Fill)
+            .into()
     }
 }
 
@@ -1003,7 +1751,7 @@ pub fn alarm_when(trigger: AlarmTrigger) -> String {
     };
     match trigger {
         AlarmTrigger::At(at) => {
-            let local = to_local(at);
+            let local = torro_gui::datetime::to_local(at);
             format!("{} {}", format_date(local.date()), format_time(local.time()))
         }
         AlarmTrigger::Before { minutes: 0, of: AlarmAnchor::Start } => tr("At start").to_string(),
@@ -1031,6 +1779,60 @@ pub fn alarm_label(alarm: &Alarm) -> String {
         Some(AlarmStyle::Notification) => format!("{when} · {}", tr("Notification")),
         Some(AlarmStyle::FullScreen) => format!("{when} · {}", tr("Full screen")),
     }
+}
+
+/// The icon and the word of "Show as".
+fn show_as(transparency: Transparency) -> (Icon, &'static str) {
+    match transparency {
+        Transparency::Opaque => (Icon::CircleSlash, tr("Busy")),
+        Transparency::Transparent => (Icon::Circle, tr("Free")),
+    }
+}
+
+/// The icon and the word of a status: a check, dashed like a tentative event in the views, a cross.
+fn status_words(status: EventStatus) -> (Icon, &'static str) {
+    match status {
+        EventStatus::Confirmed => (Icon::CircleCheck, tr("Confirmed")),
+        EventStatus::Tentative => (Icon::CircleDashed, tr("Tentative")),
+        EventStatus::Cancelled => (Icon::CircleX, trc("event", "Cancelled")),
+    }
+}
+
+/// A menu entry without a mark.
+fn text_item<'a>(label: impl text::IntoFragment<'a>, on_press: Message) -> MenuItem<'a, Message> {
+    MenuItem { mark: None, ..MenuItem::new(Icon::Repeat, label, on_press) }
+}
+
+/// A section title inside a menu card that is more than entries (the zone menu).
+fn caption<'a>(title: &'static str) -> Element<'a, Message> {
+    container(typo::text(typo::caption(), title).style(theme::text_3))
+        .padding(Padding::new(space::s()).bottom(space::xs()))
+        .into()
+}
+
+/// How tall the list of found zones may get before it scrolls: eight entries.
+fn zone_list_height() -> f32 {
+    style::MENU_ITEM_HEIGHT * 8.0
+}
+
+/// A line between the groups of rows.
+fn divider<'a>() -> Element<'a, Message> {
+    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
+}
+
+/// The name of someone invited, else their address.
+fn person_name(person: &Attendee) -> Option<String> {
+    let name = person.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    name.or(person.email.as_deref()).map(str::to_string)
+}
+
+/// The letter on someone's avatar: the first letter or digit of their name, or of their address when
+/// they have no name (as the agenda shows them, task TE.9). `None` when neither has one.
+fn initial(person: &Attendee) -> Option<&str> {
+    let name = person.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let source = name.or(person.email.as_deref())?;
+    let (at, letter) = source.char_indices().find(|(_, c)| c.is_alphanumeric())?;
+    source.get(at..at + letter.len_utf8())
 }
 
 /// The widest date and time the inputs have to show: figures are tabular, so any will do.
@@ -1090,36 +1892,10 @@ fn moment<'a>(all_day: bool, date: Input<'a>, time: Input<'a>) -> Element<'a, Me
     row![date, time.view_sized(TIME_SAMPLE)].spacing(space::xs()).into()
 }
 
-/// The width of the label column in "When": the widest of its labels in this language.
-fn label_width() -> f32 {
-    [tr("Start"), tr("End"), tr("All day")]
-        .into_iter()
-        .map(|label| text_width(label, typo::body()))
-        .fold(0.0, f32::max)
-        .ceil()
-}
-
-/// A property row with a label in `text_3` in a column `width` wide and `value` beside it, as
-/// Linear lists properties; with `on_press` the whole row is a button.
-fn labelled<'a>(
-    width: f32,
-    label: &'static str,
-    value: impl Into<Element<'a, Message>>,
-    on_press: Option<Message>,
-) -> Element<'a, Message> {
-    let label = container(typo::text(typo::body(), label).style(theme::text_3).wrapping(Wrapping::None)).width(width);
-    widgets::prop_row(None, row![label, value.into()].spacing(space::xs()).align_y(Alignment::Center), on_press)
-}
-
-/// "All day" with its switch; the row toggles it too. Read-only: the switch is shown, disabled.
-fn all_day_row<'a>(width: f32, on: bool, editable: bool) -> Element<'a, Message> {
-    let mut switch = toggler(on).size(style::CHECK_SIZE).style(style::toggler);
-    if editable {
-        switch = switch.on_toggle(Message::AllDay);
-    }
-    // In line with the text of the inputs above it.
-    let switch = container(switch).padding(Padding::ZERO.left(style::INPUT_PADDING.left));
-    labelled(width, tr("All day"), switch, editable.then_some(Message::AllDay(!on)))
+/// Where the values of the property rows start: the row's inner margin, the name column and the gap
+/// after it.
+fn value_left() -> f32 {
+    style::ITEM_PADDING.left + widgets::prop_label_width() + space::s()
 }
 
 /// A value as plain text where the form has an input, starting where the input's text does.
@@ -1165,9 +1941,9 @@ fn link_row(url: &str) -> Element<'_, Message> {
     }
 }
 
-/// A problem under a "When" or calendar row, starting where the values of the rows start.
-fn field_problem<'a>(width: f32, problem: Problem) -> Element<'a, Message> {
-    let left = style::ITEM_PADDING.left + width + space::xs() + style::INPUT_PADDING.left;
+/// A problem under a row, starting where the text of the inputs starts.
+fn field_problem<'a>(problem: Problem) -> Element<'a, Message> {
+    let left = value_left() + style::INPUT_PADDING.left;
     container(problem_line(problem)).padding(Padding::ZERO.left(left).bottom(space::xs())).into()
 }
 
@@ -1216,7 +1992,7 @@ fn quiet(invalid: bool) -> impl Fn(&Theme, text_input::Status) -> text_input::St
     }
 }
 
-/// A text input without frame or surface (the location): text where the property values are.
+/// A text input without frame or surface (location, link): text where the property values are.
 fn bare_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: Background::Color(Color::TRANSPARENT),
@@ -1302,6 +2078,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -1327,7 +2104,7 @@ mod tests {
     /// The event an update hands out to be saved, or a panic when it saves nothing.
     fn saves(editor: &mut Editor, message: Message) -> Event {
         match editor.update(message) {
-            Action::Save(event) => event,
+            Action::Save(event, _) => event,
             other => panic!("expected Save, got {other:?}"),
         }
     }
@@ -1340,7 +2117,7 @@ mod tests {
             event.href = Some("/work/new-1.ics".into());
         }
         event.etag = Some(etag.into());
-        editor.stored(&event)
+        editor.stored(&event, 0)
     }
 
     fn problem(editor: &Editor) -> Problem {
@@ -1439,7 +2216,7 @@ mod tests {
         assert!(matches!(editor.update(Message::Save), Action::Focus(START_TIME_ID)));
         editor.update(Message::StartTime("14:00".into()));
         assert_eq!(editor.shown_problem(), None);
-        assert!(matches!(editor.update(Message::Save), Action::Save(_)));
+        assert!(matches!(editor.update(Message::Save), Action::Save(_, None)));
     }
 
     #[test]
@@ -1585,7 +2362,7 @@ mod tests {
         assert!(matches!(editor.update(Message::Save), Action::None));
         assert!(editor.leave().is_none(), "leaving does not race the save under way");
         match store(&mut editor, first, "\"8\"") {
-            Action::Save(next) => {
+            Action::Save(next, _) => {
                 assert_eq!(next.etag.as_deref(), Some("\"8\""));
                 assert_eq!(next.summary, "Review v2");
                 assert_eq!(next.location.as_deref(), Some("Room 4"));
@@ -1647,7 +2424,7 @@ mod tests {
         let mut editor = Editor::edit(&timed(), &calendars());
         assert!(editor.leave().is_none());
         editor.update(Message::Location("Room 4".into()));
-        assert_eq!(editor.leave().and_then(|e| e.location), Some("Room 4".into()));
+        assert_eq!(editor.leave().and_then(|(e, _)| e.location), Some("Room 4".into()));
         editor.update(Message::StartTime("25:00".into()));
         assert!(editor.leave().is_none());
     }
@@ -1657,20 +2434,22 @@ mod tests {
         let mut new = Editor::new_event(&calendars(), day(2026, 10, 11), None);
         new.update(Message::Delete);
         assert!(!new.confirm_delete, "a draft has nothing to delete");
-        assert!(matches!(new.update(Message::ConfirmDelete), Action::None));
+        assert!(matches!(new.update(Message::ConfirmDelete(None)), Action::None));
         assert!(new.footer().is_empty());
 
         let event = stored("Review", EventTime::Date(day(2026, 10, 11)), None);
         let mut existing = Editor::edit(&event, &calendars());
-        assert_eq!(existing.footer().len(), 2, "Preview reminder and Delete event");
+        assert_eq!(existing.footer().len(), 3, "Preview reminder, the gap and Delete event");
         assert!(matches!(existing.update(Message::Delete), Action::None));
         assert!(existing.confirm_delete);
         assert_eq!(existing.footer().len(), 3, "the question, Delete and Cancel");
         existing.update(Message::CancelDelete);
         assert!(!existing.confirm_delete);
         existing.update(Message::Delete);
-        match existing.update(Message::ConfirmDelete) {
-            Action::Delete(deleted) => assert_eq!(deleted, event),
+        match existing.update(Message::ConfirmDelete(Some(SeriesScope::Series))) {
+            Action::Delete(deleted, scope) => {
+                assert_eq!((deleted, scope), (event, None), "a single event has no scope")
+            }
             other => panic!("expected Delete, got {other:?}"),
         }
     }
@@ -1690,22 +2469,6 @@ mod tests {
     }
 
     #[test]
-    fn recurring_occurrences_are_read_only() {
-        let mut event = stored("Standup", EventTime::DateTime(to_utc(at(2026, 10, 11, 9, 0))), None);
-        event.recurring = true;
-        let mut editor = Editor::edit(&event, &calendars());
-        assert_eq!(editor.read_only, Some(RECURRING));
-        set_title(&mut editor, "Changed");
-        assert_eq!(editor.form.title, "Standup", "nothing can be typed");
-        assert!(matches!(editor.update(Message::Save), Action::None));
-        assert!(matches!(editor.update(Message::Delete), Action::None));
-        assert!(editor.footer().is_empty());
-        assert!(!editor.wants_autosave() && editor.leave().is_none());
-        assert!(matches!(editor.update(Message::Escape), Action::Close));
-        let _ = editor.panel(&Anchor::new(), |m| m);
-    }
-
-    #[test]
     fn read_only_calendars_are_not_offered_and_their_events_open_read_only() {
         let birthdays = Collection { writable: false, ..calendar("birthdays", "Birthdays") };
         let calendars = vec![calendar("work", "Work"), birthdays];
@@ -1718,6 +2481,16 @@ mod tests {
         assert_eq!(editor.read_only, Some(READ_ONLY_CALENDAR));
         assert!(matches!(editor.update(Message::Delete), Action::None));
         assert!(matches!(editor.update(Message::Save), Action::None));
+        // Nothing opens and nothing changes in a read-only calendar (task TE.7).
+        for message in [Message::ToggleRepeat, Message::ToggleZones, Message::ToggleShowAs, Message::ToggleStatus] {
+            assert!(matches!(editor.update(message), Action::None));
+            assert!(editor.popup.is_none());
+        }
+        assert!(matches!(editor.update(Message::Status(EventStatus::Cancelled)), Action::None));
+        assert!(matches!(editor.update(Message::Url("https://example.org".into())), Action::None));
+        assert!(editor.footer().is_empty() && !editor.wants_autosave() && editor.leave().is_none());
+        assert!(matches!(editor.update(Message::Escape), Action::Close));
+        let _ = editor.panel(&Anchor::new(), |m| m);
     }
 
     #[test]
@@ -1742,9 +2515,9 @@ mod tests {
     /// Issue #126: a read-only event can be selected and copied, but not changed.
     #[test]
     fn a_read_only_event_can_be_selected_but_not_changed() {
-        let mut event = stored("Standup", EventTime::DateTime(to_utc(at(2026, 10, 11, 9, 0))), None);
-        event.recurring = true;
-        let mut editor = Editor::edit(&event, &calendars());
+        let event = stored("Standup", EventTime::DateTime(to_utc(at(2026, 10, 11, 9, 0))), None);
+        let calendars = vec![Collection { writable: false, ..calendar("work", "Work") }];
+        let mut editor = Editor::edit(&event, &calendars);
         assert!(matches!(editor.update(Message::Notes(text_editor::Action::SelectAll)), Action::None));
         assert_eq!(editor.notes.selection().as_deref(), Some("Bring slides"), "the notes can be selected");
         editor.update(Message::LocationText(text_editor::Action::SelectAll));
@@ -1796,11 +2569,25 @@ mod tests {
         assert!(!editor.copied, "until anything else happens");
     }
 
+    /// The names in front of the rows fit their column in this language (task TE.7, layout A).
     #[test]
-    fn the_label_column_fits_every_label() {
-        let width = label_width();
-        for label in [tr("Start"), tr("End"), tr("All day")] {
-            assert!(text_width(label, typo::body()) <= width, "{label}");
+    fn every_row_name_fits_its_column() {
+        let names = [
+            tr("Start"),
+            tr("End"),
+            tr("All day"),
+            tr("Repeat"),
+            tr("Time zone"),
+            tr("Calendar"),
+            tr("Show as"),
+            tr("Status"),
+            tr("Location"),
+            tr("Link"),
+            tr("Reminders"),
+            tr("People"),
+        ];
+        for name in names {
+            assert!(text_width(name, typo::meta()) <= widgets::prop_label_width(), "{name}");
         }
     }
 
@@ -1845,5 +2632,324 @@ mod tests {
         let _ = editor.update(Message::ToggleAlarms);
         let _ = editor.update(Message::Escape);
         assert!(!editor.alarm_menu, "Escape closes the menu first");
+    }
+
+    // Series, scope and the new fields (task TE.7).
+
+    /// An occurrence of a weekly series on Tuesdays, keyed by its start, with changed occurrences a
+    /// week before and one and two weeks after it.
+    fn occurrence() -> Event {
+        let start = EventTime::DateTime(to_utc(at(2026, 10, 13, 10, 0)));
+        let week = |weeks: i64| EventTime::DateTime(to_utc(at(2026, 10, 13, 10, 0) + Duration::weeks(weeks)));
+        let rule = repeat::shortlist(day(2026, 10, 13))[2].clone();
+        Event {
+            recurring: true,
+            recurrence_id: Some(start),
+            repeat: Some(Box::new(Repeat { rule: "FREQ=WEEKLY;BYDAY=TU".into(), ..rule })),
+            exceptions: vec![week(-1), week(1), week(2)],
+            ..stored("Weekly sync", start, Some(EventTime::DateTime(to_utc(at(2026, 10, 13, 10, 45)))))
+        }
+    }
+
+    /// The scope an update hands out with its save.
+    fn saves_with(editor: &mut Editor, message: Message) -> (Event, Option<SeriesScope>) {
+        match editor.update(message) {
+            Action::Save(event, scope) => (event, scope),
+            other => panic!("expected Save, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_scope_of_the_band_goes_with_every_save_of_an_occurrence() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        assert_eq!(editor.scope, SeriesScope::Occurrence, "This event at first");
+        assert!(editor.band().is_some());
+        editor.update(Message::Location("Room 5".into()));
+        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        assert_eq!(scope, Some(SeriesScope::Occurrence));
+        assert_eq!(event.recurrence_id, occurrence().recurrence_id, "the key as read");
+        assert_eq!(event.repeat, occurrence().repeat, "the rule unchanged, as read");
+        let _ = store(&mut editor, event, "\"8\"");
+
+        editor.update(Message::Scope(SeriesScope::Following));
+        editor.update(Message::Location("Room 6".into()));
+        assert_eq!(saves_with(&mut editor, Message::Flush).1, Some(SeriesScope::Following));
+        assert_eq!(editor.leave(), None, "nothing while the save is under way");
+
+        // A single event saves without a scope, and has no band.
+        let mut single = Editor::edit(&timed(), &calendars());
+        assert!(single.band().is_none());
+        single.update(Message::Location("Room 4".into()));
+        assert_eq!(saves_with(&mut single, Message::Flush).1, None);
+        assert_eq!(single.leave(), None);
+        let mut leaving = Editor::edit(&occurrence(), &calendars());
+        leaving.update(Message::Scope(SeriesScope::Series));
+        leaving.update(Message::Location("Room 7".into()));
+        assert_eq!(leaving.leave().map(|(_, scope)| scope), Some(Some(SeriesScope::Series)), "leaving keeps the scope");
+    }
+
+    #[test]
+    fn the_repeat_of_an_occurrence_changes_only_for_following_or_all_events() {
+        let start = day(2026, 10, 13);
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        let daily = Box::new(repeat::shortlist(start)[0].clone());
+        // "This event": the row is off.
+        assert!(matches!(editor.update(Message::ToggleRepeat), Action::None));
+        assert!(editor.popup.is_none());
+        assert!(matches!(editor.update(Message::PickRepeat(Some(daily.clone()))), Action::None));
+        assert!(matches!(editor.update(Message::OpenCustom), Action::None) && editor.popup.is_none());
+
+        editor.update(Message::Scope(SeriesScope::Following));
+        editor.update(Message::ToggleRepeat);
+        assert_eq!(editor.popup, Some(Popup::Repeat));
+        assert!(
+            matches!(editor.update(Message::PickRepeat(None)), Action::None),
+            "following events cannot end the series"
+        );
+        let (event, scope) = saves_with(&mut editor, Message::PickRepeat(Some(daily)));
+        assert_eq!(
+            (event.repeat.map(|r| r.freq), scope),
+            (Some(torro_pim::model::RepeatFreq::Daily), Some(SeriesScope::Following))
+        );
+        assert!(editor.popup.is_none(), "picking closes the menu");
+
+        // All events can end it.
+        let mut all = Editor::edit(&occurrence(), &calendars());
+        all.update(Message::Scope(SeriesScope::Series));
+        let (event, scope) = saves_with(&mut all, Message::PickRepeat(None));
+        assert_eq!((event.repeat, scope), (None, Some(SeriesScope::Series)));
+
+        // The same rule again saves nothing, and keeps the stored text.
+        let mut same = Editor::edit(&occurrence(), &calendars());
+        same.update(Message::Scope(SeriesScope::Series));
+        let weekly = Box::new(repeat::shortlist(start)[2].clone());
+        assert!(matches!(same.update(Message::PickRepeat(Some(weekly))), Action::None));
+
+        // A single event and a draft choose freely, also "Never".
+        let mut draft = Editor::new_event(&calendars(), start, Some(NaiveTime::from_hms_opt(10, 0, 0).unwrap()));
+        set_title(&mut draft, "Sync");
+        let (created, scope) =
+            saves_with(&mut draft, Message::PickRepeat(Some(Box::new(repeat::shortlist(start)[4].clone()))));
+        assert!(created.repeat.is_some() && scope.is_none());
+    }
+
+    #[test]
+    fn going_back_to_this_event_drops_a_rule_not_saved_yet() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Scope(SeriesScope::Following));
+        editor.form.repeat = None;
+        editor.update(Message::Scope(SeriesScope::Occurrence));
+        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref());
+    }
+
+    #[test]
+    fn the_custom_card_sets_the_rule_on_done_and_leaves_it_on_cancel() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Scope(SeriesScope::Series));
+        editor.update(Message::OpenCustom);
+        assert!(matches!(editor.popup, Some(Popup::Custom(_))));
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the card shows");
+        editor.update(Message::Custom(CustomEdit::Every("2".into())));
+        assert!(matches!(editor.update(Message::Custom(CustomEdit::Cancel)), Action::None));
+        assert!(editor.popup.is_none());
+        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "Cancel leaves the rule");
+
+        editor.update(Message::OpenCustom);
+        editor.update(Message::Custom(CustomEdit::Every("x".into())));
+        assert!(matches!(editor.update(Message::Custom(CustomEdit::Done)), Action::None));
+        assert!(editor.popup.is_some(), "a number that cannot be read keeps the card open");
+        editor.update(Message::Custom(CustomEdit::Every("2".into())));
+        editor.update(Message::Custom(CustomEdit::Ends(repeat::Ends::After)));
+        editor.update(Message::Custom(CustomEdit::Count("5".into())));
+        let (event, scope) = saves_with(&mut editor, Message::Custom(CustomEdit::Done));
+        let rule = event.repeat.expect("a rule");
+        assert_eq!(
+            (rule.interval, rule.end, scope),
+            (2, torro_pim::model::RepeatEnd::Count(5), Some(SeriesScope::Series))
+        );
+        assert!(editor.popup.is_none());
+    }
+
+    /// Task TE.7: before a change of "Following" is saved, the band counts the changed occurrences
+    /// it resets – exactly when time, length or rule change (`series::resets`).
+    #[test]
+    fn the_band_counts_the_changed_events_a_change_of_following_resets() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::StartTime("09:30".into()));
+        assert_eq!(editor.resets(), 0, "this event alone resets nothing");
+        editor.update(Message::Scope(SeriesScope::Following));
+        assert_eq!(editor.resets(), 2, "the two changed occurrences after this one");
+        editor.update(Message::StartTime("10:00".into()));
+        assert_eq!(editor.resets(), 0, "back at its time");
+        editor.update(Message::EndTime("11:00".into()));
+        assert_eq!(editor.resets(), 2, "a new length");
+        editor.update(Message::EndTime("10:45".into()));
+        set_title(&mut editor, "Weekly product sync");
+        assert_eq!(editor.resets(), 0, "a new title keeps the grid");
+        editor.form.repeat = Some(repeat::shortlist(day(2026, 10, 13))[0].clone());
+        assert_eq!(editor.resets(), 2, "a new rule");
+        editor.update(Message::StartTime("25:00".into()));
+        assert_eq!(editor.resets(), 0, "a form that cannot be saved changes nothing yet");
+
+        // All events: only ending the series resets, then every other changed occurrence.
+        let mut all = Editor::edit(&occurrence(), &calendars());
+        all.update(Message::Scope(SeriesScope::Series));
+        all.update(Message::StartTime("09:30".into()));
+        assert_eq!(all.resets(), 0, "the changed occurrences move along");
+        all.form.repeat = None;
+        assert_eq!(all.resets(), 3);
+        let _ = all.band_note().expect("the band says so");
+
+        // The core's count after the save.
+        let mut saved = Editor::edit(&occurrence(), &calendars());
+        saved.update(Message::Scope(SeriesScope::Following));
+        assert!(saved.band_note().is_some(), "with Following it says what a change of time would reset");
+        saved.update(Message::StartTime("09:30".into()));
+        let (event, _) = saves_with(&mut saved, Message::Flush);
+        let _ = saved.stored(&Event { exceptions: Vec::new(), ..event }, 2);
+        assert_eq!((saved.resets(), saved.reset), (0, 2));
+        assert!(saved.band_note().is_some());
+        saved.update(Message::Scope(SeriesScope::Series));
+        assert_eq!(saved.reset, 0, "a new scope starts over");
+    }
+
+    #[test]
+    fn after_a_split_the_editor_goes_on_with_the_new_series() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Scope(SeriesScope::Following));
+        editor.update(Message::StartTime("09:30".into()));
+        let (sent, _) = saves_with(&mut editor, Message::Flush);
+        // The core answers with the first occurrence of the new series: new uid and href, the rule
+        // written its own way.
+        let mut answer = Event {
+            uid: "split-1".into(),
+            href: Some("/work/split-1.ics".into()),
+            etag: Some("\"1\"".into()),
+            ..sent.clone()
+        };
+        answer.repeat = Some(Box::new(Repeat {
+            rule: "FREQ=WEEKLY;BYDAY=TU;COUNT=3".into(),
+            end: torro_pim::model::RepeatEnd::Count(3),
+            ..*sent.repeat.clone().expect("a rule")
+        }));
+        assert!(editor.awaits(&answer), "a new uid after a split is still our answer");
+        assert!(matches!(editor.stored(&answer, 0), Action::None), "nothing left to save");
+        assert_eq!(editor.event().and_then(|e| e.href.as_deref()), Some("/work/split-1.ics"));
+        assert_eq!(editor.form.repeat.as_ref(), answer.repeat.as_deref(), "the rule as stored");
+        editor.update(Message::Location("Room 9".into()));
+        let (next, _) = saves_with(&mut editor, Message::Flush);
+        assert_eq!((next.href.as_deref(), next.etag.as_deref()), (Some("/work/split-1.ics"), Some("\"1\"")));
+        assert_eq!(next.repeat, answer.repeat, "the stored rule goes back unchanged");
+    }
+
+    #[test]
+    fn a_series_switches_between_all_day_and_timed_only_for_this_event() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Scope(SeriesScope::Series));
+        assert!(matches!(editor.update(Message::AllDay(true)), Action::None));
+        assert!(!editor.form.all_day, "the switch is off");
+        // A switch made for this event alone is not sent for all of them.
+        editor.update(Message::Scope(SeriesScope::Occurrence));
+        editor.form.all_day = true;
+        editor.update(Message::Scope(SeriesScope::Series));
+        assert_eq!(problem(&editor), Problem::AllDaySeries);
+        editor.update(Message::Scope(SeriesScope::Occurrence));
+        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        assert!(event.all_day() && scope == Some(SeriesScope::Occurrence));
+    }
+
+    #[test]
+    fn deleting_an_occurrence_asks_which_events() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Delete);
+        assert_eq!(editor.footer().len(), 1, "one question with a button per scope");
+        assert!(matches!(editor.update(Message::Escape), Action::None) && !editor.confirm_delete, "Escape cancels");
+        for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+            editor.update(Message::Delete);
+            match editor.update(Message::ConfirmDelete(Some(scope))) {
+                Action::Delete(event, chosen) => assert_eq!((event, chosen), (occurrence(), Some(scope))),
+                other => panic!("expected Delete, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn show_as_status_and_link_are_saved_at_once_or_when_typed() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        editor.update(Message::ToggleShowAs);
+        assert_eq!(editor.popup, Some(Popup::ShowAs));
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the menu shows");
+        let (event, _) = saves_with(&mut editor, Message::ShowAs(Transparency::Transparent));
+        assert_eq!(event.transparency, Transparency::Transparent);
+        let _ = store(&mut editor, event, "\"8\"");
+        editor.update(Message::ToggleStatus);
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the menu shows");
+        let (event, _) = saves_with(&mut editor, Message::Status(EventStatus::Tentative));
+        assert_eq!(event.status, Some(EventStatus::Tentative));
+        let _ = store(&mut editor, event, "\"9\"");
+        editor.update(Message::Url("  https://example.org/agenda ".into()));
+        let (event, _) = saves_with(&mut editor, Message::Flush);
+        assert_eq!(event.url.as_deref(), Some("https://example.org/agenda"));
+        assert!(web_link("https://example.org") && !web_link("mailto:anna@example.org") && !web_link("file:///etc"));
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    #[test]
+    fn another_zone_keeps_the_wall_clock() {
+        let mut event = timed();
+        event.time_zone = Some("Europe/Berlin".into());
+        event.start = EventTime::DateTime(at(2026, 10, 27, 9, 0).and_utc());
+        event.end = Some(EventTime::DateTime(at(2026, 10, 27, 10, 0).and_utc()));
+        let mut editor = Editor::edit(&event, &calendars());
+        assert_eq!(editor.form.start_time, "10:00", "on Berlin's clock");
+        assert!(matches!(editor.update(Message::ToggleZones), Action::Focus(ZONE_SEARCH_ID)));
+        editor.update(Message::ZoneQuery("new york".into()));
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the menu shows");
+        let (saved, _) = saves_with(&mut editor, Message::ZoneFirst);
+        assert_eq!(saved.time_zone.as_deref(), Some("America/New_York"));
+        assert_eq!(saved.start, EventTime::DateTime(at(2026, 10, 27, 14, 0).and_utc()), "10:00 in New York");
+        assert!(editor.popup.is_none());
+    }
+
+    #[test]
+    fn people_are_only_shown() {
+        let anna = Attendee {
+            name: Some("Anna Berg".into()),
+            email: Some("anna@example.org".into()),
+            partstat: PartStat::Accepted,
+            role: torro_pim::model::AttendeeRole::Chair,
+        };
+        let ben = Attendee {
+            name: None,
+            email: Some("ben@example.org".into()),
+            partstat: PartStat::Declined,
+            ..anna.clone()
+        };
+        let event = Event { organizer: Some(Box::new(anna.clone())), attendees: vec![anna.clone(), ben], ..timed() };
+        let editor = Editor::edit(&event, &calendars());
+        assert_eq!(editor.people_lines().len(), 2, "the row and the note about the server");
+        assert!(Editor::edit(&timed(), &calendars()).people_lines().is_empty());
+        assert_eq!((initial(&anna), person_name(&anna).as_deref()), (Some("A"), Some("Anna Berg")));
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    #[test]
+    fn the_panel_of_an_occurrence_builds_with_every_menu() {
+        let anchor = Anchor::new();
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        let _ = editor.panel(&anchor, |m| m);
+        editor.update(Message::Scope(SeriesScope::Following));
+        for open in [Message::ToggleRepeat, Message::ToggleZones, Message::ToggleShowAs, Message::ToggleStatus] {
+            editor.update(open);
+            assert!(editor.popup.is_some());
+            let _ = editor.panel(&anchor, |m| m);
+            let _ = editor.layer(&anchor, |m| m).expect("a layer");
+            assert!(
+                matches!(editor.update(Message::Escape), Action::None) && editor.popup.is_none(),
+                "Escape closes it"
+            );
+        }
+        editor.update(Message::Delete);
+        let _ = editor.panel(&anchor, |m| m);
     }
 }

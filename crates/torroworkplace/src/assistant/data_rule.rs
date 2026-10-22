@@ -474,6 +474,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
         let answered =
             Response::InvitationAnswered { delivery: torro_ipc::mail::Delivery::Accepted, event: Some(event) };

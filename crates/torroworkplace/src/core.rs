@@ -652,6 +652,7 @@ fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<
         geo: None,
         organizer: None,
         attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
 }
 
@@ -849,6 +850,7 @@ fn event_from_invitation(
         geo: None,
         organizer: None,
         attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
 }
 
@@ -11381,6 +11383,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -21102,6 +21105,7 @@ mod tests {
                 geo: None,
                 organizer: None,
                 attendees: Vec::new(),
+                exceptions: Vec::new(),
             };
             room.fake.service.cache_events_of_today(vec![foreign]).await;
             let declined = ask(core, key, respond(&room.id, InvitationAnswer::Decline, None)).await;

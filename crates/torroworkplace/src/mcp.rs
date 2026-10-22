@@ -1150,6 +1150,7 @@ fn save_event<Tz: TimeZone>(input: EventInput, zone: &Tz) -> Result<Request, Too
                     geo: None,
                     organizer: None,
                     attendees: Vec::new(),
+                    exceptions: Vec::new(),
                 },
                 scope: None,
             })
@@ -1959,6 +1960,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 

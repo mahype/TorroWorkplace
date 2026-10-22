@@ -1003,6 +1003,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -1201,6 +1202,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
         let utc = |day, hour| at(day, hour, 0).and_local_timezone(chrono::Local).single().expect("local").to_utc();
         // Monday 5 (past) and Thursday 8 (to come) both have 10:00 and 16:00; Thursday's 13:00 is

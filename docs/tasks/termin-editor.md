@@ -199,7 +199,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   `{event, scope}` baut `SaveEvent { scope: Some(…) }`, kurze Form mit `scope` ist ein Eingabefehler; Bild-Antwort.
 
 ## TE.7 Editor: Felder, Wiederholung, Umfang (Layout A)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** TE.4 · **Dateien:** `crates/torrocalendar/src/{editor,app}.rs`,
   `crates/torrocalendar/src/editor/` (neu, falls `editor.rs` zu groß wird: `repeat.rs`), `crates/torro-gui/src/icon.rs`,
   `crates/torro-gui/assets/icons/`, `crates/torro-core/src/i18n/de.rs`

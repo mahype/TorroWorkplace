@@ -771,6 +771,7 @@ pub(crate) mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
         let ids = ids(&Request::DeleteEvent { event, scope: None });
         assert_eq!(ids[0], format!("collection:nextcloud:anna@cloud.example.org/{}", hashed("cal/work/")));

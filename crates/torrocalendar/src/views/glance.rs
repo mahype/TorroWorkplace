@@ -989,6 +989,7 @@ mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
         let cancelled = Some(torro_pim::model::EventStatus::Cancelled);
         let events = [

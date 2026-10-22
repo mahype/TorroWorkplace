@@ -33,6 +33,7 @@ fn event(uid: &str, collection: &str, start: DateTime<Utc>, minutes: i64) -> Eve
         geo: None,
         organizer: None,
         attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
 }
 

@@ -68,6 +68,7 @@ use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
+use torro_pim::model::SeriesScope;
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
 
@@ -271,8 +272,12 @@ pub enum Open {
     Editor,
     /// The side panel with a new event.
     EditorNew,
-    /// The side panel with an event that cannot be edited (the first occurrence of a series).
+    /// The side panel with an event of a read-only calendar. The demo has none, so the first event
+    /// that is not part of a series opens as if its calendar were read-only.
     EditorReadOnly,
+    /// The side panel with an occurrence of a series (task TE.7): the first one of the demo's daily
+    /// standup, with the band "Changes apply to".
+    EditorSeries,
     /// The timeline with the night's card open under "Nights" in the header.
     Night,
     /// The view menu ("Week ▾"); only the medium and narrow header have it.
@@ -290,7 +295,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 16] = [
+    const ALL: [(&'static str, Open); 17] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
@@ -300,6 +305,7 @@ impl Open {
         ("editor", Open::Editor),
         ("editor-new", Open::EditorNew),
         ("editor-read-only", Open::EditorReadOnly),
+        ("editor-series", Open::EditorSeries),
         ("night", Open::Night),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
@@ -637,9 +643,10 @@ pub enum Message {
     Editor(editor::Message),
     /// Keyboard: a new event on the shown day at 09:00.
     NewEventHere,
-    /// The answer to a save of the editor with this count ([`App::edits`]). Boxed: an event with
+    /// The answer to a save of the editor with this count ([`App::edits`]): the event as stored and
+    /// how many changed occurrences of its series the core reset (task TE.7). Boxed: an event with
     /// its series and people is far larger than every other message.
-    Saved(u64, Result<Box<Event>, String>),
+    Saved(u64, Result<Box<(Event, u32)>, String>),
     Deleted(Result<(), String>),
     /// A link of the editor was handed to the browser (issue #126).
     LinkOpened(Result<(), String>),
@@ -1112,10 +1119,11 @@ impl App {
                 let current = edit == self.edits;
                 match result {
                     Ok(saved) => {
+                        let (saved, reset) = *saved;
                         // The editor keeps editing on top of the stored version, with its new etag,
                         // and sends what was typed meanwhile.
                         let follow_up = match self.editor.as_mut() {
-                            Some(editor) if current && editor.awaits(&saved) => editor.stored(&saved),
+                            Some(editor) if current && editor.awaits(&saved) => editor.stored(&saved, reset),
                             _ => editor::Action::None,
                         };
                         return Task::batch([self.editor_action(follow_up), self.load()]);
@@ -1124,7 +1132,9 @@ impl App {
                         if let Some(editor) = self.editor.as_mut().filter(|_| current) {
                             editor.save_failed();
                         }
-                        self.error = Some(trf("Save failed: {error}", &[("error", &err)]));
+                        self.error = Some(err);
+                        // A conflict or a vanished event: the calendar shows what the server has now.
+                        return self.load();
                     }
                 }
             }
@@ -1630,7 +1640,7 @@ impl App {
     /// Closes the side panel; a change that still waits to be saved is saved.
     fn close_editor(&mut self) -> Task<Message> {
         match self.editor.take().and_then(|editor| editor.leave()) {
-            Some(event) => self.save(event),
+            Some((event, scope)) => self.save(event, scope),
             None => Task::none(),
         }
     }
@@ -1642,7 +1652,7 @@ impl App {
             editor::Action::Close => self.close_editor(),
             // The first field with a problem, after Enter.
             editor::Action::Focus(id) => iced::widget::operation::focus(id),
-            editor::Action::Save(event) => self.save(event),
+            editor::Action::Save(event, scope) => self.save(event, scope),
             // Checked again here: only web and mail addresses ever reach the browser.
             editor::Action::OpenLink(url) if links::openable(&url) => {
                 Task::perform(async move { webbrowser::open(&url).map_err(|err| err.to_string()) }, Message::LinkOpened)
@@ -1665,25 +1675,54 @@ impl App {
                     Message::Previewed,
                 )
             }
-            editor::Action::Delete(event) => {
+            editor::Action::Delete(event, scope) => {
                 self.editor = None;
                 let source = self.source.clone();
                 Task::perform(
-                    async move { source.delete_event(event, None).await.map_err(|e| e.to_string()) },
+                    async move { source.delete_event(event, scope).await.map_err(|e| e.to_string()) },
                     Message::Deleted,
                 )
             }
         }
     }
 
-    /// Saves `event` (the core's `save_event`) for the editor open now.
-    fn save(&self, event: Event) -> Task<Message> {
-        let source = self.source.clone();
+    /// Saves `event` with `scope` (the core's `save_event`, task TE.7) for the editor open now. The
+    /// core's answer is asked for directly, because it says how many changed occurrences the save
+    /// reset (`Response::Event.reset`), which `PimSource::save_event` does not hand on; the demo
+    /// resets none. A failure comes back as the sentence the window shows ([`save_failed`]).
+    fn save(&self, event: Event, scope: Option<SeriesScope>) -> Task<Message> {
         let edit = self.edits;
-        Task::perform(
-            async move { source.save_event(event, None).await.map(Box::new).map_err(|e| e.to_string()) },
-            move |result| Message::Saved(edit, result),
-        )
+        let done = move |result| Message::Saved(edit, result);
+        match &self.source {
+            Source::Core(client) => {
+                let socket = client.socket.clone();
+                let request = torro_ipc::Request::SaveEvent { event, scope };
+                Task::perform(
+                    async move {
+                        match torro_ipc::client::call(&socket, &request).await {
+                            Ok(torro_ipc::Response::Event { event, reset }) => Ok(Box::new((event, reset))),
+                            Ok(torro_ipc::Response::Error { code, message }) => Err(save_failed(&code, &message)),
+                            Ok(other) => Err(save_failed("error", &format!("unexpected answer: {other:?}"))),
+                            Err(err) => Err(save_failed("offline", &err.to_string())),
+                        }
+                    },
+                    done,
+                )
+            }
+            Source::Demo(_) => {
+                let source = self.source.clone();
+                Task::perform(
+                    async move {
+                        match source.save_event(event, scope).await {
+                            Ok(event) => Ok(Box::new((event, 0))),
+                            Err(torro_pim::ProviderError::Conflict { .. }) => Err(save_failed("conflict", "")),
+                            Err(err) => Err(save_failed("error", &err.to_string())),
+                        }
+                    },
+                    done,
+                )
+            }
+        }
     }
 
     fn current_view(&self, night: &Anchor) -> Element<'_, Message> {
@@ -2039,7 +2078,20 @@ impl App {
         }
         let event = match self.launch.open {
             Some(Open::Editor) => self.events.iter().find(|event| !event.recurring).or(self.events.first()),
-            Some(Open::EditorReadOnly) => self.events.iter().find(|event| event.recurring).or(self.events.first()),
+            Some(Open::EditorReadOnly) => {
+                let event = self.events.iter().find(|event| !event.recurring).or(self.events.first());
+                // As if its calendar were read-only: the demo has no read-only event calendar.
+                let calendars: Vec<Collection> = self
+                    .writable_calendars()
+                    .into_iter()
+                    .map(|calendar| Collection { writable: false, ..calendar })
+                    .collect();
+                if let Some(editor) = event.map(|event| Editor::edit(event, &calendars)) {
+                    let _ = self.open_editor(editor);
+                }
+                None
+            }
+            Some(Open::EditorSeries) => self.events.iter().find(|event| event.recurring).or(self.events.first()),
             Some(Open::EditorNew) => {
                 let _ = self.update(Message::NewEventHere);
                 None
@@ -2117,10 +2169,28 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     widgets::popover(head, tr("Night"), rows, actions)
 }
 
+/// The sentence the window shows when a save failed with the error `code` of the core (`message`
+/// is the core's, in English): what happened and what to do now. The calendar loads again either way.
+fn save_failed(code: &str, message: &str) -> String {
+    match code {
+        "conflict" => {
+            tr("The event was changed elsewhere. It has been loaded again; open it to change it.").to_string()
+        }
+        "not-found" => tr("The event is no longer there. The calendar has been loaded again.").to_string(),
+        "unsupported" => tr("This change only works for this event. Choose This event and try again.").to_string(),
+        _ => trf("Save failed: {error}", &[("error", &message)]),
+    }
+}
+
 /// Whether `a` and `b` are the same event: the same uid in the same calendar, and for the
-/// occurrences of a series (which share their uid) the same start.
+/// occurrences of a series (which share their uid) the same key, else the same start.
 fn same_event(a: &Event, b: &Event) -> bool {
-    a.uid == b.uid && a.collection == b.collection && (!a.recurring || a.start == b.start)
+    // An occurrence is known by its key, which stays when it is moved (task TE.7).
+    let same_occurrence = match (a.recurrence_id, b.recurrence_id) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.start == b.start,
+    };
+    a.uid == b.uid && a.collection == b.collection && (!a.recurring || same_occurrence)
 }
 
 /// The title of an account's group in the sidebar and the menu (task K.31): its host, which is
@@ -2542,7 +2612,7 @@ mod tests {
             iced::widget::text_editor::Edit::Insert('X'),
         ))));
         let _ = app.update(Message::Editor(editor::Message::Flush));
-        let _ = app.update(Message::Saved(earlier, Ok(Box::new(event))));
+        let _ = app.update(Message::Saved(earlier, Ok(Box::new((event, 0)))));
         assert!(app.editor.as_ref().is_some_and(|editor| editor.event().is_none()), "the draft stays a draft");
     }
 
@@ -2565,7 +2635,7 @@ mod tests {
         let _ = app.update(Message::OpenEvent(index));
         let _ = app.update(Message::Editor(editor::Message::Delete));
         assert!(app.editor.is_some(), "it asks first");
-        assert!(app.update(Message::Editor(editor::Message::ConfirmDelete)).units() > 0);
+        assert!(app.update(Message::Editor(editor::Message::ConfirmDelete(None))).units() > 0);
         assert!(app.editor.is_none());
     }
 
@@ -2921,14 +2991,28 @@ mod tests {
         // Only an existing event can be deleted: this one is the first that is not a series.
         assert!(matches!(editor.update(editor::Message::Delete), editor::Action::None), "it asks first");
         assert!(
-            matches!(editor.update(editor::Message::ConfirmDelete), editor::Action::Delete(event) if !event.recurring)
+            matches!(editor.update(editor::Message::ConfirmDelete(None)), editor::Action::Delete(event, None) if !event.recurring)
         );
         let new = launched(&["--demo", "--open", "editor-new"]);
         let editor = new.editor.as_ref().expect("the editor is open");
         assert!(editor.event().is_none(), "it is a draft");
-        let series = launched(&["--demo", "--open", "editor-read-only"]);
-        let editor = series.editor.as_ref().expect("the editor is open");
-        assert!(editor.event().is_some_and(|event| event.recurring), "a series opens read-only");
+        let read_only = launched(&["--demo", "--open", "editor-read-only"]);
+        let mut editor = read_only.editor.clone().expect("the editor is open");
+        assert!(editor.event().is_some_and(|event| !event.recurring));
+        assert!(matches!(editor.update(editor::Message::Delete), editor::Action::None));
+        assert!(
+            matches!(editor.update(editor::Message::ConfirmDelete(None)), editor::Action::None),
+            "as if its calendar were read-only: nothing to delete"
+        );
+        // Task TE.7: an occurrence of the standup, edited like any other event, with its scope.
+        let series = launched(&["--demo", "--open", "editor-series"]);
+        let mut editor = series.editor.clone().expect("the editor is open");
+        assert!(editor.event().is_some_and(|event| event.recurring && !event.exceptions.is_empty()));
+        let _ = editor.update(editor::Message::Location("Room 7".into()));
+        assert!(
+            matches!(editor.update(editor::Message::Flush), editor::Action::Save(_, Some(SeriesScope::Occurrence))),
+            "This event at first"
+        );
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "editor"]);
         let _ = closed.update(Message::Editor(editor::Message::Close));

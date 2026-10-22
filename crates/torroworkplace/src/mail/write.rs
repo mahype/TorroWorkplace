@@ -1779,6 +1779,7 @@ pub(crate) mod tests {
             geo: None,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
         let organizer = MailAddress { name: Some("Jonas \"Boss\" Weber".into()), address: "jonas@example.com".into() };
         let invitation = Invitation {

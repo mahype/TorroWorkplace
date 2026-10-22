@@ -1057,6 +1057,7 @@ mod tests {
             geo,
             organizer: None,
             attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 

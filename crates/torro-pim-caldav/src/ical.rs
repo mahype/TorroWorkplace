@@ -138,6 +138,8 @@ impl ObjectFacts {
     ///   left as it is when the object names none.
     /// - `repeat`: the rule of the series, the same on every occurrence; and `recurring` for an
     ///   occurrence of a series, so it stays true exactly when `recurrence_id` or `repeat` is set.
+    /// - `exceptions`: the keys of the changed occurrences in the stored order, on every occurrence
+    ///   of a series; empty for a single event.
     pub fn complete(&self, event: &mut Event) {
         let series = self.repeat.is_some() || !self.exceptions.is_empty();
         if series && event.recurrence_id.is_none() {
@@ -151,6 +153,8 @@ impl ObjectFacts {
             event.time_zone = Some(zone.clone());
         }
         event.repeat = self.repeat.clone().map(Box::new);
+        event.exceptions =
+            if series { self.exceptions.iter().map(|exception| exception.recurrence_id).collect() } else { Vec::new() };
         event.recurring |= event.recurrence_id.is_some() || event.repeat.is_some();
     }
 }
@@ -335,6 +339,7 @@ pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], col
         geo: geo(props),
         organizer: get("ORGANIZER").map(|p| Box::new(person(p))),
         attendees: props.iter().filter(|p| p.name.eq_ignore_ascii_case("ATTENDEE")).map(person).collect(),
+        exceptions: Vec::new(),
     })
 }
 
@@ -993,5 +998,26 @@ RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         only.complete(&mut occurrence);
         assert_eq!(occurrence.recurrence_id, Some(key), "found by its start");
         assert_eq!((occurrence.time_zone.as_deref(), occurrence.recurring), (Some("Europe/Berlin"), true));
+        assert_eq!(occurrence.exceptions, [key], "the changed occurrences, for the editor (TE.7)");
+    }
+
+    #[test]
+    fn every_occurrence_learns_the_changed_occurrences_of_its_series() {
+        let key = utc(2026, 10, 20, 8, 0);
+        // The main event with a weekly rule, and a changed occurrence an hour later.
+        let object = NEXTCLOUD_BERLIN.replace(
+            "STATUS:CONFIRMED",
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\nEND:VEVENT\nBEGIN:VEVENT\nUID:x\n\
+             RECURRENCE-ID;TZID=Europe/Berlin:20261020T100000\nDTSTART;TZID=Europe/Berlin:20261020T110000",
+        );
+        let series = ObjectFacts::read(&object);
+        assert_eq!(series.exceptions.len(), 1, "{object}");
+        let mut occurrence = Event { exceptions: vec![utc(2000, 1, 1, 0, 0)], ..one(NEXTCLOUD_BERLIN) };
+        series.complete(&mut occurrence);
+        assert_eq!(occurrence.exceptions, [key]);
+        // A single event has none, whatever the client sent.
+        let mut single = Event { exceptions: vec![key], ..one(NEXTCLOUD_BERLIN) };
+        ObjectFacts::read(NEXTCLOUD_BERLIN).complete(&mut single);
+        assert!(single.exceptions.is_empty());
     }
 }

@@ -19,6 +19,10 @@ torro-ipc.workspace = true
 # The settings in the content area (task S.19).
 torro-settings-ui.workspace = true
 chrono.workspace = true
+# The time zone of an event in the editor (task TE.7): the IANA names and their clocks, and the
+# name of this computer's zone.
+chrono-tz.workspace = true
+iana-time-zone.workspace = true
 iced.workspace = true
 # Opens the links of an event's location and notes (issue #126).
 webbrowser.workspace = true

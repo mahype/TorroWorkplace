@@ -34,6 +34,7 @@ fn event(uid: &str, location: Option<&str>) -> Event {
         geo: None,
         organizer: None,
         attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
 }
 

@@ -6431,6 +6431,7 @@ pub(crate) mod tests {
                 geo: None,
                 organizer: None,
                 attendees: Vec::new(),
+                exceptions: Vec::new(),
             },
             fires_at: at(9, 59),
             style: torro_pim::AlarmStyle::Notification,

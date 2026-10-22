@@ -7018,6 +7018,8 @@ name = "torrocalendar"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "chrono-tz",
+ "iana-time-zone",
  "iced",
  "torro-core",
  "torro-gui",
