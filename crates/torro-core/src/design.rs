@@ -655,6 +655,9 @@ pub struct Palette {
     pub error: Rgba,
     pub inactive: Rgba,
     pub merged: Rgba,
+    /// Unread mail in lists and cards: a blue dot, separate from account and category colours.
+    /// At least 3:1 on every mail row and card surface.
+    pub unread: Rgba,
     /// Default calendar and list colours: work, personal, family, birthday, groceries.
     pub calendar: [Rgba; 5],
     /// Opacity of a calendar colour used as a surface, 0–1.
@@ -790,6 +793,7 @@ impl Palette {
             "error" => &mut self.error,
             "inactive" => &mut self.inactive,
             "merged" => &mut self.merged,
+            "unread" => &mut self.unread,
             "chart_other" => &mut self.chart_other,
             "shadow" => &mut self.shadow,
             "scrim" => &mut self.scrim,
@@ -1154,6 +1158,7 @@ const STANDARD_DARK: Palette = Palette {
     error: Rgba::from_rgb(STATUS_ERROR),
     inactive: Rgba::from_rgb(STATUS_INACTIVE),
     merged: Rgba::hex(0xA78BFA),
+    unread: Rgba::hex(0x66A3FF),
     calendar: [Rgba::hex(0x5B8CFF), Rgba::hex(0x3FB984), Rgba::hex(0xE8A33D), Rgba::hex(0xD96CA8), Rgba::hex(0xA78BFA)],
     tint: 0.18,
     // Checked with the dataviz validator against `panel` (task E8.8b): lightness band, chroma, CVD
@@ -1195,6 +1200,7 @@ const STANDARD_LIGHT: Palette = Palette {
     error: Rgba::from_rgb(STATUS_ERROR),
     inactive: Rgba::from_rgb(STATUS_INACTIVE),
     merged: Rgba::hex(0x7C5CE6),
+    unread: Rgba::hex(0x2563D8),
     calendar: [Rgba::hex(0x3B6EF0), Rgba::hex(0x1F9D68), Rgba::hex(0xB06F12), Rgba::hex(0xC2508F), Rgba::hex(0x7C5CE6)],
     tint: 0.14,
     // The same hues stepped for the light panel, checked the same way (task E8.8b).

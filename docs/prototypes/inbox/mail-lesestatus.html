@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mail-Lesestatus · drei Mockups</title>
+  <style>
+    @font-face { font-family: Figtree; src: url("../../../fonts/guildr/Figtree-Regular.ttf") format("truetype"); font-weight: 400; }
+    @font-face { font-family: Figtree; src: url("../../../fonts/guildr/Figtree-SemiBold.ttf") format("truetype"); font-weight: 600; }
+    :root { font-family: Figtree, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e9ebef; background: #101115; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button { font: inherit; cursor: pointer; }
+    button:focus-visible { outline: 2px solid #83b8ff; outline-offset: 2px; }
+    .page { max-width: 1440px; margin: auto; padding: 36px clamp(16px, 3.1vw, 48px) 56px; }
+    .intro { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+    h1 { margin: 0 0 8px; font-size: clamp(27px, 3vw, 38px); letter-spacing: -.035em; line-height: 1.13; font-weight: 600; }
+    .intro p { margin: 0; max-width: 77ch; color: #a7abb4; line-height: 1.5; font-size: 15px; }
+    .reset { background: #272a31; color: #e8eaed; border: 1px solid #444851; border-radius: 8px; padding: 10px 14px; white-space: nowrap; font-size: 13px; }
+    .reset:hover { background: #343842; }
+    .options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 0 0 18px; }
+    .option { min-height: 91px; display: flex; align-items: flex-start; gap: 13px; border: 1px solid #34373f; border-radius: 11px; padding: 16px 17px; text-align: left; background: #1a1c21; color: #e4e6eb; }
+    .option:hover { border-color: #59606d; background: #20232a; }
+    .option[aria-selected="true"] { border-color: #5e9ce9; box-shadow: inset 0 0 0 1px #5e9ce9; background: #202b39; }
+    .option-letter { color: #8ebcff; font-size: 17px; font-weight: 600; line-height: 1.3; }
+    .option strong { display: block; font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+    .option small { display: block; font-size: 12px; color: #aeb3be; line-height: 1.35; }
+    .variant-head { min-height: 52px; display: flex; justify-content: space-between; align-items: baseline; gap: 24px; margin: 0 0 12px; }
+    .variant-head h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; font-weight: 600; }
+    .variant-head p { margin: 0; max-width: 70ch; color: #aeb2bb; font-size: 13px; line-height: 1.4; }
+    .window { --line: #2b2e35; --panel: #17191d; --muted: #9399a3; height: 680px; background: #111216; border: 1px solid #3c4049; border-radius: 12px; box-shadow: 0 26px 80px #0009; overflow: hidden; display: grid; grid-template-rows: 34px minmax(0, 1fr); font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; }
+    .chrome { background: #16181d; border-bottom: 1px solid #252830; display: flex; align-items: center; gap: 6px; padding: 0 13px; }
+    .chrome i { width: 10px; height: 10px; border-radius: 50%; background: #4a4e57; }
+    .chrome span { color: #838993; font-size: 11px; margin: auto; transform: translateX(-16px); }
+    .cols { display: grid; grid-template-columns: 202px minmax(375px, 430px) minmax(280px, 1fr); min-height: 0; }
+    .sidebar { min-width: 0; background: #15171b; border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 12px 9px; }
+    .brand { display: flex; align-items: center; gap: 9px; padding: 5px 10px 17px; font-size: 14px; font-weight: 650; }
+    .brand-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: white; background: #d94b35; font-weight: 800; }
+    .nav-label { color: #797e88; text-transform: uppercase; letter-spacing: .09em; font-size: 10px; font-weight: 700; padding: 18px 10px 7px; }
+    .nav { height: 35px; display: flex; align-items: center; gap: 9px; padding: 0 10px; color: #b5bac2; border-radius: 7px; white-space: nowrap; }
+    .nav.active { background: #292c33; color: #f4f5f7; }
+    .nav svg { width: 16px; height: 16px; }
+    .nav .count { margin-left: auto; color: #b9bdc5; font-size: 12px; font-variant-numeric: tabular-nums; }
+    .nav:not(.active) .count { color: #858a94; }
+    .account { margin-top: auto; border-top: 1px solid var(--line); padding: 14px 9px 4px; color: #aeb3bc; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mail-column { min-width: 0; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); display: grid; grid-template-rows: 53px 47px minmax(0, 1fr); }
+    .mail-head { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 0 16px; font-weight: 620; font-size: 14px; }
+    .mail-head svg { width: 17px; height: 17px; color: #a4a9b2; }
+    .mail-head .count { color: #9ba1ab; font-size: 12px; font-weight: 450; }
+    .head-end { margin-left: auto; color: #969ca6; font-size: 11px; font-weight: 400; white-space: nowrap; }
+    .search-line { border-bottom: 1px solid var(--line); padding: 7px 13px; }
+    .search { height: 32px; display: flex; align-items: center; gap: 8px; color: #858c97; background: #111216; border: 1px solid #353941; border-radius: 7px; padding: 0 10px; font-size: 11px; }
+    .search svg { width: 15px; height: 15px; }
+    .mail-list { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #454a55 transparent; }
+    .mail-row { position: relative; display: grid; grid-template-columns: 18px 36px minmax(0, 1fr); gap: 10px; align-items: center; width: 100%; height: 92px; padding: 0 15px 0 12px; background: transparent; border: 0; border-bottom: 1px solid var(--line); color: #e9ebef; text-align: left; }
+    .mail-row:hover { background: #22262d; }
+    .mail-row.selected { background: #2a2d35; }
+    .mail-row.selected::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: #e05a43; }
+    .indicator-slot { width: 18px; height: 60px; display: grid; place-items: center; flex: none; }
+    .indicator { display: block; visibility: hidden; background: #72aeff; flex: none; }
+    .mail-row.unread .indicator { visibility: visible; }
+    body[data-variant="a"] .indicator,
+    body[data-variant="b"] .indicator { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 2px #72aeff1b; }
+    body[data-variant="c"] .indicator { width: 4px; height: 42px; border-radius: 3px; }
+    body[data-variant="b"] .mail-row.unread { background: #202b39; }
+    body[data-variant="b"] .mail-row.unread:hover { background: #263548; }
+    body[data-variant="b"] .mail-row.unread.selected { background: #303745; }
+    body[data-variant="c"] .mail-row.unread .sender,
+    body[data-variant="c"] .mail-row.unread .date { color: #f6f8fa; }
+    .avatar { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: #303744; color: #dce4ee; font-size: 11px; font-weight: 650; }
+    .avatar.purple { background: #383047; color: #eee0ff; }
+    .avatar.teal { background: #24423f; color: #cef5ec; }
+    .avatar.orange { background: #47372c; color: #ffe3ca; }
+    .mail-copy { min-width: 0; display: block; }
+    .row-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; height: 22px; }
+    .sender { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 480; color: #c6cad2; }
+    .date { margin-left: auto; flex: none; color: #989ea9; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .subject { display: block; height: 22px; line-height: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 400; color: #c8cbd2; }
+    .preview { display: block; height: 22px; line-height: 22px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #a4aab4; font-size: 12px; }
+    .mail-row.unread .sender, .mail-row.unread .subject { color: #f1f3f6; font-weight: 650; }
+    .mail-row.unread .preview { color: #c3c9d2; }
+    .reader { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+    .reader-top { height: 53px; flex: none; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 0 21px; color: #a3a8b2; font-size: 11px; }
+    .reader-top .spacer { flex: 1; }
+    .icon-button { height: 28px; width: 28px; border: 1px solid #3b3f48; color: #b5bbc4; border-radius: 6px; display: grid; place-items: center; background: transparent; }
+    .icon-button svg { width: 15px; height: 15px; }
+    .reader-body { overflow: auto; padding: 27px 30px; }
+    .reader-body h3 { margin: 0 0 22px; font-size: 22px; line-height: 1.25; font-weight: 600; letter-spacing: -.02em; }
+    .from-line { display: flex; align-items: center; gap: 11px; padding: 0 0 20px; margin: 0 0 23px; border-bottom: 1px solid var(--line); }
+    .from-line .avatar { width: 38px; height: 38px; }
+    .from-line strong { display: block; font-size: 12px; }
+    .from-line span { display: block; color: #9da3ad; font-size: 11px; }
+    .from-line time { margin-left: auto; align-self: start; color: #9da3ad; font-size: 11px; white-space: nowrap; }
+    .reader-body p { margin: 0 0 15px; max-width: 60ch; color: #d8dbe0; font-size: 13px; line-height: 1.6; }
+    .review { display: grid; grid-template-columns: minmax(0, 1fr) 286px; gap: 16px; margin-top: 18px; }
+    .comparison, .notes { background: #1a1c21; border: 1px solid #34373f; border-radius: 10px; padding: 16px 18px; }
+    .review h3 { font-size: 13px; margin: 0 0 13px; font-weight: 600; color: #e7e9ed; }
+    .compare-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .compare-sample { min-width: 0; background: #17191d; border: 1px solid #343841; border-radius: 8px; overflow: hidden; }
+    .compare-sample .caption { display: block; padding: 8px 11px; font-size: 11px; color: #aeb3bd; background: #202229; border-bottom: 1px solid #343841; }
+    .compare-sample .mail-row { border: 0; width: 100%; }
+    .compare-sample .mail-row.selected::before { display: none; }
+    .notes p { margin: 0 0 10px; color: #b9bec7; font-size: 12px; line-height: 1.55; }
+    .notes p:last-child { margin-bottom: 0; }
+    .notes strong { color: #f0f2f5; font-weight: 600; }
+    svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    @media (max-width: 1100px) { .cols { grid-template-columns: 174px minmax(355px, 42%) minmax(260px, 1fr); } .reader-body { padding: 24px 22px; } }
+    @media (max-width: 850px) { .cols { grid-template-columns: 165px minmax(0, 1fr); } .reader { display: none; } .mail-column { border-right: 0; } .review { grid-template-columns: 1fr; } }
+    @media (max-width: 600px) { .page { padding: 22px 10px 40px; } .intro { align-items: start; flex-direction: column; } .options { grid-template-columns: 1fr; gap: 7px; } .option { min-height: 0; padding: 11px 13px; } .option strong { margin: 0; } .option small { display: none; } .variant-head { display: block; } .variant-head h2 { margin-bottom: 4px; } .window { height: 568px; } .cols { grid-template-columns: minmax(0, 1fr); } .sidebar { display: none; } .mail-row { padding-right: 11px; } .compare-row { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 4h16l2 11v5H2v-5L4 4Z"/><path d="M2 15h6l2 3h4l2-3h6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m4 12 5 5L20 6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M2 6h8l2 2h10v12H2V6Z"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><path d="M3 4h18v5H3V4Zm2 5v11h14V9M9 13h6"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m4 12 7-7v4c5 0 8 3 9 10-2-4-5-6-9-6v4l-7-5Z"/></symbol>
+  </svg>
+  <div class="page">
+    <header class="intro">
+      <div><h1>Gelesen. Auf einen Blick.</h1><p>Drei Varianten für einen deutlichen Lesestatus in Torro Mail. Die linke Markierung hat immer denselben Platz; Zeilenhöhe, Avatar, Textbeginn, Suche und Lesebereich bleiben beim Öffnen stabil.</p></div>
+      <button class="reset" id="reset" type="button">Beispiel zurücksetzen</button>
+    </header>
+    <div class="options" role="tablist" aria-label="Lesestatus-Varianten">
+      <button class="option" type="button" role="tab" aria-selected="true" data-variant="a"><span class="option-letter">A</span><span><strong>Punkt am linken Rand</strong><small>Apple-inspiriert, klar und zurückhaltend</small></span></button>
+      <button class="option" type="button" role="tab" aria-selected="false" data-variant="b"><span class="option-letter">B</span><span><strong>Punkt + Zeilenfläche</strong><small>Ungelesene Mails stechen stärker hervor</small></span></button>
+      <button class="option" type="button" role="tab" aria-selected="false" data-variant="c"><span class="option-letter">C</span><span><strong>Schmale Lesespur</strong><small>Auch bei dichtem Inhalt gut erkennbar</small></span></button>
+    </div>
+    <div class="variant-head"><h2 id="variant-title">A · Punkt am linken Rand</h2><p id="variant-description">Ein blauer Punkt links vom Avatar verschwindet beim Lesen. Absender und Betreff wechseln von kräftiger zu normaler Schrift.</p></div>
+    <div class="window" id="mockup" data-variant="a">
+      <div class="chrome"><i></i><i></i><i></i><span>Torro Mail</span></div>
+      <div class="cols">
+        <aside class="sidebar" aria-label="Navigation">
+          <div class="brand"><span class="brand-mark">T</span> Torro Mail</div>
+          <div class="nav active"><svg><use href="#i-inbox"/></svg>For me <span class="count" id="nav-count">4</span></div>
+          <div class="nav"><svg><use href="#i-inbox"/></svg>Info <span class="count">6</span></div>
+          <div class="nav"><svg><use href="#i-clock"/></svg>Later <span class="count">3</span></div>
+          <div class="nav"><svg><use href="#i-check"/></svg>Done</div>
+          <div class="nav-label">Folders</div>
+          <div class="nav"><svg><use href="#i-inbox"/></svg>Inbox <span class="count" id="folder-count">4</span></div>
+          <div class="nav"><svg><use href="#i-folder"/></svg>Archive</div>
+          <div class="account">maria@torro.example</div>
+        </aside>
+        <main class="mail-column" aria-label="Mail-Liste">
+          <div class="mail-head"><svg><use href="#i-inbox"/></svg>For me <span class="count" id="header-count">4 unread</span><span class="head-end">Newest first</span></div>
+          <div class="search-line"><div class="search"><svg><use href="#i-search"/></svg>Search all mail</div></div>
+          <div class="mail-list" id="mail-list"></div>
+        </main>
+        <section class="reader" aria-label="Geöffnete Mail">
+          <div class="reader-top"><span>Conversation</span><span class="spacer"></span><span class="icon-button" aria-label="Archivieren"><svg><use href="#i-archive"/></svg></span><span class="icon-button" aria-label="Antworten"><svg><use href="#i-arrow"/></svg></span></div>
+          <div class="reader-body" id="reader-body"></div>
+        </section>
+      </div>
+    </div>
+    <div class="review">
+      <section class="comparison" aria-label="Direkter Vergleich"><h3>Dieselbe Mail, vor und nach dem Öffnen</h3><div class="compare-row"><div class="compare-sample"><span class="caption">Ungelesen</span><div id="sample-unread"></div></div><div class="compare-sample"><span class="caption">Gelesen</span><div id="sample-read"></div></div></div></section>
+      <aside class="notes"><h3>Was stabil bleibt</h3><p><strong>92 px Zeilenhöhe</strong> in beiden Zuständen, wie in der aktuellen Mail-Liste.</p><p><strong>18 px fester Markierungsplatz</strong> links. Der Text und der Avatar rücken beim Lesen nicht nach.</p><p><strong>Auswahl bleibt orange</strong> am äußersten Rand und ist vom blauen Lesestatus getrennt.</p></aside>
+    </div>
+  </div>
+  <script>
+    const seed = [
+      { id: 1, initials: "LK", avatar: "purple", from: "Lea König", address: "lea@team.example", subject: "Planung für Freitag", preview: "Kannst du die offenen Punkte bis morgen ansehen?", date: "09:42", unread: true, body: "Ich habe den aktuellen Ablauf für Freitag zusammengestellt. Kannst du dir die offenen Punkte ansehen und mir bis morgen eine Rückmeldung geben?" },
+      { id: 2, initials: "TW", avatar: "teal", from: "Torro Workplace", address: "updates@torro.example", subject: "Aktuelle Änderungen im Projekt", preview: "Die Übersicht für diese Woche ist da.", date: "08:31", unread: true, body: "Die Übersicht für diese Woche ist da. Die wichtigsten Änderungen findest du im Projektbereich." },
+      { id: 3, initials: "JS", avatar: "orange", from: "Jonas Stein", address: "jonas@studio.example", subject: "Re: Entwurf für die Präsentation", preview: "Sieht gut aus. Zwei kleine Anmerkungen …", date: "Gestern", unread: false, body: "Sieht gut aus. Ich habe nur zwei kleine Anmerkungen zum Einstieg und zur Schlussfolie." },
+      { id: 4, initials: "AM", avatar: "purple", from: "Amira Malik", address: "amira@team.example", subject: "Termin nächste Woche", preview: "Passt dir Dienstag um 11 Uhr?", date: "Gestern", unread: true, body: "Passt dir Dienstag um 11 Uhr? Dann würde ich den Termin an alle schicken." },
+      { id: 5, initials: "NB", avatar: "teal", from: "Nora Becker", address: "nora@studio.example", subject: "Fotos vom Workshop", preview: "Hier sind die Bilder und meine Notizen.", date: "Mo", unread: false, body: "Hier sind die Bilder und meine Notizen vom Workshop. Sag Bescheid, wenn noch etwas fehlt." },
+      { id: 6, initials: "MS", avatar: "orange", from: "Mika Schulz", address: "mika@partner.example", subject: "Rechnung September", preview: "Anbei die Rechnung für September.", date: "Mo", unread: true, body: "Anbei die Rechnung für September. Vielen Dank für die Zusammenarbeit!" }
+    ];
+    const variants = {
+      a: { title: "A · Punkt am linken Rand", description: "Ein blauer Punkt links vom Avatar verschwindet beim Lesen. Absender und Betreff wechseln von kräftiger zu normaler Schrift." },
+      b: { title: "B · Punkt + Zeilenfläche", description: "Zusätzlich zum Punkt bekommt nur ungelesene Mail eine ruhige blaue Fläche. Der Kontrast ist deutlich, ohne die Auswahlfarbe zu ersetzen." },
+      c: { title: "C · Schmale Lesespur", description: "Ein längerer blauer Strich signalisiert ungelesen. Er ist aus größerer Entfernung erkennbar und nutzt denselben festen Platz wie der Punkt." }
+    };
+    let mails = seed.map(mail => ({ ...mail }));
+    let selectedId = 3;
+    let variant = "a";
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
+    function row(mail, selected = false, interactive = true) {
+      const tag = interactive ? "button" : "div";
+      const attributes = interactive ? `type="button" data-id="${mail.id}" aria-label="${escapeHtml(mail.from)}: ${escapeHtml(mail.subject)}, ${mail.unread ? "ungelesen" : "gelesen"}"` : "";
+      return `<${tag} class="mail-row ${mail.unread ? "unread" : "read"} ${selected ? "selected" : ""}" ${attributes}><span class="indicator-slot" aria-hidden="true"><span class="indicator"></span></span><span class="avatar ${mail.avatar}" aria-hidden="true">${mail.initials}</span><span class="mail-copy"><span class="row-top"><span class="sender">${escapeHtml(mail.from)}</span><time class="date">${escapeHtml(mail.date)}</time></span><span class="subject">${escapeHtml(mail.subject)}</span><span class="preview">${escapeHtml(mail.preview)}</span></span></${tag}>`;
+    }
+    function render() {
+      document.body.dataset.variant = variant;
+      document.getElementById("mockup").dataset.variant = variant;
+      document.querySelectorAll(".option").forEach(option => option.setAttribute("aria-selected", String(option.dataset.variant === variant)));
+      document.getElementById("variant-title").textContent = variants[variant].title;
+      document.getElementById("variant-description").textContent = variants[variant].description;
+      document.getElementById("mail-list").innerHTML = mails.map(mail => row(mail, mail.id === selectedId)).join("");
+      const unread = mails.filter(mail => mail.unread).length;
+      document.getElementById("nav-count").textContent = unread;
+      document.getElementById("folder-count").textContent = unread;
+      document.getElementById("header-count").textContent = `${unread} unread`;
+      const selected = mails.find(mail => mail.id === selectedId);
+      document.getElementById("reader-body").innerHTML = `<h3>${escapeHtml(selected.subject)}</h3><div class="from-line"><div class="avatar ${selected.avatar}">${selected.initials}</div><div><strong>${escapeHtml(selected.from)}</strong><span>${escapeHtml(selected.address)}</span></div><time>${escapeHtml(selected.date)}</time></div><p>Hallo Maria,</p><p>${escapeHtml(selected.body)}</p><p>Viele Grüße<br>${escapeHtml(selected.from.split(" ")[0])}</p>`;
+      const sample = seed[0];
+      document.getElementById("sample-unread").innerHTML = row({ ...sample, unread: true }, false, false);
+      document.getElementById("sample-read").innerHTML = row({ ...sample, unread: false }, false, false);
+    }
+    document.addEventListener("click", event => {
+      const option = event.target.closest(".option");
+      if (option) { variant = option.dataset.variant; render(); return; }
+      if (event.target.closest("#reset")) { mails = seed.map(mail => ({ ...mail })); selectedId = 3; render(); return; }
+      const mail = event.target.closest("#mail-list .mail-row");
+      if (mail) { selectedId = Number(mail.dataset.id); mails.find(item => item.id === selectedId).unread = false; render(); }
+    });
+    document.addEventListener("keydown", event => {
+      if (!event.target.matches(".option") || !["ArrowRight", "ArrowLeft"].includes(event.key)) return;
+      event.preventDefault();
+      const keys = Object.keys(variants);
+      const index = (keys.indexOf(variant) + (event.key === "ArrowRight" ? 1 : -1) + keys.length) % keys.length;
+      variant = keys[index];
+      render();
+      document.querySelector(`.option[data-variant="${variant}"]`).focus();
+    });
+    render();
+  </script>
+</body>
+</html>

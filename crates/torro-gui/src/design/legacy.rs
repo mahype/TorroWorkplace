@@ -111,6 +111,7 @@ pub const DARK: Palette = Palette {
     error_text: color(STATUS_ERROR),
     inactive: color(STATUS_INACTIVE),
     merged: hex(0xA78BFA),
+    unread: hex(0x66A3FF),
     calendar: [hex(0x5B8CFF), hex(0x3FB984), hex(0xE8A33D), hex(0xD96CA8), hex(0xA78BFA)],
     tint: 0.18,
     // New with E8.8b, nothing drew charts before: the standard's chart colours.
@@ -153,6 +154,7 @@ pub const LIGHT: Palette = Palette {
     error_text: mix(color(STATUS_ERROR), hex(0x18191B), 0.3),
     inactive: color(STATUS_INACTIVE),
     merged: hex(0x7C5CE6),
+    unread: hex(0x2563D8),
     calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xB06F12), hex(0xC2508F), hex(0x7C5CE6)],
     tint: 0.14,
     // New with E8.8b, as in the dark palette.

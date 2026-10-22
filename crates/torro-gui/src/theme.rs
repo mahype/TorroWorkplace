@@ -170,6 +170,8 @@ pub struct Palette {
     /// the same hue as the fifth list colour. A graphic (icon, dot) next to a word, never text;
     /// ≥ 3:1 on every surface.
     pub merged: Color,
+    /// Unread mail: a blue dot on rows and cards, independent of account and category colours.
+    pub unread: Color,
     /// Default colours for calendars and task lists, in this order: work (blue), personal
     /// (green), family (orange), birthday (pink), groceries (violet). Use them as bar, dot, ring
     /// or check mark; as a surface only through [`Palette::tinted`].
@@ -267,6 +269,7 @@ impl Palette {
             error_text: rgba(c.error_text(mode)),
             inactive: rgba(c.inactive),
             merged: rgba(c.merged),
+            unread: rgba(c.unread),
             calendar: c.calendar.map(rgba),
             tint: c.tint,
             chart: c.chart.map(rgba),
@@ -788,6 +791,8 @@ mod tests {
     #[test]
     fn values_match_the_design_skill() {
         let (dark, light) = (Palette::dark(), Palette::light());
+        assert_eq!(dark.unread.into_rgba8(), [0x66, 0xA3, 0xFF, 0xFF]);
+        assert_eq!(light.unread.into_rgba8(), [0x25, 0x63, 0xD8, 0xFF]);
         assert_eq!(dark.bg.into_rgba8(), [0x08, 0x09, 0x0A, 0xFF]);
         assert_eq!(light.selected.into_rgba8(), [0xE9, 0xEA, 0xED, 0xFF]);
         assert_eq!(light.text_3.into_rgba8(), [0x62, 0x66, 0x6D, 0xFF]);
