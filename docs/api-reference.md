@@ -732,7 +732,7 @@ Asks the decision model on this computer what a mail is, again, and returns its 
 
 Zugriff `read` · MCP-Tool `inbox_get_categorization`
 
-How the sorting of mail by a decision model stands: whether it is on, which AI account and model it uses, and per mail account how far the legacy backlog has come (`messages`, `done`, `state` `not_started`, `running`, `complete` or `cancelled`). `clear_job` contains the latest all-account category reset with its persistent progress and errors. Only accounts this key may read.
+How the sorting of mail by a decision model stands: whether it is on, which AI account and model it uses, and per mail account how far the backlog has come (`messages`, `done`, `state` `not_started`, `running`, `complete` or `cancelled`). Only accounts this key may read. `clear_job` holds the latest all-account category reset with its persistent progress and errors.
 
 Keine Felder.
 
@@ -751,43 +751,86 @@ Starts sorting the mail that has no category yet, or stops a run with `cancel: t
 
 Zugriff `read` · MCP-Tool `inbox_preview_category_job`
 
-Zählt lokal bekannte Mails im gewählten Umfang, ohne sie zu ändern. `scope.accounts` und `scope.folders` sind Listen von IDs; leere Listen bedeuten alle zugänglichen Konten beziehungsweise alle Ordner. `scope.since` ist einschließlich, `scope.before` ausschließlich (RFC 3339); ohne Datum gibt es keine Zeitgrenze. `scope.again` nimmt auch automatisch per Modell kategorisierte Mails in `eligible` auf. Die Antwort trennt `total`, `unclassified`, `automatic`, `protected` (manuell oder per Regel) und `eligible`. Diese Zahlen umfassen gelesene und ungelesene Mails; Seitenleisten-Badges zeigen nur ungelesene an.
+Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. |
+| `scope.accounts` | array<string> | nein, Standard `[]` |  |
+| `scope.again` | boolean | nein, Standard `false` | Also revisit categories supplied by a model. Person and rule categories stay protected. |
+| `scope.before` | string (date-time) | nein | Exclusive upper date bound. `None` includes the newest locally known mail. |
+| `scope.engine` | string | nein | Optional explicit decision model. Both fields must be supplied together; otherwise the current `inbox.categorize` assignment is used. |
+| `scope.folders` | array<string> | nein, Standard `[]` |  |
+| `scope.model` | string | nein |  |
+| `scope.since` | string (date-time) | nein | Inclusive lower date bound. `None` includes the oldest locally known mail. |
 
 ### `inbox.start_category_job`
 
 Zugriff `write` · MCP-Tool `inbox_start_category_job`
 
-Startet einen gespeicherten Auftrag mit demselben `scope` wie die Vorschau, ohne 30-Tage- oder 500er-Grenze. Optional wählen `scope.engine` und `scope.model` gemeinsam ein Entscheidungsmodell; sonst gilt die aktuelle Zuordnung für `inbox.categorize`. Die Mail-Cloud-Einstellung wird auch bei expliziter Modellwahl erzwungen. Die Antwort enthält `job.id`, festgehaltene Konto-Cursor, `eligible`, `processed`, `changed`, Fehler, Modellstandort und Zustand. Nur eine Sortierung läuft gleichzeitig. Neue Mails durchlaufen weiterhin die normale Eingangssortierung.
+Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `scope` | object | ja | The mail selected for a deliberate categorization run (issue #263). Empty account or folder lists mean every accessible account or every folder of the selected accounts, respectively. |
+| `scope.accounts` | array<string> | nein, Standard `[]` |  |
+| `scope.again` | boolean | nein, Standard `false` | Also revisit categories supplied by a model. Person and rule categories stay protected. |
+| `scope.before` | string (date-time) | nein | Exclusive upper date bound. `None` includes the newest locally known mail. |
+| `scope.engine` | string | nein | Optional explicit decision model. Both fields must be supplied together; otherwise the current `inbox.categorize` assignment is used. |
+| `scope.folders` | array<string> | nein, Standard `[]` |  |
+| `scope.model` | string | nein |  |
+| `scope.since` | string (date-time) | nein | Inclusive lower date bound. `None` includes the oldest locally known mail. |
 
 ### `inbox.get_category_job`
 
 Zugriff `read` · MCP-Tool `inbox_get_category_job`
 
-Liest mit optionaler `id` einen bestimmten, sonst den jüngsten Auftrag. Ein Lauf, dessen Dienst neu gestartet wurde, erscheint als `paused` und lässt sich fortsetzen.
+Reads the latest persistent mail categorization job or a job by ID, including scope, processed and changed counts, errors and running/paused/cancelled/complete state. A run whose service was restarted shows as `paused` and can be resumed.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | nein |  |
 
 ### `inbox.control_category_job`
 
 Zugriff `write` · MCP-Tool `inbox_control_category_job`
 
-Steuert den Auftrag `id` mit `action: pause | resume | cancel`. Fortsetzen behält Umfang und Cursor. Bereits gespeicherte Kategorien bleiben bestehen. Manuelle und regelbasierte Kategorien werden auch dann nicht überschrieben, wenn sie während einer Modellantwort geändert werden.
+Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `action` | `"pause"` \| `"resume"` \| `"cancel"` | ja | Control of a previously started job. Resume keeps the original scope and cursor. |
+| `id` | string | ja |  |
 
 ### `inbox.preview_clear_categories`
 
 Zugriff `read` · MCP-Tool `inbox_preview_clear_categories`
 
-Zählt sämtliche Kategoriezuordnungen pro zugänglichem E-Mail-Konto, über alle Ordner und gelesene wie ungelesene Nachrichten. Die Vorschau verändert keine Daten.
+Counts every category assignment in every accessible mail account and folder, including read mail, by account. No mail is changed. The count is per account, over all folders, for read and unread mail.
+
+Keine Felder.
 
 ### `inbox.clear_categories`
 
-Zugriff `delete` · MCP-Tool `inbox_clear_categories` · zentrale Freigabe für Agenten
+Zugriff `delete` · MCP-Tool `inbox_clear_categories`
 
-Erfordert `all_accounts: true` und `disable_automatic: boolean`. Ein gespeicherter Auftrag entfernt manuelle, regelbasierte und Modellkategorien sowie `needs_reply` und `urgency` der Modellantworten, in Batches aus allen zugänglichen Mailkonten. Post, Ordner, Anhänge, Index, Entwürfe und Sortierregeln bleiben. Laufende Sortieraufträge werden zuvor beendet; während des Entfernens werden eingehende automatische Kategorisierungen ausgesetzt. `inbox.get_categorization.clear_job` zeigt Kennung, Zustand, Konto-Zähler und Fehler. Ist `disable_automatic` falsch, können neue E-Mails danach wieder Kategorien erhalten.
+Starts one resumable job to remove all manual, rule and model category assignments and model answers in every accessible mail account. Requires all_accounts: true and the person's approval. Mail, folders and sorting rules remain. The caller may also switch off automatic categorization; if left on, future mail can gain categories again. Also removes `needs_reply` and `urgency` of the model answers, in batches. Posts, folders, attachments, index, drafts and sorting rules stay. Running sorting jobs are ended first, and incoming automatic categorization is suspended while the reset runs. `inbox.get_categorization.clear_job` shows id, state, account counters and errors.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `all_accounts` | boolean | ja |  |
+| `disable_automatic` | boolean | ja |  |
 
 ### `inbox.control_clear_categories`
 
-Zugriff `delete` · MCP-Tool `inbox_control_clear_categories` · zentrale Freigabe für Agenten
+Zugriff `delete` · MCP-Tool `inbox_control_clear_categories`
 
-Steuert den Auftrag `id` mit `action: pause | resume | cancel`. Fortsetzen nutzt auch nach einem Abbruch den gespeicherten Cursor. Bereits entfernte Kategorien bleiben entfernt.
+Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored account cursors. Requires the person's approval. Resume uses the stored cursor even after a cancel. Categories already removed stay removed.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `action` | `"pause"` \| `"resume"` \| `"cancel"` | ja | Control of a previously started job. Resume keeps the original scope and cursor. |
+| `id` | string | ja |  |
 
 ### `inbox.create_category`
 
@@ -981,49 +1024,79 @@ Lists the folders of the mail accounts this key may see, or of one `account` (`m
 
 Zugriff `read` · MCP-Tool `mail_account_stats`
 
-Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. These are local counts, not verified server totals. Changes nothing.
+Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. These are local counts, not verified server totals. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `account` | string | nein | Only this account; omitted for every mail account in reach. |
 
-The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states, and per-account attachment bytes. All totals refer to locally known mail; they are not a server inventory. Deleted reading texts may remain in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop.
-
 ### `mail.get_cache_policy`
 
 Zugriff `read` · MCP-Tool `mail_get_cache_policy`
 
-Reads the current policy for one `account`. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.
+Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
 
 ### `mail.preview_cache`
 
 Zugriff `read` · MCP-Tool `mail_preview_cache`
 
-Fields: `account` and proposed `mode`. Returns current body count, bodies to fetch/remove, and estimated download/reclaim bytes. The estimate uses the average locally kept text size because IMAP sizes are not persisted. It changes nothing.
+Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything. Returns the current body count, the bodies to fetch or remove and the estimated download and reclaim bytes. The average locally kept text size is used because IMAP sizes are not stored.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
 
 ### `mail.set_cache_policy`
 
 Zugriff `admin` · MCP-Tool `mail_set_cache_policy`
 
-Field: `policy` as returned by `mail.get_cache_policy`, with changed mode, attachment prefetch, or retention. This persists per account. Automatic sync and indexing use the new choice; use `mail.start_cache_job` to apply it to previously synchronized mail immediately. Draft texts and search text remain.
+Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `policy` | object | ja | Per-account local storage choice, persisted with the mail store. |
+| `policy.account` | string | ja |  |
+| `policy.attachment_retention_days` | integer | nein, Standard `1` | Attachment files are removed after this many days; 1 by default. |
+| `policy.mode` | `"headers_only"` \| `"recent90_days"` \| `"all_offline"` | ja | How many message bodies an account keeps for offline reading. Search text is independent. |
+| `policy.prefetch_attachments` | boolean | nein, Standard `false` | Fetch attachment parts in advance, separately from message texts. |
 
 ### `mail.start_cache_job`
 
 Zugriff `write` · MCP-Tool `mail_start_cache_job`
 
-Fields: `account` and `action`: `apply_policy`, `fetch_missing_bodies`, `fetch_attachments`, `rebuild_index`, or `clean_cache`. Returns a durable job with `id`, `state`, `processed`, `total`, estimated bytes and any error. `apply_policy` first removes reading texts outside the selected retention, then fetches missing in-scope texts. The worker uses bounded steps and `BODY.PEEK[]`, so it does not mark mail read. `clean_cache` removes only local reading texts outside the policy; search index, drafts, send journal and server mail stay.
+Starts a resumable cache or index maintenance job for one account. A job has progress and never deletes server mail or drafts. `action` is `apply_policy` (first removes reading texts outside the retention, then fetches missing in-scope texts), `fetch_missing_bodies`, `fetch_attachments`, `rebuild_index` or `clean_cache` (removes only local reading texts outside the policy; search index, drafts, send journal and server mail stay). Returns a durable job with `id`, `state`, `processed`, `total`, estimated bytes and any error. It works in bounded steps with `BODY.PEEK[]`, so it does not mark mail read.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `action` | `"apply_policy"` \| `"fetch_missing_bodies"` \| `"fetch_attachments"` \| `"rebuild_index"` \| `"clean_cache"` | ja |  |
 
 ### `mail.cache_job_status`
 
 Zugriff `read` · MCP-Tool `mail_cache_job_status`
 
-Field: `account`. Returns the latest job or `null`. A job left running by a daemon restart is marked paused and can resume.
+Reads the durable cache maintenance job of one account with progress and error. Returns the latest job or `null`; a job left running by a daemon restart is marked paused and can resume.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
 
 ### `mail.control_cache_job`
 
 Zugriff `write` · MCP-Tool `mail_control_cache_job`
 
-Fields: `account`, the job `id`, and `resume` (`true` to continue, `false` to pause). A failed job can be resumed after the server is available.
+Pauses or resumes a cache maintenance job by id. `resume: true` continues the job and `false` pauses it; a failed job can be resumed once the server is available.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `account` | string | ja |  |
+| `id` | string | ja |  |
+| `resume` | boolean | ja |  |
 
 ### `mail.search_messages`
 
