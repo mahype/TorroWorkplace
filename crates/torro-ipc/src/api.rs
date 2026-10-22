@@ -3407,7 +3407,7 @@ static SET_CACHE_POLICY: Command = Command {
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.",
+    description: "Sets an account's offline body and attachment retention policy after a mail.preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.",
 };
 static PREVIEW_CACHE: Command = Command {
     name: "mail.preview_cache",
