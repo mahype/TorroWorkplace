@@ -395,6 +395,8 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
 
 ### K.26 Teilnehmer und Status von Terminen – und nichts mehr verlieren beim Speichern
 - [ ] erledigt
+- **Aufgegangen in Issue #278** ([termin-editor.md](termin-editor.md)): Modell und iCalendar in TE.1/TE.2,
+  Anzeige in TE.9. Wird mit TE.9 abgehakt.
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Dateien:** `crates/torro-pim/src/model.rs`,
   `crates/torro-pim/src/demo.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`, Anzeige in
   `crates/torrocalendar/src/views/{agenda,radar}.rs` und im Termin-Paneel (nennen)
