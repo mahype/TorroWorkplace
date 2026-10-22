@@ -8,3 +8,4 @@ __pycache__/
 .claude/settings.local.json
 .worktrees/
 scripts/worktree.local.env
+.tbd/

@@ -23,5 +23,17 @@
         ]
       }
     ]
+  },
+  "extraKnownMarketplaces": {
+    "enon-ai-tooling": {
+      "source": {
+        "source": "github",
+        "repo": "Immoticket24/enon-ai-tooling"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "enon-tools@enon-ai-tooling": true
   }
 }
