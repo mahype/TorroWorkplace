@@ -1116,7 +1116,15 @@ fn edit_series(
             target.repeat = repeat.map(Box::new);
         }
     }
-    // Which dates the series has afterwards, to tell which keys stay.
+    // Which dates the series has afterwards, to tell which keys stay: counted at least up to the
+    // latest changed occurrence or excluded date, also in a series older than the years counted (the
+    // second review of PR #294).
+    let latest = object
+        .exception_keys()
+        .into_iter()
+        .chain(main.excluded.iter().copied())
+        .max_by_key(|time| instant(*time))
+        .map(|time| shifted(time, shift, zone));
     let new_dates = match rule {
         Rule::Keep if shift.is_zero() => None,
         Rule::Remove => Some(Dates { list: vec![target.start], known_until: None }),
@@ -1126,7 +1134,7 @@ fn edit_series(
                 _ => main.rule.clone(),
             };
             let extra = main.extra.iter().map(|time| shifted(*time, shift, zone)).collect();
-            Main { event: target.clone(), rule, zone, excluded: Vec::new(), extra }.occurrences()
+            Main { event: target.clone(), rule, zone, excluded: Vec::new(), extra }.occurrences_through(latest)
         }
     };
     let stays = |old: EventTime| {
@@ -1245,7 +1253,12 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
     let shift = shift_between(reference.start, event.start, zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
     let resized = length(reference.start, reference.end) != length(event.start, event.end);
     let from = |time: EventTime| !following || instant(time) >= instant(key);
-    if rule == Rule::Keep && shift.is_zero() && !resized {
+    // Another zone moves the dates the server counts (a summer date by an hour, the last one past an
+    // `UNTIL`) without a shift on the old clock; what that drops is not counted here, so it counts as
+    // dropping (fail closed, the second review of PR #294). `carry` writes the zone on the same
+    // condition.
+    let rezoned = event.time_zone != reference.time_zone;
+    if rule == Rule::Keep && shift.is_zero() && !resized && !rezoned {
         return Ok(Lost::default());
     }
 
@@ -1267,7 +1280,14 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
         }
     };
     let new_event = Event { start, ..main.event.clone() };
-    let new = Main { event: new_event, rule: new_rule, zone, excluded: Vec::new(), extra }.occurrences();
+    let latest = found
+        .object
+        .exception_keys()
+        .into_iter()
+        .filter(|other| from(*other))
+        .max_by_key(|time| instant(*time))
+        .map(|time| shifted(time, shift, zone));
+    let new = Main { event: new_event, rule: new_rule, zone, excluded: Vec::new(), extra }.occurrences_through(latest);
 
     let changed: Vec<EventTime> =
         found.object.exception_keys().into_iter().filter(|other| from(*other) && *other != key).collect();
@@ -1330,7 +1350,7 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
         }
     }
     let mut dropped = gone.len() as u32;
-    if rule == Rule::Remove || cut_short {
+    if rule == Rule::Remove || cut_short || rezoned {
         dropped = dropped.max(1);
     }
     Ok(Lost { dropped, reset: reset.len() as u32 })
@@ -1771,6 +1791,41 @@ mod tests {
         let outcome = save(&old, &tuesday, SeriesScope::Following, &writing()).expect("split");
         let (new, _) = split(&outcome);
         assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261013T080000"), "{new}");
+    }
+
+    #[test]
+    fn another_zone_for_the_series_counts_as_dropping() {
+        // The second review of PR #294: Lagos has Berlin's winter offset; the summer events move.
+        let series = plain_series("FREQ=WEEKLY;BYDAY=TU;UNTIL=20270629T060000Z", "20270105");
+        let key = berlin(2027, 1, 12, 8);
+        let stored = occurrence(&series, key);
+        let lagos = Event { time_zone: Some("Africa/Lagos".into()), ..stored.clone() };
+        assert_eq!(drops(&series, &lagos, SeriesScope::Series), 1);
+        assert_eq!(drops(&series, &lagos, SeriesScope::Following), 1);
+        assert_eq!(drops(&series, &lagos, SeriesScope::Occurrence), 0, "one event alone drops nothing");
+        assert_eq!(drops(&series, &stored, SeriesScope::Series), 0, "the same zone drops nothing");
+    }
+
+    #[test]
+    fn a_new_rule_for_all_resets_changed_events_beyond_the_counted_years() {
+        // The second review of PR #294: Tuesdays since 2014 with a changed event on 20 Oct 2026; on
+        // Wednesdays that key is no event any more.
+        let old = old_series("FREQ=WEEKLY;BYDAY=TU");
+        let changed = "BEGIN:VEVENT\nUID:b81d3e5f-2a4c-4d6e-8f0a-1c3e5a7b9d26\nDTSTAMP:20261013T060000Z\n\
+                       RECURRENCE-ID;TZID=Europe/Berlin:20261020T080000\nDTSTART;TZID=Europe/Berlin:20261020T090000\n\
+                       DTEND;TZID=Europe/Berlin:20261020T093000\nSUMMARY:Run (late)\nEND:VEVENT\nBEGIN:VTIMEZONE";
+        let old = old.replacen("BEGIN:VTIMEZONE", changed, 1);
+        let key = berlin(2026, 10, 13, 8);
+        let stored = occurrence(&old, key);
+        let mut wednesdays = stored.repeat.as_deref().cloned().expect("rule");
+        wednesdays.weekdays =
+            vec![torro_pim::model::RepeatDay { day: torro_pim::model::Weekday::Wednesday, nth: None }];
+        wednesdays.rule = String::new();
+        let event = Event { repeat: Some(Box::new(wednesdays)), ..stored };
+        assert_eq!(resets(&old, &event, SeriesScope::Series), 1);
+        let outcome = save(&old, &event, SeriesScope::Series, &writing()).expect("saved");
+        assert_eq!(outcome.reset, 1);
+        assert_eq!(count(replaced_ics(&outcome), "RECURRENCE-ID"), 0, "{}", replaced_ics(&outcome));
     }
 
     #[test]
