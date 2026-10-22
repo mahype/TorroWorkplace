@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lists in three designs</title>
+<!-- Entwurf L.32 (Issue #291): Aufgabenliste (torrotasks) und Agenda des Kalenders in den drei Designs
+     Standard, Compact und Console nebeneinander, dunkel und hell.
+     Regel: Ein Design bestimmt nur Maße und *wie* Listen gezeichnet werden, nie *wo* etwas steht. Darum
+     erzeugt ein Skript für alle drei dasselbe Markup aus denselben Daten; nur die Werte je Design
+     (CSS-Variablen an .d.standard / .d.compact / .d.console) und die Listenart unterscheiden sich.
+     Werte aus der Tabelle in docs/tasks/design-pakete.md (Abschnitt „Drei Designs“); was dort fehlt, ist
+     abgeleitet und in der Tabelle „Values“ auf der Seite begründet. Aufbau der Zeilen nach dem Code:
+     torrotasks::list::row_view / group_head, torro_gui::widgets::list_row, torrocalendar views/agenda.rs
+     (day_view, row_view, chip_view, free_view, now_view, gap_view). Farben: Schema „Torro“ (gehören nie
+     zu einem Design). Öffnet ohne Server; Inter aus crates/torro-gui/assets/fonts, sonst Google Fonts. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+@font-face{font-family:InterLocal;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf)}
+@font-face{font-family:InterLocal;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf)}
+@font-face{font-family:InterLocal;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf)}
+@font-face{font-family:"Inter Tabular";font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Regular.ttf)}
+@font-face{font-family:"Inter Tabular";font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Medium.ttf)}
+
+/* Farbschema „Torro“ (wie docs/prototypes/linear/torro.css), je Modus an einer Klasse statt an :root,
+   damit dunkel und hell auf einer Seite stehen. */
+.mode-dark{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --accent:#D50C0C; --on-accent:#FFFFFF; --on-accent-dim:rgba(255,255,255,.45); --attention:#E8A33D;
+  --c-work:#5B8CFF; --c-personal:#3FB984; --c-family:#E8A33D; --c-birthday:#D96CA8; --c-groceries:#A78BFA;
+  --tint:18%;
+  color-scheme:dark;
+}
+.mode-light{
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --accent:#D50C0C; --on-accent:#FFFFFF; --on-accent-dim:rgba(255,255,255,.5); --attention:#9A5B0B;
+  --c-work:#3B6EF0; --c-personal:#1F9D68; --c-family:#B06F12; --c-birthday:#C2508F; --c-groceries:#7C5CE6;
+  --tint:14%;
+  color-scheme:light;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:#08090A;font:400 13px/20px InterLocal,Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+svg.i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+svg.s14{width:14px;height:14px}
+svg.s12{width:12px;height:12px}
+
+/* Seite um die Entwürfe (keine App-Oberfläche) */
+.mode{background:var(--bg);color:var(--text);padding:32px 32px 48px}
+.page-head{max-width:1100px}
+h1{font-size:22px;line-height:28px;font-weight:600;margin:0 0 8px;letter-spacing:-.01em}
+h2{font-size:16px;line-height:22px;font-weight:600;margin:0 0 16px}
+h3{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:24px 0 12px}
+.lead{color:var(--text2);max-width:80ch;margin:0 0 16px}
+.notes{color:var(--text2);max-width:90ch;margin:0;padding-left:20px}
+.notes li{margin:4px 0}
+.notes b{color:var(--text);font-weight:500}
+code{font:12px/16px "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+table.values{border-collapse:collapse;margin:8px 0 24px;font-size:12px;line-height:16px;max-width:1200px}
+table.values th,table.values td{text-align:left;padding:6px 12px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.values th{color:var(--text3);font-weight:500}
+table.values td.num{font-family:"Inter Tabular",InterLocal,Inter,sans-serif;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--text)}
+table.values td.why{color:var(--text3);max-width:52ch}
+table.values td.key{color:var(--text);white-space:nowrap}
+.board{display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+.cap{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;font-size:12px;line-height:16px;color:var(--text3)}
+.cap b{font-size:13px;line-height:20px;font-weight:600;color:var(--text)}
+
+/* ---------------------------------------------------------------------------------------------
+   Die drei Designs: nur Werte. Schlüssel aus der Tabelle der Aufgabe, abgeleitete mit Kommentar.
+   --------------------------------------------------------------------------------------------- */
+.d{width:var(--w);flex:none;font-family:var(--font);font-size:var(--body);line-height:var(--body-lh);color:var(--text)}
+.d.standard{
+  --font:InterLocal,Inter,system-ui,sans-serif; --tab:"Inter Tabular",InterLocal,Inter,sans-serif;
+  --body:14px; --body-lh:22px; --strong:500; --meta:13px; --meta-lh:18px; --cap:12px; --cap-lh:16px;
+  --hl:28px; --hl-lh:36px; --hl-w:600; --micro:11px; --micro-lh:14px;
+  --w:440px; --header:64px; --ctrl:36px; --px:24px; --r:4px;
+  --row:48px;      /* abgeleitet: eine Stufe über Compact (40), wie row_sidebar/header wachsen */
+  --group:40px;    /* abgeleitet: >= control_sm 36, damit „+“ passt */
+  --g1:12px; --g2:8px; --pill:22px; --due:48px; --chev:12px;
+  --side:24px; --date:64px; --today:40px; --time:56px; --ev:52px; --free:32px; --dhead:28px;
+  --dpad:12px; --gaprow:40px; --wtop:24px; --egap:12px; --evpad:4px;
+}
+.d.compact{
+  --font:InterLocal,Inter,system-ui,sans-serif; --tab:"Inter Tabular",InterLocal,Inter,sans-serif;
+  --body:13px; --body-lh:20px; --strong:500; --meta:12px; --meta-lh:16px; --cap:11px; --cap-lh:16px;
+  --hl:22px; --hl-lh:28px; --hl-w:600; --micro:11px; --micro-lh:14px;
+  --w:400px; --header:48px; --ctrl:30px; --px:16px; --r:4px;
+  --row:40px; --group:32px;   /* = heute */
+  --g1:12px; --g2:8px; --pill:20px; --due:44px; --chev:12px;
+  --side:16px; --date:56px; --today:32px; --time:52px; --ev:44px; --free:28px; --dhead:24px;
+  --dpad:12px; --gaprow:36px; --wtop:24px; --egap:12px; --evpad:4px;
+}
+.d.console{
+  --font:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; --tab:var(--font);
+  --body:12px; --body-lh:18px; --strong:700; --meta:11px; --meta-lh:16px; --cap:11px; --cap-lh:16px;
+  --hl:12px; --hl-lh:18px; --hl-w:700; --micro:11px; --micro-lh:16px;
+  --w:600px; --header:32px; --ctrl:24px; --px:8px; --r:0px;
+  --row:24px; --group:24px;   /* eine Zeile */
+  --g1:8px; --g2:4px; --pill:20px; --due:44px; --chev:8px;
+  --side:8px; --date:56px; --today:22px; --time:88px; --ev:24px; --free:24px; --dhead:24px;
+  --dpad:6px; --gaprow:24px; --wtop:12px; --egap:8px; --evpad:3px;
+}
+.d .tabn{font-family:var(--tab);font-variant-numeric:tabular-nums}
+
+/* Inhaltsfläche: inset 0 in allen drei Designs, also bündig ohne Radius. */
+.surface{background:var(--panel);border:1px solid var(--line);overflow:hidden}
+
+/* Kopfleiste (size.header, Knöpfe size.control_sm) */
+.hdr{height:var(--header);display:flex;align-items:center;gap:8px;padding:0 var(--px);border-bottom:1px solid var(--line);white-space:nowrap}
+.hdr > .i{color:var(--text3)}
+.hdr b{font-weight:var(--strong)}
+.hdr .faint{color:var(--text3);font-size:var(--meta);line-height:var(--meta-lh)}
+.hdr .grow{flex:1}
+.btn{height:var(--ctrl);display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:var(--r);border:1px solid transparent;
+  background:none;color:var(--text2);font:500 var(--cap)/1 var(--font)}
+.btn.primary{background:var(--accent);color:var(--on-accent)}
+
+/* ---------------- Aufgabenliste ---------------- */
+.ghead{display:flex;align-items:center;height:var(--group);background:var(--raised);
+  padding-right:calc(var(--px) - (var(--ctrl) - 14px) / 2);white-space:nowrap}
+.ghead .chev{width:var(--px);flex:none;display:grid;place-items:center;color:var(--text3)}
+.ghead .chev svg{width:var(--chev);height:var(--chev)}
+.ghead .gicon{width:16px;flex:none;display:grid;place-items:center;color:var(--text3)}
+.ghead .gicon.attention{color:var(--attention)}
+.ghead .label{margin-left:12px;font-size:var(--cap);line-height:var(--cap-lh);font-weight:500;color:var(--text2)}
+.ghead .n{margin-left:8px;font-size:var(--meta);line-height:var(--meta-lh);color:var(--text3)}
+.ghead .grow{flex:1}
+.ghead .add{width:var(--ctrl);height:var(--ctrl);display:grid;place-items:center;color:var(--text3);border-radius:var(--r)}
+
+.row{display:flex;align-items:center;height:var(--row);padding:0 var(--px);border-bottom:1px solid var(--line);white-space:nowrap}
+.check{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--text3);flex:none;margin-right:var(--g1);display:grid;place-items:center}
+.check.done{border:0;background:var(--c);color:#fff}
+.check.done svg{width:11px;height:11px;stroke-width:3}
+.prio{width:14px;height:12px;flex:none;margin-right:var(--g2);display:inline-flex;align-items:flex-end;gap:2px}
+.prio i{display:block;width:3px;border-radius:1px;background:var(--line-strong)}
+.prio i:nth-child(1){height:5px}.prio i:nth-child(2){height:8px}.prio i:nth-child(3){height:12px}
+.prio.p1 i:nth-child(-n+1),.prio.p2 i:nth-child(-n+2),.prio.p3 i{background:var(--text2)}
+.prio.none i{visibility:hidden}
+.urgent{width:14px;height:14px;flex:none;margin-right:var(--g2);border-radius:var(--r);background:var(--attention);color:var(--panel);
+  display:grid;place-items:center;font:700 10px/1 var(--font)}
+.row .title{flex:1;min-width:0;display:flex;align-items:center;gap:12px}
+.row .title .t{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:var(--strong)}
+.row.done .title .t{color:var(--text3);text-decoration:line-through}
+.hints{display:flex;align-items:center;gap:8px;flex:none;color:var(--text3);font-size:var(--meta);line-height:var(--meta-lh)}
+.hints span{display:inline-flex;align-items:center;gap:4px}
+.right{display:flex;align-items:center;gap:var(--g2);margin-left:var(--g1);flex:none}
+.pill{height:var(--pill);display:inline-flex;align-items:center;gap:6px;padding:0 6px;border-radius:calc(var(--pill) / 2);
+  border:1px solid var(--line-strong);color:var(--text2);font-size:var(--meta);line-height:var(--meta-lh)}
+.pill .dot{width:6px;height:6px;border-radius:50%;background:var(--c);flex:none}
+.due{min-width:var(--due);text-align:right;font-size:var(--meta);line-height:var(--meta-lh);color:var(--text3)}
+.due.late{color:var(--attention)}
+
+/* ---------------- Agenda ---------------- */
+.agenda{padding:8px var(--side) 24px}
+.week{display:flex;align-items:center;gap:12px;margin:var(--wtop) 0 0;padding-bottom:4px;font-size:var(--cap);line-height:var(--cap-lh);font-weight:500;color:var(--text3);white-space:nowrap}
+.week::after{content:"";flex:1;height:1px;background:var(--line)}
+.week.first{margin-top:0}
+.day{display:grid;grid-template-columns:var(--date) minmax(0,1fr);padding:var(--dpad) 0}
+.day.line,.gap.line{border-bottom:1px solid var(--line)}
+.date{display:flex;flex-direction:column;align-items:center;gap:2px;padding-top:2px}
+.date small{font-size:var(--cap);line-height:var(--cap-lh);font-weight:500;color:var(--text3)}
+.date b{font-family:var(--tab);font-variant-numeric:tabular-nums;font-size:var(--hl);font-weight:var(--hl-w);
+  width:var(--today);height:var(--today);line-height:var(--today);border-radius:50%;text-align:center;color:var(--text)}
+.day.weekend .date b{color:var(--text2)}
+.day.today .date small{color:var(--text)}
+.day.today .date b{background:var(--accent);color:var(--on-accent)}
+/* Inter Tabular gibt es nur in 400/500; die Tageszahl (600) nimmt Inter mit tnum statt einer künstlichen Fettung. */
+.d:not(.console) .date b{font-family:var(--font)}
+.events{display:flex;flex-direction:column;min-width:0}
+.dayhead{display:flex;align-items:center;height:var(--dhead);padding:0 8px;margin-bottom:4px;white-space:nowrap}
+.dayhead b{font-size:var(--cap);line-height:var(--cap-lh);font-weight:500;color:var(--text2)}
+.dayhead .grow{flex:1}
+.dayhead span{font-size:var(--meta);line-height:var(--meta-lh);color:var(--text3)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding-left:8px;margin-bottom:4px}
+.chip{height:var(--dhead);display:inline-flex;align-items:center;gap:4px;padding:0 8px 0 11px;border-radius:var(--r);white-space:nowrap;
+  font-size:var(--cap);line-height:var(--cap-lh);font-weight:500;color:var(--text);
+  background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c)}
+.ev{display:flex;gap:var(--egap);height:var(--ev);padding:var(--evpad) 8px;border-radius:var(--r);white-space:nowrap}
+.ev.past{opacity:.55}
+.ev.now{background:color-mix(in srgb,var(--c) var(--tint),var(--panel))}
+.ev .tm{width:var(--time);flex:none;display:flex;flex-direction:column;justify-content:center;font-family:var(--tab);font-variant-numeric:tabular-nums}
+.ev .tm b{font-weight:var(--strong)}
+.ev .tm small{font-size:var(--meta);line-height:var(--meta-lh);color:var(--text3)}
+.ev .bar{width:3px;flex:none;border-radius:calc(min(var(--r),1.5px));background:var(--c)}
+.ev .what{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center}
+.ev .what b{font-weight:var(--strong);overflow:hidden;text-overflow:ellipsis}
+.ev .place{display:flex;align-items:center;gap:4px;min-width:0;font-size:var(--meta);line-height:var(--meta-lh);color:var(--text2)}
+.ev .place svg{color:var(--text3)}
+.ev .place span{overflow:hidden;text-overflow:ellipsis}
+.ev .left{align-self:center;flex:none}
+.free{display:flex;align-items:center;gap:var(--egap);height:var(--free);padding:0 8px}
+.free .sp{width:var(--time);flex:none}
+.free .note{flex:1;display:flex;align-items:center;gap:8px;font-size:var(--meta);line-height:var(--meta-lh);color:var(--text3);white-space:nowrap}
+.free .note::after{content:"";flex:1;height:1px;background:repeating-linear-gradient(to right,var(--line-strong) 0 3px,transparent 3px 6px)}
+.nowline{display:flex;align-items:center;gap:4px;padding:0 8px}
+.nowline span{font:500 var(--micro)/var(--micro-lh) var(--tab);font-variant-numeric:tabular-nums;color:var(--on-accent);background:var(--accent);
+  border-radius:var(--r);padding:0 4px}
+.nowline::after{content:"";flex:1;height:1px;background:var(--accent)}
+.gap{display:grid;grid-template-columns:var(--date) minmax(0,1fr);align-items:center;height:var(--gaprow)}
+.gap b{font-family:var(--tab);font-variant-numeric:tabular-nums;font-size:var(--cap);font-weight:500;text-align:center;color:var(--text3)}
+.gap span{padding-left:8px;font-size:var(--meta);line-height:var(--meta-lh);color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* ---------------- Auswahl ---------------- */
+/* Standard und Compact ([list] selection = bar): Fläche `selected`, Strich 2 px links in `accent`. */
+.d:not(.console) .row.sel,.d:not(.console) .ev.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--accent)}
+/* Console (selection = fill): ganze Zeile in `accent`, Text und Symbole in `on_accent`. */
+.d.console .row.sel,.d.console .ev.sel{background:var(--accent);color:var(--on-accent)}
+.d.console .sel .t,.d.console .sel .hints,.d.console .sel .pill,.d.console .sel .due,
+.d.console .sel .tm small,.d.console .sel .place,.d.console .sel .place svg{color:var(--on-accent)}
+.d.console .sel .check{border-color:var(--on-accent)}
+.d.console .sel .prio i{background:var(--on-accent-dim)}
+.d.console .sel .prio.p1 i:nth-child(-n+1),.d.console .sel .prio.p2 i:nth-child(-n+2),.d.console .sel .prio.p3 i{background:var(--on-accent)}
+.d.console .sel .pill{border-color:var(--on-accent-dim)}
+.d.console .sel .pill .dot,.d.console .sel .bar{background:var(--on-accent)}
+
+/* ---------------- Console: Listenart „line“ ----------------
+   separators = false: keine Linien zwischen Zeilen und Tagen. Alles in einer Zeile: Beginn und Dauer
+   nebeneinander, Ort hinter dem Titel, Wochentag neben der Tageszahl. Reihenfolge bleibt. */
+.d.console .row{border-bottom:0}
+.d.console .day.line,.d.console .gap.line{border-bottom:0}
+.d.console .date{flex-direction:row;align-items:center;justify-content:center;gap:6px;height:var(--dhead);padding-top:0}
+.d.console .dayhead,.d.console .chips{margin-bottom:0}
+.d.console .ev .tm{flex-direction:row;align-items:center;justify-content:flex-start;gap:1ch}
+.d.console .ev .tm small{font-size:var(--body);line-height:var(--body-lh)}
+.d.console .ev .what{flex-direction:row;align-items:center;justify-content:flex-start;gap:1ch}
+.d.console .ev .what b{flex:0 1 auto}
+.d.console .ev .place{flex:0 1 auto}
+.d.console .ev .place::before{content:"·";color:inherit;margin-right:4px}
+</style></head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
+  <symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol>
+  <symbol id="i-calendar-clock" viewBox="0 0 24 24"><path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h5"/><path d="M17.5 17.5 16 16.3V14"/><circle cx="16" cy="16" r="6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+  <symbol id="i-map-pin" viewBox="0 0 24 24"><path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/></symbol>
+  <symbol id="i-list-checks" viewBox="0 0 24 24"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></symbol>
+  <symbol id="i-align-left" viewBox="0 0 24 24"><path d="M15 12H3"/><path d="M17 18H3"/><path d="M21 6H3"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></symbol>
+</svg>
+
+<section class="mode mode-dark">
+  <div class="page-head">
+    <h1>Lists in three designs</h1>
+    <p class="lead">Draft for L.32 (#291): the task list and the calendar agenda drawn with Standard, Compact and Console, dark
+      and light. One script builds the same rows from the same data for all three; a design only changes sizes and how the
+      list is drawn, never where something stands. Colours are the Torro scheme in every design.</p>
+    <ul class="notes">
+      <li><b>Standard and Compact</b> draw rows with hairlines between them; the selected row is <code>selected</code> with a
+        2 px bar in <code>accent</code> at the left.</li>
+      <li><b>Console</b> draws every entry on one line, without lines; the selected row is filled with <code>accent</code>,
+        its text and symbols in <code>on_accent</code>.</li>
+      <li>No column headings, no capitals. Every row has the same cells in the same order in all three designs.</li>
+    </ul>
+    <h3>Values</h3>
+    <table class="values">
+      <thead><tr><th>Value</th><th>Standard</th><th>Compact</th><th>Console</th><th>Where it comes from</th></tr></thead>
+      <tbody>
+        <tr><td class="key">Font</td><td class="num">Inter</td><td class="num">Inter</td><td class="num">JetBrains Mono</td><td class="why">Table (<code>[about] font</code>)</td></tr>
+        <tr><td class="key">body · body_strong</td><td class="num">14/22 · 500</td><td class="num">13/20 · 500</td><td class="num">12/18 · bold</td><td class="why">Table</td></tr>
+        <tr><td class="key">meta · caption</td><td class="num">13/18 · 12/16</td><td class="num">12/16 · 11/16</td><td class="num">11/16 · 11/16</td><td class="why">Table</td></tr>
+        <tr><td class="key">headline (day number)</td><td class="num">28/36</td><td class="num">22/28</td><td class="num">12/18 bold</td><td class="why">Table</td></tr>
+        <tr><td class="key">header · control_sm</td><td class="num">64 · 36</td><td class="num">48 · 30</td><td class="num">32 · 24</td><td class="why">Table</td></tr>
+        <tr><td class="key">row_padding (sides)</td><td class="num">24</td><td class="num">16</td><td class="num">8</td><td class="why">Table</td></tr>
+        <tr><td class="key">radius</td><td class="num">4</td><td class="num">4</td><td class="num">0</td><td class="why">Table. Round shapes (check, today, pill, dot) stay round in every design.</td></tr>
+        <tr><td class="key">separators · selection</td><td class="num">lines · bar</td><td class="num">lines · bar</td><td class="num">none · fill</td><td class="why">Table (<code>[list]</code>)</td></tr>
+        <tr><td class="key">Width shown</td><td class="num">440</td><td class="num">400</td><td class="num">600</td><td class="why">Table (<code>size.list</code>). The agenda is shown at the same width for comparison; in the app it is up to 720 wide.</td></tr>
+        <tr><td class="key">Task row</td><td class="num">48</td><td class="num">40</td><td class="num">24</td><td class="why">Derived. Compact keeps today's 40. Standard is one step up (+8), as header and row_sidebar grow from Compact to Standard. Console is one line, like row_message, row_notice and row_sidebar there.</td></tr>
+        <tr><td class="key">Group head</td><td class="num">40</td><td class="num">32</td><td class="num">24</td><td class="why">Derived. At least control_sm, so the "+" fits. Compact keeps today's 32. Console is one line.</td></tr>
+        <tr><td class="key">Gaps in a row (after check · between cells)</td><td class="num">12 · 8</td><td class="num">12 · 8</td><td class="num">8 · 4</td><td class="why">Derived. Standard and Compact keep today's space::m / space::s (the space scale is not in the table). Console takes item_gap 4 so a 600-wide line holds more.</td></tr>
+        <tr><td class="key">Chevron in group head</td><td class="num">12</td><td class="num">12</td><td class="num">8</td><td class="why">Derived. The chevron sits in the side padding, so in Console it is 8, which keeps the group icon on the axis of the checks.</td></tr>
+        <tr><td class="key">Pill</td><td class="num">22</td><td class="num">20</td><td class="num">20</td><td class="why">Derived: meta line height + 4, as today (16 + 4).</td></tr>
+        <tr><td class="key">Due column (min width)</td><td class="num">48</td><td class="num">44</td><td class="num">44</td><td class="why">Derived: wide enough for "Oct 30". Today's code uses <code>size::header()</code> for it (44), which would become 64 / 32.</td></tr>
+        <tr><td class="key">Agenda side padding</td><td class="num">24</td><td class="num">16</td><td class="num">8</td><td class="why">Derived: follows row_padding (today a fixed 24).</td></tr>
+        <tr><td class="key">Date column · today circle</td><td class="num">64 · 40</td><td class="num">56 · 32</td><td class="num">56 · 22</td><td class="why">Derived. Circle = headline line height + 4 (Compact 28 + 4 = today's 32); column = circle + 24. Console: weekday and day on one line.</td></tr>
+        <tr><td class="key">Time column</td><td class="num">56</td><td class="num">52</td><td class="num">88</td><td class="why">Derived. Compact keeps today's axis of 52; Standard +4 for 14 px digits. Console fits "14:30 1 h 30" (12 characters) on one line.</td></tr>
+        <tr><td class="key">Event row</td><td class="num">52</td><td class="num">44</td><td class="num">24</td><td class="why">Derived: task row + 4, as today; Console one line.</td></tr>
+        <tr><td class="key">Day head · all-day chip · free time · empty days</td><td class="num">28 · 28 · 32 · 40</td><td class="num">24 · 24 · 28 · 36</td><td class="num">24 · 24 · 24 · 24</td><td class="why">Derived. Compact keeps today's values; Standard +4 for the larger type; Console one line.</td></tr>
+        <tr><td class="key">Between days</td><td class="num">line, 12</td><td class="num">line, 12</td><td class="num">no line, 6</td><td class="why">Derived from separators. Week heads keep their line in every design: they are a label, not a row separator.</td></tr>
+      </tbody>
+    </table>
+    <h3>To confirm</h3>
+    <ul class="notes">
+      <li>Console, selected row: the list dot and the calendar bar also turn <code>on_accent</code>, following "text and
+        symbols in on_accent". The list name stays readable.</li>
+      <li>Round shapes stay round in Console; only radius xs–lg drop to 0 (buttons, chips, the now label, event rows).</li>
+      <li>Console chevron in group heads is 8 so the group icon stays on the check axis.</li>
+      <li>The agenda's selected event gets the same treatment as a task row: bar (Standard, Compact) or fill (Console).</li>
+    </ul>
+  </div>
+  <div id="dark"></div>
+</section>
+
+<section class="mode mode-light">
+  <div id="light"></div>
+</section>
+
+<script>
+// Gleiche Daten und gleiches Markup für alle drei Designs; nur die Klasse am Rahmen wechselt.
+const DESIGNS = [
+  {id: "standard", name: "Standard", note: "Inter 14/22 · row 48 · lines · bar"},
+  {id: "compact", name: "Compact", note: "Inter 13/20 · row 40 · lines · bar"},
+  {id: "console", name: "Console", note: "JetBrains Mono 12/18 · one line · fill"},
+];
+
+const icon = (name, cls = "") => `<svg class="i ${cls}"><use href="#i-${name}"/></svg>`;
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+// Aufgaben wie torrotasks --demo: Gruppen nach Fälligkeit, unter "Today" nur die Uhrzeit.
+const GROUPS = [
+  {label: "Overdue", icon: "circle-alert", tone: "attention", rows: [
+    {title: "File invoices for September", prio: "urgent", list: "Work", c: "work", due: "Fri 9", late: true},
+    {title: "Call the insurance about the bike", prio: 3, list: "Personal", c: "personal", due: "Thu 8", late: true},
+  ]},
+  {label: "Today", icon: "sun", rows: [
+    {title: "Review API concept", prio: 2, list: "Work", c: "work", due: "16:00", sel: true,
+      hints: [["list-checks", "2/4"], ["align-left"]]},
+    {title: "Buy Mum's present", prio: 1, list: "Family", c: "family", due: "18:00"},
+    {title: "Book train tickets", prio: 0, list: "Personal", c: "personal", due: "", done: true},
+  ]},
+  {label: "Upcoming", icon: "calendar-clock", rows: [
+    {title: "Prepare sprint demo", prio: 2, list: "Work", c: "work", due: "Mon 12", hints: [["list-checks", "0/3"]]},
+    {title: "Renew passport", prio: 1, list: "Personal", c: "personal", due: "Oct 30"},
+  ]},
+];
+
+function prio(p) {
+  if (p === "urgent") return `<span class="urgent">!</span>`;
+  const cls = p ? `p${p}` : "none";
+  return `<span class="prio ${cls}"><i></i><i></i><i></i></span>`;
+}
+
+function taskRow(r) {
+  const check = r.done
+    ? `<span class="check done" style="--c:var(--c-${r.c})">${icon("check")}</span>`
+    : `<span class="check"></span>`;
+  const hints = r.hints
+    ? `<span class="hints">${r.hints.map(([n, t]) => `<span>${icon(n, "s14")}${t ? `<span class="tabn">${t}</span>` : ""}</span>`).join("")}</span>`
+    : "";
+  return `<div class="row${r.sel ? " sel" : ""}${r.done ? " done" : ""}">
+    ${check}${prio(r.prio)}
+    <span class="title"><span class="t">${esc(r.title)}</span>${hints}</span>
+    <span class="right"><span class="pill"><span class="dot" style="--c:var(--c-${r.c})"></span>${r.list}</span>
+      <span class="due tabn${r.late ? " late" : ""}">${r.due}</span></span>
+  </div>`;
+}
+
+function groupHead(g) {
+  return `<div class="ghead"><span class="chev">${icon("chevron-down")}</span>
+    <span class="gicon ${g.tone || ""}">${icon(g.icon, "s14")}</span>
+    <span class="label">${g.label}</span><span class="n tabn">${g.rows.filter((r) => !r.done).length}</span>
+    <span class="grow"></span><span class="add">${icon("plus", "s14")}</span></div>`;
+}
+
+function tasks() {
+  const open = GROUPS.flatMap((g) => g.rows).filter((r) => !r.done).length;
+  return `<div class="surface">
+    <div class="hdr">${icon("sun")}<b>Today</b><span class="faint tabn">${open} open</span><span class="grow"></span>
+      <span class="btn">${icon("sliders", "s14")}Display</span><span class="btn primary">${icon("plus", "s14")}New task</span></div>
+    ${GROUPS.map((g) => groupHead(g) + g.rows.map(taskRow).join("")).join("")}
+  </div>`;
+}
+
+// Agenda wie torrocalendar --demo --now 2026-10-13T14:20.
+const BLOCKS = [
+  {week: "This week · Week 42"},
+  {day: {wd: "Tue", n: 13, label: "Today", today: true, lines: [
+    {ev: ["09:30", "15 min", "Daily Standup", "work", "meet.example.org/daily", "video"], past: true},
+    {ev: ["13:00", "2 h", "API design workshop", "work", "Room Rhine", "pin"], left: "40 min left"},
+    {now: "14:20"},
+    {ev: ["15:00", "30 min", "1:1 with Lena", "work", "Office 2.14", "pin"], sel: true},
+    {free: "3 h free"},
+    {ev: ["18:30", "1 h", "Run", "personal", "City park", "pin"]},
+  ]}},
+  {day: {wd: "Wed", n: 14, label: "Tomorrow", lines: [
+    {ev: ["09:30", "15 min", "Daily Standup", "work", "meet.example.org/daily", "video"]},
+    {free: "2 h free"},
+    {ev: ["12:30", "1 h", "Lunch with Jana", "personal", "Canteen North", "pin"]},
+  ]}},
+  {gap: ["2 d", "Nothing planned · Thu 15 – Fri 16"]},
+  {day: {wd: "Sat", n: 17, weekend: true, chips: [["Mum's birthday", "birthday"]], lines: [
+    {ev: ["09:30", "1 h 30", "Football", "personal", "Forest sports field", "pin"]},
+  ]}},
+  {week: "Week 43"},
+  {day: {wd: "Mon", n: 19, lines: [
+    {ev: ["09:30", "15 min", "Daily Standup", "work", "meet.example.org/daily", "video"]},
+  ]}},
+];
+
+function count(day) {
+  const n = (day.chips || []).length + day.lines.filter((l) => l.ev).length;
+  return n === 1 ? "1 event" : `${n} events`;
+}
+
+function line(l) {
+  if (l.now) return `<div class="nowline"><span>${l.now}</span></div>`;
+  if (l.free) return `<div class="free"><span class="sp"></span><span class="note">${l.free}</span></div>`;
+  const [start, dur, title, c, place, kind] = l.ev;
+  const cls = ["ev", l.past && "past", l.left && "now", l.sel && "sel"].filter(Boolean).join(" ");
+  return `<div class="${cls}" style="--c:var(--c-${c})">
+    <span class="tm"><b>${start}</b><small>${dur}</small></span><span class="bar"></span>
+    <span class="what"><b>${esc(title)}</b><span class="place">${icon(kind === "video" ? "video" : "map-pin", "s14")}<span>${place}</span></span></span>
+    ${l.left ? `<span class="left pill">${l.left}</span>` : ""}
+  </div>`;
+}
+
+function agenda() {
+  const parts = BLOCKS.map((b, i) => {
+    // Linie zwischen Tagen und Lücken, nicht an einem Wochenkopf (der hat seine eigene) und nicht am Ende.
+    const next = BLOCKS[i + 1];
+    const ruled = !b.week && next && (next.day || next.gap) ? " line" : "";
+    if (b.week) return `<div class="week${i === 0 ? " first" : ""}">${b.week}</div>`;
+    if (b.gap) return `<div class="gap${ruled}"><b>${b.gap[0]}</b><span>${b.gap[1]}</span></div>`;
+    const d = b.day;
+    const chips = d.chips
+      ? `<div class="chips">${d.chips.map(([t, c]) => `<span class="chip" style="--c:var(--c-${c})">${esc(t)}</span>`).join("")}</div>`
+      : "";
+    return `<div class="day${d.today ? " today" : ""}${d.weekend ? " weekend" : ""}${ruled}">
+      <div class="date"><small>${d.wd}</small><b>${d.n}</b></div>
+      <div class="events"><div class="dayhead"><b>${d.label || ""}</b><span class="grow"></span><span class="tabn">${count(d)}</span></div>
+        ${chips}${d.lines.map(line).join("")}</div>
+    </div>`;
+  });
+  return `<div class="surface">
+    <div class="hdr"><b>October 2026</b><span class="faint">From today</span><span class="grow"></span>
+      <span class="btn">Today</span><span class="btn primary">${icon("plus", "s14")}New event</span></div>
+    <div class="agenda">${parts.join("")}</div>
+  </div>`;
+}
+
+function board(view) {
+  return `<div class="board">${DESIGNS.map((d) => `<div class="d ${d.id}">
+    <div class="cap"><b>${d.name}</b><span>${d.note}</span></div>${view()}</div>`).join("")}</div>`;
+}
+
+for (const [id, title] of [["dark", "Dark"], ["light", "Light"]]) {
+  document.getElementById(id).innerHTML = `<h2>${title}</h2>
+    <h3>Task list</h3>${board(tasks)}
+    <h3>Agenda</h3>${board(agenda)}`;
+}
+</script>
+</body></html>

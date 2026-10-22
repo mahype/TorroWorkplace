@@ -654,7 +654,7 @@ es im Kommentar der `design.toml`):
   `density_level` für die drei Balanced/Dense/VeryDense. fmt/clippy/test, auch `TORRO_LANG=de`.
 
 ### L.32 Entwurf: Aufgabenliste und Agenda in den drei Designs
-- [ ] erledigt
+- [x] erledigt (bestätigt 2026-10-23, Issue-Kommentar 6352347065: in der gewählten Console-Zeile auch Punkt und Farbbalken `on_accent`; Kreise, Pille und Punkt bleiben rund; Chevron 8 in Console; gewählter Termin wie gewählte Aufgabenzeile)
 - **Modell:** Opus · **Braucht:** L.31 · **Dateien:** neu `docs/prototypes/designs/listen.html`
 - Ein Entwurf in HTML nach dem Muster von `docs/prototypes/linear/` (gleiches CSS-Vokabular, Werte aus L.31): die
   Aufgabenliste (`torrotasks`, Zeile, Gruppenkopf, gewählte Zeile) und die Agenda des Kalenders (Tag, Termin, freie Zeit)
