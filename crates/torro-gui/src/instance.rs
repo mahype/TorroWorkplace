@@ -7,7 +7,7 @@
 //! line `show`, gets `ok` back and ends with exit code 0 without a window ([`Claim::Shown`]); the
 //! running app brings its window to the front ([`subscription`], [`bring_to_front`]). Otherwise the
 //! new start listens itself ([`Claim::First`]). A socket file nobody listens on (an app that crashed)
-//! is replaced.
+//! is replaced; one somebody listens on never is, so of two starts at the same time one listens.
 //!
 //! The channel can only ever bring a window to the front. The listening app reads at most
 //! [`MAX_LINE`] bytes, takes exactly `show` and drops everything else; arguments, targets, paths and
@@ -197,6 +197,10 @@ mod channel {
 
     use super::{Opening, TRIES, answer, knock, knocked};
 
+    /// How long a start waits before it asks a socket that refused it once again: another start may
+    /// have bound it and not yet listen on it.
+    const REFUSED_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
+
     /// The longest socket path the system takes, without its closing NUL: `sun_path` holds 108
     /// bytes on Linux and 104 on macOS and the BSDs.
     const SUN_PATH: usize = if cfg!(any(target_os = "linux", target_os = "android")) { 108 } else { 104 };
@@ -207,9 +211,14 @@ mod channel {
         path.as_os_str().len() < SUN_PATH
     }
 
-    /// Reaches the app listening at `path` or listens there: knocks first; when nobody listens,
-    /// removes what is left at `path` (a crashed app's socket, or anything that is no socket) and binds a socket of its own, 0600 in
-    /// a 0700 directory ([`private_dir`]).
+    /// Reaches the app listening at `path` or listens there, a socket of its own, 0600 in a 0700
+    /// directory ([`private_dir`]). Knocks first when a socket is there. Only what is surely nobody's is
+    /// removed before binding: a socket that refuses the connection twice, [`REFUSED_AGAIN`] apart (a
+    /// crashed app's; once may be a start between its bind and its listen), or anything that is no
+    /// socket (a file, a link). With nothing there it binds at once, and a bind that finds the name
+    /// taken (another start bound it a moment ago) knocks again, all within [`TRIES`]. So of two starts
+    /// at the same time one listens and the other reaches it; removing first would let both listen,
+    /// the first on a socket file the second took away.
     pub(super) async fn open(path: &Path) -> Opening<UnixListener> {
         if !fits_sun_path(path) {
             return Opening::Without("the path is too long for a socket".into());
@@ -219,18 +228,28 @@ mod channel {
         {
             return Opening::Without(err.to_string());
         }
+        let mut refused = false;
         for _ in 0..TRIES {
-            // Only a socket is knocked on; anything else at `path` (a file, a link) is replaced.
-            let socket = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_socket());
-            if socket {
-                match UnixStream::connect(path).await {
+            let leftover = match std::fs::symlink_metadata(path) {
+                Ok(meta) if meta.file_type().is_socket() => match UnixStream::connect(path).await {
                     Ok(stream) => return knocked(knock(stream).await),
-                    // Gone meanwhile, or a socket with nobody behind it.
-                    Err(err) if matches!(err.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {}
+                    // Nobody behind it the second time: a crashed app's.
+                    Err(err) if err.kind() == ErrorKind::ConnectionRefused && refused => true,
+                    Err(err) if err.kind() == ErrorKind::ConnectionRefused => {
+                        refused = true;
+                        tokio::time::sleep(REFUSED_AGAIN).await;
+                        continue;
+                    }
+                    // Gone meanwhile.
+                    Err(err) if err.kind() == ErrorKind::NotFound => false,
                     Err(err) => return Opening::Without(err.to_string()),
-                }
-            }
-            if let Err(err) = std::fs::remove_file(path)
+                },
+                Ok(_) => true,
+                Err(err) if err.kind() == ErrorKind::NotFound => false,
+                Err(err) => return Opening::Without(err.to_string()),
+            };
+            if leftover
+                && let Err(err) = std::fs::remove_file(path)
                 && err.kind() != ErrorKind::NotFound
             {
                 return Opening::Without(err.to_string());
@@ -243,8 +262,9 @@ mod channel {
                         Err(err) => Opening::Without(err.to_string()),
                     };
                 }
-                // Another start bound it a moment ago: knock there.
-                Err(err) if err.kind() == ErrorKind::AddrInUse => {}
+                // Another start bound it a moment ago: knock there. Linux says `EADDRINUSE`, macOS
+                // `EEXIST`.
+                Err(err) if matches!(err.kind(), ErrorKind::AddrInUse | ErrorKind::AlreadyExists) => {}
                 Err(err) => return Opening::Without(err.to_string()),
             }
         }
@@ -442,6 +462,35 @@ mod tests {
         assert_eq!(claim, Claim::First);
         assert_eq!(claim_with_inbox(&path).0, Claim::Shown);
         shows.recv_timeout(Duration::from_secs(3)).expect("the new listener got show");
+    }
+
+    /// Two starts at the same moment: exactly one listens, the other reaches it. Repeated, because
+    /// the race is a matter of timing.
+    #[test]
+    fn of_two_starts_at_once_one_listens_and_the_other_shows_it() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = TempDir::new("race");
+        for round in 0..20 {
+            let path = dir.0.join(format!("r{round}.instance"));
+            let barrier = Arc::new(Barrier::new(2));
+            let starts: Vec<_> = (0..2)
+                .map(|_| {
+                    let (path, barrier) = (path.clone(), Arc::clone(&barrier));
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        claim_with_inbox(&path)
+                    })
+                })
+                .collect();
+            let claims: Vec<_> = starts.into_iter().map(|start| start.join().expect("a start")).collect();
+            let mut kinds: Vec<_> = claims.iter().map(|(claim, _)| format!("{claim:?}")).collect();
+            kinds.sort();
+            assert_eq!(kinds, ["First", "Shown"], "round {round}");
+            let (_, shows) = claims.iter().find(|(claim, _)| *claim == Claim::First).expect("a first");
+            shows.recv_timeout(Duration::from_secs(3)).expect("the first got show");
+            assert_eq!(claim_with_inbox(&path).0, Claim::Shown, "the first is still reachable, round {round}");
+        }
     }
 
     #[test]
