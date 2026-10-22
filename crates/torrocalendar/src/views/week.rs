@@ -5,10 +5,12 @@
 //! header "Mon 5" (today: the number in a red circle), a strip of all-day chips, and the hours
 //! 0–24 down the time axis (scrolled so 07:00 is on top; a view higher than the day stretches the
 //! hours to fill it). Timed events are tinted blocks with a bar in their calendar colour
-//! (overlapping ones side by side); past ones are faded; gaps of two hours or more between the
-//! events of today and the days to come say "2 h free"; a red line with its time in the axis
-//! marks now. A thin, muted line at the left edge of each day column runs through the working
-//! hours (task K.33, `Settings::working_hours`), behind the events. Weekends are set off a little; in the week, today's
+//! (overlapping ones side by side); past ones are faded, cancelled ones faded and struck through,
+//! tentative ones a dashed outline without fill ([`super::Look`]); gaps of two hours or more
+//! between the events of today and the days to come (cancelled ones leave their time free) say
+//! "2 h free"; a red line with its time in the axis marks now. A thin, muted line at the left edge
+//! of each day column runs through the working hours (task K.33, `Settings::working_hours`), behind
+//! the events. Weekends are set off a little; in the week, today's
 //! column (header, all-day strip and hours) is washed with a trace of the accent, so the eye
 //! finds it at once.
 //!
@@ -40,11 +42,12 @@ use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::typo::{ellipsize, text_width};
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{icon, style, typo};
+use torro_pim::model::EventStatus;
 use torro_pim::{Event as CalendarEvent, EventTime};
 
 use layout::{GridHit, StripHit, grid_height, hour_height};
 
-use super::{ViewData, short_date};
+use super::{Look, ViewData, dashed_outline, short_date, strike, takes_time, title_text};
 use crate::app::Message;
 
 /// Id of the time grid's scrollable, used by [`scroll_to_morning`].
@@ -75,8 +78,6 @@ const SHORT_TIME_WIDTH: f32 = 36.0;
 /// A one-line event keeps its start time in front of the title only while at least this many
 /// letters of the title fit beside it; otherwise the title alone is worth more than the time.
 const MIN_TITLE_LETTERS: usize = 4;
-/// Past events and chips are drawn at this opacity over their background (`.ev.past`).
-const PAST_OPACITY: f32 = 0.55;
 /// Weekend columns get this much of the window background over the panel (`.daycols > .weekend`).
 const WEEKEND_SHADE: f32 = 0.35;
 /// Today's column in the week gets this much of the accent over its ground: enough to find it at
@@ -225,12 +226,20 @@ struct Entry {
     end: NaiveDateTime,
     title: String,
     location: Option<String>,
+    /// Whether it takes place (`STATUS`), for its [`Look`].
+    status: Option<EventStatus>,
 }
 
 impl Entry {
     /// Over by `now`: drawn faded.
     fn past(&self, now: NaiveDateTime) -> bool {
         self.end <= now
+    }
+
+    /// How it shows at `now`: faded when over or cancelled, struck through when cancelled, dashed
+    /// when tentative.
+    fn look(&self, now: NaiveDateTime) -> Look {
+        Look::of(self.status, self.past(now))
     }
 
     /// "10:00 – 11:30", or just "10:00" for an entry without length.
@@ -268,6 +277,7 @@ impl Plan {
                 end,
                 title: title(item.event),
                 location: location.map(str::to_string),
+                status: item.event.status,
             });
             if all_day {
                 plan.bars.extend(layout::day_span(id, data.start, columns, start, end));
@@ -319,7 +329,7 @@ impl Plan {
     }
 
     /// The free gaps of `column` worth a note: today from now on, days to come in full, none
-    /// on days gone by.
+    /// on days gone by. Cancelled events leave their time free.
     fn free_gaps(&self, column: usize) -> Vec<(f32, f32)> {
         let Some(&day) = self.days.get(column) else {
             return Vec::new();
@@ -332,7 +342,13 @@ impl Plan {
         } else {
             0.0
         };
-        layout::free_gaps(&self.timed, column, from, FREE_MINUTES)
+        let busy: Vec<layout::TimedSegment> = self
+            .timed
+            .iter()
+            .filter(|segment| self.entries.get(segment.id).is_some_and(|entry| takes_time(entry.status)))
+            .copied()
+            .collect();
+        layout::free_gaps(&busy, column, from, FREE_MINUTES)
     }
 }
 
@@ -446,6 +462,8 @@ struct Next {
     title: String,
     /// "All day", "Now" for one running, or its start "15:00".
     when: String,
+    /// Cancelled: its title struck through.
+    struck: bool,
 }
 
 /// The events of the day view's day (`data.start`) for its properties column, all-day ones first,
@@ -462,14 +480,16 @@ fn up_next(data: &ViewData<'_>) -> Vec<Next> {
             if today && !all_day && end <= data.now {
                 return None;
             }
+            let look = Look::of(item.event.status, false);
             let when = if all_day {
                 tr("All day").to_string()
-            } else if today && start <= data.now {
+            } else if today && start <= data.now && !look.struck {
                 tr("Now").to_string()
             } else {
                 format_time(start.time())
             };
-            let next = Next { index: item.index, color: item.color, title: title(item.event), when };
+            let next =
+                Next { index: item.index, color: item.color, title: title(item.event), when, struck: look.struck };
             Some((!all_day, start, next))
         })
         .collect();
@@ -494,11 +514,13 @@ pub fn day_props(data: &ViewData<'_>) -> Element<'static, Message> {
 }
 
 /// A row of [`day_props`]: dot, title cut to the room left beside the time, the time at the right.
+/// A cancelled event's title is struck through in `text_3`.
 fn next_row(next: Next) -> Element<'static, Message> {
     let when_width = text_width(&next.when, typo::meta());
     let title = ellipsize(&next.title, typo::body(), props_room() - when_width - space::s());
+    let struck = next.struck;
     let value = row![
-        typo::text(typo::body(), title).wrapping(iced::widget::text::Wrapping::None),
+        title_text(typo::body(), title, struck, move |t| if struck { palette(t).text_3 } else { palette(t).text }),
         Space::new().width(Length::Fill),
         typo::text(typo::meta().tabular(), next.when).style(theme::text_3),
     ]
@@ -569,12 +591,16 @@ impl canvas::Program<Message> for Strip {
         let (bars, _) = layout::bar_blocks(&plan.bars, count, bounds.width);
         for bar in &bars {
             if let Some(entry) = plan.entries.get(bar.id) {
-                let tone = Tone::of(&p, entry.color, p.panel, entry.past(plan.now));
-                surface(&mut frame, bar.rect, &tone);
+                let look = entry.look(plan.now);
+                let tone = Tone::of(&p, entry.color, p.panel, look.faded);
+                event_surface(&mut frame, bar.rect, &tone, look);
                 frame.with_clip(text_clip(bar.rect), |frame| {
                     let at = Point::new(bar.rect.x + TEXT_LEFT, bar.rect.center_y());
                     let title = ellipsize(&entry.title, typo::caption(), text_room(bar.rect));
                     label(frame, &title, at, typo::caption(), tone.title, Alignment::Left, Vertical::Center);
+                    if look.struck {
+                        strike(frame, at, text_width(&title, typo::caption()), tone.title);
+                    }
                 });
             }
         }
@@ -696,10 +722,11 @@ impl canvas::Program<Message> for Grid {
         for block in &blocks {
             let Some(entry) = plan.entries.get(block.id) else { continue };
             let column = layout::column_at(block.rect.x, count, width).unwrap_or_default();
-            let tone = Tone::of(&p, entry.color, under(column), entry.past(plan.now));
-            surface(&mut frame, block.rect, &tone);
+            let look = entry.look(plan.now);
+            let tone = Tone::of(&p, entry.color, under(column), look.faded);
+            event_surface(&mut frame, block.rect, &tone, look);
             // The day view has the width for the place; seven columns do not.
-            event_text(&mut frame, block.rect, entry, &tone, count == 1);
+            event_text(&mut frame, block.rect, entry, &tone, count == 1, look.struck);
         }
         // Over the blocks, so a neighbour in the next lane does not cover it.
         for block in blocks.iter().filter(|block| plan.is_selected(block.id)) {
@@ -714,9 +741,9 @@ impl canvas::Program<Message> for Grid {
 }
 
 /// The colours of one event or chip, already composed over what lies under it: tinted fill,
-/// full-colour bar, title in `text`, time in `text_2`, place in `text_3`. A past entry is faded
-/// towards its background as a whole (55 %), like CSS `opacity` – composed by hand, because a
-/// canvas cannot fade a group of shapes.
+/// full-colour bar, title in `text`, time in `text_2`, place in `text_3`. A faded entry (over, or
+/// cancelled: [`Look`]) is faded towards its background as a whole (55 %), like CSS `opacity` –
+/// composed by hand, because a canvas cannot fade a group of shapes.
 pub(super) struct Tone {
     pub(super) fill: Color,
     pub(super) bar: Color,
@@ -726,11 +753,11 @@ pub(super) struct Tone {
 }
 
 impl Tone {
-    pub(super) fn of(p: &Palette, color: Color, under: Color, past: bool) -> Tone {
+    pub(super) fn of(p: &Palette, color: Color, under: Color, faded: bool) -> Tone {
         // The tint is laid over the panel, not the weekend shade, so an event looks the same on
         // every day (`color-mix(var(--c) var(--tint), var(--panel))`).
         let fill = over(p.tinted(color), p.panel);
-        let fade = |c: Color| if past { mix(under, c, PAST_OPACITY) } else { c };
+        let fade = |c: Color| Look { faded, ..Look::default() }.over(under, c);
         Tone { fill: fade(fill), bar: fade(color), title: fade(p.text), time: fade(p.text_2), place: fade(p.text_3) }
     }
 }
@@ -743,6 +770,12 @@ pub(super) fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     let body_radius = Radius::new(0.0).right(radius::xs());
     frame.fill(&Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, body_radius), tone.fill);
+}
+
+/// The surface of an event or chip as its `look` says: [`surface`], or for a tentative one only a
+/// dashed outline in its (faded) calendar colour, without fill and bar (`.ev.tentative`).
+pub(super) fn event_surface(frame: &mut Frame, rect: Rectangle, tone: &Tone, look: Look) {
+    if look.dashed { dashed_outline(frame, rect, tone.bar) } else { surface(frame, rect, tone) }
 }
 
 /// The outline of the event open in the side panel: a ring in `focus_ring`, as wide as the focus
@@ -805,8 +838,9 @@ fn short_line(title: &str, time: String, room: f32) -> (Option<String>, String) 
 /// The text of a timed event. Title (`CAPTION`) over the time range (`MICRO`), and the place
 /// below when `with_place` and there is room; a block too low for two lines (under half an
 /// hour) gets one: "09:30 Daily standup" ([`short_line`]). Never wrapped: in a narrow tile
-/// wrapping would break words into single letters; every line is cut with "…" to the block.
-fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, with_place: bool) {
+/// wrapping would break words into single letters; every line is cut with "…" to the block. The
+/// title of a cancelled event (`struck`) is struck through.
+fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, with_place: bool, struck: bool) {
     let x = rect.x + TEXT_LEFT;
     let room = text_room(rect);
     frame.with_clip(text_clip(rect), |frame| {
@@ -814,6 +848,10 @@ fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, wi
             let mut y = rect.y + TEXT_TOP;
             let title = ellipsize(&entry.title, typo::caption(), room);
             label(frame, &title, Point::new(x, y), typo::caption(), tone.title, Alignment::Left, Vertical::Top);
+            if struck {
+                let middle = Point::new(x, y + line_height(typo::caption()) / 2.0);
+                strike(frame, middle, text_width(&title, typo::caption()), tone.title);
+            }
             y += line_height(typo::caption());
             let time = time_line(entry, room);
             label(frame, &time, Point::new(x, y), typo::micro(), tone.time, Alignment::Left, Vertical::Top);
@@ -840,6 +878,9 @@ fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, wi
                 Alignment::Left,
                 Vertical::Center,
             );
+            if struck {
+                strike(frame, Point::new(title_x, y), text_width(&title, typo::caption()), tone.title);
+            }
         }
     });
 }
@@ -907,7 +948,7 @@ mod tests {
     }
 
     fn entry(start: NaiveDateTime, end: NaiveDateTime) -> Entry {
-        Entry { index: 0, color: Color::BLACK, start, end, title: "Standup".into(), location: None }
+        Entry { index: 0, color: Color::BLACK, start, end, title: "Standup".into(), location: None, status: None }
     }
 
     #[test]
@@ -1132,7 +1173,7 @@ mod tests {
         let (now, past) = (Tone::of(&p, p.calendar[0], p.panel, false), Tone::of(&p, p.calendar[0], p.panel, true));
         // Light mode: text is dark on a white panel, so faded text is lighter.
         assert!(past.title.r > now.title.r);
-        assert!((past.title.r - mix(p.panel, p.text, PAST_OPACITY).r).abs() < 1e-6);
+        assert!((past.title.r - mix(p.panel, p.text, super::super::FADED).r).abs() < 1e-6);
         assert_ne!(past.bar, now.bar);
     }
 
@@ -1162,11 +1203,13 @@ mod tests {
             attendees: Vec::new(),
         };
         let utc = |day, hour| at(day, hour, 0).and_local_timezone(chrono::Local).single().expect("local").to_utc();
-        // Monday 5 (past) and Thursday 8 (to come) both have 10:00 and 16:00.
-        let events: Vec<CalendarEvent> = [5, 8]
+        // Monday 5 (past) and Thursday 8 (to come) both have 10:00 and 16:00; Thursday's 13:00 is
+        // cancelled and leaves its time free.
+        let mut events: Vec<CalendarEvent> = [5, 8]
             .into_iter()
             .flat_map(|day| [event(utc(day, 10), utc(day, 11)), event(utc(day, 16), utc(day, 17))])
             .collect();
+        events.push(CalendarEvent { status: Some(EventStatus::Cancelled), ..event(utc(8, 13), utc(8, 14)) });
         let items =
             events.iter().enumerate().map(|(index, event)| super::super::Item { index, event, color: blue }).collect();
         let start = at(5, 0, 0).date();

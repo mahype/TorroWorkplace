@@ -394,7 +394,7 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   ohne Nacht), fmt/clippy/test grün, Sichtprüfung leerer Tag und voller Tag, hell/dunkel.
 
 ### K.26 Teilnehmer und Status von Terminen – und nichts mehr verlieren beim Speichern
-- [ ] erledigt
+- [x] erledigt (mit TE.9, #278; die Avatare im Termin-Paneel und am Bogen des Radars sind nicht Teil von TE.9)
 - **Aufgegangen in Issue #278** ([termin-editor.md](termin-editor.md)): Modell und iCalendar in TE.1/TE.2,
   Anzeige in TE.9. Wird mit TE.9 abgehakt.
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Dateien:** `crates/torro-pim/src/model.rs`,

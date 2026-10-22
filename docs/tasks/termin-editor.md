@@ -243,7 +243,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   „Open in Maps“, keine Suche ohne Enter; Sichtprüfung; fmt, clippy, test.
 
 ## TE.9 Ansichten: abgesagt, vorläufig, Teilnehmer
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** TE.2 · **Dateien:** `crates/torrocalendar/src/views/{week,month,agenda,timeline,radar,glance}.rs`,
   `crates/torrocalendar/src/views/mod.rs`
 - Rest von K.26: abgesagte Termine durchgestrichen und 55 % (eine gemeinsame Hilfsfunktion in `views/mod.rs`),

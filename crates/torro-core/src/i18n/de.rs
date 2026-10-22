@@ -3935,6 +3935,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{change}; removes {n} events", "{change}; entfernt {n} Termine"),
     ("{change}; ends the series", "{change}; beendet die Serie"),
     ("{change}; may remove events", "{change}; entfernt womöglich Termine"),
+    ("tentative", "vorläufig"),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),
