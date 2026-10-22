@@ -5,7 +5,10 @@
 //! places `Request::OpenApp` starts apps from, so a listed app that is installed can be opened.
 //!
 //! The inbox is three entries (task E8.1): its mail window, its notifications window and its hub,
-//! one binary `torroinbox` with three window classes. All three are installed or none.
+//! one binary `torroinbox` with three window classes. Mail and App Feed also have programs of their
+//! own (issue #279, `torro-inbox-mail`, `torro-inbox-notifications`, [`AppId::program_file`]): the core
+//! starts their windows with them when they are there ([`program_for`]), else with `torroinbox` as
+//! before, and either one makes the entry installed. `apps.list_apps` still names `torroinbox`.
 //!
 //! `apps.open_app` with a `target` (task E8.7a) opens a mail or a task, (task WZ.8) a new mail
 //! with a file of the tools' register attached, and (issue #243) the core's dialog to edit a
@@ -43,13 +46,14 @@ fn list_in(dirs: &[PathBuf]) -> Vec<AppInfo> {
             binary: app.binary.to_string(),
             name: app.display_name.to_string(),
             window_class: app.window_class.to_string(),
-            installed: is_installed(app.binary, dirs),
+            // Either program opens the window (issue #279); the answer keeps naming `torroinbox`.
+            installed: is_installed(app.binary, dirs) || is_installed(app.program_file(), dirs),
         })
         .collect()
 }
 
 /// The folders an app binary is looked for in: the folder of this executable, then `PATH`.
-fn search_dirs() -> Vec<PathBuf> {
+pub(crate) fn search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
         dirs.push(dir);
@@ -69,6 +73,38 @@ fn is_installed(binary: &str, dirs: &[PathBuf]) -> bool {
 fn find_in(binary: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     let file = format!("{binary}{}", std::env::consts::EXE_SUFFIX);
     dirs.iter().map(|dir| dir.join(&file)).find(|path| path.is_file())
+}
+
+/// The program that starts `app`'s window (`Core::open_app`), looked up in `dirs` (in the core
+/// [`search_dirs`]) folder by folder (issue #279): in each, the entry's own program
+/// ([`AppId::program_file`], `torro-inbox-mail`) first, then [`AppId::binary`] (`torroinbox`), so the
+/// programs of one installation go together. By its path when found, else [`AppId::binary`] by name,
+/// which the system then looks up on `PATH` as before.
+///
+/// The command line is [`AppId::command`] of it either way (`torro-inbox-mail --view mail`): the own
+/// program puts its `--view` in front only when none is given, so the line means the same with both
+/// programs and [`target_command`] keeps one rule. For entries without a program of their own this is
+/// the binary as before (`torrocalendar`).
+pub fn program_for(app: AppId, dirs: &[PathBuf]) -> String {
+    let found = dirs.iter().find_map(|dir| {
+        let dir = std::slice::from_ref(dir);
+        find_in(app.program_file(), dir).or_else(|| find_in(app.binary, dir))
+    });
+    found.map_or_else(|| app.binary.to_string(), |path| path.to_string_lossy().into_owned())
+}
+
+/// The program that starts a window showing `opened` (`apps.open_app` with a target, then
+/// [`target_command`]), looked up in `dirs`: [`program_for`] the entry of [`Opened::app`], so a mail
+/// opens in `torro-inbox-mail` when it is there; for a file always `torroinbox`, because the compose
+/// window (`--compose`) is no window of the mail program.
+pub fn target_program(opened: &Opened, dirs: &[PathBuf]) -> String {
+    match opened {
+        Opened::File { .. } => {
+            let binary = opened.app().binary;
+            find_in(binary, dirs).map_or_else(|| binary.to_string(), |path| path.to_string_lossy().into_owned())
+        }
+        _ => program_for(opened.app(), dirs),
+    }
 }
 
 /// Where the listener's program comes from.
@@ -365,11 +401,12 @@ impl Opened {
     }
 }
 
-/// The command line that starts a window of `program` (the path of [`Opened::app`]'s binary)
-/// showing `opened`: `torroinbox --view mail --message=m:…`, `torrotasks --task=<uid>`,
-/// `torroinbox --compose --attach=<path>` or `torroworkplace ui --template=<id>` (the dialog in its
-/// mode "Edit"; the mode "Save", `--saved`, is never built here). One argument each, with `=`, so a value that starts
-/// with `-` stays a value; started without a shell.
+/// The command line that starts a window of `program` (the path [`target_program`] found: for a mail
+/// `torro-inbox-mail` or `torroinbox`, else [`Opened::app`]'s binary) showing `opened`:
+/// `torroinbox --view mail --message=m:…` (or `torro-inbox-mail --view mail --message=m:…`),
+/// `torrotasks --task=<uid>`, `torroinbox --compose --attach=<path>` or `torroworkplace ui --template=<id>`
+/// (the dialog in its mode "Edit"; the mode "Save", `--saved`, is never built here). One argument each,
+/// with `=`, so a value that starts with `-` stays a value; started without a shell.
 pub fn target_command(program: String, opened: &Opened) -> Vec<String> {
     let (mut command, argument) = match opened {
         Opened::Mail { message } => (opened.app().command(program), format!("--message={message}")),
@@ -576,6 +613,88 @@ pub mod tests {
         let command = target_command("/bin/torroworkplace".into(), &opened);
         assert_eq!(command, ["/bin/torroworkplace", "ui", "--template=dev"]);
         assert!(!command.iter().any(|arg| arg.contains("saved")), "never the mode Save");
+    }
+
+    /// The path `program` in `dir`, as the core's command line names it.
+    fn at(dir: &Path, program: &str) -> String {
+        dir.join(binary(program)).to_string_lossy().into_owned()
+    }
+
+    /// Issue #279: Mail and App Feed start with their own program when it is installed, else with
+    /// `torroinbox` as before; the arguments of the entry stay the same, other entries are untouched.
+    #[test]
+    fn mail_and_app_feed_start_with_their_own_program_when_it_is_there() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dirs = [dir.path().to_path_buf()];
+        let mail = AppId::INBOX_MAIL;
+        assert_eq!(program_for(mail, &dirs), "torroinbox", "nothing installed: by name, from PATH");
+
+        fs::write(dir.path().join(binary("torroinbox")), b"").expect("write binary");
+        let inbox = at(dir.path(), "torroinbox");
+        assert_eq!(mail.command(program_for(mail, &dirs)), [inbox.as_str(), "--view", "mail"]);
+
+        fs::write(dir.path().join(binary("torro-inbox-mail")), b"").expect("write binary");
+        let own = at(dir.path(), "torro-inbox-mail");
+        assert_eq!(mail.command(program_for(mail, &dirs)), [own.as_str(), "--view", "mail"]);
+        let feed = AppId::INBOX_NOTIFICATIONS;
+        assert_eq!(program_for(feed, &dirs), inbox, "App Feed without its program");
+        fs::write(dir.path().join(binary("torro-inbox-notifications")), b"").expect("write binary");
+        assert_eq!(program_for(feed, &dirs), at(dir.path(), "torro-inbox-notifications"));
+        assert_eq!(program_for(AppId::INBOX, &dirs), inbox, "the hub is torroinbox");
+        assert_eq!(program_for(AppId::CALENDAR, &dirs), "torrocalendar");
+
+        // The programs of one installation go together: the first folder with either wins.
+        let later = tempfile::tempdir().expect("temp dir");
+        fs::write(later.path().join(binary("torro-inbox-mail")), b"").expect("write binary");
+        let first = tempfile::tempdir().expect("temp dir");
+        fs::write(first.path().join(binary("torroinbox")), b"").expect("write binary");
+        let dirs = [first.path().to_path_buf(), later.path().to_path_buf()];
+        assert_eq!(program_for(mail, &dirs), at(first.path(), "torroinbox"));
+    }
+
+    /// Issue #279: a mail opens in the mail program with its `--message=…` when it is installed, else
+    /// in `torroinbox`; a file always opens the compose window of `torroinbox`.
+    #[test]
+    fn a_mail_target_starts_the_own_program_when_it_is_there() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dirs = [dir.path().to_path_buf()];
+        fs::write(dir.path().join(binary("torroinbox")), b"").expect("write binary");
+        let inbox = at(dir.path(), "torroinbox");
+        let mail = Opened::Mail { message: "m:0a1b".into() };
+        let file = Opened::File { path: "/home/anna/Offer.pdf".into() };
+        let command = target_command(target_program(&mail, &dirs), &mail);
+        assert_eq!(command, [inbox.as_str(), "--view", "mail", "--message=m:0a1b"]);
+
+        fs::write(dir.path().join(binary("torro-inbox-mail")), b"").expect("write binary");
+        let own = at(dir.path(), "torro-inbox-mail");
+        let command = target_command(target_program(&mail, &dirs), &mail);
+        assert_eq!(command, [own.as_str(), "--view", "mail", "--message=m:0a1b"]);
+        let command = target_command(target_program(&file, &dirs), &file);
+        assert_eq!(command, [inbox.as_str(), "--compose", "--attach=/home/anna/Offer.pdf"], "compose stays");
+        let task = Opened::Task { uid: "7d1e".into() };
+        assert_eq!(target_command(target_program(&task, &dirs), &task), ["torrotasks", "--task=7d1e"]);
+    }
+
+    /// Issue #279: with only `torro-inbox-mail` installed, Mail is installed and still listed with
+    /// the binary `torroinbox`; the hub and App Feed are not.
+    #[test]
+    fn mail_is_installed_with_only_its_own_program() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join(binary("torro-inbox-mail")), b"").expect("write binary");
+        let apps = list_in(&[dir.path().to_path_buf()]);
+        let inbox: Vec<(&str, &str, bool)> = apps
+            .iter()
+            .filter(|app| app.window_class.starts_with("torro-inbox"))
+            .map(|app| (app.window_class.as_str(), app.binary.as_str(), app.installed))
+            .collect();
+        assert_eq!(
+            inbox,
+            [
+                ("torro-inbox", "torroinbox", false),
+                ("torro-inbox-mail", "torroinbox", true),
+                ("torro-inbox-notifications", "torroinbox", false),
+            ]
+        );
     }
 
     #[test]

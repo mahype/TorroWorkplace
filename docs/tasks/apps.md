@@ -102,7 +102,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
   Systems ankommt. Wenn nicht, ist das ein Befund im Bericht, kein Grund zu nativem Code.
 
 ### AP.3 Eingang: drei Programme mit eigenem Icon
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Umbau in Bibliothek, neue Crates) · **Braucht:** AP.1 · **Dateien:** `Cargo.toml`
   (Mitglieder und `[workspace.dependencies]`), `crates/torroinbox/Cargo.toml`, `crates/torroinbox/src/lib.rs`
   (neu), `crates/torroinbox/src/main.rs`, `crates/torro-inbox-mail/` (neu: `Cargo.toml`, `src/main.rs`,
