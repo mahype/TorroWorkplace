@@ -1,11 +1,12 @@
 //! The calendar app's sections "Reminders" and "Night" (task S.19 in
 //! `docs/tasks/steuerzentrale.md`), ported from the control centre's General page (task ER2.4,
 //! K.27) now that "Calendars" moves into [`crate::collections`] instead, grouped by account like
-//! "Lists" in the tasks app.
+//! "Lists" in the tasks app. "Working hours" (task K.33) follows the night here, since app
+//! settings live in the app's own window.
 //!
-//! `torrocalendar` builds its three sections – "Calendars" from [`crate::collections`], and these
-//! two – into one `SECTIONS` list of its own: this library has no module that already combines
-//! them, since "Calendars" is shared with the tasks app's "Lists" and does not belong only here.
+//! `torrocalendar` builds its sections – "Calendars" from [`crate::collections`], and these – into
+//! one `SECTIONS` list of its own: this library has no module that already combines them, since
+//! "Calendars" is shared with the tasks app's "Lists" and does not belong only here.
 //!
 //! The floating card "Night" at the moon on the timeline's canvas (`torrocalendar::app`) is the
 //! app's own quick way to the same setting; this section is the full page behind the gear and
@@ -15,6 +16,7 @@ use iced::widget::{column, pick_list, row, toggler};
 use iced::{Alignment, Element};
 
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::Quarter;
 use torro_gui::theme::{self, space};
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{Request, SettingKey};
@@ -235,7 +237,7 @@ pub mod reminders {
 /// floating card at the moon on the timeline's canvas sends the same request; this is the full
 /// page behind the gear.
 pub mod night {
-    use torro_core::settings::{Night, Quarter};
+    use torro_core::settings::Night;
 
     use super::*;
 
@@ -261,34 +263,9 @@ pub mod night {
         let footer = tr(
             "The timeline folds the night away and the radar shades it; neither counts it as free time. The same time twice means no night.",
         );
-        let row = setting_row(None, tr("Night"), None, control(data.settings.night));
+        let night = data.settings.night;
+        let row = setting_row(None, tr("Night"), None, from_until(night.from, night.to, Message::From, Message::To));
         widgets::group(tr("Night"), vec![row], Some(footer.to_string()))
-    }
-
-    /// "From" and "Until" of the night, each a list of the quarter hours of a day.
-    fn control(night: Night) -> Element<'static, Message> {
-        let label = |text: &'static str| typo::text(typo::meta(), text).style(theme::text_2);
-        row(vec![
-            label(tr("From")).into(),
-            time_field(night.from, Message::From),
-            label(tr("Until")).into(),
-            time_field(night.to, Message::To),
-        ])
-        .spacing(space::s())
-        .align_y(Alignment::Center)
-        .into()
-    }
-
-    /// A time on the quarter hour as a pick list in the look of a secondary button.
-    fn time_field(time: Quarter, on_pick: fn(Quarter) -> Message) -> Element<'static, Message> {
-        pick_list(Quarter::all().collect::<Vec<_>>(), Some(time), on_pick)
-            .padding(style::pick_list_padding())
-            .text_size(typo::caption().size)
-            .text_line_height(typo::caption().line_height)
-            .font(typo::caption().font)
-            .style(style::pick_list)
-            .menu_style(style::pick_list_menu)
-            .into()
     }
 
     #[cfg(test)]
@@ -329,4 +306,151 @@ pub mod night {
             let _: Element<'_, Message> = view(&Data::default());
         }
     }
+}
+
+/// The working hours: from when until when the calendar draws its thin line in day, week,
+/// timeline and radar (task K.33). The same every day, never over midnight.
+pub mod working_hours {
+    use torro_core::settings::WorkingHours;
+
+    use super::*;
+
+    /// "From" or "Until" of the working hours.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Message {
+        From(Quarter),
+        To(Quarter),
+    }
+
+    /// The working hours after `message`: picking "From" after "Until" (or "Until" before
+    /// "From") moves the other end along and keeps the length, held to 00:00 and 23:45, so the
+    /// page never shows an error. Where the end of the day leaves no room at all, the picked end
+    /// gives way by a quarter hour rather than turning the working hours off unasked. The core
+    /// still refuses anything over midnight.
+    pub(crate) fn changed(hours: WorkingHours, message: Message) -> WorkingHours {
+        let length = hours.to.minutes() - hours.from.minutes().min(hours.to.minutes());
+        // No working hours stay none: the other end moves along with nothing between.
+        let room = if hours.is_none() { 0 } else { 15 };
+        let last = Quarter::all().last().map_or(0, Quarter::minutes);
+        let at = |minutes: u32| Quarter::new(minutes / 60, minutes % 60).unwrap_or(hours.from);
+        match message {
+            Message::From(from) if from > hours.to => {
+                let to = at((from.minutes() + length).min(last));
+                WorkingHours { from: at(from.minutes().min(to.minutes().saturating_sub(room))), to }
+            }
+            Message::From(from) => WorkingHours { from, ..hours },
+            Message::To(to) if to < hours.from => {
+                let from = at(to.minutes().saturating_sub(length));
+                WorkingHours { from, to: at(to.minutes().max(from.minutes() + room)) }
+            }
+            Message::To(to) => WorkingHours { to, ..hours },
+        }
+    }
+
+    /// Both ends go as one value, with the other as the stored settings have it, so two windows
+    /// never leave half of it behind.
+    pub fn update<A>(message: Message, data: &Data) -> Action<A> {
+        let hours = changed(data.settings.working_hours, message);
+        Action::send(Request::SetSetting { key: SettingKey::WorkingHours, value: hours.to_value() })
+    }
+
+    pub fn view(data: &Data) -> Element<'_, Message> {
+        let footer = tr(
+            "The calendar draws your working hours as a thin line in day, week, timeline and radar. The same time twice means no working hours.",
+        );
+        let hours = data.settings.working_hours;
+        let control = from_until(hours.from, hours.to, Message::From, Message::To);
+        let row = setting_row(None, tr("Working hours"), None, control);
+        widgets::group(tr("Working hours"), vec![row], Some(footer.to_string()))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::Action as Act;
+
+        fn sent(action: Action<()>) -> serde_json::Value {
+            match action {
+                Act::Send(requests) => match requests.as_slice() {
+                    [Request::SetSetting { key: SettingKey::WorkingHours, value }] => value.clone(),
+                    other => panic!("expected one SetSetting(WorkingHours), got {other:?}"),
+                },
+                other => panic!("expected Send, got {other:?}"),
+            }
+        }
+
+        fn quarter(hour: u32, minute: u32) -> Quarter {
+            Quarter::new(hour, minute).expect("quarter")
+        }
+
+        fn hours(from: Quarter, to: Quarter) -> WorkingHours {
+            WorkingHours { from, to }
+        }
+
+        /// A time sets both ends, with the other kept while it stays in order.
+        #[test]
+        fn a_time_sets_the_whole_working_hours() {
+            let data = Data::default();
+            assert_eq!(
+                sent(update(Message::From(quarter(7, 30)), &data)),
+                serde_json::json!({"from": "07:30", "to": "17:00"})
+            );
+            assert_eq!(
+                sent(update(Message::To(quarter(16, 0)), &data)),
+                serde_json::json!({"from": "08:00", "to": "16:00"})
+            );
+        }
+
+        /// "From" after "Until" moves "Until" along, and the other way round; the length stays.
+        #[test]
+        fn the_other_end_moves_along() {
+            let short = hours(quarter(9, 0), quarter(11, 30));
+            assert_eq!(changed(short, Message::From(quarter(12, 0))), hours(quarter(12, 0), quarter(14, 30)));
+            assert_eq!(changed(short, Message::To(quarter(8, 15))), hours(quarter(5, 45), quarter(8, 15)));
+        }
+
+        /// Moving along stops at 00:00 and 23:45, never over midnight.
+        #[test]
+        fn moving_along_stops_at_the_ends_of_the_day() {
+            let day = hours(quarter(8, 0), quarter(17, 0));
+            assert_eq!(changed(day, Message::From(quarter(20, 0))), hours(quarter(20, 0), quarter(23, 45)));
+            assert_eq!(changed(day, Message::To(quarter(3, 0))), hours(quarter(0, 0), quarter(3, 0)));
+            assert_eq!(changed(day, Message::From(quarter(23, 45))), hours(quarter(23, 30), quarter(23, 45)));
+            assert_eq!(changed(day, Message::To(quarter(0, 0))), hours(quarter(0, 0), quarter(0, 15)));
+            let none = hours(quarter(9, 0), quarter(9, 0));
+            assert!(changed(none, Message::From(quarter(10, 0))).is_none(), "no working hours stay none");
+        }
+
+        #[test]
+        fn the_page_builds() {
+            let _: Element<'_, Message> = view(&Data::default());
+        }
+    }
+}
+
+/// "From" and "Until", each a list of the quarter hours of a day: the control of the night and of
+/// the working hours.
+fn from_until<M: Clone + 'static>(
+    from: Quarter,
+    to: Quarter,
+    on_from: fn(Quarter) -> M,
+    on_to: fn(Quarter) -> M,
+) -> Element<'static, M> {
+    let label = |text: &'static str| typo::text(typo::meta(), text).style(theme::text_2);
+    row(vec![label(tr("From")).into(), time_field(from, on_from), label(tr("Until")).into(), time_field(to, on_to)])
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// A time on the quarter hour as a pick list in the look of a secondary button.
+fn time_field<M: Clone + 'static>(time: Quarter, on_pick: fn(Quarter) -> M) -> Element<'static, M> {
+    pick_list(Quarter::all().collect::<Vec<_>>(), Some(time), on_pick)
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
+        .style(style::pick_list)
+        .menu_style(style::pick_list_menu)
+        .into()
 }

@@ -197,6 +197,10 @@ pub struct Palette {
     /// 60 % over [`Palette::panel`] – the ground of an unfolded one. A cool, quiet blue-grey;
     /// `text_3` on it stays readable (≥ 4.5:1).
     pub night: Color,
+    /// The thin line of the working hours in the calendar's day, week, timeline and radar (task
+    /// K.33): a muted mark behind the events, never text. The neutral grey of
+    /// [`Palette::line_selected`] unless the colour scheme gives it a colour of its own.
+    pub working_hours: Color,
     /// The frame of the window: sidebar, rail, drawer, the margin around the content panel and the
     /// title band over them. [`Palette::bg`] unless the colour scheme gives the sidebar a colour of its own.
     pub sidebar: Color,
@@ -278,6 +282,7 @@ impl Palette {
             shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
             scrim: rgba(c.scrim),
             night: rgba(c.night),
+            working_hours: rgba(c.working_hours),
             sidebar: rgba(c.sidebar),
             sidebar_hover: rgba(c.sidebar_hover),
             sidebar_selected: rgba(c.sidebar_selected),
@@ -737,6 +742,15 @@ mod tests {
         }
         assert_eq!(Palette::dark().night.into_rgba8(), [0x12, 0x16, 0x26, 0xFF]);
         assert_eq!(Palette::light().night.into_rgba8(), [0xE3, 0xE7, 0xF1, 0xFF]);
+    }
+
+    #[test]
+    fn working_hours_are_the_grey_of_selection_edges() {
+        assert_eq!(Palette::dark().working_hours, Color::from_rgba(1.0, 1.0, 1.0, 0.28));
+        assert_eq!(Palette::light().working_hours, Color::from_rgba(0.0, 0.0, 0.0, 0.32));
+        for p in [Palette::dark(), Palette::light()] {
+            assert_eq!(p.working_hours, p.line_selected);
+        }
     }
 
     #[test]

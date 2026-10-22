@@ -7,7 +7,8 @@
 //! hours to fill it). Timed events are tinted blocks with a bar in their calendar colour
 //! (overlapping ones side by side); past ones are faded; gaps of two hours or more between the
 //! events of today and the days to come say "2 h free"; a red line with its time in the axis
-//! marks now. Weekends are set off a little; in the week, today's
+//! marks now. A thin, muted line at the left edge of each day column runs through the working
+//! hours (task K.33, `Settings::working_hours`), behind the events. Weekends are set off a little; in the week, today's
 //! column (header, all-day strip and hours) is washed with a trace of the accent, so the eye
 //! finds it at once.
 //!
@@ -33,6 +34,7 @@ use iced::widget::text::{Alignment, Style as TextStyle};
 use iced::widget::{Id, Space, column, container, responsive, row, rule, scrollable};
 use iced::{Background, Color, Element, Event, Length, Padding, Point, Rectangle, Size, Task, Theme, mouse};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::WorkingHours;
 use torro_gui::datetime::{format_time, to_local, weekday_name};
 use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::typo::{ellipsize, text_width};
@@ -129,8 +131,9 @@ fn morning_pad(viewport: f32) -> f32 {
     if furthest >= morning() || furthest <= 0.0 { 0.0 } else { (morning() - furthest).rem_euclid(hour_height()) }
 }
 
-pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
-    let plan = Plan::new(&data);
+/// The view for `data`, with the line of the `working` hours in each day column.
+pub fn view(data: ViewData<'_>, working: WorkingHours) -> Element<'_, Message> {
+    let plan = Plan::new(&data, working);
     // The header has to leave room for the time axis, whose width follows the grid's width; the
     // pad under the grid follows its height.
     responsive(move |bounds| week(plan.clone(), bounds, true)).into()
@@ -138,8 +141,8 @@ pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
 
 /// The day view under the week strip of the narrow layout (`super::week_strip`, task K.19):
 /// [`view`] for one day without the day header, which the strip above already shows.
-pub fn day_under_strip(data: ViewData<'_>) -> Element<'_, Message> {
-    let plan = Plan::new(&data);
+pub fn day_under_strip(data: ViewData<'_>, working: WorkingHours) -> Element<'_, Message> {
+    let plan = Plan::new(&data, working);
     responsive(move |bounds| week(plan.clone(), bounds, false)).into()
 }
 
@@ -208,6 +211,8 @@ struct Plan {
     now: NaiveDateTime,
     /// The app's index of the event open in the side panel.
     selected: Option<usize>,
+    /// The suite's working hours, drawn as a line in every day column.
+    working: WorkingHours,
 }
 
 #[derive(Debug, Clone)]
@@ -239,7 +244,7 @@ impl Entry {
 }
 
 impl Plan {
-    fn new(data: &ViewData<'_>) -> Plan {
+    fn new(data: &ViewData<'_>, working: WorkingHours) -> Plan {
         let count = (data.end - data.start).num_days().max(1);
         let days: Vec<NaiveDate> = (0..count).map(|i| data.start + Duration::days(i)).collect();
         let columns = days.len();
@@ -250,6 +255,7 @@ impl Plan {
             bars: Vec::new(),
             now: data.now,
             selected: data.selected,
+            working,
         };
         for item in &data.items {
             let (start, end, all_day) = local_span(item.event);
@@ -669,6 +675,12 @@ impl canvas::Program<Message> for Grid {
             let x = column_x(column);
             line(&mut frame, Point::new(x, 0.0), Point::new(x, height), p.line);
         }
+        // Over the column's divider, so it does not vanish in it, and under everything else.
+        for column in 0..count {
+            if let Some(rect) = layout::working_line(plan.working, column, count, width, hour) {
+                fill(&mut frame, rect, p.working_hours);
+            }
+        }
 
         for column in 0..count {
             for (start, end) in plan.free_gaps(column) {
@@ -998,7 +1010,7 @@ mod tests {
                 now: at(7, 14, 20),
                 selected: None,
             };
-            Plan::new(&data).empty_note()
+            Plan::new(&data, WorkingHours::DEFAULT).empty_note()
         };
         assert_eq!(empty(monday, 7), Some(tr("No events this week")));
         assert_eq!(empty(at(7, 0, 0).date(), 1), Some(tr("No events today")));
@@ -1013,7 +1025,7 @@ mod tests {
             now: at(7, 14, 20),
             selected: None,
         };
-        assert_eq!(Plan::new(&data).empty_note(), None);
+        assert_eq!(Plan::new(&data, WorkingHours::DEFAULT).empty_note(), None);
     }
 
     #[test]
@@ -1027,7 +1039,7 @@ mod tests {
                 now,
                 selected: None,
             };
-            Plan::new(&data)
+            Plan::new(&data, WorkingHours::DEFAULT)
         };
         let dark = theme::theme();
         let (t, p) = (&dark, Palette::dark());
@@ -1150,7 +1162,7 @@ mod tests {
             now: at(7, 14, 20),
             selected: None,
         };
-        let plan = Plan::new(&data);
+        let plan = Plan::new(&data, WorkingHours::DEFAULT);
         assert_eq!(plan.free_gaps(0), vec![], "Monday is over");
         assert_eq!(plan.free_gaps(3), vec![(660.0, 960.0)], "Thursday 11:00–16:00");
     }
@@ -1172,7 +1184,7 @@ mod tests {
             now: at(7, 14, 20),
             selected: None,
         };
-        Plan::new(&data)
+        Plan::new(&data, WorkingHours::DEFAULT)
     }
 
     /// What the canvas shows with the cursor at `point` inside bounds that start at (30, 40).

@@ -11,7 +11,9 @@
 //! with zigzag edges, a moon and "Night · 8 h"; events in it are dots in their calendar colour. A
 //! click on the band unfolds that night (hours at the day's pace on a darker ground, "Collapse
 //! night" at its top); "Nights" in the header unfolds or folds them all. Without a night the days
-//! follow each other whole. A strong line parts the days at midnight; a red line marks now.
+//! follow each other whole. A strong line parts the days at midnight; a red line marks now. A
+//! thin, muted line along the bottom of the hour row runs through the working hours (task K.33,
+//! `Settings::working_hours`); in a folded night it stops at the band.
 //!
 //! Clicks: an event or chip → `OpenEvent`; free time → `NewEvent` at that time (rounded down to a
 //! quarter hour); the all-day row → an all-day `NewEvent`; a folded night only unfolds. A
@@ -38,7 +40,7 @@ use iced::widget::text::Alignment;
 use iced::widget::{Id, operation, scrollable};
 use iced::{Color, Element, Event, Length, Point, Rectangle, Size, Task, Theme, Vector, mouse};
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::Night;
+use torro_core::settings::{Night, WorkingHours};
 use torro_gui::datetime::{format_time, weekday_name};
 use torro_gui::icon::{self, Icon};
 use torro_gui::style;
@@ -213,11 +215,18 @@ impl State {
     }
 }
 
-/// The timeline of the days `[data.start, data.end)` with `night` in a sideways scrollable, filling
-/// the space it gets. The canvas is anchored at `anchor`, so the night's card can float beside a
-/// moon (`EditNight` carries the moon's place on the canvas).
-pub fn view<'a>(data: ViewData<'a>, state: &State, night: Night, anchor: &Anchor) -> Element<'a, Message> {
-    let plan = Plan::new(&data, state, night);
+/// The timeline of the days `[data.start, data.end)` with `night` and the line of the `working`
+/// hours in a sideways scrollable, filling the space it gets. The canvas is anchored at `anchor`,
+/// so the night's card can float beside a moon (`EditNight` carries the moon's place on the
+/// canvas).
+pub fn view<'a>(
+    data: ViewData<'a>,
+    state: &State,
+    night: Night,
+    working: WorkingHours,
+    anchor: &Anchor,
+) -> Element<'a, Message> {
+    let plan = Plan::new(&data, state, night, working);
     let width = plan.track.width;
     let canvas = iced::widget::canvas(Timeline { plan }).width(Length::Fixed(width)).height(Length::Fill);
     scrollable(widgets::anchored(anchor, canvas))
@@ -250,6 +259,8 @@ struct Plan {
     entries: Vec<Entry>,
     timed: Vec<Timed>,
     spans: Vec<Span>,
+    /// Where the line of the working hours runs along x ([`Track::working`]).
+    working: Vec<(f32, f32)>,
     now: NaiveDateTime,
     /// The app's index of the event open in the side panel.
     selected: Option<usize>,
@@ -257,12 +268,15 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(data: &ViewData<'_>, state: &State, night: Night) -> Plan {
+    fn new(data: &ViewData<'_>, state: &State, night: Night, working: WorkingHours) -> Plan {
+        let track = Track::new(data.start, data.end, &state.open, night);
+        let working = track.working(working);
         let mut plan = Plan {
-            track: Track::new(data.start, data.end, &state.open, night),
+            track,
             entries: Vec::new(),
             timed: Vec::new(),
             spans: Vec::new(),
+            working,
             now: data.now,
             selected: data.selected,
             viewport: state.viewport,
@@ -478,6 +492,14 @@ impl canvas::Program<Message> for Timeline {
                     ground,
                 );
             }
+        }
+        let (top, bottom) = rows.working();
+        for &(left, right) in plan.working.iter().filter(|(left, right)| seen(*left, right - left)) {
+            week::fill(
+                &mut frame,
+                Rectangle::new(Point::new(left, top), Size::new(right - left, bottom - top)),
+                p.working_hours,
+            );
         }
         hours(&mut frame, &p, plan, &rows, now_x, &seen);
         for x in plan.track.midnights().into_iter().filter(|x| seen(*x, 0.0)) {
@@ -851,7 +873,7 @@ mod tests {
     #[test]
     fn timed_events_become_columns_and_all_day_ones_chips() {
         let events = events();
-        let plan = Plan::new(&data(&events), &State::default(), Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!(plan.timed.iter().map(|t| t.id).collect::<Vec<_>>(), [0, 1]);
         assert_eq!(plan.spans, [Span { id: 2, first: d(14), after: d(15) }]);
         assert_eq!(plan.entries[2].index, 12, "the app's index for OpenEvent");
@@ -860,7 +882,7 @@ mod tests {
     #[test]
     fn clicks_open_events_unfold_nights_and_start_new_events() {
         let events = events();
-        let plan = Plan::new(&data(&events), &State::default(), Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT);
         let rows = plan.rows(SIZE.height);
         let workshop = layout::blocks(&plan.track, &rows, &plan.timed)[0].rect;
         let message = |point: Point| plan.hit(SIZE, point).and_then(|hit| plan.message(hit));
@@ -888,7 +910,8 @@ mod tests {
     #[test]
     fn the_hand_shows_over_what_a_click_opens_or_unfolds() {
         let events = events();
-        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT) };
+        let timeline =
+            Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT) };
         let rows = timeline.plan.rows(SIZE.height);
         let workshop = layout::blocks(&timeline.plan.track, &rows, &timeline.plan.timed)[0].rect;
         assert_eq!(interaction(&timeline, workshop.center()), mouse::Interaction::Pointer);
@@ -904,7 +927,8 @@ mod tests {
         assert_eq!(sideways(mouse::ScrollDelta::Pixels { x: 0.0, y: 30.0 }), Some(-30.0));
         assert_eq!(sideways(mouse::ScrollDelta::Pixels { x: 40.0, y: 5.0 }), None);
         let events = events();
-        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT) };
+        let timeline =
+            Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT) };
         let bounds = Rectangle::new(Point::ORIGIN, SIZE);
         let wheel = Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 } });
         let over = mouse::Cursor::Available(Point::new(100.0, 100.0));
@@ -962,8 +986,11 @@ mod tests {
         assert_eq!(state.open, BTreeSet::from([d(12), d(13), d(14)]), "none open: all unfold");
         let _ = state.update::<()>(Change::ToggleNight(d(13)), first, after, Night::DEFAULT);
         assert!(!state.open.contains(&d(13)));
-        let plan = Plan::new(&data(&events()), &state, Night::DEFAULT);
-        assert!(plan.track.width > Plan::new(&data(&events()), &State::default(), Night::DEFAULT).track.width);
+        let plan = Plan::new(&data(&events()), &state, Night::DEFAULT, WorkingHours::DEFAULT);
+        assert!(
+            plan.track.width
+                > Plan::new(&data(&events()), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT).track.width
+        );
         assert_eq!(plan.folds(&plan.rows(SIZE.height)).len(), 2, "a collapse button per open night");
     }
 
@@ -985,7 +1012,8 @@ mod tests {
     #[test]
     fn a_click_on_the_moon_unfolds_and_a_double_click_opens_the_night() {
         let events = events();
-        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT) };
+        let timeline =
+            Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT) };
         let rows = timeline.plan.rows(SIZE.height);
         let (evening, moon) = timeline.plan.moons(&rows)[1];
         assert_eq!(evening, d(13));
@@ -1011,12 +1039,12 @@ mod tests {
         let events = events();
         let quarter = |hour, minute| torro_core::settings::Quarter::new(hour, minute).expect("quarter");
         let late = Night { from: quarter(23, 30), to: quarter(7, 0) };
-        let plan = Plan::new(&data(&events), &State::default(), late);
+        let plan = Plan::new(&data(&events), &State::default(), late, WorkingHours::DEFAULT);
         let night = plan.track.segments[1];
         assert_eq!((night.start, night.end), (at(12, 23, 30), at(13, 7, 0)));
         assert_eq!(plan.night_label(&night, &plan.rows(SIZE.height)), format!("{} · {}", tr("Night"), span(450)));
         let none = Night::none_at(late.from);
-        let plan = Plan::new(&data(&events), &State::default(), none);
+        let plan = Plan::new(&data(&events), &State::default(), none, WorkingHours::DEFAULT);
         assert!(plan.track.segments.iter().all(|segment| segment.evening().is_none()), "no night, no band");
         assert!(plan.moons(&plan.rows(SIZE.height)).is_empty());
     }
@@ -1034,7 +1062,7 @@ mod tests {
     #[test]
     fn the_view_builds_with_and_without_events() {
         let events = events();
-        let _ = view(data(&events), &State::default(), Night::DEFAULT, &Anchor::new());
-        let _ = view(data(&[]), &State::default(), Night::DEFAULT, &Anchor::new());
+        let _ = view(data(&events), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT, &Anchor::new());
+        let _ = view(data(&[]), &State::default(), Night::DEFAULT, WorkingHours::DEFAULT, &Anchor::new());
     }
 }

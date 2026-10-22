@@ -246,6 +246,18 @@ Der Punkt liegt auf Zeilen und Karten. Sein Wert muss deshalb auf `panel`, `rais
 `selected` mindestens 3:1 erreichen. Bei eigenen Flächen kann ein Paket den blauen Wert je Modus
 überschreiben; der Punkt teilt seine Farbe nicht mit Kalendern, Diagrammen oder Kategorien.
 
+### Arbeitszeit im Kalender
+
+| Schlüssel | Wofür | Standard dunkel | Standard hell | fehlt → |
+|---|---|---|---|---|
+| `working_hours` | dünne Linie der Arbeitszeit in Tag, Woche, Zeitstrahl und Radar (K.33) | `#FFFFFF47` (Weiß 28 %) | `#00000052` (Schwarz 32 %) | `line_selected` des Schemas |
+
+Die Linie ist eine Markierung hinter den Terminen, kein Text und kein Bedienelement; für sie gilt
+keine Kontrastregel. Im Standard ist sie das neutrale Grau der Kanten von Gewähltem. Lässt ein
+Schema den Schlüssel weg, nimmt es sein eigenes `line_selected`, damit ältere Pakete die Linie in
+ihren Farben zeichnen. Weder Torro-Rot noch eine Kalenderfarbe: Die Linie darf nicht mit der
+Jetzt-Linie oder dem Farbstreifen eines Termins verwechselt werden.
+
 ## Regeln, die jedes Paket einhalten muss
 
 Die Suite prüft ein Paket beim Laden. Verstößt es gegen eine Regel, wird es **ganz abgelehnt** (nie halb

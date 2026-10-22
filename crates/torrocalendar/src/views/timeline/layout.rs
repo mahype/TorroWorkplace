@@ -1,7 +1,7 @@
 //! Geometry of the timeline (task K.21), free of Iced widgets so that it can be tested: the track
 //! of days and nights along x (time ↔ x with folded and unfolded nights), the rows across y, the
 //! event columns with their lanes, the dots of events in a folded night, the all-day chips, free
-//! gaps and hit-testing. `timeline.rs` draws the result.
+//! gaps, the line of the working hours (task K.33) and hit-testing. `timeline.rs` draws the result.
 //!
 //! The night is the suite's setting (`Settings::night`, task K.27), 22:00–06:00 by default. x runs
 //! along the track from the end of the night on its first day (06:00) to the end of the night
@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::time::Instant;
 use iced::{Point, Rectangle, Size};
-use torro_core::settings::Night;
+use torro_core::settings::{Night, WorkingHours};
 use torro_gui::icon;
 use torro_gui::theme::{size, space};
 
@@ -294,6 +294,35 @@ impl Track {
         self.day_start(day) + Duration::minutes(length.unwrap_or(24 * 60))
     }
 
+    /// Where the line of the working `hours` runs along x (task K.33): `(from, to)` for each
+    /// stretch of them on the track, also of the day before the first, whose hours may reach into
+    /// it. Parts in a folded night are left out, so the line ends at the edge of the band; parts in
+    /// an unfolded night run on with the day. Empty without working hours.
+    pub fn working(&self, hours: WorkingHours) -> Vec<(f32, f32)> {
+        if hours.is_none() {
+            return Vec::new();
+        }
+        let mut lines: Vec<(f32, f32)> = Vec::new();
+        let mut day = self.start.date() - Duration::days(1);
+        while day <= self.end.date() {
+            let (from, to) = (at_minutes(day, hours.from.minutes()), at_minutes(day, hours.to.minutes()));
+            for segment in self.segments.iter().filter(|segment| !segment.folded()) {
+                let (start, end) = (from.max(segment.start), to.min(segment.end));
+                if start >= end {
+                    continue;
+                }
+                let (left, right) = (segment.x_of(start), segment.x_of(end));
+                // A day and the unfolded night beside it meet without a gap: one line, not two.
+                match lines.last_mut() {
+                    Some(last) if (last.1 - left).abs() < 0.01 => last.1 = right,
+                    _ => lines.push((left, right)),
+                }
+            }
+            day += Duration::days(1);
+        }
+        lines
+    }
+
     /// The scroll offset that puts `focus` at [`FOCUS_AT`] of a viewport `viewport` wide, kept to
     /// what the scrollable can reach.
     pub fn focus_offset(&self, focus: NaiveDateTime, viewport: f32) -> f32 {
@@ -315,6 +344,13 @@ impl Rows {
     /// The hour labels: `(top, bottom)`.
     pub fn axis(&self) -> (f32, f32) {
         (day_head(), day_head() + axis_row())
+    }
+
+    /// The line of the working hours (task K.33): `(top, bottom)`, the lowest [`GAP`] of the hour
+    /// row, so it runs along the hours without touching their labels or the chips below.
+    pub fn working(&self) -> (f32, f32) {
+        let bottom = self.axis().1;
+        (bottom - GAP, bottom)
     }
 
     /// The all-day chips: `(top, bottom)`.
@@ -711,6 +747,42 @@ mod tests {
         assert!(close(track.x_of(now) - offset, 180.0));
         assert_eq!(track.focus_offset(at(12, 6, 0), 600.0), 0.0, "not before the start");
         assert!(close(track.focus_offset(at(14, 5, 0), 600.0), track.width - 600.0), "not past the end");
+    }
+
+    fn hours(from: (u32, u32), to: (u32, u32)) -> WorkingHours {
+        let quarter = |(hour, minute)| Quarter::new(hour, minute).expect("quarter");
+        WorkingHours { from: quarter(from), to: quarter(to) }
+    }
+
+    /// Task K.33: one line per day from the start to the end of the working hours.
+    #[test]
+    fn the_working_line_runs_from_start_to_end_of_each_day() {
+        let track = track(&[]);
+        let lines = track.working(hours((7, 30), (16, 0)));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(close(lines[0].0, 1.5 * HOUR_WIDTH) && close(lines[0].1, 10.0 * HOUR_WIDTH), "{lines:?}");
+        assert!(close(lines[1].0, track.x_of(at(13, 7, 30))) && close(lines[1].1, track.x_of(at(13, 16, 0))));
+        let rows = rows();
+        assert_eq!(rows.working(), (rows.axis().1 - GAP, rows.axis().1));
+        assert!(track.working(hours((9, 0), (9, 0))).is_empty(), "no working hours, no line");
+    }
+
+    /// Working hours from 05:00 reach into the night 22:00–06:00: folded, the line starts at the
+    /// right edge of the band (or at the start of the track on the first day); unfolded, at 05:00.
+    #[test]
+    fn the_working_line_ends_at_a_folded_night() {
+        let early = hours((5, 0), (9, 0));
+        let folded = track(&[]).working(early);
+        assert_eq!(folded.len(), 2, "{folded:?}");
+        assert!(close(folded[0].0, 0.0) && close(folded[0].1, 3.0 * HOUR_WIDTH), "{folded:?}");
+        assert!(close(folded[1].0, DAY + NIGHT_WIDTH), "the band's right edge: {folded:?}");
+        assert!(close(folded[1].1, DAY + NIGHT_WIDTH + 3.0 * HOUR_WIDTH));
+        let open = track(&[12]);
+        let unfolded = open.working(early);
+        assert_eq!(unfolded.len(), 2, "{unfolded:?}");
+        assert!(close(unfolded[1].0, open.x_of(at(13, 5, 0))), "{unfolded:?}");
+        assert!(close(unfolded[1].0, DAY + 7.0 * HOUR_WIDTH), "inside the unfolded night");
+        assert!(close(unfolded[1].1, open.x_of(at(13, 9, 0))), "one line across the morning");
     }
 
     fn timed(id: usize, start: NaiveDateTime, end: NaiveDateTime) -> Timed {
