@@ -61,6 +61,10 @@ torro-htmlview = { path = "crates/torro-htmlview" }
 torroinbox = { path = "crates/torroinbox" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
+# Time zones of events (torro-pim-caldav, TE.2): IANA names read from `TZID` and written with a `VTIMEZONE`; the
+# computer's zone by name (chrono brings iana-time-zone already). Both MIT OR Apache-2.0.
+chrono-tz = "0.10.4"
+iana-time-zone = "0.1.65"
 # The desktop folder of each system for the PDF tool's files (torroworkplace, WZ.4): XDG `user-dirs.dirs` on Linux,
 # the Known Folder on Windows, `~/Desktop` on macOS.
 dirs = "7.0.0"

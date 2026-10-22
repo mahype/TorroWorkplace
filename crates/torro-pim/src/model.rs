@@ -166,10 +166,11 @@ impl Event {
         matches!(self.start, EventTime::Date(_))
     }
 
-    /// The event makes its time busy: opaque and not all-day. All-day entries (holidays,
-    /// birthdays) and transparent ones leave the time free, whatever they say.
+    /// The event makes its time busy: opaque, not all-day and not cancelled. All-day entries
+    /// (holidays, birthdays), transparent ones and cancelled ones (`STATUS:CANCELLED`, task TE.2)
+    /// leave the time free, whatever else they say.
     pub fn busy(&self) -> bool {
-        self.transparency == Transparency::Opaque && !self.all_day()
+        self.transparency == Transparency::Opaque && !self.all_day() && self.status != Some(EventStatus::Cancelled)
     }
 }
 
@@ -759,8 +760,12 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&json).expect("back"), free);
         assert!(!free.busy(), "free time is not busy");
         let day = NaiveDate::from_ymd_opt(2026, 10, 12).expect("date");
-        let all_day = Event { start: EventTime::Date(day), end: None, ..event };
+        let all_day = Event { start: EventTime::Date(day), end: None, ..event.clone() };
         assert!(!all_day.busy(), "all-day entries never make the time busy");
+        // Task TE.2: a cancelled event keeps no time busy; tentative and confirmed ones do.
+        let status = |status| Event { status: Some(status), ..event.clone() };
+        assert!(!status(EventStatus::Cancelled).busy(), "cancelled events leave the time free");
+        assert!(status(EventStatus::Tentative).busy() && status(EventStatus::Confirmed).busy());
     }
 
     /// Task TE.1: an event from an older client reads without the fields of the event editor, and

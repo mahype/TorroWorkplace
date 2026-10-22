@@ -132,6 +132,27 @@ fn full_screen_becomes_a_notification_during_a_call() {
     assert_eq!(join_of(&call).map(|join| join.service), Some("Zoom".into()));
 }
 
+/// Task TE.2: a cancelled event is read now, but it reminds of nothing and holds no call.
+#[test]
+fn a_cancelled_event_reminds_of_nothing_and_is_no_call() {
+    let mut gone = event("gone", WORK, at(10, 0), 60);
+    gone.alarms = vec![before(15, Some(AlarmStyle::FullScreen))];
+    gone.status = Some(EventStatus::Cancelled);
+    let all = Settings { all_day: true, free_events: true, ..full_screen(WORK) };
+    assert!(plan(std::slice::from_ref(&gone), &all, &Ledger::default(), at(9, 50)).is_empty());
+    let tentative = Event { status: Some(EventStatus::Tentative), ..gone.clone() };
+    assert_eq!(states(&plan(&[tentative], &all, &Ledger::default(), at(9, 50))), [("gone", ReminderState::Due)]);
+
+    // A called-off call that would still run does not turn full screen into a notification.
+    let mut call = event("call", HOME, at(9, 30), 60);
+    call.location = Some("https://us02web.zoom.us/j/123".into());
+    call.status = Some(EventStatus::Cancelled);
+    let next = event("next", WORK, at(10, 0), 30);
+    let reminders = plan(&[call, next], &full_screen(WORK), &Ledger::default(), at(9, 59));
+    assert_eq!(states(&reminders), [("next", ReminderState::Due)]);
+    assert_eq!(reminders[0].style, AlarmStyle::FullScreen);
+}
+
 #[test]
 fn a_moved_event_is_a_new_reminder() {
     let reminders = Reminders::new(None);

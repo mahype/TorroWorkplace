@@ -82,7 +82,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   Vorkommen ohne `scope` bleibt `unsupported`.
 
 ## TE.2 iCalendar: neue Felder, Zeitzonen, Teilnehmer
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert`) · **Braucht:** TE.1 · **Dateien:** `crates/torro-pim-caldav/src/{ical,write}.rs`,
   `crates/torro-pim-caldav/Cargo.toml`, `Cargo.toml` (Wurzel), `crates/torro-pim-caldav/tests/fixtures/`,
   `crates/torro-pim/src/model.rs` (`Event::busy`), `crates/torroworkplace/src/reminders.rs`

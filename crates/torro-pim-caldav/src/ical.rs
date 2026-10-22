@@ -1,16 +1,23 @@
 //! Just enough iCalendar (RFC 5545) to read events (VEVENT) and tasks (VTODO).
 //!
 //! The server expands recurring events for us (`<C:expand>` in the calendar query), so
-//! every occurrence arrives as its own VEVENT with times in UTC. Times with a TZID that
-//! slip through anyway are read as local time; a full time zone database comes with the
-//! sync engine.
+//! every occurrence arrives as its own VEVENT with times in UTC. A stored object read as it is
+//! (an update writes onto it, an invitation came by mail) keeps its `TZID`s: an IANA name
+//! (`Europe/Berlin`, also behind a vendor prefix like `/mozilla.org/20050126_1/Europe/Berlin`) is
+//! converted with `chrono-tz` and kept as the event's `time_zone` (task TE.2); any other name
+//! (Windows' `W. Europe Standard Time`) and floating times are read as the computer's local time.
+//!
+//! Cancelled events (`STATUS:CANCELLED`) are read with their status (task TE.2): the calendar
+//! shows them struck through, and [`Event::busy`] and the reminders leave them out. Cancelled
+//! tasks are still skipped. Organizer and attendees are read for display only; nothing writes them.
 //!
 //! An event's reminders (task ER1.1, `docs/erinnerungen.md`) are its `VALARM` components with
 //! `ACTION:DISPLAY` or `AUDIO` ([`alarm`]). Mail alarms, `ACTION:NONE` (Apple's placeholder) and
 //! alarms whose `TRIGGER` cannot be read are not the model's: they are left out, not reported.
 
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use torro_pim::model::Link;
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
+use chrono_tz::Tz;
+use torro_pim::model::{Attendee, AttendeeRole, EventStatus, Geo, Link, PartStat};
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Todo, Transparency};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
@@ -26,7 +33,8 @@ impl Property<'_> {
     }
 }
 
-/// The events in one iCalendar object (one `calendar-data`), skipping cancelled ones.
+/// The events in one iCalendar object (one `calendar-data`), cancelled ones included (with
+/// `status: Cancelled`); a VEVENT without a readable `DTSTART` is left out.
 pub fn parse_events(ics: &str, collection: &str) -> Vec<Event> {
     let mut events = Vec::new();
     for_each_component(ics, "VEVENT", |props, alarms| events.extend(to_event(props, alarms, collection)));
@@ -173,14 +181,12 @@ fn split_list(value: &str) -> Vec<&str> {
     parts
 }
 
-/// The event one VEVENT's own properties and its `VALARM`s describe; `None` for a cancelled one
-/// or one without a readable `DTSTART`.
+/// The event one VEVENT's own properties and its `VALARM`s describe; `None` for one without a
+/// readable `DTSTART`. A cancelled event is read like any other, with `status: Cancelled`.
 pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], collection: &str) -> Option<Event> {
     let get = |name: &str| find(props, name);
-    if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
-        return None;
-    }
-    let start = parse_time(get("DTSTART")?)?;
+    let dtstart = get("DTSTART")?;
+    let start = parse_time(dtstart)?;
     let end = match get("DTEND").and_then(parse_time) {
         Some(end) => Some(end),
         None => get("DURATION").and_then(|p| parse_duration(p.value)).map(|d| add(start, d)),
@@ -198,16 +204,108 @@ pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], col
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
         transparency: transparency(get("TRANSP")),
         alarms: alarms.iter().filter_map(|props| alarm(props)).collect(),
-        // Read from the server from task TE.2 (fields) and TE.3 (series) on.
-        recurrence_id: None,
+        recurrence_id: get("RECURRENCE-ID").and_then(parse_time),
+        // The rule is read with the raw objects of a series (task TE.3).
         repeat: None,
-        time_zone: None,
-        url: None,
-        status: None,
-        geo: None,
-        organizer: None,
-        attendees: Vec::new(),
+        time_zone: matches!(start, EventTime::DateTime(_))
+            .then(|| dtstart.param("TZID").and_then(zone))
+            .flatten()
+            .map(|tz| tz.name().to_string()),
+        url: get("URL").map(|p| p.value.trim().to_string()).filter(|s| !s.is_empty()),
+        status: get("STATUS").and_then(|p| status(p.value)),
+        geo: geo(props),
+        organizer: get("ORGANIZER").map(|p| Box::new(person(p))),
+        attendees: props.iter().filter(|p| p.name.eq_ignore_ascii_case("ATTENDEE")).map(person).collect(),
     })
+}
+
+/// The IANA zone a `TZID` names, also behind a vendor prefix (`/mozilla.org/20050126_1/Europe/Berlin`,
+/// as older Thunderbird and Citadel write it); `None` for any other name (Windows' `W. Europe
+/// Standard Time`), which the object's own `VTIMEZONE` would have to explain.
+pub(crate) fn zone(tzid: &str) -> Option<Tz> {
+    let tzid = tzid.trim();
+    let suffixes = tzid.match_indices('/').map(|(i, _)| &tzid[i + 1..]);
+    std::iter::once(tzid).chain(suffixes).find_map(|name| name.parse::<Tz>().ok())
+}
+
+/// The status of an event (`STATUS`); `None` for a value RFC 5545 does not give events.
+fn status(value: &str) -> Option<EventStatus> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "CONFIRMED" => Some(EventStatus::Confirmed),
+        "TENTATIVE" => Some(EventStatus::Tentative),
+        "CANCELLED" => Some(EventStatus::Cancelled),
+        _ => None,
+    }
+}
+
+/// Where the event is: `GEO:lat;lon` (RFC 5545 section 3.8.1.6), else the `geo:` URI of Apple's
+/// `X-APPLE-STRUCTURED-LOCATION` (RFC 5870: `geo:lat,lon[,alt][;u=…]`). A value that is not two
+/// numbers in range is none.
+fn geo(props: &[Property<'_>]) -> Option<Geo> {
+    let point = |lat: &str, lon: &str| Geo::new(lat.trim().parse().ok()?, lon.trim().parse().ok()?);
+    let stored = find(props, "GEO").and_then(|p| {
+        // Some programs write a comma instead of the semicolon.
+        let (lat, lon) = p.value.split_once(';').or_else(|| p.value.split_once(','))?;
+        point(lat, lon)
+    });
+    stored.or_else(|| {
+        let apple = find(props, "X-APPLE-STRUCTURED-LOCATION")?.value.trim();
+        let coords = strip_prefix_ignore_case(apple, "geo:")?.split(';').next()?;
+        let mut parts = coords.split(',');
+        point(parts.next()?, parts.next()?)
+    })
+}
+
+/// `text` without `prefix`, whatever the case of the prefix.
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+}
+
+/// The person an `ORGANIZER` or `ATTENDEE` names: `CN` as the name, the `mailto:` address (else
+/// the `EMAIL` parameter of RFC 7986), `PARTSTAT` and `ROLE`; unknown values are the defaults.
+fn person(prop: &Property<'_>) -> Attendee {
+    let address = strip_prefix_ignore_case(prop.value.trim(), "mailto:").or_else(|| prop.param("EMAIL"));
+    let partstat = match prop.param("PARTSTAT").map(|v| v.trim().to_ascii_uppercase()).as_deref() {
+        Some("ACCEPTED") => PartStat::Accepted,
+        Some("DECLINED") => PartStat::Declined,
+        Some("TENTATIVE") => PartStat::Tentative,
+        Some("DELEGATED") => PartStat::Delegated,
+        _ => PartStat::NeedsAction,
+    };
+    let role = match prop.param("ROLE").map(|v| v.trim().to_ascii_uppercase()).as_deref() {
+        Some("CHAIR") => AttendeeRole::Chair,
+        Some("OPT-PARTICIPANT") => AttendeeRole::Optional,
+        Some("NON-PARTICIPANT") => AttendeeRole::NonParticipant,
+        _ => AttendeeRole::Required,
+    };
+    Attendee {
+        name: prop.param("CN").map(param_text).filter(|name| !name.is_empty()),
+        email: address.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
+        partstat,
+        role,
+    }
+}
+
+/// A parameter value as text: trimmed, with the `^` escapes of RFC 6868 (`^n` line break, `^'`
+/// double quote, `^^` caret) resolved.
+fn param_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.trim().chars();
+    while let Some(c) = chars.next() {
+        if c != '^' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('\'') => out.push('"'),
+            Some('^') => out.push('^'),
+            Some(other) => out.extend(['^', other]),
+            None => out.push('^'),
+        }
+    }
+    out
 }
 
 /// The reminder one `VALARM`'s properties describe: `ACTION:DISPLAY` or `AUDIO` with a readable
@@ -255,6 +353,8 @@ fn add(time: EventTime, duration: Duration) -> EventTime {
     }
 }
 
+/// A `DATE`, a UTC time (`…Z`), a time in the IANA zone its `TZID` names ([`zone`]) or, for a
+/// floating time or a zone chrono-tz does not know, a time in the computer's local zone.
 fn parse_time(prop: &Property<'_>) -> Option<EventTime> {
     let value = prop.value.trim();
     if prop.param("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || value.len() == 8 {
@@ -264,10 +364,28 @@ fn parse_time(prop: &Property<'_>) -> Option<EventTime> {
         let naive = NaiveDateTime::parse_from_str(utc, "%Y%m%dT%H%M%S").ok()?;
         return Some(EventTime::DateTime(naive.and_utc()));
     }
-    // Floating or TZID time: read as local time for now.
     let naive = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S").ok()?;
+    if let Some(tz) = prop.param("TZID").and_then(zone) {
+        return Some(EventTime::DateTime(in_zone(tz, naive)));
+    }
+    // Floating time, or a zone only the object's VTIMEZONE explains: the computer's local time.
     let local = Local.from_local_datetime(&naive).earliest()?;
     Some(EventTime::DateTime(local.with_timezone(&Utc)))
+}
+
+/// The instant the wall-clock time `naive` names in `tz`, as RFC 5545 section 3.3.5 reads it: a
+/// time that occurs twice (the hour before winter time) is the first one, a time the clocks skip
+/// (the hour before summer time) counts with the offset before the gap (02:30 becomes 03:30).
+pub(crate) fn in_zone(tz: Tz, naive: NaiveDateTime) -> DateTime<Utc> {
+    match tz.from_local_datetime(&naive).earliest() {
+        Some(at) => at.with_timezone(&Utc),
+        None => {
+            // In the gap: the offset a day before is the one before it (zones change at most
+            // twice a year).
+            let before = tz.offset_from_utc_datetime(&(naive - Duration::days(1))).fix();
+            (naive - Duration::seconds(i64::from(before.local_minus_utc()))).and_utc()
+        }
+    }
 }
 
 /// `P1D`, `PT1H30M`, `-PT15M`, `P2W` …
@@ -363,9 +481,11 @@ mod tests {
     const SAMPLE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:abc\r\nDTSTART:20261011T080000Z\r\nDTEND:20261011T093000Z\r\nSUMMARY:Workshop\\, Teil 1\r\nLOCATION:Raum\r\n  3\r\nBEGIN:VALARM\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Alarm\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:day\r\nDTSTART;VALUE=DATE:20261012\r\nDURATION:P1D\r\nSUMMARY:Urlaub\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:gone\r\nSTATUS:CANCELLED\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 
     #[test]
-    fn reads_timed_all_day_and_skips_cancelled() {
+    fn reads_timed_all_day_and_cancelled() {
         let events = parse_events(SAMPLE, "/cal/");
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3, "cancelled events are read since TE.2");
+        assert_eq!(events[2].status, Some(EventStatus::Cancelled));
+        assert_eq!((events[0].status, events[0].time_zone.as_deref()), (None, None), "UTC times name no zone");
         let first = &events[0];
         assert_eq!(first.summary, "Workshop, Teil 1");
         assert_eq!(first.location.as_deref(), Some("Raum 3"));
@@ -564,5 +684,155 @@ RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         );
         let event = parse_events(&ics, "/cal/").remove(0);
         assert_eq!(event.description, None, "an alarm's description is not the event's");
+    }
+
+    // New fields, time zones and attendees (task TE.2).
+
+    const NEXTCLOUD_BERLIN: &str = include_str!("../tests/fixtures/nextcloud-event-berlin.ics");
+    const NEXTCLOUD_CANCELLED: &str = include_str!("../tests/fixtures/nextcloud-event-cancelled.ics");
+    const NEXTCLOUD_ATTENDEES: &str = include_str!("../tests/fixtures/nextcloud-event-attendees.ics");
+    const APPLE_PLACE: &str = include_str!("../tests/fixtures/apple-structured-location.ics");
+
+    fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> EventTime {
+        EventTime::DateTime(Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).single().expect("a time"))
+    }
+
+    fn one(ics: &str) -> Event {
+        parse_events(ics, "/cal/").into_iter().next().expect("an event")
+    }
+
+    #[test]
+    fn tzid_times_are_converted_with_the_zone_and_the_zone_is_kept() {
+        // Summer time: 10:00 in Berlin is 08:00 UTC.
+        let summer = one(NEXTCLOUD_BERLIN);
+        assert_eq!(summer.start, utc(2026, 10, 13, 8, 0));
+        assert_eq!(summer.end, Some(utc(2026, 10, 13, 9, 30)));
+        assert_eq!(summer.time_zone.as_deref(), Some("Europe/Berlin"));
+        // Winter time: 09:00 in Berlin is 08:00 UTC.
+        let winter = one(NEXTCLOUD_CANCELLED);
+        assert_eq!(winter.start, utc(2026, 1, 20, 8, 0));
+        assert_eq!(winter.time_zone.as_deref(), Some("Europe/Berlin"));
+    }
+
+    #[test]
+    fn zone_names_behind_a_prefix_are_found_and_windows_names_are_not() {
+        assert_eq!(zone("Europe/Berlin"), Some(Tz::Europe__Berlin));
+        assert_eq!(zone(" America/Argentina/Buenos_Aires "), Some(Tz::America__Argentina__Buenos_Aires));
+        assert_eq!(zone("/mozilla.org/20050126_1/Europe/Berlin"), Some(Tz::Europe__Berlin));
+        assert_eq!(zone("/citadel.org/20190914_1/America/New_York"), Some(Tz::America__New_York));
+        assert_eq!(zone("W. Europe Standard Time"), None);
+        assert_eq!(zone(""), None);
+        // Unknown names are read as local time, as before, and name no zone.
+        let windows = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=W. Europe Standard Time");
+        assert_eq!(one(&windows).time_zone, None);
+        let prefixed = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=/mozilla.org/20050126_1/Europe/Berlin");
+        let event = one(&prefixed);
+        assert_eq!((event.start, event.time_zone.as_deref()), (utc(2026, 10, 13, 8, 0), Some("Europe/Berlin")));
+    }
+
+    #[test]
+    fn times_around_the_change_of_the_clock_follow_rfc_5545() {
+        let berlin = Tz::Europe__Berlin;
+        let naive = |d: u32, mo: u32, h: u32, mi: u32| {
+            NaiveDate::from_ymd_opt(2026, mo, d).and_then(|d| d.and_hms_opt(h, mi, 0)).expect("a time")
+        };
+        let at = |y, mo, d, h, mi| Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).single().expect("a time");
+        // 02:30 on 29 March does not exist: counted with the offset before the gap (+01:00).
+        assert_eq!(in_zone(berlin, naive(29, 3, 2, 30)), at(2026, 3, 29, 1, 30));
+        // 02:30 on 25 October happens twice: the first one (+02:00).
+        assert_eq!(in_zone(berlin, naive(25, 10, 2, 30)), at(2026, 10, 25, 0, 30));
+        assert_eq!(in_zone(berlin, naive(25, 10, 3, 30)), at(2026, 10, 25, 2, 30));
+    }
+
+    #[test]
+    fn reads_url_status_and_a_cancelled_event() {
+        let event = one(NEXTCLOUD_BERLIN);
+        assert_eq!(event.url.as_deref(), Some("https://wiki.example.org/planung/2026-10-13"));
+        assert_eq!(event.status, Some(EventStatus::Confirmed));
+        assert_eq!((event.geo, event.organizer.as_deref(), event.attendees.len()), (None, None, 0));
+        let cancelled = one(NEXTCLOUD_CANCELLED);
+        assert_eq!(cancelled.status, Some(EventStatus::Cancelled));
+        assert_eq!(cancelled.summary, "Jahresgespräch");
+        assert!(!cancelled.busy(), "a cancelled event keeps no time busy");
+        let status = |value: &str| one(&NEXTCLOUD_BERLIN.replace("STATUS:CONFIRMED", value)).status;
+        assert_eq!(status("status: tentative "), Some(EventStatus::Tentative));
+        assert_eq!(status("STATUS:X-POSTPONED"), None, "an unknown status is none");
+        assert_eq!(status("STATUS:NEEDS-ACTION"), None, "a task's status is not an event's");
+    }
+
+    #[test]
+    fn reads_the_place_from_geo_or_from_apple() {
+        let geo = one(NEXTCLOUD_ATTENDEES).geo.expect("GEO");
+        assert_eq!((geo.lat, geo.lon), (52.520008, 13.404954));
+        let apple = one(APPLE_PLACE);
+        let place = apple.geo.expect("Apple's place");
+        assert_eq!((place.lat, place.lon), (52.516275, 13.377704));
+        assert_eq!(apple.location.as_deref(), Some("Brandenburger Tor\nPariser Platz, 10117 Berlin, Deutschland"));
+        // GEO wins over Apple's place; broken values are none.
+        let both = APPLE_PLACE.replace("SEQUENCE:0", "GEO:48.137154;11.576124");
+        assert_eq!(one(&both).geo.map(|g| (g.lat, g.lon)), Some((48.137154, 11.576124)));
+        for broken in ["GEO:91;13", "GEO:52.5", "GEO:nan;13", "GEO:north;east"] {
+            let ics = NEXTCLOUD_ATTENDEES.replace("GEO:52.520008;13.404954", broken);
+            assert_eq!(one(&ics).geo, None, "{broken}");
+        }
+        let comma = NEXTCLOUD_ATTENDEES.replace("GEO:52.520008;13.404954", "GEO:52.5,13.4");
+        assert_eq!(one(&comma).geo.map(|g| (g.lat, g.lon)), Some((52.5, 13.4)), "a comma is forgiven");
+        let with_params = APPLE_PLACE.replace("geo:52.516275,13.377704", "GEO:52.5,13.4,34;u=35");
+        assert_eq!(one(&with_params).geo.map(|g| (g.lat, g.lon)), Some((52.5, 13.4)), "altitude and u= are left out");
+    }
+
+    #[test]
+    fn reads_organizer_and_attendees() {
+        let event = one(NEXTCLOUD_ATTENDEES);
+        let anna = Attendee {
+            name: Some("Anna Beispiel".into()),
+            email: Some("anna@example.org".into()),
+            partstat: PartStat::NeedsAction,
+            role: AttendeeRole::Required,
+        };
+        assert_eq!(event.organizer.as_deref(), Some(&anna));
+        assert_eq!(
+            event.attendees,
+            [
+                Attendee { partstat: PartStat::Accepted, role: AttendeeRole::Chair, ..anna.clone() },
+                Attendee {
+                    name: Some("Beispiel, Ben".into()),
+                    email: Some("ben@example.org".into()),
+                    partstat: PartStat::Tentative,
+                    role: AttendeeRole::Required,
+                },
+                Attendee {
+                    name: None,
+                    email: Some("carla@example.org".into()),
+                    partstat: PartStat::NeedsAction,
+                    role: AttendeeRole::Optional,
+                },
+                Attendee {
+                    name: Some("Raum 2".into()),
+                    email: None,
+                    partstat: PartStat::Accepted,
+                    role: AttendeeRole::NonParticipant,
+                },
+            ]
+        );
+        let declined = one(NEXTCLOUD_CANCELLED).attendees;
+        assert_eq!(declined[1].partstat, PartStat::Declined);
+        // RFC 6868 escapes and the EMAIL parameter of RFC 7986.
+        let odd = NEXTCLOUD_BERLIN.replace(
+            "STATUS:CONFIRMED",
+            "ATTENDEE;CN=Dr. ^'Q^' Muster;EMAIL=q@example.org;PARTSTAT=X-UNKNOWN:urn:uuid:1",
+        );
+        let q = one(&odd).attendees.remove(0);
+        assert_eq!((q.name.as_deref(), q.email.as_deref()), (Some("Dr. \"Q\" Muster"), Some("q@example.org")));
+        assert_eq!(q.partstat, PartStat::NeedsAction, "unknown answers are not answers");
+    }
+
+    #[test]
+    fn reads_the_recurrence_id() {
+        let ics = NEXTCLOUD_BERLIN.replace("STATUS:CONFIRMED", "RECURRENCE-ID;TZID=Europe/Berlin:20261013T100000");
+        let event = one(&ics);
+        assert_eq!(event.recurrence_id, Some(utc(2026, 10, 13, 8, 0)));
+        assert!(event.recurring);
+        assert_eq!(one(NEXTCLOUD_BERLIN).recurrence_id, None);
     }
 }
