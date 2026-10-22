@@ -23,7 +23,15 @@
 //! needs a native event loop on the main thread, so the service runs as a task on the runtime's
 //! worker threads and the main thread runs [`tray::Shell`] until the service ends.
 //! `--headless` runs no tray and no event loop on any system.
+//!
+//! A person's quit (tray › Quit, `ctl quit`) leaves the marker [`QUIT_MARK`] next to the socket, which
+//! the next start removes (issue #279, decision 4 in `docs/lebenszyklus.md`): while it stands, no MCP
+//! server starts the service again. The first-run setup opens only once the socket answers
+//! ([`once_listening`]), so a service that fails on its socket opens no window that would start the
+//! next one.
 
+use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,7 +40,7 @@ use tokio::sync::mpsc;
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
-use torro_ipc::{Request, Response, app_key_path, client, server, socket_path};
+use torro_ipc::{Door, Key, Request, Response, app_key_path, client, server, socket_path};
 use torro_setups::storage::Store;
 
 use crate::clients::{Clients, SystemKeychain};
@@ -46,6 +54,8 @@ pub struct Daemon {
     runtime: tokio::runtime::Handle,
     refresh: mpsc::UnboundedSender<()>,
     quit: mpsc::UnboundedSender<()>,
+    /// Where a person's quit is marked ([`QUIT_MARK`]); `None` without a state directory.
+    quit_mark: Option<PathBuf>,
 }
 
 impl Daemon {
@@ -56,19 +66,10 @@ impl Daemon {
         let core = Arc::clone(&self.core);
         let refresh = self.refresh.clone();
         let quit = self.quit.clone();
+        let quit_mark = self.quit_mark.clone();
         self.runtime.spawn(async move {
-            let what = describe(&request);
-            let ends = matches!(request, Request::Quit);
-            let quiet = shows_itself(&request);
             let _ = refresh.send(());
-            let response = core.handle(request).await;
-            match quiet && !matches!(response, Response::Error { .. }) {
-                true => log(&what, &response),
-                false => report(&what, &response),
-            }
-            if ends && matches!(response, Response::Ok) {
-                end_after_answer(quit);
-            }
+            run_from_tray(&core, request, &quit, quit_mark.as_deref(), report).await;
             let _ = refresh.send(());
         });
     }
@@ -129,8 +130,101 @@ const ANSWER_GRACE: Duration = Duration::from_millis(200);
 /// How long the start waits for an answer to "is a core already running?".
 const START_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Ends the service once the answer to a `system.quit` is on its way (see [`ANSWER_GRACE`]).
-fn end_after_answer(quit: mpsc::UnboundedSender<()>) {
+/// The marker a person's quit leaves in the core's state directory, next to the socket (issue #279,
+/// decision 4 in `docs/lebenszyklus.md`): the time only, 0600. While it stands no MCP server starts
+/// the core ([`stopped_by_person`]); the core's next start removes it. An end by a signal, by
+/// `launchctl`/`systemctl stop` or by a crash leaves none.
+pub const QUIT_MARK: &str = "quit";
+
+/// Whether a person stopped the core at `socket` ([`QUIT_MARK`] stands next to it): an MCP server
+/// then leaves it stopped. `false` without a state directory.
+pub fn stopped_by_person(socket: &Path) -> bool {
+    torro_gui::source::core_state_file(socket, QUIT_MARK).is_some_and(|mark| mark.is_file())
+}
+
+/// Removes the marker of a person's quit, as the service starts: whoever started it wants it. A
+/// marker that cannot be removed is only logged, it keeps nothing but MCP from starting the core.
+fn clear_quit(mark: Option<&Path>) {
+    let Some(mark) = mark else { return };
+    match std::fs::remove_file(mark) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => eprintln!("torroworkplace: cannot remove {}: {err}", mark.display()),
+    }
+}
+
+/// What the tray does with `request` ([`Daemon::run`]): runs it, tells how it went – `tell`
+/// ([`report`] in the service), only logged for a window that opened ([`shows_itself`]) – and ends
+/// the service after a quit ([`end_after_answer`]).
+async fn run_from_tray(
+    core: &Core,
+    request: Request,
+    quit: &mpsc::UnboundedSender<()>,
+    quit_mark: Option<&Path>,
+    tell: fn(&str, &Response),
+) {
+    let what = describe(&request);
+    let ends = matches!(request, Request::Quit);
+    let quiet = shows_itself(&request);
+    let response = core.handle(request).await;
+    match quiet && !matches!(response, Response::Error { .. }) {
+        true => log(&what, &response),
+        false => tell(&what, &response),
+    }
+    if ends && matches!(response, Response::Ok) {
+        end_after_answer(quit.clone(), quit_mark);
+    }
+}
+
+/// One request from the socket ([`serve`]): passes the key check ([`Core::handle_from`]), tells
+/// about template commands on the desktop as the tray does, asks for a new menu, and ends the
+/// service after a quit, which only the app key may send ([`end_after_answer`]).
+async fn answer(
+    core: Arc<Core>,
+    key: Option<Key>,
+    door: Door,
+    request: Request,
+    refresh: mpsc::UnboundedSender<()>,
+    quit: mpsc::UnboundedSender<()>,
+    quit_mark: Option<PathBuf>,
+) -> Response {
+    // Hotkeys go through `ctl`, so commands from the socket get the same
+    // notifications as clicks in the tray.
+    let changes = changes_state(&request).then(|| describe(&request));
+    let notifies = tells_on_desktop(&request);
+    // The tray on macOS and Windows registers the template keys with each new menu.
+    let rekeys = crate::workspace_keys::rebinds_after(&request);
+    let ends = matches!(request, Request::Quit);
+    // A refused request ran nothing: no notification, no new menu, so a foreign
+    // client cannot flood the desktop.
+    let response = match core.handle_from(key.as_ref(), door, request).await {
+        Ok(response) => response,
+        Err(refused) => return refused.response(),
+    };
+    if ends && matches!(response, Response::Ok) {
+        end_after_answer(quit, quit_mark.as_deref());
+    }
+    if let Some(what) = changes {
+        if notifies {
+            report(&what, &response);
+        }
+        let _ = refresh.send(());
+    } else if rekeys {
+        let _ = refresh.send(());
+    }
+    response
+}
+
+/// Ends the service once the answer to a `system.quit` is on its way (see [`ANSWER_GRACE`]). The one
+/// place a person's quit passes, from the tray and from the socket alike, so it marks the quit here
+/// ([`QUIT_MARK`] at `mark`) before anything ends. A marker that cannot be written is only logged:
+/// the quit still ends the service.
+fn end_after_answer(quit: mpsc::UnboundedSender<()>, mark: Option<&Path>) {
+    if let Some(mark) = mark
+        && let Err(err) = torro_gui::source::write_mark(mark, chrono::Utc::now())
+    {
+        eprintln!("torroworkplace: cannot write {}: {err}", mark.display());
+    }
     tokio::spawn(async move {
         tokio::time::sleep(ANSWER_GRACE).await;
         let _ = quit.send(());
@@ -234,6 +328,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
     if let Ok(Ok(Response::Pong { .. })) = ping {
         return Err("already running".into());
     }
+    // A person who quit and starts the service again (or logs in) wants it: MCP may start it again.
+    let quit_mark = torro_gui::source::core_state_file(&socket, QUIT_MARK);
+    clear_quit(quit_mark.as_deref());
     // The app key goes next to the socket, where `torro_ipc::client` looks for it.
     let config = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.config;
     // Reading or creating the files may wait for another core starting at the same time.
@@ -274,39 +371,11 @@ async fn serve(shows: Shows) -> Result<(), String> {
         let core = Arc::clone(&core);
         let refresh = refresh_tx.clone();
         let quit = quit_tx.clone();
+        let quit_mark = quit_mark.clone();
         let socket = socket.clone();
         tokio::spawn(async move {
             server::serve_with_key(&socket, move |key, door, request| {
-                let core = Arc::clone(&core);
-                let refresh = refresh.clone();
-                let quit = quit.clone();
-                async move {
-                    // Hotkeys go through `ctl`, so commands from the socket get the same
-                    // notifications as clicks in the tray.
-                    let changes = changes_state(&request).then(|| describe(&request));
-                    let notifies = tells_on_desktop(&request);
-                    // The tray on macOS and Windows registers the template keys with each new menu.
-                    let rekeys = crate::workspace_keys::rebinds_after(&request);
-                    let ends = matches!(request, Request::Quit);
-                    // A refused request ran nothing: no notification, no new menu, so a foreign
-                    // client cannot flood the desktop.
-                    let response = match core.handle_from(key.as_ref(), door, request).await {
-                        Ok(response) => response,
-                        Err(refused) => return refused.response(),
-                    };
-                    if ends && matches!(response, Response::Ok) {
-                        end_after_answer(quit);
-                    }
-                    if let Some(what) = changes {
-                        if notifies {
-                            report(&what, &response);
-                        }
-                        let _ = refresh.send(());
-                    } else if rekeys {
-                        let _ = refresh.send(());
-                    }
-                    response
-                }
+                answer(Arc::clone(&core), key, door, request, refresh.clone(), quit.clone(), quit_mark.clone())
             })
             .await
         })
@@ -318,6 +387,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
         runtime: tokio::runtime::Handle::current(),
         refresh: refresh_tx.clone(),
         quit: quit_tx,
+        quit_mark,
     });
     // Taken before the first snapshot, so an approval opened or an entry posted in between still
     // refreshes the menu.
@@ -327,9 +397,12 @@ async fn serve(shows: Shows) -> Result<(), String> {
     let voice_changes = core.voice_changes();
     let front = Front::start(&daemon, shows, core.snapshot().await).await?;
     // A first start without accounts opens the setup (task W.9); a headless core opens no window.
+    // Only once the socket answers (issue #279): the setup starts a core of its own when it finds
+    // none, so a service that fails on its socket must not open it.
     if !matches!(front, Front::None) {
         let core = Arc::clone(&core);
-        tokio::spawn(async move { core.offer_setup().await });
+        let socket = socket.clone();
+        tokio::spawn(async move { once_listening(&socket, SETUP_WAIT, core.offer_setup()).await });
     }
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
@@ -377,6 +450,21 @@ const SERVICE_LOCK: &str = "service.lock";
 
 /// How long the end of the service waits for the template keys to be released.
 const RELEASE_WAIT: Duration = Duration::from_secs(2);
+
+/// How long the start waits for its own socket to answer before it gives up on the setup
+/// ([`once_listening`]).
+const SETUP_WAIT: Duration = Duration::from_secs(10);
+
+/// Runs `then` once the core at `socket` answers `system.ping`, within `limit` (issue #279); `true`
+/// when it ran. A socket that does not answer in time runs nothing: `false`, with a line on stderr.
+async fn once_listening(socket: &Path, limit: Duration, then: impl Future<Output = ()>) -> bool {
+    if !torro_gui::source::wait_for_core(socket, limit).await {
+        eprintln!("torroworkplace: the socket does not answer; not opening the setup");
+        return false;
+    }
+    then.await;
+    true
+}
 
 /// Makes this process the one service of the user: locks [`SERVICE_LOCK`] for as long as the
 /// returned file lives (the system drops the lock when the process ends, also when it is killed).
@@ -837,6 +925,133 @@ fn log(what: &str, response: &Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A core over `dir` with nothing of the user's: keys, approvals and inbox in `dir`, no window
+    /// manager, no notifications.
+    fn core_in(dir: &Path) -> Arc<Core> {
+        let settings = crate::settings_service::SettingsStore::at(dir.join("config").join("settings.json"));
+        Arc::new(
+            Core::new(
+                torro_wm::Backend::Unsupported { name: "test".into() },
+                Store::at(dir.to_path_buf()),
+                Arc::new(crate::pim::PimService::with_settings(settings)),
+                crate::clients::tests::open_in(dir),
+            )
+            .with_approvals(crate::approvals::tests::quiet_in(dir))
+            .with_inbox(crate::inbox::tests::inbox_in(dir)),
+        )
+    }
+
+    /// The marker holds the time only and is the owner's alone.
+    fn assert_marked(mark: &Path) {
+        assert!(torro_gui::source::read_mark(mark).is_some(), "{} holds a time", mark.display());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(mark).expect("marked").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    /// Issue #279: tray › Quit marks the quit and ends the service.
+    #[tokio::test]
+    async fn a_quit_from_the_tray_is_marked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_in(dir.path());
+        let mark = dir.path().join("state").join(QUIT_MARK);
+        let (quit, mut ended) = mpsc::unbounded_channel();
+
+        run_from_tray(&core, Request::Quit, &quit, Some(&mark), |_, _| {}).await;
+        assert_marked(&mark);
+        assert!(stopped_by_person(&dir.path().join("state").join("core.sock")));
+        let end = tokio::time::timeout(Duration::from_secs(5), ended.recv()).await;
+        assert_eq!(end, Ok(Some(())), "the service ends");
+
+        // Anything else from the tray marks nothing.
+        let other = tempfile::tempdir().expect("temp dir");
+        let mark = other.path().join(QUIT_MARK);
+        run_from_tray(&core_in(other.path()), Request::Status, &quit, Some(&mark), |_, _| {}).await;
+        assert!(!mark.exists());
+    }
+
+    /// Issue #279: `ctl quit` (the app key over the socket) marks the quit; a request without the key
+    /// is refused and marks nothing.
+    #[tokio::test]
+    async fn a_quit_over_the_socket_is_marked_with_the_app_key_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_in(dir.path());
+        let mark = dir.path().join("state").join(QUIT_MARK);
+        let (refresh, _menu) = mpsc::unbounded_channel();
+        let (quit, mut ended) = mpsc::unbounded_channel();
+        let ask = |key: Option<Key>| {
+            answer(Arc::clone(&core), key, Door::Api, Request::Quit, refresh.clone(), quit.clone(), Some(mark.clone()))
+        };
+
+        let refused = ask(None).await;
+        assert!(matches!(&refused, Response::Error { code, .. } if code == "unauthorized"), "{refused:?}");
+        assert!(!mark.exists(), "a refused quit marks nothing");
+
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(ask(Some(app_key)).await, Response::Ok);
+        assert_marked(&mark);
+        let end = tokio::time::timeout(Duration::from_secs(5), ended.recv()).await;
+        assert_eq!(end, Ok(Some(())), "the service ends");
+    }
+
+    /// Issue #279: the next start removes the marker, whoever starts the service.
+    #[test]
+    fn the_start_removes_the_marker() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("core.sock");
+        let mark = dir.path().join(QUIT_MARK);
+        assert!(!stopped_by_person(&socket));
+        torro_gui::source::write_mark(&mark, chrono::Utc::now()).expect("written");
+        assert!(stopped_by_person(&socket));
+
+        clear_quit(Some(&mark));
+        assert!(!mark.exists());
+        assert!(!stopped_by_person(&socket));
+        clear_quit(Some(&mark));
+        clear_quit(None);
+    }
+
+    /// Issue #279: the setup opens only once the socket answers; a socket that takes connections but
+    /// never answers (or none at all) opens nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_setup_waits_for_an_answering_socket() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let opened = AtomicBool::new(false);
+        let open = || async { opened.store(true, Ordering::SeqCst) };
+
+        let silent = dir.path().join("silent.sock");
+        let _held = std::os::unix::net::UnixListener::bind(&silent).expect("binds");
+        assert!(!once_listening(&silent, Duration::from_millis(500), open()).await);
+        assert!(!once_listening(&dir.path().join("none.sock"), Duration::from_millis(200), open()).await);
+        assert!(!opened.load(Ordering::SeqCst), "no setup without an answer");
+
+        let answering = dir.path().join("core.sock");
+        let listener = tokio::net::UnixListener::bind(&answering).expect("binds");
+        let core = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { return };
+                let (read, mut write) = stream.into_split();
+                let mut line = String::new();
+                let _ = BufReader::new(read).read_line(&mut line).await;
+                let pong = Response::Pong { version: "0.1.0".into(), api: torro_ipc::API_VERSION };
+                let mut reply = serde_json::to_vec(&pong).expect("serializes");
+                reply.push(b'\n');
+                let _ = write.write_all(&reply).await;
+            }
+        });
+        assert!(once_listening(&answering, Duration::from_secs(5), open()).await);
+        assert!(opened.load(Ordering::SeqCst), "the setup opens once the socket answers");
+        core.abort();
+    }
 
     /// Issue #243: a key and a startup change the menu, but the dialog that sets them shows its own
     /// result, so no notification comes.

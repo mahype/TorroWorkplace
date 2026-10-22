@@ -143,12 +143,20 @@ async fn show_control_centre(
     section: Section,
     start: fn(Section) -> Result<(), String>,
 ) -> Result<(), String> {
-    // A window manager that cannot list windows has none we could bring forward; start the page.
-    let open = wm.windows(None).await.unwrap_or_default();
-    match open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
-        Some(window) => wm.focus_window(&window.id).await.map_err(|err| err.to_string()),
+    match focus_open(wm, AppId::WORKPLACE).await {
+        Some(focused) => focused,
         None => start(section),
     }
+}
+
+/// Brings an open window of `app` to the front (issue #279): `Some` with how focusing went when `wm`
+/// lists a window that is `app`'s by any of the names window managers give it ([`AppId::owns_class`]:
+/// window class, bundle id, program), `None` when it lists none. A window manager that cannot list
+/// windows has none to bring forward: `None` as well, so the caller starts the app.
+async fn focus_open(wm: &impl WindowManager, app: AppId) -> Option<Result<(), String>> {
+    let open = wm.windows(None).await.ok()?;
+    let window = open.iter().find(|window| app.owns_class(&window.class))?;
+    Some(wm.focus_window(&window.id).await.map_err(|err| err.to_string()))
 }
 
 /// The window class of the reminder window (`torrocalendar --reminders`, task ER2.2).
@@ -7403,10 +7411,8 @@ impl Core {
     /// Brings the app's window to the front, or starts the app when it has none – with the
     /// arguments of its entry (`torroinbox --view mail`, [`AppId::command`]).
     pub async fn open_app(&self, app: AppId) -> Result<(), String> {
-        if let Ok(windows) = self.backend.windows(None).await
-            && let Some(window) = windows.iter().find(|w| w.class == app.window_class)
-        {
-            return self.backend.focus_window(&window.id).await.map_err(|err| err.to_string());
+        if let Some(focused) = focus_open(&self.backend, app).await {
+            return focused;
         }
         let program = sibling(app.binary).to_string_lossy().into_owned();
         SystemLauncher.spawn(&app.command(program)).map(|_| ()).map_err(|err| err.to_string())
@@ -10548,6 +10554,42 @@ mod tests {
         assert_eq!(show_control_centre(&empty, Section::Accounts, record_start).await, Ok(()));
         assert!(empty.calls().is_empty());
         assert_eq!(started(Section::Accounts), before + 1);
+    }
+
+    /// Issue #279: AeroSpace names a window by its bundle id, GlazeWM by its process, so an app that
+    /// is open under either name comes to the front instead of starting a second time.
+    #[tokio::test]
+    async fn an_open_app_is_found_by_its_bundle_id_or_program() {
+        use torro_wm::fake::{Call, FakeWm};
+        for class in ["io.github.mahype.torro-calendar", "torrocalendar", "torrocalendar.exe", "torro-calendar"] {
+            let wm = FakeWm::new("1");
+            wm.open_window("io.github.mahype.torro-tasks", None);
+            let open = wm.open_window(class, None);
+            assert_eq!(focus_open(&wm, AppId::CALENDAR).await, Some(Ok(())), "{class}");
+            assert_eq!(wm.calls(), vec![Call::Focus(open)], "{class}");
+        }
+        // The inbox's binary is the hub's: an open hub does not stand in for Mail.
+        let wm = FakeWm::new("1");
+        wm.open_window("torroinbox", None);
+        wm.open_window("com.example.torro-inbox-mail", None);
+        assert_eq!(focus_open(&wm, AppId::INBOX_MAIL).await, None);
+        assert!(wm.calls().is_empty());
+        // Without windows to list there is nothing to bring forward.
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(focus_open(&core(dir.path()).backend, AppId::CALENDAR).await, None);
+    }
+
+    /// Issue #279: the control centre from its bundle (AeroSpace) comes to the front too.
+    #[tokio::test]
+    async fn the_control_centre_is_found_by_its_bundle_id() {
+        use torro_wm::fake::{Call, FakeWm};
+        let wm = FakeWm::new("1");
+        let open = wm.open_window(torro_core::app::WORKPLACE_BUNDLE_ID, None);
+        // A section no other test starts, so the count is this test's alone.
+        let before = started(Section::Mcp);
+        assert_eq!(show_control_centre(&wm, Section::Mcp, record_start).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
+        assert_eq!(started(Section::Mcp), before, "no second control centre");
     }
 
     #[test]

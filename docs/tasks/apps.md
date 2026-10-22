@@ -28,7 +28,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
 ## Aufgaben
 
 ### AP.1 Schließen: keine doppelten Instanzen, keine Neustarts nach Quit, keine Startschleife
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Prozesse, Nebenläufigkeit, mehrere Crates) · **Braucht:** – · **Dateien:**
   `crates/torro-core/src/app.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`,
   `crates/torroworkplace/src/mcp.rs`, `crates/torro-gui/src/source.rs`

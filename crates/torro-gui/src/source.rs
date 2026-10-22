@@ -3,8 +3,13 @@
 //! Without `--demo` an app starts the core when it is not running ([`ensure_core`]) and waits for
 //! it once before its first load ([`Source::ready`], [`wait_for_core`], issue #206): a core started
 //! just now does not listen yet, and asking at once would show an error until the app's next timer.
+//!
+//! Every program of the suite that starts the core leaves a marker ([`CORE_START_MARK`]) in the
+//! core's state directory first, and none starts it again within [`CORE_START_GAP`] of that (issue
+//! #279): a core that fails right after its start must not be started over and over by the windows
+//! it opened.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -105,10 +110,17 @@ pub async fn wait_for_core(socket: &Path, limit: Duration) -> bool {
 
 /// Starts `torroworkplace daemon` in the background when nothing listens on `socket`. The
 /// app then retries until the core answers. Unix only for now.
+///
+/// Not when a program of the suite tried to start it within the last [`CORE_START_GAP`]
+/// ([`claim_core_start`], issue #279): that start is still under way, or the core failed at once,
+/// and starting it again would only repeat that.
 pub fn ensure_core(socket: &std::path::Path) {
     #[cfg(unix)]
     {
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return;
+        }
+        if !claim_core_start(socket, Utc::now()) {
             return;
         }
         let program = sibling(torro_core::AppId::WORKPLACE.binary);
@@ -146,6 +158,79 @@ fn daemon_command(program: &std::path::Path, home: Option<std::path::PathBuf>) -
         .current_dir(home.unwrap_or_else(|| std::path::PathBuf::from("/")))
         .process_group(0);
     command
+}
+
+/// The marker in the core's state directory ([`core_state_file`]) that tells when a program of the
+/// suite last tried to start the core ([`claim_core_start`], issue #279). It holds the time only.
+pub const CORE_START_MARK: &str = "core-start";
+
+/// How long after one try to start the core no program of the suite tries again
+/// ([`start_due`]): about as long as a core needs to answer once started.
+pub const CORE_START_GAP: Duration = Duration::from_secs(10);
+
+/// The file `name` in the state directory of the core listening at `socket`, where its app key lies
+/// too ([`torro_ipc::app_key_path`]): next to `core.sock`, on Windows in the state directory of
+/// [`torro_core::paths::AppPaths`]. `None` when there is no such directory (a socket path without a
+/// directory, no home directory), so no marker ever lands in the current directory.
+pub fn core_state_file(socket: &Path, name: &str) -> Option<PathBuf> {
+    let key = torro_ipc::app_key_path(socket);
+    key.parent().filter(|dir| !dir.as_os_str().is_empty())?;
+    Some(key.with_file_name(name))
+}
+
+/// Writes the marker `path`: the time `at` (RFC 3339) and nothing else, readable by its owner only
+/// (0600 on Unix). Creates the directory if needed and replaces an older marker.
+pub fn write_mark(path: &Path, at: DateTime<Utc>) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        let mut file = options.open(path)?;
+        // `mode` applies to a new file only; one left by an older version gets it here.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(at.to_rfc3339().as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        options.open(path)?.write_all(at.to_rfc3339().as_bytes())
+    }
+}
+
+/// The time in the marker `path` ([`write_mark`]); `None` when there is none or it holds no time.
+pub fn read_mark(path: &Path) -> Option<DateTime<Utc>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    DateTime::parse_from_rfc3339(text.trim()).ok().map(|at| at.with_timezone(&Utc))
+}
+
+/// Whether a start of the core at `now` is due after the last try at `last`: always without one,
+/// else only [`CORE_START_GAP`] or more apart. Apart in either direction: a try stamped a moment
+/// after `now` by another program running at the same time counts as recent too, and a clock set
+/// back blocks no longer than the gap.
+pub fn start_due(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    let gap = chrono::TimeDelta::from_std(CORE_START_GAP).unwrap_or(chrono::TimeDelta::MAX);
+    last.is_none_or(|at| (now - at).abs() >= gap)
+}
+
+/// Claims a start of the core at `socket` for `now` (issue #279): `false` when a program of the suite
+/// tried within [`CORE_START_GAP`] ([`CORE_START_MARK`], [`start_due`]), else records `now` there and
+/// answers `true`. Without a state directory, or when the marker cannot be written, the start goes
+/// ahead as it did before the marker: a missing marker must never keep the core from starting.
+pub fn claim_core_start(socket: &Path, now: DateTime<Utc>) -> bool {
+    let Some(path) = core_state_file(socket, CORE_START_MARK) else { return true };
+    if !start_due(read_mark(&path), now) {
+        return false;
+    }
+    if let Err(err) = write_mark(&path, now) {
+        eprintln!("cannot write {}: {err}", path.display());
+    }
+    true
 }
 
 /// `name` next to the running binary (an install puts the suite in one directory), else
@@ -321,6 +406,74 @@ mod tests {
         assert!(!wait_for_core(&path, Duration::from_millis(200)).await);
         let waited = started.elapsed();
         assert!(waited >= Duration::from_millis(150) && waited < Duration::from_secs(2), "{waited:?}");
+    }
+
+    /// A directory under the system temp dir, removed again on drop (torro-gui has no `tempfile`).
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> TempDir {
+            let dir = std::env::temp_dir().join(format!("torro-gui-source-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            TempDir(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_790_000_000 + seconds, 0).expect("a time")
+    }
+
+    /// Issue #279: one try per [`CORE_START_GAP`], whoever tries.
+    #[test]
+    fn a_start_is_due_only_ten_seconds_after_the_last_try() {
+        assert!(start_due(None, at(0)), "never tried");
+        assert!(!start_due(Some(at(0)), at(0)));
+        assert!(!start_due(Some(at(0)), at(9)));
+        assert!(start_due(Some(at(0)), at(10)));
+        assert!(start_due(Some(at(0)), at(3600)));
+        assert!(!start_due(Some(at(5)), at(0)), "stamped a moment later by another program");
+        assert!(start_due(Some(at(60)), at(0)), "a clock set back blocks no longer than the gap");
+    }
+
+    /// Issue #279: the marker lies next to the socket, and a second try within ten seconds starts
+    /// nothing, whichever program of the suite makes it.
+    #[cfg(unix)]
+    #[test]
+    fn a_second_start_within_ten_seconds_is_left_out() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new("claim");
+        let socket = dir.0.join("state").join("core.sock");
+        let mark = dir.0.join("state").join(CORE_START_MARK);
+        assert_eq!(core_state_file(&socket, CORE_START_MARK), Some(mark.clone()));
+
+        assert!(claim_core_start(&socket, at(0)), "the first start");
+        assert_eq!(read_mark(&mark), Some(at(0)));
+        let mode = std::fs::metadata(&mark).expect("written").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+
+        assert!(!claim_core_start(&socket, at(4)), "a second program four seconds later");
+        assert_eq!(read_mark(&mark), Some(at(0)), "a left-out start leaves the time as it was");
+        assert!(claim_core_start(&socket, at(10)), "ten seconds on, it may try again");
+        assert_eq!(read_mark(&mark), Some(at(10)));
+    }
+
+    #[test]
+    fn a_marker_without_a_time_or_a_directory_blocks_nothing() {
+        let dir = TempDir::new("broken");
+        let mark = dir.0.join(CORE_START_MARK);
+        assert_eq!(read_mark(&mark), None, "no marker");
+        std::fs::write(&mark, "soon").expect("write");
+        assert_eq!(read_mark(&mark), None, "no time in it");
+        assert!(start_due(read_mark(&mark), at(0)));
+        assert_eq!(core_state_file(Path::new("core.sock"), CORE_START_MARK), None, "never the current directory");
     }
 
     #[cfg(unix)]
