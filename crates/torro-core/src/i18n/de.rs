@@ -3924,6 +3924,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The address of the service in the settings cannot be used.",
         "Die Adresse des Dienstes in den Einstellungen lässt sich nicht verwenden.",
     ),
+    // Series in approvals (TE.4)
+    ("this event only", "nur dieser Termin"),
+    ("this and all following events", "dieser und alle folgenden Termine"),
+    ("all events of the series", "alle Termine der Serie"),
+    ("{change} ({events})", "{change} ({events})"),
+    ("{change}; resets 1 changed event", "{change}; setzt 1 geänderten Termin zurück"),
+    ("{change}; resets {n} changed events", "{change}; setzt {n} geänderte Termine zurück"),
+    ("{change}; removes 1 event", "{change}; entfernt 1 Termin"),
+    ("{change}; removes {n} events", "{change}; entfernt {n} Termine"),
+    ("{change}; ends the series", "{change}; beendet die Serie"),
+    ("{change}; may remove events", "{change}; entfernt womöglich Termine"),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),

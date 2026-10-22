@@ -13,6 +13,8 @@
 //!   by mail (task E8.3b), [`ObjectFacts`] what a stored object says about the occurrences the
 //!   server expanded from it (task TE.3).
 //! - `recur`: the rule of a series, `RRULE` to `torro_pim::model::Repeat` and back (task TE.3).
+//! - `series`: changing and deleting one occurrence, the following ones or a whole series on the
+//!   stored object (task TE.4); `write` sends it ([`CalDavClient::save_in_series`]).
 //!
 //! `sync-collection` and the `torro_pim::Provider` implementation come with the SQLite cache.
 
@@ -21,13 +23,16 @@ pub mod discover;
 mod ical;
 pub mod nextcloud;
 pub mod recur;
+pub mod series;
 pub mod write;
 
 use std::time::Duration;
 
 pub use client::{CalDavClient, RawObject, Services};
 pub use ical::{Exception, ObjectFacts, parse_events};
+pub use series::{SeriesError, SeriesFailure};
 use torro_pim::ProviderError;
+pub use write::SeriesWrite;
 
 /// Where and as whom to connect. The password lives in the system keychain and reaches the
 /// client as a `torro_core::account::Secret` ([`CalDavClient::new`]), not here.

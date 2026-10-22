@@ -52,6 +52,7 @@ use torro_ipc::api::{Area, Mcp, Rights};
 use torro_ipc::assistant::Mode;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_mail::{MailAddress, Role};
+use torro_pim::model::SeriesScope;
 use torro_pim::{Event, EventTime, Todo};
 use torro_setups::LoadMode;
 
@@ -314,6 +315,30 @@ pub struct Facts {
     /// it, looked up by its id. `None` for a model the account does not list: the summary then says
     /// "an unknown model". The account's label is [`Facts::name`].
     pub model: Option<KnownModel>,
+    /// For `calendar.save_event` with a scope (task TE.4): how many changed occurrences of the series
+    /// the save resets ("resets 2 changed events"), read from the stored object in the core's cache
+    /// (`torro_pim_caldav::series::resets`), never from the client's event. 0 when none, or when the
+    /// core does not hold the object in the version the request names.
+    pub resets: u32,
+    /// For `calendar.save_event` with a scope (task TE.4): which events of the series the save
+    /// removes beyond the reset ones ([`Removal`]), from the stored object in the core's cache, never
+    /// from the client's event. Such a save waits for approval as a delete does, so the summary says it.
+    pub removal: Removal,
+}
+
+/// What a save of a series removes, for its summary ([`Facts::removal`], task TE.4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Removal {
+    /// Nothing (or only the changed events [`Facts::resets`] counts).
+    #[default]
+    Nothing,
+    /// This many events of the series go: a shorter series, another rule.
+    Events(u32),
+    /// The rule goes: the series ends as one event.
+    EndsSeries,
+    /// The core does not hold the series in the version the request names, so it may remove events
+    /// (the core checks such a save as a delete).
+    Unknown,
 }
 
 /// A model of an AI account as the core lists it, for the summary of `ai.set_model_enabled` (task
@@ -1116,18 +1141,25 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         }
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
-        Request::DeleteEvent { event, .. } => match &facts.item {
-            Some(item) => trf(
-                "Delete event \"{title}\" on {when} from \"{calendar}\"",
-                &[
-                    ("title", &quote(&item.title)),
-                    ("when", &item.start.map(|start| when(&start, today)).unwrap_or_default()),
-                    ("calendar", &named(&event.collection)),
-                ],
-            ),
-            None => trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &named(&event.collection))]),
-        },
-        Request::SaveEvent { event, .. } => event_saved(event, facts, today),
+        Request::DeleteEvent { event, scope } => in_scope(
+            *scope,
+            match &facts.item {
+                Some(item) => trf(
+                    "Delete event \"{title}\" on {when} from \"{calendar}\"",
+                    &[
+                        ("title", &quote(&item.title)),
+                        ("when", &item.start.map(|start| when(&start, today)).unwrap_or_default()),
+                        ("calendar", &named(&event.collection)),
+                    ],
+                ),
+                None => trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &named(&event.collection))]),
+            },
+        ),
+        // Which events of a series, and what a change resets, come from the core's cache (task TE.4).
+        Request::SaveEvent { event, scope } => {
+            let text = with_resets(in_scope(*scope, event_saved(event, facts, today)), facts.resets);
+            with_removal(text, facts.removal)
+        }
         Request::DeleteTodo { todo } => match &facts.item {
             Some(item) => trf(
                 "Delete task \"{title}\" from \"{list}\"",
@@ -2532,6 +2564,39 @@ fn event_saved(event: &Event, facts: &Facts, today: chrono::NaiveDate) -> String
     trf(text, &args)
 }
 
+/// `text`, a change or delete of an event, with the events of its series it is about (task TE.4):
+/// "this event only", "this and all following events", "all events of the series". Unchanged without
+/// a scope.
+fn in_scope(scope: Option<SeriesScope>, text: String) -> String {
+    let Some(scope) = scope else { return text };
+    let which = match scope {
+        SeriesScope::Occurrence => tr("this event only"),
+        SeriesScope::Following => tr("this and all following events"),
+        SeriesScope::Series => tr("all events of the series"),
+    };
+    trf("{change} ({events})", &[("change", &text), ("events", &which)])
+}
+
+/// `text` with how many changed events of the series the save resets ([`Facts::resets`], task TE.4).
+fn with_resets(text: String, resets: u32) -> String {
+    match resets {
+        0 => text,
+        1 => trf("{change}; resets 1 changed event", &[("change", &text)]),
+        n => trf("{change}; resets {n} changed events", &[("change", &text), ("n", &n)]),
+    }
+}
+
+/// `text` with what the save removes from the series ([`Facts::removal`], task TE.4).
+fn with_removal(text: String, removal: Removal) -> String {
+    match removal {
+        Removal::Nothing => text,
+        Removal::Events(1) => trf("{change}; removes 1 event", &[("change", &text)]),
+        Removal::Events(n) => trf("{change}; removes {n} events", &[("change", &text), ("n", &n)]),
+        Removal::EndsSeries => trf("{change}; ends the series", &[("change", &text)]),
+        Removal::Unknown => trf("{change}; may remove events", &[("change", &text)]),
+    }
+}
+
 /// The summary of `tasks.save_todo`: create, change, or move to another list.
 fn todo_saved(todo: &Todo, facts: &Facts) -> String {
     let list = quote(facts.name.as_deref().unwrap_or(&todo.collection));
@@ -3622,6 +3687,63 @@ pub(crate) mod tests {
         assert!(unknown.contains(tr("an unknown mail")) && unknown.contains("home"), "{unknown}");
         let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).map(EventTime::Date);
         assert!(summary(&make(day), &facts).contains(&subject));
+    }
+
+    /// Task TE.4: a change or delete in a series says which of its events, and a save what it resets;
+    /// title and date are the cache's, also when the client sends another title and start.
+    #[test]
+    fn a_series_summary_names_its_events_and_resets_with_the_cached_date() {
+        let today = Local::now().date_naive();
+        let claimed = event("c", Some("/cal/sync.ics"), "Lunch", day(20));
+        let real = Facts { resets: 2, ..facts(cached("Weekly product sync", Some(day(14))), "Work") };
+        let deleted = trf(
+            "Delete event \"{title}\" on {when} from \"{calendar}\"",
+            &[("title", &"Weekly product sync"), ("when", &when(&day(14), today)), ("calendar", &"Work")],
+        );
+        for (scope, words) in [
+            (SeriesScope::Occurrence, "this event only"),
+            (SeriesScope::Following, "this and all following events"),
+            (SeriesScope::Series, "all events of the series"),
+        ] {
+            let text = summary(&Request::DeleteEvent { event: claimed.clone(), scope: Some(scope) }, &real);
+            assert_eq!(text, trf("{change} ({events})", &[("change", &deleted), ("events", &tr(words))]));
+            assert!(!text.contains("Lunch"), "{text}");
+        }
+        let save = summary(&Request::SaveEvent { event: claimed.clone(), scope: Some(SeriesScope::Following) }, &real);
+        let changed = trf(
+            "{change} ({events})",
+            &[("change", &event_saved(&claimed, &real, today)), ("events", &tr("this and all following events"))],
+        );
+        assert_eq!(save, trf("{change}; resets {n} changed events", &[("change", &changed), ("n", &2)]));
+        assert!(save.contains(&when(&day(14), today)), "the cached date: {save}");
+        let one = Facts { resets: 1, ..real.clone() };
+        let save = summary(&Request::SaveEvent { event: claimed.clone(), scope: Some(SeriesScope::Series) }, &one);
+        let all = trf(
+            "{change} ({events})",
+            &[("change", &event_saved(&claimed, &one, today)), ("events", &tr("all events of the series"))],
+        );
+        assert_eq!(save, trf("{change}; resets 1 changed event", &[("change", &all)]));
+        // What the save removes, from the core's facts, whatever the client sends.
+        for (removal, words) in [
+            (Removal::Events(1), "{change}; removes 1 event"),
+            (Removal::EndsSeries, "{change}; ends the series"),
+            (Removal::Unknown, "{change}; may remove events"),
+        ] {
+            let removing = Facts { resets: 0, removal, ..real.clone() };
+            let save =
+                summary(&Request::SaveEvent { event: claimed.clone(), scope: Some(SeriesScope::Series) }, &removing);
+            let all = trf(
+                "{change} ({events})",
+                &[("change", &event_saved(&claimed, &removing, today)), ("events", &tr("all events of the series"))],
+            );
+            assert_eq!(save, trf(words, &[("change", &all)]));
+        }
+        let many = Facts { resets: 0, removal: Removal::Events(5), ..real.clone() };
+        let save = summary(&Request::SaveEvent { event: claimed.clone(), scope: Some(SeriesScope::Series) }, &many);
+        assert!(save.ends_with(&trf("{change}; removes {n} events", &[("change", &""), ("n", &5)])), "{save}");
+        // Without a scope, a single event as before.
+        let single = summary(&Request::DeleteEvent { event: claimed, scope: None }, &real);
+        assert_eq!(single, deleted);
     }
 
     #[test]

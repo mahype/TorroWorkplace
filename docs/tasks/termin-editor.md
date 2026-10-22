@@ -122,7 +122,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   werden geholt; fmt, clippy, test.
 
 ## TE.4 Serien schreiben: dieser, folgende, alle
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert`) · **Braucht:** TE.3 · **Dateien:** `crates/torro-pim-caldav/src/series.rs`
   (neu), `crates/torro-pim-caldav/src/{write,lib}.rs`, `crates/torro-pim-caldav/Cargo.toml`, `Cargo.toml`,
   `crates/torroworkplace/src/{pim,approvals,core}.rs`, `crates/torro-pim/src/demo.rs`, Fixtures

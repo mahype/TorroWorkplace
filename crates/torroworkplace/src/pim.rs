@@ -24,11 +24,18 @@
 //!   `time_zone` and, where the server left it out, `recurrence_id` from its object
 //!   ([`complete_events`]).
 //! - Writes go to the server first (ETag-guarded) and update the cache with the answer.
-//!   Series are refused until series editing exists, because writing one occurrence back would
-//!   overwrite the whole series. The core decides what a series is, not the client (task
+//!   An occurrence of a series is changed or deleted only with a `scope` (task TE.4,
+//!   [`PimService::save_in_series`]); without one it is refused, because writing one occurrence
+//!   back would overwrite the whole series. The core decides what a series is, not the client (task
 //!   A.2b): from the cached item in the version the client names, else from the server. An
 //!   existing item is only changed, moved or deleted with the `etag` it was read with. Moving
 //!   an item to a collection of another account is refused (`unsupported`) for now.
+//! - **Series** (task TE.4): `torro_pim_caldav::series` plans the change on the stored object, the
+//!   CalDAV client writes it (a split: the new object first, then the shortened series, the new one
+//!   taken back when that fails), and the core then reads the occurrences of the objects it wrote
+//!   again and replaces them and their stored objects in the cache ([`PimService::refresh_series`]).
+//!   Whether a save removes events of a series ([`PimService::removes_events`]) is read from the
+//!   stored object in the cache only, never from what the client says.
 //! - When a server refuses an app password (401/403), the core asks once whether this device
 //!   was marked for a remote wipe and, if so, removes that account, its secret and its cache
 //!   (task S.12, `account::remote_wipe`).
@@ -121,7 +128,9 @@ use torro_pim::{
 use torro_pim_caldav::discover::{self, DiscoverError, Discoverer, NoDns};
 use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
-use torro_pim_caldav::{CalDavAccount, CalDavClient, ObjectFacts, RawObject, Services};
+use torro_pim_caldav::{
+    CalDavAccount, CalDavClient, ObjectFacts, RawObject, SeriesFailure, SeriesWrite, Services, series,
+};
 use torro_pim_github::api::{self as github_api, MAX_MATCHES};
 use torro_pim_github::lists::{self, FilterFile};
 use torro_pim_github::{Api, FilterList, IssueRef, address, item, scope};
@@ -130,7 +139,7 @@ use torro_core::i18n::{tr, trf};
 
 use crate::account::github::{SystemTokens, TokenStore};
 use crate::account::{self, Connected, Stored};
-use crate::approvals::{Facts, Known};
+use crate::approvals::{Facts, Known, Removal};
 use crate::inbox::{AccountCheck, Health, Trouble};
 use crate::notify;
 use crate::settings_service::SettingsStore;
@@ -980,11 +989,12 @@ impl PimService {
             Request::DeleteTodo { todo } if self.is_filter_list(&todo.collection).await => {
                 error("unsupported", "the items of a GitHub filter list cannot be deleted; they live on GitHub".into())
             }
-            Request::SaveEvent { event, scope } => match self.save_event(event, scope).await {
-                Ok(event) => Response::Event { event, reset: 0 },
+            // Boxed: a write to a series reads and writes several objects and holds events on the way.
+            Request::SaveEvent { event, scope } => match Box::pin(self.save_event(event, scope)).await {
+                Ok((event, reset)) => Response::Event { event, reset },
                 Err(err) => self.write_failed(err).await,
             },
-            Request::DeleteEvent { event, scope } => match self.delete_event(event, scope).await {
+            Request::DeleteEvent { event, scope } => match Box::pin(self.delete_event(event, scope)).await {
                 Ok(()) => Response::Ok,
                 Err(err) => self.write_failed(err).await,
             },
@@ -1082,6 +1092,9 @@ impl PimService {
             // A place search or a map reads no calendar (task TE.1); recent places are filtered
             // by the reach where they are read (task TE.5).
             Request::SearchPlaces { .. } | Request::MapPreview { .. } => return None,
+            // A split of a series (task TE.4) makes its new object in the collection that holds
+            // `href`, never under an href of the request: checked here with the href. Only a whole
+            // series may move, so with `occurrence` or `following` that is `collection` itself.
             Request::SaveEvent { event, .. } | Request::DeleteEvent { event, .. } => {
                 (Role::Calendar, &event.collection, event.href.as_deref())
             }
@@ -1379,6 +1392,15 @@ impl PimService {
     pub async fn cache_events(&self, events: Vec<Event>) {
         if let Some(slot) = self.state.write().await.accounts.first_mut() {
             slot.events = events;
+        }
+    }
+
+    /// Puts `objects` into the cache of the first account as a sync would after the expansion (task
+    /// TE.4: what a save of a series removes is read from them), for the core's handler tests.
+    #[cfg(test)]
+    pub async fn cache_objects(&self, objects: Vec<RawObject>) {
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.objects = objects.into_iter().map(|object| (object.href.clone(), object)).collect();
         }
     }
 
@@ -2126,21 +2148,19 @@ impl PimService {
         Ok(events)
     }
 
-    /// `calendar.save_event`. `scope` is checked here (task TE.1): only with an `href`, and only
-    /// `series` together with a move to another calendar. Every occurrence stays `unsupported`
-    /// until series are written (task TE.4), with `scope` or without.
-    async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<Event, WriteError> {
+    /// `calendar.save_event`, answered with the saved event and how many changed occurrences of a
+    /// series were reset (`Response::Event::reset`). `scope` is checked here (task TE.1): only with
+    /// an `href`. With a scope the series path writes it ([`PimService::save_in_series`]); without
+    /// one an occurrence of a series is `unsupported`, so a client that does not know series never
+    /// overwrites one. A single event that gets a rule becomes a series and is read again like one.
+    async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(Event, u32), WriteError> {
         scope_needs_href(&event, scope)?;
-        if event.recurring {
-            return Err(series(Role::Calendar));
+        match scope {
+            Some(scope) => return self.save_in_series(event, scope).await,
+            None if event.recurring => return Err(series(Role::Calendar)),
+            None => {}
         }
         let place = self.place(&event.collection).await?;
-        if matches!(scope, Some(SeriesScope::Occurrence | SeriesScope::Following))
-            && moved(event.href.as_deref(), &place.url).is_some()
-        {
-            let message = "only a whole series moves to another calendar: send scope `series`";
-            return Err(refused("unsupported", message.into()));
-        }
         let (uid, etag) = (event.uid.clone(), event.etag.clone());
         let saved = match moved(event.href.as_deref(), &place.url) {
             // Moving to another calendar of the same account: create there on top of the stored
@@ -2171,6 +2191,14 @@ impl PimService {
             }
         };
         let saved = Event { collection: place.id.clone(), ..saved };
+        // A rule made it a series: its occurrences come from the server, like those of any series.
+        if saved.repeat.is_some()
+            && let Some((href, etag)) = saved.href.clone().zip(saved.etag.clone())
+        {
+            let written = SeriesWrite { kept: Some((href.clone(), etag)), split: None, key: None, reset: 0 };
+            let refreshed = self.refresh_series(&place, &place, &href, &written).await;
+            return Ok((answer_of(&refreshed, &written, saved), 0));
+        }
         if let Some(slot) = self.state.write().await.slot_mut(&place.account) {
             slot.events.retain(|e| e.href != saved.href);
             slot.events.push(saved.clone());
@@ -2179,14 +2207,57 @@ impl PimService {
                 slot.objects.remove(href);
             }
         }
-        Ok(saved)
+        Ok((saved, 0))
     }
 
-    /// `calendar.delete_event`; `scope` as for [`PimService::save_event`].
+    /// `calendar.save_event` with a scope (task TE.4, `docs/termin-editor.md` decisions 3 to 6): the
+    /// occurrence `event` (its `href`, `etag` and `recurrence_id` as read) changes alone, with the
+    /// following ones (the series is split) or with the whole series ([`CalDavClient::save_in_series`]).
+    ///
+    /// Checked before anything is written: the calendar as for every write ([`PimService::place`]);
+    /// moving to another calendar only with `series` (else `unsupported`), within the account; the
+    /// version the client read ([`PimService::check_version`]: no `etag` or a newer one on the server
+    /// is `conflict`, gone is `not-found`). The series itself refuses an occurrence it does not have
+    /// (`not-found`) and changes it cannot write (`unsupported`). A split makes its new object in the
+    /// calendar of the stored series, under an href the CalDAV client makes, never one of the request.
+    ///
+    /// Afterwards the occurrences of the objects written are read again and replace the cached ones
+    /// ([`PimService::refresh_series`]); the answer is the occurrence with the key the changed one has
+    /// now (the first of the new series after a split), and the number of changed occurrences reset.
+    async fn save_in_series(&self, event: Event, scope: SeriesScope) -> Result<(Event, u32), WriteError> {
+        let place = self.place(&event.collection).await?;
+        let href = event.href.clone().unwrap_or_default();
+        let old = moved(Some(&href), &place.url);
+        if old.is_some() && scope != SeriesScope::Series {
+            let message = "only a whole series moves to another calendar: send scope `series`";
+            return Err(refused("unsupported", message.into()));
+        }
+        let holder = match &old {
+            Some(old) => self.holder_of(old, &place).await?,
+            None => place.clone(),
+        };
+        let item = Item::new(Role::Calendar, &holder.url, &href, event.etag.as_deref(), &event.uid);
+        self.check_version(&holder, item).await?;
+        let to = old.is_some().then_some(place.url.as_str());
+        let sent = Event { collection: holder.url.clone(), ..event.clone() };
+        let written = holder
+            .client
+            .save_in_series(&sent, scope, to)
+            .await
+            .map_err(|failure| series_failed(&holder.account, failure))?;
+        let refreshed = self.refresh_series(&holder, &place, &href, &written).await;
+        let answer = Event { collection: place.id.clone(), ..event };
+        Ok((answer_of(&refreshed, &written, answer), written.reset))
+    }
+
+    /// `calendar.delete_event`; `scope` as for [`PimService::save_event`]: with one the series path
+    /// deletes it ([`PimService::delete_in_series`]), without one an occurrence is `unsupported`.
     async fn delete_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(), WriteError> {
         scope_needs_href(&event, scope)?;
-        if event.recurring {
-            return Err(series(Role::Calendar));
+        match scope {
+            Some(scope) => return self.delete_in_series(event, scope).await,
+            None if event.recurring => return Err(series(Role::Calendar)),
+            None => {}
         }
         let place = self.place(&event.collection).await?;
         if let Some(href) = event.href.as_deref() {
@@ -2202,6 +2273,68 @@ impl PimService {
             }
         }
         Ok(())
+    }
+
+    /// `calendar.delete_event` with a scope (task TE.4): an `EXDATE` for one occurrence, the end of
+    /// the series before it for the following ones, the whole object for the series
+    /// ([`CalDavClient::delete_in_series`]); checked like [`PimService::save_in_series`], and the
+    /// series read again afterwards.
+    async fn delete_in_series(&self, event: Event, scope: SeriesScope) -> Result<(), WriteError> {
+        let place = self.place(&event.collection).await?;
+        let href = event.href.clone().unwrap_or_default();
+        let item = Item::new(Role::Calendar, &place.url, &href, event.etag.as_deref(), &event.uid);
+        self.check_version(&place, item).await?;
+        let gone = Event { collection: place.url.clone(), ..event };
+        let written = place
+            .client
+            .delete_in_series(&gone, scope)
+            .await
+            .map_err(|failure| series_failed(&place.account, failure))?;
+        self.refresh_series(&place, &place, &href, &written).await;
+        Ok(())
+    }
+
+    /// Replaces in the cache what a write to a series changed (task TE.4): the occurrences of the
+    /// object at `old_href` (in `holder`) go, and those of the objects `written` names (in `place`,
+    /// where a moved series went) are read again from the server, expanded in the account's window
+    /// ([`CalDavClient::occurrences`]), together with their stored objects, and completed like after a
+    /// sync. Returns the occurrences read. When reading fails, the cache holds none of them until the
+    /// next sync, rather than old ones.
+    async fn refresh_series(&self, holder: &Place, place: &Place, old_href: &str, written: &SeriesWrite) -> Vec<Event> {
+        let hrefs: Vec<String> =
+            [&written.kept, &written.split].into_iter().flatten().map(|(href, _)| href.clone()).collect();
+        let window = self.state.read().await.slot(&place.account).and_then(|slot| slot.window);
+        let (start, end) = window.unwrap_or_else(default_window);
+        let fetched = match place.client.occurrences(&place.url, &hrefs, start, end).await {
+            Ok(events) => Box::pin(place.client.objects(&place.url, &hrefs)).await.map(|objects| (events, objects)),
+            Err(err) => Err(err),
+        };
+        let mut state = self.state.write().await;
+        if let Some(slot) = state.slot_mut(&holder.account) {
+            slot.events.retain(|e| e.href.as_deref() != Some(old_href));
+            slot.objects.remove(old_href);
+        }
+        let Some(slot) = state.slot_mut(&place.account) else { return Vec::new() };
+        slot.events.retain(|e| !e.href.as_ref().is_some_and(|href| hrefs.contains(href)));
+        hrefs.iter().for_each(|href| {
+            slot.objects.remove(href);
+        });
+        match fetched {
+            Ok((events, objects)) => {
+                let objects: HashMap<String, RawObject> =
+                    objects.into_iter().map(|object| (object.href.clone(), object)).collect();
+                let mut events: Vec<Event> =
+                    events.into_iter().map(|e| Event { collection: place.id.clone(), ..e }).collect();
+                complete_events(&mut events, &objects);
+                slot.objects.extend(objects);
+                slot.events.extend(events.iter().cloned());
+                events
+            }
+            Err(err) => {
+                eprintln!("torroworkplace: a changed series of {} could not be read again: {err}", place.account);
+                Vec::new()
+            }
+        }
     }
 
     async fn save_todo(&self, todo: Todo) -> Result<Todo, WriteError> {
@@ -2417,6 +2550,17 @@ impl PimService {
     /// tasks), else from the server ([`CalDavClient::stored_item`]). The write that follows
     /// sends the same `etag` as `If-Match`, so the version checked is the version written.
     async fn check_existing(&self, place: &Place, item: Item<'_>) -> Result<(), WriteError> {
+        self.check_item(place, item, true).await
+    }
+
+    /// [`PimService::check_existing`] for a write to a series (task TE.4): the same checks of the
+    /// version, but a series is what is expected here.
+    async fn check_version(&self, place: &Place, item: Item<'_>) -> Result<(), WriteError> {
+        self.check_item(place, item, false).await
+    }
+
+    /// The checks of [`PimService::check_existing`]; a series is refused only with `refuse_series`.
+    async fn check_item(&self, place: &Place, item: Item<'_>, refuse_series: bool) -> Result<(), WriteError> {
         let Some(url) = item_url(item.collection, item.href) else {
             return Err(ProviderError::Other(format!("{} is not an item in {}", item.href, item.collection)).into());
         };
@@ -2426,18 +2570,41 @@ impl PimService {
         if item.role == Role::Calendar {
             let state = self.state.read().await;
             if let Some(recurring) = state.slot(&place.account).and_then(|slot| cached_series(slot, &url, etag)) {
-                return if recurring { Err(series(item.role)) } else { Ok(()) };
+                return if recurring && refuse_series { Err(series(item.role)) } else { Ok(()) };
             }
         }
         let stored = place.client.stored_item(item.collection, item.href).await;
         match stored.map_err(|err| Failed::at(&place.account, err))? {
             None => Err(refused("not-found", format!("{} is not on the server any more: reload", item.href))),
-            Some(stored) if stored.recurring => Err(series(item.role)),
+            Some(stored) if stored.recurring && refuse_series => Err(series(item.role)),
             Some(stored) if stored.etag != etag => {
                 Err(Failed::at(&place.account, ProviderError::Conflict { uid: item.uid.to_string() }).into())
             }
             Some(_) => Ok(()),
         }
+    }
+}
+
+/// What a save of a series removes (task TE.4).
+impl PimService {
+    /// Whether `request` is a `calendar.save_event` with a scope that removes events of a series or
+    /// resets changed ones: a shorter series, another rule, no rule, a split with new times
+    /// ([`series::drops`]). The core then checks it as it checks `calendar.delete_event`: the right to
+    /// delete, and an approval where deleting needs one.
+    ///
+    /// Read from the stored object the cache holds for its `href` in the version of its `etag`, never
+    /// from what the client says the series is. Without such an object the core cannot tell and
+    /// counts it as removing (fail closed). One occurrence (`occurrence`) and requests without a
+    /// scope never remove events this way: without a scope a series is not written at all.
+    pub async fn removes_events(&self, request: &Request) -> bool {
+        let Request::SaveEvent { event, scope: Some(scope) } = request else { return false };
+        if *scope == SeriesScope::Occurrence {
+            return false;
+        }
+        let Some(href) = event.href.as_deref() else { return false };
+        let state = self.state.read().await;
+        held_object(&state, &event.collection, href, event.etag.as_deref())
+            .is_none_or(|held| series::drops(&held.ics, event, *scope) > 0)
     }
 }
 
@@ -2449,7 +2616,10 @@ impl PimService {
     ///
     /// - writes of events and tasks with an `href`: the item at that `href`, resolved as the
     ///   write resolves it ([`touched`]), and for a save that moves it the collection losing it
-    ///   ([`Facts::moved_from`]); the collection written to by its display name;
+    ///   ([`Facts::moved_from`]); the collection written to by its display name. An event is the
+    ///   occurrence with the request's `recurrence_id` (task TE.4), so a change of one occurrence of
+    ///   a series names its date; a series' save with a scope also says how many changed occurrences
+    ///   it resets ([`Facts::resets`], [`series::resets`] on the stored object in the cache);
     /// - `tasks.move_todo`: the task at `href` and its list, compared as `move_todo` compares;
     /// - `tasks.save_todo` on a GitHub filter list (tasks G.5, G.5b): the item the list holds under
     ///   the `uid`, the one [`PimService::save_filter_todo`] closes or reopens, and for an issue
@@ -2472,12 +2642,10 @@ impl PimService {
         let name_of = |id: &str| state.collections().find(|c| c.id == id).map(|c| c.name.clone());
         let named = |id: &str| Facts { name: name_of(id), ..Facts::default() };
         let written = |collection: &str, href: Option<&str>, etag: Option<&str>, role: Role, save: bool| {
-            let touched = href.and_then(|href| touched(&state, collection, href, etag, role, save));
-            let (item, moved_from) = match touched {
-                Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
-                None => (None, None),
-            };
-            Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
+            written_item(&state, collection, href, etag, role, save, None)
+        };
+        let event_written = |collection: &str, href: Option<&str>, etag: Option<&str>, role: Role, save: bool, key| {
+            written_item(&state, collection, href, etag, role, save, key)
         };
         match request {
             // The event as the cache holds it, never the client's text (task ER1.3).
@@ -2499,11 +2667,33 @@ impl PimService {
                     .collect();
                 Facts { calendars, ..Facts::default() }
             }
-            Request::DeleteEvent { event, .. } => {
-                written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, false)
+            // With a scope the occurrence is found by its key; without one an occurrence of a series is
+            // refused anyway, and a key the client made up must not blank a single event's summary.
+            Request::DeleteEvent { event, scope } => {
+                let (href, etag) = (event.href.as_deref(), event.etag.as_deref());
+                let key = scope.map(|_| event.recurrence_id);
+                event_written(&event.collection, href, etag, Role::Calendar, false, key)
             }
-            Request::SaveEvent { event, .. } => {
-                written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, true)
+            Request::SaveEvent { event, scope } => {
+                let (href, etag) = (event.href.as_deref(), event.etag.as_deref());
+                let key = scope.map(|_| event.recurrence_id);
+                let facts = event_written(&event.collection, href, etag, Role::Calendar, true, key);
+                let held = href.and_then(|href| held_object(&state, &event.collection, href, etag));
+                let resets = scope.zip(held).map_or(0, |(scope, held)| series::resets(&held.ics, event, scope));
+                let removal = match (scope, held) {
+                    (None | Some(SeriesScope::Occurrence), _) => Removal::Nothing,
+                    // As `removes_events` counts it: not held in this version, so it may remove events.
+                    (Some(_), None) => Removal::Unknown,
+                    (Some(scope), Some(held)) => match series::drops(&held.ics, event, *scope) {
+                        0 => Removal::Nothing,
+                        _ if event.repeat.is_none() => Removal::EndsSeries,
+                        dropped => match dropped.saturating_sub(resets) {
+                            0 => Removal::Nothing,
+                            more => Removal::Events(more),
+                        },
+                    },
+                };
+                Facts { resets, removal, ..facts }
             }
             Request::DeleteTodo { todo } => {
                 written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, false)
@@ -2575,7 +2765,9 @@ impl PimService {
 /// The item is `None` when the holder's cache has nothing at that address, or has it in another
 /// version than `etag`, the one the write will be checked against: the server may hold a newer
 /// version than the cache (a client can read one past the cached window), and the summary must
-/// not name the old title for it. Of a series the first occurrence.
+/// not name the old title for it. An event is the occurrence whose `recurrence_id` is `key` (task
+/// TE.4), `None` for a single event: one of a series is found only with its key, never by being
+/// first; `key` itself `None` (tasks) takes any.
 fn touched(
     state: &State,
     collection: &str,
@@ -2583,6 +2775,7 @@ fn touched(
     etag: Option<&str>,
     role: Role,
     save: bool,
+    key: Option<Option<EventTime>>,
 ) -> Option<(String, Option<Known>)> {
     let slot = state.owner(collection)?;
     let at = |id: &str| slot.url(id).and_then(|url| item_url(url, href)).map(|target| (id.to_string(), target));
@@ -2602,6 +2795,7 @@ fn touched(
             .events
             .iter()
             .filter(|e| is_target(&e.collection, e.href.as_deref(), e.etag.as_deref()))
+            .filter(|e| key.is_none_or(|key| e.recurrence_id == key))
             .min_by_key(|e| e.start)
             .map(|e| Known { title: e.summary.clone(), start: Some(e.start) }),
         Role::TaskList => slot
@@ -2611,6 +2805,39 @@ fn touched(
             .map(|t| Known { title: t.summary.clone(), start: None }),
     };
     Some((holder, item))
+}
+
+/// The [`Facts`] of a write of an item to `collection` with `href` ([`touched`] with `key`): the item
+/// as cached, the collection written to and, for a move, the one losing it.
+fn written_item(
+    state: &State,
+    collection: &str,
+    href: Option<&str>,
+    etag: Option<&str>,
+    role: Role,
+    save: bool,
+    key: Option<Option<EventTime>>,
+) -> Facts {
+    let name_of = |id: &str| state.collections().find(|c| c.id == id).map(|c| c.name.clone());
+    let touched = href.and_then(|href| touched(state, collection, href, etag, role, save, key));
+    let (item, moved_from) = match touched {
+        Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
+        None => (None, None),
+    };
+    Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
+}
+
+/// The stored object of the event at `href` written to `collection` (resolved as [`touched`]
+/// resolves it, a move included) as the cache holds it, when it is the version `etag` (task TE.4):
+/// what a save of a series really changes is read from it, never from the client's event.
+fn held_object<'a>(state: &'a State, collection: &str, href: &str, etag: Option<&str>) -> Option<&'a RawObject> {
+    let slot = state.owner(collection)?;
+    let at = |id: &str| slot.url(id).and_then(|url| item_url(url, href)).map(|target| (id.to_string(), target));
+    let (holder, target) = at(collection).or_else(|| slot.collections.iter().find_map(|c| at(&c.id)))?;
+    let url = slot.url(&holder)?;
+    slot.objects
+        .values()
+        .find(|object| object.etag.as_deref() == etag && item_url(url, &object.href).as_ref() == Some(&target))
 }
 
 /// The trouble of an account whose sync just failed with `err` at `now`, after `before`: a refused
@@ -3964,10 +4191,41 @@ fn scope_needs_href(event: &Event, scope: Option<SeriesScope>) -> Result<(), Wri
 /// The refusal for a series: `unsupported` until series editing exists.
 fn series(role: Role) -> WriteError {
     let message = match role {
-        Role::Calendar => "recurring events cannot be edited yet",
+        Role::Calendar => "a recurring event is changed or deleted with a scope: occurrence, following or series",
         Role::TaskList => "recurring tasks cannot be edited yet",
     };
     refused("unsupported", message.into())
+}
+
+/// The failure of a write to a series as the core answers it: the server's, of `account`, or the
+/// series' own refusal with its code (`not-found`, `unsupported`).
+fn series_failed(account: &str, failure: SeriesFailure) -> WriteError {
+    match failure {
+        SeriesFailure::Server(err) => Failed::at(account, err).into(),
+        SeriesFailure::Refused(err) => refused(err.code(), err.to_string()),
+    }
+}
+
+/// The occurrence a write to a series answers with (task TE.4): of the object `written` names last
+/// (the new one after a split), the one with the key the changed occurrence has now, else its first
+/// one read again; `sent` with the new `href`, `etag` and key when none was read (outside the
+/// window, or reading failed).
+fn answer_of(refreshed: &[Event], written: &SeriesWrite, sent: Event) -> Event {
+    let Some((href, etag)) = written.split.as_ref().or(written.kept.as_ref()) else { return sent };
+    let of_object = || refreshed.iter().filter(|e| e.href.as_deref() == Some(href.as_str()));
+    let keyed = written.key.and_then(|key| of_object().find(|e| e.recurrence_id == Some(key)));
+    match keyed.or_else(|| of_object().min_by_key(|e| e.start)) {
+        Some(found) => found.clone(),
+        None => Event { href: Some(href.clone()), etag: Some(etag.clone()), recurrence_id: written.key, ..sent },
+    }
+}
+
+/// The cached window around now ([`WINDOW_BACK_DAYS`], [`WINDOW_AHEAD_DAYS`]), for an account that
+/// has not synced yet.
+fn default_window() -> (DateTime<Utc>, DateTime<Utc>) {
+    let today = Local::now().date_naive();
+    let day = |date: chrono::NaiveDate| date.and_time(chrono::NaiveTime::MIN).and_utc();
+    (day(today - Span::days(WINDOW_BACK_DAYS)), day(today + Span::days(WINDOW_AHEAD_DAYS)))
 }
 
 /// An item on the server that a write is about to change, move away or delete.
@@ -4028,6 +4286,8 @@ fn provider_error(err: &ProviderError) -> Response {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     /// The account most tests use; the core's handler tests sign it in with
@@ -4218,10 +4478,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// Task TE.1: an occurrence stays `unsupported` with a scope as well until series are written
-    /// (TE.4); a scope on an event not saved yet is an `error`, before anything is looked up.
+    /// Task TE.1: a scope on an event not saved yet is an `error`, before anything is looked up; an
+    /// occurrence without a scope stays `unsupported` (task TE.4 writes it with one).
     #[tokio::test]
-    async fn scopes_are_checked_and_occurrences_stay_refused() {
+    async fn scopes_are_checked_and_an_occurrence_without_one_stays_refused() {
         let service = service();
         let occurrence = Event {
             recurring: true,
@@ -4229,17 +4489,17 @@ pub(crate) mod tests {
             etag: Some("\"1\"".into()),
             ..event(Utc::now(), 1)
         };
+        for request in [
+            Request::SaveEvent { event: occurrence.clone(), scope: None },
+            Request::DeleteEvent { event: occurrence.clone(), scope: None },
+        ] {
+            let response = service.handle_within(request, Reach::Suite).await;
+            assert!(
+                matches!(response, Response::Error { ref code, ref message } if code == "unsupported" && message.contains("scope")),
+                "{response:?}"
+            );
+        }
         for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
-            for request in [
-                Request::SaveEvent { event: occurrence.clone(), scope: Some(scope) },
-                Request::DeleteEvent { event: occurrence.clone(), scope: Some(scope) },
-            ] {
-                let response = service.handle_within(request, Reach::Suite).await;
-                assert!(
-                    matches!(response, Response::Error { ref code, .. } if code == "unsupported"),
-                    "{scope:?}: {response:?}"
-                );
-            }
             let new = Event { href: None, etag: None, ..event(Utc::now(), 1) };
             for request in [
                 Request::SaveEvent { event: new.clone(), scope: Some(scope) },
@@ -6482,5 +6742,183 @@ pub(crate) mod tests {
 
     fn parse_one(ics: &str) -> Event {
         torro_pim_caldav::parse_events(ics, "/cal/").remove(0)
+    }
+
+    // Writing series (task TE.4).
+
+    /// The second occurrence of [`SERIES`] (weekly from 11 Oct, 08:00 UTC), as the core caches it.
+    fn second_of_series(base: &str, etag: &str) -> Event {
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 18, 8, 0, 0).single().expect("time"));
+        Event {
+            recurring: true,
+            recurrence_id: Some(key),
+            repeat: Some(Box::new(torro_pim_caldav::recur::read("FREQ=WEEKLY", None))),
+            start: key,
+            end: None,
+            ..listed_event(base, Some(etag))
+        }
+    }
+
+    const EXPANDED_SECOND: &str = r#"<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/remote.php/dav/calendars/anna/work/e.ics</d:href><d:propstat><d:prop><d:getetag>"2"</d:getetag><cal:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:u
+DTSTART:20261011T080000Z
+RECURRENCE-ID:20261011T080000Z
+SUMMARY:Workshop
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+
+    /// A server holding [`SERIES`] at `e.ics` in version `"1"`: a new object is made in version
+    /// `"n1"`, the series is written in version `"2"` (or refused with 412 when `refuse` is set), and
+    /// the multigets answer with the old series' first occurrence.
+    fn server_splitting(refuse: bool) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        move |seen| match (seen.method.as_str(), seen.if_none_match.is_some()) {
+            ("GET", _) => (200, Some("\"1\""), SERIES),
+            ("PUT", true) => (201, Some("\"n1\""), ""),
+            ("PUT", false) if refuse => (412, None, ""),
+            ("PUT", false) => (204, Some("\"2\""), ""),
+            ("DELETE", _) => (204, None, ""),
+            ("REPORT", _) if seen.body.contains("expand") => (207, None, EXPANDED_SECOND),
+            ("REPORT", _) => (207, None, NOTHING),
+            _ => (405, None, ""),
+        }
+    }
+
+    #[tokio::test]
+    async fn splitting_a_series_writes_the_new_part_first_and_reads_both_again() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let event = Event { summary: "Workshop in a new format".into(), ..second_of_series(&base, "\"1\"") };
+        let request = Request::SaveEvent { event: event.clone(), scope: Some(SeriesScope::Following) };
+        let Response::Event { event: saved, reset } = service.handle_within(request, Reach::Suite).await else {
+            panic!("expected the saved occurrence")
+        };
+        assert_eq!(reset, 0);
+        let seen = lines(&record);
+        assert_eq!(seen[..2], [format!("GET {WORK}e.ics"), format!("GET {WORK}e.ics")], "{seen:?}");
+        assert!(
+            seen[2].starts_with(&format!("PUT {WORK}")) && seen[2].ends_with("@torro.ics If-None-Match *"),
+            "{seen:?}"
+        );
+        assert_eq!(seen[3], format!("PUT {WORK}e.ics If-Match \"1\""));
+        assert!(seen[4..].iter().all(|line| line == &format!("REPORT {WORK}")) && seen.len() == 6, "{seen:?}");
+        let bodies: Vec<String> = record.lock().expect("record").iter().map(|s| s.body.clone()).collect();
+        assert!(bodies[2].contains("RELATED-TO;RELTYPE=SIBLING:u") && bodies[2].contains("Workshop in a new format"));
+        assert!(bodies[3].contains("RRULE:FREQ=WEEKLY;UNTIL=20261018T075959Z"), "{}", bodies[3]);
+        // The answer is the first occurrence of the new series: outside what the server answered
+        // here, so the event as sent, with the new object's href and version.
+        assert!(saved.href.as_deref().is_some_and(|href| href.ends_with("@torro.ics")), "{saved:?}");
+        assert_eq!((saved.etag.as_deref(), saved.recurrence_id), (Some("\"n1\""), event.recurrence_id));
+        // The cache holds what the server answered for the old series, nothing of before.
+        let state = service.state.read().await;
+        let cached: Vec<(&str, Option<&str>)> =
+            state.accounts[0].events.iter().map(|e| (e.summary.as_str(), e.etag.as_deref())).collect();
+        assert_eq!(cached, [("Workshop", Some("\"2\""))]);
+    }
+
+    #[tokio::test]
+    async fn a_split_whose_second_write_fails_takes_the_new_part_back() {
+        let (base, record) = fake_server(server_splitting(true)).await;
+        let service = service_on(&base).await;
+        let event = Event { summary: "Workshop in a new format".into(), ..second_of_series(&base, "\"1\"") };
+        let request = Request::SaveEvent { event, scope: Some(SeriesScope::Following) };
+        let response = service.handle_within(request, Reach::Suite).await;
+        assert_eq!(code_of(&response), "conflict", "{response:?}");
+        let seen = lines(&record);
+        assert_eq!(seen.len(), 5, "{seen:?}");
+        let new = seen[2].trim_start_matches("PUT ").trim_end_matches(" If-None-Match *").to_string();
+        assert_eq!(seen[4], format!("DELETE {new} If-Match \"n1\""), "the new part goes again");
+    }
+
+    #[tokio::test]
+    async fn a_series_changed_meanwhile_is_a_conflict_and_nothing_is_written() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+            let stale = second_of_series(&base, "\"0\"");
+            let response = service
+                .handle_within(Request::SaveEvent { event: stale.clone(), scope: Some(scope) }, Reach::Suite)
+                .await;
+            assert_eq!(code_of(&response), "conflict", "{response:?}");
+            let response =
+                service.handle_within(Request::DeleteEvent { event: stale, scope: Some(scope) }, Reach::Suite).await;
+            assert_eq!(code_of(&response), "conflict", "{response:?}");
+        }
+        assert!(lines(&record).iter().all(|line| line.starts_with("GET ")), "only reads: {:?}", lines(&record));
+        // An occurrence the series does not have is `not-found`, before anything is written.
+        let wednesday = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 21, 8, 0, 0).single().expect("time"));
+        let other = Event { recurrence_id: Some(wednesday), ..second_of_series(&base, "\"1\"") };
+        let response = service
+            .handle_within(Request::DeleteEvent { event: other, scope: Some(SeriesScope::Occurrence) }, Reach::Suite)
+            .await;
+        assert_eq!(code_of(&response), "not-found", "{response:?}");
+        assert!(lines(&record).iter().all(|line| line.starts_with("GET ")));
+    }
+
+    #[tokio::test]
+    async fn deleting_one_occurrence_excludes_its_date() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let request =
+            Request::DeleteEvent { event: second_of_series(&base, "\"1\""), scope: Some(SeriesScope::Occurrence) };
+        assert_eq!(service.handle_within(request, Reach::Suite).await, Response::Ok);
+        let seen = record.lock().expect("record").clone();
+        let put = seen.iter().find(|s| s.method == "PUT").expect("written");
+        assert_eq!(put.if_match.as_deref(), Some("\"1\""));
+        assert!(put.body.contains("EXDATE:20261018T080000Z"), "{}", put.body);
+    }
+
+    fn renamed_again(event: &Event) -> Event {
+        Event { summary: "Workshop III".into(), ..event.clone() }
+    }
+
+    /// The occurrence of [`SERIES`] at `key` cached with its stored object, in `work`.
+    async fn cache_series(service: &PimService, key: EventTime) -> Event {
+        let mut slot = slot_on("http://127.0.0.1:9/remote.php/dav/");
+        let base = "http://127.0.0.1:9/remote.php/dav/";
+        let event = Event { recurrence_id: Some(key), start: key, ..second_of_series(base, "\"1\"") };
+        let object =
+            RawObject { href: event.href.clone().unwrap_or_default(), etag: Some("\"1\"".into()), ics: SERIES.into() };
+        slot.events = vec![event.clone()];
+        slot.objects = [(object.href.clone(), object)].into();
+        service.state.write().await.accounts.push(slot);
+        event
+    }
+
+    /// Task TE.4: an approval names the occurrence by its key, never the first one or the client's
+    /// start, and says how many changed occurrences a save resets, from the stored object.
+    #[tokio::test]
+    async fn facts_name_the_occurrence_by_its_key_and_what_a_save_removes() {
+        let service = service();
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 18, 8, 0, 0).single().expect("time"));
+        let cached = cache_series(&service, key).await;
+        let claimed = Event {
+            summary: "Lunch".into(),
+            start: EventTime::DateTime(Utc.with_ymd_and_hms(2026, 12, 24, 12, 0, 0).single().expect("time")),
+            ..cached.clone()
+        };
+        let facts =
+            service.facts(&Request::SaveEvent { event: claimed.clone(), scope: Some(SeriesScope::Series) }).await;
+        assert_eq!(facts.item, Some(Known { title: "Workshop".into(), start: Some(key) }));
+        let other = Event { recurrence_id: Some(EventTime::DateTime(Utc::now())), ..claimed.clone() };
+        let facts = service.facts(&Request::DeleteEvent { event: other, scope: Some(SeriesScope::Occurrence) }).await;
+        assert_eq!(facts.item, None, "no occurrence with that key: unknown");
+
+        // Removing events of the series needs the right to delete; a new title does not.
+        let renamed = Event { summary: "Workshop II".into(), ..cached.clone() };
+        let ended = Event { repeat: None, ..cached.clone() };
+        let save = |event: &Event, scope| Request::SaveEvent { event: event.clone(), scope: Some(scope) };
+        assert!(!service.removes_events(&save(&renamed, SeriesScope::Series)).await);
+        assert!(!service.removes_events(&save(&ended, SeriesScope::Occurrence)).await);
+        assert!(service.removes_events(&save(&ended, SeriesScope::Series)).await);
+        let uncached = Event { etag: Some("\"9\"".into()), ..renamed };
+        assert!(service.removes_events(&save(&uncached, SeriesScope::Series)).await, "unknown: counted as removing");
+        assert!(!service.removes_events(&Request::SaveEvent { event: ended.clone(), scope: None }).await);
+        let service = &service;
+        let removal = |request: Request| async move { service.facts(&request).await.removal };
+        assert_eq!(removal(save(&ended, SeriesScope::Series)).await, Removal::EndsSeries);
+        assert_eq!(removal(save(&renamed_again(&cached), SeriesScope::Series)).await, Removal::Nothing);
+        assert_eq!(removal(save(&uncached, SeriesScope::Following)).await, Removal::Unknown);
     }
 }

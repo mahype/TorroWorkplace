@@ -867,6 +867,19 @@ fn invitation_calendar_refusal(
         .then(|| Refused::Forbidden { command: "calendar.delete_event" }.response())
 }
 
+/// The operation of `calendar.delete_event` for the same event and scope as the `calendar.save_event`
+/// `request` (task TE.4): a save that removes events of a series is checked as that delete. `None`
+/// for every other request. A function of its own, so the request built for it never lives in the
+/// handler's future.
+fn delete_operation(request: &Request) -> Option<torro_ipc::api::Operation> {
+    match request {
+        Request::SaveEvent { event, scope } => {
+            Some(Request::DeleteEvent { event: event.clone(), scope: *scope }.operation())
+        }
+        _ => None,
+    }
+}
+
 /// A decline removes the copy of the event made before: for a client whose `confirm` asks before
 /// deleting, it waits for a person like any delete does (task E8.3b), whatever `outbound` says.
 fn invitation_deletes_waiting(request: &Request, rights: &torro_ipc::api::Rights) -> bool {
@@ -2847,6 +2860,22 @@ impl Core {
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return Ok(not_reached(&request, &outside));
         }
+        // A save that removes events of a series (a shorter series, another rule, no rule, a split
+        // with new times: task TE.4) is checked as `calendar.delete_event` is: the right to delete
+        // first, then an approval where deleting waits for one. What it removes comes from the
+        // stored object in the core's cache, never from what the client says the series is.
+        let removal = match self.pim.removes_events(&request).await {
+            true => delete_operation(&request),
+            false => None,
+        };
+        if let Some(delete) = removal
+            && !rights.allows(delete)
+        {
+            let kind = self.client_kind(&id).unwrap_or_default();
+            let command = request.operation().name();
+            let lack = torro_ipc::api::Lack::of_in(&kind, &rights, delete, &[], &[], via.origin.mode);
+            return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
+        }
         // A task made of a mail reads the mail, and opening one shows a mail or a task (task
         // E8.7a): what the client may not read is `not-found` before anyone is asked.
         if let Request::CreateTodoFromMail { account, .. } = &request
@@ -2941,6 +2970,7 @@ impl Core {
         if question
             || from_mail
             || rights.needs_approval_of(operation)
+            || removal.is_some_and(|delete| rights.needs_approval_of(delete))
             || invitation_deletes_waiting(&request, &rights)
             || self.opens_a_web_page(&request, inbox_client.as_ref())
             || self.proposes_bot(&id, &request)
@@ -3631,6 +3661,13 @@ impl Core {
         let reach = Reach::Client(rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return not_reached(&request, &outside);
+        }
+        // A save that removes events of a series still needs the right to delete (task TE.4).
+        if let Some(delete) = delete_operation(&request)
+            && !rights.allows(delete)
+            && self.pim.removes_events(&request).await
+        {
+            return Refused::Forbidden { command }.response();
         }
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
@@ -10301,6 +10338,80 @@ mod tests {
             asked.summary,
             torro_core::i18n::trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &"Work")])
         );
+    }
+
+    /// Task TE.4: a save that removes events of a series is checked as `calendar.delete_event`. A client
+    /// that may write but not delete can neither shorten a series nor end its rule through a save; one
+    /// whose deletes wait for a person (`Confirm::OnDelete`) waits; a change that removes nothing is a
+    /// write and waits for nobody. What it removes comes from the stored object in the cache.
+    #[tokio::test]
+    async fn a_save_that_removes_events_of_a_series_needs_the_right_to_delete() {
+        use chrono::TimeZone;
+        const RUNS: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:run\r\nDTSTART:20261012T060000Z\r\nSUMMARY:Morning run\r\nRRULE:FREQ=DAILY;COUNT=10\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let work = id("/cal/work/");
+        core.pim.cache_collections(vec![torro_pim::Collection { name: "Work".into(), ..calendar(&work) }]).await;
+        let href = "https://cloud.example.org/cal/work/run.ics";
+        let key =
+            torro_pim::EventTime::DateTime(chrono::Utc.with_ymd_and_hms(2026, 10, 14, 6, 0, 0).single().expect("t"));
+        let rule = |text: &str| Some(Box::new(torro_pim_caldav::recur::read(text, None)));
+        let occurrence = torro_pim::Event {
+            uid: "run".into(),
+            summary: "Morning run".into(),
+            etag: Some("\"1\"".into()),
+            start: key,
+            recurring: true,
+            recurrence_id: Some(key),
+            repeat: rule("FREQ=DAILY;COUNT=10"),
+            ..event_in(&work, Some(href))
+        };
+        core.pim.cache_events(vec![occurrence.clone()]).await;
+        let stored = torro_pim_caldav::RawObject { href: href.into(), etag: Some("\"1\"".into()), ics: RUNS.into() };
+        core.pim.cache_objects(vec![stored]).await;
+        let shorter = torro_pim::Event { repeat: rule("FREQ=DAILY;COUNT=5"), ..occurrence.clone() };
+        let ended = torro_pim::Event { repeat: None, ..occurrence.clone() };
+        let renamed = torro_pim::Event { summary: "Run".into(), ..occurrence.clone() };
+        let save = |event: &torro_pim::Event, scope| Request::SaveEvent { event: event.clone(), scope: Some(scope) };
+        let waited = |response: &Response| matches!(response, Response::Pending { .. });
+        let refused = |response: &Response| matches!(response, Response::Error { code, .. } if code == "forbidden");
+
+        let mut write_only = RightsTemplate::ReadAndWrite.rights();
+        write_only.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+        let (_, writer) = client(&core, write_only).await;
+        for request in [
+            save(&shorter, torro_pim::model::SeriesScope::Series),
+            save(&ended, torro_pim::model::SeriesScope::Series),
+            save(&ended, torro_pim::model::SeriesScope::Following),
+        ] {
+            let response = ask(&core, Some(&writer), request).await;
+            assert!(refused(&response), "{response:?}");
+        }
+        // A new title removes nothing: it runs as a write (here it finds no server).
+        let response = ask(&core, Some(&writer), save(&renamed, torro_pim::model::SeriesScope::Following)).await;
+        assert!(!waited(&response) && !refused(&response), "{response:?}");
+        let response = ask(&core, Some(&writer), save(&ended, torro_pim::model::SeriesScope::Occurrence)).await;
+        assert!(!waited(&response) && !refused(&response), "one occurrence drops nothing: {response:?}");
+
+        // With the right to delete and `Confirm::OnDelete`, it waits for a person.
+        let (deleter_id, deleter) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let asked = waits(ask(&core, Some(&deleter), save(&shorter, torro_pim::model::SeriesScope::Series)).await);
+        assert!(asked.summary.contains(tr("all events of the series")), "{}", asked.summary);
+        let removes = torro_core::i18n::trf("{change}; removes {n} events", &[("change", &""), ("n", &5)]);
+        assert!(asked.summary.ends_with(&removes), "says what goes: {}", asked.summary);
+        // The right to delete taken away while it waits: refused when it runs.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut narrowed = RightsTemplate::ReadAndWrite.rights();
+        narrowed.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+        let update = Request::UpdateClient { id: deleter_id.clone(), rights: narrowed };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert!(refused(&response), "{response:?}");
+        let update = Request::UpdateClient { id: deleter_id, rights: RightsTemplate::ReadAndWrite.rights() };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let response = ask(&core, Some(&deleter), save(&renamed, torro_pim::model::SeriesScope::Series)).await;
+        assert!(!waited(&response), "a write waits for nobody: {response:?}");
     }
 
     #[tokio::test]
