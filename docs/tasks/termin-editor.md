@@ -199,7 +199,8 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   `{event, scope}` baut `SaveEvent { scope: Some(…) }`, kurze Form mit `scope` ist ein Eingabefehler; Bild-Antwort.
 
 ## TE.7 Editor: Felder, Wiederholung, Umfang (Layout A)
-- [x] erledigt
+- [ ] erledigt – alles außer der Sichtprüfung; die steht aus (dem Agenten fehlten unter macOS die Rechte für
+  Bildschirmaufnahme), sie ist Punkt im Testplan von PR #294
 - **Modell:** Opus · **Braucht:** TE.4 · **Dateien:** `crates/torrocalendar/src/{editor,app}.rs`,
   `crates/torrocalendar/src/editor/` (neu, falls `editor.rs` zu groß wird: `repeat.rs`), `crates/torro-gui/src/icon.rs`,
   `crates/torro-gui/assets/icons/`, `crates/torro-core/src/i18n/de.rs`
@@ -225,7 +226,8 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   geht mit dem Request, Lesen-nur-Fälle; Sichtprüfung `torro-design-review` in allen Größen; fmt, clippy, test.
 
 ## TE.8 Editor: Erinnerungen frei, Ort mit Karte
-- [x] erledigt
+- [ ] erledigt – alles außer der Sichtprüfung; die steht aus (dem Agenten fehlten unter macOS die Rechte für
+  Bildschirmaufnahme), sie ist Punkt im Testplan von PR #294
 - **Modell:** Sonnet · **Braucht:** TE.5, TE.7 · **Dateien:** `crates/torrocalendar/src/{editor,app}.rs`,
   `crates/torrocalendar/Cargo.toml`, `Cargo.toml` (iced-Feature), `crates/torro-core/src/i18n/de.rs`
 - **Reminders** (`termin-editor-a-remind.png`): „Add reminder“ öffnet eine Karte mit Chips (At start, 5, 10, 15,
@@ -243,7 +245,8 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   „Open in Maps“, keine Suche ohne Enter; Sichtprüfung; fmt, clippy, test.
 
 ## TE.9 Ansichten: abgesagt, vorläufig, Teilnehmer
-- [x] erledigt
+- [ ] erledigt – alles außer der Sichtprüfung; die steht aus (dem Agenten fehlten unter macOS die Rechte für
+  Bildschirmaufnahme), sie ist Punkt im Testplan von PR #294
 - **Modell:** Sonnet · **Braucht:** TE.2 · **Dateien:** `crates/torrocalendar/src/views/{week,month,agenda,timeline,radar,glance}.rs`,
   `crates/torrocalendar/src/views/mod.rs`
 - Rest von K.26: abgesagte Termine durchgestrichen und 55 % (eine gemeinsame Hilfsfunktion in `views/mod.rs`),
