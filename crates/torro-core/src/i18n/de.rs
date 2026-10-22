@@ -3951,7 +3951,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Time span", "Zeitraum"),
     ("All known mail", "Alle bekannten E-Mails"),
     ("Last 30 days", "Letzte 30 Tage"),
-    ("Last 90 days", "Letzte 90 Tage"),
     ("Last year", "Letztes Jahr"),
     ("Recheck model categories", "Modellkategorien erneut prüfen"),
     ("Manual choices and sorting rules remain protected.", "Manuelle Zuordnungen und Sortierregeln bleiben geschützt."),
