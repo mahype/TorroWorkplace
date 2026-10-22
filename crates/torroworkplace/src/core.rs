@@ -1851,6 +1851,9 @@ pub struct Core {
     /// ([`Core::bind_template_keys`]). Written down for the next core of the same Hyprland instance
     /// ([`crate::workspace_keys::Ledger`]); none in tests.
     keys: crate::workspace_keys::BoundKeys,
+    /// The place search and the map of the event editor (task TE.5): throttles, answers and the
+    /// tile cache for the whole service ([`crate::places::Places::system`]; tests keep no tiles).
+    places: crate::places::Places,
 }
 
 impl Core {
@@ -1906,6 +1909,7 @@ impl Core {
             } else {
                 crate::workspace_keys::BoundKeys::system()
             },
+            places: crate::places::Places::system(),
         }
     }
 
@@ -4077,8 +4081,11 @@ impl Core {
             Request::CreateTodoFromMail { account, id, collection, title, due } => {
                 self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, None).await
             }
-            // The place search and the map of the event editor (task TE.1).
-            request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. }) => self.places(&request),
+            // The place search and the map of the event editor (tasks TE.1, TE.5); boxed, as their
+            // answer waits for other services.
+            request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. }) => {
+                Box::pin(self.places(request, reach)).await
+            }
             pim @ (Request::ConnectNextcloud { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
@@ -7788,19 +7795,49 @@ impl Core {
         }
     }
 
-    /// `calendar.search_places` and `calendar.map_preview` (task TE.1): `error` outside the limits
-    /// ([`torro_ipc::pim::limit_refusal`]), `unsupported` while maps are off, so nothing is sent; with
-    /// maps on `unsupported` as well until the services are asked (task TE.5). No message repeats the
+    /// `calendar.search_places` and `calendar.map_preview` (tasks TE.1, TE.5): `error` outside the
+    /// limits ([`torro_ipc::pim::limit_refusal`]), `unsupported` while maps are off, so nothing is
+    /// sent and nothing read. With maps on [`crate::places::Places`] asks the services of the
+    /// settings; the person (`Reach::Suite`) goes before clients there. A search starts with the
+    /// earlier places of events `reach` may read ([`Core::recent_places`]). No message repeats the
     /// query or the point.
-    fn places(&self, request: &Request) -> Response {
-        if let Some(refused) = torro_ipc::pim::limit_refusal(request) {
+    async fn places(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::pim::limit_refusal(&request) {
             return refused;
         }
-        let message = match self.settings.current().maps.enabled {
-            false => "maps and place search are off; a person can turn them on in the settings",
-            true => "maps and place search are not available yet",
+        let maps = self.settings.current().maps;
+        if !maps.enabled {
+            let message = "maps and place search are off; a person can turn them on in the settings";
+            return Response::Error { code: "unsupported".into(), message: message.into() };
+        }
+        let asker = match reach {
+            Reach::Suite => crate::places::Asker::Person,
+            Reach::Client(_) => crate::places::Asker::Client,
         };
-        Response::Error { code: "unsupported".into(), message: message.into() }
+        match request {
+            Request::SearchPlaces { query, near } => {
+                let recent = self.recent_places(&query, reach).await;
+                self.places.search(&maps, &query, near, asker, recent).await
+            }
+            Request::MapPreview { geo, width, height, dark } => {
+                self.places.map(&maps, geo, width, height, dark, asker).await
+            }
+            _ => Response::Error { code: "error".into(), message: "not a place request".into() },
+        }
+    }
+
+    /// The earlier places for `query` ([`crate::places::recent_places`]) among the events of the
+    /// calendars `reach` may read: the calendar service leaves out the others before it reads any
+    /// event (`calendar.list_events`). The window lies inside what a sync keeps
+    /// ([`crate::places::recent_window`]), so once the calendars synced the events come from the
+    /// cache; a calendar that cannot be read gives no places.
+    async fn recent_places(&self, query: &str, reach: Reach<'_>) -> Vec<torro_ipc::Place> {
+        let now = Utc::now();
+        let (start, end) = crate::places::recent_window(now);
+        match Box::pin(self.pim.handle_within(Request::Events { start, end }, reach)).await {
+            Response::Events { events } => crate::places::recent_places(&events, query, now),
+            _ => Vec::new(),
+        }
     }
 
     /// `settings.voice_status` (task C.9): what the listener does, and what the assistant app
@@ -10725,11 +10762,28 @@ mod tests {
         assert!(!settings(&core).await.maps.enabled, "off once the person allowed it");
     }
 
-    /// Task TE.1: the place search and the map check their limits first, then answer `unsupported`
-    /// while maps are off – and, until task TE.5, also when they are on. No answer repeats the query.
+    /// Tasks TE.1 and TE.5: the place search and the map check their limits first, then answer
+    /// `unsupported` while maps are off, without asking any service. No answer repeats the query.
+    /// Turned on, they ask the services of the settings.
     #[tokio::test]
     async fn place_search_and_map_check_limits_and_are_off_by_default() {
         use torro_pim::model::Geo;
+        let server = httpmock::MockServer::start_async().await;
+        let answer = r#"{"type":"FeatureCollection","features":[{"type":"Feature",
+            "geometry":{"type":"Point","coordinates":[13.4132,52.5219]},
+            "properties":{"name":"Alexanderplatz","city":"Berlin"}}]}"#;
+        let photon = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api").query_param("q", "Alexanderplatz");
+                then.status(200).body(answer);
+            })
+            .await;
+        let tiles = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path_includes("/tiles/17/");
+                then.status(200).body(place_tile());
+            })
+            .await;
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
         let search = |query: &str| Request::SearchPlaces { query: query.into(), near: None };
@@ -10749,9 +10803,77 @@ mod tests {
             let Response::Error { message, .. } = answer else { panic!("an error") };
             assert!(!message.contains("Alexanderplatz") && !message.contains("52.5"), "{message}");
         }
-        let on = Request::SetSetting { key: torro_ipc::SettingKey::Maps, value: serde_json::json!({"enabled": true}) };
+        assert_eq!((photon.calls_async().await, tiles.calls_async().await), (0, 0), "off asks nothing");
+
+        let services = serde_json::json!({
+            "enabled": true,
+            "geocoder": server.base_url(),
+            "tiles": format!("{}/tiles/{{z}}/{{x}}/{{y}}.png", server.base_url()),
+        });
+        let on = Request::SetSetting { key: torro_ipc::SettingKey::Maps, value: services };
         assert_eq!(core.handle(on).await, Response::Ok);
-        assert_eq!(code(&core.handle(search("Alexanderplatz")).await), "unsupported", "until task TE.5");
+        let Response::Places { places } = core.handle(search("Alexanderplatz")).await else { panic!("places") };
+        let found: Vec<(&str, &str)> = places.iter().map(|p| (p.label.as_str(), p.detail.as_str())).collect();
+        assert_eq!(found, [("Alexanderplatz", "Berlin")]);
+        assert_eq!(places[0].kind, torro_ipc::PlaceKind::Search);
+        let Response::Image { png } = core.handle(map(52.5, 336)).await else { panic!("a map") };
+        assert!(!png.is_empty() && tiles.calls_async().await > 0);
+        assert_eq!(code(&core.handle(map(85.1, 336)).await), "error", "limits first, with maps on too");
+    }
+
+    /// A map tile of one colour, as PNG, for the fake tile service (task TE.5).
+    fn place_tile() -> Vec<u8> {
+        let tile = image::RgbImage::from_pixel(256, 256, image::Rgb([242, 239, 233]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(tile).write_to(&mut png, image::ImageFormat::Png).expect("encoded");
+        png.into_inner()
+    }
+
+    /// Task TE.5: earlier places come from the events of calendars the asker may read only; a
+    /// client limited to one calendar never sees the locations of the others.
+    #[tokio::test]
+    async fn earlier_places_come_only_from_calendars_the_client_may_read() {
+        use torro_pim::model::Geo;
+        let server = httpmock::MockServer::start_async().await;
+        let nothing = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api");
+                then.status(200).body(r#"{"type":"FeatureCollection","features":[]}"#);
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let at = |collection: &str, location: &str, lat: f64| torro_pim::Event {
+            location: Some(location.into()),
+            geo: Some(Geo { lat, lon: 13.4 }),
+            ..event_in(collection, Some(&format!("https://cloud.example.org/cal/{collection}/{lat}.ics")))
+        };
+        core.pim
+            .cache_events_as_synced(vec![
+                at(&fake.work, "Rathaus Mitte, Berlin", 52.51),
+                at(&fake.home, "Rathaus Pankow, Berlin", 52.56),
+            ])
+            .await;
+        let maps = serde_json::json!({"enabled": true, "geocoder": server.base_url()});
+        let on = Request::SetSetting { key: torro_ipc::SettingKey::Maps, value: maps };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        let labels = |response: Response| match response {
+            Response::Places { places } => {
+                assert!(places.iter().all(|place| place.kind == torro_ipc::PlaceKind::Recent));
+                places.into_iter().map(|place| place.label).collect::<std::collections::BTreeSet<_>>()
+            }
+            other => panic!("places, got {other:?}"),
+        };
+        let search = || Request::SearchPlaces { query: "rathaus berlin".into(), near: None };
+
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let all = labels(ask(&core, Some(&app_key), search()).await);
+        assert_eq!(all, ["Rathaus Mitte, Berlin".to_string(), "Rathaus Pankow, Berlin".to_string()].into());
+        let mut home_only = RightsTemplate::FullAccess.rights();
+        home_only.calendars = Selection::Only(vec![fake.home.clone()]);
+        let (_, key) = client(&core, home_only).await;
+        assert_eq!(labels(ask(&core, Some(&key), search()).await), ["Rathaus Pankow, Berlin".to_string()].into());
+        assert_eq!(nothing.calls_async().await, 1, "the service's answer is kept for the client");
     }
 
     /// Task C.9: the voice status and test come from the assistant app; without it the status says

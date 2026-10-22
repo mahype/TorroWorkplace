@@ -3902,6 +3902,28 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Event editor (#278)
     ("Turn off maps and place search", "Karten und Ortssuche ausschalten"),
+    // Place search and map in the service (TE.5)
+    ("Too many place searches. Try again in a moment.", "Zu viele Ortssuchen. Versuch es gleich noch einmal."),
+    ("Too many maps at once. Try again in a moment.", "Zu viele Karten auf einmal. Versuch es gleich noch einmal."),
+    (
+        "The place search service asked to wait. Try again later.",
+        "Der Dienst für die Ortssuche bittet zu warten. Versuch es später noch einmal.",
+    ),
+    (
+        "The map service asked to wait. Try again later.",
+        "Der Kartendienst bittet zu warten. Versuch es später noch einmal.",
+    ),
+    ("The place search service cannot be reached.", "Der Dienst für die Ortssuche ist nicht erreichbar."),
+    ("The map service cannot be reached.", "Der Kartendienst ist nicht erreichbar."),
+    (
+        "The place search service gave no usable answer.",
+        "Der Dienst für die Ortssuche hat keine brauchbare Antwort gegeben.",
+    ),
+    ("The map could not be drawn.", "Die Karte konnte nicht gezeichnet werden."),
+    (
+        "The address of the service in the settings cannot be used.",
+        "Die Adresse des Dienstes in den Einstellungen lässt sich nicht verwenden.",
+    ),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),

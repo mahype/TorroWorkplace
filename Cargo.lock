@@ -7054,12 +7054,14 @@ dependencies = [
 name = "torroworkplace"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs",
  "getrandom 0.4.3",
  "global-hotkey",
  "httpmock",
  "iced",
+ "image",
  "keyring",
  "ksni",
  "notify-rust",

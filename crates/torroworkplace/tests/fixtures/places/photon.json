@@ -1,0 +1,85 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.4132147, 52.5219184] },
+      "properties": {
+        "osm_type": "W",
+        "osm_id": 4067882,
+        "osm_key": "place",
+        "osm_value": "square",
+        "type": "street",
+        "name": "Alexanderplatz",
+        "postcode": "10178",
+        "city": "Berlin",
+        "district": "Mitte",
+        "state": "Berlin",
+        "country": "Germany",
+        "countrycode": "DE",
+        "extent": [13.4104, 52.5233, 13.4157, 52.5205]
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.4146, 52.5225] },
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 2468246310,
+        "osm_key": "building",
+        "osm_value": "yes",
+        "type": "house",
+        "street": "Alexanderplatz",
+        "housenumber": "1",
+        "postcode": "10178",
+        "city": "Berlin",
+        "state": "Berlin",
+        "country": "Germany",
+        "countrycode": "DE"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.4112, 52.5215] },
+      "properties": {
+        "osm_type": "N",
+        "osm_id": 3856100103,
+        "osm_key": "amenity",
+        "osm_value": "cafe",
+        "type": "house",
+        "name": "Café am Alex",
+        "street": "Rathausstraße",
+        "housenumber": "5",
+        "postcode": "10178",
+        "city": "Berlin",
+        "country": "Germany",
+        "countrycode": "DE"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.3888599, 52.5170365] },
+      "properties": {
+        "osm_type": "R",
+        "osm_id": 62422,
+        "osm_key": "place",
+        "osm_value": "city",
+        "type": "city",
+        "name": "Berlin",
+        "state": "Berlin",
+        "country": "Germany",
+        "countrycode": "DE"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.4, 95.0] },
+      "properties": { "osm_key": "place", "name": "Off the map", "country": "Nowhere" }
+    },
+    {
+      "type": "Feature",
+      "geometry": { "type": "Point", "coordinates": [13.41, 52.52] },
+      "properties": { "osm_key": "highway", "osm_value": "bus_stop", "country": "Germany" }
+    }
+  ]
+}

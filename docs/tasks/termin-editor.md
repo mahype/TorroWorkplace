@@ -165,7 +165,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   entfernen; Freigabe-Fall unter `Confirm::OnDelete`; fmt, clippy, test.
 
 ## TE.5 Orte im Dienst: Suche und Karte
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** TE.1 · **Dateien:** `crates/torroworkplace/src/places.rs` (neu),
   `crates/torroworkplace/src/{core,main}.rs`, `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/tests/fixtures/`
 - Suche: Photon (`/api?q=…&limit=6&lang=en|de`, mit `near` als `lat`/`lon`) oder Nominatim (`/search?format=jsonv2`)
