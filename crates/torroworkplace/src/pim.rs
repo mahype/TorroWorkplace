@@ -2175,9 +2175,11 @@ impl PimService {
     /// one an occurrence of a series is `unsupported`, so a client that does not know series never
     /// overwrites one. A single event that gets a rule becomes a series and is read again like one.
     /// A rule text that is no single line of the `RRULE` grammar is `error` on every path, before
-    /// anything is read or written ([`rule_refused`]).
+    /// anything is written, unless it is the text the server stores ([`PimService::rule_refused`]).
     async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(Event, u32), WriteError> {
-        rule_refused(&event)?;
+        // Boxed: reading the stored rule would otherwise sit inline in every save's future, and the
+        // core's future for a request would outgrow a thread's stack.
+        Box::pin(self.rule_refused(&event)).await?;
         scope_needs_href(&event, scope)?;
         match scope {
             Some(scope) => return self.save_in_series(event, scope).await,
@@ -2269,14 +2271,50 @@ impl PimService {
         self.check_version(&holder, item).await?;
         let to = old.is_some().then_some(place.url.as_str());
         let sent = Event { collection: holder.url.clone(), ..event.clone() };
-        let written = holder
-            .client
-            .save_in_series(&sent, scope, to)
+        // Boxed: a write to a series (read, plan, up to three requests) would otherwise sit inline in
+        // the core's future for every request and outgrow a thread's stack.
+        let written = Box::pin(holder.client.save_in_series(&sent, scope, to))
             .await
             .map_err(|failure| series_failed(&holder.account, failure))?;
         let refreshed = self.refresh_series(&holder, &place, &href, &written).await;
         let answer = Event { collection: place.id.clone(), ..event };
         Ok((answer_of(&refreshed, &written, answer), written.reset))
+    }
+
+    /// `error` for an event whose rule text ([`torro_pim::model::Repeat::rule`]) is no single line of
+    /// the `RRULE` grammar ([`torro_pim_caldav::recur::check`]): it could carry `ATTENDEE`, `VALARM` or
+    /// `END:VEVENT` lines into the stored object (finding 1 of the review of #278). Checked for every
+    /// save, whatever the scope; the writer would leave such a text out anyway.
+    ///
+    /// A text that is the rule the server stores for the event's `href` passes: a series whose stored
+    /// rule fails the check (no `FREQ`, an `X-` part with a `:` …) comes to the client with that text
+    /// and goes back with it on every save, and the writer keeps the stored rule (the second review of
+    /// #278, finding 1). The stored rule is read only for a text that fails the check: from the cache
+    /// ([`stored_rule_of`]), else from the server; nothing is written before.
+    async fn rule_refused(&self, event: &Event) -> Result<(), WriteError> {
+        let Some(repeat) = event.repeat.as_deref() else { return Ok(()) };
+        let Err(why) = torro_pim_caldav::recur::check(&repeat.rule) else { return Ok(()) };
+        if self.stored_rule(event).await.is_some_and(|stored| stored.trim() == repeat.rule.trim()) {
+            return Ok(());
+        }
+        Err(refused("error", format!("repeat.rule is no valid RRULE value: {why}")))
+    }
+
+    /// The rule text the server stores for the event at `event.href`: from the cache when it holds the
+    /// object in the version `event.etag` names, else read from the server. `None` for a new event,
+    /// an object without a rule, and when it cannot be read.
+    async fn stored_rule(&self, event: &Event) -> Option<String> {
+        let href = event.href.as_deref()?;
+        let cached = {
+            let state = self.state.read().await;
+            held_object(&state, &event.collection, href, event.etag.as_deref()).map(|held| stored_rule_of(&held.ics))
+        };
+        if let Some(rule) = cached {
+            return rule;
+        }
+        let place = self.place(&event.collection).await.ok()?;
+        let holder = self.holder_of(href, &place).await.ok()?;
+        holder.client.stored_rule(&holder.url, href).await.ok().flatten()
     }
 
     /// `calendar.delete_event`; `scope` as for [`PimService::save_event`]: with one the series path
@@ -4266,14 +4304,9 @@ fn answer_of(refreshed: &[Event], written: &SeriesWrite, sent: Event) -> Event {
     Event { href: Some(href.clone()), etag: Some(etag.clone()), collection: sent.collection, ..base }
 }
 
-/// `error` for an event whose rule text ([`torro_pim::model::Repeat::rule`]) is no single line of the
-/// `RRULE` grammar ([`torro_pim_caldav::recur::check`]): it could carry `ATTENDEE`, `VALARM` or
-/// `END:VEVENT` lines into the stored object (finding 1 of the review of #278). Checked for every
-/// save, whatever the scope; the writer would leave such a text out anyway.
-fn rule_refused(event: &Event) -> Result<(), WriteError> {
-    let Some(repeat) = event.repeat.as_deref() else { return Ok(()) };
-    torro_pim_caldav::recur::check(&repeat.rule)
-        .map_err(|why| refused("error", format!("repeat.rule is no valid RRULE value: {why}")))
+/// The `RRULE` text of the main event of the stored object `ics`; `None` without one.
+fn stored_rule_of(ics: &str) -> Option<String> {
+    ObjectFacts::read(ics).repeat.map(|repeat| repeat.rule)
 }
 
 /// The cached window around now ([`WINDOW_BACK_DAYS`], [`WINDOW_AHEAD_DAYS`]), for an account that
@@ -6995,7 +7028,8 @@ END:VCALENDAR
     const SMUGGLED: &str = "FREQ=WEEKLY\r\nATTENDEE;RSVP=TRUE:mailto:eve@example.org\r\nEND:VEVENT";
 
     /// Finding 1: a rule text with more lines is `error` on every path, before anything is written,
-    /// whether the client says it is custom or not.
+    /// whether the client says it is custom or not. The stored rule is read to compare (it is not the
+    /// stored text), nothing more.
     #[tokio::test]
     async fn a_rule_text_with_more_lines_is_refused_before_anything_is_written() {
         let (base, record) = fake_server(server_splitting(false)).await;
@@ -7017,7 +7051,72 @@ END:VCALENDAR
             let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
             assert_eq!(code_of(&response), "error", "a new event: {response:?}");
         }
-        assert!(lines(&record).is_empty(), "nothing read or written: {:?}", lines(&record));
+        let seen = lines(&record);
+        assert!(seen.iter().all(|line| line.starts_with("GET ")), "nothing written: {seen:?}");
+    }
+
+    /// A series on the fake server whose stored rule is `rule`, at `e.ics` in version `"1"`; writes as
+    /// [`server_splitting`] takes them, the multigets answer with nothing.
+    fn server_with_rule(rule: &'static str) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        let ics: &'static str =
+            Box::leak(SERIES.replace("RRULE:FREQ=WEEKLY", &format!("RRULE:{rule}")).into_boxed_str());
+        move |seen| match (seen.method.as_str(), seen.if_none_match.is_some()) {
+            ("GET", _) => (200, Some("\"1\""), ics),
+            ("PUT", true) => (201, Some("\"n1\""), ""),
+            ("PUT", false) => (204, Some("\"2\""), ""),
+            ("REPORT", _) => (207, None, NOTHING),
+            _ => (405, None, ""),
+        }
+    }
+
+    /// The second review of #278, finding 1: a stored rule that fails the check (no `FREQ`, an `X-`
+    /// part with a `:`) comes back with every save of its series; a new title saves with every scope,
+    /// from the cache and from the server, and the rule stays as stored.
+    #[tokio::test]
+    async fn a_stored_rule_that_fails_the_check_goes_back_with_a_new_title() {
+        for rule in ["BYDAY=MO", "FREQ=WEEKLY;X-URL=https://example.org"] {
+            let (base, record) = fake_server(server_with_rule(rule)).await;
+            let service = service_on(&base).await;
+            let repeat = torro_pim_caldav::recur::read(rule, None);
+            assert!(repeat.custom && torro_pim_caldav::recur::check(rule).is_err(), "{rule}");
+            let sent = Event {
+                summary: "Workshop renamed".into(),
+                repeat: Some(Box::new(repeat)),
+                ..second_of_series(&base, "\"1\"")
+            };
+            for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+                let request = Request::SaveEvent { event: sent.clone(), scope: Some(scope) };
+                let response = service.handle_within(request, Reach::Suite).await;
+                assert!(matches!(response, Response::Event { .. }), "{rule}, {scope:?}: {response:?}");
+            }
+            let seen = record.lock().expect("record").clone();
+            let written: Vec<&Seen> = seen.iter().filter(|s| s.method == "PUT").collect();
+            assert!(written.len() >= 3, "{rule}: {:?}", lines(&record));
+            for put in written {
+                assert!(put.body.contains(&format!("RRULE:{rule}")) || !put.body.contains("RRULE"), "{}", put.body);
+            }
+            // From the cache: the stored object held in the version the client read.
+            let cached = service_on(&base).await;
+            {
+                let mut state = cached.state.write().await;
+                let slot = state.accounts.first_mut().expect("the account");
+                let href = sent.href.clone().unwrap_or_default();
+                let ics = SERIES.replace("RRULE:FREQ=WEEKLY", &format!("RRULE:{rule}"));
+                slot.objects = [(href.clone(), RawObject { href, etag: Some("\"1\"".into()), ics })].into();
+            }
+            assert_eq!(cached.stored_rule(&sent).await.as_deref(), Some(rule));
+            let request = Request::SaveEvent { event: sent.clone(), scope: Some(SeriesScope::Occurrence) };
+            let response = cached.handle_within(request, Reach::Suite).await;
+            assert!(matches!(response, Response::Event { .. }), "{rule}, cached: {response:?}");
+            // Another text that fails the check is still refused.
+            let other = torro_pim::model::Repeat {
+                rule: format!("{rule};X-A=b c"),
+                ..torro_pim_caldav::recur::read(rule, None)
+            };
+            let refused = Event { repeat: Some(Box::new(other)), ..sent };
+            let request = Request::SaveEvent { event: refused, scope: Some(SeriesScope::Series) };
+            assert_eq!(code_of(&cached.handle_within(request, Reach::Suite).await), "error", "{rule}");
+        }
     }
 
     /// Finding 2: the answer is the occurrence written, also when it lies beyond what is read again.

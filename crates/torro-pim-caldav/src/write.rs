@@ -271,6 +271,20 @@ impl CalDavClient {
         etag: Option<&str>,
         ics: String,
     ) -> Result<(String, String), ProviderError> {
+        // Boxed: callers keep this future inline in theirs, up to the core's future for a request.
+        Box::pin(self.put_sent(collection, uid, href, etag, ics)).await.map_err(Unwritten::into_error)
+    }
+
+    /// [`CalDavClient::put_item`], saying whether a failed PUT surely wrote nothing
+    /// ([`Unwritten`]).
+    async fn put_sent(
+        &self,
+        collection: &str,
+        uid: &str,
+        href: Option<&str>,
+        etag: Option<&str>,
+        ics: String,
+    ) -> Result<(String, String), Unwritten> {
         let (header, value) = precondition(href, etag)?;
         let (url, href) = match href {
             Some(href) => (resolve(collection, href)?, href.to_string()),
@@ -288,15 +302,16 @@ impl CalDavClient {
             .header("Content-Type", "text/calendar; charset=utf-8")
             .body(ics)
             .header(header, value);
-        let response = request.send().await.map_err(transport_error)?;
+        let response = request.send().await.map_err(|err| Unwritten::Unknown(transport_error(err)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(status_error(status, uid, &url));
+            return Err(Unwritten::Refused(status_error(status, uid, &url)));
         }
         let header_etag = etag_header(&response);
         let etag = match header_etag {
             Some(etag) => etag,
-            None => self.fetch_etag(&url).await?,
+            // Written already: a failure from here on leaves the new version on the server.
+            None => self.fetch_etag(&url).await.map_err(Unwritten::Unknown)?,
         };
         Ok((href, etag))
     }
@@ -310,18 +325,30 @@ impl CalDavClient {
         href: Option<&str>,
         etag: Option<&str>,
     ) -> Result<(), ProviderError> {
+        Box::pin(self.delete_sent(collection, uid, href, etag)).await.map_err(Unwritten::into_error)
+    }
+
+    /// [`CalDavClient::delete_item`], saying whether a failed DELETE surely deleted nothing
+    /// ([`Unwritten`]).
+    async fn delete_sent(
+        &self,
+        collection: &str,
+        uid: &str,
+        href: Option<&str>,
+        etag: Option<&str>,
+    ) -> Result<(), Unwritten> {
         let Some(href) = href else { return Ok(()) };
         let (header, value) = precondition(Some(href), etag)?;
         let url = self.on_server(resolve(collection, href)?)?;
         let request =
             self.http.delete(url.clone()).basic_auth(&self.username, Some(&self.password)).header(header, value);
-        let response = request.send().await.map_err(transport_error)?;
+        let response = request.send().await.map_err(|err| Unwritten::Unknown(transport_error(err)))?;
         let status = response.status();
         // 404: already gone, which is what the caller wanted.
         if status.is_success() || status == StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            Err(status_error(status, uid, &url))
+            Err(Unwritten::Refused(status_error(status, uid, &url)))
         }
     }
 
@@ -337,6 +364,15 @@ impl CalDavClient {
             None => self.fetch_etag(&fetched.url).await?,
         };
         Ok(Some(StoredItem { etag, recurring: crate::ical::is_series(&fetched.ics) }))
+    }
+
+    /// The `RRULE` text of the series stored at `href`, an item directly in `collection`
+    /// ([`item_url`]), as [`crate::ObjectFacts::repeat`] reads it; `Ok(None)` when nothing is stored
+    /// there (404) or the object has no rule. The core compares a client's rule text that fails
+    /// [`crate::recur::check`] with it: the stored text going back unchanged is no smuggled line.
+    pub async fn stored_rule(&self, collection: &str, href: &str) -> Result<Option<String>, ProviderError> {
+        let Some(fetched) = self.fetch_item(collection, href).await? else { return Ok(None) };
+        Ok(crate::ical::ObjectFacts::read(&fetched.ics).repeat.map(|repeat| repeat.rule))
     }
 
     /// The iCalendar object stored at `href` in `collection`, to write a change onto; `None`
@@ -383,12 +419,15 @@ impl CalDavClient {
     /// (`If-Match`), so a series someone changed meanwhile is a conflict and stays as it is.
     ///
     /// "This and all following" writes the new object first (`If-None-Match: *`, a new UID in the
-    /// same collection) and then the shortened series; when that second write fails, the new object
-    /// is deleted again and the error is the answer, so the series is never doubled. With `to` (a
-    /// collection URL of the same server) the whole series moves there: written new
-    /// (`If-None-Match: *`), then the stored object deleted (`If-Match`); when that delete fails, the
-    /// new object is deleted again and the error is the answer, so the series never lies twice. A
-    /// split cannot move.
+    /// same collection) and then the shortened series; when the server refuses that second write
+    /// (an error status), the new object is deleted again and the error is the answer, so the series
+    /// is never doubled. With `to` (a collection URL of the same server) the whole series moves
+    /// there: written new (`If-None-Match: *`), then the stored object deleted (`If-Match`); when the
+    /// server refuses that delete, the new object is deleted again and the error is the answer, so
+    /// the series never lies twice. A second step without an answer (connection lost, timeout) may
+    /// have been done on the server: then nothing is taken back – that could lose events – and the
+    /// error is the answer; the next sync reads both objects as the server holds them. A split
+    /// cannot move.
     ///
     /// The change is planned on the version the client read: when the server answers the read with
     /// another ETag than `event.etag`, it is a conflict before anything is written, so not even a
@@ -418,25 +457,29 @@ impl CalDavClient {
             (Plan::Replace { ics }, Some(to)) => {
                 let written = series::occurrence(&ics, key);
                 let (moved_href, moved_etag) = self.put_item(to, &event.uid, None, None, ics).await?;
-                if let Err(err) = self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await {
-                    // Taken back, or the series would lie in both calendars.
-                    let undone = self.delete_item(to, &event.uid, Some(&moved_href), Some(&moved_etag)).await;
-                    if undone.is_err() {
-                        eprintln!("torro-pim-caldav: the moved copy of a series could not be taken back");
+                if let Err(failed) = self.delete_sent(&event.collection, &event.uid, Some(href), Some(etag)).await {
+                    // Taken back only when the server refused the delete, or the series would lie in
+                    // both calendars. Without an answer it may be gone already: the copy stays, so the
+                    // series is never lost, and the next sync shows what each calendar holds.
+                    if let Unwritten::Refused(_) = failed {
+                        let undone = self.delete_item(to, &event.uid, Some(&moved_href), Some(&moved_etag)).await;
+                        if undone.is_err() {
+                            eprintln!("torro-pim-caldav: the moved copy of a series could not be taken back");
+                        }
                     }
-                    return Err(err.into());
+                    return Err(failed.into_error().into());
                 }
                 Ok(SeriesWrite { kept: Some((moved_href, moved_etag)), split: None, key, reset, event: written })
             }
             (Plan::Split { new, old }, None) => {
                 let written = series::occurrence(&new, key);
                 let (new_href, new_etag) = self.put_item(&event.collection, &uid, None, None, new).await?;
-                match self.put_item(&event.collection, &event.uid, Some(href), Some(etag), old).await {
+                match self.put_sent(&event.collection, &event.uid, Some(href), Some(etag), old).await {
                     Ok(kept) => {
                         let split = Some((new_href, new_etag));
                         Ok(SeriesWrite { kept: Some(kept), split, key, reset, event: written })
                     }
-                    Err(err) => {
+                    Err(Unwritten::Refused(err)) => {
                         // Taken back, or the events after the split would show twice.
                         let undone = self.delete_item(&event.collection, &uid, Some(&new_href), Some(&new_etag)).await;
                         if undone.is_err() {
@@ -444,6 +487,9 @@ impl CalDavClient {
                         }
                         Err(err.into())
                     }
+                    // No answer: the shortened series may be written already, and taking the new part
+                    // back would lose the events after the split. Both stay; the next sync shows them.
+                    Err(Unwritten::Unknown(err)) => Err(err.into()),
                 }
             }
             (Plan::Split { .. }, Some(_)) => {
@@ -517,6 +563,33 @@ impl CalDavClient {
         );
         let xml = self.request("REPORT", &url, "0", &body).await?;
         expanded_in_answer(&xml, &url, collection)
+    }
+}
+
+/// Why a write failed, and whether it surely changed nothing on the server: the second step of a
+/// move or a split is taken back only then (the second review of #278, finding 4).
+#[derive(Debug)]
+enum Unwritten {
+    /// Nothing was changed: the request was not sent (no precondition, an address off the server),
+    /// or the server answered it with an error status (412, 403, 409, 5xx …).
+    Refused(ProviderError),
+    /// The request went out but its end is unknown: no answer (connection lost, timeout), or it was
+    /// written and the ETag that follows could not be read.
+    Unknown(ProviderError),
+}
+
+impl Unwritten {
+    fn into_error(self) -> ProviderError {
+        match self {
+            Unwritten::Refused(err) | Unwritten::Unknown(err) => err,
+        }
+    }
+}
+
+impl From<ProviderError> for Unwritten {
+    /// The checks before a request is sent.
+    fn from(err: ProviderError) -> Self {
+        Unwritten::Refused(err)
     }
 }
 
@@ -977,11 +1050,10 @@ pub(crate) fn rule_text(repeat: &Repeat, stored: Option<&str>, start: EventTime,
             None => crate::recur::write(repeat),
         };
     }
-    if let Some(stored) = stored {
-        let as_stored = Repeat { rule: stored.to_string(), ..repeat.clone() };
-        if crate::recur::write(&as_stored) == stored {
-            return stored.to_string();
-        }
+    if let Some(stored) = stored
+        && crate::recur::keeps_stored(stored, repeat)
+    {
+        return stored.to_string();
     }
     let end = match (repeat.end, start) {
         (RepeatEnd::Until(EventTime::DateTime(at)), EventTime::Date(_)) => {
@@ -3152,6 +3224,11 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         let fields = Repeat { rule: "FREQ=WEEKLY\r\nATTENDEE:x".into(), ..weekly(RepeatEnd::Never) };
         assert_eq!(rule_text(&fields, None, start, None), "FREQ=WEEKLY");
         assert_eq!(rule_text(&fields, Some("FREQ=WEEKLY;WKST=SU"), start, None), "FREQ=WEEKLY;WKST=SU");
+        // A stored text that fails the check stays while its fields stay (the second review of #278).
+        let sloppy = "FREQ=WEEKLY; BYDAY=TU";
+        let read = crate::recur::read(sloppy, None);
+        assert!(!read.custom && crate::recur::check(sloppy).is_err());
+        assert_eq!(rule_text(&read, Some(sloppy), start, None), sloppy);
         let no_rule = Event { repeat: Some(Box::new(custom("FREQ=DAILY\nEND:VEVENT"))), ..event() };
         let ics = event_ics(&no_rule, now(), None);
         assert!(
@@ -3260,5 +3337,92 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         assert!(matches!(moved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{moved:?}");
         assert_eq!((created.calls_async().await, refused.calls_async().await), (1, 1));
         assert_eq!(taken_back.calls_async().await, 1, "the copy in home goes again");
+    }
+
+    /// A client that gives up on an answer after a short while, for the tests of a lost answer.
+    fn impatient_client_of(server: &httpmock::MockServer) -> CalDavClient {
+        let account = crate::CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
+        let http = reqwest::Client::builder().timeout(std::time::Duration::from_millis(200)).build().expect("http");
+        CalDavClient::new(http, &account, torro_core::account::Secret::new("secret")).expect("client")
+    }
+
+    /// The server holding [`SERIES_ICS`] at `work/e.ics` in version `"1"` that makes any new object
+    /// (`If-None-Match: *`) in version `"n1"`; returns the mocks of the new object and of its delete.
+    async fn series_server(server: &httpmock::MockServer) -> (httpmock::Mock<'_>, httpmock::Mock<'_>) {
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/remote.php/dav/calendars/anna/work/e.ics");
+                then.status(200).header("ETag", "\"1\"").body(SERIES_ICS);
+            })
+            .await;
+        let created = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::PUT).header("If-None-Match", "*");
+                then.status(201).header("ETag", "\"n1\"");
+            })
+            .await;
+        let taken_back = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE).header("If-Match", "\"n1\"");
+                then.status(204);
+            })
+            .await;
+        (created, taken_back)
+    }
+
+    /// The second review of #278, finding 4: a split whose shortened series the server refuses (412)
+    /// takes the new part back; one whose answer never comes leaves both, as the server may hold them.
+    #[tokio::test]
+    async fn a_split_is_taken_back_only_when_the_server_refuses_the_second_write() {
+        for lost in [false, true] {
+            let server = httpmock::MockServer::start_async().await;
+            let work = server.url("/remote.php/dav/calendars/anna/work/");
+            let (created, taken_back) = series_server(&server).await;
+            let second = server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::PUT)
+                        .path("/remote.php/dav/calendars/anna/work/e.ics")
+                        .header("If-Match", "\"1\"");
+                    if lost {
+                        then.status(204).header("ETag", "\"2\"").delay(std::time::Duration::from_secs(1));
+                    } else {
+                        then.status(412);
+                    }
+                })
+                .await;
+            let client = impatient_client_of(&server);
+            let event = Event { summary: "Workshop II".into(), ..second_occurrence(&work) };
+            let saved = client.save_in_series(&event, SeriesScope::Following, None).await;
+            assert!(saved.is_err(), "{lost}: {saved:?}");
+            if !lost {
+                assert!(matches!(saved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{saved:?}");
+            }
+            assert_eq!((created.calls_async().await, second.calls_async().await), (1, 1), "{lost}");
+            let expected = if lost { 0 } else { 1 };
+            assert_eq!(taken_back.calls_async().await, expected, "taken back only after a refusal: {lost}");
+        }
+    }
+
+    /// The second review of #278, finding 4: a move whose delete of the old series gets no answer
+    /// leaves the copy, so the series is never lost; a refused delete takes it back (see above).
+    #[tokio::test]
+    async fn a_move_without_an_answer_to_the_delete_keeps_the_copy() {
+        let server = httpmock::MockServer::start_async().await;
+        let work = server.url("/remote.php/dav/calendars/anna/work/");
+        let home = server.url("/remote.php/dav/calendars/anna/home/");
+        let (created, taken_back) = series_server(&server).await;
+        let unanswered = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE)
+                    .path("/remote.php/dav/calendars/anna/work/e.ics")
+                    .header("If-Match", "\"1\"");
+                then.status(204).delay(std::time::Duration::from_secs(1));
+            })
+            .await;
+        let client = impatient_client_of(&server);
+        let moved = client.save_in_series(&second_occurrence(&work), SeriesScope::Series, Some(&home)).await;
+        assert!(matches!(moved, Err(SeriesFailure::Server(ProviderError::Offline))), "{moved:?}");
+        assert_eq!((created.calls_async().await, unanswered.calls_async().await), (1, 1));
+        assert_eq!(taken_back.calls_async().await, 0, "the copy in home stays");
     }
 }

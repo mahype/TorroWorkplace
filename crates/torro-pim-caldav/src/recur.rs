@@ -134,47 +134,126 @@ pub const MAX_RULE_CHARS: usize = 1000;
 
 /// Whether `rule`, a rule text a client sent ([`Repeat::rule`]), is one line of the `RRULE` grammar
 /// (RFC 5545 section 3.3.10) that may be written: empty (no text), or at most [`MAX_RULE_CHARS`]
-/// characters of letters, digits, `;`, `=`, `,`, `+`, `-` and spaces, every part `NAME=VALUE` with
-/// a name of letters, digits and `-`, and exactly one `FREQ` with a frequency RFC 5545 names.
+/// characters, no spaces, every part `NAME=VALUE` and no name twice:
+///
+/// - exactly one `FREQ` with a frequency RFC 5545 names;
+/// - `COUNT` and `INTERVAL` positive whole numbers, `UNTIL` a day (`20261231`) or a time
+///   (`20261231T225959`, with or without `Z`), `WKST` a weekday;
+/// - `BYSECOND`, `BYMINUTE`, `BYHOUR`, `BYDAY`, `BYMONTHDAY`, `BYYEARDAY`, `BYWEEKNO`, `BYMONTH` and
+///   `BYSETPOS` lists of values in their ranges (`BYMONTH` of RFC 7529 also with `L`), `RSCALE` a name
+///   and `SKIP` one of its three values (RFC 7529);
+/// - an extension part `X-NAME=value`, its value printable ASCII without spaces, `:`, `;`, `"`, a backslash
+///   or `=`. Any other name is refused.
 ///
 /// This is the guard against a client smuggling lines into the stored object: a line break, a `:`
 /// or any other character outside the grammar would let `ATTENDEE`, `VALARM` or `END:VEVENT` follow
 /// the rule, and the server would send invitations for them. The core refuses such a text with
-/// `error` before anything is written; the writer leaves it out as well ([`crate::write`]). The
-/// error is a reason for people.
+/// `error` before anything is written, unless it is the rule the server stores already; the writer
+/// never writes a client's text that fails it ([`crate::write`]). Names and values in any case, as
+/// RFC 5545 reads them. The error is a reason for people.
 pub fn check(rule: &str) -> Result<(), &'static str> {
     if rule.chars().count() > MAX_RULE_CHARS {
         return Err("the rule text is too long");
     }
-    // Checked before trimming: `trim` would hide a line break at either end.
-    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, ';' | '=' | ',' | '+' | '-' | ' ');
-    if !rule.chars().all(allowed) {
-        return Err("the rule text holds characters an RRULE cannot have: one line of letters, digits and ;=,+-");
-    }
-    let rule = rule.trim();
     if rule.is_empty() {
         return Ok(());
     }
-    let mut freqs = 0;
-    for part in rule.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+    let mut names: Vec<String> = Vec::new();
+    for part in rule.split(';') {
         let Some((name, value)) = part.split_once('=') else { return Err("every part of the rule is NAME=VALUE") };
-        let (name, value) = (name.trim(), value.trim());
-        let named = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-        if !named || value.is_empty() || value.contains('=') {
-            return Err("every part of the rule is NAME=VALUE");
+        let name = name.to_ascii_uppercase();
+        if names.contains(&name) {
+            return Err("a part of the rule comes twice");
         }
-        if name.eq_ignore_ascii_case("FREQ") {
-            let known = ["SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
-            if !known.iter().any(|freq| value.eq_ignore_ascii_case(freq)) {
-                return Err("the rule has no frequency RFC 5545 knows");
-            }
-            freqs += 1;
-        }
+        check_part(&name, value)?;
+        names.push(name);
     }
-    if freqs != 1 {
+    if !names.iter().any(|name| name == "FREQ") {
         return Err("the rule needs exactly one FREQ");
     }
     Ok(())
+}
+
+/// One part `name=value` of a rule ([`check`]); `name` in capitals.
+fn check_part(name: &str, value: &str) -> Result<(), &'static str> {
+    const BAD: &str = "a part of the rule has a value RFC 5545 does not allow there";
+    let numbers = |low: i32, high: i32, signed: bool| {
+        value.split(',').all(|item| {
+            let digits = if signed { item.strip_prefix(['+', '-']).unwrap_or(item) } else { item };
+            let negative = item.starts_with('-');
+            !digits.is_empty()
+                && digits.len() <= 3
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && digits.parse::<i32>().is_ok_and(|n| (low..=high).contains(&n) && !(negative && n == 0))
+        })
+    };
+    let fine = match name {
+        "FREQ" => ["SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"]
+            .iter()
+            .any(|freq| value.eq_ignore_ascii_case(freq)),
+        "COUNT" | "INTERVAL" => {
+            !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) && value.parse::<u32>().is_ok_and(|n| n > 0)
+        }
+        "UNTIL" => until_value(value),
+        "WKST" => value.len() == 2 && weekday_of(value).is_some(),
+        "BYSECOND" => numbers(0, 60, false),
+        "BYMINUTE" => numbers(0, 59, false),
+        "BYHOUR" => numbers(0, 23, false),
+        "BYMONTHDAY" => numbers(1, 31, true),
+        "BYYEARDAY" | "BYSETPOS" => numbers(1, 366, true),
+        "BYWEEKNO" => numbers(1, 53, true),
+        "BYMONTH" => value.split(',').all(|item| {
+            let digits = item.strip_suffix(['L', 'l']).unwrap_or(item);
+            !digits.is_empty()
+                && digits.len() <= 2
+                && digits.bytes().all(|b| b.is_ascii_digit())
+                && month(digits).is_some()
+        }),
+        "BYDAY" => value.split(',').all(|item| {
+            item.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'-') && weekday(item).is_some()
+        }),
+        "RSCALE" => !value.is_empty() && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+        "SKIP" => ["OMIT", "BACKWARD", "FORWARD"].iter().any(|skip| value.eq_ignore_ascii_case(skip)),
+        _ if is_extension(name) => {
+            return if !value.is_empty() && value.bytes().all(|b| b.is_ascii_graphic() && !b":;\"\\=".contains(&b)) {
+                Ok(())
+            } else {
+                Err("an extension part of the rule is X-NAME=value without spaces, :, ;, \" or =")
+            };
+        }
+        _ => return Err("the rule has a part RFC 5545 does not know"),
+    };
+    if fine { Ok(()) } else { Err(BAD) }
+}
+
+/// `X-` and at least one letter, digit or `-`.
+fn is_extension(name: &str) -> bool {
+    name.strip_prefix("X-")
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+}
+
+/// `UNTIL` as RFC 5545 writes it: a day (`20261231`) or a time (`20261231T225959`, with or without `Z`).
+fn until_value(value: &str) -> bool {
+    let digits = |text: &str| text.bytes().all(|b| b.is_ascii_digit());
+    match value.len() {
+        8 => digits(value) && NaiveDate::parse_from_str(value, "%Y%m%d").is_ok(),
+        15 | 16 => {
+            let time = value.strip_suffix(['Z', 'z']).unwrap_or(value);
+            let Some((day, clock)) = time.split_once(['T', 't']) else { return false };
+            time.len() == 15
+                && digits(day)
+                && digits(clock)
+                && NaiveDateTime::parse_from_str(&format!("{day}T{clock}"), "%Y%m%dT%H%M%S").is_ok()
+        }
+        _ => false,
+    }
+}
+
+/// Whether `repeat` holds the fields of `stored`, a rule text the server stores ([`read`]): then the
+/// stored text is written back as it is, whether or not it passes [`check`] – it is in the object
+/// already, and rewriting it would look like a new rule (the review of #278, finding 1).
+pub(crate) fn keeps_stored(stored: &str, repeat: &Repeat) -> bool {
+    same_fields(&read(stored, None), repeat)
 }
 
 /// The fields the editor shows are the same in `a` and `b` (text and `custom` aside).
@@ -386,8 +465,17 @@ mod tests {
             "FREQ=WEEKLY;BYDAY=TU",
             "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
             "freq=daily;until=20261231T225959Z",
+            "FREQ=DAILY;UNTIL=20261231",
+            "FREQ=DAILY;UNTIL=20261231T235959",
             "FREQ=YEARLY;BYDAY=+4TU;X-NAME=1",
-            "FREQ=WEEKLY; BYDAY=TU",
+            "FREQ=YEARLY;INTERVAL=2;BYMONTH=10;BYMONTHDAY=13;COUNT=5",
+            "FREQ=MONTHLY;BYMONTHDAY=-1",
+            "FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,WE;WKST=SU",
+            "FREQ=HOURLY;BYHOUR=9,17;BYMINUTE=0,30;BYSECOND=0",
+            "FREQ=YEARLY;BYWEEKNO=20;BYDAY=MO",
+            "FREQ=YEARLY;BYYEARDAY=-100",
+            "FREQ=YEARLY;RSCALE=CHINESE;BYMONTH=5L;SKIP=FORWARD",
+            "FREQ=DAILY;X-EVOLUTION-ENDDATE=20261231T090000Z",
         ] {
             assert_eq!(check(good), Ok(()), "{good}");
         }
@@ -396,14 +484,39 @@ mod tests {
             "FREQ=WEEKLY\nEND:VEVENT",
             "FREQ=WEEKLY;BYDAY=TU\u{0}",
             "FREQ=WEEKLY;X-URL=https://example.org",
+            "FREQ=WEEKLY;X-NAME=\"quoted\"",
+            "FREQ=WEEKLY;X-NAME=a b",
+            "FREQ=WEEKLY;X-=1",
             "FREQ=WEEKLY;BYDAY",
             "FREQ=WEEKLY;=TU",
             "FREQ=WEEKLY;BYDAY=TU=WE",
             "BYDAY=TU",
             "FREQ=WEEKLY;FREQ=DAILY",
+            "FREQ=DAILY;COUNT=2;COUNT=3",
             "FREQ=FORTNIGHTLY",
             "FREQ=WEEKLY;BYDAY=TU\u{2028}",
             "FREQ=WEEKLY;BYDAY=TU\r\n",
+            // Review of #278 (5): spaces, broken numbers and dates, values out of range, unknown parts.
+            "FREQ=WEEKLY; BYDAY=TU",
+            " FREQ=WEEKLY",
+            "FREQ=WEEKLY;BYDAY=TU ",
+            "FREQ=DAILY;UNTIL=xyz",
+            "FREQ=DAILY;UNTIL=20261332",
+            "FREQ=DAILY;UNTIL=20261231T256000Z",
+            "FREQ=DAILY;COUNT=-1",
+            "FREQ=DAILY;COUNT=0",
+            "FREQ=DAILY;COUNT=+3",
+            "FREQ=DAILY;INTERVAL=0",
+            "FREQ=WEEKLY;BYDAY=XX",
+            "FREQ=WEEKLY;BYDAY=0MO",
+            "FREQ=YEARLY;BYMONTH=13",
+            "FREQ=MONTHLY;BYMONTHDAY=0",
+            "FREQ=MONTHLY;BYMONTHDAY=32",
+            "FREQ=DAILY;BYHOUR=24",
+            "FREQ=WEEKLY;WKST=MONDAY",
+            "FREQ=DAILY;SKIP=LATER",
+            "FREQ=DAILY;FOO=1",
+            "FREQ=DAILY;",
         ] {
             assert!(check(bad).is_err(), "{bad:?}");
         }
