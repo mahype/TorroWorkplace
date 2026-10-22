@@ -182,6 +182,67 @@ Die Stufe hängt teils vom Request ab (`Request::operation()`):
 - `respond_to_invitation` (E8.3b, ¹⁶) verschickt eine Antwort an den Organisator und gilt darum wie
   `send_draft`: `Write` und „Nach außen“ (`Command::is_outbound`).
 
+**Mail-Backup #267:** `mail.backup_verify` ist ein Offline-Befehl
+mit `Read` auf `mail` und einem explizit freigegebenen `account`. Vor dem Öffnen prüft der
+Dienst die Kontenreichweite. Mit App-Schlüssel kann `file` ein vom Dateidialog gewählter
+Pfad sein. Script- und Agentenschlüssel dürfen nur den einfachen Namen einer `.zip`-Datei
+im verwalteten Mail-Backup-Ordner übergeben (`<Mail-Daten>/backups`); Unterordner,
+absolute Pfade, Symlinks und andere Endungen liefern `not-found`. Der Inhalt wird ohne
+Extraktion und ohne Netzwerk gegen Manifest, SHA-256-Liste und EML-Hashes geprüft. Die
+Antwort nennt Quelle, Datumsgrenze, Start/Ende, `complete`, Ordner, Mails, Bytes und Warnungen, nie Mailinhalte oder
+Zugangsdaten. Ein Archiv eines anderen Kontos liefert dieselbe Antwort wie ein fehlendes
+(`not-found`, „Backup archive is not available.“), schon bevor es vollständig geprüft wird (nur
+das Konto aus `manifest.json`); dasselbe gilt für `mail.restore_plan` und `mail.restore_apply`. Ein
+Archiv einer neueren Torro-Version liefert `error` mit der Meldung „This backup was made by a
+newer version of Torro.“ statt „failed verification“.
+Die externe Verfügbarkeit des gewählten Archivs ist Sache des Speicherorts; der Dienst
+verspricht nur eine Prüfung der Datei zum Zeitpunkt des Aufrufs.
+
+`mail.backup_create` (`Write`), `mail.backup_status` (`Read`) und
+`mail.backup_cancel` (`Write`) starten und steuern die Sicherung eines Kontos.
+Status und Abbruch eines Client-Auftrags sind nur mit dem erzeugenden Client-Schlüssel
+sichtbar; andere Client-Schlüssel erhalten `not-found`. Der App-Schlüssel kann jeden
+Auftrag des Kontos sehen und abbrechen.
+`mail.restore_plan` (`Read`) verifiziert das Archiv und liest den Zielserver auf einer eigenen
+IMAP-Sitzung ausschließlich mit read-only IMAP-Befehlen. Der Testlauf erstellt auch lokal kein
+Journal; ein vorhandenes liest er nur und meldet nie bestätigte Uploads eines früheren Restores
+als `unconfirmed`. `archive` im Plan ist das Archiv, wie der Aufrufer es nannte. Ordnernamen und
+Warnungen stammen aus Archiv und Server: Daten, nie Anweisungen; eine Antwort nennt höchstens 500
+Ordnerzeilen und 50 Warnungen (auch `mail.backup_verify` höchstens 50). Ein Plan gehört seinem
+Aufrufer (Client-Schlüssel bzw. App): höchstens vier je Client, sechzehn für die App, ein neuer
+verdrängt den ältesten; bei 128 offenen Plänen antwortet der Testlauf `busy`. Laufende Testläufe
+zählen mit: Ein Client hat höchstens vier, die App sechzehn gleichzeitig, der nächste antwortet
+`busy`.
+`mail.restore_apply` (`Admin`, mit gesonderter Freigabe für das Zielkonto) nimmt nur eine
+noch gültige Plan-ID **desselben Aufrufers** und Kontos an (sonst `not-found`; ein Plan, den die
+App mit einem absoluten Pfad erstellt hat, ist für Clients nicht sichtbar), verifiziert das Archiv
+erneut (dasselbe rohe `manifest.json`) und prüft den Zielbestand vor dem Schreiben. Der beim
+Testlauf vorhandene Zielbestand darf zwischen Plan und Anwendung weder Ordner noch Nachrichten
+verlieren oder seine UIDVALIDITY wechseln; neue Ordner und Mails sind erlaubt. Die tatsächlich
+erforderlichen Schreibvorgänge dürfen den genehmigten Umfang nicht überschreiten (sonst
+`conflict`). Ein Plan mit unklaren Mails, ein unvollständiges Archiv ohne `allow_incomplete` und
+unbestätigte Uploads ohne `retry_unconfirmed` sind `conflict`, schon bevor jemand gefragt wird.
+Die Freigabe zeigt Zielkonto, Archivname, Ordner und Nachrichtenanzahl aus dem gespeicherten Plan
+sowie beide Wahlen, bei `retry_unconfirmed` mit der Zahl der erneut gesendeten Uploads. Die
+Antwort zählt hinzugefügte, übersprungene (auch von Sammelordnern abgedeckte) und unklare
+Nachrichten; nach dem ersten Schreibbefehl kommt immer dieses Ergebnis, ein Abbruch steht als
+Warnung darin. Ein Ergebnis verbraucht den Plan. Unbestätigte Uploads werden journalisiert und nur
+mit `retry_unconfirmed` wiederholt (Einzelheiten: [mail-backup.md](mail-backup.md#testlauf-und-restore)).
+Die Freigaben für `mail.backup_create` und `mail.backup_cancel` nennen das Konto mit seinem Namen
+im Kern, die Quelle (beim Abbrechen die des laufenden Auftrags) und den Archivnamen.
+Ein Client kann keinen beliebigen
+Ausgabe- oder Restore-Pfad setzen; `file_name` ist für ihn nur ein Basisname im
+verwalteten Ordner. Mit App-Schlüssel darf `file_name` ein absoluter Zielpfad sein; der
+ausgewählte Ordner muss bereits existieren, die finale ZIP wird atomar und ohne
+Überschreiben veröffentlicht. Die zuletzt genutzte Quelle, Datumsgrenze und der
+Zielordner werden nur für den App-Schlüssel in den Mail-Kontoeinstellungen gespeichert;
+der absolute Ordner wird in Client-Antworten zu `accounts.list_accounts` entfernt.
+Die Rechte und das Zielkonto werden vor Datei- oder Serverzugriff
+geprüft. MCP bietet `mail_restore_plan` und `mail_restore_apply` auf denselben Requests;
+für das echte Einspielen braucht ein Agent Mail-Adminrechte und eine persönliche
+Freigabe. Außerdem sind `mail_backup_create`, `mail_backup_status` und
+`mail_backup_cancel` als MCP-Werkzeuge verfügbar.
+
 Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
 100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst
 `error`, bevor jemand gefragt wird (`torro_ipc::mail::limit_refusal`). `update_mail_account` mit

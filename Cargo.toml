@@ -9,6 +9,7 @@ members = [
     "crates/torro-ntfy",
     "crates/torro-mail",
     "crates/torro-mail-imap",
+    "crates/torro-mail-backup",
     "crates/torro-ipc",
     "crates/torro-wm",
     "crates/torro-setups",
@@ -47,6 +48,7 @@ torro-nextcloud = { path = "crates/torro-nextcloud" }
 torro-ntfy = { path = "crates/torro-ntfy" }
 torro-mail = { path = "crates/torro-mail" }
 torro-mail-imap = { path = "crates/torro-mail-imap" }
+torro-mail-backup = { path = "crates/torro-mail-backup" }
 torro-tui = { path = "crates/torro-tui" }
 torro-ipc = { path = "crates/torro-ipc" }
 torro-wm = { path = "crates/torro-wm" }
@@ -91,7 +93,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["rustls", 
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 roxmltree = "0.21.1"
 # Bundled: builds SQLite from source, so no system library is needed on Linux, macOS or Windows.
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "blob"] }
 schemars = { version = "1.2.2", features = ["chrono04"] }
 webbrowser = "1.2.4"
 # `data:` pictures in HTML mail (torro-htmlview, task M9.6).
@@ -126,9 +128,11 @@ notify-rust = "4.18.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.152"
 sha2 = "0.11.0"
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Safe access to processes without `unsafe` here: the SID of the current user on Windows (torro-ipc, X.1) and
-# program path and arguments of a pid (torro-setups, X.8).
-sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+# program path and arguments of a pid (torro-setups, X.8), and the free space of a disk before and while a mail
+# backup writes (`disk`, #267).
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }
 tempfile = "3.27.0"
 # Design packs (torro-core, L.1): `design.toml` is read with toml (parse and serde only, no writer); ttf-parser reads the
 # family names of a pack's fonts, the version Iced's font stack already brings.

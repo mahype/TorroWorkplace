@@ -857,6 +857,13 @@ fn describe(request: &Request) -> String {
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::MailAccountStats { .. } => "mail account statistics".into(),
+        // Never a selected archive path, job id or target account address (#267).
+        Request::MailBackupCreate { .. } => "create mail backup".into(),
+        Request::MailBackupStatus { .. } => "mail backup status".into(),
+        Request::MailBackupCancel { .. } => "cancel mail backup".into(),
+        Request::MailBackupVerify { .. } => "verify mail backup".into(),
+        Request::MailRestorePlan { .. } => "plan mail restore".into(),
+        Request::MailRestoreApply { .. } => "apply mail restore".into(),
         Request::SearchMail { .. } => "search mail".into(),
         Request::MailIndexStatus { .. } => "mail index status".into(),
         Request::GetMail { .. } => "get mail".into(),

@@ -92,6 +92,11 @@ allen Apps gleich.
 
 > **Entschieden 2026-10-12:** keine eigene App. Was hier steht (Größenklassen, Schreibfenster,
 > Einladungen), gilt für die Mail-Tiefe im Eingang `torroinbox` ([eingang.md](eingang.md)).
+>
+> **Aktualisierung 2026-10-21 (#267):** Die untenstehende Aussage, es gebe keine eigenen
+> Kontoeinstellungen im Mail-Fenster, ist durch [settings.md](settings.md) überholt.
+> Mail-spezifische Einstellungen liegen hinter dem Zahnrad des Eingang/Mail-Fensters;
+> Backup & Restore liegt dort unter Konten → Konto ([Konzept](mail-backup.md)).
 
 Arbeitsname `torromail` (siehe offene Entscheidungen). Eigener Prozess, Iced, `torro_gui::shell`,
 spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
@@ -143,6 +148,18 @@ Was wir aus TorroMail außerdem **nicht** übernehmen: Regeln je Ordner für Age
 ist die Cache-Strategie je Konto unter Mail-Einstellungen › Storage & index wählbar:
 nur Kopfzeilen, Mailtexte der letzten 90 Tage oder alle Mailtexte offline. Der Suchindex bleibt
 unabhängig vom Lesecache; Anhänge haben eigene Vorladeoption und Aufbewahrung.
+Im Modus „alle Mailtexte offline“ hält der Dienst seit #267 zusätzlich die vollständigen
+RFC-822-Originalbytes mit Prüfsumme in einer unabhängigen SQLite-Tabelle je Konto. Der
+Cache-Auftrag ergänzt fehlende Originale auch für bereits zwischengespeicherte Texte; ein
+schon vorhandenes Original wird beim erneuten Öffnen weder geholt noch neu geschrieben.
+Das Originaldepot überlebt das Löschen von Textcache und veralteten Headern und benötigt
+entsprechend dauerhaft Speicherplatz. Verlässt eine Mail den Server (gelöscht, verschoben,
+Ordner neu nummeriert oder entfernt), wird ihr Original als „nicht mehr auf dem Server“
+markiert, aus lokalen Backups ausgelassen und nach 30 Tagen beim regulären Wartungslauf
+nach dem Sync gelöscht; alle übrigen Originale bleiben bis zum Entfernen des Kontos. Kann
+ein Original nicht erfasst werden, laufen Sync und Suchindex trotzdem weiter. Nur diese
+Originale sind Quelle eines lokalen ZIP-Backups; fehlende Originale werden ausgewiesen und
+machen das Archiv unvollständig ([Konzept](mail-backup.md)).
 
 ## Architektur: Mail im Kern
 

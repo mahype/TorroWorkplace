@@ -2086,7 +2086,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{provider} akzeptiert hier dein normales Passwort nicht. Erstelle in deinen Kontoeinstellungen ein App-Passwort.",
     ),
     // Mail scaffold: rights and approvals (M2.1)
-    ("Archive", "Archiv"),
     // "Archive" as a button (issue #121, `trc("action", …)`); the folder above.
     ("action|Archive", "Archivieren"),
     ("Change the mail account {account}: {changes}", "Mail-Konto {account} ändern: {changes}"),
@@ -2140,6 +2139,150 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("signature \"{start}\"", "Signatur „{start}“"),
     ("tasks", "Aufgaben"),
     ("{role} → \"{path}\"", "{role} → „{path}“"),
+    // Mail backup and restore (#267, MB.1)
+    ("Backup archive is not available.", "Das Backup-Archiv ist nicht verfügbar."),
+    ("Backup archive failed verification.", "Die Prüfung des Backup-Archivs ist fehlgeschlagen."),
+    ("A backup for this mail account is already running.", "Für dieses Mail-Konto läuft bereits ein Backup."),
+    ("Backup job is not available.", "Der Backup-Auftrag ist nicht verfügbar."),
+    ("The backup job caller is not known.", "Der Auftraggeber dieses Backups ist nicht bekannt."),
+    (
+        "Backup file name must be a plain .zip name or absolute app path.",
+        "Der Backup-Dateiname muss ein einfacher .zip-Name oder ein absoluter App-Pfad sein.",
+    ),
+    ("Mail backup could not be started.", "Das Mail-Backup konnte nicht gestartet werden."),
+    ("Mail backup could not be completed.", "Das Mail-Backup konnte nicht abgeschlossen werden."),
+    (
+        "A file named {name} already exists in the backup folder. Choose another name.",
+        "Im Backup-Ordner gibt es schon eine Datei namens {name}. Wähle einen anderen Namen.",
+    ),
+    (
+        "Not enough free disk space for a backup: {free} free, at least {reserve} must stay free.",
+        "Nicht genug freier Speicherplatz für ein Backup: {free} frei, mindestens {reserve} müssen frei bleiben.",
+    ),
+    (
+        "Not enough free disk space for this backup: {mail} of mail, {free} free, and at least {reserve} must stay free.",
+        "Nicht genug freier Speicherplatz für dieses Backup: {mail} an E-Mails, {free} frei, und mindestens {reserve} müssen frei bleiben.",
+    ),
+    (
+        "Mail backup stopped because the disk is almost full: {free} free, at least {reserve} must stay free. The partial archive was removed.",
+        "Das Mail-Backup wurde angehalten, weil der Speicher fast voll ist: {free} frei, mindestens {reserve} müssen frei bleiben. Das unfertige Archiv wurde entfernt.",
+    ),
+    (
+        "Mail backup is incomplete: a source message disappeared while reading.",
+        "Das Mail-Backup ist unvollständig: Beim Lesen ist eine Nachricht aus der Quelle verschwunden.",
+    ),
+    (
+        "Mail backup is incomplete: the server returned an incomplete message body.",
+        "Das Mail-Backup ist unvollständig: Der Server hat einen unvollständigen Nachrichtentext geliefert.",
+    ),
+    (
+        "Mail backup is incomplete: IMAP message identifiers changed.",
+        "Das Mail-Backup ist unvollständig: Die IMAP-Nachrichtenkennungen haben sich geändert.",
+    ),
+    (
+        "Mail backup is incomplete: the folder inventory changed while reading.",
+        "Das Mail-Backup ist unvollständig: Der Ordnerbestand hat sich beim Lesen geändert.",
+    ),
+    (
+        "Mail backup is incomplete: a local original is missing or damaged.",
+        "Das Mail-Backup ist unvollständig: Ein lokales Original fehlt oder ist beschädigt.",
+    ),
+    (
+        "Mail backup is incomplete: the local mail inventory changed while reading.",
+        "Das Mail-Backup ist unvollständig: Der lokale Mail-Bestand hat sich beim Lesen geändert.",
+    ),
+    ("Mail backup was cancelled.", "Das Mail-Backup wurde abgebrochen."),
+    // Restore plan and journal (#267, MB.5)
+    (
+        "This archive is incomplete; restoring it needs separate confirmation.",
+        "Dieses Archiv ist unvollständig; die Wiederherstellung muss gesondert bestätigt werden.",
+    ),
+    (
+        "Confirm restoring this incomplete archive first.",
+        "Bestätige zuerst die Wiederherstellung dieses unvollständigen Archivs.",
+    ),
+    ("Restore plan is no longer available.", "Der Wiederherstellungsplan ist nicht mehr verfügbar."),
+    (
+        "Restore {messages} mail messages ({bytes} bytes) from {archive} to {account}; create {folders} folders",
+        "{messages} Mails ({bytes} Bytes) aus {archive} nach {account} wiederherstellen; {folders} Ordner anlegen",
+    ),
+    ("; incomplete archive explicitly accepted", "; unvollständiges Archiv ausdrücklich akzeptiert"),
+    ("new folder", "neuer Ordner"),
+    ("existing folder", "vorhandener Ordner"),
+    ("{path}: {messages} messages, {create}", "{path}: {messages} Mails, {create}"),
+    (
+        "More folder changes are listed in the restore test result.",
+        "Weitere Ordneränderungen stehen im Ergebnis des Wiederherstellungstests.",
+    ),
+    (
+        "Mail restore could not be completed; check the archive and target account.",
+        "Die Mail-Wiederherstellung konnte nicht abgeschlossen werden. Prüfe Archiv und Zielkonto.",
+    ),
+    // Mail account backup and restore controls and CLI (#267, MB.6)
+    ("Accept incomplete archive", "Unvollständiges Archiv akzeptieren"),
+    ("Archive", "Archiv"),
+    ("Archive name", "Archivname"),
+    ("Archive to inspect", "Zu prüfendes Archiv"),
+    ("Backup", "Backup"),
+    ("Backup source", "Backup-Quelle"),
+    ("Backup folder", "Backup-Ordner"),
+    ("Cancel backup", "Backup abbrechen"),
+    ("Counting", "Wird gezählt"),
+    ("Create backup", "Backup erstellen"),
+    (
+        "Choose an absolute backup folder and an archive name.",
+        "Wähle einen absoluten Backup-Ordner und einen Archivnamen.",
+    ),
+    ("Choose a valid archive name.", "Wähle einen gültigen Archivnamen."),
+    ("Do not restore", "Nicht wiederherstellen"),
+    ("Enter a valid date as YYYY-MM-DD.", "Gib ein gültiges Datum als JJJJ-MM-TT ein."),
+    ("From date", "Ab Datum"),
+    ("I reviewed the plan", "Ich habe den Plan geprüft"),
+    ("Incomplete", "Unvollständig"),
+    ("Leave empty for all mail.", "Für alle Mails leer lassen."),
+    (
+        "Leave empty for the managed folder. Your last choice is saved when you start a backup.",
+        "Leer lassen für den verwalteten Ordner. Deine letzte Wahl wird beim Start eines Backups gespeichert.",
+    ),
+    ("Local", "Lokal"),
+    ("Not reviewed", "Noch nicht geprüft"),
+    ("Queued", "Wartet"),
+    ("Reading mail", "Mails werden gelesen"),
+    ("Refresh progress", "Fortschritt aktualisieren"),
+    ("Restore", "Wiederherstellung"),
+    ("Restore confirmation", "Wiederherstellung bestätigen"),
+    ("Restore mail", "Mails wiederherstellen"),
+    ("Run restore test", "Wiederherstellung testen"),
+    ("Saved in the selected folder.", "Wird im gewählten Ordner gespeichert."),
+    ("Skipped", "Übersprungen"),
+    (
+        "The ZIP is readable without Torro and is not encrypted. Keep it in a private location. Local backup includes only retained original mails.",
+        "Das ZIP ist ohne Torro lesbar und nicht verschlüsselt. Bewahre es geschützt auf. Ein lokales Backup enthält nur aufbewahrte Mail-Originale.",
+    ),
+    ("The mail backup answer was unexpected. Try again.", "Unerwartete Antwort beim Mail-Backup. Versuche es erneut."),
+    (
+        "The test only reads the target. Restoring adds mail and missing folders; it never deletes existing mail.",
+        "Der Test liest das Ziel nur. Die Wiederherstellung fügt Mails und fehlende Ordner hinzu und löscht keine vorhandenen Mails.",
+    ),
+    ("Use a simple .zip archive name without folders.", "Verwende einen einfachen .zip-Archivnamen ohne Ordner."),
+    ("Verify archive", "Archiv prüfen"),
+    ("Verifying", "Wird geprüft"),
+    ("An option needs a value.", "Eine Option benötigt einen Wert."),
+    ("An option was given twice.", "Eine Option wurde doppelt angegeben."),
+    ("Mail commands need --account.", "Mail-Befehle benötigen --account."),
+    ("messages", "Mails"),
+    ("bytes", "Bytes"),
+    ("No core socket is available.", "Die Verbindung zum Kern ist nicht verfügbar."),
+    ("Options do not match this mail command.", "Die Optionen passen nicht zu diesem Mail-Befehl."),
+    ("Only the app may select a mail backup folder.", "Nur die App darf einen Mail-Backup-Ordner wählen."),
+    ("Source must be server or local.", "Die Quelle muss server oder local sein."),
+    ("This command needs --file.", "Dieser Befehl benötigt --file."),
+    ("This command needs --job.", "Dieser Befehl benötigt --job."),
+    ("This option takes no value.", "Diese Option nimmt keinen Wert an."),
+    (
+        "Use ctl mail backup create|status|cancel|verify or ctl mail restore.",
+        "Verwende ctl mail backup create|status|cancel|verify oder ctl mail restore.",
+    ),
     // Mail rights on the agents page (M3.4)
     ("Always", "Immer"),
     ("Ask me each time", "Jedes Mal fragen"),
@@ -2253,6 +2396,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No such message.", "Diese Nachricht gibt es nicht."),
     ("The attachment is larger than 50 MiB.", "Der Anhang ist größer als 50 MiB."),
     ("The message could not be read.", "Die Nachricht konnte nicht gelesen werden."),
+    (
+        "This message is too large to display; its original is retained for backup.",
+        "Diese Nachricht ist zu groß für die Anzeige; ihr Original bleibt für das Backup gespeichert.",
+    ),
     ("The message has no such attachment.", "Die Nachricht hat keinen solchen Anhang."),
     ("This cursor is not valid. Search again without it.", "Dieser Cursor ist ungültig. Suche ohne ihn erneut."),
     // Mail search: the query language (issue #136)
@@ -4009,6 +4156,228 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Current sorting job", "Aktueller Sortierauftrag"),
     ("Paused", "Pausiert"),
     ("Cancelled", "Abgebrochen"),
+    ("Cancelling…", "Wird abgebrochen…"),
+    ("This command is not supported.", "Dieser Befehl wird nicht unterstützt."),
+    (
+        "The archive names a folder that cannot be restored safely.",
+        "Das Archiv nennt einen Ordner, der sich nicht sicher wiederherstellen lässt.",
+    ),
+    (
+        "The archive changed after the restore test. Run the restore test again.",
+        "Das Archiv hat sich nach dem Wiederherstellungstest geändert. Starte den Wiederherstellungstest erneut.",
+    ),
+    (
+        "The mail account changed after the restore test. Run the restore test again.",
+        "Das Mail-Konto hat sich nach dem Wiederherstellungstest geändert. Starte den Wiederherstellungstest erneut.",
+    ),
+    (
+        "An earlier restore left uploads that were never confirmed. Confirm uploading them again first.",
+        "Eine frühere Wiederherstellung hat Uploads hinterlassen, die nie bestätigt wurden. Bestätige zuerst, dass sie erneut hochgeladen werden.",
+    ),
+    (
+        "Some mail cannot be restored safely. Check the restore test first.",
+        "Einige Mails lassen sich nicht sicher wiederherstellen. Prüfe zuerst den Wiederherstellungstest.",
+    ),
+    ("The restore journal of this archive is damaged.", "Das Wiederherstellungsjournal dieses Archivs ist beschädigt."),
+    (
+        "Too many restore plans are open. Try again later.",
+        "Zu viele Wiederherstellungspläne sind offen. Versuche es später noch einmal.",
+    ),
+    ("Restore will create folder {path}.", "Die Wiederherstellung legt den Ordner {path} an."),
+    (
+        "Folder {path} exists on the target but cannot be opened; its mail is left out.",
+        "Der Ordner {path} existiert im Ziel, lässt sich aber nicht öffnen; seine Mails werden ausgelassen.",
+    ),
+    (
+        "Folder {path} uses another hierarchy delimiter than the target; its mail is left out.",
+        "Der Ordner {path} nutzt ein anderes Trennzeichen als das Ziel; seine Mails werden ausgelassen.",
+    ),
+    (
+        "Folder {path} maps to the same target folder as another archive folder; its mail is left out.",
+        "Der Ordner {path} fällt auf denselben Zielordner wie ein anderer Archivordner; seine Mails werden ausgelassen.",
+    ),
+    (
+        "{n} uploads to {path} of an earlier restore were never confirmed; they are sent again only with your confirmation.",
+        "{n} Uploads nach {path} aus einer früheren Wiederherstellung wurden nie bestätigt; sie werden nur mit deiner Bestätigung erneut gesendet.",
+    ),
+    (
+        "{n} uploads to {path} of an earlier restore do not match the mail now in the folder; check the folder.",
+        "{n} Uploads nach {path} aus einer früheren Wiederherstellung passen nicht zu den Mails im Ordner; prüfe den Ordner.",
+    ),
+    (
+        "{n} IMAP flags or keywords will be left out because the target cannot keep them.",
+        "{n} IMAP-Markierungen oder Schlagwörter werden ausgelassen, weil das Ziel sie nicht halten kann.",
+    ),
+    (
+        "{n} messages already in the target have another date or other flags; they stay as they are.",
+        "{n} Mails im Ziel haben ein anderes Datum oder andere Markierungen; sie bleiben unverändert.",
+    ),
+    ("{n} further folders are not listed here.", "{n} weitere Ordner sind hier nicht aufgeführt."),
+    (
+        "{n} messages were refused by the server and not restored; run the restore test again to retry them.",
+        "{n} Mails hat der Server abgelehnt, sie wurden nicht wiederhergestellt; starte den Wiederherstellungstest erneut, um sie noch einmal zu versuchen.",
+    ),
+    (
+        "The server stored {n} restored messages changed; they count as restored and are not uploaded again.",
+        "Der Server hat {n} wiederhergestellte Mails verändert gespeichert; sie gelten als wiederhergestellt und werden nicht erneut hochgeladen.",
+    ),
+    (
+        "Folder {path} was created but could not be subscribed.",
+        "Der Ordner {path} wurde angelegt, konnte aber nicht abonniert werden.",
+    ),
+    (
+        "The restore stopped: the connection to the server was lost. Run the restore test again to continue.",
+        "Die Wiederherstellung wurde abgebrochen: Die Verbindung zum Server ging verloren. Starte den Wiederherstellungstest erneut, um fortzufahren.",
+    ),
+    (
+        "The restore stopped: the archive could not be read or its journal not saved.",
+        "Die Wiederherstellung wurde abgebrochen: Das Archiv konnte nicht gelesen oder sein Journal nicht gespeichert werden.",
+    ),
+    (
+        "The restore stopped: {path} lost mail or was reset meanwhile. Run the restore test again.",
+        "Die Wiederherstellung wurde abgebrochen: In {path} fehlen inzwischen Mails oder der Ordner wurde zurückgesetzt. Starte den Wiederherstellungstest erneut.",
+    ),
+    (
+        "The restore stopped: folder {path} could not be created or opened.",
+        "Die Wiederherstellung wurde abgebrochen: Der Ordner {path} konnte nicht angelegt oder geöffnet werden.",
+    ),
+    (
+        "The restore stopped: the server did not confirm an upload to {path}. Run the restore test again; it shows whether the mail arrived.",
+        "Die Wiederherstellung wurde abgebrochen: Der Server hat einen Upload nach {path} nicht bestätigt. Starte den Wiederherstellungstest erneut; er zeigt, ob die Mail angekommen ist.",
+    ),
+    (
+        "The restore stopped: the server accepted an upload to {path}, but the mail there cannot be matched to the archive; it may have arrived changed. Check the folder before uploading it again.",
+        "Die Wiederherstellung wurde abgebrochen: Der Server hat einen Upload nach {path} angenommen, aber die Mails dort lassen sich dem Archiv nicht zuordnen; die Mail ist vielleicht verändert angekommen. Prüfe den Ordner, bevor du sie erneut hochlädst.",
+    ),
+    (
+        "The restore stopped: the server refused to open folder {path}. Check the folder, then run the restore test again.",
+        "Die Wiederherstellung wurde abgebrochen: Der Server hat das Öffnen des Ordners {path} abgelehnt. Prüfe den Ordner und starte dann den Wiederherstellungstest erneut.",
+    ),
+    ("The restore caller is not known.", "Der Auftraggeber dieser Wiederherstellung ist nicht bekannt."),
+    (
+        "The archive was saved and verified, but the disk did not confirm its new name; check that it is still there after a system crash.",
+        "Das Archiv wurde gespeichert und geprüft, aber der Datenträger hat seinen neuen Namen nicht bestätigt; prüfe nach einem Systemabsturz, ob es noch da ist.",
+    ),
+    (
+        "The restore stopped: {path} changed while mail was uploaded. Run the restore test again.",
+        "Die Wiederherstellung wurde abgebrochen: {path} hat sich während des Hochladens geändert. Starte den Wiederherstellungstest erneut.",
+    ),
+    ("a new archive in the managed folder", "ein neues Archiv im verwalteten Ordner"),
+    (
+        "Back up the mail account {account} from {source}, mail since {day}, into {archive}",
+        "Das Mail-Konto {account} von {source} sichern, Mails seit {day}, in {archive}",
+    ),
+    (
+        "Back up the mail account {account} from {source} into {archive}",
+        "Das Mail-Konto {account} von {source} in {archive} sichern",
+    ),
+    (
+        "Cancel the backup of the mail account {account} from {source}",
+        "Das Backup des Mail-Kontos {account} von {source} abbrechen",
+    ),
+    (
+        "Cancel an unknown backup of the mail account {account}",
+        "Ein unbekanntes Backup des Mail-Kontos {account} abbrechen",
+    ),
+    ("the server", "dem Server"),
+    ("this device", "diesem Gerät"),
+    (
+        "; {n} unconfirmed uploads of an earlier restore are sent again",
+        "; {n} unbestätigte Uploads einer früheren Wiederherstellung werden erneut gesendet",
+    ),
+    (
+        "The IMAP server marks folder {path} as {reason}; its messages cannot be inventoried.",
+        "Der IMAP-Server kennzeichnet den Ordner {path} als {reason}; seine Nachrichten können nicht erfasst werden.",
+    ),
+    ("{n} further warnings were left out.", "{n} weitere Warnungen wurden ausgelassen."),
+    ("This message is too large to display.", "Diese Nachricht ist zu groß für die Anzeige."),
+    (
+        "{n} local mail headers without an original were omitted.",
+        "{n} lokale Mail-Header ohne Original wurden ausgelassen.",
+    ),
+    (
+        "{n} originals of mail no longer on the server were skipped.",
+        "{n} Originale von Mails, die nicht mehr auf dem Server liegen, wurden übersprungen.",
+    ),
+    (
+        "1 upload of an earlier restore could not be confirmed: it may not have arrived, or arrived changed so that it cannot be recognized. Check the target folder before uploading it again.",
+        "1 Upload einer früheren Wiederherstellung ließ sich nicht bestätigen: Er ist vielleicht nicht angekommen oder so verändert angekommen, dass er sich nicht wiedererkennen lässt. Prüfe den Zielordner, bevor du ihn erneut hochlädst.",
+    ),
+    (
+        "{n} uploads of an earlier restore could not be confirmed: they may not have arrived, or arrived changed so that they cannot be recognized. Check the target folders before uploading them again.",
+        "{n} Uploads einer früheren Wiederherstellung ließen sich nicht bestätigen: Sie sind vielleicht nicht angekommen oder so verändert angekommen, dass sie sich nicht wiedererkennen lassen. Prüfe die Zielordner, bevor du sie erneut hochlädst.",
+    ),
+    (
+        "Added: {added} · Skipped: {skipped} · Uncertain: {uncertain}",
+        "Hinzugefügt: {added} · Übersprungen: {skipped} · Unklar: {uncertain}",
+    ),
+    (
+        "An earlier restore left uploads that could not be confirmed: they may not have arrived, or arrived changed. Check the target folders, then add --retry-unconfirmed to upload them again.",
+        "Eine frühere Wiederherstellung hat Uploads hinterlassen, die sich nicht bestätigen ließen: Sie sind vielleicht nicht oder verändert angekommen. Prüfe die Zielordner und lade sie dann mit --retry-unconfirmed erneut hoch.",
+    ),
+    ("Archive complete", "Archiv vollständig"),
+    ("Archive incomplete", "Archiv unvollständig"),
+    ("Archive name or path", "Archivname oder Pfad"),
+    ("Archive: {name}", "Archiv: {name}"),
+    ("Backup {id}: {phase}", "Backup {id}: {phase}"),
+    ("Choose a backup archive", "Backup-Archiv wählen"),
+    ("Choose a backup folder", "Backup-Ordner wählen"),
+    (
+        "Collection folder: only mail that is in no other folder is added here. Copies of mail in other folders: {covered}, not uploaded.",
+        "Sammelordner: Hier werden nur Mails ergänzt, die in keinem anderen Ordner liegen. Kopien von Mails anderer Ordner: {covered}, nicht hochgeladen.",
+    ),
+    ("Do not upload again", "Nicht erneut hochladen"),
+    ("Folder Spam could not be read during the backup.", "Der Ordner Spam konnte beim Backup nicht gelesen werden."),
+    ("Into {target}, existing folder", "Nach {target}, vorhandener Ordner"),
+    ("Into {target}, new folder", "Nach {target}, neuer Ordner"),
+    ("Managed folder", "Verwalteter Ordner"),
+    (
+        "Messages: {messages} · Folders: {folders} · Size: {size}",
+        "Mails: {messages} · Ordner: {folders} · Größe: {size}",
+    ),
+    ("Plan: {id}", "Plan: {id}"),
+    ("Refreshing…", "Wird aktualisiert…"),
+    ("Restore finished", "Wiederherstellung abgeschlossen"),
+    ("Restore test of {name}: nothing was changed", "Wiederherstellungstest für {name}: Es wurde nichts geändert"),
+    ("Restoring…", "Wird wiederhergestellt…"),
+    (
+        "Some mail is uncertain. Check the target account first; restoring stays off.",
+        "Einige Mails sind unklar. Prüfe zuerst das Zielkonto; Wiederherstellen bleibt aus.",
+    ),
+    (
+        "Some mail is uncertain; check the target account before restoring.",
+        "Einige Mails sind unklar; prüfe das Zielkonto vor dem Wiederherstellen.",
+    ),
+    ("Starting backup…", "Backup wird gestartet…"),
+    ("Testing…", "Wird getestet…"),
+    ("The archive is incomplete.", "Das Archiv ist unvollständig."),
+    (
+        "The archive is incomplete; add --allow-incomplete to restore it anyway.",
+        "Das Archiv ist unvollständig; mit --allow-incomplete wird es trotzdem wiederhergestellt.",
+    ),
+    (
+        "The demo makes no backups and restores nothing.",
+        "Die Demo erstellt keine Backups und stellt nichts wieder her.",
+    ),
+    (
+        "To add: {add} · Already present: {present} · Uncertain: {uncertain}",
+        "Hinzufügen: {add} · Bereits vorhanden: {present} · Unklar: {uncertain}",
+    ),
+    (
+        "To add: {add} · Already present: {present} · Uncertain: {uncertain} · New folders: {folders} · Size: {size}",
+        "Hinzufügen: {add} · Bereits vorhanden: {present} · Unklar: {uncertain} · Neue Ordner: {folders} · Größe: {size}",
+    ),
+    (
+        "Torro no longer knows this backup job, for example after a restart. Its archive was not finished; start a new backup.",
+        "Torro kennt diesen Backup-Auftrag nicht mehr, etwa nach einem Neustart. Sein Archiv wurde nicht fertig; starte ein neues Backup.",
+    ),
+    ("Unconfirmed uploads of an earlier restore: {n}", "Unbestätigte Uploads einer früheren Wiederherstellung: {n}"),
+    ("Upload unconfirmed mail again", "Unbestätigte Mails erneut hochladen"),
+    ("Warning: {text}", "Warnung: {text}"),
+    ("YYYY-MM-DD", "JJJJ-MM-TT"),
+    ("mail-YYYYMMDD.zip", "mail-JJJJMMTT.zip"),
+    ("ZIP archives", "ZIP-Archive"),
+    ("This backup was made by a newer version of Torro.", "Dieses Backup stammt aus einer neueren Torro-Version."),
     ("Complete", "Abgeschlossen"),
     ("Resume", "Fortsetzen"),
     ("Pause", "Pausieren"),

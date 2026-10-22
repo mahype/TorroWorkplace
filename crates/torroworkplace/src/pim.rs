@@ -1040,6 +1040,12 @@ impl PimService {
             // The categories of mail touch no calendar or task collection (task E12.4).
             Request::AiAssignments
             | Request::SetAiAssignment { .. }
+            | Request::MailBackupCreate { .. }
+            | Request::MailBackupStatus { .. }
+            | Request::MailBackupCancel { .. }
+            | Request::MailBackupVerify { .. }
+            | Request::MailRestorePlan { .. }
+            | Request::MailRestoreApply { .. }
             | Request::ListCategories { .. }
             | Request::SetItemCategory { .. }
             | Request::ClassifyItem { .. }

@@ -26,7 +26,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -190,6 +190,14 @@ pub struct Selected {
     /// HIGHESTMODSEQ, when the server has CONDSTORE and keeps mod-sequences for this folder;
     /// `None` otherwise (then sync compares UIDs and flags).
     pub highest_modseq: Option<u64>,
+    /// Opened with `EXAMINE`, or the server answered `[READ-ONLY]`: commands that change messages
+    /// ([`Session::store_flags`], [`Session::move_messages`], [`Session::delete_messages`]) fail on
+    /// it with [`ImapError::Protocol`] before anything is sent. Code that reuses an open folder for
+    /// such a command must `select` it again when this is set.
+    pub read_only: bool,
+    /// The flags the server keeps for good in this folder (`PERMANENTFLAGS`), as sent; `\*` means
+    /// it takes new keywords. `None` when the server did not say (then every flag may be kept).
+    pub permanent_flags: Option<Vec<String>>,
 }
 
 impl Selected {
@@ -233,11 +241,111 @@ pub struct FetchedHeader {
     pub header: Vec<u8>,
 }
 
+/// Metadata retained for each backed-up folder occurrence, including every server flag and the
+/// original INTERNALDATE offset. Unlike `FetchedHeader`, this omits derived MIME data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupMessage {
+    pub uid: u32,
+    pub flags: Vec<String>,
+    pub internal_date: DateTime<FixedOffset>,
+    pub bytes: u64,
+    /// Gmail's message id (`X-GM-MSGID`), the same in every label folder that shows the message;
+    /// only asked for when the server announces `X-GM-EXT-1`, else `None`.
+    pub gm_msgid: Option<u64>,
+}
+
+/// Why reading a whole original in pieces ([`BodyChunks`]) failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BodyError {
+    /// The connection or the server failed.
+    Imap(ImapError),
+    /// The server no longer returns the message: it was expunged while it was read.
+    Vanished,
+    /// A piece came back shorter than its place before `RFC822.SIZE` asked for.
+    Truncated,
+    /// Bytes follow after `RFC822.SIZE`: the size was too small, what was read is not the whole
+    /// original.
+    Oversized,
+}
+
+impl From<ImapError> for BodyError {
+    fn from(error: ImapError) -> Self {
+        BodyError::Imap(error)
+    }
+}
+
+impl From<BodyError> for ImapError {
+    /// For callers without their own reasons: a vanished message is [`ImapError::NotFound`], a body
+    /// that does not match its size [`ImapError::Protocol`].
+    fn from(error: BodyError) -> Self {
+        match error {
+            BodyError::Imap(error) => error,
+            BodyError::Vanished => ImapError::NotFound("message vanished while its original was read".into()),
+            BodyError::Truncated => ImapError::Protocol("original shorter than its RFC822.SIZE".into()),
+            BodyError::Oversized => ImapError::Protocol("original longer than its RFC822.SIZE".into()),
+        }
+    }
+}
+
+/// Reads one original of the open folder in pieces of at most 64 KiB (`BODY.PEEK[]<offset.count>`,
+/// never marked read), so even a message far beyond the literal limit needs no full buffer. The one
+/// place that does this (backup, restore check, offline originals).
+///
+/// `size` is the message's `RFC822.SIZE`. After the last piece it asks for one byte at `size` and
+/// requires an empty answer (RFC 3501, 6.4.5: an origin past the end gives an empty string): a cut
+/// original must never pass for the whole one.
+///
+/// ```ignore
+/// let mut body = BodyChunks::new(uid, size);
+/// while let Some(piece) = body.next(&mut session).await? { spool.write_all(&piece)?; }
+/// ```
+#[derive(Debug, Clone)]
+pub struct BodyChunks {
+    uid: u32,
+    size: u64,
+    offset: u64,
+    done: bool,
+}
+
+impl BodyChunks {
+    /// Reads message `uid` of `size` bytes from the start.
+    pub fn new(uid: u32, size: u64) -> BodyChunks {
+        BodyChunks { uid, size, offset: 0, done: false }
+    }
+
+    /// The next piece, in order; `None` once every byte up to `size` was returned and the server
+    /// confirmed that nothing follows. Errors: [`BodyError::Vanished`] when the server returns no
+    /// such message, [`BodyError::Truncated`] for a short piece, [`BodyError::Oversized`] for bytes
+    /// after `size`, [`BodyError::Imap`] for the connection. After an error, start anew.
+    pub async fn next(&mut self, session: &mut Session) -> Result<Option<Vec<u8>>, BodyError> {
+        if self.done {
+            return Ok(None);
+        }
+        if self.offset >= self.size {
+            let rest = session.fetch_backup_chunk(self.uid, self.size, 1).await?.ok_or(BodyError::Vanished)?;
+            if !rest.is_empty() {
+                return Err(BodyError::Oversized);
+            }
+            self.done = true;
+            return Ok(None);
+        }
+        let count = (self.size - self.offset).min(LITERAL_CHUNK as u64) as usize;
+        let piece = session.fetch_backup_chunk(self.uid, self.offset, count).await?.ok_or(BodyError::Vanished)?;
+        if piece.len() != count {
+            return Err(BodyError::Truncated);
+        }
+        self.offset += count as u64;
+        Ok(Some(piece))
+    }
+}
+
 /// The flags of one message ([`Session::fetch_flags`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlagState {
     pub uid: u32,
     pub flags: Vec<Flag>,
+    /// Every IMAP flag and keyword as returned by the server, for retained originals.
+    pub raw_flags: Vec<String>,
     /// Marked `\Deleted`, waiting to be expunged.
     pub deleted: bool,
     /// The message's mod-sequence, when the server has CONDSTORE.
@@ -249,6 +357,111 @@ pub struct FlagState {
 pub struct AppendUid {
     pub uid_validity: u32,
     pub uid: u32,
+}
+
+/// Why [`Session::append_backup`] stored nothing it could confirm, and whether the server may
+/// have stored the message anyway. A restore (#267) acts on that difference: a message that was
+/// certainly not stored may be sent again, one that may have been stored must not be sent again
+/// without a person's say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppendError {
+    /// The server answered the `APPEND` with `NO` or `BAD`, before or after the message: nothing
+    /// was stored, and the session can be used further.
+    Refused(ImapError),
+    /// The command failed before the last piece of the message was handed to the connection (busy
+    /// or broken connection, a local read error, an invalid argument): part of the message never
+    /// left, so the server cannot have stored it. The session is not usable any more.
+    NotSent(ImapError),
+    /// The last piece of the message was handed to the connection but no tagged answer came back
+    /// (writing that piece or the closing line break failed, the connection broke, `BYE`, a broken
+    /// answer): the server may have stored it. The session is not usable any more.
+    Unconfirmed(ImapError),
+}
+
+impl AppendError {
+    /// The IMAP error behind it.
+    pub fn imap(&self) -> &ImapError {
+        match self {
+            Self::Refused(error) | Self::NotSent(error) | Self::Unconfirmed(error) => error,
+        }
+    }
+}
+
+impl fmt::Display for AppendError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(error) => write!(f, "APPEND refused: {error}"),
+            Self::NotSent(error) => write!(f, "APPEND not sent: {error}"),
+            Self::Unconfirmed(error) => write!(f, "APPEND unconfirmed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for AppendError {}
+
+/// `path` as a folder name on the wire. Without `UTF8=ACCEPT` (this crate never enables it) IMAP
+/// names folders in modified UTF-7 (RFC 3501 5.1.3), and `LIST` sends them so: a plain ASCII
+/// `path` is taken as such a name and stays as it is. Any other `path` is raw text (as an archive
+/// or a person may hold it): each run of characters outside printable ASCII becomes `&…-`, `&`
+/// becomes `&-`. A name that mixes an encoded part with raw Unicode is therefore taken as text.
+pub fn encode_mailbox(path: &str) -> std::borrow::Cow<'_, str> {
+    if path.is_ascii() {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    let mut out = String::with_capacity(path.len() * 2);
+    let mut run: Vec<u16> = Vec::new();
+    for c in path.chars() {
+        if (' '..='~').contains(&c) {
+            push_utf7_run(&mut out, &mut run);
+            if c == '&' {
+                out.push_str("&-");
+            } else {
+                out.push(c);
+            }
+        } else {
+            let mut units = [0u16; 2];
+            run.extend_from_slice(c.encode_utf16(&mut units));
+        }
+    }
+    push_utf7_run(&mut out, &mut run);
+    std::borrow::Cow::Owned(out)
+}
+
+/// Writes `run` (UTF-16 units) as `&<modified base64>-` and empties it; nothing when it is empty.
+fn push_utf7_run(out: &mut String, run: &mut Vec<u16>) {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+,";
+    if run.is_empty() {
+        return;
+    }
+    out.push('&');
+    let mut bits: u32 = 0;
+    let mut count = 0u32;
+    for byte in run.iter().flat_map(|unit| unit.to_be_bytes()) {
+        bits = (bits << 8) | u32::from(byte);
+        count += 8;
+        while count >= 6 {
+            count -= 6;
+            out.push(char::from(ALPHABET[((bits >> count) & 0x3f) as usize]));
+        }
+        bits &= (1 << count) - 1;
+    }
+    if count > 0 {
+        out.push(char::from(ALPHABET[((bits << (6 - count)) & 0x3f) as usize]));
+    }
+    out.push('-');
+    run.clear();
+}
+
+/// Where the server says an appended message landed (`APPENDUID`), if it says.
+fn append_uid(outcome: &Outcome) -> Option<AppendUid> {
+    if outcome.code_name() != Some("APPENDUID") {
+        return None;
+    }
+    let mut numbers = outcome.code_args().split_whitespace().map(str::parse::<u32>);
+    match (numbers.next(), numbers.next()) {
+        (Some(Ok(uid_validity)), Some(Ok(uid))) => Some(AppendUid { uid_validity, uid }),
+        _ => None,
+    }
 }
 
 /// How [`Session::idle`] ended.
@@ -444,8 +657,9 @@ impl Session {
     /// Makes the folder `path` (as the server will name it, prefix included). With a `role` and
     /// a server that has CREATE-SPECIAL-USE it is created as that role (`CREATE … (USE
     /// (\Sent))`); refuses the server the role, it is created plainly. A folder that already
-    /// exists (`[ALREADYEXISTS]`) is fine.
+    /// exists (`[ALREADYEXISTS]`) is fine. `path` goes out as [`encode_mailbox`] makes it.
     pub async fn create_folder(&mut self, path: &str, role: Option<Role>) -> Result<(), ImapError> {
+        let path = &*encode_mailbox(path);
         if let Some(role) = role
             && self.capabilities.has("CREATE-SPECIAL-USE")
         {
@@ -465,9 +679,10 @@ impl Session {
         }
     }
 
-    /// Subscribes to the folder at `path`, so other mail programs show it too.
+    /// Subscribes to the folder at `path`, so other mail programs show it too. `path` goes out as
+    /// [`encode_mailbox`] makes it.
     pub async fn subscribe(&mut self, path: &str) -> Result<(), ImapError> {
-        self.run(&[Arg::Raw("SUBSCRIBE"), Arg::Str(path)], "SUBSCRIBE").await.map(drop)
+        self.run(&[Arg::Raw("SUBSCRIBE"), Arg::Str(&encode_mailbox(path))], "SUBSCRIBE").await.map(drop)
     }
 
     /// Opens the folder at `path` for the message commands (`SELECT`, with `(CONDSTORE)` when the
@@ -476,15 +691,39 @@ impl Session {
     /// [`ImapError::NotFound`] when it does not exist; [`ImapError::Protocol`] when the server
     /// sends no UIDVALIDITY (nothing could be cached safely).
     pub async fn select(&mut self, path: &str) -> Result<Selected, ImapError> {
+        self.open_folder(path, false).await
+    }
+
+    /// Opens a folder read-only for an inventory, backup or restore test run. The server must not
+    /// accept changes through this selected folder, even if a future caller sends one by mistake.
+    pub async fn examine(&mut self, path: &str) -> Result<Selected, ImapError> {
+        self.open_folder(path, true).await
+    }
+
+    async fn open_folder(&mut self, path: &str, read_only: bool) -> Result<Selected, ImapError> {
         self.selected = None;
-        let mut args = vec![Arg::Raw("SELECT"), Arg::Str(path)];
+        let command = if read_only { "EXAMINE" } else { "SELECT" };
+        let wire_path = encode_mailbox(path);
+        let mut args = vec![Arg::Raw(command), Arg::Str(&wire_path)];
         if self.condstore() {
             args.push(Arg::Raw("(CONDSTORE)"));
         }
-        let data = self.run(&args, "SELECT").await?;
+        // The tagged answer says `[READ-ONLY]` when even a SELECT may not change the folder.
+        let reply = self.wire.exchange(&args).await?;
+        if reply.outcome.status != Status::Ok {
+            return Err(refused(&reply.outcome, command));
+        }
+        let data = reply.data;
         let mut uid_validity = None;
-        let mut selected =
-            Selected { path: path.into(), uid_validity: 0, uid_next: None, exists: 0, highest_modseq: None };
+        let mut selected = Selected {
+            path: path.into(),
+            uid_validity: 0,
+            uid_next: None,
+            exists: 0,
+            highest_modseq: None,
+            read_only: read_only || reply.outcome.code_name() == Some("READ-ONLY"),
+            permanent_flags: None,
+        };
         for response in &data {
             match response {
                 Response::Data(tokens) if tokens.get(1).is_some_and(|t| t.is("EXISTS")) => {
@@ -494,13 +733,17 @@ impl Session {
                     Some("UIDVALIDITY") => uid_validity = outcome.code_number(),
                     Some("UIDNEXT") => selected.uid_next = outcome.code_number(),
                     Some("HIGHESTMODSEQ") => selected.highest_modseq = outcome.code_number().filter(|&m| m > 0),
+                    Some("PERMANENTFLAGS") => {
+                        let list = outcome.code_args().trim_start_matches('(').trim_end_matches(')');
+                        selected.permanent_flags = Some(list.split_whitespace().map(str::to_owned).collect());
+                    }
                     _ => {}
                 },
                 _ => {}
             }
         }
         selected.uid_validity =
-            uid_validity.ok_or_else(|| ImapError::Protocol(format!("SELECT of {path:?} named no UIDVALIDITY")))?;
+            uid_validity.ok_or_else(|| ImapError::Protocol(format!("{command} of {path:?} named no UIDVALIDITY")))?;
         self.selected = Some(selected.clone());
         Ok(selected)
     }
@@ -597,6 +840,67 @@ impl Session {
             .collect())
     }
 
+    /// Raw backup metadata without narrowing flags to Torro's ordinary reading set, for all `uids`
+    /// in one `UID FETCH` (pass batches of a few hundred). With `X-GM-EXT-1` it also asks for
+    /// `X-GM-MSGID` ([`BackupMessage::gm_msgid`]). The caller compares returned UIDs with its
+    /// inventory and treats any missing UID as incomplete.
+    pub async fn fetch_backup_metadata(&mut self, uids: &[u32]) -> Result<Vec<BackupMessage>, ImapError> {
+        self.require_selected()?;
+        if uids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let set = uid_set(uids);
+        let items = if self.capabilities.has("X-GM-EXT-1") {
+            "(UID FLAGS INTERNALDATE RFC822.SIZE X-GM-MSGID)"
+        } else {
+            "(UID FLAGS INTERNALDATE RFC822.SIZE)"
+        };
+        let data = self.run(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw(items)], "FETCH").await?;
+        fetched(&data)
+            .map(|item| {
+                let flags = item
+                    .get("FLAGS")
+                    .and_then(Token::list)
+                    .ok_or_else(|| ImapError::Protocol("backup FETCH named no FLAGS".into()))?
+                    .iter()
+                    .map(|token| token.text().ok_or_else(|| ImapError::Protocol("invalid backup flag".into())))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let internal_date = item
+                    .get("INTERNALDATE")
+                    .and_then(Token::text)
+                    .and_then(|value| DateTime::parse_from_str(value.trim(), "%d-%b-%Y %H:%M:%S %z").ok())
+                    .ok_or_else(|| ImapError::Protocol("backup FETCH named no valid INTERNALDATE".into()))?;
+                let bytes = item
+                    .get("RFC822.SIZE")
+                    .and_then(Token::number)
+                    .ok_or_else(|| ImapError::Protocol("backup FETCH named no valid RFC822.SIZE".into()))?;
+                let gm_msgid = item.get("X-GM-MSGID").and_then(Token::number);
+                Ok(BackupMessage { uid: item.uid, flags, internal_date, bytes, gm_msgid })
+            })
+            .collect()
+    }
+
+    /// Returns at most 64 KiB of original RFC-822 bytes via IMAP partial `BODY.PEEK[]`. A server
+    /// that omits the requested item is reported as a vanished message by the backup caller.
+    pub async fn fetch_backup_chunk(
+        &mut self,
+        uid: u32,
+        offset: u64,
+        count: usize,
+    ) -> Result<Option<Vec<u8>>, ImapError> {
+        self.require_selected()?;
+        if count == 0 || count > LITERAL_CHUNK || offset.checked_add(count as u64).is_none() {
+            return Err(ImapError::Protocol("invalid backup chunk range".into()));
+        }
+        let set = uid.to_string();
+        let item = format!("(UID BODY.PEEK[]<{offset}.{count}>)");
+        let returned = format!("BODY[]<{offset}>");
+        let data = self.run(&[Arg::Raw("UID FETCH"), Arg::Raw(&set), Arg::Raw(&item)], "FETCH").await?;
+        Ok(fetched(&data)
+            .filter(|item| item.uid == uid)
+            .find_map(|item| item.get(&returned).and_then(Token::bytes).map(<[u8]>::to_vec)))
+    }
+
     /// The flags of every message in the open folder (`UID FETCH 1:* (UID FLAGS)`), or, with
     /// `changed_since` and a server with CONDSTORE, only of those changed after that
     /// mod-sequence (`CHANGEDSINCE`). Without CONDSTORE `changed_since` is ignored and all come
@@ -614,8 +918,10 @@ impl Session {
         let data = self.run(&[Arg::Raw("UID FETCH 1:*"), Arg::Raw(&items)], "FETCH").await?;
         Ok(fetched(&data)
             .filter_map(|item| {
-                let (flags, deleted) = parse_flags(item.get("FLAGS")?);
-                Some(FlagState { uid: item.uid, flags, deleted, modseq: item.modseq() })
+                let flag_list = item.get("FLAGS")?;
+                let (flags, deleted) = parse_flags(flag_list);
+                let raw_flags = flag_list.list()?.iter().filter_map(Token::atom).map(str::to_string).collect();
+                Some(FlagState { uid: item.uid, flags, raw_flags, deleted, modseq: item.modseq() })
             })
             .collect())
     }
@@ -634,7 +940,7 @@ impl Session {
     /// Adds and removes flags of the messages `uids` in the open folder (`UID STORE …
     /// +FLAGS.SILENT` / `-FLAGS.SILENT`).
     pub async fn store_flags(&mut self, uids: &[u32], add: &[Flag], remove: &[Flag]) -> Result<(), ImapError> {
-        self.require_selected()?;
+        self.require_writable()?;
         if uids.is_empty() {
             return Ok(());
         }
@@ -653,7 +959,7 @@ impl Session {
     /// the server has MOVE, else `UID COPY`, `\Deleted` and expunging them
     /// ([`Session::delete_messages`]). [`ImapError::NotFound`] when `target` does not exist.
     pub async fn move_messages(&mut self, uids: &[u32], target: &str) -> Result<(), ImapError> {
-        self.require_selected()?;
+        self.require_writable()?;
         if uids.is_empty() {
             return Ok(());
         }
@@ -670,7 +976,7 @@ impl Session {
     /// messages someone marked `\Deleted` in this folder; that is what "deleted" means in IMAP,
     /// and older mail programs do the same.
     pub async fn delete_messages(&mut self, uids: &[u32]) -> Result<(), ImapError> {
-        self.require_selected()?;
+        self.require_writable()?;
         if uids.is_empty() {
             return Ok(());
         }
@@ -700,7 +1006,8 @@ impl Session {
             atoms.push("\\Draft");
         }
         let list = format!("({})", atoms.join(" "));
-        let mut args = vec![Arg::Raw("APPEND"), Arg::Str(path)];
+        let path = encode_mailbox(path);
+        let mut args = vec![Arg::Raw("APPEND"), Arg::Str(&path)];
         if !atoms.is_empty() {
             args.push(Arg::Raw(&list));
         }
@@ -709,14 +1016,32 @@ impl Session {
         if reply.outcome.status != Status::Ok {
             return Err(refused(&reply.outcome, "APPEND"));
         }
-        let appended = (reply.outcome.code_name() == Some("APPENDUID")).then(|| {
-            let mut numbers = reply.outcome.code_args().split_whitespace().map(str::parse::<u32>);
-            match (numbers.next(), numbers.next()) {
-                (Some(Ok(uid_validity)), Some(Ok(uid))) => Some(AppendUid { uid_validity, uid }),
-                _ => None,
-            }
-        });
-        Ok(appended.flatten())
+        Ok(append_uid(&reply.outcome))
+    }
+
+    /// APPEND an archived EML without buffering it as one `Vec`, retaining its original
+    /// INTERNALDATE and the given flags and keywords, which must all be transferable
+    /// ([`backup_flag_transferable`]). `input` must provide exactly `bytes`; it is read in pieces
+    /// of 64 KiB while they are sent. `path` goes out as [`encode_mailbox`] makes it. The error
+    /// says whether the server may have stored the message anyway ([`AppendError`]).
+    pub async fn append_backup<R: AsyncRead + Unpin + Send>(
+        &mut self,
+        path: &str,
+        input: &mut R,
+        bytes: u64,
+        flags: &[String],
+        internal_date: Option<DateTime<FixedOffset>>,
+    ) -> Result<Option<AppendUid>, AppendError> {
+        if flags.iter().any(|flag| !backup_flag_transferable(flag)) {
+            return Err(AppendError::NotSent(ImapError::Protocol("archive holds a nontransferable IMAP flag".into())));
+        }
+        let date = internal_date.map(|date| date.format("%d-%b-%Y %H:%M:%S %z").to_string());
+        let path = encode_mailbox(path);
+        let reply = self.wire.append_stream(&path, input, bytes, flags, date.as_deref()).await?;
+        if reply.outcome.status != Status::Ok {
+            return Err(AppendError::Refused(refused(&reply.outcome, "APPEND")));
+        }
+        Ok(append_uid(&reply.outcome))
     }
 
     /// Waits up to `max` for the server to report a change in the open folder (`IDLE`, then
@@ -748,6 +1073,16 @@ impl Session {
 
     fn require_selected(&self) -> Result<&Selected, ImapError> {
         self.selected.as_ref().ok_or_else(|| ImapError::Protocol("no folder is open (select one first)".into()))
+    }
+
+    /// The open folder, when it may be changed: an `EXAMINE`d one would refuse, or a server might
+    /// ignore the change, so the session says so before sending anything.
+    fn require_writable(&self) -> Result<&Selected, ImapError> {
+        let selected = self.require_selected()?;
+        if selected.read_only {
+            return Err(ImapError::Protocol("the folder is open read-only (select it to change messages)".into()));
+        }
+        Ok(selected)
     }
 
     /// Runs a command and hands back its untagged responses; any answer but `OK` is an error.
@@ -905,6 +1240,18 @@ fn flag_atom(flag: Flag) -> &'static str {
         Flag::Flagged => "\\Flagged",
         Flag::Answered => "\\Answered",
     }
+}
+
+/// Flags safe to send as IMAP atoms in a restore. `\Recent` is server-owned and `\Deleted`
+/// could expunge a restored message; unsupported system flags are reported and omitted.
+pub fn backup_flag_transferable(flag: &str) -> bool {
+    if flag.starts_with('\\') {
+        return ["\\Seen", "\\Answered", "\\Flagged", "\\Draft"].iter().any(|system| flag.eq_ignore_ascii_case(system));
+    }
+    !flag.is_empty()
+        && flag.bytes().all(|byte| {
+            (0x21..=0x7e).contains(&byte) && !matches!(byte, b'(' | b')' | b'{' | b'%' | b'*' | b'"' | b'\\' | b']')
+        })
 }
 
 /// The suite's flags in a `FLAGS (…)` list, and whether `\Deleted` is among them.
@@ -1509,6 +1856,95 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Wire<S> {
         Ok(Reply { data, outcome })
     }
 
+    /// The restore variant of APPEND: writes the literal from an async source in bounded blocks.
+    /// A failure before the last block is written means the server cannot have stored the message
+    /// ([`AppendError::NotSent`]): that block never left. From writing the last block on only a
+    /// tagged answer tells ([`AppendError::Unconfirmed`]): a write can fail after its bytes left
+    /// (a flush error), so a failure there is never taken as proof that nothing arrived. A tagged
+    /// `NO`/`BAD` comes back as the reply.
+    async fn append_stream<R: AsyncRead + Unpin + Send>(
+        &mut self,
+        path: &str,
+        input: &mut R,
+        bytes: u64,
+        flags: &[String],
+        internal_date: Option<&str>,
+    ) -> Result<Reply, AppendError> {
+        if path.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0)) {
+            return Err(AppendError::NotSent(ImapError::Protocol("a folder name holds a line break".into())));
+        }
+        let tag = self.start().map_err(AppendError::NotSent)?;
+        let sent = self.append_head(&tag, path, flags, internal_date, bytes).await.map_err(AppendError::NotSent)?;
+        let mut data = match sent {
+            Ok(data) => data,
+            Err(reply) => return Ok(reply),
+        };
+        let mut left = bytes;
+        let mut chunk = vec![0u8; LITERAL_CHUNK];
+        while left > 0 {
+            let count = left.min(LITERAL_CHUNK as u64) as usize;
+            input
+                .read_exact(&mut chunk[..count])
+                .await
+                .map_err(|_| AppendError::NotSent(ImapError::Offline("restore source ended during APPEND".into())))?;
+            let last = left == count as u64;
+            self.write(&chunk[..count])
+                .await
+                .map_err(|error| if last { AppendError::Unconfirmed(error) } else { AppendError::NotSent(error) })?;
+            left -= count as u64;
+        }
+        self.write(b"\r\n").await.map_err(AppendError::Unconfirmed)?;
+        let outcome = self.finish(&tag, &mut data, false).await.map_err(AppendError::Unconfirmed)?;
+        Ok(Reply { data, outcome })
+    }
+
+    /// The command line of [`Wire::append_stream`] up to the message literal, and the server's `+`
+    /// for it: `Ok(data)` with the untagged responses so far, or `Err(reply)` when the server
+    /// answered the command (tagged) instead.
+    async fn append_head(
+        &mut self,
+        tag: &str,
+        path: &str,
+        flags: &[String],
+        internal_date: Option<&str>,
+        bytes: u64,
+    ) -> Result<Result<Vec<Response>, Reply>, ImapError> {
+        let mut data = Vec::new();
+        let mut line = format!("{tag} APPEND ").into_bytes();
+        if path.bytes().all(|byte| (0x20..0x7f).contains(&byte)) {
+            line.push(b'"');
+            for byte in path.bytes() {
+                if matches!(byte, b'"' | b'\\') {
+                    line.push(b'\\');
+                }
+                line.push(byte);
+            }
+            line.push(b'"');
+        } else {
+            line.extend_from_slice(format!("{{{}}}\r\n", path.len()).as_bytes());
+            self.write(&line).await?;
+            line.clear();
+            if let Some(outcome) = self.await_continue(tag, &mut data).await? {
+                self.busy = false;
+                return Ok(Err(Reply { data, outcome }));
+            }
+            self.write(path.as_bytes()).await?;
+        }
+        if !flags.is_empty() {
+            line.extend_from_slice(format!(" ({})", flags.join(" ")).as_bytes());
+        }
+        if let Some(date) = internal_date {
+            line.extend_from_slice(format!(" \"{date}\"").as_bytes());
+        }
+        line.extend_from_slice(format!(" {{{bytes}}}\r\n").as_bytes());
+        self.write(&line).await?;
+        if let Some(outcome) = self.await_continue(tag, &mut data).await? {
+            self.busy = false;
+            return Ok(Err(Reply { data, outcome }));
+        }
+        Ok(Ok(data))
+    }
+
     /// `AUTHENTICATE PLAIN` with the base64 `blob`; a further challenge is cancelled with `*`.
     async fn authenticate(&mut self, blob: &str) -> Result<Reply, ImapError> {
         let tag = self.start()?;
@@ -1802,6 +2238,85 @@ mod tests {
             panic!("data")
         };
         assert!(!has_attachment(&tokens[2].list().expect("items")[1]), "inline images do not count");
+    }
+
+    /// A connection that answers `script` and takes `limit` bytes; the write that would go beyond
+    /// them hands over what fits and then fails, as a connection that breaks midway.
+    struct Breaking {
+        script: io::Cursor<Vec<u8>>,
+        written: usize,
+        limit: usize,
+    }
+
+    impl AsyncRead for Breaking {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            let this = &mut *self;
+            let start = usize::try_from(this.script.position()).unwrap_or(usize::MAX);
+            let rest = this.script.get_ref().get(start..).unwrap_or_default();
+            let count = rest.len().min(buf.remaining());
+            buf.put_slice(&rest[..count]);
+            this.script.set_position((start + count) as u64);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for Breaking {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            let room = self.limit - self.written;
+            if room == 0 {
+                return std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+            }
+            let count = room.min(buf.len());
+            self.written += count;
+            std::task::Poll::Ready(Ok(count))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn an_append_that_breaks_in_its_last_block_may_have_arrived() {
+        let bytes = LITERAL_CHUNK + 10;
+        let head = format!("a1 APPEND \"INBOX\" {{{bytes}}}\r\n").len();
+        let message = vec![b'x'; bytes];
+        let append = |limit: usize| {
+            let message = message.clone();
+            async move {
+                let stream = Breaking { script: io::Cursor::new(b"+ go\r\n".to_vec()), written: 0, limit };
+                let mut wire = Wire::new(stream, 1);
+                let mut input = io::Cursor::new(message);
+                wire.append_stream("INBOX", &mut input, bytes as u64, &[], None).await.map(|_| ())
+            }
+        };
+        // The first of two blocks breaks: its rest and the whole second block never left.
+        let early = append(head + 3).await;
+        assert!(matches!(early, Err(AppendError::NotSent(_))), "{early:?}");
+        // The last block breaks: all of it may have left before the failure was noticed.
+        let late = append(head + LITERAL_CHUNK + 3).await;
+        assert!(matches!(late, Err(AppendError::Unconfirmed(_))), "{late:?}");
+        // Only the closing line break is missing: the message is out.
+        let end = append(head + bytes).await;
+        assert!(matches!(end, Err(AppendError::Unconfirmed(_))), "{end:?}");
     }
 
     #[test]

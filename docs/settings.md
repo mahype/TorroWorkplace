@@ -122,6 +122,10 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
   Rules); das Mail-Fenster hat keine Rules, dort holt „All rules“ das Fenster des Notification Hub nach
   vorn, wo die Regeln stehen. „Change access“ unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen
   seit #231 den Abschnitt Access im selben Fenster; Konten einrichten öffnet weiter Accounts in der Steuerzentrale.
+  Für die Backup-Seite eines Mail-Kontos (#267) gibt es im Mail-Fenster die Demo-Zustände
+  `torroinbox --demo --view mail --open backup|backup-plan|backup-error|backup-done`: Einstellungen
+  bei Accounts, erstes Konto, mit laufendem Backup, Restore-Testlauf (Ordnertabelle, unvollständiges
+  Archiv, unbestätigte Uploads), verlorenem Job bzw. fertigem Backup samt Restore.
 
 ### Was wohin gehört
 
@@ -131,7 +135,7 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
-| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen) · Reading („Show mail as“, „Mail colors“) · Keyboard shortcuts (E10.3) | Kontodetail Mail; Appearance › Mail |
+| **Mail** (Fensterart Mail) | Accounts (je Mail-Konto Absendername, Signatur, „Write new mail as“, offene Ordnerfragen, Backup und Restore) · Reading („Show mail as“, „Mail colors“) · Keyboard shortcuts (E10.3) | Kontodetail Mail; Appearance › Mail; Mail-Backup #267 |
 
 Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). Die Fensterarten des Eingangs-Programms
 zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das Mail-Fenster die von Mail.
@@ -706,11 +710,18 @@ führt nur noch dorthin, wo es um Konten geht („Open Settings“ einer App ohn
 
 #### Mail-Fenster
 
+Backup und Wiederherstellung liegen im Mail-Fenster unter **Einstellungen → Konten → Konto**,
+nicht in den allgemeinen Einstellungen. Die zuletzt verwendete Quelle, Datumsgrenze und
+der Zielordner stehen im `MailSettings.backup` dieses Kontos; Archivname, Testlauf und
+Bestätigung gelten jeweils für dieses Konto. Das offene ZIP64-Format und die CLI sind in
+[Mail-Backup](mail-backup.md) beschrieben.
+
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
 | HTML/Text, Light/Dark am Leser | nur für die offene Mail | Mail-Fenster › Fuß des Lesers | nur im Speicher; Vorgabe `mailView`, `mailAppearance` | – (Vorgabe: `set_setting`) | Mail | bleibt; Vorgabe nach Mail |
 | From, Signatur beim Schreiben | Absender der neuen Mail | Mail › Schreiben | nicht gespeichert; Signatur aus dem Konto | – | Mail | bleibt |
 | Tastenkürzel | fest „Torro“ | Mail-Fenster (`torro_core::shortcuts`) | Code | – | Mail | geplant (E10.1b, E10.2, E10.3) |
+| Backup source, From date, Backup folder | Vorgabe für das nächste Backup dieses Kontos | Mail-Fenster › Settings › Accounts › Konto › Backup | im Mail-Konto: `MailSettings.backup` (`local`, `since`, `directory`), geschrieben, wenn ein Backup startet | `mail.backup_create` speichert die Wahl mit; kein eigenes `set` | Mail | bleibt; Archivname, Testlauf und Bestätigungen gelten nur im Speicher für dieses Konto (#267) |
 
 ### Geplant, nicht gebaut
 

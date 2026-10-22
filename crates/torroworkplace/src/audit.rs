@@ -413,6 +413,12 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::StartMailCacheJob { .. }
         | Request::MailCacheJobStatus { .. }
         | Request::ControlMailCacheJob { .. }
+        | Request::MailBackupCreate { .. }
+        | Request::MailBackupStatus { .. }
+        | Request::MailBackupCancel { .. }
+        | Request::MailBackupVerify { .. }
+        | Request::MailRestorePlan { .. }
+        | Request::MailRestoreApply { .. }
         | Request::SearchMail { .. }
         | Request::MailIndexStatus { .. }
         | Request::GetMail { .. }
@@ -970,5 +976,12 @@ pub(crate) mod tests {
             folder_roles: None,
         };
         assert_eq!(super::ids(&update), vec!["account:mail:anna@mailbox.org".to_string()]);
+        let verify = Request::MailBackupVerify {
+            file: "/Users/anna/Documents/Salary mail.zip".into(),
+            account: "mail:anna@mailbox.org".into(),
+        };
+        let logged = super::ids(&verify);
+        assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string()]);
+        assert!(!logged.join(" ").contains("Salary"));
     }
 }

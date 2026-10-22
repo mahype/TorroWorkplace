@@ -1513,6 +1513,20 @@ impl MailService {
         self.mailbox_of(account).await?.command().await
     }
 
+    /// A new signed-in session of `account` of its own, outside the command connection: for work
+    /// that reads or writes for minutes or hours (a mail backup or restore, #267) and must not hold
+    /// up the sync, reading and sending, which share [`MailService::command`]. Signed in exactly as
+    /// the account's other connections (checked public addresses, the password from the core's
+    /// keychain, which never leaves the core). The caller ends it with `Session::logout`.
+    ///
+    /// Errors as for [`MailService::command`].
+    pub(crate) async fn own_session(&self, account: &str) -> Result<Session, MailError> {
+        let mailbox = self.mailbox_of(account).await?;
+        // Same rule as the command connection: an account whose store is not open is not used.
+        mailbox.store()?;
+        mailbox.connect().await
+    }
+
     /// The store of `account`, to read the cached mail without a connection (task M3.1).
     /// [`MailError::NotFound`] for an unknown account or one whose mail is off.
     pub async fn store(&self, account: &str) -> Result<SharedStore, MailError> {

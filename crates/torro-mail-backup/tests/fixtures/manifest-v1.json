@@ -1,0 +1,36 @@
+{
+  "format": "torro-mail-backup",
+  "version": 1,
+  "status": "complete",
+  "source": "server",
+  "since": null,
+  "started_at": "2026-10-21T10:00:00Z",
+  "finished_at": "2026-10-21T10:00:01Z",
+  "account": { "address": "anna@example.org", "server": "imap.example.org" },
+  "folders": [
+    {
+      "id": "f000001", "name": "Inbox", "path": "INBOX", "delimiter": "/",
+      "selectable": true, "role": "inbox", "uid_validity": 42,
+      "inventory": {
+        "checked_at": "2026-10-21T10:00:01Z",
+        "eligible_messages": 1,
+        "uid_set_sha256": "1561ade0621c5acf44b780521f95a1e0b19b4e5032945b860c4032fc28a3a23b"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "id": "m000000001",
+      "folder_id": "f000001",
+      "path": "mail/f000001/m000000001.eml",
+      "uid": 7,
+      "uid_validity": 42,
+      "internal_date": "2026-10-20T09:00:00+00:00",
+      "flags": ["\\Seen"],
+      "bytes": 57,
+      "sha256": "775fb4368f2ec68c62a9bc2ce285f01f46ab8f66304d88bfd2e2c2825d0b7fb3"
+    }
+  ],
+  "counts": { "folders": 1, "messages": 1, "bytes": 57 },
+  "warnings": []
+}

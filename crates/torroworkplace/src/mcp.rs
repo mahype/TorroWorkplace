@@ -1437,6 +1437,83 @@ mod tests {
     }
 
     #[test]
+    fn backup_verify_and_restore_tools_map_to_their_scoped_requests() {
+        let request = request_for(
+            "mail_backup_verify",
+            args(json!({"file": "anna-2026.zip", "account": "mail:anna@example.org"})),
+            &Utc,
+        );
+        assert_eq!(
+            request,
+            Ok(Request::MailBackupVerify { file: "anna-2026.zip".into(), account: "mail:anna@example.org".into() })
+        );
+        let names: BTreeSet<String> = tools().iter().map(|tool| tool.name.to_string()).collect();
+        assert!(names.contains("mail_backup_verify"));
+        assert!(names.contains("mail_restore_plan"));
+        assert!(names.contains("mail_restore_apply"));
+        assert_eq!(
+            request_for(
+                "mail_restore_plan",
+                args(json!({"file": "anna-2026.zip", "account": "mail:anna@example.org"})),
+                &Utc
+            ),
+            Ok(Request::MailRestorePlan { file: "anna-2026.zip".into(), account: "mail:anna@example.org".into() })
+        );
+        assert_eq!(
+            request_for(
+                "mail_restore_apply",
+                args(json!({"plan": "plan-1", "account": "mail:anna@example.org", "allow_incomplete": false})),
+                &Utc
+            ),
+            Ok(Request::MailRestoreApply {
+                plan: "plan-1".into(),
+                account: "mail:anna@example.org".into(),
+                allow_incomplete: false,
+                retry_unconfirmed: false
+            })
+        );
+        assert_eq!(
+            request_for(
+                "mail_restore_apply",
+                args(json!({"plan": "plan-2", "account": "mail:anna@example.org", "retry_unconfirmed": true})),
+                &Utc
+            ),
+            Ok(Request::MailRestoreApply {
+                plan: "plan-2".into(),
+                account: "mail:anna@example.org".into(),
+                allow_incomplete: false,
+                retry_unconfirmed: true
+            })
+        );
+        for active in ["mail_backup_create", "mail_backup_status", "mail_backup_cancel"] {
+            assert!(names.contains(active));
+        }
+        assert_eq!(
+            request_for(
+                "mail_backup_create",
+                args(json!({
+                    "account": "mail:anna@example.org", "source": "local", "since": "2026-10-20", "file_name": "anna.zip"
+                })),
+                &Utc
+            ),
+            Ok(Request::MailBackupCreate {
+                account: "mail:anna@example.org".into(),
+                source: torro_ipc::mail::BackupScope::Local,
+                since: chrono::NaiveDate::from_ymd_opt(2026, 10, 20),
+                file_name: Some("anna.zip".into()),
+            })
+        );
+        assert_eq!(
+            request_for("mail_backup_status", args(json!({"account": "mail:anna@example.org", "job": "j-1"})), &Utc),
+            Ok(Request::MailBackupStatus { account: "mail:anna@example.org".into(), job: "j-1".into() })
+        );
+        assert_eq!(
+            request_for("mail_backup_cancel", args(json!({"account": "mail:anna@example.org", "job": "j-1"})), &Utc),
+            Ok(Request::MailBackupCancel { account: "mail:anna@example.org".into(), job: "j-1".into() })
+        );
+    }
+
+    #[test]
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);
         assert_eq!(zoom, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: json!(1.25) }));

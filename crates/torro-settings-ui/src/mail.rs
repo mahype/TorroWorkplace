@@ -26,6 +26,7 @@ use torro_gui::icon::Icon;
 
 use crate::{Action, Data, Page, Section};
 
+mod backup;
 mod editor;
 
 /// The sections, in the order of the list. [`Section::id`] is what `--settings <id>` takes.
@@ -112,6 +113,50 @@ pub fn answered(state: &mut State, answer: &Result<torro_ipc::Response, String>)
     storage::answered(&mut state.storage, answer);
 }
 
+/// Backup answers carry their originating account, so another section's pending answer cannot
+/// consume a backup job and a job remains visible after switching between mail accounts. The
+/// window passes the core's errors as `Ok(Response::Error)` with their code (`not-found` for a job
+/// the core no longer knows), not as `Err`.
+pub fn backup_answered(state: &mut State, account: &str, answer: &Result<torro_ipc::Response, String>) {
+    accounts::backup_answered(&mut state.accounts, account, answer);
+}
+
+/// The status request of the open account's running backup job, for the window's ten-second tick;
+/// `None` when no job runs or a request is on its way.
+pub fn poll_request(state: &mut State) -> Option<torro_ipc::Request> {
+    accounts::poll_request(&mut state.accounts)
+}
+
+pub use backup::{Chooser as BackupChooser, Scene as BackupScene};
+
+/// The system chooser `message` asks the window to open ("Choose…" next to the backup folder or the
+/// archive), `None` for every other message. The sections never open a dialog; the window does and
+/// answers with [`backup_chosen`].
+pub fn backup_chooser(message: &Message) -> Option<BackupChooser> {
+    match message {
+        Message::Accounts(accounts::Message::Backup(backup::Message::Choose(chooser))) => Some(*chooser),
+        _ => None,
+    }
+}
+
+/// The message that hands the path picked in `chooser` back to the open account's page.
+pub fn backup_chosen(chooser: BackupChooser, path: std::path::PathBuf) -> Message {
+    Message::Accounts(accounts::Message::Backup(backup::Message::Chosen(chooser, path)))
+}
+
+/// Puts the demo page `scene` on `account` (`--demo --open backup…` in the inbox): it shows once the
+/// account's page is opened ([`accounts::Message::Open`]), or at once if it is open.
+pub fn stage_backup(state: &mut State, account: &str, scene: BackupScene) {
+    accounts::stage_backup(&mut state.accounts, account, backup::State::scene(scene, account));
+}
+
+/// What the window keeps of these sections while the settings are closed: only Accounts, with each
+/// account's backup page and the requests on their way, whose answers still arrive. The other
+/// sections start afresh, so a preview that was on its way never stays "Calculating…".
+pub fn kept(state: State) -> State {
+    State { accounts: state.accounts, ..State::default() }
+}
+
 /// One section's page with its messages wrapped in [`Message`].
 fn wrap<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> Message) -> Page<'a, Message> {
     Page {
@@ -151,6 +196,9 @@ pub mod accounts {
         /// accounts.
         draft: Option<Draft>,
         folders_expanded: bool,
+        backup: backup::State,
+        backup_account: Option<String>,
+        backup_others: BTreeMap<String, backup::State>,
     }
 
     /// What a row of this section reports.
@@ -172,6 +220,8 @@ pub mod accounts {
         Format(MailFormat),
         /// "Use this folder" for a role the server left open.
         PickFolder { role: Role, path: String },
+        /// A row of the account's groups "Backup" and "Restore".
+        Backup(backup::Message),
     }
 
     /// The sender name and the signature of one account as they are being typed.
@@ -226,6 +276,15 @@ pub mod accounts {
                 // Without the account in the loaded data there is nothing to show or type into;
                 // the list stays, and a press after the next load opens it.
                 if let Some(mail) = mail_of(data, &id) {
+                    if state.backup_account.as_deref() != Some(id.as_str()) {
+                        if let Some(previous) = state.backup_account.replace(id.clone()) {
+                            state.backup_others.insert(previous, std::mem::take(&mut state.backup));
+                        }
+                        state.backup = state
+                            .backup_others
+                            .remove(&id)
+                            .unwrap_or_else(|| backup::State::from_preferences(&mail.settings.backup));
+                    }
                     state.draft = Some(Draft::new(&id, mail));
                     state.folders_expanded = false;
                 }
@@ -261,6 +320,39 @@ pub mod accounts {
             Message::PickFolder { role, path } => change(state, data, |_| {
                 Some(MailChange { folder_roles: Some(BTreeMap::from([(role, path)])), ..MailChange::default() })
             }),
+            Message::Backup(message) => state
+                .draft
+                .as_ref()
+                .map_or(Action::None, |draft| backup::update(&mut state.backup, &draft.account, message)),
+        }
+    }
+
+    /// The answer of a backup request for `account`, to its page whether it is open or not.
+    pub fn backup_answered(state: &mut State, account: &str, answer: &Result<torro_ipc::Response, String>) {
+        if state.backup_account.as_deref() == Some(account) {
+            backup::answered(&mut state.backup, answer);
+        } else if let Some(saved) = state.backup_others.get_mut(account) {
+            backup::answered(saved, answer);
+        }
+    }
+
+    pub fn poll_request(state: &mut State) -> Option<Request> {
+        let draft = state.draft.as_ref()?;
+        backup::poll_request(&mut state.backup, &draft.account)
+    }
+
+    /// The backup folder typed or chosen on the open account's page.
+    #[cfg(test)]
+    pub(super) fn backup_destination(state: &State) -> Option<&str> {
+        state.draft.as_ref().map(|_| state.backup.destination.as_str())
+    }
+
+    /// Replaces `account`'s backup page by `backup`, open or kept for later.
+    pub(super) fn stage_backup(state: &mut State, account: &str, backup: backup::State) {
+        if state.backup_account.as_deref() == Some(account) {
+            state.backup = backup;
+        } else {
+            state.backup_others.insert(account.to_string(), backup);
         }
     }
 
@@ -311,7 +403,8 @@ pub mod accounts {
             Some((draft, mail)) => {
                 let label = account_label(data, &draft.account);
                 let stats = data.mail_stats.iter().find(|stats| stats.account == draft.account);
-                Page::new(account_page(draft, mail, stats, state.folders_expanded)).sub_page(label, Message::Back)
+                Page::new(account_page(draft, mail, stats, state.folders_expanded, &state.backup))
+                    .sub_page(label, Message::Back)
             }
             None => Page::new(list(data)),
         }
@@ -353,6 +446,7 @@ pub mod accounts {
         mail: &'a MailView,
         stats: Option<&'a MailAccountStats>,
         folders_expanded: bool,
+        backup_state: &'a backup::State,
     ) -> Element<'a, Message> {
         let mut page =
             column![inventory_group(stats, folders_expanded), sender_groups(draft, mail), writing_group(mail)]
@@ -360,6 +454,7 @@ pub mod accounts {
         if !mail.open_roles.is_empty() {
             page = page.push(folders_group(&mail.open_roles));
         }
+        page = page.push(backup::view(backup_state, &draft.account).map(Message::Backup));
         page.into()
     }
 
@@ -432,7 +527,8 @@ pub mod accounts {
         date.format("%Y-%m-%d %H:%M UTC").to_string()
     }
 
-    fn byte_size(bytes: u64) -> String {
+    /// A size in MiB with one decimal, as the inventory and the backup page show it.
+    pub(super) fn byte_size(bytes: u64) -> String {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 
@@ -1163,6 +1259,70 @@ mod tests {
         let _: Action<()> =
             update(&mut state, Message::Accounts(accounts::Message::Open("mail:anna@example.org".into())), &data);
         assert!(page(&state, &data, "accounts").sub_page.is_some());
+    }
+
+    #[test]
+    fn backup_answer_returns_to_the_account_that_started_the_job() {
+        use torro_ipc::mail::{BackupJob, BackupPhase, BackupScope};
+
+        let anna = "mail:anna@example.org";
+        let bernd = "mail:bernd@example.org";
+        let data = Data {
+            accounts: vec![
+                accounts::tests::account("anna@example.org", "Anna", None),
+                accounts::tests::account("bernd@example.org", "Bernd", None),
+            ],
+            ..Data::default()
+        };
+        let mut state = State::default();
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        let action: Action<()> =
+            update(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data);
+        assert!(matches!(action, Action::Ask(torro_ipc::Request::MailBackupCreate { .. })));
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(bernd.into())), &data);
+        let job = BackupJob {
+            id: "job-anna".into(),
+            account: anna.into(),
+            source: BackupScope::Server,
+            phase: BackupPhase::Reading,
+            folders: 1,
+            messages: 2,
+            bytes: 32,
+            archive: None,
+            warnings: Vec::new(),
+        };
+        backup_answered(&mut state, anna, &Ok(torro_ipc::Response::MailBackupJob { job }));
+        assert!(accounts::poll_request(&mut state.accounts).is_none(), "Bernd's page has no Anna job");
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        assert!(
+            matches!(accounts::poll_request(&mut state.accounts), Some(torro_ipc::Request::MailBackupStatus { job, .. }) if job == "job-anna")
+        );
+        assert_eq!(
+            update::<()>(&mut state, Message::Accounts(accounts::Message::Backup(backup::Message::Create)), &data),
+            Action::None
+        );
+    }
+
+    /// Closing the settings keeps each account's backup page (`kept`), and a staged demo page shows
+    /// when its account opens; "Choose…" is the window's, and the path it picked comes back.
+    #[test]
+    fn backup_pages_outlive_closed_settings_and_choosers_round_trip() {
+        let anna = "mail:anna@example.org";
+        let data =
+            Data { accounts: vec![accounts::tests::account("anna@example.org", "Anna", None)], ..Data::default() };
+        let mut state = State::default();
+        stage_backup(&mut state, anna, BackupScene::Running);
+        let mut state = kept(state);
+        let _: Action<()> = update(&mut state, Message::Accounts(accounts::Message::Open(anna.into())), &data);
+        assert!(
+            matches!(poll_request(&mut state), Some(torro_ipc::Request::MailBackupStatus { job, .. }) if job == "demo-job")
+        );
+        let choose = Message::Accounts(accounts::Message::Backup(backup::Message::Choose(BackupChooser::Folder)));
+        assert_eq!(backup_chooser(&choose), Some(BackupChooser::Folder));
+        assert_eq!(backup_chooser(&Message::Accounts(accounts::Message::Back)), None);
+        let folder = std::env::temp_dir();
+        let _: Action<()> = update(&mut state, backup_chosen(BackupChooser::Folder, folder.clone()), &data);
+        assert_eq!(accounts::backup_destination(&state.accounts), Some(folder.to_string_lossy().as_ref()));
     }
 
     /// The sections' ids and names, as the list and `--settings <section>` use them. "Keyboard

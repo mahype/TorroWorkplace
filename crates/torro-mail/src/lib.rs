@@ -31,8 +31,8 @@ pub mod message;
 pub mod order;
 
 pub use account::{
-    ACCOUNT_PREFIX, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify, Security, Services,
-    account_id, is_account_id,
+    ACCOUNT_PREFIX, BackupPreferences, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify,
+    Security, Services, account_id, is_account_id,
 };
 pub use category::{Category, CategoryDef, CategoryGroup, CategoryIcon, CategorySource, CustomCategory, MailCategory};
 pub use message::{

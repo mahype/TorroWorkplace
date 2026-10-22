@@ -33,6 +33,7 @@ torro-ntfy.workspace = true
 # Mail accounts (task M2.1 sets them up for M2.2 to M3.3).
 torro-mail.workspace = true
 torro-mail-imap.workspace = true
+torro-mail-backup.workspace = true
 torro-ipc.workspace = true
 torro-tui.workspace = true
 torro-wm.workspace = true
@@ -40,6 +41,7 @@ torro-setups.workspace = true
 torro-gui.workspace = true
 # The rows of the settings pages, shared with the apps (task S.16).
 torro-settings-ui.workspace = true
+tempfile.workspace = true
 iced.workspace = true
 chrono.workspace = true
 getrandom.workspace = true
@@ -80,7 +82,6 @@ winit.workspace = true
 global-hotkey.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 # Draws a design pack's `preview.png` through the SVG renderer in a test of the control centre.
 resvg.workspace = true
 # Fake AI servers (Ollama, OpenRouter) for the tests of the AI accounts (task KI.1a).

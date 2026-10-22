@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use chrono::NaiveDate;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -191,11 +192,54 @@ pub struct MailSettings {
     /// (`accounts.update_mail_account`) sets only the roles it names and keeps the others.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub folder_roles: BTreeMap<Role, String>,
+    /// The last backup choice of this account; no archive content or secret is stored here.
+    #[serde(default, skip_serializing_if = "BackupPreferences::is_default")]
+    pub backup: BackupPreferences,
+}
+
+/// Last-used backup settings, kept with the mail account rather than general settings, so the
+/// account's backup page offers the same choice next time (`docs/mail-backup.md`). Nothing here is
+/// a secret or archive content; all fields default, so older account files read unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct BackupPreferences {
+    /// `true`: back up from the originals held on this device (no server contact); `false`: read
+    /// every folder from the IMAP server.
+    #[serde(default)]
+    pub local: bool,
+    /// Only mail received on or after this calendar day (inclusive, by IMAP `INTERNALDATE`);
+    /// `None`: all mail of the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<NaiveDate>,
+    /// An absolute folder chosen by the suite user; `None` uses the private managed folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+}
+
+impl BackupPreferences {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_choices_round_trip_without_changing_older_account_settings() {
+        let old = serde_json::to_value(MailSettings::default()).expect("settings");
+        assert!(old.get("backup").is_none());
+        let preferences = BackupPreferences {
+            local: true,
+            since: NaiveDate::from_ymd_opt(2020, 1, 2),
+            directory: Some("/selected".into()),
+        };
+        let mut settings: MailSettings = serde_json::from_value(old).expect("old settings");
+        settings.backup = preferences.clone();
+        let restored: MailSettings =
+            serde_json::from_value(serde_json::to_value(settings).expect("serialized")).expect("restored");
+        assert_eq!(restored.backup, preferences);
+    }
 
     #[test]
     fn account_ids_name_the_address_with_its_domain_in_small_letters() {

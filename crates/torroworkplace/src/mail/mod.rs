@@ -40,6 +40,7 @@ use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+pub mod backup;
 pub mod fold;
 pub mod inbox_feed;
 pub mod query;
@@ -103,6 +104,9 @@ pub enum MailStoreError {
     /// the UIDs it holds mean something else now. Re-read the folder with
     /// [`store::MailStore::note_uidvalidity`].
     StaleUidValidity,
+    /// An RFC-822 original is larger than the local original depot can hold
+    /// ([`store::ORIGINAL_MAX_BYTES`]): it stays missing there, and a local backup reports the gap.
+    OriginalTooLarge,
 }
 
 impl fmt::Display for MailStoreError {
@@ -116,6 +120,7 @@ impl fmt::Display for MailStoreError {
             MailStoreError::NewerSchema(version) => write!(f, "the mail store is from a newer version ({version})"),
             MailStoreError::UnknownFolder => f.write_str("unknown mail folder"),
             MailStoreError::StaleUidValidity => f.write_str("the folder was renumbered by the server"),
+            MailStoreError::OriginalTooLarge => f.write_str("the original is too large for the local store"),
         }
     }
 }
