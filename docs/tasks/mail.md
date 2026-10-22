@@ -1075,7 +1075,7 @@ läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
   `Untrusted`; dasselbe für SMTP (TLS und STARTTLS); `Fingerprint` liest und schreibt das Format.
 
 ### M11.3 Kern: jeder eingetragene Server, gemerkte Zertifikate
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M11.1, M11.2 · **Dateien:** `crates/torroworkplace/src/mail/service.rs`,
   `crates/torroworkplace/src/{core,pim}.rs`, `crates/torro-core/src/i18n/de.rs`, `docs/api.md`, `docs/mail.md`
 - **Oberfläche:** M11.4. **API/MCP:** M11.1.

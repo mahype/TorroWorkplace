@@ -89,8 +89,8 @@
 //!   its services change ([`PimService::put_mail_account`]), taking over the CalDAV account of the
 //!   same sign-in in the same step, so the same collections are never synced twice. Its health
 //!   goes into the mail account's one check ([`PimService::calendar_health`]). Like the mail
-//!   sync it connects to public addresses only, checked on every connection ([`public_http`],
-//!   task M2.7b).
+//!   sync it connects to the server a person typed, wherever it is (issue #284), and trusts the
+//!   certificates the person confirmed for the account besides the system's ([`mail_http`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -105,6 +105,7 @@ use torro_core::account::{AccountKind, Secret};
 use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response, ServerService};
+use torro_mail_imap::tls::{Seen, Trust, client_config};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::model::{GitHubKind, GitHubState, Link};
 use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
@@ -780,11 +781,6 @@ fn sign_in_of(app_password: &Secret) -> [u8; 32] {
 #[derive(Debug)]
 pub struct PimService {
     http: Option<reqwest::Client>,
-    /// The HTTP client of the calendar part of mail accounts (task M2.7b, [`public_http`]): it
-    /// resolves every name anew, refuses it unless all its addresses are public and connects to
-    /// exactly those, as the mail sync does for IMAP. Its CalDAV address was checked the same way
-    /// when the account was connected.
-    public_http: Option<reqwest::Client>,
     state: RwLock<State>,
     /// One sync of an account at a time.
     syncing: Mutex<()>,
@@ -818,16 +814,8 @@ impl PimService {
                 None
             }
         };
-        let public_http = match public_http() {
-            Ok(http) => Some(http),
-            Err(err) => {
-                eprintln!("torroworkplace: no HTTP client for the calendars of mail accounts: {err}");
-                None
-            }
-        };
         PimService {
             http,
-            public_http,
             state: RwLock::new(State::default()),
             syncing: Mutex::new(()),
             settings,
@@ -837,13 +825,22 @@ impl PimService {
         }
     }
 
-    /// The HTTP client for the calendars of `account`: for a mail account's calendar part the one
-    /// that connects to public addresses only ([`PimService::public_http`]), else the shared one
-    /// (a Nextcloud or a typed CalDAV server may be in the person's own network).
-    fn http_for(&self, account: &torro_core::Account) -> Option<&reqwest::Client> {
-        match account.kind {
-            AccountKind::Mail => self.public_http.as_ref(),
-            _ => self.http.as_ref(),
+    /// The HTTP client for the calendars of `account`: for a mail account that trusts certificates
+    /// a person confirmed (issue #284, `MailAccountConfig::trusted_certificates`) one of its own,
+    /// built here and held in the account's slot with its CalDAV client ([`mail_http`]); else the
+    /// shared one.
+    fn http_for(&self, account: &torro_core::Account) -> Option<reqwest::Client> {
+        let pins = match (account.kind, account.mail.as_ref()) {
+            (AccountKind::Mail, Some(mail)) if !mail.trusted_certificates.is_empty() => &mail.trusted_certificates,
+            _ => return self.http.clone(),
+        };
+        let fingerprints = pins.iter().filter_map(|pin| pin.parse().ok()).collect();
+        match mail_http(&Trust::System.with_pins(fingerprints)) {
+            Ok((http, _)) => Some(http),
+            Err(err) => {
+                eprintln!("torroworkplace: no HTTP client for the calendars of {}: {err}", account.id);
+                None
+            }
         }
     }
 
@@ -907,7 +904,7 @@ impl PimService {
                             continue;
                         }
                         let http = service.http_for(stored.account());
-                        state.accounts.push(Slot::loaded(stored, http));
+                        state.accounts.push(Slot::loaded(stored, http.as_ref()));
                     }
                 }
                 Err(err) => eprintln!("torroworkplace: cannot read the accounts: {err}"),
@@ -1695,7 +1692,7 @@ impl PimService {
         let same_sign_in = account::caldav_sign_in(&account);
         let connected = Connected { account, app_password: password };
         let http = self.http_for(&connected.account);
-        let client = if syncs { http.and_then(|http| account::caldav(http, &connected).ok()) } else { None };
+        let client = if syncs { http.and_then(|http| account::caldav(&http, &connected).ok()) } else { None };
         {
             let mut state = self.state.write().await;
             let beside = same_sign_in.filter(|caldav| syncs && Some(caldav.as_str()) != replaces);
@@ -3681,22 +3678,44 @@ fn chosen(wanted: Services, kind: CollectionKind) -> bool {
     (wanted.calendars && kind.has_events()) || (wanted.tasks && kind.has_todos())
 }
 
-/// The HTTP client of the calendar part of mail accounts (task M2.7b): no proxy, and its DNS is
-/// discovery's guard ([`discover::GuardedDns`] with [`discover::is_public`]): a name resolves only
-/// when every address is on the public internet, and reqwest connects to exactly what it
-/// returned, so checking and connecting can never see different addresses. (An address written
-/// as an IP literal is not resolved; a mail account's CalDAV address was refused at connecting if
-/// it was a private one.)
-fn public_http() -> Result<reqwest::Client, String> {
-    let guarded = discover::GuardedDns::new(Arc::new(discover::SystemResolver::new()), discover::is_public);
-    reqwest::Client::builder()
-        .user_agent("Torro Workplace")
+/// An HTTP client for the CalDAV server of a mail account (issue #284) that trusts what `trust`
+/// trusts (`MailService::trust_for`: the system's certificates and those the person confirmed for
+/// the account), and the [`Seen`] its certificate check reports to: the refused certificate after
+/// a failed sign-in, the pin used after one that worked.
+///
+/// Built like `torro_pim_caldav::http_client` (user agent, timeouts), but without a proxy: the
+/// connection goes to the server the person typed. Redirects are followed within the same origin
+/// only (scheme, host, port), so a refused certificate ([`Seen::rejected`]) is always the one of
+/// the host the person sees in the question, never of another host a redirect led to. ALPN offers
+/// HTTP/2 and HTTP/1.1, as reqwest's own TLS does.
+pub(crate) fn mail_http(trust: &Trust) -> Result<(reqwest::Client, Seen), String> {
+    let (mut tls, seen) = client_config(trust).map_err(|err| err.to_string())?;
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let agent = match std::env::var("HOSTNAME").ok().filter(|host| !host.is_empty()) {
+        Some(host) => format!("Torro Workplace ({host})"),
+        None => "Torro Workplace".to_string(),
+    };
+    let http = reqwest::Client::builder()
+        .user_agent(agent)
         .no_proxy()
-        .dns_resolver(Arc::new(guarded))
+        .redirect(same_origin_redirects())
+        .tls_backend_preconfigured(tls)
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    Ok((http, seen))
+}
+
+/// Redirects of [`mail_http`]: at most ten, and only to the origin the first request went to.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let same = attempt.previous().first().is_some_and(|first| first.origin() == attempt.url().origin());
+        match (same, attempt.previous().len()) {
+            (true, 0..10) => attempt.follow(),
+            _ => attempt.stop(),
+        }
+    })
 }
 
 /// A client for signing in at the found CalDAV address of `dav` (task M2.7b): its host is resolved
@@ -5263,23 +5282,41 @@ pub(crate) mod tests {
         assert!(service.state.read().await.accounts.is_empty(), "calendars off: no slot, no cache");
     }
 
-    /// Task M2.7b: the calendar part of a mail account resolves its server anew for every
-    /// connection and goes nowhere when the name points into the local network (`localhost` here),
-    /// unlike a Nextcloud or a typed CalDAV server, which may be at home.
+    /// Issue #284: the calendar part of a mail account syncs from the server a person typed,
+    /// wherever it is (`localhost` here), like a Nextcloud or a typed CalDAV server. Without
+    /// trusted certificates it uses the shared client.
     #[tokio::test]
-    async fn the_calendars_of_a_mail_account_are_fetched_from_public_addresses_only() {
+    async fn the_calendars_of_a_mail_account_are_fetched_from_the_server_a_person_typed() {
         let (dav, record) = fake_server(split_server).await;
         let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
         let on = torro_mail::Services { mail: true, calendars: true, tasks: true };
         let mail = mail_with_calendars(&dav.replace("127.0.0.1", "localhost"), on);
         service.put_mail_account(mail.clone(), Secret::new(PASSWORD), None).await.expect("put");
-        assert!(service.sync_account(&mail.id).await.is_err(), "refused");
-        assert!(record.lock().expect("record").is_empty(), "nothing was sent: {:?}", lines(&record));
-        assert!(!format!("{:?}", service.state.read().await.accounts[0].problem).contains(PASSWORD));
+        service.sync_account(&mail.id).await.expect("a mail account's calendars may be at home");
+        assert!(lines(&record).iter().any(|line| line.starts_with("REPORT")), "{:?}", lines(&record));
 
         let caldav = torro_core::Account::caldav(&dav.replace("127.0.0.1", "localhost"), "anna", "example.org");
         service.pretend_connected(caldav.clone(), PASSWORD).await;
         service.sync_account(&caldav.id).await.expect("a CalDAV account may be at home");
+    }
+
+    /// Issue #284: a mail account with trusted certificates gets an HTTP client of its own for its
+    /// calendars, one without keeps the shared one; both reach the server (plain http here, where
+    /// no certificate is shown).
+    #[tokio::test]
+    async fn a_mail_account_with_trusted_certificates_gets_a_client_of_its_own() {
+        let (dav, record) = fake_server(split_server).await;
+        let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
+        let on = torro_mail::Services { mail: true, calendars: true, tasks: true };
+        let mut mail = mail_with_calendars(&dav.replace("127.0.0.1", "localhost"), on);
+        assert!(service.http_for(&mail).is_some(), "the shared client");
+        if let Some(config) = mail.mail.as_mut() {
+            config.trusted_certificates = vec![format!("AB{}", ":CD".repeat(31))];
+        }
+        assert!(service.http_for(&mail).is_some(), "a client of its own");
+        service.put_mail_account(mail.clone(), Secret::new(PASSWORD), None).await.expect("put");
+        service.sync_account(&mail.id).await.expect("synced with its own client");
+        assert!(lines(&record).iter().any(|line| line.starts_with("REPORT")), "{:?}", lines(&record));
     }
 
     #[test]

@@ -35,13 +35,18 @@
 //! that syncs calendars too has one check for the inbox: its mail part and its calendar part from
 //! the calendar service joined ([`MailService::account_checks`]).
 //!
-//! **Security.** The password comes from the keychain and goes to the IMAP and SMTP servers only,
-//! never into an answer, a log or a `Debug` output. Before every connection the host must resolve
-//! to public addresses only (the guard of the CalDAV and mail discovery, `is_public`), so an
-//! account cannot be used to probe the local network; the connection then goes to exactly the
-//! addresses checked, the host name serving TLS alone (task M2.7b), so a name that answers
-//! differently the second time (DNS rebinding) reaches nothing new. Rights are not checked here: the core checks
-//! a client's reach (`Rights::reaches_mail_account`) before it asks this service.
+//! **Security.** The servers of a mail account come from people only: `accounts.connect_mail` takes
+//! the app key alone, never a client key (`docs/api.md`, "Was nie nach außen geht", 5). So every
+//! server a person typed is used as it is (issue #284): on the public internet, in the local network
+//! or on this computer. The password comes from the keychain and goes to the IMAP and SMTP servers
+//! only, never into an answer, a log or a `Debug` output. A host name is resolved once per
+//! connection and the connection goes to exactly those addresses, the host name serving TLS alone
+//! (task M2.7b), so what was resolved is what is reached. Certificates: those the system trusts, and
+//! besides them only the ones a person confirmed for the account
+//! (`MailAccountConfig::trusted_certificates`, [`Connector::trust_for`]); any other certificate ends
+//! the connection before the login ([`SignInError::Untrusted`], [`MailError::Untrusted`]). Rights are
+//! not checked here: the core checks a client's reach (`Rights::reaches_mail_account`) before it asks
+//! this service.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -69,6 +74,7 @@ use torro_mail::{Endpoint, MailAccountConfig, MailSettings, Role};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
 use torro_mail_imap::imap::{IdleEvent, ImapError, Session, Trust};
 use torro_mail_imap::smtp::{SmtpError, SmtpSubmitter};
+use torro_mail_imap::tls::Fingerprint;
 use torro_pim::{AccountState, ProviderError};
 use torro_pim_caldav::discover::is_public;
 
@@ -123,9 +129,16 @@ pub enum MailError {
     Auth,
     /// The server cannot be reached, or the connection dropped. Tried again later.
     Offline(String),
-    /// The IMAP host resolves to an address that is not on the public internet (loopback, a
-    /// private or link-local network); nothing was sent to it.
+    /// The host may not be connected to: only a service without a home directory
+    /// ([`MailService::without_home`], [`Connector::nowhere`]) answers this; nothing was sent.
     NotPublic,
+    /// The server showed a certificate that is neither trusted by the system nor one the person
+    /// confirmed for the account (issue #284): it changed since, or the system stopped trusting
+    /// it. The connection ended before the login. A person has to look at it ("Server settings…"),
+    /// so the account asks to sign in; the sync still tries again like [`MailError::Offline`]
+    /// (nothing reaches the server, so no server locks the account), and a certificate that is
+    /// set back heals the account on its own.
+    Untrusted(Fingerprint),
     /// The server answered something unexpected or refused a command (also a folder or message
     /// that does not exist: [`ImapError::NotFound`]).
     Server(ImapError),
@@ -134,11 +147,12 @@ pub enum MailError {
 }
 
 impl MailError {
-    /// The API error code (`docs/api.md`): `not-found`, `auth`, `offline` or `error`.
+    /// The API error code (`docs/api.md`): `not-found`, `auth` (also for an untrusted certificate:
+    /// a person has to act), `offline` or `error`.
     pub fn code(&self) -> &'static str {
         match self {
             MailError::NotFound | MailError::Server(ImapError::NotFound(_)) => "not-found",
-            MailError::NoPassword | MailError::Auth => "auth",
+            MailError::NoPassword | MailError::Auth | MailError::Untrusted(_) => "auth",
             MailError::Offline(_) => "offline",
             MailError::NotPublic | MailError::Server(_) | MailError::Store(_) => "error",
         }
@@ -151,7 +165,11 @@ impl MailError {
             MailError::NoPassword => tr("Sign in again: no password is stored on this device").into(),
             MailError::Auth => tr("Password was refused").into(),
             MailError::Offline(_) => tr("The server cannot be reached.").into(),
-            MailError::NotPublic => tr("The mail server is not on the public internet.").into(),
+            MailError::NotPublic => tr("The mail server cannot be used.").into(),
+            // Without the fingerprint: the person compares it where they confirm it.
+            MailError::Untrusted(_) => {
+                tr("The certificate of the mail server changed. Check it in Server settings.").into()
+            }
             // Server words and folder names stay in the core's log ([`fmt::Display`]): they come
             // from outside and may reach an agent.
             MailError::Server(ImapError::NotFound(_)) => {
@@ -171,7 +189,8 @@ impl MailError {
     fn trouble(&self) -> Trouble {
         match self {
             MailError::Auth => Trouble::SignInRefused,
-            MailError::NoPassword => Trouble::SignInNeeded,
+            // A person has to act, as for a missing password: confirm the certificate again.
+            MailError::NoPassword | MailError::Untrusted(_) => Trouble::SignInNeeded,
             _ => Trouble::SyncFailing,
         }
     }
@@ -185,7 +204,11 @@ impl fmt::Display for MailError {
             MailError::NoPassword => f.write_str("no password stored"),
             MailError::Auth => f.write_str("the password was refused"),
             MailError::Offline(why) => write!(f, "offline: {why}"),
-            MailError::NotPublic => f.write_str("the IMAP host is not on the public internet"),
+            MailError::NotPublic => f.write_str("the mail server may not be connected to"),
+            // A fingerprint is no secret: the server shows it to everyone who connects.
+            MailError::Untrusted(shown) => {
+                write!(f, "the certificate of the mail server is not trusted (SHA-256 {shown})")
+            }
             MailError::Server(err) => err.fmt(f),
             MailError::Store(err) => err.fmt(f),
         }
@@ -200,6 +223,7 @@ impl From<ImapError> for MailError {
             // The server's words may name the login; the account shows its own text.
             ImapError::Auth(_) => MailError::Auth,
             ImapError::Offline(why) => MailError::Offline(why),
+            ImapError::Untrusted(fingerprint) => MailError::Untrusted(fingerprint),
             other => MailError::Server(other),
         }
     }
@@ -239,8 +263,13 @@ pub enum SignInError {
     Refused(Service),
     /// The server cannot be reached.
     Offline(Service),
-    /// The host resolves to an address that is not on the public internet; nothing was sent.
+    /// The host may not be connected to ([`MailError::NotPublic`]: only without a home
+    /// directory); nothing was sent.
     NotPublic(Service),
+    /// The server showed this certificate, which the system does not trust and the person has not
+    /// confirmed for the account (issue #284). Nothing of the login was sent. The core answers
+    /// `accounts.connect_mail` with `Response::UntrustedCertificate` for it.
+    Untrusted(Service, Fingerprint),
     /// The server lacks what a secure sign-in needs (SMTP without STARTTLS or a login method).
     Unsupported(Service),
     /// No CalDAV answers at the CalDAV address, or none was given for calendars or tasks.
@@ -255,14 +284,12 @@ impl SignInError {
         match err {
             ImapError::Auth(_) => SignInError::Refused(Service::Imap),
             ImapError::Offline(_) => SignInError::Offline(Service::Imap),
-            // Task M11.3 answers an untrusted certificate with its fingerprint; until then it fails.
-            ImapError::Protocol(_) | ImapError::NotFound(_) | ImapError::Untrusted(_) => {
-                SignInError::Failed(Service::Imap)
-            }
+            ImapError::Untrusted(fingerprint) => SignInError::Untrusted(Service::Imap, fingerprint),
+            ImapError::Protocol(_) | ImapError::NotFound(_) => SignInError::Failed(Service::Imap),
         }
     }
 
-    /// What a failed check of a host of `service` ([`MailService::check_public`]) means.
+    /// What a failed check of a host of `service` ([`MailService::check_host`]) means.
     fn host(service: Service, err: MailError) -> SignInError {
         match err {
             MailError::NotPublic => SignInError::NotPublic(service),
@@ -277,12 +304,10 @@ impl SignInError {
             SmtpError::Auth => SignInError::Refused(Service::Smtp),
             SmtpError::Offline => SignInError::Offline(Service::Smtp),
             SmtpError::Unsupported => SignInError::Unsupported(Service::Smtp),
-            // Task M11.3 answers an untrusted certificate with its fingerprint; until then it fails.
-            SmtpError::Tls
-            | SmtpError::Untrusted(_)
-            | SmtpError::Rejected { .. }
-            | SmtpError::InvalidEnvelope
-            | SmtpError::Protocol => SignInError::Failed(Service::Smtp),
+            SmtpError::Untrusted(fingerprint) => SignInError::Untrusted(Service::Smtp, fingerprint),
+            SmtpError::Tls | SmtpError::Rejected { .. } | SmtpError::InvalidEnvelope | SmtpError::Protocol => {
+                SignInError::Failed(Service::Smtp)
+            }
         }
     }
 
@@ -295,14 +320,15 @@ impl SignInError {
         }
     }
 
-    /// The API error code: `auth`, `offline`, `unsupported`, `not-found` or `error`.
+    /// The API error code: `auth`, `offline`, `unsupported`, `not-found` or `error`. An untrusted
+    /// certificate is `error` here; the core answers it with `Response::UntrustedCertificate`.
     pub fn code(&self) -> &'static str {
         match self {
             SignInError::Refused(_) => "auth",
             SignInError::Offline(_) => "offline",
             SignInError::Unsupported(_) => "unsupported",
             SignInError::NoCalendars => "not-found",
-            SignInError::NotPublic(_) | SignInError::Failed(_) => "error",
+            SignInError::NotPublic(_) | SignInError::Untrusted(..) | SignInError::Failed(_) => "error",
         }
     }
 
@@ -312,14 +338,19 @@ impl SignInError {
         match self {
             SignInError::Refused(service) => named("The {service} server refused the password.", service),
             SignInError::Offline(service) => named("The {service} server cannot be reached.", service),
-            SignInError::NotPublic(service) => named("The {service} server is not on the public internet.", service),
+            SignInError::NotPublic(service) => named("The {service} server cannot be used.", service),
+            SignInError::Untrusted(service, _) => {
+                named("The certificate of the {service} server is not trusted.", service)
+            }
             SignInError::Unsupported(service) => named("The {service} server offers no secure sign-in.", service),
             SignInError::NoCalendars => tr("No calendar service answers at this address.").into(),
             SignInError::Failed(service) => named("The {service} server answered unexpectedly.", service),
         }
     }
 
-    /// The answer to `accounts.connect_mail` that failed with this error.
+    /// The answer to `accounts.connect_mail` that failed with this error. For
+    /// [`SignInError::Untrusted`] only the fallback: the core answers it with the host and the
+    /// fingerprint (`Response::UntrustedCertificate`).
     pub fn response(&self) -> Response {
         Response::Error { code: self.code().into(), message: self.message() }
     }
@@ -452,7 +483,11 @@ impl fmt::Debug for Command {
 /// [`Connector::system`]; tests a local server with a test CA and a fake SMTP check.
 #[derive(Debug, Clone)]
 struct Connector {
+    /// What every account trusts; an account adds the certificates a person confirmed
+    /// ([`Connector::trust_for`]).
     trust: Trust,
+    /// Which addresses may be connected to: all of them in the core (issue #284, the servers come
+    /// from people only), none at all for [`Connector::nowhere`].
     allowed: fn(IpAddr) -> bool,
     smtp: SmtpCheck,
     lookup: Lookup,
@@ -462,8 +497,8 @@ struct Connector {
 #[cfg(test)]
 type FakeLookup = Arc<dyn Fn(&str, u16) -> Vec<SocketAddr> + Send + Sync>;
 
-/// How [`Connector::public_addresses`] resolves a host name. Only there: every connection then
-/// goes to the addresses it found (task M2.7b).
+/// How [`Connector::resolve`] resolves a host name. Only there: every connection then goes to the
+/// addresses it found (task M2.7b).
 #[derive(Clone)]
 enum Lookup {
     /// The operating system's resolver (`getaddrinfo`), as every connection of the suite.
@@ -490,9 +525,9 @@ type FakeSmtp = Arc<dyn Fn(&Endpoint, &str, &Secret) -> Result<(), SmtpError> + 
 /// How [`Connector::check_smtp`] checks an SMTP sign-in.
 #[derive(Clone)]
 enum SmtpCheck {
-    /// At the server, with `SmtpSubmitter::check_login` (TLS or STARTTLS, nothing sent).
+    /// At the server, with `SmtpSubmitter::check_login_pinned` (TLS or STARTTLS, nothing sent).
     Server,
-    /// Tests: decides without a connection, from server, login and password.
+    /// Tests: decides without a connection, from server, login and password; no pin is used.
     #[cfg(test)]
     Fake(FakeSmtp),
 }
@@ -508,8 +543,9 @@ impl fmt::Debug for SmtpCheck {
 }
 
 impl Connector {
+    /// The core's connections: any address (issue #284), the system's trust store.
     fn system() -> Connector {
-        Connector { trust: Trust::System, allowed: is_public, smtp: SmtpCheck::Server, lookup: Lookup::System }
+        Connector { trust: Trust::System, allowed: |_| true, smtp: SmtpCheck::Server, lookup: Lookup::System }
     }
 
     /// Connections nowhere: no address is allowed ([`MailService::without_home`]).
@@ -517,52 +553,81 @@ impl Connector {
         Connector { trust: Trust::System, allowed: |_| false, smtp: SmtpCheck::Server, lookup: Lookup::System }
     }
 
-    /// Checks the host of `server` ([`Connector::public_addresses`]), then signs in to SMTP as
-    /// `login` at those addresses and says `QUIT` without sending anything.
-    async fn check_smtp(&self, server: &Endpoint, login: &str, password: &Secret) -> Result<(), SignInError> {
-        let addresses = self
-            .public_addresses(&server.host, server.port)
-            .await
-            .map_err(|err| SignInError::host(Service::Smtp, err))?;
+    /// What a server of an account with the trusted certificates `pins`
+    /// (`MailAccountConfig::trusted_certificates`) is checked against: this connector's trust
+    /// plus exactly those certificates. An entry that is no fingerprint is left out (the core
+    /// checks every one before it is stored).
+    fn trust_for(&self, pins: &[String]) -> Trust {
+        self.trust.clone().with_pins(fingerprints(pins))
+    }
+
+    /// Checks the host of `server` ([`Connector::addresses`]), then signs in to SMTP as `login` at
+    /// those addresses, trusting the certificates `pins` besides the system's, and says `QUIT`
+    /// without sending anything. Answers with the pin the server's certificate matched (`None`
+    /// when the system trusted it).
+    async fn check_smtp(
+        &self,
+        server: &Endpoint,
+        login: &str,
+        password: &Secret,
+        pins: &[String],
+    ) -> Result<Option<Fingerprint>, SignInError> {
+        let addresses =
+            self.addresses(&server.host, server.port).await.map_err(|err| SignInError::host(Service::Smtp, err))?;
         let checked = match &self.smtp {
             SmtpCheck::Server => {
-                SmtpSubmitter::new(server.clone(), login, password.clone()).pinned_to(addresses).check_login().await
+                SmtpSubmitter::new(server.clone(), login, password.clone())
+                    .trusting(fingerprints(pins))
+                    .pinned_to(addresses)
+                    .check_login_pinned()
+                    .await
             }
             #[cfg(test)]
-            SmtpCheck::Fake(check) => check(server, login, password),
+            SmtpCheck::Fake(check) => check(server, login, password).map(|()| None),
         };
         checked.map_err(SignInError::smtp)
     }
 
-    /// Checks the host ([`Connector::public_addresses`]), then connects to those addresses and
-    /// signs in.
+    /// Checks the host ([`Connector::addresses`]), then connects to those addresses and signs in,
+    /// trusting the certificates the account keeps ([`Connector::trust_for`]).
     async fn connect(&self, config: &MailAccountConfig, login: &str, password: &Secret) -> Result<Session, MailError> {
-        let addresses = self.public_addresses(&config.imap.host, config.imap.port).await?;
-        Ok(Session::connect_to(&addresses, &config.imap, login, password, &self.trust).await?)
+        let addresses = self.addresses(&config.imap.host, config.imap.port).await?;
+        let trust = self.trust_for(&config.trusted_certificates);
+        Ok(Session::connect_to(&addresses, &config.imap, login, password, &trust).await?)
     }
 
-    /// The addresses of `host` at `port`, when it has any and every one is allowed ([`is_public`]
-    /// in the core), so the account never connects into the local network. The name is resolved
-    /// here only: every connection goes to exactly these addresses, the host name serving for TLS
-    /// alone (`Session::connect_to`, `SmtpSubmitter::pinned_to`, task M2.7b), so a name that
-    /// answers differently the second time (DNS rebinding) reaches nothing new.
+    /// The addresses of `host` at `port`, when it has any and every one is allowed (all of them in
+    /// the core, issue #284). The name is resolved here only: every connection goes to exactly
+    /// these addresses, the host name serving for TLS alone (`Session::connect_to`,
+    /// `SmtpSubmitter::pinned_to`, task M2.7b), so what was resolved is what is reached.
     ///
     /// [`MailError::Offline`] when the name cannot be resolved, [`MailError::NotPublic`] when it
-    /// has no address or one that is not allowed.
-    async fn public_addresses(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, MailError> {
-        let found: Vec<SocketAddr> = match &self.lookup {
-            Lookup::System => tokio::net::lookup_host((host, port))
-                .await
-                .map_err(|err| MailError::Offline(format!("cannot resolve the mail server: {}", err.kind())))?
-                .collect(),
-            #[cfg(test)]
-            Lookup::Fake(lookup) => lookup(host, port),
-        };
+    /// has no address or one that is not allowed ([`Connector::nowhere`]).
+    async fn addresses(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, MailError> {
+        let found = self.resolve(host, port).await?;
         if found.is_empty() || !found.iter().all(|address| (self.allowed)(address.ip())) {
             return Err(MailError::NotPublic);
         }
         Ok(found)
     }
+
+    /// What `host` at `port` resolves to now; [`MailError::Offline`] when it cannot be resolved.
+    async fn resolve(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, MailError> {
+        match &self.lookup {
+            Lookup::System => Ok(tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|err| MailError::Offline(format!("cannot resolve the mail server: {}", err.kind())))?
+                .collect()),
+            #[cfg(test)]
+            Lookup::Fake(lookup) => Ok(lookup(host, port)),
+        }
+    }
+}
+
+/// The trusted certificates `pins` (`MailAccountConfig::trusted_certificates`) as fingerprints, in
+/// their order; an entry that is none is left out.
+fn fingerprints(pins: &[String]) -> Vec<Fingerprint> {
+    pins.iter().filter_map(|pin| pin.parse().ok()).collect()
 }
 
 /// How an account stands: the last sync and what went wrong since.
@@ -1266,12 +1331,18 @@ impl MailService {
     }
 
     /// Checks a sign-in of a mail account before anything is stored (`accounts.connect_mail`,
-    /// task M2.7): the IMAP host is public ([`Connector::public_addresses`], and the sign-in goes to
-    /// the addresses checked, task M2.7b), IMAP takes `login` and
-    /// `password`, and its folders are listed with the person's picks `chosen`; then the same for
-    /// SMTP, signing in without sending anything. A refused IMAP sign-in stops there, so a server
-    /// that locks accounts after a few refusals is asked once. Answers with the roles the server
-    /// leaves open (two candidate folders with mail, `accounts.update_mail_account` picks one).
+    /// task M2.7): the IMAP host is resolved ([`MailService::check_host`], and the sign-in goes to
+    /// the addresses found, task M2.7b), IMAP takes `login` and `password`, and its folders are
+    /// listed with the person's picks `chosen`; then the same for SMTP, signing in without sending
+    /// anything. A refused IMAP sign-in stops there, so a server that locks accounts after a few
+    /// refusals is asked once.
+    ///
+    /// Both servers trust the system's certificates and `config.trusted_certificates` (issue #284:
+    /// the core passes the account's stored ones plus those the person just confirmed). A server
+    /// with any other certificate is [`SignInError::Untrusted`] with its fingerprint, before the
+    /// password went to it. Answers with the roles the server leaves open (two candidate folders
+    /// with mail, `accounts.update_mail_account` picks one) and the trusted certificates IMAP and
+    /// SMTP actually showed ([`SignedIn::pinned`]), so only those are kept.
     ///
     /// Listing the folders may create a missing drafts or sent folder on the server, as every sync
     /// does (`folders::discover`). Nothing is stored here, and no error holds the password or a
@@ -1282,26 +1353,46 @@ impl MailService {
         login: &str,
         password: &Secret,
         chosen: &BTreeMap<Role, String>,
-    ) -> Result<Vec<Role>, SignInError> {
+    ) -> Result<SignedIn, SignInError> {
         let imap = &config.imap;
-        let addresses = self.check_public(Service::Imap, &imap.host, imap.port).await?;
-        let mut session = Session::connect_to(&addresses, imap, login, password, &self.connector.trust)
-            .await
-            .map_err(SignInError::imap)?;
+        let addresses = self.check_host(Service::Imap, &imap.host, imap.port).await?;
+        let trust = self.connector.trust_for(&config.trusted_certificates);
+        let mut session =
+            Session::connect_to(&addresses, imap, login, password, &trust).await.map_err(SignInError::imap)?;
+        let mut pinned: Vec<Fingerprint> = session.pinned_certificate().into_iter().collect();
         let listed = folders::discover(&mut session, chosen).await.map_err(SignInError::imap)?;
         // Only to be polite: the sign-in was checked.
         let _ = session.logout().await;
-        self.connector.check_smtp(&config.smtp, login, password).await?;
-        Ok(listed.open.into_iter().map(|open| open.role).collect())
+        let smtp = self.connector.check_smtp(&config.smtp, login, password, &config.trusted_certificates).await?;
+        pinned.extend(smtp.filter(|pin| !pinned.contains(pin)));
+        Ok(SignedIn { open_roles: listed.open.into_iter().map(|open| open.role).collect(), pinned })
     }
 
-    /// `host` (of `service`) has addresses and all are on the public internet, as before every
-    /// connection of this service; the CalDAV address of a mail account is checked the same way
-    /// before it is signed in to (task M2.7). Answers with those addresses (task M2.7b): connect to
-    /// them and nowhere else (`Session::connect_to`, `CalDavClient::pinned`), the host name only
-    /// for TLS, so the name cannot point elsewhere between the check and the connection.
-    pub async fn check_public(&self, service: Service, host: &str, port: u16) -> Result<Vec<SocketAddr>, SignInError> {
-        self.connector.public_addresses(host, port).await.map_err(|err| SignInError::host(service, err))
+    /// The addresses `host` (of `service`) resolves to, as before every connection of this
+    /// service (task M2.7b): connect to them and nowhere else (`Session::connect_to`), the host
+    /// name only for TLS. Every address is allowed in the core (issue #284);
+    /// [`SignInError::NotPublic`] only without a home directory, [`SignInError::Offline`] when the
+    /// name cannot be resolved.
+    pub async fn check_host(&self, service: Service, host: &str, port: u16) -> Result<Vec<SocketAddr>, SignInError> {
+        self.connector.addresses(host, port).await.map_err(|err| SignInError::host(service, err))
+    }
+
+    /// Whether `host` at `port` resolves to at least one address on the public internet
+    /// (`torro_pim_caldav::discover::is_public`): `Response::UntrustedCertificate` then warns the
+    /// person clearly (issue #284). A name that cannot be resolved counts as public, so the warning
+    /// is shown rather than left out.
+    pub async fn has_public_address(&self, host: &str, port: u16) -> bool {
+        match self.connector.resolve(host, port).await {
+            Ok(found) if !found.is_empty() => found.iter().any(|address| is_public(address.ip())),
+            _ => true,
+        }
+    }
+
+    /// What a server of an account with the trusted certificates `pins` is checked against: the
+    /// service's trust (the system's in the core) plus exactly those certificates (issue #284).
+    /// For the CalDAV address of a mail account, which the core checks itself.
+    pub fn trust_for(&self, pins: &[String]) -> Trust {
+        self.connector.trust_for(pins)
     }
 
     /// Every account of `accounts.json`, of every kind, as connecting and changing a mail account
@@ -1514,8 +1605,8 @@ impl MailService {
     ///
     /// Errors: [`MailError::NotFound`] for an unknown account or one whose mail is off;
     /// [`MailError::Auth`] when its password was refused (also earlier: nothing is sent then);
-    /// [`MailError::NoPassword`], [`MailError::Offline`], [`MailError::NotPublic`] when no
-    /// connection could be made.
+    /// [`MailError::NoPassword`], [`MailError::Offline`], [`MailError::NotPublic`],
+    /// [`MailError::Untrusted`] when no connection could be made.
     pub async fn command(&self, account: &str) -> Result<Command, MailError> {
         self.mailbox_of(account).await?.command().await
     }
@@ -2169,11 +2260,12 @@ impl MailService {
     }
 
     /// Who hands the mail of `account` to its SMTP server (task M3.3): its SMTP server, login and
-    /// password, after the host was found to be public like every IMAP host
-    /// ([`Connector::public_addresses`]); it connects to the addresses checked and nowhere else
-    /// (task M2.7b). Nothing is sent yet. [`MailError::Auth`] when the password was
-    /// refused before (the same password signs in to SMTP), [`MailError::NoPassword`],
-    /// [`MailError::NotPublic`] and [`MailError::Offline`] as for connecting.
+    /// password, after the host was resolved like every IMAP host ([`Connector::addresses`]); it
+    /// connects to those addresses and nowhere else (task M2.7b) and trusts the certificates the
+    /// account keeps besides the system's (issue #284; any other is `SmtpError::Untrusted` before
+    /// the login). Nothing is sent yet. [`MailError::Auth`] when the password was refused before
+    /// (the same password signs in to SMTP), [`MailError::NoPassword`], [`MailError::NotPublic`]
+    /// and [`MailError::Offline`] as for connecting.
     pub(crate) async fn smtp(&self, account: &str) -> Result<SmtpSubmitter, MailError> {
         let mailbox = self.mailbox_of(account).await?;
         if mailbox.refused() {
@@ -2181,8 +2273,10 @@ impl MailService {
         }
         let password = mailbox.password.clone().ok_or(MailError::NoPassword)?;
         let server = &mailbox.config.smtp;
-        let addresses = self.connector.public_addresses(&server.host, server.port).await?;
-        Ok(SmtpSubmitter::new(server.clone(), mailbox.account.login_name.clone(), password).pinned_to(addresses))
+        let addresses = self.connector.addresses(&server.host, server.port).await?;
+        Ok(SmtpSubmitter::new(server.clone(), mailbox.account.login_name.clone(), password)
+            .trusting(fingerprints(&mailbox.config.trusted_certificates))
+            .pinned_to(addresses))
     }
 
     /// The SMTP server of `account` refused its password (task M3.3): the account shows "Password
@@ -2225,6 +2319,16 @@ impl MailService {
     }
 }
 
+/// A sign-in [`MailService::check_sign_in`] found good.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIn {
+    /// The roles the server leaves open (two candidate folders with mail).
+    pub open_roles: Vec<Role>,
+    /// The trusted certificates of the sign-in that IMAP or SMTP showed, each once, IMAP's first;
+    /// empty when the system trusted both servers. Only these (and CalDAV's) are worth keeping.
+    pub pinned: Vec<Fingerprint>,
+}
+
 /// The health of a mail account with two parts, mail and calendars (task M2.7): a problem of
 /// either is the account's (the mail part's first), else unsure while either is, else fine.
 fn joined(mail: Health, calendars: Health) -> Health {
@@ -2235,14 +2339,20 @@ fn joined(mail: Health, calendars: Health) -> Health {
     }
 }
 
-/// `after` signs in where `before` did: the same id, kind, login and servers (IMAP, SMTP, CalDAV).
-/// Only [`MailService::save_account`] may change these, after the servers took the password.
+/// `after` signs in where `before` did: the same id, kind, login, servers (IMAP, SMTP, CalDAV) and
+/// trusted certificates (issue #284). Only [`MailService::save_account`] may change these, after
+/// the servers took the password.
 fn same_sign_in(before: &Account, after: &Account) -> bool {
     let servers = |account: &Account| {
-        account
-            .mail
-            .as_ref()
-            .map(|mail| (mail.address.clone(), mail.imap.clone(), mail.smtp.clone(), mail.caldav.clone()))
+        account.mail.as_ref().map(|mail| {
+            (
+                mail.address.clone(),
+                mail.imap.clone(),
+                mail.smtp.clone(),
+                mail.caldav.clone(),
+                mail.trusted_certificates.clone(),
+            )
+        })
     };
     before.id == after.id
         && before.kind == after.kind
@@ -2288,9 +2398,9 @@ pub(crate) mod tests {
         index: false,
     };
 
-    /// The fake server's connections: its test CA, and loopback allowed besides the public
-    /// internet. Only tests have this way to `127.0.0.1`. SMTP takes `smtp_password` for any login
-    /// at any server, without a connection; what it was asked is kept in `smtp_asked`.
+    /// The fake server's connections: its test CA, every address allowed as in the core. SMTP
+    /// takes `smtp_password` for any login at any server, without a connection; what it was asked
+    /// is kept in `smtp_asked`.
     fn test_connector(smtp_password: &str, smtp_asked: Arc<StdMutex<Vec<String>>>) -> Connector {
         let accepted = Secret::new(smtp_password);
         let check = move |server: &Endpoint, login: &str, password: &Secret| {
@@ -2299,7 +2409,7 @@ pub(crate) mod tests {
         };
         Connector {
             trust: fake::trust(),
-            allowed: |ip| is_public(ip) || ip.is_loopback(),
+            allowed: |_| true,
             smtp: SmtpCheck::Fake(Arc::new(check)),
             lookup: Lookup::System,
         }
@@ -2318,9 +2428,21 @@ pub(crate) mod tests {
         secrets: &MemoryTokens,
         smtp_password: &str,
     ) -> (MailService, Arc<StdMutex<Vec<String>>>) {
+        service_trusting(dir, secrets, smtp_password, fake::trust())
+    }
+
+    /// [`service_with_smtp`] whose servers are checked against `trust` instead of the fake's test
+    /// CA. With `Trust::Only(Vec::new())` the fake IMAP server's certificate is one the system
+    /// does not trust, as a self-signed one on a home server (issue #284).
+    pub(crate) fn service_trusting(
+        dir: &Path,
+        secrets: &MemoryTokens,
+        smtp_password: &str,
+        trust: Trust,
+    ) -> (MailService, Arc<StdMutex<Vec<String>>>) {
         let dirs = MailDirs::new(&dir.join("data"), &dir.join("cache"));
         let asked = Arc::new(StdMutex::new(Vec::new()));
-        let connector = test_connector(smtp_password, Arc::clone(&asked));
+        let connector = Connector { trust, ..test_connector(smtp_password, Arc::clone(&asked)) };
         let service =
             MailService::new(Some(accounts_file(dir)), Arc::new(secrets.clone()), Some(dirs), connector, TEST_TIMING);
         (service, asked)
@@ -2629,25 +2751,30 @@ pub(crate) mod tests {
         assert_eq!(server.logins(), 2, "a dropped command leaves no session behind");
     }
 
+    /// Issue #284: the servers of a mail account come from people only, so the core connects to
+    /// every one: on this computer, in the local network, or a name that points there. Only a
+    /// service without a home directory connects nowhere.
     #[tokio::test]
-    async fn the_core_connects_only_to_public_mail_servers() {
+    async fn the_core_connects_to_every_mail_server_a_person_typed() {
         let connector = Connector::system();
         for host in ["127.0.0.1", "10.0.0.8", "192.168.1.2", "::1", "169.254.1.1"] {
-            let refused = connector.public_addresses(host, 993).await.expect_err("refused");
-            assert!(matches!(refused, MailError::NotPublic), "{host}: {refused:?}");
+            let found = connector.addresses(host, 993).await.expect("allowed");
+            assert_eq!(found.iter().map(|address| address.ip().to_string()).collect::<Vec<_>>(), [host]);
         }
-        assert!(
-            test_connector(PASSWORD, Arc::default()).public_addresses("127.0.0.1", 993).await.is_ok(),
-            "only the tests' way allows it"
-        );
+        let home = SocketAddr::from(([192, 168, 1, 2], 993));
+        let named =
+            Connector { lookup: Lookup::Fake(Arc::new(move |_: &str, _: u16| vec![home])), ..Connector::system() };
+        assert_eq!(named.addresses("mail.home.arpa", 993).await.expect("a name on a local address"), [home]);
+        let refused = Connector::nowhere().addresses("127.0.0.1", 993).await.expect_err("nowhere");
+        assert!(matches!(refused, MailError::NotPublic), "{refused:?}");
     }
 
-    /// Task M2.7b: the name is resolved once, for the check, and the session goes to what that
+    /// Task M2.7b: the name is resolved once per connection, and the session goes to what that
     /// found. The IMAP server is configured as `localhost` on a port where nothing listens; only
-    /// the checked address leads to the fake, whose certificate names `localhost` (TLS checks the
-    /// host name, not the address). A lookup that finds a private address connects nowhere.
+    /// the resolved address leads to the fake, whose certificate names `localhost` (TLS checks the
+    /// host name, not the address). When the name points elsewhere, the session goes there.
     #[tokio::test]
-    async fn the_session_goes_to_the_checked_address_under_the_host_name() {
+    async fn the_session_goes_to_the_resolved_address_under_the_host_name() {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         let lookups = Arc::new(StdMutex::new(Vec::new()));
@@ -2671,13 +2798,16 @@ pub(crate) mod tests {
         let config = account.mail.clone().expect("a mail account");
         let mailbox = service.mailbox(account, config, Some(Secret::new(PASSWORD))).await;
 
-        mailbox.connect().await.expect("signed in at the checked address").logout().await.expect("bye");
+        mailbox.connect().await.expect("signed in at the resolved address").logout().await.expect("bye");
         assert_eq!((server.logins(), lookups.lock().expect("record").clone()), (1, vec!["localhost:9".to_string()]));
 
-        // The name now points into the local network: refused before anything is sent.
-        *answer.lock().expect("answer") = SocketAddr::from(([10, 0, 0, 8], server.endpoint.port));
-        assert!(matches!(mailbox.connect().await, Err(MailError::NotPublic)));
-        assert_eq!(server.logins(), 1);
+        // The name now points to a port where nothing listens: the session goes there, not to the
+        // configured port or the address of the first lookup.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        *answer.lock().expect("answer") = closed.local_addr().expect("address");
+        drop(closed);
+        assert!(matches!(mailbox.connect().await, Err(MailError::Offline(_))));
+        assert_eq!((server.logins(), lookups.lock().expect("record").len()), (1, 2));
     }
 
     #[test]
@@ -2693,11 +2823,35 @@ pub(crate) mod tests {
         assert!(refused.to_string().contains("Geheimprojekt"), "the log has them");
         assert_eq!(
             MailError::NotPublic.response(),
+            Response::Error { code: "error".into(), message: tr("The mail server cannot be used.").into() }
+        );
+    }
+
+    /// Issue #284: a certificate nobody trusts is the server's fingerprint at the sign-in, and at
+    /// the sync a problem a person has to look at (`auth`, sign in again) that names no
+    /// fingerprint, while the sync keeps trying.
+    #[test]
+    fn an_untrusted_certificate_names_its_server_and_asks_a_person() {
+        let shown = Fingerprint([0xAB; 32]);
+        assert_eq!(SignInError::imap(ImapError::Untrusted(shown)), SignInError::Untrusted(Service::Imap, shown));
+        assert_eq!(SignInError::smtp(SmtpError::Untrusted(shown)), SignInError::Untrusted(Service::Smtp, shown));
+        assert_eq!(SignInError::smtp(SmtpError::Tls), SignInError::Failed(Service::Smtp), "another TLS failure");
+
+        let changed = MailError::from(ImapError::Untrusted(shown));
+        assert!(matches!(changed, MailError::Untrusted(_)), "{changed:?}");
+        assert_eq!(
+            changed.response(),
             Response::Error {
-                code: "error".into(),
-                message: tr("The mail server is not on the public internet.").into()
+                code: "auth".into(),
+                message: tr("The certificate of the mail server changed. Check it in Server settings.").into()
             }
         );
+        assert!(!changed.message().contains("AB:AB"), "the person compares it where they confirm it");
+        assert!(changed.to_string().contains(&shown.to_string()), "the core's log has it");
+        assert_eq!(changed.trouble(), Trouble::SignInNeeded);
+        let mut status = Status::default();
+        status.failed(&changed, Utc::now());
+        assert!(matches!(status.health(Utc::now()), Health::Problem { trouble: Trouble::SignInNeeded, .. }));
     }
 
     /// Task M2.7: changing settings never changes where the password goes.
@@ -2720,6 +2874,7 @@ pub(crate) mod tests {
             (|a: &mut Account| a.mail.as_mut().expect("mail").imap.host = "evil.example".into()) as fn(&mut Account),
             |a| a.mail.as_mut().expect("mail").caldav = Some("https://evil.example/".into()),
             |a| a.login_name = "someone".into(),
+            |a| a.mail.as_mut().expect("mail").trusted_certificates = vec![format!("AB{}", ":CD".repeat(31))],
         ] {
             assert!(service.update(&account.id, steer).await.is_err());
         }

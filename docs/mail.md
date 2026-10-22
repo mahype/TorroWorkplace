@@ -198,6 +198,37 @@ GitHub-Eintrag zu ([eingang.md](eingang.md), Quelle GitHub); Erledigt dort marki
 dran (`<account-id>/<url>`), `PimClient::account()` liefert eine Liste. Das löst auch das
 Ein-Konto-Limit bei Nextcloud.
 
+## Eigene Server und Zertifikate
+
+Entschieden 2026-10-22 (#284, Aufgaben M11 in [tasks/mail.md](tasks/mail.md)): Ein Mail-Konto nimmt jeden Server,
+den ein Mensch einträgt, wie er ist – beim Anbieter, im lokalen Netz (NAS, eigener Mail-Server) oder auf diesem
+Rechner (`localhost`, etwa eine Bridge). Es gibt keinen Schalter dafür. Das ist sicher, weil Server eines
+Mail-Kontos nur über `accounts.connect_mail` hineinkommen, das nur der App-Schlüssel schicken darf: Kein Agent kann
+ein Konto auf ein Ziel im lokalen Netz richten ([api.md](api.md), „Was nie nach außen geht“, Punkt 5). Die
+Dienstsuche (`discover_services`), die Anmeldung reiner CalDAV-Konten (`connect_caldav`) an einer von ihr
+gefundenen Adresse und `torro-htmlview` bleiben bei „nur öffentliche Adressen“.
+
+- **Verbinden:** Der Host wird je Verbindung einmal aufgelöst; IMAP, SMTP und der Kalenderteil verbinden sich genau
+  mit diesen Adressen, der Name dient nur TLS (wie seit M2.7b).
+- **Zertifikate:** Vertraut wird dem System und, je Konto, genau den Zertifikaten, deren SHA-256 ein Mensch
+  bestätigt hat (`MailAccountConfig::trusted_certificates`, Format `AB:CD:…`). Ein bestätigtes Zertifikat gilt ohne
+  Prüfung von Name und Ablauf, denn selbst signierte nennen oft einen anderen Namen; die Signaturen des Handshakes
+  prüft rustls trotzdem, wer nur das Zertifikat vorzeigt, kommt nicht durch.
+- **Rückfrage:** Zeigt ein Server beim Verbinden ein unbekanntes Zertifikat, antwortet der Kern mit
+  `untrusted-certificate` (Dienst, Host, Fingerabdruck), bevor das Passwort hinausgeht. Die Steuerzentrale fragt
+  „Trust this certificate?“; liegt eine Adresse des Hosts im öffentlichen Internet (`public`), warnt sie deutlich,
+  denn bei einem Anbieter heißt ein unbekanntes Zertifikat meist, dass jemand mitliest (M11.4).
+- **Merken:** Gespeichert werden nur Zertifikate, die ein Server bei dieser Anmeldung gezeigt hat, höchstens acht,
+  das älteste fällt heraus. Jedes erneute Verbinden („Server settings…“, „Change password…“) räumt so nicht mehr
+  benutzte weg; lief CalDAV dabei nicht mit, bleiben die übrigen gespeicherten, sie können CalDAV gehören. Ein
+  bestätigtes Zertifikat gilt für alle Server des Kontos; wechselt ein Mensch den Host, gilt es also auch für den
+  neuen, bis ein Verbinden mit CalDAV aufräumt.
+- **Wechsel:** Zeigt der IMAP- oder SMTP-Server später ein anderes Zertifikat, endet die Verbindung vor der
+  Anmeldung. Das Konto zeigt „The certificate of the mail server changed. Check it in Server settings.“ als Problem, das ein Mensch lösen
+  muss, und versucht es trotzdem weiter: Kein Server sperrt das Konto, weil nie ein Passwort ankommt, und ein
+  zurückgesetztes Zertifikat heilt sich von selbst. Ein Versand meldet „Nothing was sent“. Der Kalenderteil scheitert
+  dann wie bei einem nicht erreichbaren Server, noch ohne eigenen Hinweis auf das Zertifikat.
+
 ## Rechte zentral in der Steuerzentrale
 
 Die Abschnitte API und MCP der Steuerzentrale ([api.md](api.md), A.6–A.8, seit #231 getrennt) sind die

@@ -6764,9 +6764,12 @@ impl Core {
     ///    stays, also while calendars and tasks are off, and with an empty `sender_name` the stored
     ///    sender name (task M2.8). Calendars or tasks without a CalDAV address are `not-found`;
     /// 3. IMAP and SMTP ([`MailService::check_sign_in`]), then the CalDAV address when calendars or
-    ///    tasks are wanted or it is new ([`Core::check_caldav`]: public host, connected at the
-    ///    checked addresses only, task M2.7b); every host must be public. A refusal is `auth` and
-    ///    names the server; nothing is stored before all of them took the password;
+    ///    tasks are wanted or it is new ([`Core::check_caldav`]); every host goes, wherever it is
+    ///    (issue #284: the servers come from a person). A refusal is `auth` and names the server;
+    ///    nothing is stored before all of them took the password. Each server trusts the system's
+    ///    certificates, the account's stored ones and those of `trusted_certificates`; a server
+    ///    with another certificate is answered with [`Response::UntrustedCertificate`]
+    ///    ([`Core::sign_in_refusal`]) before the password went to it, and nothing is stored;
     /// 4. once the account syncs calendars or tasks, the CalDAV account of the same sign-in
     ///    (`account::caldav_sign_in`), if there is one, is taken over: the list names the mail
     ///    account instead in the same write
@@ -6778,7 +6781,9 @@ impl Core {
     ///
     /// Answered with [`Response::MailConnected`]: the account as `accounts.list_accounts` lists
     /// it, what the CalDAV address offers and the folder roles the server leaves open. The
-    /// password goes to the keychain and the servers only.
+    /// password goes to the keychain and the servers only. The account keeps the trusted
+    /// certificates a server showed at this sign-in ([`kept_certificates`]), so connecting again
+    /// clears the ones no server uses any more and a fingerprint no server showed is never stored.
     async fn connect_mail(&self, sign_in: MailSignIn) -> Response {
         let MailSignIn {
             address,
@@ -6806,10 +6811,10 @@ impl Core {
         if let Some(refused) = mail_text_refusal(Some(&sender_name), None) {
             return refused;
         }
-        // Checked before any server is asked (issue #284); trusting them is task M11.3.
-        if trusted_fingerprints(&trusted_certificates).is_none() {
+        // Checked before any server is asked (issue #284).
+        let Some(confirmed) = trusted_fingerprints(&trusted_certificates) else {
             return refusal("error", tr("A trusted certificate is not a SHA-256 fingerprint.").into());
-        }
+        };
         for (service, server) in [(Service::Imap, &imap), (Service::Smtp, &smtp)] {
             if server.host.trim().is_empty() || server.port == 0 {
                 return refusal(
@@ -6853,25 +6858,38 @@ impl Core {
             "" => existing.and_then(|account| Some(account.mail.as_ref()?.sender_name.clone())).unwrap_or_default(),
             typed => typed.to_string(),
         };
-        let config = torro_mail::MailAccountConfig {
+        // The servers trust what the account trusts and what the person just confirmed (issue #284).
+        let stored_pins =
+            existing.and_then(|account| Some(account.mail.as_ref()?.trusted_certificates.clone())).unwrap_or_default();
+        let mut offered_pins = stored_pins.clone();
+        offered_pins.extend(confirmed.into_iter().filter(|pin| !stored_pins.contains(pin)));
+        let mut config = torro_mail::MailAccountConfig {
             address: address.trim().to_string(),
             sender_name,
             imap,
             smtp,
             caldav,
-            trusted_certificates: Vec::new(),
+            trusted_certificates: offered_pins,
         };
-        let open_roles = match self.mail.check_sign_in(&config, login, &password, &settings.folder_roles).await {
-            Ok(open) => open,
-            Err(failed) => return failed.response(),
+        let signed_in = match self.mail.check_sign_in(&config, login, &password, &settings.folder_roles).await {
+            Ok(signed_in) => signed_in,
+            Err(failed) => return self.sign_in_refusal(failed, &config).await,
         };
-        let offered = match config.caldav.as_deref().filter(|_| check_caldav) {
-            Some(url) => match self.check_caldav(url, login, &password).await {
-                Ok(offered) => offered,
-                Err(failed) => return failed.response(),
+        let mut used: Vec<String> = signed_in.pinned.iter().map(ToString::to_string).collect();
+        let caldav_url = config.caldav.clone().filter(|_| check_caldav);
+        let offered = match caldav_url.as_deref() {
+            Some(url) => match self.check_caldav(url, login, &password, &config.trusted_certificates).await {
+                Ok((offered, pinned)) => {
+                    used.extend(pinned.map(|pin| pin.to_string()));
+                    offered
+                }
+                Err(failed) => return self.sign_in_refusal(failed, &config).await,
             },
             None => torro_pim_caldav::Services::default(),
         };
+        config.trusted_certificates =
+            kept_certificates(&config.trusted_certificates, &stored_pins, &used, caldav_url.is_some());
+        let open_roles = signed_in.open_roles;
         let provider = existing.and_then(|account| account.display_name.clone()).unwrap_or_else(|| {
             torro_pim_caldav::discover::domain_of(&config.address)
                 .map_or_else(String::new, |domain| torro_pim_caldav::discover::provider_name(&domain))
@@ -6913,26 +6931,49 @@ impl Core {
         }
     }
 
-    /// Checks the CalDAV address `url` of a mail account (task M2.7): its host is public
-    /// ([`MailService::check_public`]) and, at exactly the addresses checked (task M2.7b,
-    /// `CalDavClient::pinned`), it takes `login` and `password`. Answers with what it offers
-    /// (`CalDavClient::services`). Stores, caches and logs nothing.
+    /// Checks the CalDAV address `url` of a mail account (task M2.7): it takes `login` and
+    /// `password`, wherever its host is (issue #284: a person typed it), and its certificate is
+    /// one the system trusts or one of `pins` (the account's trusted certificates,
+    /// [`MailService::trust_for`]). Answers with what it offers (`CalDavClient::services`) and the
+    /// pin its certificate matched (`None` when the system trusted it). A certificate that is
+    /// neither is [`SignInError::Untrusted`] (the TLS handshake failed, so the password did not go
+    /// out). Stores, caches and logs nothing.
     async fn check_caldav(
         &self,
         url: &str,
         login: &str,
         password: &torro_ipc::Secret,
-    ) -> Result<torro_pim_caldav::Services, SignInError> {
-        let parsed = reqwest::Url::parse(url).map_err(|_| SignInError::Failed(Service::CalDav))?;
-        let host = parsed.host_str().ok_or(SignInError::Failed(Service::CalDav))?;
-        let port = parsed.port_or_known_default().ok_or(SignInError::Failed(Service::CalDav))?;
-        // `Url` writes an IPv6 host in brackets; the resolver wants it without.
-        let host = host.trim_start_matches('[').trim_end_matches(']');
-        let addresses = self.mail.check_public(Service::CalDav, host, port).await?;
+        pins: &[String],
+    ) -> Result<(torro_pim_caldav::Services, Option<torro_mail_imap::tls::Fingerprint>), SignInError> {
+        let (http, seen) =
+            crate::pim::mail_http(&self.mail.trust_for(pins)).map_err(|_| SignInError::Failed(Service::CalDav))?;
         let dav = torro_pim_caldav::CalDavAccount { url: url.to_string(), username: login.to_string() };
-        let client = torro_pim_caldav::CalDavClient::pinned(&dav, password.clone(), &addresses)
+        let client = torro_pim_caldav::CalDavClient::new(http, &dav, password.clone())
             .map_err(|_| SignInError::Failed(Service::CalDav))?;
-        client.services().await.map_err(|err| SignInError::caldav(&err))
+        match client.services().await {
+            Ok(offered) => Ok((offered, seen.accepted())),
+            Err(err) => Err(match seen.rejected() {
+                Some(shown) => SignInError::Untrusted(Service::CalDav, shown),
+                None => SignInError::caldav(&err),
+            }),
+        }
+    }
+
+    /// The answer to a mail sign-in that failed with `failed` (issue #284): a server with an
+    /// untrusted certificate is [`Response::UntrustedCertificate`] with its host as `config`
+    /// names it, the fingerprint and whether the host has an address on the public internet
+    /// ([`MailService::has_public_address`], so the person is warned clearly); every other failure
+    /// as [`SignInError::response`] has it.
+    async fn sign_in_refusal(&self, failed: SignInError, config: &torro_mail::MailAccountConfig) -> Response {
+        let SignInError::Untrusted(service, shown) = failed else { return failed.response() };
+        let server = match service {
+            Service::Imap => Some((config.imap.host.clone(), config.imap.port)),
+            Service::Smtp => Some((config.smtp.host.clone(), config.smtp.port)),
+            Service::CalDav => config.caldav.as_deref().and_then(url_host),
+        };
+        let Some((host, port)) = server else { return failed.response() };
+        let public = self.mail.has_public_address(&host, port).await;
+        Response::UntrustedCertificate { service: service.name().into(), host, sha256: shown.to_string(), public }
     }
 
     /// `accounts.list_torromail_accounts` (task M7.4): TorroMail's accounts as its `state.json`
@@ -8499,6 +8540,27 @@ struct MailSignIn {
     caldav: Option<String>,
     /// Fingerprints the person just trusted, as the request has them (issue #284).
     trusted_certificates: Vec<String>,
+}
+
+/// The host and port of the server address `url` (`https://dav.example.org/x/` →
+/// `dav.example.org`, 443), the host without the brackets `Url` writes around IPv6; `None` for an
+/// address without a host.
+fn url_host(url: &str) -> Option<(String, u16)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.trim_start_matches('[').trim_end_matches(']').to_string();
+    Some((host, parsed.port_or_known_default()?))
+}
+
+/// The trusted certificates a mail account keeps after a sign-in that worked (issue #284): of
+/// `offered` (the stored ones `stored`, oldest first, then those the person just confirmed) each
+/// one a server showed at this sign-in (`used`), and while CalDAV was not asked (`caldav_asked`
+/// false) the other stored ones too, since they may be CalDAV's. At most
+/// [`torro_mail::account::TRUSTED_CERTIFICATES_MAX`]; the oldest go first.
+fn kept_certificates(offered: &[String], stored: &[String], used: &[String], caldav_asked: bool) -> Vec<String> {
+    let kept: Vec<&String> =
+        offered.iter().filter(|pin| used.contains(pin) || (!caldav_asked && stored.contains(pin))).collect();
+    let over = kept.len().saturating_sub(torro_mail::account::TRUSTED_CERTIFICATES_MAX);
+    kept.into_iter().skip(over).cloned().collect()
 }
 
 /// `typed` as fingerprints in the form the account stores
@@ -15456,7 +15518,7 @@ mod tests {
     // Connecting mail accounts (task M2.7): a fake IMAP server, a fake SMTP check and a fake CalDAV
     // server, all on the loopback interface. The password must show nowhere but in the keychain.
 
-    use crate::mail::service::tests::{PASSWORD as MAIL_PASSWORD, service_with_smtp};
+    use crate::mail::service::tests::{PASSWORD as MAIL_PASSWORD, service_trusting, service_with_smtp};
     use crate::mail::sync::fake::FakeImap;
 
     /// A core whose mail accounts live in `dir` with the keychain `secrets`, and whose SMTP server
@@ -15579,6 +15641,108 @@ mod tests {
 
         let bare = ask(&core, Some(&app_key), trusting(vec!["ab".repeat(32)])).await;
         assert!(matches!(bare, Response::MailConnected { .. }), "{bare:?}");
+    }
+
+    /// The fingerprint of the fake IMAP server's certificate (`server.der` of `torro-mail-imap`'s
+    /// fixtures), as the account stores it.
+    fn fake_imap_certificate() -> String {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../torro-mail-imap/tests/fixtures/imap-tls/server.der");
+        torro_mail_imap::tls::Fingerprint::of(&std::fs::read(path).expect("test certificate")).to_string()
+    }
+
+    /// Issue #284 (M11.3): a server with a certificate the system does not trust (the fake IMAP
+    /// server, for a core that trusts no certificate at all: as a self-signed one on a home server)
+    /// is answered with its fingerprint before the password goes to it, and nothing is stored.
+    /// Trusted, it connects, and the account keeps exactly that certificate, not one no server
+    /// showed. When the server shows another certificate later, the account has a problem a person
+    /// must look at, and the server never sees a login.
+    #[tokio::test]
+    async fn a_certificate_the_person_trusts_is_kept_and_another_one_stops_the_sync() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let untrusting = torro_mail_imap::imap::Trust::Only(Vec::new());
+        let (mail, smtp) = service_trusting(dir.path(), &secrets, MAIL_PASSWORD, untrusting);
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let trusting = |pins: Vec<String>| {
+            let mut request = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+            if let Request::ConnectMail { trusted_certificates, .. } = &mut request {
+                *trusted_certificates = pins;
+            }
+            request
+        };
+        let shown = fake_imap_certificate();
+
+        let asked = ask(&core, Some(&app_key), trusting(Vec::new())).await;
+        let expected = Response::UntrustedCertificate {
+            service: "IMAP".into(),
+            host: server.endpoint.host.clone(),
+            sha256: shown.clone(),
+            public: false,
+        };
+        assert_eq!(asked, expected, "this computer is not on the public internet");
+        assert_eq!(server.logins(), 0, "the password did not go out");
+        assert!(smtp.lock().expect("record").is_empty(), "SMTP was not asked");
+        assert!(!mail_accounts_file(dir.path()).exists(), "nothing stored");
+        assert_eq!(secrets.get_plain(ANNA_MAIL), None);
+
+        let nobody_shows = format!("AB{}", ":CD".repeat(31));
+        let connected = ask(&core, Some(&app_key), trusting(vec![shown.to_lowercase(), nobody_shows.clone()])).await;
+        let Response::MailConnected { account, .. } = &connected else { panic!("connected, got {connected:?}") };
+        let view = account.mail.as_ref().expect("a mail view");
+        assert_eq!(view.trusted_certificates, std::slice::from_ref(&shown), "only what a server showed");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let config = stored[0].mail.clone().expect("a mail account");
+        assert_eq!(config.trusted_certificates, std::slice::from_ref(&shown));
+        crate::mail::service::tests::eventually("the first sync with the trusted certificate", || async {
+            core.mail.account_sync_status(ANNA_MAIL).await.0.is_some()
+        })
+        .await;
+        nowhere(dir.path(), MAIL_PASSWORD, &[&asked, &connected]);
+
+        // The server shows another certificate than the one trusted now (as if it got a new one).
+        let logins = server.logins();
+        let mut changed = stored.clone();
+        if let Some(mail) = changed[0].mail.as_mut() {
+            mail.trusted_certificates = vec![nobody_shows];
+        }
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), &changed).expect("written");
+        core.mail.reload().await;
+        crate::mail::service::tests::eventually("a problem at the account", || async {
+            let checks = core.mail.account_checks(Utc::now()).await.unwrap_or_default();
+            checks.iter().any(|check| {
+                matches!(
+                    check.health,
+                    crate::inbox::Health::Problem { trouble: crate::inbox::Trouble::SignInNeeded, .. }
+                )
+            })
+        })
+        .await;
+        let problem = core.mail.account_sync_status(ANNA_MAIL).await.1;
+        let message = tr("The certificate of the mail server changed. Check it in Server settings.");
+        assert_eq!(problem.as_deref(), Some(message));
+        assert_eq!(server.logins(), logins, "no login at the server");
+    }
+
+    /// Issue #284: what an account keeps of its trusted certificates after a sign-in.
+    #[test]
+    fn an_account_keeps_the_certificates_its_servers_showed() {
+        let pin = |n: u8| format!("{n:02X}{}", ":00".repeat(31));
+        let stored = [pin(1), pin(2)];
+        let offered = [pin(1), pin(2), pin(3), pin(4)];
+        let used = [pin(2), pin(3)];
+        assert_eq!(kept_certificates(&offered, &stored, &used, true), [pin(2), pin(3)], "CalDAV was asked");
+        assert_eq!(
+            kept_certificates(&offered, &stored, &used, false),
+            [pin(1), pin(2), pin(3)],
+            "the stored ones may be CalDAV's; one nobody showed never"
+        );
+        let many: Vec<String> = (0..10).map(pin).collect();
+        let kept = kept_certificates(&many, &many, &[], false);
+        assert_eq!(kept.len(), torro_mail::account::TRUSTED_CERTIFICATES_MAX);
+        assert_eq!(kept.first(), Some(&pin(2)), "the oldest went first");
+        assert!(kept_certificates(&many, &many, &[], true).is_empty());
     }
 
     /// Task E12.4: the counts of `inbox.list_categories` and `inbox.get_categorization` cover
