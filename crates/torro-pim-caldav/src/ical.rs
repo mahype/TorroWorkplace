@@ -4,8 +4,9 @@
 //! every occurrence arrives as its own VEVENT with times in UTC. A stored object read as it is
 //! (an update writes onto it, an invitation came by mail) keeps its `TZID`s: an IANA name
 //! (`Europe/Berlin`, also behind a vendor prefix like `/mozilla.org/20050126_1/Europe/Berlin`) is
-//! converted with `chrono-tz` and kept as the event's `time_zone` (task TE.2); any other name
-//! (Windows' `W. Europe Standard Time`) and floating times are read as the computer's local time.
+//! converted with `chrono-tz` and kept as the event's `time_zone` (task TE.2), and so is the Windows
+//! name of a common zone (`W. Europe Standard Time` is `Europe/Berlin`, [`windows_zone`], as Outlook
+//! and Exchange write them); any other name and floating times are read as the computer's local time.
 //!
 //! Cancelled events (`STATUS:CANCELLED`) are read with their status (task TE.2): the calendar
 //! shows them struck through, and [`Event::busy`] and the reminders leave them out. Cancelled
@@ -344,12 +345,60 @@ pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], col
 }
 
 /// The IANA zone a `TZID` names, also behind a vendor prefix (`/mozilla.org/20050126_1/Europe/Berlin`,
-/// as older Thunderbird and Citadel write it); `None` for any other name (Windows' `W. Europe
-/// Standard Time`), which the object's own `VTIMEZONE` would have to explain.
+/// as older Thunderbird and Citadel write it) and for the Windows name of a common zone
+/// ([`windows_zone`]); `None` for any other name, which only the object's own `VTIMEZONE` explains.
 pub(crate) fn zone(tzid: &str) -> Option<Tz> {
     let tzid = tzid.trim();
     let suffixes = tzid.match_indices('/').map(|(i, _)| &tzid[i + 1..]);
-    std::iter::once(tzid).chain(suffixes).find_map(|name| name.parse::<Tz>().ok())
+    std::iter::once(tzid).chain(suffixes).find_map(|name| name.parse::<Tz>().ok()).or_else(|| windows_zone(tzid))
+}
+
+/// The IANA zone of a Windows zone name as Outlook and Exchange write it in `TZID` (the first zone
+/// CLDR's `windowsZones.xml` names for it, or one with the same rules), for the common ones only:
+/// with it a series from Outlook is counted and written in its real zone instead of the computer's
+/// (finding 6 of the review of #278). `None` for names not in the list.
+fn windows_zone(name: &str) -> Option<Tz> {
+    let iana = match name {
+        "W. Europe Standard Time" => Tz::Europe__Berlin,
+        "Central Europe Standard Time" => Tz::Europe__Budapest,
+        "Central European Standard Time" => Tz::Europe__Warsaw,
+        "Romance Standard Time" => Tz::Europe__Paris,
+        "GMT Standard Time" => Tz::Europe__London,
+        "Greenwich Standard Time" => Tz::Atlantic__Reykjavik,
+        "E. Europe Standard Time" => Tz::Europe__Chisinau,
+        "FLE Standard Time" => Tz::Europe__Helsinki,
+        "GTB Standard Time" => Tz::Europe__Bucharest,
+        "Russian Standard Time" => Tz::Europe__Moscow,
+        "Turkey Standard Time" => Tz::Europe__Istanbul,
+        "Israel Standard Time" => Tz::Asia__Jerusalem,
+        "South Africa Standard Time" => Tz::Africa__Johannesburg,
+        "Arabian Standard Time" => Tz::Asia__Dubai,
+        "India Standard Time" => Tz::Asia__Kolkata,
+        "China Standard Time" => Tz::Asia__Shanghai,
+        "Singapore Standard Time" => Tz::Asia__Singapore,
+        "Tokyo Standard Time" => Tz::Asia__Tokyo,
+        "Korea Standard Time" => Tz::Asia__Seoul,
+        "AUS Eastern Standard Time" => Tz::Australia__Sydney,
+        "E. Australia Standard Time" => Tz::Australia__Brisbane,
+        "Cen. Australia Standard Time" => Tz::Australia__Adelaide,
+        "W. Australia Standard Time" => Tz::Australia__Perth,
+        "New Zealand Standard Time" => Tz::Pacific__Auckland,
+        "Eastern Standard Time" => Tz::America__New_York,
+        "Central Standard Time" => Tz::America__Chicago,
+        "Mountain Standard Time" => Tz::America__Denver,
+        "US Mountain Standard Time" => Tz::America__Phoenix,
+        "Pacific Standard Time" => Tz::America__Los_Angeles,
+        "Alaskan Standard Time" => Tz::America__Anchorage,
+        "Hawaiian Standard Time" => Tz::Pacific__Honolulu,
+        "Atlantic Standard Time" => Tz::America__Halifax,
+        "Canada Central Standard Time" => Tz::America__Regina,
+        "SA Pacific Standard Time" => Tz::America__Bogota,
+        "E. South America Standard Time" => Tz::America__Sao_Paulo,
+        "Argentina Standard Time" => Tz::America__Argentina__Buenos_Aires,
+        "UTC" | "Coordinated Universal Time" => Tz::UTC,
+        _ => return None,
+    };
+    Some(iana)
 }
 
 /// The status of an event (`STATUS`); `None` for a value RFC 5545 does not give events.
@@ -839,16 +888,22 @@ RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
     }
 
     #[test]
-    fn zone_names_behind_a_prefix_are_found_and_windows_names_are_not() {
+    fn zone_names_behind_a_prefix_and_common_windows_names_are_found() {
         assert_eq!(zone("Europe/Berlin"), Some(Tz::Europe__Berlin));
         assert_eq!(zone(" America/Argentina/Buenos_Aires "), Some(Tz::America__Argentina__Buenos_Aires));
         assert_eq!(zone("/mozilla.org/20050126_1/Europe/Berlin"), Some(Tz::Europe__Berlin));
         assert_eq!(zone("/citadel.org/20190914_1/America/New_York"), Some(Tz::America__New_York));
-        assert_eq!(zone("W. Europe Standard Time"), None);
+        assert_eq!(zone("W. Europe Standard Time"), Some(Tz::Europe__Berlin));
+        assert_eq!(zone(" Pacific Standard Time "), Some(Tz::America__Los_Angeles));
+        assert_eq!(zone("Mars Standard Time"), None);
         assert_eq!(zone(""), None);
-        // Unknown names are read as local time, as before, and name no zone.
+        // A Windows name reads in its zone, whatever the computer's is.
         let windows = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=W. Europe Standard Time");
-        assert_eq!(one(&windows).time_zone, None);
+        let event = one(&windows);
+        assert_eq!((event.start, event.time_zone.as_deref()), (utc(2026, 10, 13, 8, 0), Some("Europe/Berlin")));
+        // Unknown names are read as local time, as before, and name no zone.
+        let unknown = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=Mars Standard Time");
+        assert_eq!(one(&unknown).time_zone, None);
         let prefixed = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=/mozilla.org/20050126_1/Europe/Berlin");
         let event = one(&prefixed);
         assert_eq!((event.start, event.time_zone.as_deref()), (utc(2026, 10, 13, 8, 0), Some("Europe/Berlin")));

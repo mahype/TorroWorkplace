@@ -10372,7 +10372,9 @@ mod tests {
         let stored = torro_pim_caldav::RawObject { href: href.into(), etag: Some("\"1\"".into()), ics: RUNS.into() };
         core.pim.cache_objects(vec![stored]).await;
         let shorter = torro_pim::Event { repeat: rule("FREQ=DAILY;COUNT=5"), ..occurrence.clone() };
-        let ended = torro_pim::Event { repeat: None, ..occurrence.clone() };
+        // Ending the rule takes `recurring: false`; without its rule but still recurring, the rule stays.
+        let ended = torro_pim::Event { repeat: None, recurring: false, ..occurrence.clone() };
+        let rule_unknown = torro_pim::Event { repeat: None, summary: "Run".into(), ..occurrence.clone() };
         let renamed = torro_pim::Event { summary: "Run".into(), ..occurrence.clone() };
         let save = |event: &torro_pim::Event, scope| Request::SaveEvent { event: event.clone(), scope: Some(scope) };
         let waited = |response: &Response| matches!(response, Response::Pending { .. });
@@ -10394,6 +10396,8 @@ mod tests {
         assert!(!waited(&response) && !refused(&response), "{response:?}");
         let response = ask(&core, Some(&writer), save(&ended, torro_pim::model::SeriesScope::Occurrence)).await;
         assert!(!waited(&response) && !refused(&response), "one occurrence drops nothing: {response:?}");
+        let response = ask(&core, Some(&writer), save(&rule_unknown, torro_pim::model::SeriesScope::Series)).await;
+        assert!(!waited(&response) && !refused(&response), "the rule stays: {response:?}");
 
         // With the right to delete and `Confirm::OnDelete`, it waits for a person.
         let (deleter_id, deleter) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;

@@ -6,7 +6,8 @@
 //! text. A rule with a part the fields cannot hold (`BYSETPOS`, `BYHOUR`, `BYMINUTE`, `BYSECOND`,
 //! `BYWEEKNO`, `BYYEARDAY`, an `X-` part, a frequency below a day, a value out of range …) is
 //! read as far as it goes and marked [`Repeat::custom`]; its text stays in [`Repeat::rule`] and
-//! [`write`] gives it back unchanged. Extra dates (`RDATE`) and exclusion rules (`EXRULE`) are not
+//! [`write`] gives it back unchanged. A rule text from a client is written only when it passes
+//! [`check`] (one line of the `RRULE` grammar), so it can never add lines to the object. Extra dates (`RDATE`) and exclusion rules (`EXRULE`) are not
 //! part of the rule text: the reader of the stored object marks those (`crate::ical::ObjectFacts`).
 //! The sentence the editor shows ("Every week on Tuesday") is the app's (task TE.7).
 
@@ -93,9 +94,17 @@ pub fn read(rule: &str, zone: Option<Tz>) -> Repeat {
 ///   `BYMONTHDAY`, `BYDAY`, then `COUNT` or `UNTIL`. An `UNTIL` day is written as a date, an
 ///   instant in UTC (`…Z`), as RFC 5545 asks for a start with a zone; the caller gives a day for
 ///   an all-day series and an instant for a timed one.
+///
+/// A [`Repeat::rule`] that fails [`check`] is never given back: a custom rule then writes nothing
+/// (empty), any other is written from the fields. Which text counts as stored is the caller's
+/// choice: [`crate::write`] passes the rule the server holds, never a client's text.
 pub fn write(repeat: &Repeat) -> String {
     let stored = repeat.rule.trim();
-    if repeat.custom || (!stored.is_empty() && same_fields(&read(stored, None), repeat)) {
+    let writable = check(stored).is_ok();
+    if repeat.custom {
+        return if writable { stored.to_string() } else { String::new() };
+    }
+    if writable && !stored.is_empty() && same_fields(&read(stored, None), repeat) {
         return stored.to_string();
     }
     let mut parts = vec![format!("FREQ={}", freq_code(repeat.freq))];
@@ -118,6 +127,54 @@ pub fn write(repeat: &Repeat) -> String {
         RepeatEnd::Until(EventTime::DateTime(at)) => parts.push(format!("UNTIL={}", ical::format_utc(at))),
     }
     parts.join(";")
+}
+
+/// The longest rule text a client may send ([`check`]); real rules are far shorter.
+pub const MAX_RULE_CHARS: usize = 1000;
+
+/// Whether `rule`, a rule text a client sent ([`Repeat::rule`]), is one line of the `RRULE` grammar
+/// (RFC 5545 section 3.3.10) that may be written: empty (no text), or at most [`MAX_RULE_CHARS`]
+/// characters of letters, digits, `;`, `=`, `,`, `+`, `-` and spaces, every part `NAME=VALUE` with
+/// a name of letters, digits and `-`, and exactly one `FREQ` with a frequency RFC 5545 names.
+///
+/// This is the guard against a client smuggling lines into the stored object: a line break, a `:`
+/// or any other character outside the grammar would let `ATTENDEE`, `VALARM` or `END:VEVENT` follow
+/// the rule, and the server would send invitations for them. The core refuses such a text with
+/// `error` before anything is written; the writer leaves it out as well ([`crate::write`]). The
+/// error is a reason for people.
+pub fn check(rule: &str) -> Result<(), &'static str> {
+    if rule.chars().count() > MAX_RULE_CHARS {
+        return Err("the rule text is too long");
+    }
+    // Checked before trimming: `trim` would hide a line break at either end.
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, ';' | '=' | ',' | '+' | '-' | ' ');
+    if !rule.chars().all(allowed) {
+        return Err("the rule text holds characters an RRULE cannot have: one line of letters, digits and ;=,+-");
+    }
+    let rule = rule.trim();
+    if rule.is_empty() {
+        return Ok(());
+    }
+    let mut freqs = 0;
+    for part in rule.split(';').map(str::trim).filter(|part| !part.is_empty()) {
+        let Some((name, value)) = part.split_once('=') else { return Err("every part of the rule is NAME=VALUE") };
+        let (name, value) = (name.trim(), value.trim());
+        let named = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !named || value.is_empty() || value.contains('=') {
+            return Err("every part of the rule is NAME=VALUE");
+        }
+        if name.eq_ignore_ascii_case("FREQ") {
+            let known = ["SECONDLY", "MINUTELY", "HOURLY", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
+            if !known.iter().any(|freq| value.eq_ignore_ascii_case(freq)) {
+                return Err("the rule has no frequency RFC 5545 knows");
+            }
+            freqs += 1;
+        }
+    }
+    if freqs != 1 {
+        return Err("the rule needs exactly one FREQ");
+    }
+    Ok(())
 }
 
 /// The fields the editor shows are the same in `a` and `b` (text and `custom` aside).
@@ -311,13 +368,46 @@ mod tests {
             assert!(repeat.custom, "{rule}");
             assert_eq!(repeat.rule, rule);
             let changed = Repeat { interval: 7, ..repeat.clone() };
-            assert_eq!(write(&changed), rule, "a custom rule is written back as it is: {rule}");
+            // A text without FREQ is no rule a client may write: nothing is written for it.
+            let written = if check(rule).is_ok() { rule } else { "" };
+            assert_eq!(write(&changed), written, "a custom rule is written back as it is: {rule}");
         }
         let set_pos = read("FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1", None);
         assert_eq!((set_pos.freq, set_pos.weekdays.len()), (RepeatFreq::Monthly, 5), "read as far as it goes");
         // Apple writes WKST=SU everywhere; where it changes nothing, the rule stays plain.
         assert!(!read("FREQ=WEEKLY;BYDAY=MO,WE;WKST=SU", None).custom);
         assert!(!read("freq=weekly;byday=tu", None).custom, "names in any case");
+    }
+
+    #[test]
+    fn only_one_line_of_the_rrule_grammar_passes_the_check() {
+        for good in [
+            "",
+            "FREQ=WEEKLY;BYDAY=TU",
+            "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
+            "freq=daily;until=20261231T225959Z",
+            "FREQ=YEARLY;BYDAY=+4TU;X-NAME=1",
+            "FREQ=WEEKLY; BYDAY=TU",
+        ] {
+            assert_eq!(check(good), Ok(()), "{good}");
+        }
+        for bad in [
+            "FREQ=WEEKLY\r\nATTENDEE:mailto:eve@example.org",
+            "FREQ=WEEKLY\nEND:VEVENT",
+            "FREQ=WEEKLY;BYDAY=TU\u{0}",
+            "FREQ=WEEKLY;X-URL=https://example.org",
+            "FREQ=WEEKLY;BYDAY",
+            "FREQ=WEEKLY;=TU",
+            "FREQ=WEEKLY;BYDAY=TU=WE",
+            "BYDAY=TU",
+            "FREQ=WEEKLY;FREQ=DAILY",
+            "FREQ=FORTNIGHTLY",
+            "FREQ=WEEKLY;BYDAY=TU\u{2028}",
+            "FREQ=WEEKLY;BYDAY=TU\r\n",
+        ] {
+            assert!(check(bad).is_err(), "{bad:?}");
+        }
+        assert!(check(&format!("FREQ=DAILY;{}", "X-A=1;".repeat(200))).is_err(), "too long");
     }
 
     #[test]

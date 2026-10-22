@@ -12,12 +12,32 @@
 //!   and every `EXDATE` move along; what a changed occurrence changed itself stays. A new rule drops
 //!   the changed occurrences it no longer has; no rule makes the series a single event (the
 //!   occurrence the client changed). Deleting deletes the object.
+//!
+//!   A start moved by days while the rule keeps its `BYDAY` or `BYMONTHDAY` (a Tuesday series moved to
+//!   Wednesday) is written as it is: RFC 5545 and Nextcloud allow a `DTSTART` that is no date of the
+//!   rule, it then counts as one extra occurrence before the rule's dates. The changed occurrences and
+//!   excluded dates whose moved date the rule no longer has fall away and are counted ([`drops`],
+//!   [`Outcome::reset`]), so the core asks for the right to delete; a client that wants the same days
+//!   a day later sends the rule with the new weekday.
 //! - **Following:** splits the series as Nextcloud and Google do (never `RANGE=THISANDFUTURE`): the
 //!   stored series ends the second before the occurrence (a `COUNT` becomes `UNTIL`), a new object with
 //!   a new UID and `RELATED-TO;RELTYPE=SIBLING` starts at it with the rest of the count, and the later
 //!   changed occurrences and `EXDATE`s move into it – unless time or rule change, then they are reset
-//!   and [`Outcome::reset`] says how many. The first occurrence counts as the whole series. Deleting
-//!   only ends the stored series.
+//!   and [`Outcome::reset`] says how many. The new series takes the occurrence as the client sends
+//!   it, its time and the fields a changed occurrence changed itself included, measured from where
+//!   the rule puts it: a changed occurrence moved from 10:00 to 14:00 and saved for "following" at
+//!   15:00 starts a series at 15:00. The first occurrence counts as the whole series. Deleting only
+//!   ends the stored series.
+//!
+//! **Ending a series** takes `repeat: None` *and* `recurring: false` ([`ends_series`]). `repeat: None`
+//! alone keeps the rule: an occurrence a client got without its rule (the stored object was not at
+//! hand) must not end its series by being sent back.
+//!
+//! **Zones.** Dates are counted in the zone of the stored `DTSTART`; a timed start without a zone
+//! chrono-tz knows (floating, or a name only its `VTIMEZONE` explains) counts in the computer's zone,
+//! the zone [`crate::ical`] reads it in. Windows names of the common zones are known
+//! ([`crate::ical`]). Lines written here name the zone by its IANA name; the object gets its
+//! `VTIMEZONE` when it has none for it.
 //!
 //! Whatever the suite does not know stays as stored: properties of other programs, alarms, zones. The
 //! server keeps expanding the occurrences (decision 1); the `rrule` crate only counts dates here: the
@@ -31,7 +51,7 @@ use chrono_tz::Tz;
 use torro_pim::model::{Repeat, RepeatEnd, SeriesScope};
 use torro_pim::{Event, EventTime, ProviderError};
 
-use crate::ical::{self, Property};
+use crate::ical::{self, ObjectFacts, Property};
 use crate::write;
 
 /// At most this many dates are counted per rule; a rule that goes on is compared only as far.
@@ -162,13 +182,10 @@ pub fn delete(stored: &str, event: &Event, scope: SeriesScope, now: DateTime<Utc
     match (scope, &found.main) {
         (SeriesScope::Series, _) => Ok(gone),
         (SeriesScope::Following, Some(main)) if main.event.start == key => Ok(gone),
-        (SeriesScope::Following, Some(main)) => {
-            let head = head(&object, main, key, now);
-            Ok(Outcome { plan: Plan::Replace { ics: head.text() }, reset: 0, key: None })
-        }
+        (SeriesScope::Following, Some(main)) => Ok(replaced(&head(&object, main, key, now), Some(main))),
         (SeriesScope::Following, None) => {
             object.retain_vevents(|block| key_of(block).is_none_or(|k| instant(k) < instant(key)));
-            Ok(if object.vevents().next().is_none() { gone } else { replaced(&object) })
+            Ok(if object.vevents().next().is_none() { gone } else { replaced(&object, None) })
         }
         (SeriesScope::Occurrence, main) => {
             object.retain_vevents(|block| key_of(block) != Some(key));
@@ -176,7 +193,7 @@ pub fn delete(stored: &str, event: &Event, scope: SeriesScope, now: DateTime<Utc
                 let excluded = write::time_line("EXDATE", key, main.zone);
                 object.edit_master(|block| touch(&insert(block, vec![excluded]), now));
             }
-            Ok(if object.vevents().next().is_none() { gone } else { replaced(&object) })
+            Ok(if object.vevents().next().is_none() { gone } else { replaced(&object, main.as_ref()) })
         }
     }
 }
@@ -195,6 +212,28 @@ pub fn drops(stored: &str, event: &Event, scope: SeriesScope) -> u32 {
 /// `scope` resets ([`Outcome::reset`]); 0 when it cannot tell.
 pub fn resets(stored: &str, event: &Event, scope: SeriesScope) -> u32 {
     lost(stored, event, scope).map_or(0, |lost| lost.reset)
+}
+
+/// The occurrence with the key `key` of the object `ics` as it was written ([`Plan`]), the way the
+/// core caches it after the server expanded it: its uid, start, end and fields, with `recurrence_id`,
+/// `repeat`, `time_zone`, `exceptions` and `recurring` as [`ObjectFacts::complete`] puts them; the
+/// object's single event for `key: None`. Without `collection`, `href` and `etag`, which the caller
+/// knows. `None` when the object holds no such event.
+///
+/// The answer to a write of a series is built from it when the occurrence is not among those read
+/// again (outside the cached window, or reading failed): it is the occurrence written, with its key,
+/// never another one, and after a split the uid and rule (the rest of a `COUNT`) of the new series.
+pub fn occurrence(ics: &str, key: Option<EventTime>) -> Option<Event> {
+    let object = Object::read(ics);
+    let mut event = match key {
+        Some(key) => match object.exception(key).and_then(|block| event_of(block)) {
+            Some(changed) => changed,
+            None => object.master().and_then(|block| Main::of(block))?.at(key),
+        },
+        None => object.master().and_then(|block| event_of(block))?,
+    };
+    ObjectFacts::read(ics).complete(&mut event);
+    Some(event)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -337,9 +376,28 @@ impl Object {
     }
 }
 
-/// `object` as the stored object becomes.
-fn replaced(object: &Object) -> Outcome {
-    Outcome { plan: Plan::Replace { ics: object.text() }, reset: 0, key: None }
+/// `object` as the stored object becomes ([`zoned`]).
+fn replaced(object: &Object, main: Option<&Main>) -> Outcome {
+    Outcome { plan: Plan::Replace { ics: zoned(object, main) }, reset: 0, key: None }
+}
+
+/// `object` as text ([`Object::text`]), with the `VTIMEZONE` of the series' zone (`main`) added when
+/// one of its lines names that zone (`TZID=`) and the object defines none, as RFC 5545 section 3.6.5
+/// asks. The lines written here name the zone by its IANA name, also where the stored start names it
+/// otherwise (Windows' `W. Europe Standard Time`) or not at all (floating).
+fn zoned(object: &Object, main: Option<&Main>) -> String {
+    let text = object.text();
+    let Some((tz, around)) = main.and_then(|main| main.zone.map(|tz| (tz, main.event.start))) else { return text };
+    let name = tz.name();
+    let named = ical::unfold(&text)
+        .iter()
+        .any(|line| ical::parse_line(line).is_some_and(|prop| prop.param("TZID").is_some_and(|zone| zone == name)));
+    if !named || object.zones().iter().any(|zone| zone == name) {
+        return text;
+    }
+    let mut object = object.clone();
+    object.add_zone(write::vtimezone(tz, instant(around)));
+    object.text()
 }
 
 fn is_master(block: &[String]) -> bool {
@@ -543,7 +601,7 @@ struct Main {
     event: Event,
     /// Its `RRULE` text; `None` without one.
     rule: Option<String>,
-    /// The zone of its timed `DTSTART` (`TZID`); `None` for a day, UTC or a zone chrono-tz does not know.
+    /// The zone its dates are counted and written in ([`count_zone`]); `None` for a day or UTC.
     zone: Option<Tz>,
     /// Its `EXDATE`s.
     excluded: Vec<EventTime>,
@@ -554,7 +612,7 @@ struct Main {
 impl Main {
     fn of(block: &[String]) -> Option<Main> {
         let event = event_of(block)?;
-        let zone = event.time_zone.as_deref().and_then(ical::zone).filter(|_| !event.all_day());
+        let zone = count_zone(block, &event);
         Some(Main {
             rule: first(block, "RRULE").map(|prop| prop.value.trim().to_string()),
             zone,
@@ -596,6 +654,23 @@ impl Main {
         dates.list.retain(|time| !self.excluded.contains(time));
         Some(dates)
     }
+}
+
+/// The zone the dates of the main event `event` (its `block`) are counted in, the zone the reader
+/// read its `DTSTART` in: the one its `TZID` names (Windows names of the common zones included,
+/// [`ical::zone`]); for a timed start without a zone chrono-tz knows (floating, or a name only the
+/// object's `VTIMEZONE` explains) the computer's ([`write::machine_zone`]), where the reader puts it.
+/// `None` for a day and for UTC: counting in UTC from a start read in the computer's zone would give
+/// keys the server never expands, and every change would look like dropping events.
+fn count_zone(block: &[String], event: &Event) -> Option<Tz> {
+    if event.all_day() {
+        return None;
+    }
+    if let Some(tz) = event.time_zone.as_deref().and_then(ical::zone) {
+        return Some(tz);
+    }
+    let utc = first(block, "DTSTART").is_some_and(|prop| prop.value.trim().to_ascii_uppercase().ends_with('Z'));
+    if utc { None } else { write::machine_zone().filter(|tz| !write::is_utc(*tz)) }
 }
 
 /// Dates of a series, in order.
@@ -769,9 +844,18 @@ enum Rule {
     Remove,
 }
 
+/// Whether saving `event` with a scope `series` or `following` ends its series: `repeat: None` together
+/// with `recurring: false`. `repeat: None` with `recurring: true` keeps the stored rule, so an
+/// occurrence a client got without its rule (outside the cached window, the stored object not at
+/// hand) does not end the series by being sent back (finding 3 of the review of #278). The core and
+/// the approvals read it from here, so they say the same as the save does.
+pub fn ends_series(event: &Event) -> bool {
+    event.repeat.is_none() && !event.recurring
+}
+
 fn rule_change(main: &Main, event: &Event) -> Rule {
     match event.repeat.as_deref() {
-        None if main.is_series() => Rule::Remove,
+        None if main.is_series() && ends_series(event) => Rule::Remove,
         None => Rule::Keep,
         Some(repeat) => {
             let text = write::rule_text(repeat, main.rule.as_deref(), main.event.start, main.zone);
@@ -816,7 +900,7 @@ fn save_occurrence(found: Found, key: EventTime, event: &Event, writing: &Writin
     let (block, zone_block) = write::event_onto_block(&block, &target, &object.zones(), writing.now, writing.local);
     object.put_exception(key, block);
     object.add_zone(zone_block);
-    Ok(Outcome { plan: Plan::Replace { ics: object.text() }, reset: 0, key: Some(key) })
+    Ok(Outcome { plan: Plan::Replace { ics: zoned(&object, found.main.as_ref()) }, reset: 0, key: Some(key) })
 }
 
 fn save_series(found: Found, key: EventTime, event: &Event, writing: &Writing<'_>) -> Result<Outcome, SeriesError> {
@@ -824,26 +908,31 @@ fn save_series(found: Found, key: EventTime, event: &Event, writing: &Writing<'_
     let rule = rule_change(main, event);
     let mut object = found.object;
     let edited = edit_series(&mut object, &found.before, key, event, &rule, writing)?;
-    Ok(Outcome { plan: Plan::Replace { ics: object.text() }, reset: edited.reset, key: edited.key })
+    Ok(Outcome { plan: Plan::Replace { ics: zoned(&object, Some(main)) }, reset: edited.reset, key: edited.key })
 }
 
 fn save_following(found: Found, key: EventTime, event: &Event, writing: &Writing<'_>) -> Result<Outcome, SeriesError> {
     let main = found.main.as_ref().ok_or(SeriesError::Unsupported(NO_MAIN))?;
     let rule = rule_change(main, event);
-    let shift =
-        shift_between(found.before.start, event.start, main.zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
-    let resized = length(found.before.start, found.before.end) != length(event.start, event.end);
+    // The new series is the occurrence as the client sends it, measured from where the rule puts it,
+    // not from where a changed occurrence was moved to (finding 4 of the review of #278).
+    let base = main.at(key);
+    let shift = shift_between(base.start, event.start, main.zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
+    let resized = main.length() != length(event.start, event.end);
     let head = head(&found.object, main, key, writing.now);
     let mut tail = tail(&found.object, main, key, writing.new_uid)?;
+    // Its own changed occurrence becomes the new main event (the fields it changed itself are carried
+    // from `base`), so it is not kept a second time.
+    tail.retain_vevents(|block| key_of(block) != Some(key));
     let mut reset = 0;
     // Nextcloud's rule (decision 4): later changed occurrences move only while the dates stay.
     if !shift.is_zero() || resized || rule != Rule::Keep {
-        reset = tail.exception_keys().iter().filter(|other| **other != key).count() as u32;
+        reset = tail.exception_keys().len() as u32;
         tail.retain_vevents(is_master);
         tail.edit_master(|block| set(block, &["EXDATE", "RDATE"], Vec::new()));
     }
-    let edited = edit_series(&mut tail, &found.before, key, event, &rule, writing)?;
-    let plan = Plan::Split { new: tail.text(), old: head.text() };
+    let edited = edit_series(&mut tail, &base, key, event, &rule, writing)?;
+    let plan = Plan::Split { new: zoned(&tail, Some(main)), old: zoned(&head, Some(main)) };
     Ok(Outcome { plan, reset: reset + edited.reset, key: edited.key })
 }
 
@@ -934,8 +1023,10 @@ fn edit_series(
         Rule::Keep | Rule::Set(_) => {
             target.start = shifted(main.event.start, shift, zone);
             target.end = new_length.map(|length| plus(target.start, length));
+            // The rule as the block will hold it (its `RRULE` line is set below), so writing the
+            // event onto the block keeps that text.
             let repeat = match rule {
-                Rule::Set(text) => Some(Repeat { custom: true, ..crate::recur::read(text, zone) }),
+                Rule::Set(text) => Some(crate::recur::read(text, zone)),
                 _ => main.repeat(),
             };
             target.repeat = repeat.map(Box::new);
@@ -993,6 +1084,9 @@ fn edit_series(
                     lines = map_dates(&lines, "EXDATE", zone, |time| stays(time).then(|| shifted(time, shift, zone)));
                     lines = map_dates(&lines, "RDATE", zone, |time| Some(shifted(time, shift, zone)));
                 }
+            }
+            if let Rule::Set(text) = rule {
+                lines = set(&lines, &["RRULE"], vec![format!("RRULE:{text}")]);
             }
             kept.push(Part::Vevent(merge(&lines, &target, &mut zones)));
             continue;
@@ -1059,8 +1153,10 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
     let zone = main.zone;
     let rule = rule_change(main, event);
     let following = scope == SeriesScope::Following && !found.is_first(key);
-    let shift = shift_between(found.before.start, event.start, zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
-    let resized = length(found.before.start, found.before.end) != length(event.start, event.end);
+    // As the save measures it: "following" from where the rule puts the occurrence.
+    let reference = if following { main.at(key) } else { found.before.clone() };
+    let shift = shift_between(reference.start, event.start, zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
+    let resized = length(reference.start, reference.end) != length(event.start, event.end);
     let from = |time: EventTime| !following || instant(time) >= instant(key);
     if rule == Rule::Keep && shift.is_zero() && !resized {
         return Ok(Lost::default());
@@ -1364,7 +1460,8 @@ mod tests {
     #[test]
     fn no_rule_makes_the_changed_occurrence_a_single_event() {
         let key = berlin(2026, 10, 13, 10);
-        let event = Event { repeat: None, ..occurrence(EXCEPTIONS, key) };
+        let event = Event { repeat: None, recurring: false, ..occurrence(EXCEPTIONS, key) };
+        assert!(ends_series(&event));
         let outcome = save(EXCEPTIONS, &event, SeriesScope::Series, &writing()).expect("saved");
         assert_eq!((outcome.reset, outcome.key), (2, None));
         let ics = replaced_ics(&outcome);
@@ -1570,5 +1667,187 @@ mod tests {
         let outcome = save(&custom, &event, SeriesScope::Series, &writing()).expect("saved");
         assert!(has(replaced_ics(&outcome), "RRULE:FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2"));
         assert_eq!(drops(&custom, &event, SeriesScope::Series), 0);
+    }
+
+    // Findings of the review of #278.
+
+    /// Finding 3: an occurrence sent back without its rule (the client never got it) keeps the series.
+    #[test]
+    fn no_rule_without_recurring_false_keeps_the_series() {
+        let key = berlin(2026, 10, 13, 10);
+        let event = Event { repeat: None, summary: "Product sync".into(), ..occurrence(EXCEPTIONS, key) };
+        assert!(event.recurring && !ends_series(&event));
+        for scope in [SeriesScope::Series, SeriesScope::Following] {
+            assert_eq!(drops(EXCEPTIONS, &event, scope), 0, "{scope:?}");
+            assert_eq!(resets(EXCEPTIONS, &event, scope), 0, "{scope:?}");
+        }
+        let outcome = save(EXCEPTIONS, &event, SeriesScope::Series, &writing()).expect("saved");
+        let ics = replaced_ics(&outcome);
+        assert!(has(ics, "RRULE:FREQ=WEEKLY;BYDAY=TU"), "{ics}");
+        assert_eq!(events(ics).len(), 3, "the changed occurrences stay");
+        let following = save(EXCEPTIONS, &event, SeriesScope::Following, &writing()).expect("split");
+        let (new, _) = split(&following);
+        assert!(has(new, "RRULE:FREQ=WEEKLY;BYDAY=TU"), "{new}");
+    }
+
+    /// Finding 1: the text of a rule never reaches the object unless it is the stored one or, for a
+    /// new series, a valid one-line rule.
+    #[test]
+    fn a_rule_text_from_the_client_cannot_add_lines() {
+        let key = berlin(2026, 10, 13, 10);
+        let smuggled = "FREQ=WEEKLY;BYDAY=TU\r\nATTENDEE:mailto:eve@example.org\r\nEND:VEVENT";
+        let stored = occurrence(EXCEPTIONS, key);
+        let repeat =
+            |custom: bool| Repeat { rule: smuggled.into(), custom, ..stored.repeat.as_deref().cloned().expect("rule") };
+        for custom in [true, false] {
+            let event = Event { repeat: Some(Box::new(repeat(custom))), ..stored.clone() };
+            for scope in [SeriesScope::Series, SeriesScope::Following, SeriesScope::Occurrence] {
+                let outcome = save(EXCEPTIONS, &event, scope, &writing()).expect("saved");
+                let texts: Vec<&str> = match &outcome.plan {
+                    Plan::Replace { ics } => vec![ics],
+                    Plan::Split { new, old } => vec![new, old],
+                    Plan::Delete => Vec::new(),
+                };
+                for ics in texts {
+                    assert!(!ics.contains("eve@example.org") && !ics.contains("ATTENDEE"), "{scope:?}: {ics}");
+                    assert_eq!(count(ics, "END:VEVENT"), count(ics, "BEGIN:VEVENT"), "{ics}");
+                    let rules: Vec<String> =
+                        lines(ics).into_iter().filter(|l| l.starts_with("RRULE:FREQ=WEEKLY")).collect();
+                    assert!(rules.iter().all(|l| l.starts_with("RRULE:FREQ=WEEKLY;BYDAY=TU")), "{rules:?}");
+                }
+            }
+            assert_eq!(drops(EXCEPTIONS, &event, SeriesScope::Series), 0, "the stored rule stays");
+        }
+        // A new series: a custom text is written only when it is one valid line.
+        let single = include_str!("../tests/fixtures/nextcloud-event-berlin.ics");
+        let mut event = events(single).remove(0);
+        event.repeat = Some(Box::new(Repeat { rule: smuggled.into(), custom: true, ..repeat(true) }));
+        let ics = write::event_onto(single, &event, now(), Some(Tz::Europe__Berlin));
+        assert!(!ics.contains("ATTENDEE") && count(&ics, "RRULE:FREQ=WEEKLY") == 0, "{ics}");
+        event.repeat = Some(Box::new(Repeat { rule: "FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2".into(), ..repeat(true) }));
+        let ics = write::event_onto(single, &event, now(), Some(Tz::Europe__Berlin));
+        assert!(has(&ics, "RRULE:FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2"), "{ics}");
+    }
+
+    /// Finding 4: "following" on a changed occurrence moved from 10:00 to 14:00, saved at 15:00,
+    /// starts the new series at 15:00 with the fields it changed itself.
+    #[test]
+    fn following_on_a_moved_occurrence_starts_where_the_client_put_it() {
+        let moved = EXCEPTIONS
+            .replace("DTSTART;TZID=Europe/Berlin:20261027T100000", "DTSTART;TZID=Europe/Berlin:20261027T140000")
+            .replace("DTEND;TZID=Europe/Berlin:20261027T110000", "DTEND;TZID=Europe/Berlin:20261027T150000");
+        let key = berlin(2026, 10, 27, 10);
+        let stored = occurrence(&moved, key);
+        assert_eq!(stored.start, berlin(2026, 10, 27, 14));
+        let event = Event { start: berlin(2026, 10, 27, 15), end: Some(berlin(2026, 10, 27, 16)), ..stored.clone() };
+        let outcome = save(&moved, &event, SeriesScope::Following, &writing()).expect("split");
+        assert_eq!((outcome.reset, outcome.key), (0, Some(berlin(2026, 10, 27, 15))));
+        let (new, old) = split(&outcome);
+        assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261027T150000"), "{new}");
+        assert!(has(new, "DTEND;TZID=Europe/Berlin:20261027T160000"), "{new}");
+        let new_events = events(new);
+        assert_eq!(new_events.len(), 1, "its changed occurrence went into the new main event");
+        assert_eq!(new_events[0].summary, "Weekly product sync (Q4 review)", "its own title stays");
+        assert_eq!(new_events[0].description.as_deref(), Some("Q4 numbers first."), "its own notes stay");
+        // 27 Oct 10:00 in Berlin is 09:00 UTC (winter time).
+        assert!(has(old, "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261027T085959Z"), "{old}");
+        assert_eq!(drops(&moved, &event, SeriesScope::Following), 0);
+        // Only the title changed: the new series keeps the occurrence's 14:00, and says so.
+        let renamed = Event { summary: "Q4 review".into(), ..stored };
+        let following = save(&moved, &renamed, SeriesScope::Following, &writing()).expect("split");
+        let (new, _) = split(&following);
+        assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261027T140000"), "{new}");
+    }
+
+    /// Finding 5: a series moved by a day without a new rule keeps its `BYDAY`; what falls away is
+    /// counted. With the rule moved along, nothing is lost.
+    #[test]
+    fn moving_a_series_by_a_day_counts_what_the_old_weekday_loses() {
+        let key = berlin(2026, 10, 13, 10);
+        let stored = occurrence(EXCEPTIONS, key);
+        let wednesday = Event { start: berlin(2026, 10, 14, 10), end: Some(berlin(2026, 10, 14, 11)), ..stored };
+        assert_eq!(
+            resets(EXCEPTIONS, &wednesday, SeriesScope::Series),
+            2,
+            "6 and 27 Oct are no Tuesday dates any more"
+        );
+        assert!(drops(EXCEPTIONS, &wednesday, SeriesScope::Series) > 2);
+        let outcome = save(EXCEPTIONS, &wednesday, SeriesScope::Series, &writing()).expect("saved");
+        assert_eq!(outcome.reset, 2);
+        let ics = replaced_ics(&outcome);
+        assert!(has(ics, "DTSTART;TZID=Europe/Berlin:20260902T100000"), "{ics}");
+        assert!(has(ics, "RRULE:FREQ=WEEKLY;BYDAY=TU"), "RFC 5545 allows a start off the rule: {ics}");
+        assert_eq!(events(ics).len(), 1);
+
+        let mut repeat = wednesday.repeat.as_deref().cloned().expect("rule");
+        repeat.weekdays = vec![torro_pim::model::RepeatDay { day: torro_pim::model::Weekday::Wednesday, nth: None }];
+        let along = Event { repeat: Some(Box::new(repeat)), ..wednesday };
+        assert_eq!(
+            (drops(EXCEPTIONS, &along, SeriesScope::Series), resets(EXCEPTIONS, &along, SeriesScope::Series)),
+            (0, 0)
+        );
+        let outcome = save(EXCEPTIONS, &along, SeriesScope::Series, &writing()).expect("saved");
+        let ics = replaced_ics(&outcome);
+        assert!(has(ics, "RRULE:FREQ=WEEKLY;BYDAY=WE"), "{ics}");
+        assert!(has(ics, "RECURRENCE-ID;TZID=Europe/Berlin:20261028T100000"), "{ics}");
+        assert!(has(ics, "EXDATE;TZID=Europe/Berlin:20260923T100000"), "{ics}");
+        assert_eq!(outcome.reset, 0);
+    }
+
+    /// Finding 6: a series from Outlook names its zone the Windows way; its dates are counted there.
+    #[test]
+    fn a_windows_zone_counts_like_its_iana_zone() {
+        const OUTLOOK: &str = include_str!("../tests/fixtures/outlook-series-windows-zone.ics");
+        let key = berlin(2026, 10, 13, 10);
+        let stored = occurrence(OUTLOOK, key);
+        assert_eq!(stored.time_zone.as_deref(), Some("Europe/Berlin"));
+        let renamed = Event { summary: "Jour fixe (Q4)".into(), ..stored.clone() };
+        assert_eq!(drops(OUTLOOK, &renamed, SeriesScope::Series), 0, "a new title drops nothing");
+        let outcome =
+            save(OUTLOOK, &renamed, SeriesScope::Occurrence, &writing()).expect("its key is one of the series");
+        let ics = replaced_ics(&outcome);
+        assert!(has(ics, "RECURRENCE-ID;TZID=Europe/Berlin:20261013T100000"), "{ics}");
+        assert_eq!(count(ics, "BEGIN:VTIMEZONE"), 2, "Europe/Berlin is defined for the new line: {ics}");
+        assert!(has(ics, "X-MICROSOFT-CDO-BUSYSTATUS:BUSY"));
+        // Excluded on 20 Oct, a Tuesday after the change of the clock on 25 Oct still counts at 10:00.
+        let excluded = Event { recurrence_id: Some(berlin(2026, 10, 20, 10)), ..stored.clone() };
+        assert_eq!(save(OUTLOOK, &excluded, SeriesScope::Occurrence, &writing()), Err(SeriesError::NoOccurrence));
+        let winter = occurrence(OUTLOOK, berlin(2026, 11, 3, 10));
+        let deleted = delete(OUTLOOK, &winter, SeriesScope::Occurrence, now()).expect("deleted");
+        assert!(has(replaced_ics(&deleted), "EXDATE;TZID=Europe/Berlin:20261103T100000"));
+        let moved = Event { start: berlin(2026, 10, 13, 11), end: Some(berlin(2026, 10, 13, 12)), ..stored };
+        assert_eq!(drops(OUTLOOK, &moved, SeriesScope::Series), 0, "moving an hour drops nothing");
+    }
+
+    /// A floating start counts in the computer's zone, where the reader read it.
+    #[test]
+    fn a_floating_start_counts_in_the_computer_s_zone() {
+        let floating = DST.replace("DTSTART;TZID=Europe/Berlin:", "DTSTART:");
+        let main = Object::read(&floating).master().and_then(|b| Main::of(b)).expect("main");
+        assert_eq!(main.zone, write::machine_zone().filter(|tz| !write::is_utc(*tz)));
+        let utc = Object::read(&floating.replace("DTSTART:20261016T100000", "DTSTART:20261016T080000Z"));
+        assert_eq!(utc.master().and_then(|b| Main::of(b)).and_then(|m| m.zone), None, "UTC stays UTC");
+    }
+
+    /// Finding 2: the answer of a write is the occurrence written, from the object sent.
+    #[test]
+    fn the_occurrence_written_comes_from_the_object_sent() {
+        let key = berlin(2026, 10, 15, 8);
+        let event = Event { location: Some("Park".into()), ..occurrence(COUNTED, key) };
+        let outcome = save(COUNTED, &event, SeriesScope::Following, &writing()).expect("split");
+        let (new, old) = split(&outcome);
+        let written = super::occurrence(new, outcome.key).expect("the occurrence");
+        assert_eq!((written.uid.as_str(), written.recurrence_id, written.start), (NEW_UID, Some(key), key));
+        assert_eq!(written.location.as_deref(), Some("Park"));
+        assert_eq!(
+            written.repeat.as_deref().map(|r| (r.rule.as_str(), r.end)),
+            Some(("FREQ=DAILY;COUNT=7", RepeatEnd::Count(7)))
+        );
+        assert!(written.recurring && written.time_zone.as_deref() == Some("Europe/Berlin"));
+        let changed = super::occurrence(old, Some(berlin(2026, 10, 14, 8))).expect("a changed one of the old series");
+        assert_eq!(changed.exceptions, [berlin(2026, 10, 14, 8)]);
+        let single = include_str!("../tests/fixtures/nextcloud-event-berlin.ics");
+        let one = super::occurrence(single, None).expect("the single event");
+        assert_eq!((one.recurrence_id, one.repeat.is_none(), one.recurring), (None, true, false));
     }
 }

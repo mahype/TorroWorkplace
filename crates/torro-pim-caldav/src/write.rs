@@ -385,8 +385,14 @@ impl CalDavClient {
     /// "This and all following" writes the new object first (`If-None-Match: *`, a new UID in the
     /// same collection) and then the shortened series; when that second write fails, the new object
     /// is deleted again and the error is the answer, so the series is never doubled. With `to` (a
-    /// collection URL of the same server) the whole series moves there: written new, then the stored
-    /// object deleted; a split cannot move.
+    /// collection URL of the same server) the whole series moves there: written new
+    /// (`If-None-Match: *`), then the stored object deleted (`If-Match`); when that delete fails, the
+    /// new object is deleted again and the error is the answer, so the series never lies twice. A
+    /// split cannot move.
+    ///
+    /// The change is planned on the version the client read: when the server answers the read with
+    /// another ETag than `event.etag`, it is a conflict before anything is written, so not even a
+    /// new object (a split, a move) is built from a version the client has not seen.
     ///
     /// Refused before anything is written ([`SeriesFailure::Refused`]): no such occurrence (also an
     /// object that is gone), and changes the suite cannot write yet. An update without `href` or
@@ -398,25 +404,38 @@ impl CalDavClient {
         to: Option<&str>,
     ) -> Result<SeriesWrite, SeriesFailure> {
         let (href, etag) = series_item(event)?;
-        let stored = self.stored_ics(&event.collection, Some(href)).await?.ok_or(SeriesError::NoOccurrence)?;
+        let stored = self.stored_version(event, href, etag).await?;
         let uid = new_uid();
         let writing = series::Writing { now: Utc::now(), local: machine_zone(), new_uid: &uid };
         let outcome = series::save(&stored, event, scope, &writing)?;
         let (reset, key) = (outcome.reset, outcome.key);
         match (outcome.plan, to) {
             (Plan::Replace { ics }, None) => {
+                let written = series::occurrence(&ics, key);
                 let kept = self.put_item(&event.collection, &event.uid, Some(href), Some(etag), ics).await?;
-                Ok(SeriesWrite { kept: Some(kept), split: None, key, reset })
+                Ok(SeriesWrite { kept: Some(kept), split: None, key, reset, event: written })
             }
             (Plan::Replace { ics }, Some(to)) => {
-                let moved = self.put_item(to, &event.uid, None, None, ics).await?;
-                self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await?;
-                Ok(SeriesWrite { kept: Some(moved), split: None, key, reset })
+                let written = series::occurrence(&ics, key);
+                let (moved_href, moved_etag) = self.put_item(to, &event.uid, None, None, ics).await?;
+                if let Err(err) = self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await {
+                    // Taken back, or the series would lie in both calendars.
+                    let undone = self.delete_item(to, &event.uid, Some(&moved_href), Some(&moved_etag)).await;
+                    if undone.is_err() {
+                        eprintln!("torro-pim-caldav: the moved copy of a series could not be taken back");
+                    }
+                    return Err(err.into());
+                }
+                Ok(SeriesWrite { kept: Some((moved_href, moved_etag)), split: None, key, reset, event: written })
             }
             (Plan::Split { new, old }, None) => {
+                let written = series::occurrence(&new, key);
                 let (new_href, new_etag) = self.put_item(&event.collection, &uid, None, None, new).await?;
                 match self.put_item(&event.collection, &event.uid, Some(href), Some(etag), old).await {
-                    Ok(kept) => Ok(SeriesWrite { kept: Some(kept), split: Some((new_href, new_etag)), key, reset }),
+                    Ok(kept) => {
+                        let split = Some((new_href, new_etag));
+                        Ok(SeriesWrite { kept: Some(kept), split, key, reset, event: written })
+                    }
                     Err(err) => {
                         // Taken back, or the events after the split would show twice.
                         let undone = self.delete_item(&event.collection, &uid, Some(&new_href), Some(&new_etag)).await;
@@ -432,9 +451,20 @@ impl CalDavClient {
             }
             (Plan::Delete, _) => {
                 self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await?;
-                Ok(SeriesWrite { kept: None, split: None, key: None, reset })
+                Ok(SeriesWrite { kept: None, split: None, key: None, reset, event: None })
             }
         }
+    }
+
+    /// The object stored at `href` for a write to the series of `event`, in the version `etag` the
+    /// client read: `NoOccurrence` when it is gone, a conflict when the server holds another version
+    /// (by the ETag of its answer; a server that sends none is checked by the `If-Match` of the write).
+    async fn stored_version(&self, event: &Event, href: &str, etag: &str) -> Result<String, SeriesFailure> {
+        let fetched = self.fetch_item(&event.collection, href).await?.ok_or(SeriesError::NoOccurrence)?;
+        if fetched.etag.as_deref().is_some_and(|stored| stored != etag) {
+            return Err(ProviderError::Conflict { uid: event.uid.clone() }.into());
+        }
+        Ok(fetched.ics)
     }
 
     /// Deletes the occurrence `event` of the series stored at its `href` with `scope` (task TE.4,
@@ -442,15 +472,15 @@ impl CalDavClient {
     /// with the `etag` the event was read with. Refused like [`CalDavClient::save_in_series`].
     pub async fn delete_in_series(&self, event: &Event, scope: SeriesScope) -> Result<SeriesWrite, SeriesFailure> {
         let (href, etag) = series_item(event)?;
-        let stored = self.stored_ics(&event.collection, Some(href)).await?.ok_or(SeriesError::NoOccurrence)?;
+        let stored = self.stored_version(event, href, etag).await?;
         match series::delete(&stored, event, scope, Utc::now())?.plan {
             Plan::Replace { ics } => {
                 let kept = self.put_item(&event.collection, &event.uid, Some(href), Some(etag), ics).await?;
-                Ok(SeriesWrite { kept: Some(kept), split: None, key: None, reset: 0 })
+                Ok(SeriesWrite { kept: Some(kept), split: None, key: None, reset: 0, event: None })
             }
             Plan::Delete | Plan::Split { .. } => {
                 self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await?;
-                Ok(SeriesWrite { kept: None, split: None, key: None, reset: 0 })
+                Ok(SeriesWrite { kept: None, split: None, key: None, reset: 0, event: None })
             }
         }
     }
@@ -503,6 +533,12 @@ pub struct SeriesWrite {
     pub key: Option<EventTime>,
     /// How many changed occurrences were reset ([`series::Outcome::reset`]).
     pub reset: u32,
+    /// The changed occurrence as written, read from the object sent ([`series::occurrence`]): uid,
+    /// times, fields, `recurrence_id` (= `key`), the rule and changed occurrences of the object that
+    /// holds it (the new one after a split). Without `collection`, `href` and `etag` (those are in
+    /// `kept`/`split`); `None` after a delete. The core answers with it when it cannot read the
+    /// occurrence again, so the answer always names the occurrence written, never another.
+    pub event: Option<Event>,
 }
 
 /// The `href` and `etag` an occurrence of a series is written with; refused without either, as every
@@ -921,14 +957,27 @@ fn stored_rule_line(before: &Event) -> Option<String> {
 }
 
 /// The rule text (`RRULE` value) to write for `repeat` on a series that starts at `start` in `zone`,
-/// where `stored` is the rule stored now:
+/// where `stored` is the rule stored now. The client's [`Repeat::rule`] never reaches the object,
+/// except for a custom rule of a series that has none stored yet (and then only when it passes
+/// [`crate::recur::check`]): a client could otherwise smuggle lines in after `RRULE:` (finding 1 of
+/// the review of #278).
 ///
+/// - [`Repeat::custom`]: `stored`, as the model promises (the editor can only replace a custom rule
+///   whole, by fields); without one, the client's text when it is valid, else nothing;
 /// - `stored` when the fields of `repeat` are those of `stored` (also when a client built them anew
 ///   with an empty [`Repeat::rule`]): an untouched rule keeps its text, `WKST` and order;
-/// - else [`crate::recur::write`], with an end that fits the start: a day for an all-day series, an
-///   instant for a timed one (the last second of that day in `zone`), as RFC 5545 asks of `UNTIL`.
+/// - else a rule made from the fields alone ([`crate::recur::write`]), with an end that fits the
+///   start: a day for an all-day series, an instant for a timed one (the last second of that day in
+///   `zone`), as RFC 5545 asks of `UNTIL`.
 pub(crate) fn rule_text(repeat: &Repeat, stored: Option<&str>, start: EventTime, zone: Option<Tz>) -> String {
-    if let Some(stored) = stored.filter(|_| !repeat.custom) {
+    let stored = stored.map(str::trim).filter(|stored| !stored.is_empty());
+    if repeat.custom {
+        return match stored {
+            Some(stored) => stored.to_string(),
+            None => crate::recur::write(repeat),
+        };
+    }
+    if let Some(stored) = stored {
         let as_stored = Repeat { rule: stored.to_string(), ..repeat.clone() };
         if crate::recur::write(&as_stored) == stored {
             return stored.to_string();
@@ -944,7 +993,7 @@ pub(crate) fn rule_text(repeat: &Repeat, stored: Option<&str>, start: EventTime,
         }
         (end, _) => end,
     };
-    crate::recur::write(&Repeat { end, ..repeat.clone() })
+    crate::recur::write(&Repeat { end, rule: String::new(), ..repeat.clone() })
 }
 
 /// `STATUS:CONFIRMED`, `TENTATIVE` or `CANCELLED`.
@@ -966,7 +1015,7 @@ fn write_zone(event: &Event, before: Option<&Event>, local: Option<Tz>) -> Optio
 }
 
 /// The zone is UTC under one of its names.
-fn is_utc(tz: Tz) -> bool {
+pub(crate) fn is_utc(tz: Tz) -> bool {
     matches!(
         tz,
         Tz::UTC | Tz::Etc__UTC | Tz::Etc__Universal | Tz::Universal | Tz::Etc__Zulu | Tz::Zulu | Tz::GMT | Tz::Etc__GMT
@@ -1012,7 +1061,7 @@ fn instant(time: EventTime) -> DateTime<Utc> {
 /// starting in 1970, read off the changes of the clock in the year of `around`. A zone without
 /// summer time gets one `STANDARD`; a year with other than two changes (a zone that starts or ends
 /// summer time, or pauses it) gets one observance per change on its date, without a rule.
-fn vtimezone(tz: Tz, around: DateTime<Utc>) -> Vec<String> {
+pub(crate) fn vtimezone(tz: Tz, around: DateTime<Utc>) -> Vec<String> {
     let changes = clock_changes(tz, around.year());
     let mut out = vec!["BEGIN:VTIMEZONE".to_string(), format!("TZID:{}", tz.name())];
     if changes.is_empty() {
@@ -1511,10 +1560,12 @@ fn calendar(component: &str, zones: &[String], body: &[String]) -> String {
 }
 
 /// Appends one content line, folded at 75 octets and ended with CRLF. Folds fall between
-/// characters, never inside a UTF-8 sequence.
+/// characters, never inside a UTF-8 sequence. Control characters other than a tab are left out
+/// (RFC 5545 section 3.1 allows none in a line): a line break inside `line` would start a new
+/// property, so nothing that reaches here can add a line, whatever a field held.
 pub(crate) fn push_line(out: &mut String, line: &str) {
     let mut octets = 0;
-    for ch in line.chars() {
+    for ch in line.chars().filter(|ch| *ch == '\t' || !ch.is_control()) {
         let len = ch.len_utf8();
         if octets + len > MAX_LINE_OCTETS {
             out.push_str("\r\n ");
@@ -2774,7 +2825,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
             assert!(zone_blocks(&ics).is_empty());
         }
         // An unknown zone name counts as none; all-day events have no zone.
-        let unknown = Event { time_zone: Some("W. Europe Standard Time".into()), ..event.clone() };
+        let unknown = Event { time_zone: Some("Mars Standard Time".into()), ..event.clone() };
         assert!(unfolded_lines(&event_ics(&unknown, now(), None)).contains(&"DTSTART:20261011T080000Z".to_string()));
         let day = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
         let all_day =
@@ -3075,5 +3126,139 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         }));
         assert!(client.occurrences(&collection, &[], start, end).await.expect("nothing").is_empty());
         assert_eq!(multiget.calls_async().await, 1, "nothing asked for, nothing sent");
+    }
+
+    // Findings of the review of #278.
+
+    /// Finding 1: no line can carry another one in, whatever reaches the writer.
+    #[test]
+    fn a_line_never_holds_a_line_break() {
+        let mut out = String::new();
+        push_line(&mut out, "RRULE:FREQ=WEEKLY\r\nATTENDEE:mailto:eve@example.org\u{0}\tX");
+        assert_eq!(out, "RRULE:FREQ=WEEKLYATTENDEE:mailto:eve@example.org\tX\r\n");
+    }
+
+    /// Finding 1: a custom rule keeps the stored text; a client's text is used only for a series
+    /// without one, and only when it is a valid line.
+    #[test]
+    fn a_custom_rule_keeps_the_stored_text_and_a_client_text_must_be_valid() {
+        let start = EventTime::DateTime(at(13, 8));
+        let custom = |rule: &str| Repeat { rule: rule.into(), custom: true, ..weekly(RepeatEnd::Never) };
+        let stored = Some("FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2");
+        assert_eq!(rule_text(&custom("FREQ=DAILY"), stored, start, None), "FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2");
+        assert_eq!(rule_text(&custom("FREQ=DAILY;BYHOUR=9"), None, start, None), "FREQ=DAILY;BYHOUR=9");
+        assert_eq!(rule_text(&custom("FREQ=DAILY\r\nATTENDEE:x"), None, start, None), "");
+        // Not custom: the fields decide, never the client's text.
+        let fields = Repeat { rule: "FREQ=WEEKLY\r\nATTENDEE:x".into(), ..weekly(RepeatEnd::Never) };
+        assert_eq!(rule_text(&fields, None, start, None), "FREQ=WEEKLY");
+        assert_eq!(rule_text(&fields, Some("FREQ=WEEKLY;WKST=SU"), start, None), "FREQ=WEEKLY;WKST=SU");
+        let no_rule = Event { repeat: Some(Box::new(custom("FREQ=DAILY\nEND:VEVENT"))), ..event() };
+        let ics = event_ics(&no_rule, now(), None);
+        assert!(
+            !ics.contains("END:VEVENT\r\nEND:VEVENT") && !unfolded_lines(&ics).iter().any(|l| l.starts_with("RRULE"))
+        );
+    }
+
+    const SERIES_ICS: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nDTSTART:20261011T080000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Workshop\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    /// The second occurrence of [`SERIES_ICS`] at `href`, read in version `"1"`.
+    fn second_occurrence(collection: &str) -> Event {
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 18, 8, 0, 0).unwrap());
+        Event {
+            collection: collection.to_string(),
+            href: Some(format!("{collection}e.ics")),
+            etag: Some("\"1\"".into()),
+            uid: "u".into(),
+            summary: "Workshop".into(),
+            start: key,
+            end: None,
+            recurring: true,
+            recurrence_id: Some(key),
+            repeat: Some(Box::new(crate::recur::read("FREQ=WEEKLY", None))),
+            ..event()
+        }
+    }
+
+    fn client_of(server: &httpmock::MockServer) -> CalDavClient {
+        let account = crate::CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
+        CalDavClient::new(reqwest::Client::new(), &account, torro_core::account::Secret::new("secret")).expect("client")
+    }
+
+    /// Finding 7: the change is planned on the version the client read; another one on the server is
+    /// a conflict before anything is written.
+    #[tokio::test]
+    async fn a_series_newer_than_the_client_read_is_a_conflict_before_writing() {
+        let server = httpmock::MockServer::start_async().await;
+        let work = server.url("/remote.php/dav/calendars/anna/work/");
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/remote.php/dav/calendars/anna/work/e.ics");
+                then.status(200).header("ETag", "\"2\"").body(SERIES_ICS);
+            })
+            .await;
+        let puts = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::PUT);
+                then.status(204);
+            })
+            .await;
+        let deletes = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE);
+                then.status(204);
+            })
+            .await;
+        let client = client_of(&server);
+        let event = Event { summary: "Workshop II".into(), ..second_occurrence(&work) };
+        let saved = client.save_in_series(&event, SeriesScope::Series, None).await;
+        assert!(matches!(saved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{saved:?}");
+        let deleted = client.delete_in_series(&event, SeriesScope::Occurrence).await;
+        assert!(matches!(deleted, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{deleted:?}");
+        assert_eq!((puts.calls_async().await, deletes.calls_async().await), (0, 0), "nothing written");
+    }
+
+    /// Finding 7: a series moved to another calendar is taken back there when the old one cannot be
+    /// deleted, so it never lies twice.
+    #[tokio::test]
+    async fn a_moved_series_whose_old_object_stays_is_taken_back() {
+        let server = httpmock::MockServer::start_async().await;
+        let work = server.url("/remote.php/dav/calendars/anna/work/");
+        let home = server.url("/remote.php/dav/calendars/anna/home/");
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/remote.php/dav/calendars/anna/work/e.ics");
+                then.status(200).header("ETag", "\"1\"").body(SERIES_ICS);
+            })
+            .await;
+        let created = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::PUT)
+                    .path("/remote.php/dav/calendars/anna/home/u.ics")
+                    .header("If-None-Match", "*");
+                then.status(201).header("ETag", "\"n1\"");
+            })
+            .await;
+        let refused = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE)
+                    .path("/remote.php/dav/calendars/anna/work/e.ics")
+                    .header("If-Match", "\"1\"");
+                then.status(412);
+            })
+            .await;
+        let taken_back = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE)
+                    .path("/remote.php/dav/calendars/anna/home/u.ics")
+                    .header("If-Match", "\"n1\"");
+                then.status(204);
+            })
+            .await;
+        let client = client_of(&server);
+        let event = second_occurrence(&work);
+        let moved = client.save_in_series(&event, SeriesScope::Series, Some(&home)).await;
+        assert!(matches!(moved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{moved:?}");
+        assert_eq!((created.calls_async().await, refused.calls_async().await), (1, 1));
+        assert_eq!(taken_back.calls_async().await, 1, "the copy in home goes again");
     }
 }
