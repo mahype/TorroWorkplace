@@ -1024,7 +1024,7 @@ fn offer_answered(state: &mut State, result: &Result<Response, String>) -> Optio
             }
             // The question needs the password, which the mail path asks for (task M11.4).
             Ok(Response::UntrustedCertificate { .. }) => {
-                offer.failed = Some((id, tr("The certificate is not trusted.").into()));
+                offer.failed = Some((id, tr("The certificate is not trusted. Enter the password to check it.").into()));
             }
             Ok(_) => offer.failed = Some((id, tr("Torro Workplace did not answer as expected. Try again.").into())),
             Err(message) => offer.failed = Some((id, message.clone())),
@@ -1466,9 +1466,12 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::MailAddress | Step::MailSearching => mail_address_step(state),
         Step::MailPassword => mail_password_step(state),
         Step::MailServices => mail_services_step(state),
-        Step::MailConnecting => typo::text(typo::body(), tr("Signing in…")).style(theme::text_2).into(),
-        Step::MailCertificate => match state.mail.certificates.asking() {
+        // After "Trust certificate" the question stays while the request is out (no jump).
+        Step::MailConnecting | Step::MailCertificate => match state.mail.certificates.shown() {
             Some(asked) => certificate_question(asked),
+            None if state.step == Step::MailConnecting => {
+                typo::text(typo::body(), tr("Signing in…")).style(theme::text_2).into()
+            }
             None => Space::new().into(),
         },
         Step::AiChoose => ai_step(state),
@@ -1501,6 +1504,7 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailSearching, _) => tr("Looking for your provider."),
         (Step::MailPassword, _) => tr("Enter the password of your mailbox."),
         (Step::MailServices, _) => tr("Choose what to use from this account."),
+        (Step::MailConnecting, _) if state.mail.certificates.pending().is_some() => certificate_title(),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
         (Step::MailCertificate, _) => certificate_title(),
         (Step::AiChoose, _) => tr("Choose where your AI models run."),
@@ -2231,8 +2235,12 @@ fn footer(state: &State) -> Element<'_, Message> {
             .into(),
         None => blank::horizontal().into(),
     };
-    let back =
-        has_back(state).then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
+    // While a trusted certificate's request is out, "Back" stays in its place, but off.
+    let pending = state.step == Step::MailConnecting && state.mail.certificates.pending().is_some();
+    let back = (has_back(state) || pending).then(|| {
+        let back = (!pending).then_some(Message::Back);
+        widgets::text_button(None, tr("Back"), style::button::secondary, back)
+    });
     // A TorroMail account taken over on its step is done, not cancelled.
     let taken_over = state.step == Step::TorroMail && state.torromail.imported;
     let cancel =
@@ -2240,13 +2248,13 @@ fn footer(state: &State) -> Element<'_, Message> {
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match state.step {
         Step::TorroMail if taken_over => primary(tr("Done"), Some(Message::Close)),
+        Step::MailConnecting => state.mail.certificates.pending().map(|asked| trust_button(asked, true, None)),
         Step::Provider
         | Step::TorroMail
         | Step::SigningIn
         | Step::Github
         | Step::Checking
         | Step::MailSearching
-        | Step::MailConnecting
         | Step::AiChoose
         | Step::AiConnecting
         | Step::NtfyChecking => None,
@@ -2266,7 +2274,9 @@ fn footer(state: &State) -> Element<'_, Message> {
         }
         Step::MailServices => primary(tr("Connect"), mail_can_continue(state, state.step).then_some(Message::Continue)),
         Step::MailCertificate => {
-            primary(tr("Trust certificate"), mail_can_continue(state, state.step).then_some(Message::Continue))
+            state.mail.certificates.asking().map(|asked| {
+                trust_button(asked, false, mail_can_continue(state, state.step).then_some(Message::Continue))
+            })
         }
         Step::Token => primary(tr("Continue"), state.github.has_token().then_some(Message::Continue)),
         Step::Done => primary(tr("Done"), Some(Message::Close)),
@@ -2290,10 +2300,15 @@ pub(super) struct Untrusted {
 }
 
 /// The certificates of one dialog that sends `ConnectMail` (the add-account dialog's mail path,
-/// "Server settings", "Change password"): the ones the person trusted in it and the one it asks
-/// about now. The core stores a trusted certificate only once the whole sign-in succeeded, so when
-/// a second server asks too (IMAP, then CalDAV with another certificate) every `ConnectMail` of the
-/// dialog has to carry all of them ([`Certificates::trusted`]), not only the last.
+/// "Server settings", "Change password"): the ones the person trusted in it, the one it asks
+/// about now, and the one just trusted while that request is on its way. The core stores a
+/// trusted certificate only once the whole sign-in succeeded, so when a second server asks too
+/// (IMAP, then CalDAV with another certificate) every `ConnectMail` of the dialog has to carry all
+/// of them ([`Certificates::trusted`]), not only the last.
+///
+/// The question stays on screen while the request it led to is out ([`Certificates::shown`],
+/// [`Certificates::pending`]): the dialog does not jump back to its form and its width for the
+/// moment of signing in, and a second question takes the place of the first one in place.
 ///
 /// The password rule that goes with it lives in each dialog: it keeps the password only while
 /// [`Certificates::asking`] is `Some`; any other answer, "Back" ([`Certificates::dismiss`]) or
@@ -2304,12 +2319,18 @@ pub(super) struct Certificates {
     trusted: Vec<String>,
     /// The certificate the dialog asks about now; `None` while it asks nothing.
     asking: Option<Untrusted>,
+    /// The certificate just trusted ([`Certificates::trust`]) while the request that carries it
+    /// waits for its answer; the next answer ([`Certificates::ask`]) ends it.
+    pending: Option<Untrusted>,
 }
 
 impl Certificates {
-    /// Takes `result` when it is `Response::UntrustedCertificate`: the dialog asks about it from now
-    /// on, and `true` comes back. Every other answer changes nothing and gives `false`.
+    /// Takes the answer `result` to the dialog's request: it ends a [`Certificates::pending`]
+    /// question whatever it is. When it is `Response::UntrustedCertificate` the dialog asks about
+    /// that certificate from now on, and `true` comes back; every other answer gives `false`.
+    /// Each dialog hands it every answer to its `ConnectMail`.
     pub(super) fn ask(&mut self, result: &Result<Response, String>) -> bool {
+        self.pending = None;
         let Ok(Response::UntrustedCertificate { service, host, sha256, public }) = result else { return false };
         self.asking =
             Some(Untrusted { service: service.clone(), host: host.clone(), sha256: sha256.clone(), public: *public });
@@ -2321,19 +2342,34 @@ impl Certificates {
         self.asking.as_ref()
     }
 
+    /// The certificate just trusted, while the request that carries it is on its way: the dialog
+    /// shows the question with "Signing in…" in place of "Trust certificate".
+    pub(super) fn pending(&self) -> Option<&Untrusted> {
+        self.pending.as_ref()
+    }
+
+    /// The question the dialog shows in place of its form: the one it asks, else the one whose
+    /// answer is on its way. `None` shows the form.
+    pub(super) fn shown(&self) -> Option<&Untrusted> {
+        self.asking.as_ref().or(self.pending.as_ref())
+    }
+
     /// "Trust certificate": the fingerprint asked about joins the trusted ones (once) and the
-    /// question ends. `false` when nothing was asked.
+    /// question waits for the answer to the request the caller sends now
+    /// ([`Certificates::pending`]). `false` when nothing was asked.
     pub(super) fn trust(&mut self) -> bool {
         let Some(asked) = self.asking.take() else { return false };
         if !self.trusted.contains(&asked.sha256) {
-            self.trusted.push(asked.sha256);
+            self.trusted.push(asked.sha256.clone());
         }
+        self.pending = Some(asked);
         true
     }
 
     /// "Back" from the question: it ends without trusting anything.
     pub(super) fn dismiss(&mut self) {
         self.asking = None;
+        self.pending = None;
     }
 
     /// Every fingerprint trusted in this dialog, for `ConnectMail::trusted_certificates`.
@@ -2348,25 +2384,29 @@ pub(super) fn certificate_title() -> &'static str {
 }
 
 /// The question about `asked`: for a host on the public internet the warning first (its icon in
-/// `attention`, the colour only there), then which server's certificate is not trusted, and last
-/// the fingerprint in a group, so it stands right above the dialog's foot.
+/// `attention`, the colour only there, on the warning's first line), then which server's
+/// certificate is not trusted – both one block –, and a section below the fingerprint in a group,
+/// so it stands right above the dialog's foot.
 pub(super) fn certificate_question<'a, M: 'a>(asked: &Untrusted) -> Element<'a, M> {
     let sentence = trf(
         "The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this is your own server.",
         &[("host", &asked.host), ("service", &asked.service)],
     );
-    let mut page = column![].spacing(layout::section_gap());
+    let mut intro = column![].spacing(layout::item_gap());
     if let Some(warning) = certificate_warning(asked) {
-        let shield = icon::icon(Icon::ShieldAlert, icon::SIZE)
-            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention) });
-        page = page.push(
-            row![shield, typo::text(typo::body(), warning).width(Fill)].spacing(space::s()).align_y(Alignment::Center),
+        let shield: Element<'a, M> = icon::icon(Icon::ShieldAlert, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention) })
+            .into();
+        // As high as one line of the text, so the icon stands on its first line however many
+        // lines the warning wraps into.
+        let shield: Element<'a, M> = container(shield).center_y(typo::line_height(typo::body())).into();
+        intro = intro.push(
+            row![shield, typo::text(typo::body(), warning).width(Fill)].spacing(space::s()).align_y(Alignment::Start),
         );
     }
-    let fingerprint = typo::text(typo::meta().tabular(), fingerprint_lines(&asked.sha256)).wrapping(Wrapping::Word);
-    let row = container(fingerprint).width(Fill).padding([space::m(), space::l()]);
-    page.push(typo::text(typo::body(), sentence).style(theme::text_2))
-        .push(widgets::group(tr("Fingerprint (SHA-256)"), vec![row.into()], None))
+    intro = intro.push(typo::text(typo::body(), sentence).style(theme::text_2));
+    column![intro, widgets::group(tr("Fingerprint (SHA-256)"), vec![fingerprint_row(&asked.sha256)], None)]
+        .spacing(layout::section_gap())
         .into()
 }
 
@@ -2376,11 +2416,40 @@ fn certificate_warning(asked: &Untrusted) -> Option<&'static str> {
     asked.public.then(|| tr("This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider."))
 }
 
-/// `AB:CD:…` in groups of eight bytes with a space between them, so the 95 characters break into
-/// lines where the dialog is narrow and line up in the figures font where it is wide.
+/// The style of "Trust certificate" for `asked`. For a host on the public internet it is not the
+/// red primary button, which would invite the press the warning advises against, but
+/// `danger` (red text, no surface, as "Open anyway" of a suspicious link): the window then has
+/// no primary button at all. A server at home keeps `primary`, since trusting is the way on.
+pub(super) fn trust_style(asked: &Untrusted) -> widgets::ButtonStyle {
+    if asked.public { style::button::danger } else { style::button::primary }
+}
+
+/// The last button of a dialog's foot on the question about `asked`: "Trust certificate", which
+/// sends `trust`, or, while the request it sent is out (`sending`, [`Certificates::pending`]),
+/// "Signing in…" in the same style, which takes no second press ([`widgets::busy_button`]).
+pub(super) fn trust_button<'a, M: Clone + 'a>(asked: &Untrusted, sending: bool, trust: Option<M>) -> Element<'a, M> {
+    match sending {
+        true => widgets::busy_button(tr("Signing in…"), trust_style(asked)),
+        false => widgets::text_button(None, tr("Trust certificate"), trust_style(asked), trust),
+    }
+}
+
+/// The fingerprint `sha256` as one row of a group, as the question and an account's page show
+/// it ([`fingerprint_lines`], in [`typo::body`] with tabular figures, in `text`).
+pub(super) fn fingerprint_row<'a, M: 'a>(sha256: &str) -> Element<'a, M> {
+    // Where a window is narrower than a line, it breaks between characters rather than cut.
+    let text = typo::text(typo::body().tabular(), fingerprint_lines(sha256))
+        .style(theme::text)
+        .wrapping(Wrapping::WordOrGlyph);
+    container(text).width(Fill).padding([space::m(), space::l()]).into()
+}
+
+/// `AB:CD:…` in two fixed lines of sixteen bytes each, so the 32 bytes always stand as the same
+/// two lines that a person compares with what the server's admin reads out; tabular figures
+/// ([`fingerprint_row`]) keep the bytes of both lines in columns.
 fn fingerprint_lines(sha256: &str) -> String {
     let bytes: Vec<&str> = sha256.split(':').collect();
-    bytes.chunks(8).map(|group| group.join(":")).collect::<Vec<_>>().join(" ")
+    bytes.chunks(16).map(|line| line.join(":")).collect::<Vec<_>>().join("\n")
 }
 
 // ----- Demo states (`--demo --open wizard-mail-…`) --------------------------------------------
@@ -4139,10 +4208,32 @@ mod tests {
         assert!(certificate_warning(&public).is_some_and(|warning| warning.starts_with(tr(
             "This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider."
         ))));
-        // The fingerprint breaks into groups of eight bytes and keeps every byte.
+        // The fingerprint stands in two fixed lines of sixteen bytes and keeps every byte.
         let lines = fingerprint_lines(&sha);
-        assert_eq!(lines.split(' ').count(), 4);
-        assert_eq!(lines.replace(' ', ":"), sha);
+        assert!(lines.lines().all(|line| line.split(':').count() == 16), "{lines:?}");
+        assert_eq!(lines.lines().count(), 2);
+        assert_eq!(lines.replace('\n', ":"), sha);
+    }
+
+    /// Issue #284: for a host on the public internet "Trust certificate" is no red primary button
+    /// (the window then has none), for a server at home it is.
+    #[test]
+    fn trust_certificate_is_primary_only_for_a_server_at_home() {
+        let at_home = Untrusted {
+            service: "IMAP".into(),
+            host: "mail.home.lan".into(),
+            sha256: fingerprint("AB"),
+            public: false,
+        };
+        let public = Untrusted { public: true, ..at_home.clone() };
+        let theme = theme::theme();
+        let drawn = |asked: &Untrusted| trust_style(asked)(&theme, iced::widget::button::Status::Active);
+        assert_eq!(drawn(&at_home), style::button::primary(&theme, iced::widget::button::Status::Active));
+        assert_eq!(drawn(&public), style::button::danger(&theme, iced::widget::button::Status::Active));
+        for asked in [&at_home, &public] {
+            drop(trust_button::<Message>(asked, false, Some(Message::Continue)));
+            drop(trust_button::<Message>(asked, true, None));
+        }
     }
 
     #[test]
@@ -4155,10 +4246,17 @@ mod tests {
         assert!(!format!("{state:?}").contains("demo-password"), "a Secret shows nothing");
 
         let (password, trusted) = connect_mail(send(&mut state, Message::Continue));
-        assert_eq!((password.as_str(), trusted), ("demo-password", vec![sha]));
+        assert_eq!((password.as_str(), trusted), ("demo-password", vec![sha.clone()]));
         assert_eq!(state.step, Step::MailConnecting);
-        assert!(state.mail.certificates.asking().is_none(), "the question ended");
+        assert!(state.mail.certificates.asking().is_none(), "the question is answered");
+        // It stays on screen while the request is out, with "Signing in…" in the foot.
+        assert_eq!(state.mail.certificates.pending().map(|asked| asked.sha256.as_str()), Some(sha.as_str()));
+        assert_eq!(subtitle(&state), tr("Trust this certificate?"));
+        drop(view(&state, &Data::default()));
         assert!(matches!(send(&mut state, Message::Continue), Action::None), "once");
+        // The answer ends it.
+        answered(&mut state, &Err("The server cannot be reached.".to_string()));
+        assert!(state.mail.certificates.shown().is_none());
     }
 
     /// The core stores a certificate only once the whole sign-in succeeded: when CalDAV asks after
@@ -4170,8 +4268,12 @@ mod tests {
         answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &imap, false)));
         let (_, trusted) = connect_mail(send(&mut state, Message::Continue));
         assert_eq!(trusted, std::slice::from_ref(&imap));
+        assert!(state.mail.certificates.shown().is_some(), "the first question stays while signing in");
         answered(&mut state, &Ok(untrusted("CalDAV", "dav.home.lan", &caldav, false)));
         assert_eq!(state.step, Step::MailCertificate);
+        // The second question takes the place of the first.
+        assert_eq!(state.mail.certificates.shown().map(|asked| asked.service.as_str()), Some("CalDAV"));
+        assert!(state.mail.certificates.pending().is_none());
         let (password, trusted) = connect_mail(send(&mut state, Message::Continue));
         assert_eq!((password.as_str(), trusted), ("demo-password", vec![imap.clone(), caldav.clone()]));
         // The same certificate asked again is trusted once.
@@ -4223,7 +4325,10 @@ mod tests {
         let mut state = with_torromail(vec![torromail_account("f", "anna@fastmail.com")]);
         update(&mut state, Message::UseTorroMail("f".into()), &data);
         assert!(answered(&mut state, &Ok(untrusted("IMAP", "imap.example.org", &fingerprint("AB"), true))));
-        assert_eq!(state.torromail.failed, Some(("f".to_string(), tr("The certificate is not trusted.").to_string())));
+        assert_eq!(
+            state.torromail.failed,
+            Some(("f".to_string(), tr("The certificate is not trusted. Enter the password to check it.").to_string()))
+        );
         assert_eq!(state.step, Step::TorroMail);
         drop(view(&state, &data));
         update(&mut state, Message::EnterTorroMailPassword("f".into()), &data);

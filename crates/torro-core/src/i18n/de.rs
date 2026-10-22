@@ -2035,8 +2035,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Fingerprint (SHA-256)", "Fingerabdruck (SHA-256)"),
     ("Trust certificate", "Zertifikat vertrauen"),
-    ("Trusted certificate", "Vertrautes Zertifikat"),
-    ("The certificate is not trusted.", "Dem Zertifikat wird nicht vertraut."),
+    ("Trusted certificates", "Vertraute Zertifikate"),
+    (
+        "Signing in again under Server settings keeps only the certificates the servers still show.",
+        "Eine neue Anmeldung unter Servereinstellungen behält nur die Zertifikate, die die Server noch zeigen.",
+    ),
+    (
+        "The certificate is not trusted. Enter the password to check it.",
+        "Dem Zertifikat wird nicht vertraut. Gib das Passwort ein, um es zu prüfen.",
+    ),
     // CalDAV accounts with service discovery (M7.1)
     ("Enter an e-mail address or a domain name.", "Gib eine E-Mail-Adresse oder einen Domainnamen ein."),
     ("Enter the password.", "Gib das Passwort ein."),
