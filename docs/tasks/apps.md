@@ -207,7 +207,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
   wählt eine Variante (Kommentar im Issue), erst dann folgt AP.7.
 
 ### AP.7 Icons einbauen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** AP.5, AP.6 und die Auswahl · **Dateien:** `packaging/linux/icons/*.svg`,
   `packaging/macos/icons/*.png` (neu, 1024 px), `packaging/windows/*.ico`,
   `.github/workflows/publish-macos-app.yml`, `scripts/macos-dev-bundles.sh`, `packaging/windows/README.md`

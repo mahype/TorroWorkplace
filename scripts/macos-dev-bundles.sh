@@ -9,8 +9,9 @@
 # SERVICE_PROGRAM look for them (`<AppId::display_name>.app/Contents/MacOS/<AppId::program_file>`): the seven apps,
 # the core's service as an agent bundle inside "Torro Workplace.app", and the reminder. Each is signed with the
 # development identity (scripts/macos-dev-sign.sh, the embedded service before the outer bundle); without that
-# identity they stay unsigned. The service keeps the signing identifier of the program `torroworkplace`, so the
-# keychain entries of the development core stay readable.
+# identity they stay unsigned. Each bundle gets its icon from packaging/macos/icons/ (task AP.7): the service the
+# control centre's, the reminder the calendar's. The service keeps the signing identifier of the program
+# `torroworkplace`, so the keychain entries of the development core stay readable.
 #
 # It builds nothing with cargo: run `cargo build --workspace` first. It opens and starts nothing either.
 set -euo pipefail
@@ -21,6 +22,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 programs="$root/target/debug"
 out="${1:-$programs/bundles}"
 make_app="$root/packaging/macos/make-app.sh"
+icons="$root/packaging/macos/icons"
 sign="$root/scripts/macos-dev-sign.sh"
 
 # The version of the workspace ([workspace.package] in Cargo.toml), for CFBundleVersion.
@@ -28,17 +30,18 @@ version="$(awk '/^\[workspace.package\]/ { inside = 1; next } /^\[/ { inside = 0
   inside && $1 == "version" { gsub(/"/, "", $3); print $3; exit }' "$root/Cargo.toml")"
 [ -n "$version" ] || { echo "macos-dev-bundles.sh: no version in Cargo.toml" >&2; exit 1; }
 
-# One line per bundle: program file in the bundle | program in target/debug | bundle id suffix | title | agent app.
-# Program file, id suffix (the window class) and title follow AppId::program_file, window_class and display_name
-# in crates/torro-core/src/app.rs; the reminder follows torrocalendar's reminder (task ER2.2).
-apps='torroworkplace|torroworkplace|torro-workplace|Torro Workplace|0
-torroinbox|torroinbox|torro-inbox|Torro Notification Hub|0
-torro-inbox-mail|torro-inbox-mail|torro-inbox-mail|Torro Workplace Mail|0
-torro-inbox-notifications|torro-inbox-notifications|torro-inbox-notifications|Torro App Feed|0
-torrocalendar|torrocalendar|torro-calendar|Torro Calendar|0
-torrotasks|torrotasks|torro-tasks|Torro Tasks|0
-torroassistant|torroassistant|torro-assistant|Torro Assistant|0
-torro-reminder|torrocalendar|torro-reminder|Torro Reminder|1'
+# One line per bundle: program file in the bundle | program in target/debug | bundle id suffix | title | agent app |
+# icon in packaging/macos/icons. Program file, id suffix (the window class) and title follow AppId::program_file,
+# window_class and display_name in crates/torro-core/src/app.rs; the reminder follows torrocalendar's reminder (task
+# ER2.2) and shows the calendar's icon.
+apps='torroworkplace|torroworkplace|torro-workplace|Torro Workplace|0|torro-workplace
+torroinbox|torroinbox|torro-inbox|Torro Notification Hub|0|torro-inbox
+torro-inbox-mail|torro-inbox-mail|torro-inbox-mail|Torro Workplace Mail|0|torro-inbox-mail
+torro-inbox-notifications|torro-inbox-notifications|torro-inbox-notifications|Torro App Feed|0|torro-inbox-notifications
+torrocalendar|torrocalendar|torro-calendar|Torro Calendar|0|torro-calendar
+torrotasks|torrotasks|torro-tasks|Torro Tasks|0|torro-tasks
+torroassistant|torroassistant|torro-assistant|Torro Assistant|0|torro-assistant
+torro-reminder|torrocalendar|torro-reminder|Torro Reminder|1|torro-calendar'
 
 missing=""
 for program in torroworkplace torroinbox torro-inbox-mail torro-inbox-notifications torrocalendar torrotasks \
@@ -56,14 +59,14 @@ mkdir -p "$out"
 service_dir="$(mktemp -d)"
 trap 'rm -rf "$service_dir"' EXIT
 AGENT_APP=1 "$make_app" torroworkplace torro-workplace-service "Torro Workplace Service" "$version" \
-    "$programs/torroworkplace" "$service_dir" >/dev/null
+    "$programs/torroworkplace" "$service_dir" "$icons/torro-workplace.png" >/dev/null
 "$sign" "$service_dir/Torro Workplace Service.app/Contents/MacOS/torroworkplace"
 
-while IFS='|' read -r file program appid title agent; do
+while IFS='|' read -r file program appid title agent icon; do
     embed=""
     [ "$appid" = torro-workplace ] && embed="$service_dir/Torro Workplace Service.app"
     AGENT_APP="$agent" EMBED_APP="$embed" "$make_app" "$file" "$appid" "$title" "$version" "$programs/$program" \
-        "$out" >/dev/null
+        "$out" "$icons/$icon.png" >/dev/null
     # Signing the program in a bundle signs the bundle; the embedded service is signed already.
     "$sign" "$out/$title.app/Contents/MacOS/$file"
     echo "$out/$title.app"

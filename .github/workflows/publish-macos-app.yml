@@ -65,8 +65,9 @@ jobs:
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: x86_64, runner: macos-15-intel }
           # The reminder over the whole screen (task ER2.2): the calendar's binary as an agent app.
-          - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, title: Torro Reminder, arch: aarch64, runner: macos-14 }
-          - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, title: Torro Reminder, arch: x86_64, runner: macos-15-intel }
+          # Its icon is the calendar's (packaging/macos/icons/, task AP.7); every other bundle has the icon of its appid.
+          - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, icon: torro-calendar, title: Torro Reminder, arch: aarch64, runner: macos-14 }
+          - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, icon: torro-calendar, title: Torro Reminder, arch: x86_64, runner: macos-15-intel }
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
@@ -92,12 +93,13 @@ jobs:
           if [ "${{ matrix.service }}" = "1" ]; then
             # The core's service: an agent bundle without a Dock icon, embedded into the control centre's bundle.
             AGENT_APP=1 packaging/macos/make-app.sh torroworkplace torro-workplace-service "Torro Workplace Service" \
-              "$version" "$binary" service
+              "$version" "$binary" service packaging/macos/icons/torro-workplace.png
             embed="service/Torro Workplace Service.app"
           fi
-          # Pass a 1024x1024 PNG as the last argument once real artwork exists (packaging/macos/icons/).
+          # The icon: a 1024x1024 PNG from packaging/macos/icons/ (task AP.7), made into an .icns by make-app.sh.
           AGENT_APP="${{ matrix.agent }}" EMBED_APP="$embed" packaging/macos/make-app.sh "${{ matrix.exe || matrix.bin }}" \
-            "${{ matrix.appid }}" "${{ matrix.title }}" "$version" "$binary" out
+            "${{ matrix.appid }}" "${{ matrix.title }}" "$version" "$binary" out \
+            "packaging/macos/icons/${{ matrix.icon || matrix.appid }}.png"
 
       - name: Import the signing certificate
         env:
