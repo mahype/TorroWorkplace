@@ -323,15 +323,18 @@ pub fn sibling(name: &str) -> std::path::PathBuf {
 /// The bundle of the core's service inside the bundle of the control centre, relative to the folder
 /// that holds "Torro Workplace.app" (decision 7 in `docs/lebenszyklus.md`): an agent bundle without a
 /// Dock icon, so a double click on "Torro Workplace" opens the control centre even while the core runs.
+/// In `Contents/Library/LoginItems`, where Apple wants helper apps: a bundle directly in
+/// `Contents/Library` is sealed as a resource of the outer one, which notarisation and `spctl` may
+/// reject.
 pub const SERVICE_PROGRAM: &str =
-    "Torro Workplace.app/Contents/Library/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
+    "Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
 
 /// The folders the suite's bundles are looked for in (issue #279, decision 6 in
 /// `docs/lebenszyklus.md`), in this order: the folder holding each bundle that `exe` (this program)
 /// runs in, innermost first, then `/Applications`, then `<home>/Applications`.
 ///
 /// "Each bundle", because the core's service runs in a bundle inside "Torro Workplace.app"
-/// ([`SERVICE_PROGRAM`]): beside its own bundle is `Torro Workplace.app/Contents/Library`, and the
+/// ([`SERVICE_PROGRAM`]): beside its own bundle is `Torro Workplace.app/Contents/Library/LoginItems`, and the
 /// apps lie beside the outer bundle. A program in no bundle (development, Homebrew) adds none.
 /// Only paths from the root, so nothing is ever looked up relative to the working directory, and
 /// each folder once.
@@ -701,17 +704,23 @@ mod tests {
         assert_eq!(service_program(Some(calendar), Some(home), |path| path == system || path == own), Some(system));
         assert_eq!(service_program(Some(calendar), Some(home), |path| path == own), Some(own));
         assert_eq!(service_program(Some(calendar), Some(home), |_| false), None);
-        assert!(beside.ends_with("Torro Workplace Service.app/Contents/MacOS/torroworkplace"));
+        assert!(
+            beside.ends_with(
+                "Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace"
+            ),
+            "where Apple wants helper apps: {beside:?}"
+        );
 
         // The control centre finds the service in its own bundle.
         let control = Path::new("/Volumes/Apps/Torro Workplace.app/Contents/MacOS/torroworkplace");
         assert_eq!(service_program(Some(control), None, |path| path == beside), Some(beside.clone()));
 
-        // The service runs in Torro Workplace.app/Contents/Library: the apps lie beside the outer bundle.
+        // The service runs in Torro Workplace.app/Contents/Library/LoginItems: the apps lie beside the outer
+        // bundle.
         assert_eq!(
             bundle_folders(Some(&beside), Some(home)),
             [
-                PathBuf::from("/Volumes/Apps/Torro Workplace.app/Contents/Library"),
+                PathBuf::from("/Volumes/Apps/Torro Workplace.app/Contents/Library/LoginItems"),
                 PathBuf::from("/Volumes/Apps"),
                 PathBuf::from("/Applications"),
                 PathBuf::from("/Users/anna/Applications"),

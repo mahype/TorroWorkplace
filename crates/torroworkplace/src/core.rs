@@ -10697,7 +10697,7 @@ mod tests {
     /// (here the core's service program) does not go along.
     #[test]
     fn the_control_centre_windows_start_from_its_bundle() {
-        let program = "/Applications/Torro Workplace.app/Contents/Library/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
+        let program = "/Applications/Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
         let bundle = std::path::Path::new("/Applications/Torro Workplace.app");
         let start = |command: Vec<String>| crate::apps::workplace_command(command, Some(bundle));
         let open = |args: &[&str]| {

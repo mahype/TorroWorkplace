@@ -21,7 +21,7 @@ The names come from `AppId` in `crates/torro-core/src/app.rs`; the suite finds t
 | App | Program (`program_file`) | Window class, `.desktop`, icon | macOS bundle (`display_name`) |
 |---|---|---|---|
 | Control centre | `torroworkplace` | `torro-workplace` | `Torro Workplace.app` |
-| Core's service | `torroworkplace daemon` | – | `Torro Workplace.app/Contents/Library/Torro Workplace Service.app` (agent, no Dock icon) |
+| Core's service | `torroworkplace daemon` | – | `Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app` (agent, no Dock icon) |
 | Notification Hub | `torroinbox` | `torro-inbox` | `Torro Notification Hub.app` |
 | Mail | `torro-inbox-mail` | `torro-inbox-mail` | `Torro Workplace Mail.app` |
 | App Feed | `torro-inbox-notifications` | `torro-inbox-notifications` | `Torro App Feed.app` |

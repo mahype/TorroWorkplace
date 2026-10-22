@@ -145,7 +145,7 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
   CREATE_NEW_PROCESS_GROUP`). Die Programme sind GUI-Programme ohne Konsolenfenster; ein Fehler beim Start
   landet in einer Datei im State-Verzeichnis des Eingangs statt in einer Konsole.
 - **Bündel und Pakete.** Neun macOS-Bündel (sieben Apps, das Service-Bündel `io.github.mahype.torro-workplace-service`
-  in „Torro Workplace.app“, die Erinnerung „Torro Reminder.app“), eine `.desktop`-Datei je Eintrag, AUR-Pakete
+  in „Torro Workplace.app“ unter `Contents/Library/LoginItems/`, wo Apple Hilfs-Apps erwartet, die Erinnerung „Torro Reminder.app“), eine `.desktop`-Datei je Eintrag, AUR-Pakete
   für alle sieben Programme (die Suite hängt an allen, Mail und App Feed an `torroinbox-bin`), Homebrew-Formeln
   und ein Scoop-Manifest für die ganze Suite mit sieben Startmenü-Einträgen. Details:
   [release.md](release.md), [../packaging/README.md](../packaging/README.md).

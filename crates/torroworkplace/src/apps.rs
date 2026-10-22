@@ -994,7 +994,7 @@ pub mod tests {
         let home = Path::new("/Users/anna");
         let control = Path::new("/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace");
         let service = Path::new(
-            "/Applications/Torro Workplace.app/Contents/Library/Torro Workplace Service.app/Contents/MacOS/torroworkplace",
+            "/Applications/Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace",
         );
         let installed = [control, service, Path::new("/Applications/Torro Calendar.app/Contents/MacOS/torrocalendar")];
         let everything = |path: &Path| installed.contains(&path);

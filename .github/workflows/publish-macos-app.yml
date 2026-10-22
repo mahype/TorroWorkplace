@@ -5,7 +5,7 @@
 # Names and layout must match what the suite looks for (torro_gui::source::bundle_program, issue #279):
 # `<title>.app/Contents/MacOS/<bin>` with title = AppId::display_name, bin = AppId::program_file and the bundle id
 # io.github.mahype.<appid>, appid = AppId::window_class. "Torro Workplace.app" carries the core's service as an agent
-# bundle in Contents/Library (torro_gui::source::SERVICE_PROGRAM, decision 7 in docs/lebenszyklus.md).
+# bundle in Contents/Library/LoginItems (torro_gui::source::SERVICE_PROGRAM, decision 7 in docs/lebenszyklus.md).
 #
 # Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
 #   * automatically after a release: dist calls it as a custom publish job
@@ -73,7 +73,7 @@ jobs:
       TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
       TARGET: ${{ matrix.arch }}-apple-darwin
       APP: out/${{ matrix.title }}.app
-      SERVICE: out/${{ matrix.title }}.app/Contents/Library/Torro Workplace Service.app
+      SERVICE: out/${{ matrix.title }}.app/Contents/Library/LoginItems/Torro Workplace Service.app
     steps:
       - uses: actions/checkout@v6
         with:

@@ -80,4 +80,4 @@ while IFS='|' read -r file program appid title agent icon; do
     sign_bundle "$out/$title.app" "$out/$title.app/Contents/MacOS/$file"
     echo "$out/$title.app"
 done <<< "$apps"
-echo "$out/Torro Workplace.app/Contents/Library/Torro Workplace Service.app"
+echo "$out/Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app"

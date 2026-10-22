@@ -9,7 +9,8 @@
 #   AGENT_APP=1 make-app.sh torro-reminder torro-reminder "Torro Reminder" 0.1.0 ./torrocalendar ./out
 # The calendar binary sees its name `torro-reminder` and starts as the reminder window.
 #
-# With EMBED_APP=<path of a finished .app> that bundle is copied into `Contents/Library/` of this one. The control
+# With EMBED_APP=<path of a finished .app> that bundle is copied into `Contents/Library/LoginItems/` of this one, where
+# Apple wants helper apps (a bundle directly in `Contents/Library/` is sealed as a resource). The control
 # centre carries the core's service this way (decision 7 in docs/lebenszyklus.md, issue #279): an agent bundle
 # without a Dock icon, where `torro_gui::source::SERVICE_PROGRAM` looks for it:
 #   AGENT_APP=1 make-app.sh torroworkplace torro-workplace-service "Torro Workplace Service" 0.1.0 ./torroworkplace ./svc
@@ -56,9 +57,9 @@ if [ "${AGENT_APP:-}" = "1" ]; then
 fi
 
 if [ -n "${EMBED_APP:-}" ]; then
-  mkdir -p "$app/Contents/Library"
+  mkdir -p "$app/Contents/Library/LoginItems"
   # ditto keeps symlinks, permissions and extended attributes of the bundle (and a signature, if it has one).
-  ditto "$EMBED_APP" "$app/Contents/Library/$(basename "$EMBED_APP")"
+  ditto "$EMBED_APP" "$app/Contents/Library/LoginItems/$(basename "$EMBED_APP")"
 fi
 
 # Optional icon: a 1024x1024 PNG becomes an .icns through sips + iconutil (both ship with macOS).

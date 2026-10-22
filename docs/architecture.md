@@ -142,7 +142,7 @@ Jede App hat eine feste ID (`crates/torro-core/src/app.rs`):
 | Plattform | Weg |
 |---|---|
 | Hyprland/Omarchy | `exec-once = torroworkplace daemon` oder ein systemd-User-Service |
-| macOS | LaunchAgent in `~/Library/LaunchAgents`; der Dienst läuft aus dem Service-Bündel `Torro Workplace.app/Contents/Library/Torro Workplace Service.app` (ohne Dock-Icon) |
+| macOS | LaunchAgent in `~/Library/LaunchAgents`; der Dienst läuft aus dem Service-Bündel `Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app` (ohne Dock-Icon) |
 | Windows | Autostart-Eintrag |
 | alle, ohne Autostart | die **erste App**, die ein Mensch öffnet: `torro_gui::source::ensure_core` startet den Dienst, wenn niemand am Socket antwortet. Nach Tray › Quit startet kein MCP-Server ihn neu, erst die nächste App ([lebenszyklus.md](lebenszyklus.md)) |
 

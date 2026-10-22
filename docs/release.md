@@ -121,7 +121,7 @@ Suite heißt also sieben Aufrufe oder das geplante `install.sh` (siehe `docs/res
 - **Sieben Bündel, dazu Service-Bündel und Reminder** (#279, [lebenszyklus.md](lebenszyklus.md)): Torro Workplace,
   Torro Notification Hub, Torro Workplace Mail, Torro App Feed, Torro Calendar, Torro Tasks und Torro Assistant,
   je mit der Bundle-ID `io.github.mahype.<fensterklasse>`. In „Torro Workplace.app“ steckt unter
-  `Contents/Library/` das Service-Bündel „Torro Workplace Service.app“ (`io.github.mahype.torro-workplace-service`,
+  `Contents/Library/LoginItems/` das Service-Bündel „Torro Workplace Service.app“ (`io.github.mahype.torro-workplace-service`,
   `LSUIElement`, ohne Dock-Icon): Aus ihm läuft der Dienst, damit ein Doppelklick auf „Torro Workplace“ bei
   laufendem Dienst die Steuerzentrale öffnet. Dazu kommt „Torro Reminder.app“ (Agent, das Binary des Kalenders
   als `torro-reminder`). Die Matrix des Workflows hat je Eintrag zwei Zeilen (arm64 und x86_64).
