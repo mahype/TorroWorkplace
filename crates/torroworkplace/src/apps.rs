@@ -74,8 +74,8 @@ pub enum Start {
     /// system launcher: detached, not waited for, as before.
     Program(Vec<String>),
     /// macOS: [`OPEN`] with the absolute path of the entry's bundle ([`open_command`]). The system
-    /// starts a new process of the app with its bundle id and icon. Waited for: its exit code says
-    /// whether the system took the start.
+    /// starts a new process of the app with its bundle id and icon. Waited for, at most [`OPEN_WAIT`]:
+    /// its exit code says whether the system took the start.
     Open(Vec<String>),
 }
 
@@ -182,14 +182,36 @@ pub fn workplace_command(command: Vec<String>, bundle: Option<&Path>) -> Vec<Str
 
 /// Runs `start` ([`Start`]): a program through the system launcher, `Ok` once it is started; `open`
 /// (macOS only) waited for, `Ok` once the system took the start, an `Err` when it ended with an exit
-/// code other than 0. What `open` printed goes to the core's log only, not into the answer, as it
-/// names paths.
+/// code other than 0 or did not end within [`OPEN_WAIT`] ([`within`]). What `open` printed goes to the
+/// core's log only, not into the answer, as it names paths.
 pub async fn launch(start: Start) -> Result<(), String> {
     use torro_setups::launch::{Launcher, SystemLauncher};
 
     match start {
         Start::Program(command) => SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string()),
-        Start::Open(command) => run_open(&command).await,
+        Start::Open(command) => within(OPEN_WAIT, run_open(&command)).await,
+    }
+}
+
+/// How long `apps.open_app` waits for `open` ([`Start::Open`]). `open` only hands the start to the
+/// system and ends within a second; a dialog of the system (Gatekeeper on the first start of a
+/// downloaded app) keeps it waiting until the person answers, and the request, the tray or an agent's
+/// tool call must not wait with it.
+pub const OPEN_WAIT: Duration = Duration::from_secs(10);
+
+/// What [`within`] answers when `open` took longer than its limit: short, without a path.
+pub const OPEN_LATE: &str = "the system did not start the app in time; it may be waiting for an answer in a dialog";
+
+/// `run`'s answer when it comes within `limit`, else `Err` with [`OPEN_LATE`]. `run` is dropped then:
+/// the `open` it waits for is not killed (it only hands over to the system, and the dialog it waits
+/// on may still start the app); tokio reaps it once it ends.
+async fn within(limit: Duration, run: impl std::future::Future<Output = Result<(), String>>) -> Result<(), String> {
+    match tokio::time::timeout(limit, run).await {
+        Ok(answer) => answer,
+        Err(_) => {
+            eprintln!("torroworkplace: open did not end within {}s", limit.as_secs());
+            Err(OPEN_LATE.to_string())
+        }
     }
 }
 
@@ -1014,6 +1036,21 @@ pub mod tests {
             words(&["/usr/bin/open", "-n", "-a", "/Users/anna/Downloads/Torro Workplace.app", "--args"]),
             "no program, no arguments"
         );
+    }
+
+    /// `open` waiting on a dialog of the system does not hold up `apps.open_app`: after its limit the
+    /// answer is an error without a path; an answer in time stays what it was.
+    #[tokio::test]
+    async fn an_open_that_does_not_end_is_given_up_after_its_limit() {
+        let limit = Duration::from_millis(50);
+        let started = std::time::Instant::now();
+        let late = within(limit, std::future::pending()).await;
+        assert_eq!(late, Err(OPEN_LATE.to_string()));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        assert!(!OPEN_LATE.contains('/'), "no path in the answer");
+        assert_eq!(within(limit, async { Ok(()) }).await, Ok(()));
+        assert_eq!(within(limit, async { Err("refused".to_string()) }).await, Err("refused".to_string()));
+        assert_eq!(OPEN_WAIT, Duration::from_secs(10));
     }
 
     /// Off macOS there is no bundle and no `open`.
