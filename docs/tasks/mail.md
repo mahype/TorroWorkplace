@@ -1030,13 +1030,13 @@ läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
   internet“ und „a host that is not on the public internet (`localhost` included)“ ersetzen durch: jeder Host geht;
   neue Antwort `Response::UntrustedCertificate`.
 - Neue Antwort `Response::UntrustedCertificate { service: String, host: String, sha256: String, public: bool }`
-  (`result: "untrusted_certificate"`, verträglich): `service` ist `IMAP`, `SMTP` oder `CalDAV`; `public`, wenn eine
+  (`result: "untrusted-certificate"`, kebab-case wie alle Antworten, verträglich): `service` ist `IMAP`, `SMTP` oder `CalDAV`; `public`, wenn eine
   Adresse des Hosts öffentlich ist (dann warnt die Oberfläche deutlich); das Passwort ging nicht hinaus, nichts
   wurde gespeichert. Auch Antwort von `accounts.import_torromail_account`.
-- `audit::outcome`: `UntrustedCertificate` ergibt `untrusted_certificate`, nicht `ok`.
+- `audit::outcome`: `UntrustedCertificate` ergibt `untrusted-certificate`, nicht `ok`.
 - `MailView` bekommt `trusted_certificates: Vec<String>` (`#[serde(default)]`); kein Geheimnis.
 - Katalog `CONNECT_MAIL` (`api.rs`): Beschreibung um „any server a person typed, also on the local network; a
-  certificate the system does not trust is answered with untrusted_certificate and works once the person trusts
+  certificate the system does not trust is answered with untrusted-certificate and works once the person trusts
   it“ ergänzen. `Access`, `Mcp` bleiben.
 - Der Kern reicht das Feld in dieser Aufgabe nur durch (`MailSignIn` in `core.rs`), ohne Verhalten.
 - **Abnahme:** Serde-Test: `accounts.json` ohne das Feld lädt, leeres Feld wird nicht geschrieben;

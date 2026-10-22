@@ -2005,6 +2005,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Added to {list}", "Zu „{list}“ hinzugefügt"),
     ("Drag to a list", "Auf eine Liste ziehen"),
     ("Moved to {list}", "Nach „{list}“ verschoben"),
+    // Own mail servers and certificates (M11, issue #284)
+    (
+        "A trusted certificate is not a SHA-256 fingerprint.",
+        "Ein vertrautes Zertifikat ist kein SHA-256-Fingerabdruck.",
+    ),
     // CalDAV accounts with service discovery (M7.1)
     ("Enter an e-mail address or a domain name.", "Gib eine E-Mail-Adresse oder einen Domainnamen ein."),
     ("Enter the password.", "Gib das Passwort ein."),
