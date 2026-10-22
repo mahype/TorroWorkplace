@@ -23,7 +23,9 @@
 //!   stored series ends the second before the occurrence (a `COUNT` becomes `UNTIL`), a new object with
 //!   a new UID and `RELATED-TO;RELTYPE=SIBLING` starts at it with the rest of the count, and the later
 //!   changed occurrences and `EXDATE`s move into it – unless time or rule change, then they are reset
-//!   and [`Outcome::reset`] says how many. Only what the client changed against the occurrence as
+//!   and [`Outcome::reset`] says how many. Extra dates (`RDATE`, written by other programs) from the
+//!   occurrence on move into it and along with the series, as with "All"; the series is not split
+//!   at an extra date that is no date of its rule. Only what the client changed against the occurrence as
 //!   stored (its changed occurrence, if any) goes to the new series; what a changed occurrence changed
 //!   itself (moved, cancelled, its own title …) stays its own and stays with it. Time counts as
 //!   changed only when the client sends another start or length than the stored occurrence has: a
@@ -156,6 +158,8 @@ const KIND_CHANGE: &str =
     "a series cannot change between all-day and timed events yet: change one event, or make a new series";
 const NO_MAIN: &str =
     "the server holds only changed events of this series, not the series itself: change them one by one";
+const EXTRA_DATE: &str = "this event was added to the series apart from its rule, so the series cannot be split here: \
+     change all events or this one";
 
 /// What changing the occurrence `event` of the series `stored` with `scope` writes (see the module
 /// documentation). `event` is the occurrence as the client wants it, with the `recurrence_id` it was
@@ -925,10 +929,12 @@ fn save_following(found: Found, key: EventTime, event: &Event, writing: &Writing
     let mut reset = 0;
     // Nextcloud's rule (decision 4): later changed occurrences move only while the dates stay. The
     // occurrence's own changed occurrence stays: what it changed itself is its own, not the series'.
+    // Excluded dates come back; extra dates (`RDATE`) stay and move with the series as with "All",
+    // since dropping them would remove events [`drops`] does not count (the review of PR #294).
     if !shift.is_zero() || resized || rule != Rule::Keep {
         reset = tail.exception_keys().into_iter().filter(|other| *other != key).count() as u32;
         tail.retain_vevents(|block| is_master(block) || key_of(block) == Some(key));
-        tail.edit_master(|block| set(block, &["EXDATE", "RDATE"], Vec::new()));
+        tail.edit_master(|block| set(block, &["EXDATE"], Vec::new()));
     }
     let edited = edit_series(&mut tail, &reference, key, event, &rule, writing)?;
     let plan = Plan::Split { new: zoned(&tail, Some(main)), old: zoned(&head, Some(main)) };
@@ -974,6 +980,7 @@ fn head(object: &Object, main: &Main, key: EventTime, now: DateTime<Utc>) -> Obj
 /// starting at `key` with the rest of a `COUNT` and `RELATED-TO;RELTYPE=SIBLING` to the stored series,
 /// the extra and excluded dates and changed occurrences from `key` on.
 fn tail(object: &Object, main: &Main, key: EventTime, uid: &str) -> Result<Object, SeriesError> {
+    check_split(main, key)?;
     let rule = rest_rule(main, key)?;
     let mut tail = object.clone();
     let later = |time: EventTime| instant(time) >= instant(key);
@@ -994,6 +1001,21 @@ fn tail(object: &Object, main: &Main, key: EventTime, uid: &str) -> Result<Objec
         block
     });
     Ok(tail)
+}
+
+/// Whether `main`'s series can be split at `key`. The new series' rule counts from its start, so a
+/// start on an extra date (`RDATE`, written by another program) that is no date of the rule would move
+/// the rule there: weekly on Tuesdays at 10:00 would become Thursdays at 15:00 (the review of PR #294).
+/// Such a key is refused, also when it lies beyond the dates counted; a series without a rule has
+/// nothing to move.
+fn check_split(main: &Main, key: EventTime) -> Result<(), SeriesError> {
+    let Some(rule) = &main.rule else { return Ok(()) };
+    if !main.extra.contains(&key) {
+        return Ok(());
+    }
+    let on_rule = rule_dates(main.event.start, rule, main.zone)
+        .is_some_and(|dates| dates.knows(key) && dates.list.contains(&key));
+    if on_rule { Ok(()) } else { Err(SeriesError::Unsupported(EXTRA_DATE)) }
 }
 
 /// What [`edit_series`] did.
@@ -1165,6 +1187,9 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
     let zone = main.zone;
     let rule = rule_change(main, event);
     let following = scope == SeriesScope::Following && !found.is_first(key);
+    if following {
+        check_split(main, key)?;
+    }
     // As the save measures it ([`following_reference`]).
     let reference = if following { following_reference(main, &found.before, key, event) } else { found.before.clone() };
     let shift = shift_between(reference.start, event.start, zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
@@ -1245,6 +1270,7 @@ mod tests {
     const COUNTED: &str = include_str!("../tests/fixtures/nextcloud-series-count.ics");
     const ALL_DAY: &str = include_str!("../tests/fixtures/nextcloud-series-all-day.ics");
     const DST: &str = include_str!("../tests/fixtures/nextcloud-series-dst.ics");
+    const RDATES: &str = include_str!("../tests/fixtures/other-series-rdate.ics");
     const NEW_UID: &str = "new-series@torro";
 
     fn now() -> DateTime<Utc> {
@@ -1577,6 +1603,44 @@ mod tests {
         let new_events = events(new);
         assert_eq!(new_events.len(), 1, "no changed occurrence left");
         assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261013T090000"));
+    }
+
+    /// The occurrences the main event of `ics` gives, as the counter counts them.
+    fn dates_of(ics: &str) -> Vec<EventTime> {
+        let object = Object::read(ics);
+        let main = object.master().and_then(|block| Main::of(block)).expect("a main event");
+        main.occurrences().expect("countable").list
+    }
+
+    #[test]
+    fn following_with_a_new_time_keeps_the_extra_dates_of_other_programs() {
+        // Weekly on Tuesdays at 10:00 from 1 Sep, with extra dates on Thursday 15 and 29 Oct at 15:00.
+        let key = berlin(2026, 10, 13, 10);
+        let stored = occurrence(RDATES, key);
+        let event = Event { start: berlin(2026, 10, 13, 9), end: Some(berlin(2026, 10, 13, 10)), ..stored };
+        assert_eq!(drops(RDATES, &event, SeriesScope::Following), 0, "every event stays, an hour earlier");
+        let outcome = save(RDATES, &event, SeriesScope::Following, &writing()).expect("saved");
+        let (new, _) = split(&outcome);
+        let dates = dates_of(new);
+        for extra in [berlin(2026, 10, 15, 14), berlin(2026, 10, 29, 14)] {
+            assert!(dates.contains(&extra), "{extra:?} moves with the series: {new}");
+        }
+        assert!(dates.contains(&berlin(2026, 10, 20, 9)), "the rule at the new time: {new}");
+    }
+
+    #[test]
+    fn following_is_refused_at_an_extra_date_off_the_rule() {
+        // Splitting at Thursday 15 Oct 15:00 would anchor the weekly rule on Thursdays at 15:00.
+        let key = berlin(2026, 10, 15, 15);
+        let event = Event { summary: "Team meeting, new room".into(), ..occurrence(RDATES, key) };
+        let refused = save(RDATES, &event, SeriesScope::Following, &writing());
+        assert!(matches!(refused, Err(SeriesError::Unsupported(_))), "{refused:?}");
+        assert_eq!(drops(RDATES, &event, SeriesScope::Following), 1, "a refused change counts as dropping");
+        // This event alone and all events still work; deleting the following ones ends the series.
+        assert!(save(RDATES, &event, SeriesScope::Occurrence, &writing()).is_ok());
+        assert!(save(RDATES, &event, SeriesScope::Series, &writing()).is_ok());
+        let ended = delete(RDATES, &event, SeriesScope::Following, now()).expect("deleted");
+        assert!(dates_of(replaced_ics(&ended)).iter().all(|date| instant(*date) < instant(key)));
     }
 
     #[test]
