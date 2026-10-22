@@ -10,7 +10,7 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -42,6 +42,9 @@ pub(crate) enum BackupFileError {
     Archive(ArchiveError),
     InvalidName,
     Incomplete,
+    /// Something named like the archive is in the backup folder already (a file, a link, a
+    /// folder): a backup never replaces it.
+    Exists(String),
 }
 
 impl fmt::Display for BackupFileError {
@@ -51,6 +54,7 @@ impl fmt::Display for BackupFileError {
             Self::Archive(error) => write!(f, "mail backup failed verification: {error}"),
             Self::InvalidName => f.write_str("invalid mail backup filename"),
             Self::Incomplete => f.write_str("incomplete mail backup cannot be published"),
+            Self::Exists(_) => f.write_str("the mail backup file exists already"),
         }
     }
 }
@@ -98,29 +102,12 @@ impl PendingBackup {
     }
 
     /// The temporary file for `filename` in `selected` (absolute, existing, no symlink) or in the
-    /// managed folder `<data>/backups`. Blocking: call it on the blocking pool.
+    /// managed folder `<data>/backups` ([`backup_folder`]). Blocking: call it on the blocking pool.
     pub(crate) fn new_in(dirs: &MailDirs, filename: &str, selected: Option<&Path>) -> Result<Self, BackupFileError> {
         if !valid_filename(filename) {
             return Err(BackupFileError::InvalidName);
         }
-        let backup_dir = if let Some(selected) = selected {
-            if !selected.is_absolute() {
-                return Err(BackupFileError::InvalidName);
-            }
-            reject_symlink(selected)?;
-            let path = selected.canonicalize()?;
-            if !path.is_dir() {
-                return Err(BackupFileError::InvalidName);
-            }
-            path
-        } else {
-            reject_symlink(&dirs.data)?;
-            crate::clients::create_private_dir(&dirs.data)?;
-            let path = dirs.data.join("backups");
-            reject_symlink(&path)?;
-            crate::clients::create_private_dir(&path)?;
-            path
-        };
+        let backup_dir = backup_folder(dirs, selected)?;
         let destination = backup_dir.join(filename);
         let temporary = tempfile::Builder::new().prefix(".backup-").suffix(".partial").tempfile_in(&backup_dir)?;
         Ok(Self { backup_dir, destination, temporary })
@@ -151,12 +138,236 @@ impl PendingBackup {
     /// it only means a crash right now could still lose the new name, which the job then says.
     fn persist(self) -> Result<(PathBuf, bool), BackupFileError> {
         self.temporary.as_file().sync_all()?;
-        self.temporary.persist_noclobber(&self.destination).map_err(|error| BackupFileError::Io(error.error))?;
+        // The last guard: a file that appeared under the name after the job's check stays as it is.
+        self.temporary.persist_noclobber(&self.destination).map_err(|error| match error.error.kind() {
+            io::ErrorKind::AlreadyExists => BackupFileError::Exists(
+                self.destination.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(),
+            ),
+            _ => BackupFileError::Io(error.error),
+        })?;
         #[cfg(unix)]
         let durable = File::open(&self.backup_dir).and_then(|folder| folder.sync_all()).is_ok();
         #[cfg(not(unix))]
         let durable = true;
         Ok((self.destination, durable))
+    }
+}
+
+/// The folder a backup writes into: `selected` (absolute, an existing folder, no symlink),
+/// canonicalized, or the managed folder `<data>/backups`, made private when missing. Blocking.
+fn backup_folder(dirs: &MailDirs, selected: Option<&Path>) -> Result<PathBuf, BackupFileError> {
+    if let Some(selected) = selected {
+        if !selected.is_absolute() {
+            return Err(BackupFileError::InvalidName);
+        }
+        reject_symlink(selected)?;
+        let path = selected.canonicalize()?;
+        if !path.is_dir() {
+            return Err(BackupFileError::InvalidName);
+        }
+        return Ok(path);
+    }
+    reject_symlink(&dirs.data)?;
+    crate::clients::create_private_dir(&dirs.data)?;
+    let path = dirs.data.join("backups");
+    reject_symlink(&path)?;
+    crate::clients::create_private_dir(&path)?;
+    Ok(path)
+}
+
+/// What a backup checks before its job starts (#267), blocking: the destination folder
+/// ([`backup_folder`]), that nothing named `filename` is there yet (no file, no link, no folder),
+/// and that its disk keeps [`DISK_RESERVE`] free ([`DiskSpace`]). Free space that cannot be
+/// learned does not stop it. [`PendingBackup::persist`] stays the last guard against a file that
+/// appears under the name meanwhile.
+fn preflight(
+    dirs: &MailDirs,
+    filename: &str,
+    selected: Option<&Path>,
+    space: &DiskSpace,
+) -> Result<(), BackupRunError> {
+    let folder = backup_folder(dirs, selected)?;
+    match fs::symlink_metadata(folder.join(filename)) {
+        Ok(_) => return Err(BackupRunError::File(BackupFileError::Exists(filename.to_string()))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if let Some(free) = space.free(&folder)
+        && free < DISK_RESERVE
+    {
+        return Err(BackupRunError::Space(SpaceShortage::AtStart { free }));
+    }
+    Ok(())
+}
+
+/// Free disk space a backup always leaves (#267): it does not start with less, a local backup does
+/// not start when its mail would leave less, and a running one stops when the disk gets there.
+/// Agents with write access may start backup after backup; this keeps them from filling the disk.
+/// A fixed amount rather than a share of the disk: 2 GiB keeps the system and the other apps
+/// working on any disk, while a share would refuse backups on a large, mostly free disk for no
+/// reason (10 % of 4 TB is 400 GB) and leave too little on a small one.
+const DISK_RESERVE: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How many bytes a running backup writes (spool files and archive) between two looks at the free
+/// space: often enough that the reserve holds, rarely enough that asking costs nothing.
+const SPACE_CHECK_EVERY: u64 = 64 * 1024 * 1024;
+
+/// The free bytes on the disk of a folder; `None` when unknown. Blocking.
+type FreeBytes = dyn Fn(&Path) -> Option<u64> + Send + Sync;
+
+/// How a backup learns how much space is left on the disk of a folder, and how often it asks while
+/// writing ([`SpaceWatch`]). The core asks the system ([`DiskSpace::system`]); tests give their own
+/// answers instead of filling a disk.
+#[derive(Clone)]
+pub(crate) struct DiskSpace {
+    free: Arc<FreeBytes>,
+    every: u64,
+}
+
+impl DiskSpace {
+    /// The free space as the system reports it for the disk the folder is on ([`system_free_space`]).
+    pub(crate) fn system() -> Self {
+        Self { free: Arc::new(system_free_space), every: SPACE_CHECK_EVERY }
+    }
+
+    /// Never knows the free space: nothing is refused for it.
+    pub(crate) fn unknown() -> Self {
+        Self { free: Arc::new(|_: &Path| None), every: SPACE_CHECK_EVERY }
+    }
+
+    /// `free` answers for every folder; while writing it is asked every `every` bytes.
+    #[cfg(test)]
+    pub(crate) fn fake(every: u64, free: impl Fn(&Path) -> Option<u64> + Send + Sync + 'static) -> Self {
+        Self { free: Arc::new(free), every }
+    }
+
+    /// The free bytes on the disk of `dir`; `None` when unknown. Blocking.
+    fn free(&self, dir: &Path) -> Option<u64> {
+        (self.free)(dir)
+    }
+}
+
+impl Default for DiskSpace {
+    /// The system's answer; in tests none, so no test depends on the free space of the machine it
+    /// runs on (tests that need an answer give one with [`DiskSpace::fake`]).
+    fn default() -> Self {
+        if cfg!(test) { Self::unknown() } else { Self::system() }
+    }
+}
+
+/// The free space of the disk `dir` is on, from the disks the system lists: the one whose mount
+/// point is the longest prefix of the canonical `dir`. `None` when the folder or no disk matches.
+/// Blocking: listing disks asks every mounted file system.
+fn system_free_space(dir: &Path) -> Option<u64> {
+    let dir = without_verbatim(dir.canonicalize().ok()?);
+    let refresh = sysinfo::DiskRefreshKind::nothing().with_storage();
+    let disks = sysinfo::Disks::new_with_refreshed_list_specifics(refresh);
+    free_on(disks.list().iter().map(|disk| (disk.mount_point(), disk.available_space())), &dir)
+}
+
+/// The free bytes of the disk among `disks` (mount point, free bytes) whose mount point is the
+/// longest prefix of `dir`, by whole path components.
+fn free_on<'d>(disks: impl IntoIterator<Item = (&'d Path, u64)>, dir: &Path) -> Option<u64> {
+    disks
+        .into_iter()
+        .filter(|(mount, _)| dir.starts_with(mount))
+        .max_by_key(|(mount, _)| mount.components().count())
+        .map(|(_, free)| free)
+}
+
+/// On Windows `canonicalize` gives `\\?\C:\…`, while disks are mounted at `C:\`: the plain form,
+/// so the two compare. Network paths (`\\?\UNC\…`) stay as they are.
+#[cfg(windows)]
+fn without_verbatim(path: PathBuf) -> PathBuf {
+    let plain = {
+        let text = path.to_string_lossy();
+        text.strip_prefix(r"\\?\").filter(|rest| !rest.starts_with("UNC\\")).map(PathBuf::from)
+    };
+    plain.unwrap_or(path)
+}
+
+#[cfg(not(windows))]
+fn without_verbatim(path: PathBuf) -> PathBuf {
+    path
+}
+
+/// Too little free disk space for a backup ([`DISK_RESERVE`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpaceShortage {
+    /// Before the job starts: less than the reserve is free.
+    AtStart { free: u64 },
+    /// A local backup counted `mail` bytes of originals, and the reserve would not stay free.
+    ForMail { free: u64, mail: u64 },
+    /// While the archive was written, the free space fell under the reserve.
+    WhileWriting { free: u64 },
+}
+
+impl SpaceShortage {
+    /// For the person.
+    fn user_message(self) -> String {
+        let reserve = size_words(DISK_RESERVE);
+        match self {
+            Self::AtStart { free } => trf(
+                "Not enough free disk space for a backup: {free} free, at least {reserve} must stay free.",
+                &[("free", &size_words(free)), ("reserve", &reserve)],
+            ),
+            Self::ForMail { free, mail } => trf(
+                "Not enough free disk space for this backup: {mail} of mail, {free} free, and at least {reserve} must stay free.",
+                &[("mail", &size_words(mail)), ("free", &size_words(free)), ("reserve", &reserve)],
+            ),
+            Self::WhileWriting { free } => trf(
+                "Mail backup stopped because the disk is almost full: {free} free, at least {reserve} must stay free. The partial archive was removed.",
+                &[("free", &size_words(free)), ("reserve", &reserve)],
+            ),
+        }
+    }
+}
+
+/// A size for people, in GiB from one GiB on, else in MiB, with one decimal.
+fn size_words(bytes: u64) -> String {
+    const MIB: f64 = 1024.0 * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= 1024.0 * MIB { format!("{:.1} GiB", bytes / (1024.0 * MIB)) } else { format!("{:.1} MiB", bytes / MIB) }
+}
+
+/// The free space of the folder a running backup writes into ([`DiskSpace`]): writers note what
+/// they wrote, and every [`DiskSpace`]'s `every` bytes the free space is looked at again. Shared by
+/// the archive and its spool files; one writes at a time.
+pub(crate) struct SpaceWatch {
+    space: DiskSpace,
+    dir: PathBuf,
+    unchecked: AtomicU64,
+}
+
+impl SpaceWatch {
+    /// The folder spool files go into: the archive's, on the same disk.
+    fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// Notes `bytes` more on the disk; once enough came together, stops the run
+    /// ([`SpaceShortage::WhileWriting`]) when less than [`DISK_RESERVE`] is free. Blocking.
+    fn wrote(&self, bytes: u64) -> Result<(), BackupRunError> {
+        let unchecked = self.unchecked.fetch_add(bytes, Ordering::Relaxed).saturating_add(bytes);
+        if unchecked < self.space.every {
+            return Ok(());
+        }
+        self.unchecked.store(0, Ordering::Relaxed);
+        match self.space.free(&self.dir) {
+            Some(free) if free < DISK_RESERVE => Err(BackupRunError::Space(SpaceShortage::WhileWriting { free })),
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether `mail` more bytes still leave [`DISK_RESERVE`] free ([`SpaceShortage::ForMail`]).
+    /// Blocking.
+    fn room_for(&self, mail: u64) -> Result<(), BackupRunError> {
+        match self.space.free(&self.dir) {
+            Some(free) if free < mail.saturating_add(DISK_RESERVE) => {
+                Err(BackupRunError::Space(SpaceShortage::ForMail { free, mail }))
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -192,25 +403,28 @@ enum Publish {
 pub(crate) struct OpenArchive {
     /// `None` only after a blocking step panicked; every later call fails then.
     inner: Option<(PendingBackup, ArchiveWriter<File>)>,
-    spool_dir: PathBuf,
+    /// The free space of the archive's folder, also for its spool files.
+    space: Arc<SpaceWatch>,
 }
 
 impl OpenArchive {
     /// Creates the temporary file `filename` will be published from, in `target_dir` or in the
     /// managed folder of `dirs`, and starts the archive with `manifest` (unfinished and without
-    /// entries, see [`ArchiveWriter::new`]).
+    /// entries, see [`ArchiveWriter::new`]). What it and its spool files write is watched with
+    /// `space` ([`SpaceWatch`]).
     pub(crate) async fn create(
         dirs: MailDirs,
         filename: String,
         target_dir: Option<PathBuf>,
         manifest: Manifest,
+        space: DiskSpace,
     ) -> Result<Self, BackupRunError> {
         blocking(move || {
             let pending = PendingBackup::new_in(&dirs, &filename, target_dir.as_deref())?;
             // A second handle on the same file: the writer owns it, the pending file keeps the name.
             let writer = ArchiveWriter::new(pending.temporary.as_file().try_clone()?, manifest)?;
-            let spool_dir = pending.backup_dir.clone();
-            Ok(OpenArchive { inner: Some((pending, writer)), spool_dir })
+            let space = SpaceWatch { space, dir: pending.backup_dir.clone(), unchecked: AtomicU64::new(0) };
+            Ok(OpenArchive { inner: Some((pending, writer)), space: Arc::new(space) })
         })
         .await
     }
@@ -220,9 +434,9 @@ impl OpenArchive {
         self.inner.as_mut().map(|(_, writer)| writer).ok_or(BackupRunError::Archive(INTERRUPTED))
     }
 
-    /// The folder for spool files: next to the archive, on the same disk.
-    pub(crate) fn spool_dir(&self) -> &Path {
-        &self.spool_dir
+    /// The free space of the archive's folder; spool files go there too ([`Spool::new`]).
+    pub(crate) fn space(&self) -> &Arc<SpaceWatch> {
+        &self.space
     }
 
     /// [`ArchiveWriter::add_message`] from the start of `spool`, on the blocking pool. A rejected
@@ -235,11 +449,15 @@ impl OpenArchive {
     ) -> Result<(), BackupRunError> {
         let (pending, mut writer) = self.inner.take().ok_or(BackupRunError::Archive(INTERRUPTED))?;
         let folder_id = folder_id.to_string();
+        let space = Arc::clone(&self.space);
         let (inner, added) = tokio::task::spawn_blocking(move || {
-            let added = spool
-                .seek(SeekFrom::Start(0))
-                .map_err(BackupRunError::from)
-                .and_then(|_| writer.add_message(&folder_id, spool, metadata).map_err(BackupRunError::from));
+            let added = (|| {
+                spool.seek(SeekFrom::Start(0))?;
+                let length = spool.metadata()?.len();
+                writer.add_message(&folder_id, spool, metadata)?;
+                // The ZIP grows by about the spool's length.
+                space.wrote(length)
+            })();
             ((pending, writer), added)
         })
         .await
@@ -303,12 +521,18 @@ struct Spool {
     file: File,
     digest: Sha256,
     bytes: u64,
+    space: Arc<SpaceWatch>,
 }
 
 impl Spool {
-    async fn new(dir: &Path) -> Result<Spool, BackupRunError> {
-        let dir = dir.to_path_buf();
-        blocking(move || Ok(Spool { file: tempfile::tempfile_in(dir)?, digest: Sha256::new(), bytes: 0 })).await
+    /// A new spool file in the archive's folder, its writes noted in `space`.
+    async fn new(space: &Arc<SpaceWatch>) -> Result<Spool, BackupRunError> {
+        let space = Arc::clone(space);
+        blocking(move || {
+            let file = tempfile::tempfile_in(space.dir())?;
+            Ok(Spool { file, digest: Sha256::new(), bytes: 0, space })
+        })
+        .await
     }
 
     async fn write(mut self, piece: Vec<u8>) -> Result<Spool, BackupRunError> {
@@ -316,6 +540,7 @@ impl Spool {
             self.file.write_all(&piece)?;
             self.digest.update(&piece);
             self.bytes += piece.len() as u64;
+            self.space.wrote(piece.len() as u64)?;
             Ok(self)
         })
         .await
@@ -385,6 +610,8 @@ pub(crate) enum BackupRunError {
     Source(SourceProblem),
     /// A restore cannot go on as planned.
     Restore(RestoreProblem),
+    /// Too little free disk space for a backup.
+    Space(SpaceShortage),
     Busy,
     Random,
     Cancelled,
@@ -401,6 +628,7 @@ impl fmt::Display for BackupRunError {
             Self::Io(error) => write!(f, "backup I/O: {error}"),
             Self::Source(problem) => write!(f, "backup source: {}", problem.as_str()),
             Self::Restore(problem) => write!(f, "restore: {}", problem.as_str()),
+            Self::Space(_) => f.write_str("not enough free disk space for a backup"),
             Self::Busy => f.write_str("another backup for this account is already running"),
             Self::Random => f.write_str("cannot create a backup job id"),
             Self::Cancelled => f.write_str("backup cancelled"),
@@ -409,8 +637,8 @@ impl fmt::Display for BackupRunError {
 }
 
 impl BackupRunError {
-    /// What a failed backup job tells the person.
-    fn user_message(&self) -> String {
+    /// What a failed backup job, or a refused start, tells the person.
+    pub(crate) fn user_message(&self) -> String {
         match self {
             Self::Mail(error) => error.message(),
             Self::Imap(ImapError::Auth(_)) => tr("Password was refused").into(),
@@ -419,6 +647,10 @@ impl BackupRunError {
             Self::Source(problem) => problem.user_message().into(),
             Self::Restore(problem) => problem.user_message().into(),
             Self::Cancelled => tr("Mail backup was cancelled.").into(),
+            Self::Space(shortage) => shortage.user_message(),
+            Self::File(BackupFileError::Exists(name)) => {
+                trf("A file named {name} already exists in the backup folder. Choose another name.", &[("name", name)])
+            }
             Self::File(_) | Self::Archive(_) | Self::Store(_) | Self::Io(_) | Self::Random => {
                 tr("Mail backup could not be completed.").into()
             }
@@ -514,6 +746,8 @@ struct JobEntry {
 #[derive(Clone, Default)]
 pub(crate) struct BackupJobs {
     entries: Arc<Mutex<HashMap<String, JobEntry>>>,
+    /// How the jobs learn the free disk space ([`DISK_RESERVE`]).
+    space: DiskSpace,
 }
 
 pub(crate) struct BackupSelection {
@@ -524,11 +758,19 @@ pub(crate) struct BackupSelection {
 }
 
 impl BackupJobs {
-    /// Starts a backup of `account` in a task of its own and answers its job at once. `Busy` while
-    /// another job of the account has not ended ([`BackupPhase::is_final`]), cancelling ones too.
-    /// A second task watches the first: whatever way it ends (also a panic), the job reaches a final
-    /// phase.
-    pub(crate) fn start(
+    /// Jobs that learn the free disk space from `space` instead of the system.
+    #[cfg(test)]
+    pub(crate) fn with_space(space: DiskSpace) -> Self {
+        Self { space, ..Self::default() }
+    }
+
+    /// Starts a backup of `account` in a task of its own and answers its job at once. Refused
+    /// before any job exists ([`preflight`]): `File(Exists)` when something named like the archive
+    /// is in the destination folder already, `Space(AtStart)` when its disk has less than
+    /// [`DISK_RESERVE`] free (unknown free space refuses nothing). `Busy` while another job of the
+    /// account has not ended ([`BackupPhase::is_final`]), cancelling ones too. A second task
+    /// watches the first: whatever way it ends (also a panic), the job reaches a final phase.
+    pub(crate) async fn start(
         &self,
         mail: Arc<MailService>,
         dirs: MailDirs,
@@ -541,6 +783,11 @@ impl BackupJobs {
         let filename = filename.unwrap_or_else(|| format!("mail-{}-{id}.zip", Utc::now().format("%Y%m%dT%H%M%S")));
         if !valid_filename(&filename) {
             return Err(BackupRunError::File(BackupFileError::InvalidName));
+        }
+        {
+            let (dirs, filename, target_dir, space) =
+                (dirs.clone(), filename.clone(), target_dir.clone(), self.space.clone());
+            blocking(move || preflight(&dirs, &filename, target_dir.as_deref(), &space)).await?;
         }
         let state = Arc::new(AtomicU8::new(RUNNING));
         let job = BackupJob {
@@ -951,7 +1198,8 @@ async fn server_backup(
     let ServerPlan { manifest, mut folders, warnings, selectability } =
         server_plan(session.list().await?, gmail, address, since);
     progress.counts(&manifest.counts);
-    let archive = OpenArchive::create(dirs, filename.to_string(), target_dir, manifest).await?;
+    let space = progress.jobs.space.clone();
+    let archive = OpenArchive::create(dirs, filename.to_string(), target_dir, manifest, space).await?;
     let mut run = ServerRun { session, archive, since, progress, by_msgid: HashMap::new(), collected: HashSet::new() };
     run.progress.phase(BackupPhase::Reading);
     let real = folders.iter().position(|folder| folder.collection).unwrap_or(folders.len());
@@ -1094,7 +1342,7 @@ impl ServerRun<'_, '_> {
     /// The body of message `uid` (`size` by `RFC822.SIZE`) in a spool file, by the chunk reader,
     /// which also checks that nothing follows `size`.
     async fn spool(&mut self, uid: u32, size: u64) -> Result<(File, String, u64), BackupRunError> {
-        let mut spool = Spool::new(self.archive.spool_dir()).await?;
+        let mut spool = Spool::new(self.archive.space()).await?;
         let mut body = BodyChunks::new(uid, size);
         loop {
             self.progress.go_on()?;
@@ -1161,6 +1409,8 @@ struct LocalInventory {
     validities: HashMap<String, Option<u32>>,
     /// Originals left out because their mail is no longer on the server.
     gone: u64,
+    /// The bytes of the taken originals.
+    bytes: u64,
 }
 
 /// A local backup reads only retained RFC-822 originals, never the server (MB.4). It takes what
@@ -1210,6 +1460,7 @@ async fn run_local_backup(
                 continue;
             }
             inventory.included.push(original.seq);
+            inventory.bytes = inventory.bytes.saturating_add(original.bytes);
             *inventory.folders.entry(original.folder_path.clone()).or_default() += 1;
             inventory
                 .validities
@@ -1263,7 +1514,12 @@ async fn run_local_backup(
     };
     progress.counts(&manifest.counts);
     let target = target_dir.map(Path::to_path_buf);
-    let mut archive = OpenArchive::create(dirs, filename.to_string(), target, manifest).await?;
+    let space = progress.jobs.space.clone();
+    let mut archive = OpenArchive::create(dirs, filename.to_string(), target, manifest, space).await?;
+    // The originals' bytes are known now: the archive needs about as much room besides the reserve.
+    let watch = Arc::clone(archive.space());
+    let mail_bytes = inventory.bytes;
+    blocking(move || watch.room_for(mail_bytes)).await?;
     let mut read_digest = Sha256::new();
     let mut next = 0usize;
     let mut after = 0i64;
@@ -1286,7 +1542,7 @@ async fn run_local_backup(
             }
             next += 1;
             hash_local_metadata(&mut read_digest, &original);
-            let spool = read_local_original(&store, &original, archive.spool_dir(), &progress).await?;
+            let spool = read_local_original(&store, &original, archive.space(), &progress).await?;
             let id =
                 folder_ids.get(&original.folder_path).ok_or(BackupRunError::Source(SourceProblem::LocalChanged))?;
             let provenance =
@@ -1340,15 +1596,15 @@ fn local_folder(id: String, path: &str, info: Option<&FolderInfo>, uid_validity:
     }
 }
 
-/// Copies original `original` from the depot into a spool file in `spool_dir`, 64 KiB at a time,
-/// and checks its length and SHA-256.
+/// Copies original `original` from the depot into a spool file next to the archive (`space`), 64
+/// KiB at a time, and checks its length and SHA-256.
 async fn read_local_original(
     store: &SharedStore,
     original: &LocalOriginal,
-    spool_dir: &Path,
+    space: &Arc<SpaceWatch>,
     progress: &BackupProgress<'_>,
 ) -> Result<File, BackupRunError> {
-    let mut spool = Spool::new(spool_dir).await?;
+    let mut spool = Spool::new(space).await?;
     let mut offset = 0u64;
     while offset < original.bytes {
         progress.go_on()?;
@@ -1518,10 +1774,16 @@ fn collecting_folder<'l>(role: Option<&str>, listed: &'l [ListedFolder], gmail: 
         .find(|folder| folder.selectable() && attributes.iter().any(|attribute| folder.has_attribute(attribute)))
 }
 
-/// A folder name for a warning: modified UTF-7 decoded, cut to [`SHOWN_PATH`] characters with "…".
+/// A folder name as people read it: the mailbox name on the wire ([`encode_mailbox`], so raw text
+/// in an archive stays as it is) with its modified UTF-7 decoded. `Entw&APw-rfe` is `Entwürfe`.
+fn display_name(path: &str) -> String {
+    folders::decode_utf7(&encode_mailbox(path))
+}
+
+/// A folder name for a warning: [`display_name`], cut to [`SHOWN_PATH`] characters with "…".
 /// The name comes from the archive or the server: data for the person, never an instruction.
 fn shown_path(path: &str) -> String {
-    let text = folders::decode_utf7(path);
+    let text = display_name(path);
     if text.chars().count() <= SHOWN_PATH {
         return text;
     }
@@ -2074,6 +2336,8 @@ fn summarize_restore(
         plan.folders.push(RestoreFolderPlan {
             archive_path: folder.path.clone(),
             target_path: map.target.clone(),
+            archive_display: display_name(&folder.path),
+            target_display: display_name(&map.target),
             create: map.create,
             messages_to_add: 0,
             already_present: 0,
@@ -2344,10 +2608,72 @@ impl PlannedRestore {
     }
 }
 
+/// The kept plans and the test runs under way, under one lock so that both count against the
+/// same limits ([`RestorePlans::reserve`]).
+#[derive(Default)]
+struct PlanBook {
+    kept: HashMap<String, PlannedRestore>,
+    /// Test runs under way per caller (`None`: the app); each holds a [`PlanSlot`].
+    running: HashMap<Option<String>, usize>,
+}
+
+impl PlanBook {
+    fn forget_expired(&mut self) {
+        self.kept.retain(|_, item| item.created.elapsed() < PLAN_VALID);
+    }
+
+    fn kept_of(&self, caller: Option<&str>) -> usize {
+        self.kept.values().filter(|item| item.owner.as_deref() == caller).count()
+    }
+
+    fn running_of(&self, caller: Option<&str>) -> usize {
+        self.running.get(&caller.map(str::to_string)).copied().unwrap_or(0)
+    }
+
+    fn running_total(&self) -> usize {
+        self.running.values().sum()
+    }
+}
+
+/// The place a test run holds in [`RestorePlans`] from before its costly work until its plan is
+/// kept ([`RestorePlans::keep`]) or the run ends without one: dropping the slot gives the place
+/// back, also after an error or when the request's future is dropped.
+struct PlanSlot {
+    book: Arc<Mutex<PlanBook>>,
+    owner: Option<String>,
+    /// Still counted in `PlanBook::running`.
+    held: bool,
+}
+
+impl PlanSlot {
+    /// Gives the place back under the held lock of `book`; afterwards dropping the slot does not.
+    fn release_in(&mut self, book: &mut PlanBook) {
+        if !std::mem::replace(&mut self.held, false) {
+            return;
+        }
+        if let Some(count) = book.running.get_mut(&self.owner) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                book.running.remove(&self.owner);
+            }
+        }
+    }
+}
+
+impl Drop for PlanSlot {
+    fn drop(&mut self) {
+        if self.held {
+            let book = Arc::clone(&self.book);
+            let mut book = book.lock().unwrap_or_else(PoisonError::into_inner);
+            self.release_in(&mut book);
+        }
+    }
+}
+
 /// The restore plans of the core and the one restore that may run at a time.
 #[derive(Clone, Default)]
 pub(crate) struct RestorePlans {
-    entries: Arc<Mutex<HashMap<String, PlannedRestore>>>,
+    book: Arc<Mutex<PlanBook>>,
     apply_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -2358,7 +2684,10 @@ impl RestorePlans {
     /// archive as the caller named it (the plan's `archive`).
     ///
     /// A client keeps at most [`CLIENT_PLANS`] plans, the app [`APP_PLANS`]: a new one drops the
-    /// caller's oldest. With [`ALL_PLANS`] plans of all callers it is [`BackupRunError::Busy`].
+    /// caller's oldest. Test runs under way count too, from before the archive is opened
+    /// ([`RestorePlans::reserve`]): with as many runs of the caller under way as it may keep plans,
+    /// or with [`ALL_PLANS`] plans and runs of all callers and no plan of its own to drop, it is
+    /// [`BackupRunError::Busy`] at once.
     pub(crate) async fn plan(
         &self,
         mail: &MailService,
@@ -2368,9 +2697,7 @@ impl RestorePlans {
         account: &str,
         caller: Option<&str>,
     ) -> Result<RestorePlan, BackupRunError> {
-        if !self.has_room(caller) {
-            return Err(BackupRunError::Busy);
-        }
+        let slot = self.reserve(caller)?;
         let archive = open_restore_archive(path).await?;
         check_restore_archive(archive.manifest(), account)?;
         let digest = archive.manifest_sha256().to_string();
@@ -2398,46 +2725,63 @@ impl RestorePlans {
             target,
             created: std::time::Instant::now(),
         };
-        self.keep(id, entry)?;
+        self.keep(slot, id, entry)?;
         Ok(shown)
     }
 
-    /// Whether a plan of `caller` would fit, checked before the costly test run: there is room,
-    /// or the caller is at its own limit, so its oldest plan makes room ([`RestorePlans::keep`]).
-    fn has_room(&self, caller: Option<&str>) -> bool {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        entries.retain(|_, item| item.created.elapsed() < PLAN_VALID);
+    /// Takes a place for a test run of `caller` before its costly work, or `Busy`: when the caller
+    /// already runs as many test runs as it may keep plans, or when plans and runs of all callers
+    /// fill [`ALL_PLANS`] and the caller has no kept plan left that its new one could replace
+    /// (each of its runs under way may replace one).
+    fn reserve(&self, caller: Option<&str>) -> Result<PlanSlot, BackupRunError> {
+        let mut book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
+        book.forget_expired();
         let limit = if caller.is_some() { CLIENT_PLANS } else { APP_PLANS };
-        entries.len() < ALL_PLANS || entries.values().filter(|item| item.owner.as_deref() == caller).count() >= limit
+        let running = book.running_of(caller);
+        let full = book.kept.len() + book.running_total() >= ALL_PLANS;
+        if running >= limit || (full && book.kept_of(caller) <= running) {
+            return Err(BackupRunError::Busy);
+        }
+        let owner = caller.map(str::to_string);
+        *book.running.entry(owner.clone()).or_default() += 1;
+        Ok(PlanSlot { book: Arc::clone(&self.book), owner, held: true })
     }
 
-    fn keep(&self, id: String, entry: PlannedRestore) -> Result<(), BackupRunError> {
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        entries.retain(|_, item| item.created.elapsed() < PLAN_VALID);
+    /// Keeps the plan of the run that holds `slot`: drops the caller's oldest plans beyond its
+    /// limit, and while all places are taken the caller's oldest plan for the new one.
+    fn keep(&self, mut slot: PlanSlot, id: String, entry: PlannedRestore) -> Result<(), BackupRunError> {
+        let mut book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
+        // Under the same lock as the insert below: the run's place becomes its plan's.
+        slot.release_in(&mut book);
+        book.forget_expired();
         let limit = if entry.owner.is_some() { CLIENT_PLANS } else { APP_PLANS };
-        let mut own: Vec<(String, std::time::Instant)> = entries
+        let mut own: Vec<(String, std::time::Instant)> = book
+            .kept
             .iter()
             .filter(|(_, item)| item.owner == entry.owner)
             .map(|(id, item)| (id.clone(), item.created))
             .collect();
         own.sort_by_key(|(_, created)| *created);
-        let surplus = (own.len() + 1).saturating_sub(limit);
-        for (old, _) in own.into_iter().take(surplus) {
-            entries.remove(&old);
+        let mut own = own.into_iter();
+        let full = |book: &PlanBook| book.kept.len() + book.running_total() >= ALL_PLANS;
+        while book.kept_of(entry.owner.as_deref()) >= limit || full(&book) {
+            let Some((old, _)) = own.next() else { break };
+            book.kept.remove(&old);
         }
-        if entries.len() >= ALL_PLANS {
+        if full(&book) {
             return Err(BackupRunError::Busy);
         }
-        entries.insert(id, entry);
+        book.kept.insert(id, entry);
         Ok(())
     }
 
     /// The archive as named and the stored plan `id` of `account`, for `caller` only (`None`: the
     /// app); `None` when it is another caller's, expired or unknown.
     pub(crate) fn planned_for(&self, account: &str, id: &str, caller: Option<&str>) -> Option<(String, RestorePlan)> {
-        self.entries
+        self.book
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .kept
             .get(id)
             .filter(|item| item.valid_for(account, caller))
             .map(|item| (item.file.clone(), item.plan.clone()))
@@ -2463,8 +2807,8 @@ impl RestorePlans {
         let ApplyRequest { path, account, plan: id, caller, choice } = request;
         let _serial = self.apply_lock.lock().await;
         let (planned_digest, planned_plan, planned_target) = {
-            let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-            let item = entries.get(id).filter(|item| item.valid_for(account, caller));
+            let book = self.book.lock().unwrap_or_else(PoisonError::into_inner);
+            let item = book.kept.get(id).filter(|item| item.valid_for(account, caller));
             let item = item.ok_or(BackupRunError::Restore(RestoreProblem::PlanGone))?;
             (item.manifest_sha256.clone(), item.plan.clone(), item.target.clone())
         };
@@ -2503,7 +2847,7 @@ impl RestorePlans {
         let outcome = Box::pin(restore_on(own.session(), archive, setup)).await;
         own.close().await;
         if outcome.is_ok() {
-            self.entries.lock().unwrap_or_else(PoisonError::into_inner).remove(id);
+            self.book.lock().unwrap_or_else(PoisonError::into_inner).kept.remove(id);
         }
         outcome
     }
@@ -3067,10 +3411,10 @@ pub(crate) mod tests {
     use torro_ipc::mail::{RestorePlan, RestoreResult};
 
     use super::{
-        ApplyRequest, BackupFileError, BackupJobs, BackupProgress, BackupRunError, BackupSelection, CANCELLED,
-        COMMITTING, JobEntry, PendingBackup, RUNNING, RestoreChoice, RestoreJournal, RestorePlans, RestoreProblem,
-        SourceProblem, SourceWarning, capped_warnings, run_local_backup, run_server_backup, uid_inventory_hash,
-        write_verified_backup,
+        ALL_PLANS, ApplyRequest, BackupFileError, BackupJobs, BackupProgress, BackupRunError, BackupSelection,
+        CANCELLED, CLIENT_PLANS, COMMITTING, DISK_RESERVE, DiskSpace, JobEntry, PendingBackup, RUNNING, RestoreChoice,
+        RestoreJournal, RestorePlans, RestoreProblem, SourceProblem, SourceWarning, SpaceShortage, capped_warnings,
+        run_local_backup, run_server_backup, uid_inventory_hash, write_verified_backup,
     };
     use crate::account::github::tests::MemoryTokens;
     use crate::mail::MailDirs;
@@ -3139,13 +3483,14 @@ pub(crate) mod tests {
         .expect("archive published");
         assert!(report.complete);
         assert_eq!(fs::read(&path).expect("backup"), SAMPLE_ZIP);
-        assert!(
+        // The last guard, should a file appear under the name after the job's first check.
+        assert!(matches!(
             write_verified_backup(&dirs, "mail-2026.zip", |file| {
                 file.write_all(SAMPLE_ZIP)?;
                 Ok(())
-            })
-            .is_err()
-        );
+            }),
+            Err(BackupFileError::Exists(name)) if name == "mail-2026.zip"
+        ));
         assert_eq!(fs::read(&path).expect("original backup"), SAMPLE_ZIP);
         #[cfg(unix)]
         {
@@ -3222,6 +3567,7 @@ pub(crate) mod tests {
                 job.id.clone(),
                 JobEntry { job, state: Arc::clone(&state), owner: Some("client-1".into()) },
             )]))),
+            ..BackupJobs::default()
         };
         assert!(state.compare_exchange(RUNNING, COMMITTING, Ordering::AcqRel, Ordering::Acquire).is_ok());
         let current = jobs.cancel("mail:anna@example.org", "job", Some("client-1")).expect("the job exists");
@@ -3631,6 +3977,7 @@ pub(crate) mod tests {
         };
         let job = jobs
             .start(Arc::clone(&mail), dirs(root.path()), account.clone(), selection("first.zip"), None)
+            .await
             .expect("started");
         eventually("the job waits for a body", || async {
             server.lines().iter().any(|line| line.contains("BODY.PEEK[]<"))
@@ -3640,7 +3987,7 @@ pub(crate) mod tests {
         assert_eq!(cancelling.phase, BackupPhase::Cancelling);
         assert!(
             matches!(
-                jobs.start(Arc::clone(&mail), dirs(root.path()), account.clone(), selection("second.zip"), None),
+                jobs.start(Arc::clone(&mail), dirs(root.path()), account.clone(), selection("second.zip"), None).await,
                 Err(BackupRunError::Busy)
             ),
             "the account stays busy while the task still runs"
@@ -3655,6 +4002,7 @@ pub(crate) mod tests {
         assert!(server.lines().iter().any(|line| line.ends_with(" LOGOUT")), "signed out after the cancellation");
         let second = jobs
             .start(Arc::clone(&mail), dirs(root.path()), account.clone(), selection("second.zip"), None)
+            .await
             .expect("a new job after the old one stopped");
         eventually("the second job ends", || async {
             jobs.status(&account, &second.id, None).is_some_and(|job| job.phase.is_final())
@@ -3682,6 +4030,7 @@ pub(crate) mod tests {
                 job.id.clone(),
                 JobEntry { job, state: Arc::clone(&state), owner: None },
             )]))),
+            ..BackupJobs::default()
         };
         let task: tokio::task::JoinHandle<()> = tokio::spawn(async { std::panic::panic_any("a task that panicked") });
         let panicked = task.await.expect_err("the task panicked");
@@ -3851,7 +4200,8 @@ pub(crate) mod tests {
             filename: Some("gaps.zip".into()),
             target_dir: None,
         };
-        let job = jobs.start(Arc::clone(&mail), dirs(root.path()), account.clone(), selection, None).expect("started");
+        let job =
+            jobs.start(Arc::clone(&mail), dirs(root.path()), account.clone(), selection, None).await.expect("started");
         let done = || async { jobs.status(&account, &job.id, None).is_some_and(|job| job.phase.is_final()) };
         eventually("the job ends", done).await;
         let job = jobs.status(&account, &job.id, None).expect("the job");
@@ -3905,6 +4255,162 @@ pub(crate) mod tests {
         let places: Vec<(Option<u32>, Option<u32>)> =
             manifest.messages.iter().map(|message| (message.uid_validity, message.uid)).collect();
         assert_eq!(places, vec![(Some(4), Some(9)), (Some(2), Some(1002))]);
+    }
+
+    /// Anna's account on the trap with one original of `bytes` bytes in the inbox.
+    async fn local_with_one_original(root: &std::path::Path, bytes: usize) -> (Arc<MailService>, String) {
+        let (mail, account, _) = local_service(root).await;
+        let store = mail.store(&account).await.expect("local store");
+        let raw = format!("From: a@example.org\r\n\r\n{}\r\n", "x".repeat(bytes));
+        store
+            .run(move |db| {
+                let inbox = listed(db, "INBOX", "INBOX", Some(Role::Inbox), 1);
+                db.upsert_message(&inbox, 1, &header(1))?;
+                db.save_original("INBOX", 1, 1, Utc::now().fixed_offset(), &[], raw.as_bytes())
+            })
+            .await
+            .expect("one original");
+        (mail, account)
+    }
+
+    fn local_selection(name: &str, target_dir: Option<std::path::PathBuf>) -> BackupSelection {
+        BackupSelection { source: BackupScope::Local, since: None, filename: Some(name.into()), target_dir }
+    }
+
+    /// Starts a local backup into `name` on `jobs` and waits until its job has ended.
+    async fn ended_job(
+        jobs: &BackupJobs,
+        mail: &Arc<MailService>,
+        root: &std::path::Path,
+        account: &str,
+        name: &str,
+    ) -> BackupJob {
+        let job = jobs
+            .start(Arc::clone(mail), dirs(root), account.into(), local_selection(name, None), None)
+            .await
+            .expect("started");
+        eventually("the job ends", || async {
+            jobs.status(account, &job.id, None).is_some_and(|job| job.phase.is_final())
+        })
+        .await;
+        jobs.status(account, &job.id, None).expect("the job")
+    }
+
+    #[tokio::test]
+    async fn a_backup_refuses_a_taken_name_at_once_in_the_managed_and_a_chosen_folder() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mail, account) = local_with_one_original(root.path(), 10).await;
+        let jobs = BackupJobs::default();
+        let managed = dirs(root.path()).data.join("backups");
+        fs::create_dir_all(&managed).expect("managed folder");
+        fs::write(managed.join("taken.zip"), b"an older archive").expect("older archive");
+        let chosen = root.path().join("chosen");
+        fs::create_dir(&chosen).expect("chosen folder");
+        fs::write(chosen.join("taken.zip"), b"a file of the person").expect("their file");
+        let said = torro_core::i18n::trf(
+            "A file named {name} already exists in the backup folder. Choose another name.",
+            &[("name", &"taken.zip")],
+        );
+        for target in [None, Some(chosen.clone())] {
+            let refused = jobs
+                .start(
+                    Arc::clone(&mail),
+                    dirs(root.path()),
+                    account.clone(),
+                    local_selection("taken.zip", target),
+                    None,
+                )
+                .await;
+            let Err(error) = refused else { panic!("a taken name starts no job") };
+            assert!(matches!(&error, BackupRunError::File(BackupFileError::Exists(name)) if name == "taken.zip"));
+            assert_eq!(error.user_message(), said);
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(chosen.join("taken.zip"), managed.join("link.zip")).expect("a link");
+            let refused = jobs
+                .start(Arc::clone(&mail), dirs(root.path()), account.clone(), local_selection("link.zip", None), None)
+                .await;
+            assert!(matches!(refused, Err(BackupRunError::File(BackupFileError::Exists(_)))), "a link is taken too");
+        }
+        assert_eq!(fs::read(managed.join("taken.zip")).expect("older archive"), b"an older archive");
+        assert_eq!(fs::read(chosen.join("taken.zip")).expect("their file"), b"a file of the person");
+        // No job was made for the refused ones: the account is free for another name.
+        let job = ended_job(&jobs, &mail, root.path(), &account, "free.zip").await;
+        assert_eq!(job.phase, BackupPhase::Complete);
+    }
+
+    #[tokio::test]
+    async fn a_backup_does_not_start_without_the_disk_reserve_but_unknown_space_stops_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mail, account) = local_with_one_original(root.path(), 10).await;
+        let low = BackupJobs::with_space(DiskSpace::fake(1, |_| Some(DISK_RESERVE - 1)));
+        let refused = low
+            .start(Arc::clone(&mail), dirs(root.path()), account.clone(), local_selection("low.zip", None), None)
+            .await;
+        let Err(error) = refused else { panic!("too little space starts no job") };
+        assert!(matches!(error, BackupRunError::Space(SpaceShortage::AtStart { free }) if free == DISK_RESERVE - 1));
+        let said = torro_core::i18n::trf(
+            "Not enough free disk space for a backup: {free} free, at least {reserve} must stay free.",
+            &[("free", &"2.0 GiB"), ("reserve", &"2.0 GiB")],
+        );
+        assert_eq!(error.user_message(), said);
+        backup_folder_holds(root.path(), &[]);
+
+        let unknown = BackupJobs::with_space(DiskSpace::fake(1, |_| None));
+        let job = ended_job(&unknown, &mail, root.path(), &account, "unknown.zip").await;
+        assert_eq!(job.phase, BackupPhase::Complete, "{:?}", job.warnings);
+        backup_folder_holds(root.path(), &["unknown.zip"]);
+    }
+
+    #[tokio::test]
+    async fn a_local_backup_stops_when_its_mail_or_the_writing_would_eat_the_reserve() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mail, account) = local_with_one_original(root.path(), 100).await;
+        // Room at the start, but not for the counted mail besides the reserve.
+        let tight = BackupJobs::with_space(DiskSpace::fake(1, |_| Some(DISK_RESERVE + 10)));
+        let job = ended_job(&tight, &mail, root.path(), &account, "tight.zip").await;
+        assert_eq!(job.phase, BackupPhase::Incomplete);
+        let expected =
+            BackupRunError::Space(SpaceShortage::ForMail { free: DISK_RESERVE + 10, mail: 125 }).user_message();
+        assert_eq!(job.warnings, vec![expected]);
+        backup_folder_holds(root.path(), &[]);
+
+        // Room at the start and for the mail; then the disk fills up while the archive is written.
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        let filling = BackupJobs::with_space(DiskSpace::fake(1, move |_| {
+            let free = if counter.fetch_add(1, Ordering::SeqCst) < 2 { 4 * DISK_RESERVE } else { DISK_RESERVE / 2 };
+            Some(free)
+        }));
+        let job = ended_job(&filling, &mail, root.path(), &account, "filling.zip").await;
+        assert_eq!(job.phase, BackupPhase::Incomplete);
+        let said = torro_core::i18n::trf(
+            "Mail backup stopped because the disk is almost full: {free} free, at least {reserve} must stay free. The partial archive was removed.",
+            &[("free", &"1.0 GiB"), ("reserve", &"2.0 GiB")],
+        );
+        assert_eq!(job.warnings, vec![said]);
+        assert!(asked.load(Ordering::SeqCst) > 2, "asked again while writing");
+        backup_folder_holds(root.path(), &[]);
+    }
+
+    #[test]
+    fn the_disk_of_a_folder_is_the_one_with_the_longest_mount_point() {
+        use std::path::Path;
+        let disks =
+            [(Path::new("/"), 1), (Path::new("/home"), 2), (Path::new("/home/anna/media"), 3), (Path::new("/ho"), 4)];
+        assert_eq!(super::free_on(disks, Path::new("/home/anna/backups")), Some(2));
+        assert_eq!(super::free_on(disks, Path::new("/home/anna/media/x")), Some(3));
+        assert_eq!(super::free_on(disks, Path::new("/srv/backups")), Some(1), "whole components: not /ho");
+        assert_eq!(super::free_on([], Path::new("/srv")), None);
+        // A folder that does not exist has no disk; an existing one is looked up without a panic.
+        let root = tempfile::tempdir().expect("tempdir");
+        assert_eq!(DiskSpace::system().free(&root.path().join("missing")), None);
+        let _ = DiskSpace::system().free(root.path());
+        assert_eq!(
+            (super::size_words(DISK_RESERVE), super::size_words(512 * 1024 * 1024)),
+            ("2.0 GiB".into(), "512.0 MiB".into())
+        );
     }
 
     #[test]
@@ -4613,8 +5119,10 @@ pub(crate) mod tests {
     async fn unicode_folders_are_created_and_filled_in_modified_utf7() {
         let root = tempfile::tempdir().expect("tempdir");
         let server = FakeImap::start(PASSWORD).await;
+        // The first as raw text (an archive or a person may hold it), the second as a server
+        // lists it, in modified UTF-7.
         let zip = test_archive(
-            &[("Projekte/Grüße", None, "/")],
+            &[("Projekte/Grüße", None, "/"), ("Entw&APw-rfe", None, "/")],
             &[(0, b"From: a@example.org\r\n\r\nUnicode\r\n", &[])],
             &[],
             Status::Complete,
@@ -4623,6 +5131,14 @@ pub(crate) mod tests {
         let plans = RestorePlans::default();
         let plan = plan_of(&plans, &mail, root.path(), &zip, "unicode.zip", &account, None).await.expect("plan");
         assert_eq!(plan.folders[0].target_path, "Projekte/Gr&APwA3w-e");
+        let shown: Vec<(&str, &str)> =
+            plan.folders.iter().map(|row| (row.archive_shown(), row.target_shown())).collect();
+        assert_eq!(shown, [("Projekte/Grüße", "Projekte/Grüße"), ("Entwürfe", "Entwürfe")], "decoded for people");
+        assert_eq!(
+            (plan.folders[1].archive_path.as_str(), plan.folders[1].target_path.as_str()),
+            ("Entw&APw-rfe", "Entw&APw-rfe")
+        );
+        assert!(says(&plan.warnings, "Restore will create folder {path}.", &[("path", &"Entwürfe")]));
         assert!(plan.folders[0].create);
         assert!(says(&plan.warnings, "Restore will create folder {path}.", &[("path", &"Projekte/Grüße")]));
         let result = apply_of(&plans, &mail, root.path(), "unicode.zip", &account, &plan.id, PLAIN).await.expect("run");
@@ -4757,6 +5273,42 @@ pub(crate) mod tests {
         assert!(matches!(refused, Err(BackupRunError::Restore(RestoreProblem::PlanGone))), "{refused:?}");
     }
 
+    #[tokio::test]
+    async fn test_runs_under_way_count_against_the_plan_limits_and_give_their_place_back() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (mail, account, _) = local_service(root.path()).await;
+        let missing = root.path().join("missing.zip");
+        let plans = RestorePlans::default();
+        let run = |plans: &RestorePlans, caller: Option<&'static str>| {
+            let (plans, mail, root, missing, account) =
+                (plans.clone(), Arc::clone(&mail), root.path().to_path_buf(), missing.clone(), account.clone());
+            async move { plans.plan(&mail, &dirs(&root), "missing.zip".into(), &missing, &account, caller).await }
+        };
+        // Runs that fail (here: no archive) give their place back.
+        for _ in 0..CLIENT_PLANS + 2 {
+            assert!(matches!(run(&plans, Some("c1")).await, Err(BackupRunError::Io(_))));
+        }
+        // As many runs under way as the client may keep plans: the next is busy at once.
+        let mut under_way: Vec<_> = (0..CLIENT_PLANS).map(|_| plans.reserve(Some("c1")).expect("a place")).collect();
+        assert!(matches!(run(&plans, Some("c1")).await, Err(BackupRunError::Busy)));
+        assert!(matches!(run(&plans, Some("c2")).await, Err(BackupRunError::Io(_))), "another client has its own");
+        assert!(matches!(run(&plans, None).await, Err(BackupRunError::Io(_))), "and the app");
+        drop(under_way.pop());
+        assert!(matches!(run(&plans, Some("c1")).await, Err(BackupRunError::Io(_))), "a place came back");
+
+        // All places of all callers taken by runs under way: every caller is busy.
+        let plans = RestorePlans::default();
+        let callers: Vec<String> = (0..ALL_PLANS / CLIENT_PLANS).map(|n| format!("c{n}")).collect();
+        let mut all: Vec<_> = callers
+            .iter()
+            .flat_map(|caller| (0..CLIENT_PLANS).map(|_| plans.reserve(Some(caller.as_str())).expect("a place")))
+            .collect();
+        assert!(matches!(run(&plans, None).await, Err(BackupRunError::Busy)));
+        assert!(matches!(run(&plans, Some("other")).await, Err(BackupRunError::Busy)));
+        drop(all.pop());
+        assert!(matches!(run(&plans, None).await, Err(BackupRunError::Io(_))));
+    }
+
     #[test]
     fn every_restore_problem_has_a_code_and_its_own_text() {
         let problems = [
@@ -4784,6 +5336,8 @@ pub(crate) mod tests {
         let row = |create: bool| RestoreFolderPlan {
             archive_path: "F".into(),
             target_path: "F".into(),
+            archive_display: "F".into(),
+            target_display: "F".into(),
             create,
             messages_to_add: 0,
             already_present: 1,

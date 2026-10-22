@@ -2114,6 +2114,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Mail backup could not be started.", "Das Mail-Backup konnte nicht gestartet werden."),
     ("Mail backup could not be completed.", "Das Mail-Backup konnte nicht abgeschlossen werden."),
     (
+        "A file named {name} already exists in the backup folder. Choose another name.",
+        "Im Backup-Ordner gibt es schon eine Datei namens {name}. Wähle einen anderen Namen.",
+    ),
+    (
+        "Not enough free disk space for a backup: {free} free, at least {reserve} must stay free.",
+        "Nicht genug freier Speicherplatz für ein Backup: {free} frei, mindestens {reserve} müssen frei bleiben.",
+    ),
+    (
+        "Not enough free disk space for this backup: {mail} of mail, {free} free, and at least {reserve} must stay free.",
+        "Nicht genug freier Speicherplatz für dieses Backup: {mail} an E-Mails, {free} frei, und mindestens {reserve} müssen frei bleiben.",
+    ),
+    (
+        "Mail backup stopped because the disk is almost full: {free} free, at least {reserve} must stay free. The partial archive was removed.",
+        "Das Mail-Backup wurde angehalten, weil der Speicher fast voll ist: {free} frei, mindestens {reserve} müssen frei bleiben. Das unfertige Archiv wurde entfernt.",
+    ),
+    (
         "Mail backup is incomplete: a source message disappeared while reading.",
         "Das Mail-Backup ist unvollständig: Beim Lesen ist eine Nachricht aus der Quelle verschwunden.",
     ),

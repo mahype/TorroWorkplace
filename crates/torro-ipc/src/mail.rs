@@ -106,10 +106,25 @@ pub struct RestorePlan {
 }
 
 /// One folder row of a read-only restore test run. Paths are descriptive data, never ZIP paths.
+///
+/// `archive_path` and `target_path` are exact IMAP mailbox names as they go on the wire: modified
+/// UTF-7 (RFC 3501 5.1.3), so `Entwürfe` is `Entw&APw-rfe`. They identify the folder; compare and
+/// pass them on as they are, never show them. For people there are `archive_display` and
+/// `target_display` ([`RestoreFolderPlan::archive_shown`], [`RestoreFolderPlan::target_shown`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RestoreFolderPlan {
+    /// The folder's mailbox name in the archive, as the source server listed it.
     pub archive_path: String,
+    /// The mailbox name on the target the restore uses (it may differ from `archive_path`: `INBOX`
+    /// as the target spells it, a collection folder the target fills by itself).
     pub target_path: String,
+    /// `archive_path` decoded for people (`Entwürfe`). Empty in answers of cores before #267's
+    /// review; show `archive_path` then.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub archive_display: String,
+    /// `target_path` decoded for people. Empty in answers of older cores; show `target_path` then.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub target_display: String,
     pub create: bool,
     pub messages_to_add: u64,
     pub already_present: u64,
@@ -125,6 +140,20 @@ pub struct RestoreFolderPlan {
     /// server shows it here again by itself, so it is never appended.
     #[serde(default)]
     pub covered: u64,
+}
+
+impl RestoreFolderPlan {
+    /// The archive folder as people read it: `archive_display`, or `archive_path` when an older
+    /// core sent none.
+    pub fn archive_shown(&self) -> &str {
+        if self.archive_display.is_empty() { &self.archive_path } else { &self.archive_display }
+    }
+
+    /// The target folder as people read it: `target_display`, or `target_path` when an older core
+    /// sent none.
+    pub fn target_shown(&self) -> &str {
+        if self.target_display.is_empty() { &self.target_path } else { &self.target_display }
+    }
 }
 
 /// Verified outcome of a real restore; uncertain entries must be investigated before retrying.
@@ -607,6 +636,23 @@ mod tests {
         });
         let plan: RestorePlan = serde_json::from_value(old).expect("older plan response");
         assert!(plan.folders.is_empty());
+    }
+
+    #[test]
+    fn folder_rows_show_the_decoded_name_and_fall_back_to_the_wire_name() {
+        let older = serde_json::json!({
+            "archive_path": "Entw&APw-rfe", "target_path": "Entw&APw-rfe", "create": true,
+            "messages_to_add": 1, "already_present": 0, "uncertain": 0, "bytes_to_add": 9
+        });
+        let row: RestoreFolderPlan = serde_json::from_value(older).expect("row of an older core");
+        assert_eq!((row.archive_shown(), row.target_shown()), ("Entw&APw-rfe", "Entw&APw-rfe"));
+        let row = RestoreFolderPlan { archive_display: "Entwürfe".into(), target_display: "Entwürfe".into(), ..row };
+        assert_eq!((row.archive_shown(), row.target_shown()), ("Entwürfe", "Entwürfe"));
+        let json = serde_json::to_value(&row).expect("json");
+        assert_eq!(
+            (json["archive_path"].as_str(), json["target_display"].as_str()),
+            (Some("Entw&APw-rfe"), Some("Entwürfe"))
+        );
     }
 
     #[test]

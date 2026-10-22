@@ -2024,7 +2024,11 @@ pub enum Request {
     /// inside the managed backup folder, or an absolute destination path with the app key only.
     /// `since` includes that IMAP internal
     /// calendar day. Returns [`Response::MailBackupJob`]. Errors: `not-found`, `busy`, `offline`,
-    /// `forbidden`, `error`. The result is complete only after final inventory and ZIP verification.
+    /// `forbidden`, `conflict` (something named like the archive is in the destination folder
+    /// already; nothing is overwritten), `error` (also when the disk of the destination folder has
+    /// less than 2 GiB free; the message says how much is free). The result is complete only after
+    /// final inventory and ZIP verification; a job whose disk falls under that reserve while it
+    /// writes stops and ends `incomplete`, without an archive.
     #[serde(rename = "mail.backup_create")]
     MailBackupCreate {
         /// The mail account to back up: `mail:<address>` from `accounts.list_accounts`.
@@ -2072,9 +2076,12 @@ pub enum Request {
     },
     /// Validates an archive, reads the target with read-only IMAP and reports a restore plan. It
     /// never writes to the server or a local journal; unconfirmed uploads of an earlier restore
-    /// are reported as `unconfirmed`. The file rule is the same as backup_verify.
-    /// Returns [`Response::MailRestorePlanned`]. Errors: `not-found`, `offline`, `auth`, `busy`,
-    /// `error`.
+    /// are reported as `unconfirmed`. The file rule is the same as backup_verify. Folder rows name
+    /// each folder twice: the exact IMAP name (`archive_path`, `target_path`, modified UTF-7) and
+    /// the name for people (`archive_display`, `target_display`).
+    /// Returns [`Response::MailRestorePlanned`]. Errors: `not-found`, `offline`, `auth`, `busy`
+    /// (already four test runs of this client key under way, or all plans and runs of all callers
+    /// at their limit), `error`.
     #[serde(rename = "mail.restore_plan")]
     MailRestorePlan {
         /// A plain `.zip` name in the managed backup folder; an absolute path only with the app key.

@@ -870,7 +870,8 @@ fn verification_text(verification: &BackupVerification) -> String {
 }
 
 /// A restore test for people: what it found for which archive, what still needs a confirmation,
-/// one line per folder, the warnings, and the plan's id.
+/// one line per folder (by the names people read, not modified UTF-7), the warnings, and the plan's
+/// id.
 fn plan_text(plan: &RestorePlan) -> String {
     let mut lines = vec![
         trf("Restore test of {name}: nothing was changed", &[("name", &plan.archive)]),
@@ -893,14 +894,14 @@ fn plan_text(plan: &RestorePlan) -> String {
     }
     for folder in &plan.folders {
         let into = match folder.create {
-            true => trf("Into {target}, new folder", &[("target", &folder.target_path)]),
-            false => trf("Into {target}, existing folder", &[("target", &folder.target_path)]),
+            true => trf("Into {target}, new folder", &[("target", &folder.target_shown())]),
+            false => trf("Into {target}, existing folder", &[("target", &folder.target_shown())]),
         };
         let counts = trf(
             "To add: {add} · Already present: {present} · Uncertain: {uncertain}",
             &[("add", &folder.messages_to_add), ("present", &folder.already_present), ("uncertain", &folder.uncertain)],
         );
-        lines.push(format!("  {}: {into}; {counts}", folder.archive_path));
+        lines.push(format!("  {}: {into}; {counts}", folder.archive_shown()));
         if folder.aggregate {
             lines.push(format!(
                 "    {}",
@@ -1120,6 +1121,8 @@ mod tests {
             folders: vec![torro_ipc::mail::RestoreFolderPlan {
                 archive_path: "[Gmail]/All Mail".into(),
                 target_path: "[Gmail]/All Mail".into(),
+                archive_display: "[Gmail]/All Mail".into(),
+                target_display: "[Gmail]/All Mail".into(),
                 create: false,
                 messages_to_add: 0,
                 already_present: 0,
@@ -1130,6 +1133,23 @@ mod tests {
             }],
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_restore_test_names_folders_as_people_read_them() {
+        let mut plan = restore_plan(true, 0, 0);
+        plan.folders.push(torro_ipc::mail::RestoreFolderPlan {
+            archive_path: "INBOX/Entw&APw-rfe".into(),
+            target_path: "INBOX/Entw&APw-rfe".into(),
+            archive_display: "INBOX/Entwürfe".into(),
+            target_display: "INBOX/Entwürfe".into(),
+            create: true,
+            ..plan.folders[0].clone()
+        });
+        let text = plan_text(&plan);
+        let into = trf("Into {target}, new folder", &[("target", &"INBOX/Entwürfe")]);
+        assert!(text.contains(&format!("  INBOX/Entwürfe: {into}")), "{text}");
+        assert!(!text.contains("&APw-"), "no modified UTF-7 for people: {text}");
     }
 
     fn verified(complete: bool) -> Response {

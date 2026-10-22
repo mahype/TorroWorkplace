@@ -3188,7 +3188,9 @@ impl Core {
                 shown = crate::approvals::restore_details(&stored);
                 let choice =
                     RestoreChoice { allow_incomplete: *allow_incomplete, retry_unconfirmed: *retry_unconfirmed };
-                let summary = crate::approvals::restore_summary(&file, &stored, choice);
+                // The account by the label the core keeps, as backups and cancellations name it.
+                let label = self.account_label(account).await;
+                let summary = crate::approvals::restore_summary(&file, &stored, label.as_deref(), choice);
                 (request, None, summary)
             }
             // An answer to an invitation (task E8.3b): planned now as it will run, the calendar the
@@ -3329,6 +3331,12 @@ impl Core {
         });
     }
 
+    /// The label the core keeps for account `id` (any kind), for approvals: never a name the client
+    /// sends along. `None` when the core does not know the account.
+    async fn account_label(&self, id: &str) -> Option<String> {
+        self.accounts_within(Reach::Suite).await.into_iter().find(|account| account.id == id).map(|a| a.label)
+    }
+
     /// What the core holds about the things `request` names, for its approval's summary
     /// ([`Facts`]): the template's name from the store, the account's label (to remove it or to
     /// create a task list in it), and for calendars,
@@ -3356,19 +3364,15 @@ impl Core {
             | Request::UpdateMailAccount { id: account, .. }
             | Request::CreateTaskList { account, .. }
             | Request::MailBackupCreate { account, .. } => {
-                let accounts = self.accounts_within(Reach::Suite).await;
-                Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
+                Facts { name: self.account_label(account).await, ..Facts::default() }
             }
             // A backup to cancel (#267): its account by the label and its source as the job runs it;
             // whose job it is was checked at the door.
-            Request::MailBackupCancel { account, job } => {
-                let accounts = self.accounts_within(Reach::Suite).await;
-                Facts {
-                    name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label),
-                    backup_source: self.backup_jobs.status(account, job, None).map(|job| job.source),
-                    ..Facts::default()
-                }
-            }
+            Request::MailBackupCancel { account, job } => Facts {
+                name: self.account_label(account).await,
+                backup_source: self.backup_jobs.status(account, job, None).map(|job| job.source),
+                ..Facts::default()
+            },
             // The account by its label, the model by its name and where it computes as the account's
             // list in the core says (task S.24), never by the client's words.
             Request::SetModelEnabled { account, model, .. } => {
@@ -3781,18 +3785,27 @@ impl Core {
                                     return Response::Error { code: "error".into(), message };
                                 }
                             }
-                            match self.backup_jobs.start(
+                            let started = self.backup_jobs.start(
                                 Arc::clone(&self.mail),
                                 dirs,
                                 account,
                                 BackupSelection { source, since, filename: file_name, target_dir },
                                 caller.map(str::to_string),
-                            ) {
+                            );
+                            match started.await {
                                 Ok(job) => Response::MailBackupJob { job },
                                 Err(BackupRunError::Busy) => Response::Error {
                                     code: "busy".into(),
                                     message: tr("A backup for this mail account is already running.").into(),
                                 },
+                                // Refused before any mail is read: the name is taken, or the disk
+                                // keeps too little free (the message says how much is free).
+                                Err(error @ BackupRunError::File(crate::mail::backup::BackupFileError::Exists(_))) => {
+                                    Response::Error { code: "conflict".into(), message: error.user_message() }
+                                }
+                                Err(error @ BackupRunError::Space(_)) => {
+                                    Response::Error { code: "error".into(), message: error.user_message() }
+                                }
                                 Err(_) => Response::Error {
                                     code: "error".into(),
                                     message: tr("Mail backup could not be started.").into(),
@@ -8888,6 +8901,41 @@ mod tests {
         (core(dir).with_mail(mail).with_mail_dirs(dirs.clone()), account.id, dirs)
     }
 
+    /// A taken archive name is refused before any job exists, with `conflict` and a message that
+    /// names the file; nothing is overwritten.
+    #[tokio::test]
+    async fn a_backup_into_a_taken_name_is_a_conflict_at_once() {
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::sync::fake::FakeImap;
+
+        let dir = tempfile::tempdir().expect("test directory");
+        let server = FakeImap::start(PASSWORD).await;
+        let (core, account, dirs) = restore_core(dir.path(), &server).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        std::fs::create_dir_all(dirs.data.join("backups")).expect("managed backup folder");
+        std::fs::write(dirs.data.join("backups").join("taken.zip"), b"older").expect("older archive");
+        let answer = ask(
+            &core,
+            Some(&app_key),
+            Request::MailBackupCreate {
+                account,
+                source: torro_ipc::mail::BackupScope::Server,
+                since: None,
+                file_name: Some("taken.zip".into()),
+            },
+        )
+        .await;
+        let Response::Error { code, message } = answer else { panic!("refused, got {answer:?}") };
+        assert_eq!(code, "conflict");
+        let said = trf(
+            "A file named {name} already exists in the backup folder. Choose another name.",
+            &[("name", &"taken.zip")],
+        );
+        assert_eq!(message, said);
+        assert_eq!(std::fs::read(dirs.data.join("backups").join("taken.zip")).expect("kept"), b"older");
+        assert!(!server.lines().iter().any(|line| line.contains("LOGIN")), "no mail was read");
+    }
+
     #[tokio::test]
     async fn restore_plan_request_is_read_only_and_bound_to_its_account() {
         use crate::mail::service::tests::PASSWORD;
@@ -9000,7 +9048,12 @@ mod tests {
         };
         let asked = waits(ask(&core, Some(&agent_key), apply(&plan.id, false, false)).await);
         let (_, stored) = plans.planned_for(&account, &plan.id, Some(&agent)).expect("stored plan");
-        assert_eq!(asked.summary, crate::approvals::restore_summary("mail.zip", &stored, RestoreChoice::default()));
+        let label = core.account_label(&account).await;
+        assert!(label.is_some(), "the core knows the account's label");
+        let summary =
+            crate::approvals::restore_summary("mail.zip", &stored, label.as_deref(), RestoreChoice::default());
+        assert_eq!(asked.summary, summary);
+        assert!(!asked.summary.contains("mail:"), "the account by its label, not its id: {}", asked.summary);
         assert!(asked.summary.contains("mail.zip") && asked.summary.contains('1'), "{}", asked.summary);
         assert!(!server.lines().iter().any(|line| line.contains(" APPEND ")), "nothing before the person's yes");
 

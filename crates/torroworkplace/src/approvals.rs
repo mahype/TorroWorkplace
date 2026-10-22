@@ -1452,14 +1452,17 @@ fn backup_source_word(source: torro_ipc::mail::BackupScope) -> &'static str {
 
 /// The server-side restore plan, never counts or names supplied by the requesting client, and
 /// what the request accepts besides it: an incomplete archive, and sending again the uploads of an
-/// earlier restore that were never confirmed (with their number from the plan).
+/// earlier restore that were never confirmed (with their number from the plan). The account by
+/// `label`, the one the core keeps for it (as backups name it, [`Facts::name`]); its id only when
+/// the core knows no label.
 pub fn restore_summary(
     file: &str,
     plan: &torro_ipc::mail::RestorePlan,
+    label: Option<&str>,
     choice: crate::mail::backup::RestoreChoice,
 ) -> String {
     let archive = Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
-    let account = quote(&plan.account);
+    let account = quote(label.unwrap_or(&plan.account));
     let archive = quote(archive);
     let folders = plan.folders_to_create;
     let messages = plan.messages_to_add;
@@ -1486,6 +1489,8 @@ pub fn restore_summary(
     summary
 }
 
+/// The folders the stored `plan` creates or adds to, at most ten, by the names people read
+/// ([`torro_ipc::mail::RestoreFolderPlan::target_shown`], modified UTF-7 decoded).
 pub fn restore_details(plan: &torro_ipc::mail::RestorePlan) -> Vec<String> {
     let mut details: Vec<String> = plan
         .folders
@@ -1493,7 +1498,7 @@ pub fn restore_details(plan: &torro_ipc::mail::RestorePlan) -> Vec<String> {
         .filter(|folder| folder.create || folder.messages_to_add > 0)
         .take(10)
         .map(|folder| {
-            let path = quote(&folder.target_path);
+            let path = quote(folder.target_shown());
             let messages = folder.messages_to_add;
             let create = if folder.create { tr("new folder") } else { tr("existing folder") };
             trf(
@@ -3070,8 +3075,10 @@ pub(crate) mod tests {
             unconfirmed: 0,
             bytes_to_add: 1234,
             folders: vec![torro_ipc::mail::RestoreFolderPlan {
-                archive_path: "Projects".into(),
-                target_path: "Projects".into(),
+                archive_path: "Projekte/Entw&APw-rfe".into(),
+                target_path: "Projekte/Entw&APw-rfe".into(),
+                archive_display: "Projekte/Entwürfe".into(),
+                target_display: "Projekte/Entwürfe".into(),
                 create: true,
                 messages_to_add: 3,
                 already_present: 2,
@@ -3083,8 +3090,9 @@ pub(crate) mod tests {
             warnings: Vec::new(),
         };
         let choice = crate::mail::backup::RestoreChoice { allow_incomplete: true, retry_unconfirmed: false };
-        let shown = restore_summary("/private/backups/archive.zip", &plan, choice);
-        assert!(shown.contains("archive.zip") && shown.contains("anna@example.org"), "{shown}");
+        let shown = restore_summary("/private/backups/archive.zip", &plan, Some("Anna (work)"), choice);
+        assert!(shown.contains("archive.zip") && shown.contains("Anna (work)"), "{shown}");
+        assert!(!shown.contains("mail:"), "the account by its label, not its id: {shown}");
         assert!(!shown.contains("/private"), "only the archive's name: {shown}");
         assert!(shown.contains('3') && shown.contains("1234") && shown.contains('1'), "{shown}");
         assert!(shown.contains(tr("; incomplete archive explicitly accepted")), "{shown}");
@@ -3092,12 +3100,14 @@ pub(crate) mod tests {
         assert!(!shown.contains(&unconfirmed(0)), "{shown}");
         let retried = torro_ipc::mail::RestorePlan { unconfirmed: 2, ..plan.clone() };
         let retry = crate::mail::backup::RestoreChoice { allow_incomplete: false, retry_unconfirmed: true };
-        let shown = restore_summary("archive.zip", &retried, retry);
+        let shown = restore_summary("archive.zip", &retried, None, retry);
         assert!(shown.ends_with(&unconfirmed(2)), "{shown}");
+        assert!(shown.contains("mail:anna@example.org"), "the id only without a label: {shown}");
         assert!(!shown.contains(tr("; incomplete archive explicitly accepted")), "{shown}");
         let details = restore_details(&plan);
         assert_eq!(details.len(), 1);
-        assert!(details[0].contains("Projects") && details[0].contains('3'), "{:?}", details);
+        assert!(details[0].contains("Projekte/Entwürfe") && details[0].contains('3'), "{:?}", details);
+        assert!(!details[0].contains("&APw-"), "decoded for people: {details:?}");
     }
 
     /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget

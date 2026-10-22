@@ -184,6 +184,33 @@ verwalteten Backup-Ordner) und wird bei Fehlern entfernt; ein vorhandener Zielna
 nie überschrieben. Ein gewählter Ordner muss bereits bestehen und darf selbst kein
 symbolischer Link sein.
 
+**Vor dem Start.** Bevor ein Job entsteht, prüft der Dienst den Zielordner (verwalteten oder
+gewählten): Liegt dort schon etwas unter dem Archivnamen (Datei, Link oder Ordner), lehnt er sofort
+mit `conflict` ab („A file named … already exists in the backup folder. Choose another name.“),
+statt erst nach einem womöglich stundenlangen Lauf zu scheitern. Das Umbenennen ohne Überschreiben
+am Ende bleibt als letzte Sicherung, falls die Datei in der Zwischenzeit entsteht; der Job endet
+dann `incomplete` mit derselben Meldung.
+
+**Freier Speicherplatz.** Ein Backup lässt auf dem Datenträger des Zielordners immer mindestens
+**2 GiB** frei (feste Reserve statt eines Anteils: Ein Anteil würde auf einer großen, fast leeren
+Platte grundlos ablehnen und auf einer kleinen zu wenig übrig lassen). Die Regel gilt für alle
+Aufrufer, auch für die App, und braucht keine Freigabe; sie verhindert, dass ein Agent mit
+Schreibrecht durch ein Backup nach dem anderen die Platte füllt.
+
+- Beim Start: Ist weniger als die Reserve frei, lehnt der Dienst sofort mit `error` ab und nennt,
+  wie viel frei ist (`error` statt `busy`: Ein späterer Versuch hilft nicht von selbst, erst
+  Platz zu schaffen).
+- Lokalquelle: Nach dem Zählen kennt sie die Bytes ihrer Originale; passen diese nicht samt Reserve
+  auf den Datenträger, endet der Job `incomplete`, bevor eine Mail gelesen wird. Die Serverquelle
+  kennt die Gesamtgröße vorab nicht (sie liest Größen stapelweise beim Lesen) und verlässt sich
+  auf die laufende Prüfung.
+- Während des Schreibens: Je 64 MiB, die in Spool-Dateien und Archiv geschrieben wurden, sieht der
+  Dienst erneut nach. Fällt der freie Platz unter die Reserve, hält der Job an, entfernt seine
+  Temp-Dateien wie bei jedem anderen Fehler und endet `incomplete` mit einer Warnung.
+- Der freie Platz ist der des Datenträgers, dessen Einhängepunkt das längste Präfix des
+  kanonischen Zielordners ist (`sysinfo`, Linux, macOS und Windows). Lässt er sich nicht
+  bestimmen, blockiert das nichts.
+
 Die Serverquelle (MB.3) arbeitet auf einer **eigenen IMAP-Sitzung**, nicht auf der
 Befehlsverbindung des Kontos: Sync, Lesen und Senden laufen während eines stundenlangen Backups
 weiter. Der Dienst meldet sie an wie jede Verbindung des Kontos (geprüfte öffentliche Adressen,
@@ -365,8 +392,19 @@ einem Abbruch nicht mehr versucht). Fehler vor dem ersten Schreibbefehl sind Feh
 
 **Pläne.** Ein Plan gehört dem Aufrufer, der ihn erstellt hat: ein Client sieht und nutzt nur
 seine eigenen, die App nur ihre; andere gelten als nicht vorhanden (`not-found`). Ein Client hält
-höchstens vier Pläne, die App sechzehn; ein neuer verdrängt den ältesten desselben Aufrufers. Sind
-128 Pläne offen, antwortet ein weiterer Testlauf `busy`. Laufen zwei Restores, wartet der zweite.
+höchstens vier Pläne, die App sechzehn; ein neuer verdrängt den ältesten desselben Aufrufers.
+Laufende Testläufe zählen mit: Ihren Platz belegen sie, bevor das Archiv geöffnet wird, und geben
+ihn zurück, wenn der Lauf scheitert oder die Anfrage abbricht. Laufen schon so viele Testläufe
+eines Aufrufers, wie er Pläne halten darf, antwortet der nächste sofort `busy`. Sind Pläne und
+laufende Testläufe aller Aufrufer zusammen 128 und hat der Aufrufer keinen eigenen Plan, den der
+neue verdrängen könnte, ebenfalls `busy`. Laufen zwei Restores, wartet der zweite.
+
+**Ordnernamen.** Jede Ordnerzeile eines Plans nennt den Ordner zweimal: `archive_path` und
+`target_path` sind die genauen IMAP-Namen (modified UTF-7, z. B. `Entw&APw-rfe`), mit denen der
+Ordner gemeint ist; `archive_display` und `target_display` sind dieselben Namen für Menschen
+(`Entwürfe`). Oberfläche, CLI und Freigabe zeigen nur die lesbaren Namen; ältere Kerne ohne diese
+Felder zeigen den IMAP-Namen. Die Freigabe eines Restores nennt das Konto mit der Bezeichnung, die
+der Kern dafür führt (wie beim Backup), nie mit der Kennung aus dem Text des Clients.
 
 ## Oberfläche, CLI und Rechte
 

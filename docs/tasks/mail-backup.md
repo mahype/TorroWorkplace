@@ -146,6 +146,22 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
   `crates/torroworkplace/src/mail/{backup,mod,read,service,store,store_corpus,sync}.rs`,
   `crates/torro-settings-ui/src/mail{,/backup}.rs`, `crates/torroinbox/src/app.rs`,
   `crates/torro-core/src/i18n/de.rs`, `docs/{api,api-reference,mail,mail-backup,settings}.md`.
+- **PR-Review-Nacharbeit (PR #285):**
+  - Ordnernamen lesbar: Planzeilen tragen neben den IMAP-Namen (`archive_path`, `target_path`,
+    modified UTF-7) die dekodierten `archive_display`/`target_display` (neue optionale Felder);
+    Oberfläche, CLI und Freigabe zeigen nur diese.
+  - Restore-Freigabe nennt das Konto mit seiner Bezeichnung aus dem Kern statt `mail:…`.
+  - Vorhandener Archivname wird vor dem Start erkannt (`conflict`, verwalteter und gewählter
+    Ordner, auch Links); `persist_noclobber` bleibt letzte Sicherung.
+  - Laufende Testläufe belegen ihren Plan-Platz vorab (RAII), parallele Läufe über der Grenze
+    sind sofort `busy`.
+  - Speicherplatz-Reserve 2 GiB: Start abgelehnt (`error`), Lokalquelle prüft ihre gezählten Bytes,
+    laufende Jobs prüfen je 64 MiB und enden `incomplete`; unbekannter Platz blockiert nicht.
+    `sysinfo` mit Feature `disk`.
+  - Dateien: `Cargo.toml`, `crates/torro-ipc/src/{lib,api,mail}.rs`,
+    `crates/torroworkplace/src/{core,approvals,cli}.rs`, `crates/torroworkplace/src/mail/backup.rs`,
+    `crates/torro-settings-ui/src/mail/backup.rs`, `crates/torro-core/src/i18n/de.rs`,
+    `docs/{mail-backup,api-reference}.md`, diese Aufgabenliste.
 - Unter Mail-Kontoeinstellungen den Ablauf aus dem Mock-up anbinden: Quelle,
   Datum, Speicherort, Fortschritt/Abbruch, Verify, Restore-Plan und echte Bestätigung,
   verständliche Fehler und Hinweis auf unverschlüsseltes ZIP. CLI als

@@ -718,24 +718,28 @@ fn plan_rows<'a>(rows: &mut Vec<Element<'a, Message>>, state: &State, plan: &'a 
     rows.push(buttons(vec![action(tr("Restore mail"), restoring, state.can_apply(account).then_some(Message::Apply))]));
 }
 
-/// One folder of the plan: the archive's path, where it goes, and its counts. An aggregate folder
-/// (`\All`) says that it only takes mail found in no other folder.
-fn folder_row<'a>(folder: &'a RestoreFolderPlan) -> Element<'a, Message> {
+/// The archive folder and where it goes, by the names people read (the core decodes the IMAP
+/// names, [`RestoreFolderPlan::archive_shown`]).
+fn folder_names(folder: &RestoreFolderPlan) -> (&str, String) {
     let target = match folder.create {
-        true => trf("Into {target}, new folder", &[("target", &folder.target_path)]),
-        false => trf("Into {target}, existing folder", &[("target", &folder.target_path)]),
+        true => trf("Into {target}, new folder", &[("target", &folder.target_shown())]),
+        false => trf("Into {target}, existing folder", &[("target", &folder.target_shown())]),
     };
+    (folder.archive_shown(), target)
+}
+
+/// One folder of the plan: the archive's folder, where it goes ([`folder_names`]), and its counts.
+/// An aggregate folder (`\All`) says that it only takes mail found in no other folder.
+fn folder_row<'a>(folder: &'a RestoreFolderPlan) -> Element<'a, Message> {
+    let (name, target) = folder_names(folder);
     let counts = trf(
         "To add: {add} · Already present: {present} · Uncertain: {uncertain}",
         &[("add", &folder.messages_to_add), ("present", &folder.already_present), ("uncertain", &folder.uncertain)],
     );
     let meta = |text: String| typo::text(typo::meta(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-    let mut lines = column![
-        typo::text(typo::body_strong(), folder.archive_path.as_str()).wrapping(Wrapping::WordOrGlyph),
-        meta(target),
-        meta(counts),
-    ]
-    .spacing(space::xs());
+    let mut lines =
+        column![typo::text(typo::body_strong(), name).wrapping(Wrapping::WordOrGlyph), meta(target), meta(counts),]
+            .spacing(space::xs());
     if folder.aggregate {
         lines = lines.push(meta(trf(
             "Collection folder: only mail that is in no other folder is added here. Copies of mail in other folders: {covered}, not uploaded.",
@@ -762,9 +766,12 @@ fn phase_name(phase: BackupPhase) -> &'static str {
 /// The sample plan of [`Scene::Plan`]: an incomplete archive, an aggregate folder and three
 /// unconfirmed uploads, so every question of the page shows.
 fn demo_plan(account: &str, archive: &str) -> RestorePlan {
-    let folder = |archive_path: &str, create, add, present, aggregate, covered| RestoreFolderPlan {
-        archive_path: archive_path.into(),
-        target_path: archive_path.into(),
+    // Names as IMAP sends them, and as people read them.
+    let folder = |(path, shown): (&str, &str), create, add, present, aggregate, covered| RestoreFolderPlan {
+        archive_path: path.into(),
+        target_path: path.into(),
+        archive_display: shown.into(),
+        target_display: shown.into(),
         create,
         messages_to_add: add,
         already_present: present,
@@ -785,9 +792,9 @@ fn demo_plan(account: &str, archive: &str) -> RestorePlan {
         unconfirmed: 3,
         bytes_to_add: 266_420_000,
         folders: vec![
-            folder("INBOX", false, 1_726, 214, false, 0),
-            folder("Archive/2024", true, 177, 0, false, 0),
-            folder("[Gmail]/All Mail", false, 0, 0, true, 6_295),
+            folder(("INBOX", "INBOX"), false, 1_726, 214, false, 0),
+            folder(("Archive/Entw&APw-rfe", "Archive/Entwürfe"), true, 177, 0, false, 0),
+            folder(("[Gmail]/All Mail", "[Gmail]/All Mail"), false, 0, 0, true, 6_295),
         ],
         warnings: vec![tr("Folder Spam could not be read during the backup.").into()],
     }
@@ -799,6 +806,19 @@ mod tests {
     use torro_ipc::mail::{BackupScope, RestorePlan};
 
     const ACCOUNT: &str = "mail:anna@example.org";
+
+    #[test]
+    fn plan_folders_show_the_decoded_names_never_modified_utf7() {
+        let plan = demo_plan(ACCOUNT, "anna.zip");
+        let drafts = plan.folders.iter().find(|row| row.archive_path == "Archive/Entw&APw-rfe").expect("demo folder");
+        let (name, target) = folder_names(drafts);
+        assert_eq!(name, "Archive/Entwürfe");
+        assert_eq!(target, trf("Into {target}, new folder", &[("target", &"Archive/Entwürfe")]));
+        // A core without display names: the wire name rather than nothing.
+        let older =
+            RestoreFolderPlan { archive_display: String::new(), target_display: String::new(), ..drafts.clone() };
+        assert_eq!(folder_names(&older).0, "Archive/Entw&APw-rfe");
+    }
 
     fn job(phase: BackupPhase) -> BackupJob {
         BackupJob {
