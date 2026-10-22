@@ -164,7 +164,9 @@ fn original_depot_survives_cache_and_header_removal() {
 
     store.prune_bodies(now + Duration::days(100)).expect("body cache pruned");
     store.retain_folders(&[]).expect("headers removed");
-    assert_eq!(store.local_originals_page(0, 10).expect("listed").len(), 1);
+    let after = store.local_originals_page(0, 10).expect("listed");
+    assert_eq!(after.len(), 1, "kept until the retention period ends");
+    assert!(after[0].gone, "its folder is no longer on the server");
     assert_eq!(store.original_bytes(before[0].seq).expect("read"), Some(raw.to_vec()));
 }
 

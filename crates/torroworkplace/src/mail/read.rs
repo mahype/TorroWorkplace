@@ -634,7 +634,8 @@ async fn get_thread(mail: &MailService, reach: Reach<'_>, id: &str) -> Answer<Re
 }
 
 /// Fetches the texts of `members[missing]`, all of the account `account`, over its command
-/// connection (`BODY.PEEK[]`) and keeps them in the store. One that cannot be read or is gone
+/// connection (`BODY.PEEK[]`) and keeps them in the store, in `AllOffline` with their originals
+/// ([`super::sync::fetch_for_reading`]). One that cannot be read, is gone or too large
 /// stays without text; a failing connection ends the fetching (it is dropped, not released).
 async fn fill_texts(
     mail: &MailService,
@@ -644,13 +645,23 @@ async fn fill_texts(
     missing: &[usize],
 ) {
     let Ok(mut command) = mail.command(account).await else { return };
+    // In `AllOffline` a thread's texts keep their originals too, as a single message's do.
+    let retain = store
+        .run(|store| store.cache_policy())
+        .await
+        .is_ok_and(|policy| policy.mode == torro_ipc::mail::MailCacheMode::AllOffline);
     for &index in missing {
         let id = members[index].1.summary.id.clone();
         let lookup = id.clone();
         let Ok(Some(place)) = store.run(move |store| store.resolve_message(&lookup)).await else { continue };
-        let raw = match peek(command.session(), &place).await {
-            Ok(Some(raw)) => raw,
-            Ok(None) => continue,
+        let fetched = match valid_selection(command.session(), &place).await {
+            Ok(true) => super::sync::fetch_for_reading(command.session(), store, &place, retain).await,
+            Ok(false) => continue,
+            Err(err) => Err(err),
+        };
+        let raw = match fetched {
+            Ok(super::sync::Fetched::Whole(raw)) => raw,
+            Ok(super::sync::Fetched::Gone | super::sync::Fetched::TooLarge { .. }) => continue,
             Err(_) => return,
         };
         let Ok(read) = mime::read(&raw) else { continue };
@@ -701,7 +712,9 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
 }
 
 /// The raw message from the account's command connection. `not-found` when it is gone from the
-/// server or the folder was renumbered since the store took it.
+/// server or the folder was renumbered since the store took it. In `AllOffline` its original is
+/// kept as well ([`super::sync::fetch_for_reading`]): once, and failing to keep it does not fail
+/// the reading.
 async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
     let mut command = mail.command(&located.account).await.map_err(|err| Box::new(err.response()))?;
     let retain = located.store.run(|store| store.cache_policy()).await.map_err(store_failed)?.mode
@@ -709,62 +722,30 @@ async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
     if !valid_selection(command.session(), &located.place).await.map_err(|err| Box::new(err.response()))? {
         return Err(no_message());
     }
-    let metadata = if retain {
-        command
-            .session()
-            .fetch_backup_metadata(&[located.place.uid])
-            .await
-            .map_err(|err| Box::new(MailError::from(err).response()))?
-            .into_iter()
-            .find(|item| item.uid == located.place.uid)
-    } else {
-        None
-    };
-    if let Some(item) = metadata.as_ref().filter(|item| item.bytes > super::sync::LARGE_ORIGINAL) {
-        super::sync::retain_large_original(command.session(), &located.store, &located.place, item)
-            .await
-            .map_err(|err| Box::new(err.response()))?;
-        command.release();
-        return Err(Box::new(Response::Error {
-            code: "error".into(),
-            message: tr("This message is too large to display; its original is retained for backup.").into(),
-        }));
-    }
-    let raw = command
-        .session()
-        .fetch_message(located.place.uid)
+    let fetched = super::sync::fetch_for_reading(command.session(), &located.store, &located.place, retain)
         .await
-        .map_err(|err| Box::new(MailError::from(err).response()))?;
+        .map_err(|err| Box::new(err.response()))?;
     command.release();
-    let raw = raw.ok_or_else(no_message)?;
-    if let Some(metadata) = metadata {
-        let path = located.place.folder_path.clone();
-        let validity = located.place.uidvalidity;
-        located
-            .store
-            .run(move |store| {
-                store.save_original(&path, validity, metadata.uid, metadata.internal_date, &metadata.flags, &raw)?;
-                Ok(raw)
-            })
-            .await
-            .map_err(store_failed)
-    } else {
-        Ok(raw)
+    match fetched {
+        super::sync::Fetched::Whole(raw) => Ok(raw),
+        super::sync::Fetched::Gone => Err(no_message()),
+        super::sync::Fetched::TooLarge { retained } => Err(Box::new(Response::Error {
+            code: "error".into(),
+            message: if retained {
+                tr("This message is too large to display; its original is retained for backup.").into()
+            } else {
+                tr("This message is too large to display.").into()
+            },
+        })),
     }
 }
 
-/// `BODY.PEEK[]` of the message at `place`, opening its folder first unless it is open. `None`
-/// when it is gone, or the folder was renumbered since the store took it.
-pub(crate) async fn peek(session: &mut Session, place: &MessageRef) -> Result<Option<Vec<u8>>, MailError> {
-    if !valid_selection(session, place).await? {
-        return Ok(None);
-    }
-    Ok(session.fetch_message(place.uid).await?)
-}
-
+/// Opens the folder of `place` unless it is open; `false` when the folder was renumbered since
+/// the store took the message. A folder open read-only (`EXAMINE`) is selected again: callers may
+/// change flags afterwards.
 pub(crate) async fn valid_selection(session: &mut Session, place: &MessageRef) -> Result<bool, MailError> {
     let uid_validity = match session.selected() {
-        Some(selected) if selected.path == place.folder_path => selected.uid_validity,
+        Some(selected) if selected.path == place.folder_path && !selected.read_only => selected.uid_validity,
         _ => session.select(&place.folder_path).await?.uid_validity,
     };
     Ok(uid_validity == place.uidvalidity)
@@ -1378,13 +1359,13 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let server = FakeImap::start(PASSWORD).await;
         server.add("INBOX", &mail_with("Old news", 200, "From long ago"), &[]);
+        // Recent, but too large to be fetched ahead (`BODY_PREFETCH_MAX`).
+        let large = "y".repeat(super::super::sync::BODY_PREFETCH_MAX as usize + 1);
+        server.add("INBOX", &mail_with("Large news", 1, &large), &[]);
         let service = synced(dir.path(), &server).await;
         let id = id_of(&service, "Old news").await;
         let stored = message(answer(&service, Reach::Suite, get(&id, false)).await);
         assert_eq!(stored.text, None, "older than 90 days: not kept ahead");
-        let mut policy = service.cache_policy(ANNA).await.expect("cache policy");
-        policy.mode = torro_ipc::mail::MailCacheMode::AllOffline;
-        service.set_cache_policy(policy).await.expect("keep fetched originals offline");
 
         let read = message(answer(&service, Reach::Suite, get(&id, true)).await);
         assert_eq!(read.text.as_deref(), Some("From long ago\n"));
@@ -1393,10 +1374,60 @@ pub(crate) mod tests {
         assert!(lines.iter().any(|line| line.contains("UID FETCH") && line.contains("BODY.PEEK[]")), "{lines:?}");
         assert!(!lines.iter().any(|line| line.contains(" BODY[") || line.contains("UID STORE")), "{lines:?}");
 
+        // In the standard mode a recent text stays once read; nothing keeps an original.
         let peeks = |lines: Vec<String>| lines.iter().filter(|line| line.contains("BODY.PEEK[]")).count();
+        let id = id_of(&service, "Large news").await;
+        assert!(message(answer(&service, Reach::Suite, get(&id, true)).await).text.is_some());
         let before = peeks(server.lines());
         message(answer(&service, Reach::Suite, get(&id, true)).await);
         assert_eq!(peeks(server.lines()), before, "the text is kept now");
+        let store = service.store(ANNA).await.expect("store");
+        assert!(store.run(|store| store.local_originals_page(0, 10)).await.expect("listed").is_empty());
+    }
+
+    /// `AllOffline`: reading a mail, or a thread, keeps the original of each message, once.
+    #[tokio::test]
+    async fn reading_offline_keeps_each_original_once_also_for_a_thread() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let old = mail_with("Old news", 200, "From long ago");
+        server.add("INBOX", &old, &[]);
+        let question = mail_with("Question", 300, "Who?");
+        let reply = format!("In-Reply-To: <Question@example.org>\r\n{}", mail_with("Reply", 299, "Me."));
+        server.add("INBOX", &question, &[]);
+        server.add("INBOX", &reply, &[]);
+        let service = synced(dir.path(), &server).await;
+        let mut policy = service.cache_policy(ANNA).await.expect("cache policy");
+        policy.mode = torro_ipc::mail::MailCacheMode::AllOffline;
+        service.set_cache_policy(policy).await.expect("keep fetched originals offline");
+        let store = service.store(ANNA).await.expect("store");
+        let originals = || async {
+            let listed = store.run(|store| store.local_originals_page(0, 10)).await.expect("listed");
+            listed.into_iter().map(|original| (original.uid, original.bytes)).collect::<Vec<_>>()
+        };
+        let metadata =
+            |lines: Vec<String>| lines.iter().filter(|line| line.contains("INTERNALDATE RFC822.SIZE)")).count();
+
+        let id = id_of(&service, "Old news").await;
+        let read = message(answer(&service, Reach::Suite, get(&id, true)).await);
+        assert_eq!(read.text.as_deref(), Some("From long ago\n"));
+        assert_eq!(originals().await, vec![(1, old.len() as u64)]);
+        let (peeks, asked) = (fetches(&server, "BODY.PEEK[]").len(), metadata(server.lines()));
+        message(answer(&service, Reach::Suite, get(&id, true)).await);
+        assert_eq!(fetches(&server, "BODY.PEEK[]").len(), peeks, "the text is kept");
+        assert_eq!(metadata(server.lines()), asked, "and its original is not taken again");
+
+        let id = id_of(&service, "Reply").await;
+        let thread = answer(&service, Reach::Suite, Request::GetMailThread { id }).await;
+        let Response::MailThread { messages } = thread else { panic!("a thread, got {thread:?}") };
+        assert!(messages.iter().all(|message| message.text.is_some()), "{messages:?}");
+        let mut kept = originals().await;
+        kept.sort_unstable();
+        assert_eq!(kept, vec![(1, old.len() as u64), (2, question.len() as u64), (3, reply.len() as u64)]);
+    }
+
+    fn fetches(server: &FakeImap, what: &str) -> Vec<String> {
+        server.lines().into_iter().filter(|line| line.contains("UID FETCH") && line.contains(what)).collect()
     }
 
     /// A recent mail with a text and an HTML part; the HTML names an inline picture by its

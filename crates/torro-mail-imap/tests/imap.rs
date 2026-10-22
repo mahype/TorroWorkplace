@@ -12,7 +12,10 @@ use imap_support::{Server, Step, expect, send, serve, trust};
 use torro_core::account::Secret;
 use torro_mail::{Flag, Role, Security};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
-use torro_mail_imap::imap::{AppendUid, IdleEvent, ImapError, Search, Session, backup_flag_transferable};
+use torro_mail_imap::imap::{
+    AppendError, AppendUid, BodyChunks, BodyError, IdleEvent, ImapError, Search, Session, backup_flag_transferable,
+    encode_mailbox,
+};
 
 const LOGIN: &str = "anna@example.org";
 const PASSWORD: &str = "hunter2";
@@ -81,6 +84,109 @@ async fn backup_reads_exact_original_in_read_only_bounded_parts() {
 }
 
 #[tokio::test]
+async fn an_examined_folder_refuses_changes_before_anything_is_sent() {
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\n* OK [PERMANENTFLAGS ()] none"),
+        send("a2 OK [READ-ONLY] opened"),
+        expect("a3 SELECT \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid\r\n* OK [PERMANENTFLAGS (\\Seen $Work \\*)] kept"),
+        send("a3 OK [READ-WRITE] opened"),
+        expect("a4 SELECT \"Shared\""),
+        send("* 0 EXISTS\r\n* OK [UIDVALIDITY 7] valid"),
+        send("a4 OK [READ-ONLY] only for reading"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let examined = session.examine("INBOX").await.expect("examined");
+    assert!(examined.read_only);
+    assert_eq!(examined.permanent_flags, Some(Vec::new()));
+    for refused in [
+        session.store_flags(&[1], &[Flag::Seen], &[]).await,
+        session.move_messages(&[1], "Archive").await,
+        session.delete_messages(&[1]).await,
+    ] {
+        assert!(matches!(refused, Err(ImapError::Protocol(_))), "{refused:?}");
+    }
+    let selected = session.select("INBOX").await.expect("selected");
+    assert!(!selected.read_only);
+    assert_eq!(selected.permanent_flags, Some(vec!["\\Seen".into(), "$Work".into(), "\\*".into()]));
+    assert!(session.select("Shared").await.expect("selected").read_only, "the server said READ-ONLY");
+    let lines = server.received().await;
+    assert!(!lines.iter().any(|line| line.contains("STORE") || line.contains("MOVE") || line.contains("COPY")));
+}
+
+/// Greeting, sign-in and `EXAMINE "INBOX"` as tag `a2`.
+fn examined_inbox(caps: &str) -> Vec<Step> {
+    let mut steps = signed_in(caps);
+    steps.extend([
+        expect("a2 EXAMINE \"INBOX\""),
+        send("* 1 EXISTS\r\n* OK [UIDVALIDITY 42] valid"),
+        send("a2 OK [READ-ONLY] opened"),
+    ]);
+    steps
+}
+
+async fn read_body(session: &mut Session, uid: u32, size: u64) -> Result<Vec<u8>, BodyError> {
+    let mut body = BodyChunks::new(uid, size);
+    let mut read = Vec::new();
+    while let Some(piece) = body.next(session).await? {
+        read.extend(piece);
+    }
+    Ok(read)
+}
+
+#[tokio::test]
+async fn the_chunk_reader_checks_that_nothing_follows_the_size() {
+    let mut steps = examined_inbox("");
+    steps.extend([
+        expect("a3 UID FETCH 7 (UID BODY.PEEK[]<0.9>)"),
+        send("* 1 FETCH (UID 7 BODY[]<0> {9}\r\nABCDEFGHI)"),
+        send("a3 OK part"),
+        expect("a4 UID FETCH 7 (UID BODY.PEEK[]<9.1>)"),
+        send("* 1 FETCH (UID 7 BODY[]<9> {0}\r\n)"),
+        send("a4 OK end"),
+        expect("a5 UID FETCH 8 (UID BODY.PEEK[]<0.4>)"),
+        send("* 2 FETCH (UID 8 BODY[]<0> {4}\r\nABCD)"),
+        send("a5 OK part"),
+        expect("a6 UID FETCH 8 (UID BODY.PEEK[]<4.1>)"),
+        send("* 2 FETCH (UID 8 BODY[]<4> {1}\r\nE)"),
+        send("a6 OK more"),
+        expect("a7 UID FETCH 9 (UID BODY.PEEK[]<0.6>)"),
+        send("* 3 FETCH (UID 9 BODY[]<0> {3}\r\nABC)"),
+        send("a7 OK short"),
+        expect("a8 UID FETCH 10 (UID BODY.PEEK[]<0.2>)"),
+        send("a8 OK gone"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("examined");
+    assert_eq!(read_body(&mut session, 7, 9).await.expect("whole"), b"ABCDEFGHI");
+    assert_eq!(read_body(&mut session, 8, 4).await, Err(BodyError::Oversized), "a size that was too small");
+    assert_eq!(read_body(&mut session, 9, 6).await, Err(BodyError::Truncated));
+    assert_eq!(read_body(&mut session, 10, 2).await, Err(BodyError::Vanished));
+    server.received().await;
+}
+
+#[tokio::test]
+async fn gmail_metadata_carries_its_message_id() {
+    let mut steps = examined_inbox("X-GM-EXT-1");
+    steps.extend([
+        expect("a3 UID FETCH 7 (UID FLAGS INTERNALDATE RFC822.SIZE X-GM-MSGID)"),
+        send("* 1 FETCH (UID 7 X-GM-MSGID 1278455344230334865 FLAGS () INTERNALDATE \"20-Oct-2026 09:00:00 +0200\" RFC822.SIZE 9)"),
+        send("a3 OK metadata"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    session.examine("INBOX").await.expect("examined");
+    let metadata = session.fetch_backup_metadata(&[7]).await.expect("metadata");
+    assert_eq!(metadata[0].gm_msgid, Some(1_278_455_344_230_334_865));
+    assert_eq!(metadata[0].internal_date.offset().local_minus_utc(), 2 * 3600);
+    server.received().await;
+}
+
+#[tokio::test]
 async fn restore_append_streams_raw_bytes_with_date_and_keywords() {
     let mut steps = signed_in("");
     steps.extend([
@@ -107,14 +213,11 @@ async fn restore_append_streams_raw_bytes_with_date_and_keywords() {
 }
 
 #[tokio::test]
-async fn restore_append_uses_a_mailbox_literal_for_unicode_names() {
-    let path = "Archiv/Grüße";
+async fn restore_append_names_unicode_folders_in_modified_utf7() {
+    // Without UTF8=ACCEPT a raw UTF-8 name would be a different folder (RFC 3501 5.1.3).
     let mut steps = signed_in("");
     steps.extend([
-        expect(&format!("a2 APPEND {{{}}}", path.len())),
-        send("+ mailbox"),
-        Step::Literal(path.len()),
-        expect(" (\\Seen) {4}"),
+        expect("a2 APPEND \"Archiv/Gr&APwA3w-e\" (\\Seen) {4}"),
         send("+ message"),
         Step::Literal(4),
         expect(""),
@@ -123,10 +226,78 @@ async fn restore_append_uses_a_mailbox_literal_for_unicode_names() {
     let server = serve(Security::Tls, steps).await;
     let mut session = connect(&server).await;
     let mut raw = std::io::Cursor::new(b"EML!".as_slice());
-    assert_eq!(session.append_backup(path, &mut raw, 4, &["\\Seen".into()], None).await.expect("append"), None);
+    let appended = session.append_backup("Archiv/Grüße", &mut raw, 4, &["\\Seen".into()], None).await;
+    assert_eq!(appended, Ok(None));
     let lines = server.received().await;
-    assert!(lines.iter().any(|line| line.contains("Archiv/Grüße")));
     assert!(lines.iter().any(|line| line.contains("EML!")));
+}
+
+#[test]
+fn folder_names_encode_to_modified_utf7_and_back() {
+    for (text, wire) in [
+        ("INBOX", "INBOX"),
+        ("Entwürfe", "Entw&APw-rfe"),
+        ("Gelöschte Elemente", "Gel&APY-schte Elemente"),
+        ("台北", "&U,BTFw-"),
+        ("日本語/台北", "&ZeVnLIqe-/&U,BTFw-"),
+        ("Tom & Jörg", "Tom &- J&APY-rg"),
+        ("Grüße", "Gr&APwA3w-e"),
+    ] {
+        assert_eq!(encode_mailbox(text), wire, "{text}");
+        assert_eq!(folders::decode_utf7(wire), text, "{wire}");
+    }
+    assert_eq!(encode_mailbox("Gr&APw-e"), "Gr&APw-e", "an ASCII name is already a wire name");
+}
+
+#[tokio::test]
+async fn a_refused_append_stored_nothing_and_the_session_goes_on() {
+    let mut steps = signed_in("");
+    steps.extend([
+        expect("a2 APPEND \"INBOX\" {4}"),
+        send("+ message"),
+        Step::Literal(4),
+        expect(""),
+        send("a2 NO [OVERQUOTA] mailbox full"),
+        expect("a3 NOOP"),
+        send("a3 OK fine"),
+    ]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let mut raw = std::io::Cursor::new(b"EML!".as_slice());
+    let refused = session.append_backup("INBOX", &mut raw, 4, &[], None).await;
+    assert!(matches!(refused, Err(AppendError::Refused(_))), "{refused:?}");
+    session.noop().await.expect("the session is still usable");
+    server.received().await;
+}
+
+#[tokio::test]
+async fn an_append_without_an_answer_is_unconfirmed_and_one_cut_short_was_not_sent() {
+    // The whole message went out, then the connection ended: the server may hold it.
+    let mut steps = signed_in("");
+    steps.extend([expect("a2 APPEND \"INBOX\" {4}"), send("+ message"), Step::Literal(4), expect("")]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let mut raw = std::io::Cursor::new(b"EML!".as_slice());
+    let lost = session.append_backup("INBOX", &mut raw, 4, &[], None).await;
+    assert!(matches!(lost, Err(AppendError::Unconfirmed(_))), "{lost:?}");
+    server.received().await;
+
+    // The source ends before the announced size: the server never got the whole message.
+    let mut steps = signed_in("");
+    steps.extend([expect("a2 APPEND \"INBOX\" {9}"), send("+ message")]);
+    let server = serve(Security::Tls, steps).await;
+    let mut session = connect(&server).await;
+    let mut short = std::io::Cursor::new(b"EML!".as_slice());
+    let cut = session.append_backup("INBOX", &mut short, 9, &[], None).await;
+    assert!(matches!(cut, Err(AppendError::NotSent(_))), "{cut:?}");
+    server.received().await;
+
+    // A flag that must never be restored is refused before anything is sent.
+    let server = serve(Security::Tls, signed_in("")).await;
+    let mut session = connect(&server).await;
+    let mut raw = std::io::Cursor::new(b"EML!".as_slice());
+    let deleted = session.append_backup("INBOX", &mut raw, 4, &["\\Deleted".into()], None).await;
+    assert!(matches!(deleted, Err(AppendError::NotSent(_))), "{deleted:?}");
 }
 
 fn roles(list: &FolderList) -> Vec<(Role, &str, &str)> {

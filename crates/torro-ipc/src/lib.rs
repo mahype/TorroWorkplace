@@ -2027,41 +2027,81 @@ pub enum Request {
     /// `forbidden`, `error`. The result is complete only after final inventory and ZIP verification.
     #[serde(rename = "mail.backup_create")]
     MailBackupCreate {
+        /// The mail account to back up: `mail:<address>` from `accounts.list_accounts`.
         account: String,
+        /// `server` reads every selectable IMAP folder; `local` reads only complete originals
+        /// stored on this device and never connects.
         source: BackupScope,
+        /// Only mail from this calendar day on (inclusive, by IMAP internal date); none: all.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         since: Option<NaiveDate>,
+        /// A plain `.zip` name in the managed backup folder (`<mail data>/backups`); an absolute
+        /// path only with the app key. None: the core picks a dated name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file_name: Option<String>,
     },
     /// Progress of a backup job, including a final incomplete or cancelled result. Returns
     /// [`Response::MailBackupJob`]; `not-found` if the job is unavailable to this caller.
     #[serde(rename = "mail.backup_status")]
-    MailBackupStatus { job: String, account: String },
+    MailBackupStatus {
+        /// The job id returned by `mail.backup_create`.
+        job: String,
+        /// The account the job backs up: `mail:<address>`.
+        account: String,
+    },
     /// Requests cancellation of a background backup job. It cannot turn an incomplete archive
-    /// into a complete one. Returns [`Response::MailBackupJob`]; `not-found` for another caller's job.
+    /// into a complete one. The job reports `cancelling` until its task has stopped, then
+    /// `cancelled`. Returns [`Response::MailBackupJob`]; `not-found` for another caller's job.
     #[serde(rename = "mail.backup_cancel")]
-    MailBackupCancel { job: String, account: String },
+    MailBackupCancel {
+        /// The job id returned by `mail.backup_create`.
+        job: String,
+        /// The account the job backs up: `mail:<address>`.
+        account: String,
+    },
     /// Verifies an archive offline without contacting any mail account. An app key may name a
-    /// selected absolute file; a client key may name only an archive in the allowed backup folder.
+    /// selected absolute file; a client key may name only an archive in the managed backup folder.
     /// Returns [`Response::MailBackupVerified`]. Errors: `not-found`, `forbidden`, `error`.
     #[serde(rename = "mail.backup_verify")]
-    MailBackupVerify { file: String, account: String },
+    MailBackupVerify {
+        /// A plain `.zip` name in the managed backup folder (`<mail data>/backups`), as a backup
+        /// job reported it; an absolute path only with the app key.
+        file: String,
+        /// The account the archive belongs to: `mail:<address>`.
+        account: String,
+    },
     /// Validates an archive, reads the target with read-only IMAP and reports a restore plan. It
-    /// never writes to the server or a local journal. The file rule is the same as backup_verify.
-    /// Returns [`Response::MailRestorePlanned`]. Errors: `not-found`, `offline`, `auth`, `error`.
+    /// never writes to the server or a local journal; unconfirmed uploads of an earlier restore
+    /// are reported as `unconfirmed`. The file rule is the same as backup_verify.
+    /// Returns [`Response::MailRestorePlanned`]. Errors: `not-found`, `offline`, `auth`, `busy`,
+    /// `error`.
     #[serde(rename = "mail.restore_plan")]
-    MailRestorePlan { file: String, account: String },
+    MailRestorePlan {
+        /// A plain `.zip` name in the managed backup folder; an absolute path only with the app key.
+        file: String,
+        /// The target account, which must be the account the archive was made from: `mail:<address>`.
+        account: String,
+    },
     /// Applies a previously returned plan to the same account. The core checks the plan again
     /// before writing; it adds mail but never deletes or overwrites. `allow_incomplete` explicitly
-    /// accepts an archive whose manifest is incomplete. Returns [`Response::MailRestored`].
-    /// Errors: `not-found`, `conflict`, `offline`, `auth`, `forbidden`, `error`.
+    /// accepts an archive whose manifest is incomplete; `retry_unconfirmed` uploads again the
+    /// mail of an earlier restore whose upload was never confirmed and is still absent from the
+    /// target. Returns [`Response::MailRestored`]; a client key gets [`Response::Pending`] first,
+    /// since a person approves every restore it asks for, and the result once it ran.
+    /// Errors: `not-found`, `conflict`, `offline`, `auth`, `busy`, `forbidden`, `error`.
     #[serde(rename = "mail.restore_apply")]
     MailRestoreApply {
+        /// The plan id returned by `mail.restore_plan` (valid for one hour).
         plan: String,
+        /// The target account of that plan: `mail:<address>`.
         account: String,
+        /// Restore an archive whose manifest is incomplete; needed when the plan says
+        /// `complete_archive: false`.
         #[serde(default)]
         allow_incomplete: bool,
+        /// Upload again the mail an earlier restore could not confirm and the target still lacks.
+        #[serde(default)]
+        retry_unconfirmed: bool,
     },
     /// The folders of the accounts the caller reaches, or of `account` alone, with their role and
     /// numbers of unread and all messages ([`Response::MailFolders`]).

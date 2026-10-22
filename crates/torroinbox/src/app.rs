@@ -1320,10 +1320,21 @@ pub enum Open {
     MoveMail,
     /// That message with the question "Delete permanently?" over the window (task E10.1).
     DeleteMail,
+    /// The mail window's settings at the first account's page with a backup reading mail
+    /// (issue #267, `docs/mail-backup.md`); only with `--view mail`.
+    Backup,
+    /// That page with a restore test of an incomplete archive: the folder table with an aggregate
+    /// folder and uploads of an earlier restore that were never confirmed.
+    BackupPlan,
+    /// That page after the core forgot the job it waited for (a restart): the error under "Create
+    /// backup".
+    BackupError,
+    /// That page with a complete backup, its verified archive and a finished restore.
+    BackupDone,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 46] = [
+    const ALL: [(&'static str, Open); 50] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1370,7 +1381,23 @@ impl Open {
         ("no-ai", Open::NoAi),
         ("move-mail", Open::MoveMail),
         ("delete-mail", Open::DeleteMail),
+        ("backup", Open::Backup),
+        ("backup-plan", Open::BackupPlan),
+        ("backup-error", Open::BackupError),
+        ("backup-done", Open::BackupDone),
     ];
+
+    /// The demo page of the backup states, which open the mail window's settings at the first
+    /// account; `None` for every other state.
+    fn backup_scene(self) -> Option<settings_mail::BackupScene> {
+        match self {
+            Open::Backup => Some(settings_mail::BackupScene::Running),
+            Open::BackupPlan => Some(settings_mail::BackupScene::Plan),
+            Open::BackupError => Some(settings_mail::BackupScene::Error),
+            Open::BackupDone => Some(settings_mail::BackupScene::Done),
+            _ => None,
+        }
+    }
 }
 
 /// The start parameters of the window:
@@ -1716,6 +1743,10 @@ impl Launch {
         let font = part("--font", design::Part::Font)?;
         let color_scheme = part("--color-scheme", design::Part::ColorScheme)?;
         let kind = Kind::parse(args)?;
+        // Backups belong to a mail account's settings, which only the mail window has.
+        if open.and_then(Open::backup_scene).is_some() && kind != Kind::Mail {
+            return Err(LaunchError::Conflict("--open backup…", "a --view other than mail"));
+        }
         // The sections are the window kind's (task S.20), so this comes after `--view`.
         let settings = match flag_value(args, "--settings")? {
             None => None,
@@ -1948,6 +1979,19 @@ impl SettingsBackend for CoreSettings {
     }
 }
 
+/// Asks for a backup folder or a `.zip` archive with the system's chooser, for "Choose…" on a mail
+/// account's backup page; `None` when it is cancelled.
+async fn choose_backup_path(chooser: settings_mail::BackupChooser) -> Option<std::path::PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new();
+    let chosen = match chooser {
+        settings_mail::BackupChooser::Folder => dialog.set_title(tr("Choose a backup folder")).pick_folder().await,
+        settings_mail::BackupChooser::Archive => {
+            dialog.set_title(tr("Choose a backup archive")).add_filter(tr("ZIP archives"), &["zip"]).pick_file().await
+        }
+    };
+    chosen.map(|file| file.path().to_path_buf())
+}
+
 /// What a section of the settings returned, as the host hands it to the window. A message of the
 /// other kind's sections cannot arrive – a window builds only its own – and changes nothing.
 fn settings_update(
@@ -2077,8 +2121,12 @@ pub struct App<S> {
     suite: Source,
     /// The settings in the content area, while they are open (task S.20).
     settings: Option<SettingsPane>,
-    /// Keep mail backup jobs and in-flight answers when the settings content area is hidden.
+    /// What the mail window keeps of its settings while they are closed: each account's backup page
+    /// and the backup requests on their way ([`settings_mail::kept`]).
     saved_mail_settings: Option<Box<settings_mail::State>>,
+    /// The demo page of `--open backup…`, put on the first mail account once the settings have
+    /// loaded the accounts.
+    staged_backup: Option<settings_mail::BackupScene>,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
@@ -2572,8 +2620,11 @@ pub enum Message {
     SettingsHost(torro_settings_ui::host::Message),
     /// What a widget of the open settings section reported.
     SettingsPage(SettingsMessage),
-    /// The answer to one backup request, tagged with its originating mail account.
+    /// The answer to one backup request, tagged with its originating mail account. The core's
+    /// errors are `Ok(Response::Error)` with their code ([`App::ask_mail_backup`]).
     MailBackupAnswered(String, Box<Result<torro_ipc::Response, String>>),
+    /// What the system's chooser of a backup page returned: a path, or `None` when it was cancelled.
+    BackupChosen(settings_mail::BackupChooser, Option<std::path::PathBuf>),
     /// Open the control centre: what an entry about the suite links to ([`App::open_entry`] with
     /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
     /// able to open a settings section in this window (task S.20).
@@ -3052,6 +3103,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             suite,
             settings: None,
             saved_mail_settings: None,
+            staged_backup: open.and_then(Open::backup_scene),
             opened: false,
             categories: Vec::new(),
             open_groups: std::collections::BTreeSet::new(),
@@ -3231,8 +3283,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
-        // `--settings <section>`: the window opens with the settings in its content area.
-        let task = match app.launch.settings.clone() {
+        // `--settings <section>`: the window opens with the settings in its content area; the
+        // backup states of `--open` at Accounts.
+        let section = app.launch.settings.clone().or_else(|| app.staged_backup.map(|_| "accounts".to_string()));
+        let task = match section {
             Some(section) => Task::batch([task, app.open_settings(Some(&section))]),
             None => task,
         };
@@ -3732,7 +3786,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Refresh | Message::CoreReady => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
-                let backup_poll = self.settings.as_mut().and_then(|pane| {
+                // The demo has no backup jobs to ask about: a staged one stays as it is shown.
+                let demo = matches!(self.suite, Source::Demo(_));
+                let backup_poll = self.settings.as_mut().filter(|_| !demo).and_then(|pane| {
                     let SettingsState::Mail(state) = &mut pane.sections else { return None };
                     settings_mail::poll_request(state)
                 });
@@ -3873,13 +3929,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::SettingsHost(message) => {
                 let Some(pane) = self.settings.as_mut() else { return Task::none() };
                 // A change or a load came back: the sections let go of what was on its way.
-                if matches!(message, host::Message::Loaded(_) | host::Message::Sent { .. }) {
+                let loaded = matches!(message, host::Message::Loaded(_));
+                if loaded || matches!(message, host::Message::Sent { .. }) {
                     answered_settings(&mut pane.sections);
                 }
                 let outcome = pane.host.update(message);
+                if loaded {
+                    self.show_staged_backup();
+                }
                 return self.settings_outcome(outcome);
             }
             Message::SettingsPage(message) => {
+                // "Choose…" on a backup page: the window opens the system's chooser, never the page.
+                if let SettingsMessage::Mail(mail) = &message
+                    && let Some(chooser) = settings_mail::backup_chooser(mail)
+                {
+                    return Task::perform(choose_backup_path(chooser), move |path| {
+                        Message::BackupChosen(chooser, path)
+                    });
+                }
                 let action = {
                     let Some(pane) = self.settings.as_mut() else { return Task::none() };
                     settings_update(&mut pane.sections, message, pane.host.data())
@@ -3893,6 +3961,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let outcome = pane.host.act(action);
                 return self.settings_outcome(outcome);
             }
+            Message::BackupChosen(chooser, Some(path)) => {
+                let chosen = SettingsMessage::Mail(settings_mail::backup_chosen(chooser, path));
+                return self.update(Message::SettingsPage(chosen));
+            }
+            // Cancelled: the field keeps what it had.
+            Message::BackupChosen(_, None) => {}
             Message::MailBackupAnswered(account, answer) => {
                 if let Some(pane) = self.settings.as_mut()
                     && let SettingsState::Mail(state) = &mut pane.sections
@@ -5290,11 +5364,46 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
+    /// Sends a backup request of a mail account's page and brings its answer back to that account.
+    /// Unlike the other settings requests it goes straight to the socket, so the core's errors keep
+    /// their code (`not-found` for a job the core forgot after a restart) instead of becoming text.
+    /// The demo runs no backups and says so.
     fn ask_mail_backup(&self, request: torro_ipc::Request) -> Task<Message> {
         let Some(account) = request.mail_account().map(str::to_string) else { return Task::none() };
-        Task::perform(torro_settings_ui::ask(self.settings_backend(), request), move |answer| {
-            Message::MailBackupAnswered(account, Box::new(answer))
-        })
+        match &self.suite {
+            Source::Core(client) => {
+                let socket = client.socket.clone();
+                // The connection error names the socket path: a fixed text for the person instead.
+                let unreachable = || tr("Torro Workplace isn't responding. It may still be starting.").to_string();
+                Task::perform(
+                    async move { torro_ipc::client::call(&socket, &request).await.map_err(|_| unreachable()) },
+                    move |answer| Message::MailBackupAnswered(account, Box::new(answer)),
+                )
+            }
+            Source::Demo(_) => {
+                let answer = torro_ipc::Response::Error {
+                    code: "unsupported".into(),
+                    message: tr("The demo makes no backups and restores nothing.").into(),
+                };
+                Task::done(Message::MailBackupAnswered(account, Box::new(Ok(answer))))
+            }
+        }
+    }
+
+    /// `--open backup…`: once the settings have the accounts, the staged demo page goes on the first
+    /// mail account and its page opens. Only once; going back to the list afterwards stays there.
+    fn show_staged_backup(&mut self) {
+        let Some(scene) = self.staged_backup else { return };
+        let Some(pane) = self.settings.as_mut() else { return };
+        let SettingsState::Mail(state) = &mut pane.sections else { return };
+        // A load without the accounts (the core still starting) leaves the page staged for the next.
+        let first =
+            settings_mail::accounts::mail_accounts(pane.host.data()).first().map(|(account, _)| account.id.clone());
+        let Some(account) = first else { return };
+        self.staged_backup = None;
+        settings_mail::stage_backup(state, &account, scene);
+        let open = settings_mail::Message::Accounts(settings_mail::accounts::Message::Open(account));
+        let _ = settings_mail::update::<()>(state, open, pane.host.data());
     }
 
     /// The gear, or "Settings" in the sidebar and the menu: the settings take the content area, or
@@ -5326,8 +5435,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The content area shows entries again: the settings step aside, with everything they held.
     fn leave_settings(&mut self) {
+        // Only the accounts' pages stay (`settings_mail::kept`): a preview another section was
+        // waiting for would never come back to it.
         if let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = self.settings.take() {
-            self.saved_mail_settings = Some(state);
+            self.saved_mail_settings = Some(Box::new(settings_mail::kept(*state)));
         }
     }
 
@@ -14303,23 +14414,48 @@ mod tests {
         assert!(app.settings.is_some());
     }
 
+    /// Closing the mail window's settings keeps the accounts' backup pages, and only them
+    /// ([`settings_mail::kept`]): what other sections waited for starts afresh.
     #[test]
     fn mail_settings_reopen_keeps_backup_state() {
         let mut app = mail_window(Density::Compact, &[]);
         let _ = app.update(Message::OpenSettings);
-        let original = match &app.settings.as_ref().expect("settings open").sections {
-            SettingsState::Mail(state) => &**state as *const settings_mail::State,
+        let accounts = |app: &App<DemoSource>| match &app.settings.as_ref().expect("settings open").sections {
+            SettingsState::Mail(state) => format!("{:?}", state.accounts),
             SettingsState::Inbox(_) => panic!("mail window has mail settings"),
         };
+        if let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = app.settings.as_mut() {
+            settings_mail::stage_backup(state, "mail:anna@example.org", settings_mail::BackupScene::Running);
+        }
+        let before = accounts(&app);
         let _ = app.update(Message::OpenSettings);
         assert!(app.settings.is_none());
         assert!(app.saved_mail_settings.is_some());
         let _ = app.update(Message::OpenSettings);
-        let reopened = match &app.settings.as_ref().expect("settings reopened").sections {
-            SettingsState::Mail(state) => &**state as *const settings_mail::State,
-            SettingsState::Inbox(_) => panic!("mail window has mail settings"),
+        assert_eq!(accounts(&app), before, "the backup page remains after closing the settings");
+        assert!(before.contains("demo-job"), "{before}");
+    }
+
+    /// `--demo --open backup…` opens the mail window's settings at the first account's backup page
+    /// once the accounts are loaded; other windows refuse it.
+    #[test]
+    fn the_backup_states_open_the_first_accounts_page() {
+        let launch = Launch::parse(&args(&["--demo", "--view", "mail", "--open", "backup-plan"])).expect("valid");
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let mut app = pinned(App::new(inbox, Source::from_args(args(&["--demo"])), launch).0);
+        assert!(app.settings.is_some(), "the settings open at once");
+        let data =
+            block_on(torro_settings_ui::load(Arc::new(torro_settings_ui::demo::Demo::new()), settings_mail::wanted()));
+        let _ = app.update(Message::SettingsHost(host::Message::Loaded(Box::new(data))));
+        assert!(app.staged_backup.is_none(), "the page is on the account");
+        let Some(SettingsPane { sections: SettingsState::Mail(state), .. }) = app.settings.as_ref() else {
+            panic!("mail settings");
         };
-        assert_eq!(original, reopened, "the same backup state remains available after closing the page");
+        assert!(format!("{:?}", state.accounts).contains("demo-plan"));
+        assert!(matches!(
+            Launch::parse(&args(&["--demo", "--open", "backup"])),
+            Err(LaunchError::Conflict("--open backup…", _))
+        ));
     }
 
     /// A change behind the gear reaches the entries at once: when the host reports it stored

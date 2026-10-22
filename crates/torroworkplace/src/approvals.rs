@@ -290,6 +290,9 @@ pub struct Facts {
     /// `None` for every other command, and until the store exists (tasks M3.2, M3.3). For
     /// `accounts.update_mail_account` the account's label is [`Facts::name`].
     pub mail: Option<MailFacts>,
+    /// For `mail.backup_cancel` (#267): the source of the job to cancel as the core runs it,
+    /// looked up by the job's id. `None` when the core does not know the job.
+    pub backup_source: Option<torro_ipc::mail::BackupScope>,
     /// For `assistant.send_message`: the name of the engine that would answer, as
     /// `assistant.list_engines` lists it (task C.1). `None` when the core does not know it: the
     /// summary then shows the engine's id. The conversation's title is [`Facts::name`].
@@ -1400,14 +1403,61 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
             None => tr("Open an unknown file").to_string(),
         },
+        // A backup (#267): the account by the label the core keeps, the source and where the
+        // archive goes. A file name is a plain name in the managed folder for a client: it is what
+        // will be written.
+        Request::MailBackupCreate { account, source, since, file_name } => {
+            let source = backup_source_word(*source);
+            let archive = file_name.as_deref().map_or_else(
+                || tr("a new archive in the managed folder").to_string(),
+                |name| format!("\"{}\"", quote(Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or(name))),
+            );
+            match since {
+                Some(day) => trf(
+                    "Back up the mail account {account} from {source}, mail since {day}, into {archive}",
+                    &[
+                        ("account", &named(account)),
+                        ("source", &source),
+                        ("day", &day.format("%Y-%m-%d")),
+                        ("archive", &archive),
+                    ],
+                ),
+                None => trf(
+                    "Back up the mail account {account} from {source} into {archive}",
+                    &[("account", &named(account)), ("source", &source), ("archive", &archive)],
+                ),
+            }
+        }
+        // Cancelling a backup by its account and the source of the job as the core runs it.
+        Request::MailBackupCancel { account, .. } => match facts.backup_source {
+            Some(source) => trf(
+                "Cancel the backup of the mail account {account} from {source}",
+                &[("account", &named(account)), ("source", &backup_source_word(source))],
+            ),
+            None => trf("Cancel an unknown backup of the mail account {account}", &[("account", &named(account))]),
+        },
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
 }
 
-/// The server-side restore plan, never counts or names supplied by the requesting client.
-pub fn restore_summary(file: &str, plan: &torro_ipc::mail::RestorePlan, allow_incomplete: bool) -> String {
+/// Where a backup reads from, as people say it.
+fn backup_source_word(source: torro_ipc::mail::BackupScope) -> &'static str {
+    match source {
+        torro_ipc::mail::BackupScope::Server => tr("the server"),
+        torro_ipc::mail::BackupScope::Local => tr("this device"),
+    }
+}
+
+/// The server-side restore plan, never counts or names supplied by the requesting client, and
+/// what the request accepts besides it: an incomplete archive, and sending again the uploads of an
+/// earlier restore that were never confirmed (with their number from the plan).
+pub fn restore_summary(
+    file: &str,
+    plan: &torro_ipc::mail::RestorePlan,
+    choice: crate::mail::backup::RestoreChoice,
+) -> String {
     let archive = Path::new(file).file_name().and_then(|name| name.to_str()).unwrap_or(file);
     let account = quote(&plan.account);
     let archive = quote(archive);
@@ -1424,8 +1474,14 @@ pub fn restore_summary(file: &str, plan: &torro_ipc::mail::RestorePlan, allow_in
             ("folders", &folders),
         ],
     );
-    if !plan.complete_archive && allow_incomplete {
+    if !plan.complete_archive && choice.allow_incomplete {
         summary.push_str(tr("; incomplete archive explicitly accepted"));
+    }
+    if choice.retry_unconfirmed && plan.unconfirmed > 0 {
+        summary.push_str(&trf(
+            "; {n} unconfirmed uploads of an earlier restore are sent again",
+            &[("n", &plan.unconfirmed)],
+        ));
     }
     summary
 }
@@ -3005,11 +3061,13 @@ pub(crate) mod tests {
         let plan = torro_ipc::mail::RestorePlan {
             id: "opaque-plan".into(),
             account: "mail:anna@example.org".into(),
+            archive: "archive.zip".into(),
             complete_archive: false,
             folders_to_create: 1,
             messages_to_add: 3,
             already_present: 2,
             uncertain: 0,
+            unconfirmed: 0,
             bytes_to_add: 1234,
             folders: vec![torro_ipc::mail::RestoreFolderPlan {
                 archive_path: "Projects".into(),
@@ -3019,13 +3077,24 @@ pub(crate) mod tests {
                 already_present: 2,
                 uncertain: 0,
                 bytes_to_add: 1234,
+                aggregate: false,
+                covered: 0,
             }],
             warnings: Vec::new(),
         };
-        let shown = restore_summary("/private/backups/archive.zip", &plan, true);
+        let choice = crate::mail::backup::RestoreChoice { allow_incomplete: true, retry_unconfirmed: false };
+        let shown = restore_summary("/private/backups/archive.zip", &plan, choice);
         assert!(shown.contains("archive.zip") && shown.contains("anna@example.org"), "{shown}");
+        assert!(!shown.contains("/private"), "only the archive's name: {shown}");
         assert!(shown.contains('3') && shown.contains("1234") && shown.contains('1'), "{shown}");
         assert!(shown.contains(tr("; incomplete archive explicitly accepted")), "{shown}");
+        let unconfirmed = |n| trf("; {n} unconfirmed uploads of an earlier restore are sent again", &[("n", &n)]);
+        assert!(!shown.contains(&unconfirmed(0)), "{shown}");
+        let retried = torro_ipc::mail::RestorePlan { unconfirmed: 2, ..plan.clone() };
+        let retry = crate::mail::backup::RestoreChoice { allow_incomplete: false, retry_unconfirmed: true };
+        let shown = restore_summary("archive.zip", &retried, retry);
+        assert!(shown.ends_with(&unconfirmed(2)), "{shown}");
+        assert!(!shown.contains(tr("; incomplete archive explicitly accepted")), "{shown}");
         let details = restore_details(&plan);
         assert_eq!(details.len(), 1);
         assert!(details[0].contains("Projects") && details[0].contains('3'), "{:?}", details);

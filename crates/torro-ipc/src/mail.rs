@@ -35,7 +35,16 @@ pub enum BackupPhase {
     Verifying,
     Complete,
     Incomplete,
+    /// Cancellation was requested and the task is still stopping; the account stays busy.
+    Cancelling,
     Cancelled,
+}
+
+impl BackupPhase {
+    /// The job has ended (complete, incomplete or cancelled) and no longer keeps its account busy.
+    pub fn is_final(self) -> bool {
+        matches!(self, Self::Complete | Self::Incomplete | Self::Cancelled)
+    }
 }
 
 /// Progress and final result of one backup job; `archive` is an opaque name in the allowed folder.
@@ -76,11 +85,18 @@ pub struct BackupVerification {
 pub struct RestorePlan {
     pub id: String,
     pub account: String,
+    /// The archive this plan was made from, as the caller named it.
+    #[serde(default)]
+    pub archive: String,
     pub complete_archive: bool,
     pub folders_to_create: u64,
     pub messages_to_add: u64,
     pub already_present: u64,
     pub uncertain: u64,
+    /// Uploads of an earlier restore that were never confirmed and are absent from the target;
+    /// `mail.restore_apply` repeats them only with `retry_unconfirmed`.
+    #[serde(default)]
+    pub unconfirmed: u64,
     pub bytes_to_add: u64,
     /// Exact archive-to-target folder mapping and counts for the review table.
     #[serde(default)]
@@ -99,6 +115,16 @@ pub struct RestoreFolderPlan {
     pub already_present: u64,
     pub uncertain: u64,
     pub bytes_to_add: u64,
+    /// A virtual aggregate folder (`\All`, Gmail's starred mail) that a target folder fills by
+    /// itself too (`target_path`): only mail found in no ordinary folder is added here. Where the
+    /// target has no such folder, and always for Gmail's important mail, the archive's copies go
+    /// up as ordinary mail and this is `false`.
+    #[serde(default)]
+    pub aggregate: bool,
+    /// Archived mail of an aggregate folder that is a copy of mail in an ordinary folder; the
+    /// server shows it here again by itself, so it is never appended.
+    #[serde(default)]
+    pub covered: u64,
 }
 
 /// Verified outcome of a real restore; uncertain entries must be investigated before retrying.

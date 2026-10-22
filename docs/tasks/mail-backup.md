@@ -135,6 +135,17 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
   `crates/torroinbox/src/app.rs` (kontogenaue Antworten und verständlicher Dialog),
   `crates/torro-ipc/src/mail.rs`, `crates/torro-core/src/i18n/de.rs` und
   `docs/{api,mail-backup}.md` (Validierung, Übersetzung und Vertrag).
+- **Dritte Review-Nacharbeit (vom Menschen freigegeben, mit Entscheidungen):** Sammelordner
+  wie `\All` über Aliase statt doppelter EMLs, lokales Backup mit Lücke ist `incomplete`,
+  unbestätigte Uploads nur mit ausdrücklicher Wiederholung (`retry_unconfirmed`), eigene
+  IMAP-Verbindung für Backup und Restore, Aufbewahrung der Originale (`gone_at`, Frist),
+  Datei-/Ordnerdialog und `--open`-Zustände der Backup-Seite, Plan-Grenze je Client.
+  Dateien: `Cargo.lock`, `crates/torro-mail-backup/**`, `crates/torro-ipc/src/{lib,mail,api}.rs`,
+  `crates/torro-mail-imap/{src/imap.rs,tests/**}`, `crates/torro-mail/src/account.rs`,
+  `crates/torroworkplace/src/{core,approvals,cli}.rs`,
+  `crates/torroworkplace/src/mail/{backup,mod,read,service,store,store_corpus,sync}.rs`,
+  `crates/torro-settings-ui/src/mail{,/backup}.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/{api,api-reference,mail,mail-backup,settings}.md`.
 - Unter Mail-Kontoeinstellungen den Ablauf aus dem Mock-up anbinden: Quelle,
   Datum, Speicherort, Fortschritt/Abbruch, Verify, Restore-Plan und echte Bestätigung,
   verständliche Fehler und Hinweis auf unverschlüsseltes ZIP. CLI als

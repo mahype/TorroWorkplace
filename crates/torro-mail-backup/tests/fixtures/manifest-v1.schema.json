@@ -7,6 +7,13 @@
     "account": {
       "$ref": "#/$defs/Account"
     },
+    "aliases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Alias"
+      },
+      "maxItems": 1000000
+    },
     "counts": {
       "$ref": "#/$defs/Counts"
     },
@@ -21,16 +28,19 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/Folder"
-      }
+      },
+      "maxItems": 100000
     },
     "format": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 1024
     },
     "messages": {
       "type": "array",
       "items": {
         "$ref": "#/$defs/Message"
-      }
+      },
+      "maxItems": 1000000
     },
     "since": {
       "type": [
@@ -58,8 +68,10 @@
       "type": "array",
       "default": [],
       "items": {
-        "type": "string"
-      }
+        "type": "string",
+        "maxLength": 1024
+      },
+      "maxItems": 1000
     }
   },
   "additionalProperties": false,
@@ -80,13 +92,15 @@
       "type": "object",
       "properties": {
         "address": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "server": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "maxLength": 1024
         }
       },
       "additionalProperties": false,
@@ -94,8 +108,71 @@
         "address"
       ]
     },
+    "Alias": {
+      "description": "A folder occurrence in a collection folder such as `\\All` that has no EML of its own: the\nsame original bytes are already archived as the message at `same_as`, in another folder.\n`bytes` and `sha256` repeat that message's values so the alias can be checked on its own.",
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "flags": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "maxItems": 256
+        },
+        "folder_id": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "internal_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "same_as": {
+          "description": "The ZIP path (`Message::path`) of the archived message with these original bytes.",
+          "type": "string",
+          "maxLength": 1024
+        },
+        "sha256": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "uid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "uid_validity": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "folder_id",
+        "bytes",
+        "sha256",
+        "same_as"
+      ]
+    },
     "Counts": {
-      "description": "Counts for a quick report, checked against the actual tables.",
+      "description": "Counts for a quick report, checked against the actual tables. `messages` and `bytes` count\nEML files only; aliases add neither.",
       "type": "object",
       "properties": {
         "bytes": {
@@ -129,10 +206,12 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "maxLength": 1024
         },
         "id": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "inventory": {
           "anyOf": [
@@ -145,16 +224,19 @@
           ]
         },
         "name": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "role": {
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "maxLength": 1024
         },
         "selectable": {
           "type": "boolean"
@@ -177,7 +259,7 @@
       ]
     },
     "Inventory": {
-      "description": "The final eligible source inventory for a folder. Server UID hashes use sorted big-endian\nfour-byte UIDs, with SHA-256 of the empty sequence for an empty folder.",
+      "description": "The final eligible source inventory for a folder, covering its messages and its aliases.\nServer UID hashes use sorted big-endian four-byte UIDs of both, with SHA-256 of the empty\nsequence for an empty folder.",
       "type": "object",
       "properties": {
         "checked_at": {
@@ -193,7 +275,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "maxLength": 1024
         }
       },
       "additionalProperties": false,
@@ -215,14 +298,18 @@
           "type": "array",
           "default": [],
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "maxLength": 1024
+          },
+          "maxItems": 256
         },
         "folder_id": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "id": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "internal_date": {
           "type": [
@@ -232,10 +319,12 @@
           "format": "date-time"
         },
         "path": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "sha256": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 1024
         },
         "uid": {
           "type": [

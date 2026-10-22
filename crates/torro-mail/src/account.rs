@@ -197,11 +197,17 @@ pub struct MailSettings {
     pub backup: BackupPreferences,
 }
 
-/// Last-used backup settings, kept with the mail account rather than general settings.
+/// Last-used backup settings, kept with the mail account rather than general settings, so the
+/// account's backup page offers the same choice next time (`docs/mail-backup.md`). Nothing here is
+/// a secret or archive content; all fields default, so older account files read unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct BackupPreferences {
+    /// `true`: back up from the originals held on this device (no server contact); `false`: read
+    /// every folder from the IMAP server.
     #[serde(default)]
     pub local: bool,
+    /// Only mail received on or after this calendar day (inclusive, by IMAP `INTERNALDATE`);
+    /// `None`: all mail of the source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<NaiveDate>,
     /// An absolute folder chosen by the suite user; `None` uses the private managed folder.

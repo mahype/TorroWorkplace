@@ -37,11 +37,11 @@ use sha2::{Digest, Sha256};
 use torro_ipc::mail::MailCacheMode;
 use torro_mail::{Flag, Role};
 use torro_mail_imap::folders;
-use torro_mail_imap::imap::{BackupMessage, FetchedHeader, ImapError, Search, Session};
+use torro_mail_imap::imap::{BackupMessage, BodyChunks, FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, ReadMessage};
 
 use super::service::{Command, MailChange, MailError, Mailbox, SharedStore};
-use super::store::{BODY_RETENTION_DAYS, Body, NewMessage, UidValidity};
+use super::store::{BODY_RETENTION_DAYS, Body, NewMessage, ORIGINAL_MAX_BYTES, UidValidity};
 
 /// How many headers one `UID FETCH` asks for.
 pub const HEADER_BATCH: usize = 100;
@@ -110,8 +110,10 @@ impl Lease<'_> {
 
 /// Syncs the whole account on its command connection: lists the folders (creating a missing
 /// drafts or sent folder, task M2.3), keeps the store's folder list in line, then syncs every
-/// folder, the inbox first, and applies its account's body-retention policy. A folder that
-/// vanished on the server meanwhile is skipped; any other failure ends the sync with that error.
+/// folder, the inbox first, and applies its account's body-retention policy; originals of mail
+/// gone from the server for [`GONE_ORIGINAL_RETENTION_DAYS`](super::store::GONE_ORIGINAL_RETENTION_DAYS)
+/// are deleted. A folder that vanished on the server meanwhile is skipped; any other failure ends
+/// the sync with that error.
 pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
     let _one = mailbox.one_sync().await;
     let store = mailbox.store()?;
@@ -127,6 +129,8 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
             let mut targets = Vec::with_capacity(listed.len());
             for folder in listed {
                 let id = store.upsert_folder(&folder.path, &folder.name, folder.role)?;
+                // For a local backup's folder table (MB.4), as the server lists it.
+                store.set_folder_delimiter(&folder.path, folder.delimiter)?;
                 targets.push(Target { id, path: folder.path, role: folder.role });
             }
             // An empty list would drop every folder; a server always has an inbox.
@@ -148,7 +152,12 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
             Err(err) => return Err(err),
         }
     }
-    store.run(|store| store.prune_bodies(Utc::now()).map(drop)).await?;
+    store
+        .run(|store| {
+            store.prune_bodies(Utc::now())?;
+            store.prune_gone_originals(Utc::now()).map(drop)
+        })
+        .await?;
     Ok(())
 }
 
@@ -217,7 +226,9 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
     Ok(todo.len())
 }
 
-/// The whole message at `place` from the account's command connection; `None` when it is gone.
+/// The whole message at `place` from the account's command connection; `None` when it is gone, or
+/// larger than [`LARGE_ORIGINAL`] (then only its original is kept, in `AllOffline`). Fails only when
+/// the connection does: a mail whose original cannot be kept is read anyway ([`fetch_for_reading`]).
 async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Result<Option<Vec<u8>>, MailError> {
     let mut command = mailbox.command().await?;
     let store = mailbox.store()?;
@@ -225,46 +236,127 @@ async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Resu
     if !super::read::valid_selection(command.session(), place).await? {
         return Ok(None);
     }
-    let metadata = if retain {
-        command.session().fetch_backup_metadata(&[place.uid]).await?.into_iter().find(|item| item.uid == place.uid)
-    } else {
-        None
-    };
-    if let Some(item) = metadata.as_ref().filter(|item| item.bytes > LARGE_ORIGINAL) {
-        retain_large_original(command.session(), &store, place, item).await?;
-        command.release();
-        // The original is available for local backup. The normal MIME cache deliberately does
-        // not parse a message this large into memory.
-        return Ok(None);
-    }
-    let raw = command.session().fetch_message(place.uid).await?;
+    let fetched = fetch_for_reading(command.session(), &store, place, retain).await?;
     command.release();
-    match (metadata, raw) {
-        (Some(metadata), Some(raw)) => {
-            let path = place.folder_path.clone();
-            let validity = place.uidvalidity;
-            let saved = mailbox
-                .store()?
-                .run(move |store| {
-                    store.save_original(
-                        &path,
-                        validity,
-                        metadata.uid,
-                        metadata.internal_date,
-                        &metadata.flags,
-                        &raw,
-                    )?;
-                    Ok(raw)
-                })
-                .await?;
-            Ok(Some(saved))
-        }
-        (_, raw) => Ok(raw),
+    Ok(match fetched {
+        Fetched::Whole(raw) => Some(raw),
+        // A message this large is not parsed into memory by the normal MIME cache.
+        Fetched::TooLarge { .. } | Fetched::Gone => None,
+    })
+}
+
+/// What [`fetch_for_reading`] brought.
+#[derive(Debug)]
+pub(crate) enum Fetched {
+    /// The whole message, as the server holds it.
+    Whole(Vec<u8>),
+    /// Larger than [`LARGE_ORIGINAL`]: not read into memory. `retained`: its original is in the
+    /// local depot (it was, or it was taken now in bounded pieces).
+    TooLarge { retained: bool },
+    /// Gone from the server.
+    Gone,
+}
+
+/// The whole message at `place` for reading, on `session`, which has the folder open under
+/// `place.uidvalidity` ([`super::read::valid_selection`]); never marked read. With `retain` (the
+/// account keeps all texts offline) its RFC-822 original also goes into the local depot, with
+/// `INTERNALDATE` and flags, unless the depot holds one for this place already: then nothing more
+/// is asked or written, and a large one is not fetched at all.
+///
+/// Keeping the original never stops the reading: a server that names no `INTERNALDATE` or flags, a
+/// message that changes or vanishes while it is taken, one longer than its `RFC822.SIZE` or larger
+/// than the depot takes ([`ORIGINAL_MAX_BYTES`]) is logged without contents and left missing, which
+/// a local backup then reports. Errors only for the connection (offline, refused password) and the
+/// store's lookup; a server error while fetching the text itself is the caller's as before.
+pub(crate) async fn fetch_for_reading(
+    session: &mut Session,
+    store: &SharedStore,
+    place: &super::store::MessageRef,
+    retain: bool,
+) -> Result<Fetched, MailError> {
+    if !retain {
+        return whole(session, place).await;
     }
+    let (path, validity, uid) = (place.folder_path.clone(), place.uidvalidity, place.uid);
+    match store.run(move |db| db.original_size(&path, validity, uid)).await? {
+        Some(bytes) if bytes > LARGE_ORIGINAL => return Ok(Fetched::TooLarge { retained: true }),
+        Some(_) => return whole(session, place).await,
+        None => {}
+    }
+    let metadata = match session.fetch_backup_metadata(&[place.uid]).await.map_err(MailError::from) {
+        Ok(found) => found.into_iter().find(|item| item.uid == place.uid),
+        Err(err) if connection_lost(&err) => return Err(err),
+        Err(err) => {
+            not_retained(place, &err);
+            return whole(session, place).await;
+        }
+    };
+    // The server named no such UID: the plain fetch tells whether it is gone.
+    let Some(metadata) = metadata else { return whole(session, place).await };
+    if metadata.bytes > LARGE_ORIGINAL {
+        let retained = match retain_large_original(session, store, place, &metadata).await {
+            Ok(()) => true,
+            Err(err) if connection_lost(&err) => return Err(err),
+            Err(err) => {
+                not_retained(place, &err);
+                false
+            }
+        };
+        return Ok(Fetched::TooLarge { retained });
+    }
+    let Fetched::Whole(raw) = whole(session, place).await? else { return Ok(Fetched::Gone) };
+    let path = place.folder_path.clone();
+    let validity = place.uidvalidity;
+    let (raw, kept) = store
+        .run(move |db| {
+            let kept = db.save_original(&path, validity, metadata.uid, metadata.internal_date, &metadata.flags, &raw);
+            Ok((raw, kept))
+        })
+        .await?;
+    if let Err(err) = kept {
+        not_retained(place, &MailError::Store(err));
+    }
+    Ok(Fetched::Whole(raw))
+}
+
+/// `BODY.PEEK[]` of `place` in the open folder.
+async fn whole(session: &mut Session, place: &super::store::MessageRef) -> Result<Fetched, MailError> {
+    Ok(match session.fetch_message(place.uid).await? {
+        Some(raw) => Fetched::Whole(raw),
+        None => Fetched::Gone,
+    })
+}
+
+/// The failure is about the connection or the account, not about this one message: reading stops
+/// and is tried again later. Anything else only leaves the original missing.
+fn connection_lost(err: &MailError) -> bool {
+    matches!(
+        err,
+        MailError::NotFound
+            | MailError::NoPassword
+            | MailError::Auth
+            | MailError::Offline(_)
+            | MailError::NotPublic
+            | MailError::Server(ImapError::Offline(_) | ImapError::Auth(_))
+    )
+}
+
+/// Logs that the original of the message at `place` was not kept: the account and a fixed reason,
+/// never a server text, a folder name or contents.
+fn not_retained(place: &super::store::MessageRef, err: &MailError) {
+    let reason = match err {
+        MailError::Store(super::MailStoreError::OriginalTooLarge) => "too large for the local store",
+        MailError::Store(_) => "the local store failed",
+        MailError::Server(ImapError::NotFound(_)) => "it vanished while it was read",
+        _ => "the server answered unexpectedly",
+    };
+    eprintln!("torroworkplace: an original of {} was not kept: {reason}", place.account);
 }
 
 /// Fetch a large mail in bounded pieces, then atomically place it in the local original depot.
-/// A disappeared or changing source is left missing so local backup reports incompleteness.
+/// Fails without keeping anything for a mail larger than the depot takes, one that vanishes or
+/// changes while it is read, and one with bytes past its `RFC822.SIZE`: a cut original must never
+/// pass for the whole one. The caller leaves such an original missing ([`fetch_for_reading`]).
 pub(crate) async fn retain_large_original(
     session: &mut Session,
     store: &SharedStore,
@@ -273,19 +365,15 @@ pub(crate) async fn retain_large_original(
 ) -> Result<(), MailError> {
     use std::io::Write;
 
+    // Checked before anything is fetched: the store would refuse it at the end.
+    if metadata.bytes > ORIGINAL_MAX_BYTES {
+        return Err(MailError::Store(super::MailStoreError::OriginalTooLarge));
+    }
     let mut file = tempfile::tempfile().map_err(super::MailStoreError::Io)?;
-    let mut offset = 0u64;
-    while offset < metadata.bytes {
-        let count = (metadata.bytes - offset).min(64 * 1024) as usize;
-        let chunk = session.fetch_backup_chunk(place.uid, offset, count).await?;
-        let Some(chunk) = chunk else {
-            return Err(MailError::Server(ImapError::NotFound("message vanished during original capture".into())));
-        };
-        if chunk.len() != count {
-            return Err(MailError::Server(ImapError::Protocol("short original body chunk".into())));
-        }
+    // Checks that nothing follows RFC822.SIZE, so a cut original never passes for the whole one.
+    let mut body = BodyChunks::new(place.uid, metadata.bytes);
+    while let Some(chunk) = body.next(session).await.map_err(ImapError::from)? {
         file.write_all(&chunk).map_err(super::MailStoreError::Io)?;
-        offset += count as u64;
     }
     let after = session.fetch_backup_metadata(&[place.uid]).await?.into_iter().find(|item| item.uid == place.uid);
     if after.as_ref() != Some(metadata) {
@@ -466,6 +554,9 @@ async fn sync_folder(
                     let read = mime::read(&header.header).unwrap_or_else(|_| unreadable());
                     let message = new_message(&folder, uidvalidity, &header, &read, now);
                     let id = store.upsert_message(&folder, uidvalidity, &message)?;
+                    if let Some(at) = header.internal_date {
+                        store.set_internal_date(&folder, header.uid, at)?;
+                    }
                     stored.push((id, message.date, header));
                 }
                 Ok(stored)
@@ -492,32 +583,19 @@ async fn sync_folder(
             lease.done();
             return Ok(());
         }
-        let raw = lease.session().fetch_message(header.uid).await?;
-        let metadata = if mode == MailCacheMode::AllOffline && raw.is_some() {
-            lease.session().fetch_backup_metadata(&[header.uid]).await?.into_iter().find(|item| item.uid == header.uid)
-        } else {
-            None
+        let place = super::store::MessageRef {
+            id: id.clone(),
+            account: mailbox.id().to_string(),
+            folder: target.id.clone(),
+            folder_path: target.path.clone(),
+            uidvalidity,
+            uid: header.uid,
+            rfc_message_id: None,
         };
+        // In `AllOffline` the original is kept as well; failing to keep it never ends the sync.
+        let fetched = fetch_for_reading(lease.session(), store, &place, mode == MailCacheMode::AllOffline).await?;
         lease.done();
-        let Some(raw) = raw else { continue };
-        let raw = if let Some(metadata) = metadata {
-            let path = target.path.clone();
-            store
-                .run(move |store| {
-                    store.save_original(
-                        &path,
-                        uidvalidity,
-                        metadata.uid,
-                        metadata.internal_date,
-                        &metadata.flags,
-                        &raw,
-                    )?;
-                    Ok(raw)
-                })
-                .await?
-        } else {
-            raw
-        };
+        let Fetched::Whole(raw) = fetched else { continue };
         if policy.prefetch_attachments {
             let _ = prefetch_attachments(mailbox, &id, &raw).await;
         }
@@ -566,11 +644,12 @@ async fn know(store: &SharedStore, folder: &str, uidvalidity: u32) -> Result<Kno
     Ok(known)
 }
 
-/// Opens `path` again when the session has another folder open (a command ran in between).
-/// `false` when the folder's UIDVALIDITY is no longer `uidvalidity`.
+/// Opens `path` again when the session has another folder open (a command ran in between), or
+/// this one only read-only. `false` when the folder's UIDVALIDITY is no longer `uidvalidity`.
 async fn reselect(session: &mut Session, path: &str, uidvalidity: u32) -> Result<bool, MailError> {
     if let Some(selected) = session.selected()
         && selected.path == path
+        && !selected.read_only
     {
         return Ok(selected.uid_validity == uidvalidity);
     }
@@ -615,7 +694,7 @@ fn new_message(
 /// core saves itself (task M3.2, [`super::write`]) are threaded the same way.
 pub(super) fn thread_id(read: &ReadMessage) -> Option<String> {
     let root = read.references.first().or(read.in_reply_to.as_ref()).or(read.message_id.as_ref())?;
-    let hash: String = Sha256::digest(root.as_bytes()).iter().take(12).map(|byte| format!("{byte:02x}")).collect();
+    let hash = torro_mail_backup::hex_digest(&Sha256::digest(root.as_bytes())[..12]);
     Some(format!("t:{hash}"))
 }
 
@@ -655,10 +734,11 @@ fn unreadable() -> ReadMessage {
 /// the client trusts only its CA ([`fake::trust`]). Loopback only, no network.
 #[cfg(test)]
 pub(crate) mod fake {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use chrono::{DateTime, Duration, Utc};
+    use chrono::{DateTime, Duration, FixedOffset, Utc};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
@@ -696,10 +776,38 @@ pub(crate) mod fake {
         flags: BTreeSet<String>,
         modseq: u64,
         raw: Vec<u8>,
-        received: DateTime<Utc>,
+        /// `INTERNALDATE`, in the zone it was received in.
+        received: DateTime<FixedOffset>,
         /// `BODY.PEEK[]` answers nothing for it, as for a message gone from the server; listing and
         /// flags still show it, so the sync keeps it in the cache.
         withheld: bool,
+        /// Gmail's `X-GM-MSGID`, answered when asked for.
+        gm_msgid: Option<u64>,
+        /// `RFC822.SIZE` as the server claims it, when that is not the true length.
+        reported_size: Option<usize>,
+    }
+
+    impl Message {
+        fn new(uid: u32, flags: BTreeSet<String>, modseq: u64, raw: Vec<u8>, received: DateTime<FixedOffset>) -> Self {
+            Message { uid, flags, modseq, raw, received, withheld: false, gm_msgid: None, reported_size: None }
+        }
+    }
+
+    /// What the fake does to its world when a trigger ([`FakeImap::on_examine`]) fires.
+    #[derive(Debug, Clone)]
+    pub(crate) enum Change {
+        /// A new message with this raw text arrives in the folder.
+        Add(String),
+        /// A new message with this raw text arrives in each of these folders, as Gmail files new
+        /// mail in the inbox and in "All Mail" at once.
+        AddTo(Vec<String>, String),
+        /// The message with this UID is expunged.
+        Expunge(u32),
+        /// The folder gets a new UIDVALIDITY ([`FakeImap::renumber`]).
+        Renumber,
+        /// From this `EXAMINE` on the folder cannot be opened (`NO`), while `LIST` still shows it
+        /// selectable.
+        Refuse,
     }
 
     struct Folder {
@@ -709,6 +817,22 @@ pub(crate) mod fake {
         next_uid: u32,
         modseq: u64,
         messages: Vec<Message>,
+        /// `PERMANENTFLAGS` answered on `SELECT`/`EXAMINE`, as the list's text; none: not sent.
+        /// Without `\*` an `APPEND` with another keyword is refused, as strict servers do.
+        permanent: Option<String>,
+        /// `SELECT` and `EXAMINE` answer `NO` ([`Change::Refuse`]).
+        refused: bool,
+    }
+
+    /// What the next `APPEND` does instead of storing the message as sent ([`FakeImap::quirk_next_append`]).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum AppendQuirk {
+        /// Reads the message, stores nothing and answers `NO`.
+        Refuse,
+        /// Reads the message, stores nothing and loses the connection before answering.
+        Lose,
+        /// Stores the message with a header line added in front, as servers that rewrite mail do.
+        Alter,
     }
 
     struct World {
@@ -718,6 +842,10 @@ pub(crate) mod fake {
         /// Every line the clients sent, the password blanked.
         lines: Vec<String>,
         logins: usize,
+        /// How often each folder was opened with `EXAMINE`.
+        examines: HashMap<String, usize>,
+        /// Changes waiting for the n-th `EXAMINE` of a folder.
+        on_examine: Vec<(String, usize, Change)>,
     }
 
     impl World {
@@ -744,6 +872,17 @@ pub(crate) mod fake {
         backup_change: Arc<Mutex<Option<(String, String)>>>,
         selectable_change: Arc<Mutex<Option<String>>>,
         drop_after_append: Arc<Mutex<bool>>,
+        /// What the next `APPEND` does instead of storing as sent.
+        /// What an `APPEND` does instead of storing as sent, and how many plain ones come first.
+        append_quirk: Arc<Mutex<Option<(usize, AppendQuirk)>>>,
+        /// Answers `APPEND` with `[APPENDUID …]`, as servers with UIDPLUS.
+        uidplus: Arc<AtomicBool>,
+        /// A folder that shows every appended message once more, as Gmail's "All Mail".
+        mirror: Arc<Mutex<Option<String>>>,
+        /// Announces `X-GM-EXT-1` and answers `X-GM-MSGID`, as Gmail.
+        gmail: Arc<AtomicBool>,
+        /// While `true`, partial body fetches (`BODY.PEEK[]<…>`) wait for an answer.
+        chunk_gate: watch::Sender<bool>,
     }
 
     impl FakeImap {
@@ -759,6 +898,8 @@ pub(crate) mod fake {
                 next_uid: 1,
                 modseq: 1,
                 messages: Vec::new(),
+                permanent: None,
+                refused: false,
             };
             let world = World {
                 password: password.into(),
@@ -771,6 +912,8 @@ pub(crate) mod fake {
                 modseq: 1,
                 lines: Vec::new(),
                 logins: 0,
+                examines: HashMap::new(),
+                on_examine: Vec::new(),
             };
             let server = FakeImap {
                 endpoint: Endpoint { host: "127.0.0.1".into(), port, security: Security::Tls },
@@ -780,6 +923,11 @@ pub(crate) mod fake {
                 backup_change: Arc::new(Mutex::new(None)),
                 selectable_change: Arc::new(Mutex::new(None)),
                 drop_after_append: Arc::new(Mutex::new(false)),
+                append_quirk: Arc::new(Mutex::new(None)),
+                uidplus: Arc::new(AtomicBool::new(false)),
+                mirror: Arc::new(Mutex::new(None)),
+                gmail: Arc::new(AtomicBool::new(false)),
+                chunk_gate: watch::Sender::new(false),
             };
             let accepting = server.clone();
             tokio::spawn(async move {
@@ -806,6 +954,18 @@ pub(crate) mod fake {
 
         /// Delivers `raw` into `folder` with `flags`; returns its UID.
         pub(crate) fn add(&self, folder: &str, raw: &str, flags: &[&str]) -> u32 {
+            self.add_received(folder, raw.as_bytes(), flags, Utc::now().fixed_offset())
+        }
+
+        /// Delivers the bytes `raw` into `folder` with `flags`, received at `received` (its
+        /// `INTERNALDATE`, zone included); returns its UID.
+        pub(crate) fn add_received(
+            &self,
+            folder: &str,
+            raw: &[u8],
+            flags: &[&str],
+            received: DateTime<FixedOffset>,
+        ) -> u32 {
             let uid = {
                 let mut world = self.world();
                 let modseq = world.bump();
@@ -813,18 +973,79 @@ pub(crate) mod fake {
                 let uid = folder.next_uid;
                 folder.next_uid += 1;
                 folder.modseq = modseq;
-                folder.messages.push(Message {
-                    uid,
-                    flags: flags.iter().map(|flag| flag.to_string()).collect(),
-                    modseq,
-                    raw: raw.as_bytes().to_vec(),
-                    received: Utc::now(),
-                    withheld: false,
-                });
+                let flags = flags.iter().map(|flag| flag.to_string()).collect();
+                folder.messages.push(Message::new(uid, flags, modseq, raw.to_vec(), received));
                 uid
             };
             self.changed();
             uid
+        }
+
+        /// As Gmail from now on: announces `X-GM-EXT-1` and answers `X-GM-MSGID`.
+        pub(crate) fn act_as_gmail(&self) {
+            self.gmail.store(true, Ordering::Release);
+        }
+
+        /// Gives message `uid` of `folder` the Gmail message id `msgid` (the same in every label).
+        pub(crate) fn set_gm_msgid(&self, folder: &str, uid: u32, msgid: u64) {
+            let mut world = self.world();
+            let message =
+                world.folder(folder).messages.iter_mut().find(|m| m.uid == uid).expect("a message of the fake");
+            message.gm_msgid = Some(msgid);
+        }
+
+        /// From now on the server claims `RFC822.SIZE` `size` for message `uid` of `folder`, whatever
+        /// its true length; the body itself stays whole.
+        pub(crate) fn misreport_size(&self, folder: &str, uid: u32, size: usize) {
+            let mut world = self.world();
+            let message =
+                world.folder(folder).messages.iter_mut().find(|m| m.uid == uid).expect("a message of the fake");
+            message.reported_size = Some(size);
+        }
+
+        /// Applies `change` to `folder` just before the `nth` `EXAMINE` of it (counted from 1) is
+        /// answered.
+        pub(crate) fn on_examine(&self, folder: &str, nth: usize, change: Change) {
+            self.world().on_examine.push((folder.into(), nth, change));
+        }
+
+        /// While `held`, every partial body fetch waits; `false` lets them go on.
+        pub(crate) fn hold_backup_chunks(&self, held: bool) {
+            self.chunk_gate.send_replace(held);
+        }
+
+        /// The capabilities announced after the sign-in.
+        fn capabilities(&self) -> String {
+            world_capabilities(self.gmail.load(Ordering::Acquire))
+        }
+
+        /// Counts an `EXAMINE` of `path` and applies the changes waiting for it.
+        fn examined(&self, path: &str) {
+            let due: Vec<Change> = {
+                let mut world = self.world();
+                let count = world.examines.entry(path.to_string()).or_default();
+                *count += 1;
+                let count = *count;
+                let (due, waiting) =
+                    world.on_examine.drain(..).partition(|(folder, nth, _)| folder == path && *nth == count);
+                world.on_examine = waiting;
+                due.into_iter().map(|(_, _, change)| change).collect()
+            };
+            for change in due {
+                match change {
+                    Change::Add(raw) => {
+                        self.add(path, &raw, &[]);
+                    }
+                    Change::AddTo(folders, raw) => {
+                        for folder in folders {
+                            self.add(&folder, &raw, &[]);
+                        }
+                    }
+                    Change::Expunge(uid) => self.expunge(path, uid),
+                    Change::Renumber => self.renumber(path),
+                    Change::Refuse => self.world().folder(path).refused = true,
+                }
+            }
         }
 
         /// Injects an incoming message when the next backup body chunk is served.
@@ -840,6 +1061,32 @@ pub(crate) mod fake {
         /// Store the next APPEND literal, then lose the connection before acknowledging it.
         pub(crate) fn drop_after_next_append(&self) {
             *self.drop_after_append.lock().expect("append cut") = true;
+        }
+
+        /// The next `APPEND` does `quirk` instead of storing the message as sent.
+        pub(crate) fn quirk_next_append(&self, quirk: AppendQuirk) {
+            self.quirk_append_after(0, quirk);
+        }
+
+        /// The `APPEND` after the next `plain` ones does `quirk` instead of storing as sent.
+        pub(crate) fn quirk_append_after(&self, plain: usize, quirk: AppendQuirk) {
+            *self.append_quirk.lock().expect("append quirk") = Some((plain, quirk));
+        }
+
+        /// From now on `APPEND` answers where the message landed (`APPENDUID`).
+        pub(crate) fn act_with_uidplus(&self) {
+            self.uidplus.store(true, Ordering::Release);
+        }
+
+        /// From now on every message appended to another folder shows up in `folder` too, as in
+        /// Gmail's "All Mail".
+        pub(crate) fn mirror_appends_into(&self, folder: &str) {
+            *self.mirror.lock().expect("mirror") = Some(folder.into());
+        }
+
+        /// `folder` answers `PERMANENTFLAGS (flags)` from now on (`\\*` for any new keyword).
+        pub(crate) fn set_permanent_flags(&self, folder: &str, flags: &str) {
+            self.world().folder(folder).permanent = Some(flags.into());
         }
 
         /// Sets the flags of message `uid` in `folder`, as another mail program would.
@@ -909,6 +1156,8 @@ pub(crate) mod fake {
                 next_uid: 1,
                 modseq: 1,
                 messages: Vec::new(),
+                permanent: None,
+                refused: false,
             });
             self.changed();
         }
@@ -977,24 +1226,41 @@ pub(crate) mod fake {
                 let (tag, rest) = (tag.to_string(), rest.to_string());
                 let command = rest.split(' ').next().unwrap_or_default().to_ascii_uppercase();
                 self.world().lines.push(if command == "LOGIN" { format!("{tag} LOGIN …") } else { text.clone() });
-                let answer = match command.as_str() {
-                    "LOGIN" => self.login(&tag, &rest),
-                    "CAPABILITY" => format!("* CAPABILITY {CAPABILITIES}\r\n{tag} OK done"),
-                    "NOOP" => format!("{tag} OK done"),
+                let answer: Vec<u8> = match command.as_str() {
+                    "LOGIN" => self.login(&tag, &rest).into(),
+                    "CAPABILITY" => format!("* CAPABILITY {}\r\n{tag} OK done", self.capabilities()).into(),
+                    "NOOP" => format!("{tag} OK done").into(),
                     "LOGOUT" => {
                         let _ = write(&mut writer, &format!("* BYE bye\r\n{tag} OK done")).await;
                         return;
                     }
-                    "NAMESPACE" => format!("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n{tag} OK done"),
-                    "LIST" => self.list(&tag),
+                    "NAMESPACE" => format!("* NAMESPACE ((\"\" \"/\")) NIL NIL\r\n{tag} OK done").into(),
+                    "LIST" => self.list(&tag).into(),
                     "SELECT" | "EXAMINE" => {
                         let path = quoted(&rest[command.len() + 1..]);
-                        seen = *changes.borrow_and_update();
-                        let answer = self.select(&tag, &path, command == "EXAMINE");
-                        selected = Some(path);
-                        answer
+                        if command == "EXAMINE" && self.unselectable(&tag, &path).is_none() {
+                            self.examined(&path);
+                        }
+                        if let Some(refusal) = self.unselectable(&tag, &path) {
+                            selected = None;
+                            refusal.into()
+                        } else {
+                            seen = *changes.borrow_and_update();
+                            let answer = self.select(&tag, &path, command == "EXAMINE");
+                            selected = Some(path);
+                            answer.into()
+                        }
                     }
+                    "SUBSCRIBE" => format!("{tag} OK subscribed").into(),
                     "UID" => {
+                        if rest.contains("BODY.PEEK[]<") {
+                            let mut gate = self.chunk_gate.subscribe();
+                            while *gate.borrow_and_update() {
+                                if gate.changed().await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
                         let answer = self.uid(&tag, &rest["UID ".len()..], selected.as_deref());
                         if rest.contains("BODY.PEEK[]<")
                             && let Some((folder, raw)) = self.backup_change.lock().expect("backup change").take()
@@ -1009,11 +1275,11 @@ pub(crate) mod fake {
                         }
                         answer
                     }
-                    "STATUS" => self.status(&tag, &quoted(&rest["STATUS ".len()..])),
-                    "CREATE" => self.create(&tag, &rest),
-                    "EXPUNGE" => self.expunge_deleted(&tag, selected.as_deref()),
+                    "STATUS" => self.status(&tag, &quoted(&rest["STATUS ".len()..])).into(),
+                    "CREATE" => self.create(&tag, &rest).into(),
+                    "EXPUNGE" => self.expunge_deleted(&tag, selected.as_deref()).into(),
                     "APPEND" => match self.append(&mut reader, &mut writer, &tag, &rest).await {
-                        Some(answer) => answer,
+                        Some(answer) => answer.into(),
                         None => return,
                     },
                     "IDLE" => {
@@ -1041,11 +1307,11 @@ pub(crate) mod fake {
                                 _ = cuts.changed() => return,
                             }
                         }
-                        format!("{tag} OK Idle completed")
+                        format!("{tag} OK Idle completed").into()
                     }
-                    _ => format!("{tag} BAD unknown command"),
+                    _ => format!("{tag} BAD unknown command").into(),
                 };
-                if write(&mut writer, &answer).await.is_err() {
+                if write_bytes(&mut writer, &answer).await.is_err() {
                     return;
                 }
             }
@@ -1064,7 +1330,7 @@ pub(crate) mod fake {
             let user = quoted(arguments);
             let after = &arguments[user.len() + 2..].trim_start();
             if !user.is_empty() && quoted(after) == world.password {
-                format!("{tag} OK [CAPABILITY {CAPABILITIES}] Logged in")
+                format!("{tag} OK [CAPABILITY {}] Logged in", self.capabilities())
             } else {
                 format!("{tag} NO [AUTHENTICATIONFAILED] Authentication failed.")
             }
@@ -1081,13 +1347,30 @@ pub(crate) mod fake {
             lines.join("\r\n")
         }
 
+        /// The `NO` for opening `path` when it does not exist or is `\\Noselect`.
+        fn unselectable(&self, tag: &str, path: &str) -> Option<String> {
+            let world = self.world();
+            match world.folders.iter().find(|folder| folder.path == path) {
+                None => Some(format!("{tag} NO [NONEXISTENT] no such folder")),
+                Some(folder) if folder.refused || folder.attributes.contains("\\Noselect") => {
+                    Some(format!("{tag} NO [CANNOT] folder cannot be selected"))
+                }
+                Some(_) => None,
+            }
+        }
+
         fn select(&self, tag: &str, path: &str, read_only: bool) -> String {
             let mut world = self.world();
             let folder = world.folder(path);
             let mode = if read_only { "READ-ONLY" } else { "READ-WRITE" };
+            let permanent = folder
+                .permanent
+                .as_ref()
+                .map(|flags| format!("* OK [PERMANENTFLAGS ({flags})] Kept\r\n"))
+                .unwrap_or_default();
             format!(
                 "* {} EXISTS\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] Next\r\n\
-                 * OK [HIGHESTMODSEQ {}] Highest\r\n{tag} OK [{mode}] Select completed",
+                 * OK [HIGHESTMODSEQ {}] Highest\r\n{permanent}{tag} OK [{mode}] Select completed",
                 folder.messages.len(),
                 folder.uidvalidity,
                 folder.next_uid,
@@ -1129,6 +1412,8 @@ pub(crate) mod fake {
                 next_uid: 1,
                 modseq: 1,
                 messages: Vec::new(),
+                permanent: None,
+                refused: false,
             });
             drop(world);
             self.changed();
@@ -1155,27 +1440,63 @@ pub(crate) mod fake {
                 .rsplit_once("\" {")
                 .and_then(|(prefix, _)| prefix.rsplit_once('"'))
                 .and_then(|(_, date)| DateTime::parse_from_str(date, "%d-%b-%Y %H:%M:%S %z").ok())
-                .map(|date| date.with_timezone(&Utc))
-                .unwrap_or_else(Utc::now);
+                .unwrap_or_else(|| Utc::now().fixed_offset());
             write(writer, "+ go ahead").await.ok()?;
             let mut raw = vec![0u8; size];
             reader.read_exact(&mut raw).await.ok()?;
             let mut end = String::new();
             reader.read_line(&mut end).await.ok()?;
-            {
+            let quirk = {
+                let mut waiting = self.append_quirk.lock().expect("append quirk");
+                match waiting.as_mut() {
+                    Some((0, _)) => waiting.take().map(|(_, quirk)| quirk),
+                    Some((plain, _)) => {
+                        *plain -= 1;
+                        None
+                    }
+                    None => None,
+                }
+            };
+            match quirk {
+                Some(AppendQuirk::Refuse) => return Some(format!("{tag} NO [OVERQUOTA] mailbox is full")),
+                Some(AppendQuirk::Lose) => return None,
+                Some(AppendQuirk::Alter) => raw = [b"X-Rewritten: yes\r\n".as_slice(), &raw].concat(),
+                None => {}
+            }
+            let mirror = self.mirror.lock().expect("mirror").clone().filter(|mirror| *mirror != path);
+            let landed = {
                 let mut world = self.world();
                 let modseq = world.bump();
                 let Some(folder) = world.folders.iter_mut().find(|folder| folder.path == path) else {
                     return Some(format!("{tag} NO [TRYCREATE] no such folder"));
                 };
+                let strict = folder.permanent.as_ref().filter(|kept| !kept.contains("\\*"));
+                if let Some(kept) = strict
+                    && flags.iter().any(|flag| !flag.starts_with('\\') && !kept.split_whitespace().any(|k| k == flag))
+                {
+                    return Some(format!("{tag} NO [CANNOT] keyword not allowed here"));
+                }
                 let uid = folder.next_uid;
                 folder.next_uid += 1;
                 folder.modseq = modseq;
-                folder.messages.push(Message { uid, flags, modseq, raw, received, withheld: false });
-            }
+                folder.messages.push(Message::new(uid, flags.clone(), modseq, raw.clone(), received));
+                let landed = (folder.uidvalidity, uid);
+                if let Some(mirror) = mirror
+                    && let Some(all) = world.folders.iter_mut().find(|folder| folder.path == mirror)
+                {
+                    let uid = all.next_uid;
+                    all.next_uid += 1;
+                    all.modseq = modseq;
+                    all.messages.push(Message::new(uid, flags, modseq, raw, received));
+                }
+                landed
+            };
             self.changed();
             if std::mem::take(&mut *self.drop_after_append.lock().expect("append cut")) {
                 return None;
+            }
+            if self.uidplus.load(Ordering::Acquire) {
+                return Some(format!("{tag} OK [APPENDUID {} {}] APPEND completed", landed.0, landed.1));
             }
             Some(format!("{tag} OK APPEND completed"))
         }
@@ -1232,7 +1553,7 @@ pub(crate) mod fake {
                     return format!("{tag} NO [TRYCREATE] no such folder");
                 }
                 let modseq = world.bump();
-                let copies: Vec<(BTreeSet<String>, Vec<u8>, DateTime<Utc>)> = world
+                let copies: Vec<(BTreeSet<String>, Vec<u8>, DateTime<FixedOffset>)> = world
                     .folder(path)
                     .messages
                     .iter()
@@ -1244,20 +1565,20 @@ pub(crate) mod fake {
                 for (flags, raw, received) in copies {
                     let uid = folder.next_uid;
                     folder.next_uid += 1;
-                    folder.messages.push(Message { uid, flags, modseq, raw, received, withheld: false });
+                    folder.messages.push(Message::new(uid, flags, modseq, raw, received));
                 }
             }
             self.changed();
             format!("{tag} OK Copy completed")
         }
 
-        fn uid(&self, tag: &str, rest: &str, selected: Option<&str>) -> String {
-            let Some(path) = selected else { return format!("{tag} BAD no folder selected") };
+        fn uid(&self, tag: &str, rest: &str, selected: Option<&str>) -> Vec<u8> {
+            let Some(path) = selected else { return format!("{tag} BAD no folder selected").into() };
             if let Some(arguments) = rest.strip_prefix("STORE ") {
-                return self.store_flags(tag, path, arguments);
+                return self.store_flags(tag, path, arguments).into();
             }
             if let Some(arguments) = rest.strip_prefix("COPY ") {
-                return self.copy(tag, path, arguments);
+                return self.copy(tag, path, arguments).into();
             }
             let mut world = self.world();
             let folder = world.folder(path);
@@ -1269,7 +1590,7 @@ pub(crate) mod fake {
                     .filter(|message| matches_search(criteria, message))
                     .map(|message| message.uid.to_string())
                     .collect();
-                lines.push(format!("* SEARCH {}", uids.join(" ")).trim_end().to_string());
+                lines.push(format!("* SEARCH {}", uids.join(" ")).trim_end().as_bytes().to_vec());
             } else if let Some(fetch) = rest.strip_prefix("FETCH ") {
                 let (set, items) = fetch.split_once(' ').unwrap_or((fetch, ""));
                 let since = items
@@ -1285,43 +1606,57 @@ pub(crate) mod fake {
                     lines.push(fetched(at + 1, message, items));
                 }
             } else {
-                return format!("{tag} BAD unknown UID command");
+                return format!("{tag} BAD unknown UID command").into();
             }
-            lines.push(format!("{tag} OK done"));
-            lines.join("\r\n")
+            lines.push(format!("{tag} OK done").into());
+            lines.join(b"\r\n".as_slice())
         }
     }
 
-    /// One `FETCH` response for `message` (sequence number `seq`) with what `items` asks for.
-    fn fetched(seq: usize, message: &Message, items: &str) -> String {
+    /// One `FETCH` response for `message` (sequence number `seq`) with what `items` asks for, as
+    /// bytes: a body goes out exactly as stored, also when a piece ends inside a UTF-8 character.
+    fn fetched(seq: usize, message: &Message, items: &str) -> Vec<u8> {
         let flags = message.flags.iter().cloned().collect::<Vec<_>>().join(" ");
         let size = message.raw.len();
+        let claimed = message.reported_size.unwrap_or(size);
+        let date = message.received.format("%d-%b-%Y %H:%M:%S %z");
+        let literal = |head: String, body: &[u8]| {
+            let mut out = format!("{head} {{{}}}\r\n", body.len()).into_bytes();
+            out.extend_from_slice(body);
+            out.push(b')');
+            out
+        };
         if items.contains("BODY.PEEK[HEADER]") {
             let end = message.raw.windows(4).position(|window| window == b"\r\n\r\n").map_or(size, |at| at + 4);
-            let header = String::from_utf8_lossy(&message.raw[..end]);
-            let date = message.received.format("%d-%b-%Y %H:%M:%S +0000");
-            format!(
-                "* {seq} FETCH (UID {} FLAGS ({flags}) INTERNALDATE \"{date}\" RFC822.SIZE {size} BODYSTRUCTURE \
+            let head = format!(
+                "* {seq} FETCH (UID {} FLAGS ({flags}) INTERNALDATE \"{date}\" RFC822.SIZE {claimed} BODYSTRUCTURE \
                  (\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"8bit\" {size} 1 NIL NIL NIL) MODSEQ ({}) \
-                 BODY[HEADER] {{{}}}\r\n{header})",
-                message.uid, message.modseq, end
-            )
+                 BODY[HEADER]",
+                message.uid, message.modseq
+            );
+            literal(head, &message.raw[..end])
         } else if let Some(part) = items.split("BODY.PEEK[]<").nth(1) {
             let (offset, count) =
                 part.trim_end_matches(")").trim_end_matches('>').split_once('.').expect("partial range");
             let offset: usize = offset.parse().expect("partial offset");
             let count: usize = count.parse().expect("partial count");
             let end = offset.saturating_add(count).min(size);
-            let raw = String::from_utf8_lossy(message.raw.get(offset..end).unwrap_or_default());
-            format!("* {seq} FETCH (UID {} BODY[]<{offset}> {{{}}}\r\n{raw})", message.uid, raw.len())
+            let piece = message.raw.get(offset..end).unwrap_or_default();
+            literal(format!("* {seq} FETCH (UID {} BODY[]<{offset}>", message.uid), piece)
         } else if items.contains("BODY.PEEK[]") {
-            let raw = String::from_utf8_lossy(&message.raw);
-            format!("* {seq} FETCH (UID {} BODY[] {{{size}}}\r\n{raw})", message.uid)
+            literal(format!("* {seq} FETCH (UID {} BODY[]", message.uid), &message.raw)
         } else if items.contains("INTERNALDATE") && items.contains("RFC822.SIZE") {
-            let date = message.received.format("%d-%b-%Y %H:%M:%S +0000");
-            format!("* {seq} FETCH (UID {} FLAGS ({flags}) INTERNALDATE \"{date}\" RFC822.SIZE {size})", message.uid)
+            let gmail = match message.gm_msgid {
+                Some(msgid) if items.contains("X-GM-MSGID") => format!(" X-GM-MSGID {msgid}"),
+                _ => String::new(),
+            };
+            format!(
+                "* {seq} FETCH (UID {} FLAGS ({flags}) INTERNALDATE \"{date}\" RFC822.SIZE {claimed}{gmail})",
+                message.uid
+            )
+            .into_bytes()
         } else {
-            format!("* {seq} FETCH (UID {} FLAGS ({flags}) MODSEQ ({}))", message.uid, message.modseq)
+            format!("* {seq} FETCH (UID {} FLAGS ({flags}) MODSEQ ({}))", message.uid, message.modseq).into_bytes()
         }
     }
 
@@ -1385,7 +1720,7 @@ pub(crate) mod fake {
     /// The days compare with the `Date:` header, since the fake receives every message now.
     fn matches_search(criteria: &str, message: &Message) -> bool {
         let raw = String::from_utf8_lossy(&message.raw);
-        let date = date_of(&raw).unwrap_or(message.received).date_naive();
+        let date = date_of(&raw).unwrap_or(message.received.to_utc()).date_naive();
         let lower = raw.to_lowercase();
         let day =
             |text: Option<String>| text.and_then(|text| chrono::NaiveDate::parse_from_str(&text, "%d-%b-%Y").ok());
@@ -1444,8 +1779,19 @@ pub(crate) mod fake {
     }
 
     async fn write<W: AsyncWrite + Unpin>(writer: &mut W, text: &str) -> std::io::Result<()> {
-        writer.write_all(format!("{text}\r\n").as_bytes()).await?;
+        write_bytes(writer, text.as_bytes()).await
+    }
+
+    /// `bytes` and a line end, as one answer.
+    async fn write_bytes<W: AsyncWrite + Unpin>(writer: &mut W, bytes: &[u8]) -> std::io::Result<()> {
+        writer.write_all(bytes).await?;
+        writer.write_all(b"\r\n").await?;
         writer.flush().await
+    }
+
+    /// The capabilities after the sign-in; `gmail` adds `X-GM-EXT-1`.
+    fn world_capabilities(gmail: bool) -> String {
+        if gmail { format!("{CAPABILITIES} X-GM-EXT-1") } else { CAPABILITIES.to_string() }
     }
 
     fn acceptor() -> TlsAcceptor {
@@ -1578,6 +1924,109 @@ mod tests {
         let actual = store.run(move |db| db.original_bytes(seq)).await.expect("original").expect("present");
         assert_eq!(actual, raw.as_bytes());
         assert!(server.lines().iter().any(|line| line.contains("BODY.PEEK[]<")), "partial FETCH used");
+        let past_the_end = format!("BODY.PEEK[]<{}.1>", raw.len());
+        assert!(server.lines().iter().any(|line| line.contains(&past_the_end)), "nothing follows RFC822.SIZE");
+
+        // Asked again (a cache job), the depot answers: nothing is fetched or written anew.
+        let id = all(&mailbox).await[0].id.clone();
+        let place = store.run(move |db| db.resolve_message(&id)).await.expect("resolved").expect("there");
+        let asked = server.lines().len();
+        assert!(!cache_body(&mailbox, &place).await.expect("asked"), "too large to read");
+        let again: Vec<String> =
+            server.lines()[asked..].iter().filter(|line| line.contains("UID FETCH")).cloned().collect();
+        assert!(again.is_empty(), "{again:?}");
+        assert_eq!(store.run(|db| db.local_originals_page(0, 10)).await.expect("listed")[0].seq, seq);
+    }
+
+    #[tokio::test]
+    async fn an_original_that_cannot_be_kept_leaves_a_gap_and_reading_goes_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let large = format!("From: a@example.org\r\nSubject: Large\r\n\r\n{}", "x".repeat((33 << 20) + 1));
+        let uid = server.add("INBOX", &large, &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        store
+            .run(|db| {
+                let mut policy = db.cache_policy()?;
+                policy.mode = MailCacheMode::AllOffline;
+                db.set_cache_policy(&policy)
+            })
+            .await
+            .expect("all offline");
+        sync_account(&mailbox).await.expect("headers synced");
+        // Its body vanishes while it is taken: the original cannot be kept.
+        server.withhold_text("INBOX", uid);
+        // Not fetched ahead either (above `BODY_PREFETCH_MAX`): the backfill comes to it after the gap.
+        let next = format!("{}{}\r\n", fake::mail("After it", 400, None), "z".repeat(6 << 20));
+        server.add("INBOX", &next, &[]);
+        sync_account(&mailbox).await.expect("the next one synced");
+
+        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("not stopped by the gap"), 2);
+        let originals = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
+        assert_eq!(originals.iter().map(|original| original.uid).collect::<Vec<_>>(), vec![uid + 1]);
+        assert_eq!(store.run(|db| db.known_missing_originals(None)).await.expect("counted"), 1, "the gap shows");
+        assert_eq!(backfill(&mailbox, 10, Utc::now()).await.expect("nothing left"), 0, "not asked again");
+    }
+
+    #[tokio::test]
+    async fn reading_again_does_not_take_a_kept_original_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("Kept", 0, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        store
+            .run(|db| {
+                let mut policy = db.cache_policy()?;
+                policy.mode = MailCacheMode::AllOffline;
+                db.set_cache_policy(&policy)
+            })
+            .await
+            .expect("all offline");
+        sync_account(&mailbox).await.expect("synced with its original");
+        let metadata = || fetches(&server, "(UID FLAGS INTERNALDATE RFC822.SIZE)").len();
+        assert_eq!(metadata(), 1);
+        let id = all(&mailbox).await[0].id.clone();
+        let place = store.run(move |db| db.resolve_message(&id)).await.expect("resolved").expect("there");
+        assert!(cache_body(&mailbox, &place).await.expect("read again"));
+        assert_eq!(metadata(), 1, "the depot holds it already");
+        assert_eq!(store.run(|db| db.local_originals_page(0, 10)).await.expect("listed").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_sync_marks_originals_gone_when_their_mail_is_renumbered_or_expunged() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &fake::mail("Only", 0, None), &[]);
+        let mailbox = mailbox(dir.path(), &server).await;
+        let store = mailbox.store().expect("store");
+        store
+            .run(|db| {
+                let mut policy = db.cache_policy()?;
+                policy.mode = MailCacheMode::AllOffline;
+                db.set_cache_policy(&policy)
+            })
+            .await
+            .expect("all offline");
+        sync_account(&mailbox).await.expect("synced");
+        let places = || async {
+            let listed = store.run(|db| db.local_originals_page(0, 10)).await.expect("listed");
+            listed.into_iter().map(|original| (original.uid_validity, original.uid, original.gone)).collect::<Vec<_>>()
+        };
+        assert_eq!(places().await, vec![(11, 1, false)]);
+
+        server.renumber("INBOX");
+        sync_account(&mailbox).await.expect("synced after renumbering");
+        assert_eq!(places().await, vec![(11, 1, true), (111, 1001, false)], "the mail is kept once, anew");
+        server.expunge("INBOX", 1001);
+        sync_account(&mailbox).await.expect("synced after the expunge");
+        assert_eq!(places().await, vec![(11, 1, true), (111, 1001, true)]);
+
+        // What a local backup names the folder by, as the server lists it.
+        let infos = store.run(|db| db.folder_infos()).await.expect("folders");
+        let inbox = infos.iter().find(|info| info.path == "INBOX").expect("the inbox");
+        assert_eq!((inbox.delimiter, inbox.role.as_deref()), (Some('/'), Some("inbox")));
     }
 
     #[tokio::test]

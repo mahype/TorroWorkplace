@@ -18,7 +18,10 @@
 //! **What is kept** follows the account's cache policy: headers of known messages, selected
 //! readable texts, and search words (issue #136). In `AllOffline`, full RFC-822 originals also
 //! enter the independent `originals` table; deleting text cache or stale headers does not delete
-//! them. Attachments extracted for previews stay outside the database; see `AttachmentCache`.
+//! them. An original whose message the sync saw leave its place (moved, deleted, folder renumbered
+//! or removed) is marked gone and deleted [`GONE_ORIGINAL_RETENTION_DAYS`] later
+//! ([`MailStore::prune_gone_originals`]). Attachments extracted for previews stay outside the
+//! database; see `AttachmentCache`.
 //!
 //! **Invitations** (task E8.3b): what an invitation invites to is read from its `text/calendar` part
 //! wherever a whole message is read (the sync's texts, `mail.get_message`), kept with the text
@@ -62,7 +65,18 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
+
+/// Originals of mail that is no longer on the server (`originals.gone_at`) are deleted this many
+/// days after the sync noticed by [`MailStore::prune_gone_originals`]: long enough to still back up
+/// a folder emptied by mistake, short enough that moved and deleted mail neither piles up nor comes
+/// back as a duplicate when a local backup is restored.
+pub const GONE_ORIGINAL_RETENTION_DAYS: i64 = 30;
+
+/// The largest RFC-822 original the depot takes. SQLite's default `SQLITE_MAX_LENGTH` (10^9 bytes)
+/// bounds a BLOB and the row around it; one MiB stays for the other columns. A larger mail stays
+/// missing locally ([`MailStoreError::OriginalTooLarge`]); the server backup still reads it.
+pub const ORIGINAL_MAX_BYTES: u64 = 1_000_000_000 - (1 << 20);
 
 const SCHEMA_V9: &str = "CREATE TABLE IF NOT EXISTS cache_control (key TEXT PRIMARY KEY, value TEXT NOT NULL);";
 
@@ -80,6 +94,25 @@ const SCHEMA_V10: &str = "CREATE TABLE IF NOT EXISTS originals (
     raw BLOB NOT NULL,
     UNIQUE(folder_path, uidvalidity, uid)
 );";
+
+/// Version 11 (#267): when the sync saw an original's message go from the server (`gone_at`, Unix
+/// seconds; `NULL` while it is there), the hierarchy delimiter of each folder for a local backup's
+/// folder table, and each message's `INTERNALDATE` (Unix seconds, `NULL` for rows from before) so a
+/// local backup's date limit counts missing originals by the same date as retained ones. Each
+/// column is only added where it is missing ([`migrate`]).
+const SCHEMA_V11_GONE: &str = "ALTER TABLE originals ADD COLUMN gone_at INTEGER;";
+const SCHEMA_V11_DELIMITER: &str = "ALTER TABLE folders ADD COLUMN delimiter TEXT;";
+const SCHEMA_V11_INTERNAL_DATE: &str = "ALTER TABLE messages ADD COLUMN internal_date INTEGER;";
+const SCHEMA_V11_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS originals_gone ON originals (gone_at) WHERE gone_at IS NOT NULL;";
+
+/// Before version 11 nothing marked an original whose message went: every original without a live
+/// header row at its place (folder path, the folder's current UIDVALIDITY, UID) is such one. An
+/// original is only ever taken for a stored header, and the row only goes when the sync, a move or
+/// a deletion saw the message leave that place.
+const SCHEMA_V11_MARK_GONE: &str = "UPDATE originals SET gone_at = ?1 WHERE gone_at IS NULL AND NOT EXISTS (
+    SELECT 1 FROM messages m JOIN folders f ON f.id = m.folder_id
+    WHERE f.path = originals.folder_path AND f.uidvalidity = originals.uidvalidity AND m.uid = originals.uid)";
 
 /// At most this many bytes of a message's text go into the word index: a log of megabytes is
 /// found by its first half megabyte, and the index stays small.
@@ -313,17 +346,46 @@ pub struct MessageRef {
     pub rfc_message_id: Option<String>,
 }
 
-/// A fully held local RFC-822 original; its bytes are fetched separately to keep page reads small.
+/// A fully held local RFC-822 original ([`MailStore::local_originals_page`]); its bytes are read
+/// apart ([`MailStore::original_chunk`]) to keep page reads small.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalOriginal {
+    /// The depot's own sequence: rising in the order originals were first taken and kept when one
+    /// is taken again, so `max(seq)` at a moment bounds what existed then
+    /// ([`MailStore::original_snapshot`]).
     pub seq: i64,
+    /// The folder as the server names it (modified UTF-7), where the message was when it was taken.
     pub folder_path: String,
+    /// The folder's UIDVALIDITY the UID was valid under.
     pub uid_validity: u32,
+    /// The UID in that folder.
     pub uid: u32,
+    /// IMAP `INTERNALDATE`, with the server's offset: what a backup's date limit compares.
     pub internal_date: DateTime<FixedOffset>,
+    /// Every flag and keyword as the server named them, refreshed by the sync
+    /// ([`MailStore::set_original_flags`]).
     pub flags: Vec<String>,
+    /// Length of the raw bytes.
     pub bytes: u64,
+    /// SHA-256 of the raw bytes, lower-case hex.
     pub sha256: String,
+    /// The sync saw the message leave this place (moved, deleted, folder renumbered or removed): a
+    /// local backup skips it, and [`MailStore::prune_gone_originals`] deletes it after
+    /// [`GONE_ORIGINAL_RETENTION_DAYS`].
+    pub gone: bool,
+}
+
+/// A folder as a local backup describes it (MB.4): as the last sync of the folder list saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderInfo {
+    /// The path as the server names it.
+    pub path: String,
+    /// The name to show, decoded from modified UTF-7.
+    pub name: String,
+    /// The hierarchy delimiter; `None` for a flat server, or a folder not listed since version 11.
+    pub delimiter: Option<char>,
+    /// The role, as the store names it (`inbox`, `sent`, …).
+    pub role: Option<String>,
 }
 
 /// What [`MailStore::note_uidvalidity`] found.
@@ -513,8 +575,13 @@ impl MailStore {
         &self.account
     }
 
-    /// Keep the exact bytes separately from the disposable body and header cache. The caller
-    /// explicitly opts into this storage policy; no MIME decoding or line-ending rewrite occurs.
+    // ----- the original depot (#267, MB.4) -----
+
+    /// Keeps the exact bytes of the message at (`folder_path`, `uid_validity`, `uid`) apart from the
+    /// disposable text and header cache, with its `INTERNALDATE` and flags. No MIME decoding or
+    /// line-ending rewrite happens. Taken again, the row keeps its `seq` and counts as on the server
+    /// again (`gone_at` cleared). [`MailStoreError::OriginalTooLarge`] above
+    /// [`ORIGINAL_MAX_BYTES`]; for large mail use [`save_original_file`](Self::save_original_file).
     pub fn save_original(
         &self,
         folder_path: &str,
@@ -524,14 +591,10 @@ impl MailStore {
         flags: &[String],
         raw: &[u8],
     ) -> Result<(), MailStoreError> {
-        let bytes = i64::try_from(raw.len()).map_err(|_| MailStoreError::Corrupt("original too large".into()))?;
-        let sha256 = Sha256::digest(raw).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let bytes = original_length(raw.len() as u64)?;
+        let sha256 = hex(&Sha256::digest(raw));
         self.db.execute(
-            "INSERT INTO originals (folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256, raw)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(folder_path, uidvalidity, uid) DO UPDATE SET
-               internal_date = excluded.internal_date, flags_json = excluded.flags_json,
-               bytes = excluded.bytes, sha256 = excluded.sha256, raw = excluded.raw",
+            SAVE_ORIGINAL,
             params![
                 folder_path,
                 uid_validity,
@@ -546,9 +609,9 @@ impl MailStore {
         Ok(())
     }
 
-    /// Retain a large RFC-822 original without holding the whole message in memory. The
-    /// temporary source is complete before this transaction starts; a failed BLOB write rolls
-    /// back the metadata and bytes together.
+    /// [`save_original`](Self::save_original) for a large original, without holding the whole
+    /// message in memory: `raw` is a complete temporary copy, hashed and then streamed into a BLOB.
+    /// A failed BLOB write rolls back the metadata and bytes together.
     pub fn save_original_file(
         &self,
         folder_path: &str,
@@ -561,8 +624,7 @@ impl MailStore {
         use std::io::{Read, Seek, SeekFrom, Write};
 
         let bytes = raw.metadata()?.len();
-        let size =
-            i32::try_from(bytes).map_err(|_| MailStoreError::Corrupt("original exceeds SQLite BLOB limit".into()))?;
+        let size = i32::try_from(original_length(bytes)?).map_err(|_| MailStoreError::OriginalTooLarge)?;
         raw.seek(SeekFrom::Start(0))?;
         let mut hash = Sha256::new();
         let mut chunk = [0u8; 64 * 1024];
@@ -573,15 +635,11 @@ impl MailStore {
             }
             hash.update(&chunk[..count]);
         }
-        let sha256 = hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let sha256 = hex(&hash.finalize());
         raw.seek(SeekFrom::Start(0))?;
         let transaction = self.db.unchecked_transaction()?;
         transaction.execute(
-            "INSERT INTO originals (folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256, raw)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(folder_path, uidvalidity, uid) DO UPDATE SET
-               internal_date = excluded.internal_date, flags_json = excluded.flags_json,
-               bytes = excluded.bytes, sha256 = excluded.sha256, raw = excluded.raw",
+            SAVE_ORIGINAL,
             params![
                 folder_path,
                 uid_validity,
@@ -609,6 +667,20 @@ impl MailStore {
         Ok(())
     }
 
+    /// The length of the original at this place, `None` when the depot holds none: the readers ask
+    /// first, so a mail opened again is neither fetched whole for its original nor written again.
+    pub fn original_size(&self, folder_path: &str, uid_validity: u32, uid: u32) -> Result<Option<u64>, MailStoreError> {
+        let bytes: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT bytes FROM originals WHERE folder_path = ?1 AND uidvalidity = ?2 AND uid = ?3",
+                params![folder_path, uid_validity, uid],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(bytes.map(|bytes| bytes.max(0) as u64))
+    }
+
     /// Refresh retained RFC-822 metadata even when the body was not fetched again.
     pub fn set_original_flags(
         &self,
@@ -624,10 +696,17 @@ impl MailStore {
         Ok(())
     }
 
-    /// A bounded metadata page of complete originals, stable by insertion sequence.
+    /// The highest `seq` of the depot now (0 when it is empty). A local backup takes only originals
+    /// up to it: one taken later has a higher `seq`, one taken again keeps its own.
+    pub fn original_snapshot(&self) -> Result<i64, MailStoreError> {
+        Ok(self.db.query_row("SELECT coalesce(max(seq), 0) FROM originals", [], |row| row.get(0))?)
+    }
+
+    /// Up to `limit` originals with `seq` above `after`, by `seq`: a bounded metadata page, gone ones
+    /// included ([`LocalOriginal::gone`]).
     pub fn local_originals_page(&self, after: i64, limit: u32) -> Result<Vec<LocalOriginal>, MailStoreError> {
         let mut statement = self.db.prepare(
-            "SELECT seq, folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256
+            "SELECT seq, folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256, gone_at IS NOT NULL
              FROM originals WHERE seq > ?1 ORDER BY seq LIMIT ?2",
         )?;
         let rows = statement.query_map(params![after, limit], |row| {
@@ -640,17 +719,28 @@ impl MailStore {
                 row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
                 row.get::<_, String>(7)?,
+                row.get::<_, bool>(8)?,
             ))
         })?;
         let mut originals = Vec::new();
         for row in rows {
-            let (seq, folder_path, uid_validity, uid, date, flags, bytes, sha256) = row?;
+            let (seq, folder_path, uid_validity, uid, date, flags, bytes, sha256, gone) = row?;
             let internal_date = DateTime::parse_from_rfc3339(&date)
                 .map_err(|_| MailStoreError::Corrupt("invalid original INTERNALDATE".into()))?;
             let flags = serde_json::from_str(&flags)?;
             let bytes =
                 u64::try_from(bytes).map_err(|_| MailStoreError::Corrupt("invalid original byte count".into()))?;
-            originals.push(LocalOriginal { seq, folder_path, uid_validity, uid, internal_date, flags, bytes, sha256 });
+            originals.push(LocalOriginal {
+                seq,
+                folder_path,
+                uid_validity,
+                uid,
+                internal_date,
+                flags,
+                bytes,
+                sha256,
+                gone,
+            });
         }
         Ok(originals)
     }
@@ -660,37 +750,81 @@ impl MailStore {
         Ok(self.db.query_row("SELECT raw FROM originals WHERE seq = ?1", [seq], |row| row.get(0)).optional()?)
     }
 
-    /// Reads at most `count` bytes without materializing the SQLite BLOB in process memory.
+    /// At most `count` (1 to 64 KiB) bytes of original `seq` from `offset` on, fewer at its end and
+    /// none past it; `None` when the depot no longer holds it. Read through SQLite's incremental
+    /// BLOB I/O, so only the pages asked for are loaded: an SQL `substr` would load the whole BLOB
+    /// for every piece, under the store's lock.
     pub fn original_chunk(&self, seq: i64, offset: u64, count: usize) -> Result<Option<Vec<u8>>, MailStoreError> {
         if count == 0 || count > 64 * 1024 {
             return Err(MailStoreError::Corrupt("invalid original chunk size".into()));
         }
-        let start = i64::try_from(offset)
-            .ok()
-            .and_then(|offset| offset.checked_add(1))
-            .ok_or_else(|| MailStoreError::Corrupt("invalid original offset".into()))?;
-        Ok(self
-            .db
-            .query_row(
-                "SELECT substr(raw, ?2, ?3) FROM originals WHERE seq = ?1",
-                params![seq, start, count as i64],
-                |row| row.get(0),
-            )
-            .optional()?)
+        let start = usize::try_from(offset).map_err(|_| MailStoreError::Corrupt("invalid original offset".into()))?;
+        let held: bool =
+            self.db.query_row("SELECT EXISTS (SELECT 1 FROM originals WHERE seq = ?1)", [seq], |row| row.get(0))?;
+        if !held {
+            return Ok(None);
+        }
+        let blob = self.db.blob_open(rusqlite::MAIN_DB, "originals", "raw", seq, true)?;
+        let mut chunk = vec![0u8; count];
+        let read = blob.read_at(&mut chunk, start)?;
+        chunk.truncate(read);
+        Ok(Some(chunk))
     }
 
-    /// Known headers without a corresponding complete original. `messages.date` is a best-effort
-    /// proxy for INTERNALDATE here because the missing original has no stored IMAP metadata.
+    /// How many stored headers have no original at their place (folder path, the folder's current
+    /// UIDVALIDITY, UID): what a local backup reports as missing, and what a cache job in
+    /// `AllOffline` fetches ([`cached_body_missing`](Self::cached_body_missing)). Every header counts,
+    /// also one whose text the server could not give (`indexed = 2`): the gap is real either way.
+    /// With `since`, only messages received on or after that day: by `INTERNALDATE` where the sync
+    /// stored it (UTC), else by the header's date. Retained originals compare their own
+    /// `INTERNALDATE`; a missing one has no other date to go by.
     pub fn known_missing_originals(&self, since: Option<NaiveDate>) -> Result<u64, MailStoreError> {
         let cutoff = since.and_then(|day| day.and_hms_opt(0, 0, 0)).map(|at| at.and_utc().timestamp());
         let count: i64 = self.db.query_row(
             "SELECT count(*) FROM messages m JOIN folders f ON f.id = m.folder_id
              LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid
-             WHERE o.seq IS NULL AND (?1 IS NULL OR m.date >= ?1)",
+             WHERE o.seq IS NULL AND (?1 IS NULL OR coalesce(m.internal_date, m.date) >= ?1)",
             [cutoff],
             |row| row.get(0),
         )?;
         Ok(count.max(0) as u64)
+    }
+
+    /// Deletes the originals the sync saw go more than [`GONE_ORIGINAL_RETENTION_DAYS`] before
+    /// `now`; returns how many went. Run with the regular clean-up after a sync. Originals of mail
+    /// still on the server stay, whatever the cache policy.
+    pub fn prune_gone_originals(&self, now: DateTime<Utc>) -> Result<usize, MailStoreError> {
+        let limit = (now - Duration::days(GONE_ORIGINAL_RETENTION_DAYS)).timestamp();
+        Ok(self.db.execute("DELETE FROM originals WHERE gone_at IS NOT NULL AND gone_at < ?1", [limit])?)
+    }
+
+    /// Every folder with its path, name, delimiter and role, for a local backup's folder table.
+    pub fn folder_infos(&self) -> Result<Vec<FolderInfo>, MailStoreError> {
+        let mut statement = self.db.prepare("SELECT path, name, delimiter, role FROM folders ORDER BY path")?;
+        let rows = statement.query_map([], |row| {
+            Ok(FolderInfo {
+                path: row.get(0)?,
+                name: row.get(1)?,
+                delimiter: row.get::<_, Option<String>>(2)?.and_then(|text| text.chars().next()),
+                role: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Remembers the hierarchy delimiter the server lists for the folder at `path` (`None`: a flat
+    /// server). Nothing happens for a folder the store does not know.
+    pub fn set_folder_delimiter(&self, path: &str, delimiter: Option<char>) -> Result<(), MailStoreError> {
+        let delimiter = delimiter.map(String::from);
+        self.db.execute("UPDATE folders SET delimiter = ?2 WHERE path = ?1", params![path, delimiter])?;
+        Ok(())
+    }
+
+    /// Remembers the `INTERNALDATE` the server reports for message `uid` of `folder` (what a local
+    /// backup's date limit uses for a header without original). `false`: no such message.
+    pub fn set_internal_date(&self, folder: &str, uid: u32, at: DateTime<Utc>) -> Result<bool, MailStoreError> {
+        let sql = "UPDATE messages SET internal_date = ?3 WHERE folder_id = ?1 AND uid = ?2";
+        Ok(self.db.execute(sql, params![folder, uid, at.timestamp()])? > 0)
     }
 
     fn restrict_files(&self) -> Result<(), MailStoreError> {
@@ -723,8 +857,9 @@ impl MailStore {
     }
 
     /// Drops every folder whose path is not in `paths` (deleted on the server) with its messages;
-    /// returns how many folders went. An empty list drops all, which a sync must not send by
-    /// mistake: pass the whole `LIST` result.
+    /// returns how many folders went. Their originals stay, marked gone ([`LocalOriginal::gone`]).
+    /// An empty list drops all, which a sync must not send by mistake: pass the whole `LIST`
+    /// result.
     pub fn retain_folders(&self, paths: &[String]) -> Result<usize, MailStoreError> {
         let tx = self.db.unchecked_transaction()?;
         let known: Vec<(String, String)> = {
@@ -734,6 +869,11 @@ impl MailStore {
         let mut removed = 0;
         for (id, path) in known {
             if !paths.contains(&path) {
+                // Every original of the folder, under any UIDVALIDITY: the place is gone.
+                tx.execute(
+                    "UPDATE originals SET gone_at = ?2 WHERE folder_path = ?1 AND gone_at IS NULL",
+                    params![path, Utc::now().timestamp()],
+                )?;
                 tx.execute("DELETE FROM folders WHERE id = ?1", [&id])?;
                 removed += 1;
             }
@@ -899,9 +1039,9 @@ impl MailStore {
     }
 
     /// Tells the store which UIDVALIDITY the server reports for the folder. A different value than
-    /// stored drops all messages of the folder ([`UidValidity::Reset`]) and its modseq; the
-    /// folder and its id stay. Call this when the folder is selected, before reading or writing
-    /// messages of it.
+    /// stored drops all messages of the folder ([`UidValidity::Reset`]) and its modseq, and marks
+    /// the originals taken under the old value gone; the folder and its id stay. Call this when the
+    /// folder is selected, before reading or writing messages of it.
     pub fn note_uidvalidity(&self, folder: &str, uidvalidity: u32) -> Result<UidValidity, MailStoreError> {
         let current = self.resolve_folder(folder)?.ok_or(MailStoreError::UnknownFolder)?;
         match current.uidvalidity {
@@ -912,6 +1052,12 @@ impl MailStore {
             }
             Some(_) => {
                 let tx = self.db.unchecked_transaction()?;
+                // The old UIDs name nothing any more: every original taken under another
+                // UIDVALIDITY of this folder is gone (the sync takes the messages anew).
+                tx.execute(
+                    "UPDATE originals SET gone_at = ?3 WHERE folder_path = ?1 AND uidvalidity <> ?2 AND gone_at IS NULL",
+                    params![current.path, uidvalidity, Utc::now().timestamp()],
+                )?;
                 tx.execute("DELETE FROM messages WHERE folder_id = ?1", [folder])?;
                 tx.execute(
                     "UPDATE folders SET uidvalidity = ?2, highest_modseq = NULL WHERE id = ?1",
@@ -968,6 +1114,10 @@ impl MailStore {
             }
         };
         refresh_index(&tx, seq, None)?;
+        // The server lists the message at this place: an original kept for it is not gone.
+        if let Some((path, _)) = original_place(&tx, folder)? {
+            set_original_gone(&tx, &path, uidvalidity, new.uid, None)?;
+        }
         tx.commit()?;
         Ok(id)
     }
@@ -1436,12 +1586,15 @@ impl MailStore {
         )? > 0)
     }
 
-    /// Estimate using the average locally kept text, since IMAP header sizes are not stored.
+    /// Estimate using the average locally kept text, since IMAP header sizes are not stored. To
+    /// fetch: texts the mode keeps that are not stored (none the server could not give, `indexed =
+    /// 2`), and in `AllOffline` every header without an original, as
+    /// [`known_missing_originals`](Self::known_missing_originals) counts them.
     pub fn cache_estimate(&self, mode: MailCacheMode) -> Result<MailCacheEstimate, MailStoreError> {
         let now = Utc::now();
         let cutoff = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
         let (current, bytes): (i64, i64) = self.db.query_row("SELECT count(*), coalesce(sum(length(text) + coalesce(length(html), 0) + length(attachments_json) + length(filenames)), 0) FROM bodies", [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        let (missing, remove): (i64, i64) = self.db.query_row("SELECT coalesce(sum(m.indexed <> 2 AND (b.seq IS NULL OR (?1 = 2 AND o.seq IS NULL)) AND (?1 = 2 OR (?1 = 1 AND m.date >= ?2))), 0), coalesce(sum(b.seq IS NOT NULL AND (?1 = 0 OR (?1 = 1 AND m.date < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL), 0) FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid LEFT JOIN drafts d ON d.id = m.id", params![mode as i64, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let (missing, remove): (i64, i64) = self.db.query_row("SELECT coalesce(sum(((b.seq IS NULL AND m.indexed <> 2) OR (?1 = 2 AND o.seq IS NULL)) AND (?1 = 2 OR (?1 = 1 AND m.date >= ?2))), 0), coalesce(sum(b.seq IS NOT NULL AND (?1 = 0 OR (?1 = 1 AND m.date < ?2)) AND f.role IS NOT 'drafts' AND d.id IS NULL), 0) FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid LEFT JOIN drafts d ON d.id = m.id", params![mode as i64, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let average = if current > 0 { bytes.max(0) as u64 / current as u64 } else { 16 * 1024 };
         Ok(MailCacheEstimate {
             account: self.account.clone(),
@@ -1453,6 +1606,8 @@ impl MailStore {
         })
     }
 
+    /// Up to `limit` messages below `before` (by `seq`, newest first) that the mode wants fetched:
+    /// what [`cache_estimate`](Self::cache_estimate) counts as to fetch.
     pub fn cached_body_missing(
         &self,
         before: Option<i64>,
@@ -1460,7 +1615,7 @@ impl MailStore {
         limit: u32,
     ) -> Result<Vec<(i64, MessageRef)>, MailStoreError> {
         let cutoff = (Utc::now() - Duration::days(BODY_RETENTION_DAYS)).timestamp();
-        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid WHERE (b.seq IS NULL OR (?2 = 2 AND o.seq IS NULL)) AND m.indexed <> 2 AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (?2 = 2 OR (?2 = 1 AND m.date >= ?3)) ORDER BY m.seq DESC LIMIT ?4")?;
+        let mut statement = self.db.prepare("SELECT m.seq, m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id FROM messages m JOIN folders f ON f.id = m.folder_id LEFT JOIN bodies b ON b.seq = m.seq LEFT JOIN originals o ON o.folder_path = f.path AND o.uidvalidity = f.uidvalidity AND o.uid = m.uid WHERE ((b.seq IS NULL AND m.indexed <> 2) OR (?2 = 2 AND o.seq IS NULL)) AND f.uidvalidity IS NOT NULL AND (?1 IS NULL OR m.seq < ?1) AND (?2 = 2 OR (?2 = 1 AND m.date >= ?3)) ORDER BY m.seq DESC LIMIT ?4")?;
         let rows = statement.query_map(params![before, mode as i64, cutoff, limit], |row| {
             Ok((
                 row.get(0)?,
@@ -1527,25 +1682,53 @@ impl MailStore {
         // message replaces it.
         let tx = self.db.unchecked_transaction()?;
         tx.execute("DELETE FROM messages WHERE folder_id = ?1 AND uid = ?2 AND id <> ?3", params![folder, uid, id])?;
+        // The message left its old place; at the new one it is on the server.
+        let old: Option<(String, u32)> = tx
+            .query_row("SELECT folder_id, uid FROM messages WHERE id = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+        if let Some((old_folder, old_uid)) = old
+            && (old_folder != folder || old_uid != uid)
+        {
+            original_gone(&tx, &old_folder, old_uid)?;
+        }
         let changed =
             tx.execute("UPDATE messages SET folder_id = ?2, uid = ?3 WHERE id = ?1", params![id, folder, uid])?;
+        if let Some((path, _)) = original_place(&tx, folder)? {
+            set_original_gone(&tx, &path, uidvalidity, uid, None)?;
+        }
         tx.commit()?;
         Ok(changed > 0)
     }
 
-    /// Removes one message with its text and index entry (`false`: no such message). A draft's
-    /// author stays until [`forget_draft`](Self::forget_draft).
+    /// Removes one message with its text and index entry (`false`: no such message); its original
+    /// is marked gone (a caller that stores the same place again revives it,
+    /// [`upsert_message`](Self::upsert_message)). A draft's author stays until
+    /// [`forget_draft`](Self::forget_draft).
     #[allow(dead_code, reason = "used from mail.delete_messages, task M3.2")]
     pub fn delete_message(&self, id: &str) -> Result<bool, MailStoreError> {
-        Ok(self.db.execute("DELETE FROM messages WHERE id = ?1", [id])? > 0)
+        let tx = self.db.unchecked_transaction()?;
+        let place: Option<(String, u32)> = tx
+            .query_row("SELECT folder_id, uid FROM messages WHERE id = ?1", [id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
+        if let Some((folder, uid)) = &place {
+            original_gone(&tx, folder, *uid)?;
+        }
+        let removed = tx.execute("DELETE FROM messages WHERE id = ?1", [id])? > 0;
+        tx.commit()?;
+        Ok(removed)
     }
 
     /// Removes the messages with these UIDs from the folder (they are gone on the server);
-    /// returns how many were there.
+    /// returns how many were there. Their originals are marked gone.
     pub fn delete_uids(&self, folder: &str, uids: &[u32]) -> Result<usize, MailStoreError> {
         let tx = self.db.unchecked_transaction()?;
+        let place = original_place(&tx, folder)?;
+        let now = Utc::now().timestamp();
         let mut removed = 0;
         for uid in uids {
+            if let Some((path, Some(uidvalidity))) = &place {
+                set_original_gone(&tx, path, *uidvalidity, *uid, Some(now))?;
+            }
             removed += tx.execute("DELETE FROM messages WHERE folder_id = ?1 AND uid = ?2", params![folder, uid])?;
         }
         tx.commit()?;
@@ -1935,6 +2118,63 @@ fn file_for(dirs: &MailDirs, account: &str) -> PathBuf {
     dirs.data.join(format!("{hash}.sqlite"))
 }
 
+/// Inserts an original, or replaces the one at the same place; a place taken again is on the
+/// server again (`gone_at` cleared) and keeps its `seq`.
+const SAVE_ORIGINAL: &str =
+    "INSERT INTO originals (folder_path, uidvalidity, uid, internal_date, flags_json, bytes, sha256, raw)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+     ON CONFLICT(folder_path, uidvalidity, uid) DO UPDATE SET
+       internal_date = excluded.internal_date, flags_json = excluded.flags_json,
+       bytes = excluded.bytes, sha256 = excluded.sha256, raw = excluded.raw, gone_at = NULL";
+
+/// `bytes` as the column holds it; [`MailStoreError::OriginalTooLarge`] above [`ORIGINAL_MAX_BYTES`].
+fn original_length(bytes: u64) -> Result<i64, MailStoreError> {
+    if bytes > ORIGINAL_MAX_BYTES {
+        return Err(MailStoreError::OriginalTooLarge);
+    }
+    i64::try_from(bytes).map_err(|_| MailStoreError::OriginalTooLarge)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Path and UIDVALIDITY of the folder `folder` (an id): where its messages' originals are kept.
+fn original_place(db: &Connection, folder: &str) -> rusqlite::Result<Option<(String, Option<u32>)>> {
+    db.query_row("SELECT path, uidvalidity FROM folders WHERE id = ?1", [folder], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()
+}
+
+/// Notes that the message `uid` left `path` under `uidvalidity` (`gone`: since when, Unix
+/// seconds), or that it is there again (`None`). A UID is never given again under the same
+/// UIDVALIDITY, so a place once gone only comes back when the server lists the same message again.
+fn set_original_gone(
+    db: &Connection,
+    path: &str,
+    uidvalidity: u32,
+    uid: u32,
+    gone: Option<i64>,
+) -> rusqlite::Result<()> {
+    let sql = match gone {
+        Some(_) => {
+            "UPDATE originals SET gone_at = ?4 WHERE folder_path = ?1 AND uidvalidity = ?2 AND uid = ?3 AND gone_at IS NULL"
+        }
+        None => {
+            "UPDATE originals SET gone_at = ?4 WHERE folder_path = ?1 AND uidvalidity = ?2 AND uid = ?3 AND gone_at IS NOT NULL"
+        }
+    };
+    db.execute(sql, params![path, uidvalidity, uid, gone])?;
+    Ok(())
+}
+
+/// [`set_original_gone`] for the message `uid` of folder `folder` (an id), now.
+fn original_gone(db: &Connection, folder: &str, uid: u32) -> rusqlite::Result<()> {
+    if let Some((path, Some(uidvalidity))) = original_place(db, folder)? {
+        set_original_gone(db, &path, uidvalidity, uid, Some(Utc::now().timestamp()))?;
+    }
+    Ok(())
+}
+
 /// `path` was changed less than `age` ago (or its age cannot be told, which counts as recent).
 fn changed_within(path: &Path, age: std::time::Duration) -> bool {
     let modified = std::fs::metadata(path).and_then(|meta| meta.modified());
@@ -2021,6 +2261,19 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     }
     if version < 10 {
         tx.execute_batch(SCHEMA_V10)?;
+    }
+    if version < 11 {
+        for (table, column, sql) in [
+            ("originals", "gone_at", SCHEMA_V11_GONE),
+            ("folders", "delimiter", SCHEMA_V11_DELIMITER),
+            ("messages", "internal_date", SCHEMA_V11_INTERNAL_DATE),
+        ] {
+            if !has_column(&tx, table, column)? {
+                tx.execute_batch(sql)?;
+            }
+        }
+        tx.execute_batch(SCHEMA_V11_INDEX)?;
+        tx.execute(SCHEMA_V11_MARK_GONE, [Utc::now().timestamp()])?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -3261,6 +3514,178 @@ mod tests {
         }
         assert!(seen.iter().any(|name| name.ends_with(".sqlite-wal")), "WAL is on: {seen:?}");
         assert!(seen.iter().any(|name| name.ends_with(".sqlite-shm")), "{seen:?}");
+    }
+
+    // ----- the original depot (#267, MB.4) -----
+
+    fn now_offset() -> DateTime<FixedOffset> {
+        Utc::now().fixed_offset()
+    }
+
+    /// The original at `(path, 7, uid)` of the depot, if any.
+    fn original_at(store: &MailStore, path: &str, uid: u32) -> Option<LocalOriginal> {
+        let all = store.local_originals_page(0, 1000).expect("originals");
+        all.into_iter().find(|original| original.folder_path == path && original.uid == uid)
+    }
+
+    #[test]
+    fn original_chunks_of_a_large_original_are_read_piece_by_piece_to_the_end() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let (_tmp, _dirs, store) = open();
+        // Above the threshold where the sync stops reading a mail whole, and not a multiple of
+        // the piece size.
+        let size = (crate::mail::sync::LARGE_ORIGINAL + 1000) as usize;
+        let raw: Vec<u8> = (0..size).map(|at| (at % 251) as u8).collect();
+        let mut spool = tempfile::tempfile().expect("spool");
+        spool.write_all(&raw).expect("written");
+        spool.seek(SeekFrom::Start(0)).expect("rewound");
+        store.save_original_file("INBOX", 7, 1, now_offset(), &[], &mut spool).expect("saved");
+        let seq = original_at(&store, "INBOX", 1).expect("listed").seq;
+        let piece = 64 * 1024;
+        let read = |offset: usize, count: usize| store.original_chunk(seq, offset as u64, count).expect("read");
+
+        assert_eq!(read(0, piece).as_deref(), Some(&raw[..piece]));
+        let middle = size / 2 + 13;
+        assert_eq!(read(middle, piece).as_deref(), Some(&raw[middle..middle + piece]));
+        let last = size - 1000;
+        assert_eq!(read(last, piece).as_deref(), Some(&raw[last..]), "the last piece is shorter");
+        assert_eq!(read(size, piece), Some(Vec::new()), "nothing at the end");
+        assert_eq!(read(size + piece, 1), Some(Vec::new()), "nothing past it");
+        assert_eq!(store.original_chunk(seq + 1, 0, 1).expect("asked"), None, "no such original");
+        assert!(store.original_chunk(seq, 0, piece + 1).is_err(), "pieces stay bounded");
+    }
+
+    #[test]
+    fn an_original_larger_than_the_depot_takes_is_refused_as_such() {
+        let (_tmp, _dirs, store) = open();
+        assert!(matches!(original_length(ORIGINAL_MAX_BYTES + 1), Err(MailStoreError::OriginalTooLarge)));
+        assert_eq!(original_length(ORIGINAL_MAX_BYTES).expect("fits"), ORIGINAL_MAX_BYTES as i64);
+        store.save_original("INBOX", 7, 1, now_offset(), &[], b"small").expect("small is kept");
+        assert_eq!(store.original_size("INBOX", 7, 1).expect("asked"), Some(5));
+        assert_eq!(store.original_size("INBOX", 7, 2).expect("asked"), None);
+    }
+
+    #[test]
+    fn originals_are_marked_gone_wherever_their_message_leaves_and_back_when_it_returns() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let archive = folder(&store, "Archive", Some(Role::Archive));
+        let old = folder(&store, "Old", None);
+        for uid in 1..=4 {
+            add(&store, &inbox, &message(uid, "kept"));
+            store.save_original("INBOX", 7, uid, now_offset(), &[], b"raw").expect("saved");
+        }
+        add(&store, &old, &message(1, "old"));
+        store.save_original("Old", 7, 1, now_offset(), &[], b"raw").expect("saved");
+        let gone = |path: &str, uid: u32| original_at(&store, path, uid).expect("held").gone;
+
+        store.delete_uids(&inbox, &[1]).expect("expunged");
+        assert!(gone("INBOX", 1), "expunged on the server");
+        let id = store.message_id_for_uid(&inbox, 2).expect("asked").expect("there");
+        store.delete_message(&id).expect("deleted");
+        assert!(gone("INBOX", 2), "deleted from the suite");
+        let id = store.message_id_for_uid(&inbox, 3).expect("asked").expect("there");
+        store.relocate_message(&id, &archive, 7, 9).expect("moved");
+        assert!(gone("INBOX", 3), "moved away");
+        store.retain_folders(&["INBOX".into(), "Archive".into()]).expect("folder list");
+        assert!(gone("Old", 1), "folder removed");
+        assert!(!gone("INBOX", 4), "still there");
+
+        // The server lists UID 1 again (it was only marked deleted): its original counts again.
+        add(&store, &inbox, &message(1, "back"));
+        assert!(!gone("INBOX", 1));
+
+        store.note_uidvalidity(&inbox, 8).expect("renumbered");
+        assert!(gone("INBOX", 4), "an old UIDVALIDITY names nothing");
+    }
+
+    #[test]
+    fn gone_originals_are_deleted_after_the_retention_period_only() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        for uid in 1..=2 {
+            add(&store, &inbox, &message(uid, "mail"));
+            store.save_original("INBOX", 7, uid, now_offset(), &[], b"raw").expect("saved");
+        }
+        store.delete_uids(&inbox, &[1]).expect("gone");
+        let now = Utc::now();
+        assert_eq!(store.prune_gone_originals(now).expect("pruned"), 0, "not yet");
+        let later = now + Duration::days(GONE_ORIGINAL_RETENTION_DAYS) + Duration::minutes(1);
+        assert_eq!(store.prune_gone_originals(later).expect("pruned"), 1);
+        assert!(original_at(&store, "INBOX", 1).is_none());
+        assert!(original_at(&store, "INBOX", 2).is_some(), "mail on the server stays");
+    }
+
+    #[test]
+    fn missing_originals_count_every_header_and_go_by_internaldate_where_known() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        // Sent on the 2nd, received on the 5th; the other has no INTERNALDATE stored (older row).
+        add(&store, &inbox, &message(2, "late"));
+        store.set_internal_date(&inbox, 2, day(5)).expect("internal date");
+        add(&store, &inbox, &message(3, "header date"));
+        store.mark_unindexable(&store.message_id_for_uid(&inbox, 3).expect("asked").expect("there")).expect("marked");
+        let since = |n: u32| Some(day(n).date_naive());
+        assert_eq!(store.known_missing_originals(None).expect("counted"), 2, "no text to read is still a gap");
+        assert_eq!(store.known_missing_originals(since(4)).expect("counted"), 1, "received on the 5th");
+        assert_eq!(store.known_missing_originals(since(6)).expect("counted"), 0);
+        let estimate = store.cache_estimate(MailCacheMode::AllOffline).expect("estimate");
+        assert_eq!(estimate.bodies_to_fetch, 2, "the cache job sees the same gaps");
+        let work = store.cached_body_missing(None, MailCacheMode::AllOffline, 10).expect("work");
+        assert_eq!(work.len(), 2);
+        store.save_original("INBOX", 7, 2, now_offset(), &[], b"raw").expect("saved");
+        assert_eq!(store.known_missing_originals(None).expect("counted"), 1);
+    }
+
+    #[test]
+    fn folder_infos_name_delimiter_and_role_for_a_local_backup() {
+        let (_tmp, _dirs, store) = open();
+        store.upsert_folder("INBOX.Entw&APw-rfe", "Entwürfe", Some(Role::Drafts)).expect("folder");
+        store.set_folder_delimiter("INBOX.Entw&APw-rfe", Some('.')).expect("delimiter");
+        store.upsert_folder("INBOX", "INBOX", Some(Role::Inbox)).expect("folder");
+        let infos = store.folder_infos().expect("infos");
+        let drafts = infos.iter().find(|info| info.path == "INBOX.Entw&APw-rfe").expect("listed");
+        assert_eq!(
+            (drafts.name.as_str(), drafts.delimiter, drafts.role.as_deref()),
+            ("Entwürfe", Some('.'), Some("drafts"))
+        );
+        let inbox = infos.iter().find(|info| info.path == "INBOX").expect("listed");
+        assert_eq!(inbox.delimiter, None, "not listed with one yet");
+    }
+
+    /// A store of version 10 gets the columns of version 11, and its originals without a live
+    /// header are taken as gone; opening it again changes nothing.
+    #[test]
+    fn version_11_marks_originals_of_mail_that_already_went_and_runs_once() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        add(&store, &inbox, &message(1, "live"));
+        store.save_original("INBOX", 7, 1, now_offset(), &[], b"live").expect("saved");
+        store.save_original("INBOX", 7, 2, now_offset(), &[], b"moved before").expect("saved");
+        store.save_original("INBOX", 6, 1, now_offset(), &[], b"older UIDVALIDITY").expect("saved");
+        store
+            .db
+            .execute_batch(
+                "DROP INDEX originals_gone;
+                 ALTER TABLE originals DROP COLUMN gone_at;
+                 ALTER TABLE folders DROP COLUMN delimiter;
+                 ALTER TABLE messages DROP COLUMN internal_date;
+                 PRAGMA user_version = 10;",
+            )
+            .expect("a store of version 10");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let gone: Vec<(u32, u32, bool)> = store
+            .local_originals_page(0, 10)
+            .expect("listed")
+            .into_iter()
+            .map(|original| (original.uid_validity, original.uid, original.gone))
+            .collect();
+        assert_eq!(gone, vec![(7, 1, false), (7, 2, true), (6, 1, true)]);
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("opened again");
+        assert_eq!(store.local_originals_page(0, 10).expect("listed").len(), 3);
     }
 }
 

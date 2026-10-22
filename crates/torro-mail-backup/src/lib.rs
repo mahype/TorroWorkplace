@@ -7,7 +7,9 @@ pub mod writer;
 
 pub use verify::verify_archive;
 
-pub(crate) const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
+/// Ceiling for `manifest.json`; `format::MAX_MESSAGES` typical entries fit (a test checks it).
+pub(crate) const MAX_MANIFEST_BYTES: u64 = 512 * 1024 * 1024;
+/// Ceiling for `messages.csv` and `SHA256SUMS`.
 pub(crate) const MAX_INDEX_BYTES: u64 = 512 * 1024 * 1024;
 
 use std::fmt;
@@ -23,6 +25,8 @@ pub enum ArchiveError {
     Io(std::io::Error),
     Json(serde_json::Error),
     Format(FormatError),
+    /// A `torro-mail-backup` manifest of a version this crate cannot read, e.g. from a newer Torro.
+    UnsupportedVersion(u32),
     Invalid(&'static str),
 }
 
@@ -33,6 +37,7 @@ impl fmt::Display for ArchiveError {
             Self::Io(err) => write!(f, "I/O: {err}"),
             Self::Json(err) => write!(f, "manifest JSON: {err}"),
             Self::Format(err) => write!(f, "manifest: {err}"),
+            Self::UnsupportedVersion(version) => write!(f, "unsupported mail backup version {version}"),
             Self::Invalid(message) => f.write_str(message),
         }
     }
@@ -74,15 +79,21 @@ pub struct VerifiedArchive {
     pub finished_at: Option<DateTime<Utc>>,
     pub complete: bool,
     pub folders: u64,
+    /// EML files in the archive.
     pub messages: u64,
+    /// Collection-folder occurrences that reuse an EML (`Manifest::aliases`).
+    pub aliases: u64,
     pub bytes: u64,
     pub warnings: Vec<String>,
 }
 
-pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+/// `bytes` as lowercase hex, as SHA-256 sums are written in archives and their checks.
+pub fn hex_digest(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+        out.push(char::from(HEX[usize::from(byte >> 4)]));
+        out.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     out
 }

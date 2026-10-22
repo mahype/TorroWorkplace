@@ -43,7 +43,7 @@ use crate::audit::Audit;
 use crate::categorize;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
-use crate::mail::backup::{BackupJobs, BackupRunError, BackupSelection, RestorePlans};
+use crate::mail::backup::{ApplyRequest, BackupJobs, BackupRunError, BackupSelection, RestoreChoice, RestorePlans};
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
@@ -94,8 +94,13 @@ fn start_setup(_section: Section) -> Result<(), String> {
 }
 
 /// A client may name only one ordinary ZIP in the core's managed backup folder. The app key may
-/// use an absolute file-picker path. A bare ZIP name resolves in the managed backup folder.
-fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Response> {
+/// use an absolute file-picker path. A bare ZIP name resolves in the managed backup folder of
+/// `dirs`, the core's mail directories ([`Core::mail_dirs`]), where its backup jobs write too.
+fn backup_file_for_verify(
+    file: &str,
+    reach: Reach<'_>,
+    dirs: Option<crate::mail::MailDirs>,
+) -> Result<PathBuf, Response> {
     let not_found =
         || Response::Error { code: "not-found".into(), message: tr("Backup archive is not available.").into() };
     if file.is_empty() {
@@ -111,7 +116,7 @@ fn backup_file_for_verify(file: &str, reach: Reach<'_>) -> Result<PathBuf, Respo
     {
         return Err(not_found());
     }
-    let dirs = crate::mail::MailDirs::for_workplace().ok_or_else(not_found)?;
+    let dirs = dirs.ok_or_else(not_found)?;
     backup_file_in_managed_dir(file, &dirs)
 }
 
@@ -160,31 +165,28 @@ fn backup_destination(
     Ok((Some(file_name), None))
 }
 
+/// The answer to a failed `mail.restore_plan` or `mail.restore_apply`: each reason with its fixed
+/// code (`conflict` for a changed archive or target and for what the request did not accept,
+/// `busy`, `offline`, `auth`, `not-found`) and a text for people that names no path or server
+/// detail.
 fn restore_error_response(error: BackupRunError) -> Response {
-    match error {
-        BackupRunError::Mail(error) => error.response(),
-        BackupRunError::Imap(torro_mail_imap::imap::ImapError::Auth(_)) => {
-            Response::Error { code: "auth".into(), message: tr("Password was refused").into() }
+    use torro_mail_imap::imap::ImapError;
+    let (code, message) = match &error {
+        BackupRunError::Mail(error) => return error.response(),
+        BackupRunError::Imap(ImapError::Auth(_)) => ("auth", tr("Password was refused")),
+        BackupRunError::Imap(ImapError::Offline(_)) => ("offline", tr("The server cannot be reached.")),
+        BackupRunError::Restore(problem) => (problem.code(), problem.user_message()),
+        BackupRunError::Busy => ("busy", tr("Too many restore plans are open. Try again later.")),
+        BackupRunError::Archive(torro_mail_backup::ArchiveError::UnsupportedVersion(_)) => {
+            ("error", tr("This backup was made by a newer version of Torro."))
         }
-        BackupRunError::Imap(torro_mail_imap::imap::ImapError::Offline(_)) => {
-            Response::Error { code: "offline".into(), message: tr("The server cannot be reached.").into() }
+        BackupRunError::Archive(_) => ("error", tr("Backup archive failed verification.")),
+        BackupRunError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            ("not-found", tr("Backup archive is not available."))
         }
-        BackupRunError::Incomplete("incomplete restore archive was not confirmed") => Response::Error {
-            code: "conflict".into(),
-            message: tr("Confirm restoring this incomplete archive first.").into(),
-        },
-        BackupRunError::Incomplete(_) => Response::Error {
-            code: "conflict".into(),
-            message: tr("The archive or target changed. Run the restore test again.").into(),
-        },
-        BackupRunError::Archive(_) => {
-            Response::Error { code: "error".into(), message: tr("Backup archive failed verification.").into() }
-        }
-        _ => Response::Error {
-            code: "error".into(),
-            message: tr("Mail restore could not be completed; check the archive and target account.").into(),
-        },
-    }
+        _ => ("error", tr("Mail restore could not be completed; check the archive and target account.")),
+    };
+    Response::Error { code: code.into(), message: message.into() }
 }
 
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
@@ -1749,6 +1751,9 @@ pub struct Core {
     /// Progress and cancellation for archive jobs in this core process.
     backup_jobs: BackupJobs,
     restore_plans: RestorePlans,
+    /// The mail directories restores keep their journals in; `None`: the core's own
+    /// ([`crate::mail::MailDirs::for_workplace`]). Tests set a temporary one ([`Core::with_mail_dirs`]).
+    mail_dirs: Option<crate::mail::MailDirs>,
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
@@ -1838,6 +1843,7 @@ impl Core {
             mail,
             backup_jobs: BackupJobs::default(),
             restore_plans: RestorePlans::default(),
+            mail_dirs: None,
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
             settle_done: crate::sources::settle_done,
@@ -2176,6 +2182,18 @@ impl Core {
     pub(crate) fn with_mail(mut self, mail: MailService) -> Core {
         self.mail = Arc::new(mail.with_calendars(Arc::clone(&self.pim)));
         self
+    }
+
+    /// The core with restore journals under `dirs` instead of the user's data directory.
+    #[cfg(test)]
+    pub(crate) fn with_mail_dirs(mut self, dirs: crate::mail::MailDirs) -> Core {
+        self.mail_dirs = Some(dirs);
+        self
+    }
+
+    /// The mail directories backups and restores use ([`Core::mail_dirs`] field).
+    fn mail_dirs(&self) -> Option<crate::mail::MailDirs> {
+        self.mail_dirs.clone().or_else(crate::mail::MailDirs::for_workplace)
     }
 
     /// The core with `inbox` instead of the user's, for tests in other modules.
@@ -3148,21 +3166,29 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
-            (Request::MailRestoreApply { account, plan, allow_incomplete }, _) => {
-                let Some((file, stored)) = self.restore_plans.planned_for(account, plan) else {
-                    return Ok(Response::Error {
-                        code: "not-found".into(),
-                        message: tr("Restore plan is no longer available.").into(),
-                    });
+            // A restore (#267): only the client's own plan, and nobody is asked about one that would
+            // be refused anyway; the summary from the plan the core stored, never the client's words.
+            (Request::MailRestoreApply { account, plan, allow_incomplete, retry_unconfirmed }, _) => {
+                let Some((file, stored)) = self.restore_plans.planned_for(account, plan, Some(client)) else {
+                    let problem = crate::mail::backup::RestoreProblem::PlanGone;
+                    return Ok(Response::Error { code: problem.code().into(), message: problem.user_message().into() });
                 };
-                if stored.uncertain > 0 || (!stored.complete_archive && !allow_incomplete) {
-                    return Ok(Response::Error {
-                        code: "conflict".into(),
-                        message: tr("Restore plan needs review: uncertain messages or an incomplete archive.").into(),
-                    });
+                let refused = if stored.uncertain > 0 {
+                    Some(crate::mail::backup::RestoreProblem::Uncertain)
+                } else if !stored.complete_archive && !allow_incomplete {
+                    Some(crate::mail::backup::RestoreProblem::IncompleteNotAccepted)
+                } else if stored.unconfirmed > 0 && !retry_unconfirmed {
+                    Some(crate::mail::backup::RestoreProblem::UnconfirmedNotAccepted)
+                } else {
+                    None
+                };
+                if let Some(problem) = refused {
+                    return Ok(Response::Error { code: problem.code().into(), message: problem.user_message().into() });
                 }
                 shown = crate::approvals::restore_details(&stored);
-                let summary = crate::approvals::restore_summary(&file, &stored, *allow_incomplete);
+                let choice =
+                    RestoreChoice { allow_incomplete: *allow_incomplete, retry_unconfirmed: *retry_unconfirmed };
+                let summary = crate::approvals::restore_summary(&file, &stored, choice);
                 (request, None, summary)
             }
             // An answer to an invitation (task E8.3b): planned now as it will run, the calendar the
@@ -3328,9 +3354,20 @@ impl Core {
             // The account's label as the core knows it, never a name the client sends along.
             Request::RemoveAccount { id: account }
             | Request::UpdateMailAccount { id: account, .. }
-            | Request::CreateTaskList { account, .. } => {
+            | Request::CreateTaskList { account, .. }
+            | Request::MailBackupCreate { account, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
+            }
+            // A backup to cancel (#267): its account by the label and its source as the job runs it;
+            // whose job it is was checked at the door.
+            Request::MailBackupCancel { account, job } => {
+                let accounts = self.accounts_within(Reach::Suite).await;
+                Facts {
+                    name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label),
+                    backup_source: self.backup_jobs.status(account, job, None).map(|job| job.source),
+                    ..Facts::default()
+                }
             }
             // The account by its label, the model by its name and where it computes as the account's
             // list in the core says (task S.24), never by the client's words.
@@ -3583,6 +3620,12 @@ impl Core {
         if let Request::OpenApp { app, target } = &request {
             return self.open_app_request(app, target.as_deref(), reach, Maker::Client(client)).await;
         }
+        // A restore runs deep (IMAP over TLS, journal, spool) while the decision already holds one
+        // frame of `answer_within`: straight to its handler, so a debug build stays within a
+        // worker's stack. The handler sees what `answer_within` would pass it.
+        if let Request::MailRestoreApply { .. } = request {
+            return Box::pin(self.answer_mail_backup(request, reach, Some(client))).await;
+        }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
         Box::pin(self.handle_within_as(request, reach, Some(client))).await
@@ -3657,8 +3700,175 @@ impl Core {
         response
     }
 
+    /// The mail backup and restore commands (#267) of [`Core::answer_within`], in a frame of their own.
+    async fn answer_mail_backup(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
+        match request {
+            Request::MailBackupVerify { file, account } => match backup_file_for_verify(&file, reach, self.mail_dirs())
+            {
+                Ok(path) => {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let opened = std::fs::File::open(path).map_err(|_| None)?;
+                        torro_mail_backup::verify_archive(opened).map_err(Some)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(checked))
+                            if torro_mail::account_id(&checked.account).ok().as_deref() == Some(account.as_str()) =>
+                        {
+                            Response::MailBackupVerified {
+                                verification: BackupVerification {
+                                    source: match checked.source {
+                                        torro_mail_backup::format::Source::Server => BackupScope::Server,
+                                        torro_mail_backup::format::Source::Local => BackupScope::Local,
+                                    },
+                                    since: checked.since,
+                                    started_at: checked.started_at,
+                                    finished_at: checked.finished_at,
+                                    complete: checked.complete,
+                                    folders: checked.folders,
+                                    messages: checked.messages,
+                                    bytes: checked.bytes,
+                                    warnings: crate::mail::backup::shown_archive_warnings(checked.warnings),
+                                },
+                            }
+                        }
+                        Ok(Ok(_)) => Response::Error {
+                            code: "not-found".into(),
+                            message: tr("Backup archive is not available for this account.").into(),
+                        },
+                        Ok(Err(None)) => Response::Error {
+                            code: "not-found".into(),
+                            message: tr("Backup archive is not available.").into(),
+                        },
+                        // Not damaged, only newer than this core: say so instead of "failed". The code
+                        // stays the documented `error`.
+                        Ok(Err(Some(torro_mail_backup::ArchiveError::UnsupportedVersion(_)))) => Response::Error {
+                            code: "error".into(),
+                            message: tr("This backup was made by a newer version of Torro.").into(),
+                        },
+                        Ok(Err(Some(_))) | Err(_) => Response::Error {
+                            code: "error".into(),
+                            message: tr("Backup archive failed verification.").into(),
+                        },
+                    }
+                }
+                Err(response) => response,
+            },
+            Request::MailBackupCreate { account, source, since, file_name } => match self.mail.config(&account).await {
+                Err(error) => error.response(),
+                Ok(_) => match backup_destination(file_name, reach) {
+                    Err(response) => response,
+                    Ok((file_name, target_dir)) => match self.mail_dirs() {
+                        None => Response::Error {
+                            code: "error".into(),
+                            message: tr("Mail cannot be kept on this device.").into(),
+                        },
+                        Some(dirs) => {
+                            if matches!(reach, Reach::Suite) {
+                                let preferences = torro_mail::BackupPreferences {
+                                    local: source == torro_ipc::mail::BackupScope::Local,
+                                    since,
+                                    directory: target_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                                };
+                                if let Err(message) = self
+                                    .mail
+                                    .update(&account, move |stored| {
+                                        stored.mail_settings.get_or_insert_with(MailSettings::default).backup =
+                                            preferences;
+                                    })
+                                    .await
+                                {
+                                    return Response::Error { code: "error".into(), message };
+                                }
+                            }
+                            match self.backup_jobs.start(
+                                Arc::clone(&self.mail),
+                                dirs,
+                                account,
+                                BackupSelection { source, since, filename: file_name, target_dir },
+                                caller.map(str::to_string),
+                            ) {
+                                Ok(job) => Response::MailBackupJob { job },
+                                Err(BackupRunError::Busy) => Response::Error {
+                                    code: "busy".into(),
+                                    message: tr("A backup for this mail account is already running.").into(),
+                                },
+                                Err(_) => Response::Error {
+                                    code: "error".into(),
+                                    message: tr("Mail backup could not be started.").into(),
+                                },
+                            }
+                        }
+                    },
+                },
+            },
+            Request::MailBackupStatus { account, job } => match self.backup_jobs.status(&account, &job, caller) {
+                Some(job) => Response::MailBackupJob { job },
+                None => {
+                    Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
+                }
+            },
+            Request::MailBackupCancel { account, job } => match self.backup_jobs.cancel(&account, &job, caller) {
+                Some(job) => Response::MailBackupJob { job },
+                None => {
+                    Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
+                }
+            },
+            Request::MailRestorePlan { file, account } => match self.mail.config(&account).await {
+                Err(error) => error.response(),
+                Ok(_) => match (backup_file_for_verify(&file, reach, self.mail_dirs()), self.mail_dirs()) {
+                    (Err(response), _) => response,
+                    (Ok(_), None) => Response::Error {
+                        code: "error".into(),
+                        message: tr("Mail cannot be kept on this device.").into(),
+                    },
+                    (Ok(path), Some(dirs)) => {
+                        let planned = self.restore_plans.plan(&self.mail, &dirs, file, &path, &account, caller);
+                        match Box::pin(planned).await {
+                            Ok(plan) => Response::MailRestorePlanned { plan },
+                            Err(error) => restore_error_response(error),
+                        }
+                    }
+                },
+            },
+            Request::MailRestoreApply { plan, account, allow_incomplete, retry_unconfirmed } => {
+                if let Err(error) = self.mail.config(&account).await {
+                    return error.response();
+                }
+                // Only the caller's own plan: another caller's, the app's (perhaps with a path a
+                // client may not name) or an expired one looks like none.
+                let Some((file, _)) = self.restore_plans.planned_for(&account, &plan, caller) else {
+                    return restore_error_response(BackupRunError::Restore(
+                        crate::mail::backup::RestoreProblem::PlanGone,
+                    ));
+                };
+                let path = match backup_file_for_verify(&file, reach, self.mail_dirs()) {
+                    Ok(path) => path,
+                    Err(response) => return response,
+                };
+                let Some(dirs) = self.mail_dirs() else {
+                    return Response::Error {
+                        code: "error".into(),
+                        message: tr("Mail cannot be kept on this device.").into(),
+                    };
+                };
+                let choice = RestoreChoice { allow_incomplete, retry_unconfirmed };
+                let request = ApplyRequest { path: &path, account: &account, plan: &plan, caller, choice };
+                let applied = self.restore_plans.apply(&self.mail, &dirs, request);
+                match Box::pin(applied).await {
+                    Ok(restore) => Response::MailRestored { restore },
+                    Err(error) => restore_error_response(error),
+                }
+            }
+            _ => Response::Error { code: "unsupported".into(), message: tr("This command is not supported.").into() },
+        }
+    }
+
     /// [`Core::handle_within`] without the template keys: the answer to `request` itself.
     async fn answer_within(&self, request: Request, reach: Reach<'_>, caller: Option<&str>) -> Response {
+        // Jobs and plans belong to the client that made them; a client without a known caller
+        // would see and use the app's. The dispatch always names a client's caller, so this only
+        // guards against a future path that forgets it.
         let client = matches!(reach, Reach::Client(_));
         if client
             && caller.is_none()
@@ -3670,6 +3880,15 @@ impl Core {
             return Response::Error {
                 code: "forbidden".into(),
                 message: tr("The backup job caller is not known.").into(),
+            };
+        }
+        if client
+            && caller.is_none()
+            && matches!(&request, Request::MailRestorePlan { .. } | Request::MailRestoreApply { .. })
+        {
+            return Response::Error {
+                code: "forbidden".into(),
+                message: tr("The restore caller is not known.").into(),
             };
         }
         match request {
@@ -4055,151 +4274,16 @@ impl Core {
                     Err(err) => err.response(),
                 }
             }
-            Request::MailBackupVerify { file, account } => match backup_file_for_verify(&file, reach) {
-                Ok(path) => {
-                    let result = tokio::task::spawn_blocking(move || {
-                        let opened = std::fs::File::open(path).map_err(|_| None)?;
-                        torro_mail_backup::verify_archive(opened).map_err(Some)
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(checked))
-                            if torro_mail::account_id(&checked.account).ok().as_deref() == Some(account.as_str()) =>
-                        {
-                            Response::MailBackupVerified {
-                                verification: BackupVerification {
-                                    source: match checked.source {
-                                        torro_mail_backup::format::Source::Server => BackupScope::Server,
-                                        torro_mail_backup::format::Source::Local => BackupScope::Local,
-                                    },
-                                    since: checked.since,
-                                    started_at: checked.started_at,
-                                    finished_at: checked.finished_at,
-                                    complete: checked.complete,
-                                    folders: checked.folders,
-                                    messages: checked.messages,
-                                    bytes: checked.bytes,
-                                    warnings: checked.warnings,
-                                },
-                            }
-                        }
-                        Ok(Ok(_)) => Response::Error {
-                            code: "not-found".into(),
-                            message: tr("Backup archive is not available for this account.").into(),
-                        },
-                        Ok(Err(None)) => Response::Error {
-                            code: "not-found".into(),
-                            message: tr("Backup archive is not available.").into(),
-                        },
-                        Ok(Err(Some(_))) | Err(_) => Response::Error {
-                            code: "error".into(),
-                            message: tr("Backup archive failed verification.").into(),
-                        },
-                    }
-                }
-                Err(response) => response,
-            },
-            Request::MailBackupCreate { account, source, since, file_name } => match self.mail.config(&account).await {
-                Err(error) => error.response(),
-                Ok(_) => match backup_destination(file_name, reach) {
-                    Err(response) => response,
-                    Ok((file_name, target_dir)) => match crate::mail::MailDirs::for_workplace() {
-                        None => Response::Error {
-                            code: "error".into(),
-                            message: tr("Mail cannot be kept on this device.").into(),
-                        },
-                        Some(dirs) => {
-                            if matches!(reach, Reach::Suite) {
-                                let preferences = torro_mail::BackupPreferences {
-                                    local: source == torro_ipc::mail::BackupScope::Local,
-                                    since,
-                                    directory: target_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
-                                };
-                                if let Err(message) = self
-                                    .mail
-                                    .update(&account, move |stored| {
-                                        stored.mail_settings.get_or_insert_with(MailSettings::default).backup =
-                                            preferences;
-                                    })
-                                    .await
-                                {
-                                    return Response::Error { code: "error".into(), message };
-                                }
-                            }
-                            match self.backup_jobs.start(
-                                Arc::clone(&self.mail),
-                                dirs,
-                                account,
-                                BackupSelection { source, since, filename: file_name, target_dir },
-                                caller.map(str::to_string),
-                            ) {
-                                Ok(job) => Response::MailBackupJob { job },
-                                Err(BackupRunError::Busy) => Response::Error {
-                                    code: "busy".into(),
-                                    message: tr("A backup for this mail account is already running.").into(),
-                                },
-                                Err(_) => Response::Error {
-                                    code: "error".into(),
-                                    message: tr("Mail backup could not be started.").into(),
-                                },
-                            }
-                        }
-                    },
-                },
-            },
-            Request::MailBackupStatus { account, job } => match self.backup_jobs.status(&account, &job, caller) {
-                Some(job) => Response::MailBackupJob { job },
-                None => {
-                    Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
-                }
-            },
-            Request::MailBackupCancel { account, job } => match self.backup_jobs.cancel(&account, &job, caller) {
-                Some(job) => Response::MailBackupJob { job },
-                None => {
-                    Response::Error { code: "not-found".into(), message: tr("Backup job is not available.").into() }
-                }
-            },
-            Request::MailRestorePlan { file, account } => match self.mail.config(&account).await {
-                Err(error) => error.response(),
-                Ok(_) => match backup_file_for_verify(&file, reach) {
-                    Err(response) => response,
-                    Ok(path) => match Box::pin(self.restore_plans.plan(&self.mail, file, &path, &account)).await {
-                        Ok(plan) => Response::MailRestorePlanned { plan },
-                        Err(error) => restore_error_response(error),
-                    },
-                },
-            },
-            Request::MailRestoreApply { plan, account, allow_incomplete } => match self.mail.config(&account).await {
-                Err(error) => error.response(),
-                Ok(_) => match self.restore_plans.file_for(&account, &plan) {
-                    None => Response::Error {
-                        code: "not-found".into(),
-                        message: tr("Restore plan is no longer available.").into(),
-                    },
-                    Some(file) => match backup_file_for_verify(&file, reach) {
-                        Err(response) => response,
-                        Ok(path) => match crate::mail::MailDirs::for_workplace() {
-                            None => Response::Error {
-                                code: "error".into(),
-                                message: tr("Mail cannot be kept on this device.").into(),
-                            },
-                            Some(dirs) => match Box::pin(self.restore_plans.apply(
-                                &self.mail,
-                                &dirs,
-                                &path,
-                                &account,
-                                &plan,
-                                allow_incomplete,
-                            ))
-                            .await
-                            {
-                                Ok(restore) => Response::MailRestored { restore },
-                                Err(error) => restore_error_response(error),
-                            },
-                        },
-                    },
-                },
-            },
+            request @ (Request::MailBackupVerify { .. }
+            | Request::MailBackupCreate { .. }
+            | Request::MailBackupStatus { .. }
+            | Request::MailBackupCancel { .. }
+            | Request::MailRestorePlan { .. }
+            | Request::MailRestoreApply { .. }) => {
+                // Boxed: the backup and restore answers would grow this match's poll frame, deep in
+                // the stack already when the inbox's quiet asks the core again.
+                Box::pin(self.answer_mail_backup(request, reach, caller)).await
+            }
             // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
@@ -8560,10 +8644,12 @@ mod tests {
         let rights = RightsTemplate::FullAccess.rights();
         let reach = Reach::Client(&rights);
         for file in ["/tmp/archive.zip", "../archive.zip", "sub/archive.zip", "archive.eml", ""] {
-            assert_eq!(code(&backup_file_for_verify(file, reach).expect_err(file)), "not-found", "{file}");
+            let dirs = crate::mail::MailDirs::for_workplace();
+            assert_eq!(code(&backup_file_for_verify(file, reach, dirs).expect_err(file)), "not-found", "{file}");
         }
         let selected = tempfile::tempdir().expect("selected file directory").path().join("archive.zip");
-        assert_eq!(backup_file_for_verify(selected.to_str().expect("UTF-8 test path"), Reach::Suite), Ok(selected));
+        let named = backup_file_for_verify(selected.to_str().expect("UTF-8 test path"), Reach::Suite, None);
+        assert_eq!(named, Ok(selected));
     }
 
     #[cfg(unix)]
@@ -8714,43 +8800,334 @@ mod tests {
         assert_eq!(code(&other), "not-found");
     }
 
+    /// A ZIP with one stored member `name` holding `data`, written by hand: the core has no ZIP
+    /// writer of its own.
+    fn stored_zip(name: &str, data: &[u8]) -> Vec<u8> {
+        let crc = data.iter().fold(!0u32, |crc, byte| {
+            (0..8).fold(crc ^ u32::from(*byte), |crc, _| if crc & 1 == 1 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 })
+        }) ^ !0u32;
+        let (size, name_len) = (data.len() as u32, name.len() as u16);
+        let mut zip = Vec::new();
+        let common = |zip: &mut Vec<u8>| {
+            zip.extend_from_slice(&20u16.to_le_bytes()); // version needed
+            zip.extend_from_slice(&0u16.to_le_bytes()); // flags
+            zip.extend_from_slice(&0u16.to_le_bytes()); // stored
+            zip.extend_from_slice(&0u16.to_le_bytes()); // time
+            zip.extend_from_slice(&0x21u16.to_le_bytes()); // date: 1980-01-01
+            zip.extend_from_slice(&crc.to_le_bytes());
+            zip.extend_from_slice(&size.to_le_bytes());
+            zip.extend_from_slice(&size.to_le_bytes());
+            zip.extend_from_slice(&name_len.to_le_bytes());
+            zip.extend_from_slice(&0u16.to_le_bytes()); // extra
+        };
+        zip.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
+        common(&mut zip);
+        zip.extend_from_slice(name.as_bytes());
+        zip.extend_from_slice(data);
+        let directory = zip.len() as u32;
+        zip.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
+        zip.extend_from_slice(&0x0314u16.to_le_bytes()); // made by Unix, version 2.0
+        common(&mut zip);
+        zip.extend_from_slice(&[0; 6]); // comment length, disk, internal attributes
+        zip.extend_from_slice(&0o100_644u32.wrapping_shl(16).to_le_bytes()); // a regular file
+        zip.extend_from_slice(&0u32.to_le_bytes()); // offset of the local header
+        zip.extend_from_slice(name.as_bytes());
+        let directory_size = zip.len() as u32 - directory;
+        zip.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
+        zip.extend_from_slice(&[0; 4]); // disks
+        zip.extend_from_slice(&1u16.to_le_bytes());
+        zip.extend_from_slice(&1u16.to_le_bytes());
+        zip.extend_from_slice(&directory_size.to_le_bytes());
+        zip.extend_from_slice(&directory.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes());
+        zip
+    }
+
     #[tokio::test]
-    async fn restore_plan_request_is_read_only_and_bound_to_its_account() {
+    async fn backup_verify_says_when_an_archive_is_from_a_newer_torro() {
+        let dir = tempfile::tempdir().expect("test directory");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let archive = dir.path().join("newer.zip");
+        let manifest = br#"{"format":"torro-mail-backup","version":2}"#;
+        std::fs::write(&archive, stored_zip("manifest.json", manifest)).expect("archive of a newer Torro");
+        let answer = ask(
+            &core,
+            Some(&app_key),
+            Request::MailBackupVerify {
+                file: archive.to_string_lossy().into_owned(),
+                account: "mail:anna@example.org".into(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(&answer, Response::Error { code, message }
+                if code == "error" && message == tr("This backup was made by a newer version of Torro.")),
+            "{answer:?}"
+        );
+    }
+
+    const SAMPLE_ARCHIVE: &[u8] = include_bytes!("../../torro-mail-backup/tests/fixtures/sample-v1.zip");
+
+    /// Anna's mail account on `server` (workers paused) in a core whose restore journals stay in
+    /// `dir`.
+    async fn restore_core(
+        dir: &std::path::Path,
+        server: &crate::mail::sync::fake::FakeImap,
+    ) -> (Core, String, crate::mail::MailDirs) {
         use crate::account::github::tests::MemoryTokens;
         use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir, &secrets, &[(&account, PASSWORD)]);
+        let mail = service_in(dir, &secrets);
+        mail.pause_from_start(true);
+        mail.reload().await;
+        let dirs = crate::mail::MailDirs::new(&dir.join("data"), &dir.join("cache"));
+        (core(dir).with_mail(mail).with_mail_dirs(dirs.clone()), account.id, dirs)
+    }
+
+    #[tokio::test]
+    async fn restore_plan_request_is_read_only_and_bound_to_its_account() {
+        use crate::mail::service::tests::PASSWORD;
         use crate::mail::sync::fake::FakeImap;
 
         let dir = tempfile::tempdir().expect("test directory");
         let server = FakeImap::start(PASSWORD).await;
-        let secrets = MemoryTokens::default();
-        let account = mail_account("anna@example.org", &server.endpoint);
-        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
-        let mail = service_in(dir.path(), &secrets);
-        mail.reload().await;
-        let core = core(dir.path()).with_mail(mail);
+        let (core, account, dirs) = restore_core(dir.path(), &server).await;
         let app_key = crate::clients::tests::app_key(dir.path());
         let archive = dir.path().join("mail.zip");
-        std::fs::write(&archive, include_bytes!("../../torro-mail-backup/tests/fixtures/sample-v1.zip"))
-            .expect("portable ZIP");
-        let answer = ask(
-            &core,
-            Some(&app_key),
-            Request::MailRestorePlan { file: archive.to_string_lossy().into_owned(), account: account.id.clone() },
-        )
-        .await;
-        assert!(matches!(answer, Response::MailRestorePlanned { plan } if plan.messages_to_add == 1));
+        std::fs::write(&archive, SAMPLE_ARCHIVE).expect("portable ZIP");
+        let file = archive.to_string_lossy().into_owned();
+        let answer =
+            ask(&core, Some(&app_key), Request::MailRestorePlan { file: file.clone(), account: account.clone() }).await;
+        assert!(
+            matches!(&answer, Response::MailRestorePlanned { plan } if plan.messages_to_add == 1 && plan.archive == file),
+            "{answer:?}"
+        );
         let other = ask(
             &core,
             Some(&app_key),
-            Request::MailRestorePlan {
-                file: archive.to_string_lossy().into_owned(),
-                account: "mail:bob@example.org".into(),
-            },
+            Request::MailRestorePlan { file: file.clone(), account: "mail:bob@example.org".into() },
         )
         .await;
         assert_eq!(code(&other), "not-found");
         assert!(!server.lines().iter().any(|line| line.contains(" APPEND ") || line.contains(" CREATE ")));
-        assert!(!dir.path().join("data/mail/restore-journals").exists());
+        assert!(!dirs.data.join("restore-journals").exists());
+    }
+
+    /// Plans belong to the client that made them: a client's request that reaches the core without
+    /// its caller is refused instead of seeing the app's plans.
+    #[tokio::test]
+    async fn restore_requests_of_a_client_without_a_caller_are_forbidden() {
+        let dir = tempfile::tempdir().expect("test directory");
+        let core = core(dir.path());
+        let rights = RightsTemplate::FullAccess.rights();
+        let account = "mail:anna@example.org".to_string();
+        for request in [
+            Request::MailRestorePlan { file: "mail.zip".into(), account: account.clone() },
+            Request::MailRestoreApply {
+                plan: "0123456789abcdef".into(),
+                account: account.clone(),
+                allow_incomplete: false,
+                retry_unconfirmed: true,
+            },
+        ] {
+            let answer = core.handle_within(request, crate::pim::Reach::Client(&rights)).await;
+            assert_eq!(code(&answer), "forbidden", "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn restore_errors_answer_with_fixed_codes() {
+        use crate::mail::backup::RestoreProblem;
+        use torro_mail_imap::imap::ImapError;
+        let cases = [
+            (BackupRunError::Busy, "busy"),
+            (BackupRunError::Restore(RestoreProblem::TargetChanged), "conflict"),
+            (BackupRunError::Restore(RestoreProblem::ArchiveChanged), "conflict"),
+            (BackupRunError::Restore(RestoreProblem::UnconfirmedNotAccepted), "conflict"),
+            (BackupRunError::Restore(RestoreProblem::PlanGone), "not-found"),
+            (BackupRunError::Imap(ImapError::Offline("gone".into())), "offline"),
+            (BackupRunError::Imap(ImapError::Auth("no".into())), "auth"),
+            (BackupRunError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)), "not-found"),
+            (BackupRunError::Archive(torro_mail_backup::ArchiveError::UnsupportedVersion(9)), "error"),
+        ];
+        for (error, expected) in cases {
+            let shown = format!("{error:?}");
+            let Response::Error { code, message } = restore_error_response(error) else { panic!("an error") };
+            assert_eq!(code, expected, "{shown}");
+            assert!(!message.is_empty() && !message.contains('/'), "{message}");
+        }
+        let Response::Error { message, .. } =
+            restore_error_response(BackupRunError::Restore(RestoreProblem::TargetChanged))
+        else {
+            panic!("an error")
+        };
+        assert_eq!(message, RestoreProblem::TargetChanged.user_message());
+    }
+
+    /// A client with mail admin rights asks a person before its own reviewed plan runs; the
+    /// approval names what the core stored, and plans of others are none of its business.
+    #[tokio::test]
+    async fn a_client_restore_waits_for_a_person_and_only_for_its_own_plan() {
+        use crate::mail::backup::RestoreChoice;
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::sync::fake::{AppendQuirk, FakeImap};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let (core, account, dirs) = restore_core(dir.path(), &server).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        let (agent, agent_key) = client(&core, rights.clone()).await;
+        let (_, other_key) = core.clients.add("Codex", "codex", rights).await.expect("added");
+        // In the managed folder, where a client's plan names it.
+        std::fs::create_dir_all(dirs.data.join("backups")).expect("managed backup folder");
+        let archive = dirs.data.join("backups").join("mail.zip");
+        std::fs::write(&archive, SAMPLE_ARCHIVE).expect("archive");
+        // The agent's plan, as `mail.restore_plan` keeps it for a name in the managed folder.
+        let plans = &core.restore_plans;
+        let plan = plans.plan(&core.mail, &dirs, "mail.zip".into(), &archive, &account, Some(&agent)).await;
+        let plan = plan.expect("the agent's plan");
+        let apply = |plan: &str, allow_incomplete: bool, retry_unconfirmed: bool| Request::MailRestoreApply {
+            plan: plan.into(),
+            account: account.clone(),
+            allow_incomplete,
+            retry_unconfirmed,
+        };
+        let asked = waits(ask(&core, Some(&agent_key), apply(&plan.id, false, false)).await);
+        let (_, stored) = plans.planned_for(&account, &plan.id, Some(&agent)).expect("stored plan");
+        assert_eq!(asked.summary, crate::approvals::restore_summary("mail.zip", &stored, RestoreChoice::default()));
+        assert!(asked.summary.contains("mail.zip") && asked.summary.contains('1'), "{}", asked.summary);
+        assert!(!server.lines().iter().any(|line| line.contains(" APPEND ")), "nothing before the person's yes");
+
+        assert_eq!(code(&ask(&core, Some(&other_key), apply(&plan.id, false, false)).await), "not-found");
+        let file = archive.to_string_lossy().into_owned();
+        let Response::MailRestorePlanned { plan: app_plan } =
+            ask(&core, Some(&app_key), Request::MailRestorePlan { file, account: account.clone() }).await
+        else {
+            panic!("the app's plan")
+        };
+        assert_eq!(code(&ask(&core, Some(&agent_key), apply(&app_plan.id, false, false)).await), "not-found");
+
+        // The person allows it with the app key: the restore runs as the agent (only the agent's
+        // own plan exists for it) and its upload reaches the server, where it gets lost.
+        server.quirk_next_append(AppendQuirk::Lose);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let ran = match &decided.state {
+            torro_ipc::ApprovalState::Done { response } => (**response).clone(),
+            other => panic!("the restore ran: {other:?}"),
+        };
+        assert!(
+            matches!(&ran, Response::MailRestored { restore } if restore.added == 0 && restore.uncertain == 1),
+            "a result after the first write, as the agent: {ran:?}"
+        );
+        assert_eq!(appends(&server), 1, "the upload went out after the person's yes");
+
+        // Sending the lost upload again needs its own say.
+        let retried = plans.plan(&core.mail, &dirs, "mail.zip".into(), &archive, &account, Some(&agent)).await;
+        let retried = retried.expect("plan again");
+        assert_eq!(retried.unconfirmed, 1);
+        let open = core.approvals.list(None, Utc::now()).await.expect("approvals").len();
+        let refused = ask(&core, Some(&agent_key), apply(&retried.id, false, false)).await;
+        assert_eq!(code(&refused), "conflict", "{refused:?}");
+        assert_eq!(core.approvals.list(None, Utc::now()).await.expect("approvals").len(), open, "nobody asked");
+        let asked = waits(ask(&core, Some(&agent_key), apply(&retried.id, false, true)).await);
+        let again = trf("; {n} unconfirmed uploads of an earlier restore are sent again", &[("n", &1)]);
+        assert!(asked.summary.contains(&again), "{}", asked.summary);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(
+            matches!(
+                &decided.state,
+                torro_ipc::ApprovalState::Done { response }
+                    if matches!(&**response, Response::MailRestored { restore } if restore.added == 1)
+            ),
+            "{:?}",
+            decided.state
+        );
+        assert_eq!(appends(&server), 2, "sent once more, with the person's confirmation");
+        assert_eq!(server.messages("INBOX").len(), 1);
+    }
+
+    fn appends(server: &crate::mail::sync::fake::FakeImap) -> usize {
+        server.lines().iter().filter(|line| line.contains(" APPEND ")).count()
+    }
+
+    /// A plan with uncertain mail, or of an incomplete archive without its confirmation, is
+    /// refused (`conflict`) before a person is asked.
+    #[tokio::test]
+    async fn a_client_restore_that_needs_review_is_refused_before_anyone_is_asked() {
+        use crate::mail::backup::tests::test_archive;
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::sync::fake::FakeImap;
+        use torro_mail_backup::format::Status;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add_folder("Projects", "\\Noselect \\HasChildren", 20);
+        let (core, account, dirs) = restore_core(dir.path(), &server).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        let (agent, agent_key) = client(&core, rights).await;
+        let raw: &[u8] = b"From: a@example.org\r\n\r\nText\r\n";
+        let uncertain = test_archive(&[("Projects", None, "/")], &[(0, raw, &[])], &[], Status::Complete);
+        let incomplete = test_archive(&[("INBOX", Some("inbox"), "/")], &[(0, raw, &[])], &[], Status::Incomplete);
+        let mut ids = Vec::new();
+        for (name, zip) in [("uncertain.zip", uncertain), ("incomplete.zip", incomplete)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, zip).expect("archive");
+            let plan = core.restore_plans.plan(&core.mail, &dirs, name.into(), &path, &account, Some(&agent)).await;
+            ids.push(plan.expect("plan").id);
+        }
+        let apply = |plan: &str, allow_incomplete: bool| Request::MailRestoreApply {
+            plan: plan.into(),
+            account: account.clone(),
+            allow_incomplete,
+            retry_unconfirmed: false,
+        };
+        for (id, allow) in [(&ids[0], true), (&ids[1], false)] {
+            let refused = ask(&core, Some(&agent_key), apply(id, allow)).await;
+            assert_eq!(code(&refused), "conflict", "{refused:?}");
+        }
+        assert!(core.approvals.list(None, Utc::now()).await.expect("approvals").is_empty(), "nobody asked");
+        let asked = waits(ask(&core, Some(&agent_key), apply(&ids[1], true)).await);
+        assert!(asked.summary.contains(tr("; incomplete archive explicitly accepted")), "{}", asked.summary);
+    }
+
+    /// #267: a backup a client starts or cancels is summed up from the core's account and job.
+    #[tokio::test]
+    async fn backup_approvals_name_the_account_and_the_source_the_core_knows() {
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::sync::fake::FakeImap;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let (core, account, _) = restore_core(dir.path(), &server).await;
+        let create = Request::MailBackupCreate {
+            account: account.clone(),
+            source: torro_ipc::mail::BackupScope::Local,
+            since: chrono::NaiveDate::from_ymd_opt(2026, 1, 2),
+            file_name: Some("anna.zip".into()),
+        };
+        let facts = core.facts(&create).await;
+        assert!(facts.name.is_some(), "the account's label from the core");
+        let shown = crate::approvals::summary(&create, &facts);
+        assert!(shown.contains("anna.zip") && shown.contains("2026-01-02"), "{shown}");
+        assert!(shown.contains(tr("this device")), "{shown}");
+        assert!(!shown.contains("mail.backup_create"), "more than the command's name: {shown}");
+        let cancel = Request::MailBackupCancel { account: account.clone(), job: "unknown".into() };
+        let facts = core.facts(&cancel).await;
+        assert_eq!(facts.backup_source, None);
+        let shown = crate::approvals::summary(&cancel, &facts);
+        let label = facts.name.clone().unwrap_or_default();
+        assert_eq!(
+            shown,
+            trf("Cancel an unknown backup of the mail account {account}", &[("account", &label)]),
+            "{shown}"
+        );
     }
 
     #[tokio::test]

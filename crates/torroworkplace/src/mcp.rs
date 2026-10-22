@@ -1455,7 +1455,21 @@ mod tests {
             Ok(Request::MailRestoreApply {
                 plan: "plan-1".into(),
                 account: "mail:anna@example.org".into(),
-                allow_incomplete: false
+                allow_incomplete: false,
+                retry_unconfirmed: false
+            })
+        );
+        assert_eq!(
+            request_for(
+                "mail_restore_apply",
+                args(json!({"plan": "plan-2", "account": "mail:anna@example.org", "retry_unconfirmed": true})),
+                &Utc
+            ),
+            Ok(Request::MailRestoreApply {
+                plan: "plan-2".into(),
+                account: "mail:anna@example.org".into(),
+                allow_incomplete: false,
+                retry_unconfirmed: true
             })
         );
         for active in ["mail_backup_create", "mail_backup_status", "mail_backup_cancel"] {
