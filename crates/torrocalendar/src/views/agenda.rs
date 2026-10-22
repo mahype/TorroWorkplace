@@ -15,9 +15,9 @@
 //!   Beside it the people invited who have not declined, as avatars with their initials (at most
 //!   three and "+2"; not in the narrow layout either).
 //! - **State** ([`super::Look`], task TE.9): a cancelled event is struck through and at 55 %, and
-//!   it leaves its time free (no "40 min left", no break in "3 h free"); a tentative one has a
-//!   dashed bar and says "· tentative" after its title, a tentative all-day chip a dashed outline
-//!   instead of its fill.
+//!   it leaves its time free (no "40 min left", no break in "3 h free") and says "· cancelled" after
+//!   its title; a tentative one has a dashed bar and says "· tentative" after its title, a
+//!   tentative all-day chip a dashed outline instead of its fill.
 //! - **Free time** of two hours or more between two events of a day: "3 h free" with a dotted line;
 //!   on today only what is still ahead.
 //! - **Empty days** between days with events as one line per week, "3 d · Nothing planned ·
@@ -658,7 +658,7 @@ fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Messag
 /// An event row (`.ev`): start over duration, the bar, title over place, and at the right the
 /// avatars of the people invited and, on the running event, "40 min left". Hover `hover`, open in
 /// the side panel `selected`, running tinted, ended at 55 %; cancelled struck through and at 55 %,
-/// tentative with a dashed bar and "· tentative" after the title.
+/// tentative with a dashed bar and "· tentative" after the title, cancelled with "· cancelled".
 fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message> {
     let look = Look::of(event.status, event.past);
     let alpha = look.alpha();
@@ -695,13 +695,13 @@ fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message>
     if faces > 0 {
         side_width += avatars_width(faces) + m.gap;
     }
-    let tentative = look.dashed.then(|| format!("{SEPARATOR}{}", tr("tentative")));
-    let suffix_width = tentative.as_deref().map_or(0.0, |text| text_width(text, typo::body()));
+    let state = state_word(event.status).map(|word| format!("{SEPARATOR}{word}"));
+    let suffix_width = state.as_deref().map_or(0.0, |text| text_width(text, typo::body()));
     let room = m.text - side_width;
     let title = ellipsize(&event.title, typo::body_strong(), (room - suffix_width).max(0.0));
     let mut heading =
         row![title_text(typo::body_strong(), title, look.struck, move |t| palette(t).text.scale_alpha(alpha))];
-    if let Some(text) = tentative {
+    if let Some(text) = state {
         heading = heading.push(
             typo::text(typo::body(), text)
                 .style(move |t: &Theme| faded(palette(t).text_3, alpha))
@@ -732,6 +732,16 @@ fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message>
         .style(move |t, status| row_style(&palette(t), status, selected, running.then_some(color)))
         .on_press(Message::OpenEvent(event.index))
         .into()
+}
+
+/// The word after the title of an event that is not simply on: "tentative", "cancelled" (behind
+/// " · ", quietly), so the state never shows by the dashes or the stroke alone.
+fn state_word(status: Option<EventStatus>) -> Option<&'static str> {
+    match status? {
+        EventStatus::Tentative => Some(tr("tentative")),
+        EventStatus::Cancelled => Some(tr("cancelled")),
+        EventStatus::Confirmed => None,
+    }
 }
 
 /// The line under the title: map pin or camera, the place and "day 2 of 3"; `None` with neither.
@@ -1074,6 +1084,14 @@ mod tests {
         let blocks = planned(&events, 14, 15, local(10, 8, 0));
         let row = rows(days(&blocks)[0])[0];
         assert_eq!((row.people.clone(), row.more), (initials(&["AW", "L", "Ö"]), 2));
+    }
+
+    /// Review of #278: a cancelled row says so in words, as a tentative one does.
+    #[test]
+    fn the_state_of_a_row_is_said_in_a_word() {
+        assert_eq!(state_word(Some(EventStatus::Cancelled)), Some(tr("cancelled")));
+        assert_eq!(state_word(Some(EventStatus::Tentative)), Some(tr("tentative")));
+        assert_eq!((state_word(Some(EventStatus::Confirmed)), state_word(None)), (None, None));
     }
 
     #[test]

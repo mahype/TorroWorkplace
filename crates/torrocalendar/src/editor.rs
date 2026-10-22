@@ -1550,7 +1550,7 @@ impl Editor {
         };
         let label = row![
             icon(Icon::Repeat, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).text_3) }),
-            typo::text(typo::body(), tr("Changes apply to")).style(theme::text_2).wrapping(Wrapping::None),
+            widgets::ellipsized(typo::body(), tr("Changes apply to"), theme::text_2),
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
@@ -1655,7 +1655,8 @@ impl Editor {
             .font(typo::headline().font)
             .size(typo::headline().size)
             .line_height(typo::headline().line_height)
-            .padding(Padding::ZERO)
+            // Room for the focus ring beside the text, as little as keeps it off the letters.
+            .padding(Padding::ZERO.left(space::xs()).right(space::xs()))
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text));
         let mut title = column![field].spacing(space::s());
@@ -1793,13 +1794,7 @@ impl Editor {
         if name.is_some() && name == self.machine_zone.as_deref() {
             quiet.push(tr("your time zone").to_string());
         }
-        let value = row![
-            typo::text(typo::body(), city).style(theme::text).wrapping(Wrapping::None),
-            typo::text(typo::body(), quiet.join(" · ")).style(theme::text_3).wrapping(Wrapping::None),
-        ]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-        let value = container(value).width(Length::Fill).clip(true);
+        let value = zone_value(city, quiet.join(" · "));
         let line = widgets::prop_line(
             tr("Time zone"),
             Some(Mark::Icon(Icon::Globe)),
@@ -1887,11 +1882,11 @@ impl Editor {
         text_input(tr("Add location"), &self.form.location)
             .on_input(Message::Location)
             .on_submit(Message::SearchPlaces)
-            .padding(Padding::ZERO)
+            .padding(style::INPUT_PADDING)
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .style(bare_input)
+            .style(quiet(false))
             .into()
     }
 
@@ -1907,11 +1902,11 @@ impl Editor {
         let field = text_input(tr("Add link"), &self.form.url)
             .on_input(Message::Url)
             .on_submit(Message::Save)
-            .padding(Padding::ZERO)
+            .padding(style::INPUT_PADDING)
             .size(typo::body().size)
             .line_height(typo::body().line_height)
             .font(typo::body().font)
-            .style(bare_input);
+            .style(quiet(false));
         let mut value = row![field].spacing(space::s()).align_y(Alignment::Center);
         if let Some(open) = open {
             value = value.push(widgets::icon_button(Icon::ArrowUpRight, tr("Open link"), Some(open)));
@@ -1940,13 +1935,18 @@ impl Editor {
                     value.push(widgets::icon_button(Icon::X, tr("Remove reminder"), Some(Message::RemoveAlarm(index))));
             }
             let mark = match alarm.style {
-                Some(AlarmStyle::FullScreen) => Icon::Eye,
+                Some(AlarmStyle::FullScreen) => Icon::Maximize,
                 _ => Icon::Bell,
             };
             rows.push((Mark::Icon(mark), value.into(), None));
         }
         if self.form.alarms.is_empty() {
-            let quiet = typo::text(typo::body(), tr("The default reminder of the settings")).style(theme::text_3);
+            let quiet = row![
+                typo::text(typo::body(), tr("Default reminder")).style(theme::text_2).wrapping(Wrapping::None),
+                typo::text(typo::body(), tr("from Settings")).style(theme::text_3).wrapping(Wrapping::None),
+            ]
+            .spacing(space::s());
+            let quiet = container(quiet).width(Length::Fill).clip(true);
             rows.push((Mark::Icon(Icon::Bell), quiet.into(), None));
         }
         if editable {
@@ -2005,7 +2005,7 @@ impl Editor {
     /// The notes as a quiet field that wraps.
     fn notes_editor(&self) -> Element<'_, Message> {
         text_editor(&self.notes)
-            .placeholder(tr("Add notes …"))
+            .placeholder(tr("Add notes…"))
             .on_action(Message::Notes)
             .key_binding(|press| match press.key.as_ref() {
                 _ if !is_focused(&press) => text_editor::Binding::from_key_press(press),
@@ -2015,16 +2015,17 @@ impl Editor {
             .font(typo::body().font)
             .size(typo::body().size)
             .line_height(typo::body().line_height)
-            .padding(Padding::ZERO)
+            .padding(style::INPUT_PADDING)
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text_2))
             .into()
     }
 
     /// The rows of "Notes": the notes, then "Copy notes" ("Copied" right after a press) when there
-    /// are any.
+    /// are any. The notes carry the input's padding themselves (room for the focus ring), which
+    /// puts their text where `panel::inset` would.
     fn notes_rows<'a>(&'a self, notes: Element<'a, Message>) -> Vec<Element<'a, Message>> {
-        let mut rows = vec![panel::inset(notes)];
+        let mut rows = vec![notes];
         if !self.form.notes.trim().is_empty() {
             let (mark, label) = if self.copied { (Icon::Check, tr("Copied")) } else { (Icon::Copy, tr("Copy notes")) };
             let label = typo::text(typo::body(), label).style(theme::text_2);
@@ -2073,7 +2074,7 @@ impl Editor {
         }
         if !self.confirm_delete {
             let preview = widgets::text_button(
-                Some(Icon::Eye),
+                Some(Icon::BellRing),
                 tr("Preview reminder"),
                 style::button::ghost,
                 Some(Message::PreviewReminder),
@@ -2091,7 +2092,7 @@ impl Editor {
         }
         if self.occurrence().is_none() {
             return vec![
-                typo::text(typo::body(), tr("Really delete?")).style(theme::text_2).into(),
+                typo::text(typo::body(), tr("Delete this event?")).style(theme::text_2).into(),
                 widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete(None))),
                 widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
             ];
@@ -2119,7 +2120,7 @@ impl Editor {
         let buttons = row![
             scope(tr("Only this event"), SeriesScope::Occurrence, style::button::secondary, None),
             scope(tr("This and following"), SeriesScope::Following, style::button::secondary, None),
-            scope(tr("All events"), SeriesScope::Series, style::button::danger, Some(Icon::Trash2)),
+            scope(tr("All events"), SeriesScope::Series, framed_danger, Some(Icon::Trash2)),
             cancel,
         ]
         .spacing(space::s())
@@ -2181,7 +2182,7 @@ fn style_word(style: AlarmStyle) -> &'static str {
 /// The icon and the word of "Show as".
 fn show_as(transparency: Transparency) -> (Icon, &'static str) {
     match transparency {
-        Transparency::Opaque => (Icon::CircleSlash, tr("Busy")),
+        Transparency::Opaque => (Icon::CircleDot, tr("Busy")),
         Transparency::Transparent => (Icon::Circle, tr("Free")),
     }
 }
@@ -2193,6 +2194,39 @@ fn status_words(status: EventStatus) -> (Icon, &'static str) {
         EventStatus::Tentative => (Icon::CircleDashed, tr("Tentative")),
         EventStatus::Cancelled => (Icon::CircleX, trc("event", "Cancelled")),
     }
+}
+
+/// The value of "Time zone": the city in `text`, then the abbreviation and "your time zone" quietly
+/// in `text_3`. Where they do not fit, the quiet part goes and the city is cut with "…"
+/// ([`typo::ellipsize`]); then the whole value shows as tooltip, never cut silently.
+fn zone_value<'a>(city: String, quiet: String) -> Element<'a, Message> {
+    let level = typo::body();
+    let whole = if quiet.is_empty() { city.clone() } else { format!("{city} · {quiet}") };
+    iced::widget::responsive(move |room| {
+        let quiet_width = if quiet.is_empty() { 0.0 } else { text_width(&quiet, level) + space::s() };
+        let both = text_width(&city, level) + quiet_width <= room.width;
+        let shown = if both { city.clone() } else { typo::ellipsize(&city, level, room.width) };
+        let mut line = row![typo::text(level, shown.clone()).style(theme::text).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+        if both && !quiet.is_empty() {
+            line = line.push(typo::text(level, quiet.clone()).style(theme::text_3).wrapping(Wrapping::None));
+        }
+        let line = container(line).width(Length::Fill).clip(true);
+        let cut = shown != city || (!both && !quiet.is_empty());
+        if cut { widgets::with_tooltip(line, whole.clone()) } else { line.into() }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// The answer "All events" to the question before deleting an occurrence: the frame and surface of
+/// the other answers ([`style::button::secondary`]) with the words in the error colour of
+/// [`style::button::danger`], so the three read as one row of choices and the destructive one still
+/// stands out.
+fn framed_danger(theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {
+    let framed = style::button::secondary(theme, status);
+    iced::widget::button::Style { text_color: style::button::danger(theme, status).text_color, ..framed }
 }
 
 /// A menu entry without a mark.
@@ -2311,7 +2345,8 @@ fn selectable<'a>(
         .font(typo::body().font)
         .size(typo::body().size)
         .line_height(typo::body().line_height)
-        .padding(Padding::ZERO)
+        // As an input's: the text where the editable fields put theirs, room for the focus ring.
+        .padding(style::INPUT_PADDING)
         .wrapping(Wrapping::WordOrGlyph)
         .style(move |t, s| bare_editor(t, s, value(t)))
         .into()
@@ -2342,17 +2377,35 @@ fn field_problem<'a>(problem: Problem) -> Element<'a, Message> {
 
 /// What is wrong, in the error colour with an icon: "(!) Enter a title".
 fn problem_line<'a>(problem: Problem) -> Element<'a, Message> {
+    problem_note(problem.message())
+}
+
+/// `message` in the error colour with the alert icon in front, in `META`: what is wrong in the form
+/// or in a card ("Add reminder", "Custom repeat"), always with the icon, so colour is never the only
+/// sign.
+pub(super) fn problem_note<'a>(message: &'static str) -> Element<'a, Message> {
     let mark =
         icon(Icon::CircleAlert, icon::SIZE_SM).style(|theme, _| svg::Style { color: Some(palette(theme).error_text) });
     row![
         // The icon is centred on the first line of the message, which may wrap in a narrow window.
         container(mark).center_y(typo::meta().line_height.to_absolute(typo::meta().size)),
-        typo::text(typo::meta(), problem.message())
-            .style(|theme| text::Style { color: Some(palette(theme).error_text) }),
+        typo::text(typo::meta(), message).style(|theme| text::Style { color: Some(palette(theme).error_text) }),
     ]
     .spacing(space::xs())
     .align_y(Alignment::Start)
     .into()
+}
+
+/// The framed input of a card ([`style::text_input`]) with its border in the error colour while
+/// `invalid`: the field the card's problem is about (the message under it says what is wrong).
+pub(super) fn card_input(invalid: bool) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let mut look = style::text_input(theme, status);
+        if invalid {
+            look.border.color = palette(theme).error_text;
+        }
+        look
+    }
 }
 
 /// The calendar's dot and name. The dot stands in a cell as wide as an icon, so the name lines up
@@ -2385,22 +2438,16 @@ fn quiet(invalid: bool) -> impl Fn(&Theme, text_input::Status) -> text_input::St
     }
 }
 
-/// A text input without frame or surface (location, link): text where the property values are.
-fn bare_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
-    text_input::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
-        ..style::text_input(theme, status)
-    }
-}
-
-/// A text editor without frame or surface (Linear's title and description): text in `value`,
-/// placeholder `text_3`. Focus shows as the caret; the field sits where its text is.
+/// A text editor without frame or surface at rest (Linear's title and description): text in
+/// `value`, placeholder `text_3`. Focused it shows the suite's focus ring (`focus_ring`, 2 px, as
+/// [`quiet`] inputs do), so the keyboard's place is always visible; the field's padding keeps the
+/// ring off the text.
 fn bare_editor(theme: &Theme, status: text_editor::Status, value: Color) -> text_editor::Style {
     let base = style::text_editor(theme, status);
+    let focused = matches!(status, text_editor::Status::Focused { .. });
     text_editor::Style {
         background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
+        border: if focused { base.border } else { Border::default() },
         placeholder: palette(theme).text_3,
         value,
         ..base

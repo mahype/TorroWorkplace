@@ -17,7 +17,7 @@ use torro_core::i18n::{tr, trc, trf};
 use torro_core::settings::Reminders;
 use torro_gui::datetime::{format_date, format_time, parse_date, parse_time};
 use torro_gui::icon::Icon;
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::theme::{self, size, space};
 use torro_gui::typo::{self, text_width};
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{layout, style};
@@ -113,6 +113,15 @@ pub enum Problem {
     Date,
     /// Further than [`Reminders::MAX_LEAD`] from the event.
     TooFar,
+}
+
+/// A field of the card that a [`Problem`] can be about, to mark it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Input {
+    Amount,
+    DayBefore,
+    Date,
+    Time,
 }
 
 impl Problem {
@@ -232,14 +241,33 @@ impl Card {
         Ok(Alarm { trigger, style: self.style })
     }
 
-    /// The card under "Add reminder": the chips, "Custom" with its three ways, "Style", what is wrong
-    /// (after "Add"), Cancel and Add.
+    /// The field the problem shown is about, so it can be marked: the number of a lead, the time of
+    /// "Day before at", the date or time of a fixed reminder; the field of the way chosen when the
+    /// reminder lies too far. `None` before "Add" and for a chip.
+    fn invalid(&self, problem: Option<Problem>) -> Option<Input> {
+        match (problem?, self.way) {
+            (_, Way::Preset(_)) => None,
+            (Problem::Amount | Problem::TooFar, Way::Relative) => Some(Input::Amount),
+            (_, Way::DayBefore) => Some(Input::DayBefore),
+            (Problem::Time, Way::Fixed) => Some(Input::Time),
+            (_, Way::Fixed) => Some(Input::Date),
+            (_, Way::Relative) => Some(Input::Amount),
+        }
+    }
+
+    /// The card under "Add reminder" in the rhythm of a card (title, then groups 16 apart, 8 inside):
+    /// the chips, "Custom" with its three ways (radio buttons with their words), "Style", then what is
+    /// wrong (after "Add", with its icon; the field it is about framed in the error colour), Cancel
+    /// and Add.
     pub fn view<'a>(
         &'a self,
         start: NaiveDateTime,
         today: NaiveDate,
         instant: impl Fn(NaiveDateTime) -> DateTime<Utc>,
     ) -> Element<'a, Message> {
+        let problem = if self.attempted { self.build(start, today, instant).err() } else { None };
+        let invalid = self.invalid(problem);
+        let wrong = |input: Input| invalid == Some(input);
         let chips = PRESETS
             .iter()
             .map(|&minutes| {
@@ -251,8 +279,8 @@ impl Card {
         let units = Unit::ALL.map(|unit| (unit.label(), edit(Edit::Unit(unit))));
         let unit = Unit::ALL.iter().position(|u| *u == self.unit).unwrap_or_default();
         let relative = row![
-            choice(Way::Relative, self.way),
-            field(&self.amount, "2", "0000", |v| edit(Edit::Amount(v))),
+            choice(Way::Relative, self.way, ""),
+            field(&self.amount, "2", "0000", wrong(Input::Amount), |v| edit(Edit::Amount(v))),
             widgets::segmented(units, unit),
         ]
         .spacing(space::s())
@@ -269,18 +297,16 @@ impl Card {
             .align_y(Alignment::Center);
         let relation = container(relation).padding(iced::Padding::ZERO.left(style::CHECK_SIZE + space::s()));
         let day_before = row![
-            choice(Way::DayBefore, self.way),
-            quiet(tr("Day before at")),
-            field(&self.day_before, "18:00", "00:00", |v| edit(Edit::DayBefore(v))),
+            choice(Way::DayBefore, self.way, tr("Day before at")),
+            field(&self.day_before, "18:00", "00:00", wrong(Input::DayBefore), |v| edit(Edit::DayBefore(v))),
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
         let fixed = row![
-            choice(Way::Fixed, self.way),
-            quiet(trc("date", "On")),
-            field(&self.date, "26.10.2026", "00.00.0000", |v| edit(Edit::Date(v))),
+            choice(Way::Fixed, self.way, trc("date", "On")),
+            field(&self.date, "26.10.2026", "00.00.0000", wrong(Input::Date), |v| edit(Edit::Date(v))),
             quiet(tr("at")),
-            field(&self.time, "09:00", "00:00", |v| edit(Edit::Time(v))),
+            field(&self.time, "09:00", "00:00", wrong(Input::Time), |v| edit(Edit::Time(v))),
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
@@ -289,7 +315,7 @@ impl Card {
         let styles = [
             (Icon::Calendar, tr("Calendar default"), None),
             (Icon::Bell, tr("Notification"), Some(AlarmStyle::Notification)),
-            (Icon::Eye, tr("Full screen"), Some(AlarmStyle::FullScreen)),
+            (Icon::Maximize, tr("Full screen"), Some(AlarmStyle::FullScreen)),
         ]
         .into_iter()
         .map(|(mark, label, style)| {
@@ -297,26 +323,11 @@ impl Card {
         })
         .collect();
 
-        let mut card = column![
-            typo::text(typo::title(), tr("Add reminder")),
-            widgets::chip_row(chips),
-            caption(tr("Custom")),
-            relative,
-            relation,
-            day_before,
-            fixed,
-            caption(tr("Style")),
-            widgets::chip_row(styles),
-            rule::horizontal(size::HAIRLINE).style(style::rule),
-        ]
-        .spacing(space::s());
-        if self.attempted
-            && let Err(problem) = self.build(start, today, instant)
-        {
-            card = card.push(
-                typo::text(typo::meta(), problem.message())
-                    .style(|t| iced::widget::text::Style { color: Some(palette(t).error_text) }),
-            );
+        let custom = column![caption(tr("Custom")), relative, relation, day_before, fixed].spacing(space::s());
+        let style_group = column![caption(tr("Style")), widgets::chip_row(styles)].spacing(space::s());
+        let mut foot = column![rule::horizontal(size::HAIRLINE).style(style::rule)].spacing(space::s());
+        if let Some(problem) = problem {
+            foot = foot.push(super::problem_note(problem.message()));
         }
         let actions = row![
             iced::widget::space::horizontal(),
@@ -325,7 +336,9 @@ impl Card {
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
-        container(card.push(actions))
+        let body = column![widgets::chip_row(chips), custom, style_group, foot.push(actions)].spacing(space::l());
+        let card = column![typo::text(typo::title(), tr("Add reminder")), body].spacing(space::m());
+        container(card)
             .width(widgets::POPOVER_WIDTH)
             .padding(layout::panel_padding())
             .style(style::container::popover)
@@ -379,11 +392,17 @@ fn edit(edit: Edit) -> Message {
     Message::Remind(edit)
 }
 
-/// The radio button of `way`, chosen while the card's way is `current`.
-fn choice<'a>(way: Way, current: Way) -> Element<'a, Message> {
-    radio("", way, Some(current), |way| edit(Edit::Way(way)))
+/// The radio button of `way` with its `words` as label ("Day before at", "On"), chosen while the
+/// card's way is `current`; a click on the words chooses it too. The lead in n units has no words of
+/// its own (`""`): the number stands right after the button.
+fn choice<'a>(way: Way, current: Way, words: &'a str) -> Element<'a, Message> {
+    let gap = if words.is_empty() { 0.0 } else { space::s() };
+    radio(words, way, Some(current), |way| edit(Edit::Way(way)))
         .size(style::CHECK_SIZE)
-        .spacing(0.0)
+        .spacing(gap)
+        .text_size(typo::body().size)
+        .text_line_height(typo::body().line_height)
+        .font(typo::body().font)
         .style(style::radio)
         .into()
 }
@@ -398,12 +417,13 @@ fn caption<'a>(title: &'static str) -> Element<'a, Message> {
     typo::text(typo::caption(), title).style(theme::text_3).into()
 }
 
-/// A framed input of the card, as wide as `sample` (or the placeholder) in tabular figures; Enter
-/// is "Add".
+/// A framed input of the card, as wide as `sample` (or the placeholder) in tabular figures, framed in
+/// the error colour while `invalid`; Enter is "Add".
 fn field<'a>(
     value: &'a str,
     placeholder: &'static str,
     sample: &'static str,
+    invalid: bool,
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     let level = typo::body().tabular();
@@ -417,7 +437,7 @@ fn field<'a>(
         .line_height(level.line_height)
         .font(level.font)
         .width(Length::Fixed(width.ceil()))
-        .style(style::text_input)
+        .style(super::card_input(invalid))
         .into()
 }
 
@@ -535,6 +555,25 @@ mod tests {
         assert_eq!(card.build(start, today(), berlin), Err(Problem::Time));
         card.update(Edit::Date("31.02.2026".into()));
         assert_eq!(card.build(start, today(), berlin), Err(Problem::Date));
+        card.update(Edit::Add);
+        let _ = card.view(start, today(), berlin);
+    }
+
+    /// Review of #278: after "Add", the field a problem is about is the one marked.
+    #[test]
+    fn the_field_of_the_problem_is_marked() {
+        let start = at(2026, 10, 27, 10, 0);
+        let mut card = Card::new(start.date());
+        assert_eq!(card.invalid(card.build(start, today(), berlin).err()), None, "a chip needs nothing");
+        card.update(Edit::Amount("two".into()));
+        assert_eq!(card.invalid(card.build(start, today(), berlin).err()), Some(Input::Amount));
+        card.update(Edit::DayBefore("25:00".into()));
+        assert_eq!(card.invalid(card.build(start, today(), berlin).err()), Some(Input::DayBefore));
+        card.update(Edit::Date("31.02.2026".into()));
+        assert_eq!(card.invalid(card.build(start, today(), berlin).err()), Some(Input::Date));
+        card.update(Edit::Date("26.10.2026".into()));
+        card.update(Edit::Time("nope".into()));
+        assert_eq!(card.invalid(card.build(start, today(), berlin).err()), Some(Input::Time));
         card.update(Edit::Add);
         let _ = card.view(start, today(), berlin);
     }

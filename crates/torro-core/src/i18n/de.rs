@@ -4102,6 +4102,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The place search did not work. Try again later.",
         "Die Ortssuche hat nicht geklappt. Versuch es später noch einmal.",
     ),
+    ("from Settings", "aus den Einstellungen"),
+    ("Delete this event?", "Diesen Termin löschen?"),
+    ("Add notes…", "Notizen hinzufügen …"),
+    ("cancelled", "abgesagt"),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),
@@ -4114,7 +4118,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Reminders", "Erinnerungen"),
     ("Remove reminder", "Erinnerung entfernen"),
     ("Style", "Art"),
-    ("The default reminder of the settings", "Die Standard-Erinnerung der Einstellungen"),
     ("{n} hours", "{n} Stunden"),
     ("{span} after the end", "{span} nach dem Ende"),
     ("{span} after the start", "{span} nach Beginn"),

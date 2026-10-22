@@ -17,8 +17,8 @@ use chrono::{Datelike, Duration, NaiveDate};
 use iced::widget::{column, container, row, rule, text_input};
 use iced::{Alignment, Element, Length};
 use torro_core::i18n::{tr, trc, trf};
-use torro_gui::datetime::{format_date, month_name_short, parse_date, to_local};
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::datetime::{format_date, month_name_short, parse_date, to_local, weekday_name};
+use torro_gui::theme::{self, size, space};
 use torro_gui::typo::{self, text_width};
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{layout, style};
@@ -48,6 +48,13 @@ fn index(day: Weekday) -> usize {
 /// "Tue" (German "Di").
 fn short(day: Weekday) -> &'static str {
     tr(SHORT[index(day)])
+}
+
+/// The whole name of `day` ("Tuesday", German "Dienstag"), for the tooltip of its chip.
+fn full(day: Weekday) -> &'static str {
+    // 5 January 2026 is a Monday; the days after it follow in the order of `DAYS`.
+    let monday = NaiveDate::from_ymd_opt(2026, 1, 5).unwrap_or_default();
+    weekday_name(monday + Duration::days(index(day) as i64), false)
 }
 
 /// The weekday of `date`, as a rule names it.
@@ -622,6 +629,7 @@ impl Custom {
         until: impl Fn(NaiveDate) -> EventTime,
     ) -> Element<'a, Message> {
         let built = self.build(start, today, until);
+        let problem = built.as_ref().err().copied().filter(|_| self.attempted);
         let labels = [tr("Every"), tr("On"), tr("Ends")];
         let width = labels.iter().map(|l| text_width(l, typo::meta())).fold(0.0, f32::max).ceil();
         let label = move |text: &'static str| -> Element<'a, Message> {
@@ -643,11 +651,10 @@ impl Custom {
             RepeatFreq::Monthly => 2,
             RepeatFreq::Yearly => 3,
         };
-        let every_row = row![field(&self.every, "1", "000", |v| edit(Edit::Every(v))), widgets::segmented(units, unit)]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-        let mut card = column![typo::text(typo::title(), tr("Custom repeat")), line(tr("Every"), every_row.into()),]
-            .spacing(space::s());
+        let every_field = field(&self.every, "1", "000", problem == Some(Problem::Every), |v| edit(Edit::Every(v)));
+        let every_row =
+            row![every_field, widgets::segmented(units, unit)].spacing(space::s()).align_y(Alignment::Center);
+        let mut what = column![line(tr("Every"), every_row.into())].spacing(space::s());
 
         match self.freq {
             RepeatFreq::Weekly => {
@@ -655,10 +662,12 @@ impl Custom {
                     .iter()
                     .enumerate()
                     .map(|(i, day)| {
-                        widgets::choice_chip(short(*day), None::<Mark>, self.days[i], Some(edit(Edit::Day(i))))
+                        let chip =
+                            widgets::choice_chip(short(*day), None::<Mark>, self.days[i], Some(edit(Edit::Day(i))));
+                        widgets::with_tooltip(chip, full(*day))
                     })
                     .collect();
-                card = card.push(line(tr("On"), widgets::chip_row(chips)));
+                what = what.push(line(tr("On"), widgets::chip_row(chips)));
             }
             RepeatFreq::Monthly => {
                 let by_day = on_month_days(&[if last_of_month(start) { -1 } else { start.day() as i8 }]);
@@ -667,7 +676,7 @@ impl Custom {
                     widgets::choice_chip(by_day, None::<Mark>, !self.by_weekday, Some(edit(Edit::ByWeekday(false)))),
                     widgets::choice_chip(by_weekday, None::<Mark>, self.by_weekday, Some(edit(Edit::ByWeekday(true)))),
                 ];
-                card = card.push(line(tr("On"), widgets::chip_row(chips)));
+                what = what.push(line(tr("On"), widgets::chip_row(chips)));
             }
             RepeatFreq::Daily | RepeatFreq::Yearly => {}
         }
@@ -686,22 +695,22 @@ impl Custom {
         match self.ends {
             Ends::Never => {}
             Ends::On => {
-                end_row = end_row.push(field(&self.until, "22.12.2026", "00.00.0000", |v| edit(Edit::Until(v))))
+                let wrong = matches!(problem, Some(Problem::Until | Problem::UntilBeforeStart));
+                end_row = end_row.push(field(&self.until, "22.12.2026", "00.00.0000", wrong, |v| edit(Edit::Until(v))))
             }
             Ends::After => {
+                let wrong = problem == Some(Problem::Count);
                 end_row = end_row
-                    .push(field(&self.count, "10", "000", |v| edit(Edit::Count(v))))
+                    .push(field(&self.count, "10", "000", wrong, |v| edit(Edit::Count(v))))
                     .push(typo::text(typo::body(), tr("times")).style(theme::text_2));
             }
         }
-        card = card.push(line(tr("Ends"), end_row.wrap().vertical_spacing(space::s()).into()));
+        let ends_line = line(tr("Ends"), end_row.wrap().vertical_spacing(space::s()).into());
 
-        let note: Element<'a, Message> = match &built {
-            Err(problem) if self.attempted => typo::text(typo::meta(), problem.message())
-                .style(|t| iced::widget::text::Style { color: Some(palette(t).error_text) })
-                .into(),
-            Ok(rule) => typo::text(typo::meta(), sentence(rule, start)).style(theme::text_2).into(),
-            Err(_) => typo::text(typo::meta(), "").into(),
+        let note: Element<'a, Message> = match (&built, problem) {
+            (_, Some(problem)) => super::problem_note(problem.message()),
+            (Ok(rule), None) => typo::text(typo::meta(), sentence(rule, start)).style(theme::text_2).into(),
+            (Err(_), None) => typo::text(typo::meta(), "").into(),
         };
         let actions = row![
             iced::widget::space::horizontal(),
@@ -710,7 +719,10 @@ impl Custom {
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
-        card = card.push(rule::horizontal(size::HAIRLINE).style(style::rule)).push(note).push(actions);
+        let foot = column![rule::horizontal(size::HAIRLINE).style(style::rule), note, actions].spacing(space::s());
+        // A card's rhythm: title, then groups 16 apart, 8 inside.
+        let body = column![what, ends_line, foot].spacing(space::l());
+        let card = column![typo::text(typo::title(), tr("Custom repeat")), body].spacing(space::m());
         container(card)
             .width(widgets::POPOVER_WIDTH)
             .padding(layout::panel_padding())
@@ -724,12 +736,13 @@ fn edit(edit: Edit) -> Message {
     Message::Custom(edit)
 }
 
-/// A framed input of the card, as wide as `sample` (or the placeholder) in tabular figures; Enter
-/// is "Done".
+/// A framed input of the card, as wide as `sample` (or the placeholder) in tabular figures, framed in
+/// the error colour while `invalid` (the problem shown after "Done" is about it); Enter is "Done".
 fn field<'a>(
     value: &'a str,
     placeholder: &'static str,
     sample: &'static str,
+    invalid: bool,
     on_input: impl Fn(String) -> Message + 'a,
 ) -> Element<'a, Message> {
     let level = typo::body().tabular();
@@ -743,7 +756,7 @@ fn field<'a>(
         .line_height(level.line_height)
         .font(level.font)
         .width(Length::Fixed(width.ceil()))
-        .style(style::text_input)
+        .style(super::card_input(invalid))
         .into()
 }
 
@@ -835,6 +848,14 @@ mod tests {
         // A rule the editor cannot show.
         let custom = Repeat { custom: true, rule: "FREQ=MONTHLY;BYSETPOS=-1;BYDAY=MO,TU".into(), ..list[4].clone() };
         assert_eq!(sentence(&custom, start), tr("Custom rule"));
+    }
+
+    #[test]
+    fn every_weekday_chip_names_its_day_in_full() {
+        assert_eq!(
+            DAYS.map(full),
+            ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(tr)
+        );
     }
 
     #[test]

@@ -21,8 +21,10 @@ use torro_pim::model::Geo;
 
 use super::Message;
 
-/// The size of the map `calendar.map_preview` is asked for, in logical pixels (layout A); the
-/// picture fills the width of the value column and keeps this height.
+/// The size of the picture `calendar.map_preview` is asked for, in logical pixels (layout A). It is
+/// only the request: the map is laid out as wide as the value column and [`size::map_preview()`]
+/// high, and the picture covers that ([`ContentFit::Cover`]), so a design pack's other row height
+/// changes the frame, not what is fetched.
 pub const MAP_WIDTH: u16 = 336;
 pub const MAP_HEIGHT: u16 = 104;
 
@@ -161,7 +163,7 @@ pub(super) fn suggestions<'a>(places: &'a [Place], query: &str, service: &'stati
         .push(container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]))
         .push(entry(Icon::SquarePen, written, tr("Without a map").to_string(), Message::AsWritten));
     let source = trf("Search by {service} · © OpenStreetMap contributors", &[("service", &service)]);
-    list = list.push(caption(source));
+    list = list.push(source_line(source));
     container(list).width(widgets::POPOVER_WIDTH).padding(style::MENU_INSET).style(style::container::menu).into()
 }
 
@@ -181,35 +183,50 @@ fn entry<'a>(mark: Icon, label: String, detail: String, on_press: Message) -> El
         .into()
 }
 
-/// A title or a quiet line in the suggestions.
+/// The title of the suggestions.
 fn caption<'a>(words: impl iced::widget::text::IntoFragment<'a>) -> Element<'a, Message> {
     container(typo::text(typo::caption(), words).style(theme::text_3))
         .padding(Padding::new(space::s()).bottom(space::xs()))
         .into()
 }
 
-/// The map under the location: the picture with a pin in the middle in `pin` (the calendar's
-/// colour), ↗ "Open in Maps" (`open`) in the top right corner and "© OpenStreetMap" (a link to the
-/// copyright page) in the bottom right one, in a frame with radius `md`.
+/// The quiet line at the foot of the suggestions: who searched and whose data it is, metadata in
+/// `META` and `text_3`, not a title.
+fn source_line<'a>(words: String) -> Element<'a, Message> {
+    container(typo::text(typo::meta(), words).style(theme::text_3))
+        .padding(Padding::new(space::s()).top(space::xs()))
+        .into()
+}
+
+/// The edge of the pin on the map: an icon and a half, so it stands out of the streets.
+fn pin_size() -> f32 {
+    icon::SIZE + icon::SIZE / 2.0
+}
+
+/// The map under the location, [`size::map_preview()`] high: the picture with a pin in the middle
+/// in `pin` (the calendar's colour), ↗ "Open in Maps" (`open`) in the top right corner and
+/// "© OpenStreetMap" (a link to the copyright page, a button as high as ↗) in the bottom right one,
+/// in a frame with radius `md`.
 pub(super) fn map_view<'a>(picture: &'a image::Handle, pin: Color, open: Message) -> Element<'a, Message> {
-    let height = f32::from(MAP_HEIGHT);
+    let height = size::map_preview();
     let picture =
         image(picture).width(Length::Fill).height(height).content_fit(ContentFit::Cover).border_radius(radius::md());
-    let marker = icon(Icon::MapPin, space::xl()).style(move |_, _| svg::Style { color: Some(pin) });
+    let marker = icon(Icon::MapPin, pin_size()).style(move |_, _| svg::Style { color: Some(pin) });
     // The tip of the pin, not its middle, stands on the point.
-    let marker = container(column![marker, Space::new().height(space::xl())]).center(Length::Fill);
+    let marker = container(column![marker, Space::new().height(pin_size())]).center(Length::Fill);
     let open = widgets::boxed_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(open));
-    let credit = button(typo::text(typo::meta(), tr("© OpenStreetMap")).style(theme::text_2))
-        .padding(Padding::ZERO.left(space::xs()).right(space::xs()))
-        .style(style::button::secondary)
-        .on_press(Message::OpenLink(OSM_COPYRIGHT.to_string()));
+    let credit = widgets::text_button(
+        None,
+        tr("© OpenStreetMap"),
+        style::button::secondary,
+        Some(Message::OpenLink(OSM_COPYRIGHT.to_string())),
+    );
     let over = column![
         row![Space::new().width(Length::Fill), open],
         Space::new().height(Length::Fill),
         row![Space::new().width(Length::Fill), credit],
     ]
-    .padding(Padding::new(space::xs()).bottom(0.0).right(0.0).top(space::xs()));
-    let over = container(over).padding(Padding::ZERO.right(space::xs()));
+    .padding(space::xs());
     container(stack![picture, marker, over].width(Length::Fill).height(height))
         .width(Length::Fill)
         .style(frame)
@@ -319,6 +336,17 @@ mod tests {
         let geo = maps_link(MapsApp::Geo, "Berlin", None);
         assert_eq!(geo.starts_with("geo:"), cfg!(target_os = "linux"));
         assert!(maps_link(MapsApp::Osm, "Berlin", None).starts_with("https://www.openstreetmap.org/"));
+    }
+
+    /// Review of #278: the map is laid out by its token, not by the size it is fetched in, and
+    /// both of its buttons ("Open in Maps", "© OpenStreetMap") are proper click targets that fit it.
+    #[test]
+    fn the_map_holds_two_buttons_of_full_height() {
+        assert!(size::control_sm() >= 24.0, "a click target of at least 24");
+        assert!(size::map_preview() >= 2.0 * size::control_sm() + 3.0 * space::xs());
+        assert!(pin_size() > icon::SIZE);
+        let picture = image::Handle::from_rgba(1, 1, vec![0; 4]);
+        let _ = map_view(&picture, Color::WHITE, Message::OpenMaps);
     }
 
     #[test]

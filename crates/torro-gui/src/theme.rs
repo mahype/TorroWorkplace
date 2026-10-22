@@ -654,6 +654,12 @@ pub mod size {
     pub fn pill() -> f32 {
         design::with(|t| t.design.size.pill)
     }
+    /// 104: the height of the small map under an event's location (calendar editor, review of
+    /// #278): two list rows and a gap, so the pin, "Open in Maps" and the attribution fit with room
+    /// around them. Derived from the pack's [`row`] and [`super::space::xl`], not a value of its own.
+    pub fn map_preview() -> f32 {
+        row() * 2.0 + super::space::xl()
+    }
     /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
     /// above the columns of a grid). Always one logical pixel, also on HiDPI screens; not part of a
     /// design pack, so it stays a constant.
@@ -888,6 +894,11 @@ mod tests {
         let tinted = p.tinted(p.calendar[0]);
         assert_eq!((tinted.r, tinted.g, tinted.b), (p.calendar[0].r, p.calendar[0].g, p.calendar[0].b));
         assert_eq!(tinted.a, 0.14);
+    }
+
+    #[test]
+    fn the_map_preview_is_two_rows_and_a_gap() {
+        assert_eq!(size::map_preview(), 104.0);
     }
 
     #[test]
