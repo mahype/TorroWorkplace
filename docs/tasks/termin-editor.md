@@ -135,7 +135,9 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   - **Following ändern:** teilen – Master `UNTIL` = Vorkommen − 1 s (`COUNT` → `UNTIL`), spätere `EXDATE`,
     `RDATE` und Ausnahmen dort entfernen; neues Objekt mit neuer UID, `RELATED-TO;RELTYPE=SIBLING`, `DTSTART`
     am Vorkommen, Rest-`COUNT`; spätere Ausnahmen und `EXDATE` ziehen um, wenn Zeit und Regel gleich bleiben,
-    sonst fallen sie weg und die Antwort sagt wie viele. Ist das Vorkommen das erste, gilt `Series`.
+    sonst fallen sie weg und die Antwort sagt wie viele. Spätere `RDATE` ziehen immer um und rücken mit; an
+    einem `RDATE` außerhalb der Regel wird nicht geteilt (`unsupported`, Review von PR #294). Ist das
+    Vorkommen das erste, gilt `Series`.
   - **Series ändern:** Master ändern; verschiebt sich der Beginn, rücken `RECURRENCE-ID` aller Ausnahmen und alle
     `EXDATE` um denselben Abstand; Felder der Ausnahmen, die sie selbst geändert haben, bleiben.
   - **Löschen:** Occurrence → `EXDATE` (in der Zone von `DTSTART`) und Ausnahme entfernen; Following → wie

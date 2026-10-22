@@ -193,6 +193,17 @@ Kacheln, zu Photon, zu den Regeln von Nominatim und „© OpenStreetMap contribu
   bleiben, kein Löschrecht nötig). Ändert er sie, beginnt die neue Serie bei seiner Zeit, gemessen vom
   Raster (14:00 → 15:00: Serie um 15:00), und spätere Ausnahmen werden zurückgesetzt. Kern (`drops`,
   `resets`) und Editor (Band) zählen mit derselben Bedingung.
+- **„Folgende“ und Zusatztermine** (Review von PR #294): `RDATE` anderer Programme ab dem Termin ziehen in
+  die neue Serie und rücken mit ihr, wie bei „alle“. An einem `RDATE`, das kein Datum der Regel ist, teilt der
+  Dienst nicht (`unsupported`): die Regel würde sonst auf diesem Datum neu verankert (dienstags 10:00 würde
+  donnerstags 15:00). Gezählt wird ab dem Termin, auch in Serien, die vor mehr als zehn Jahren begannen; der
+  Rest eines `COUNT` ebenso. Wo der Dienst nicht so weit zählen kann (über 5000 Termine), teilt er nicht.
+- **Zählhorizont:** Termine zählt der Dienst bis zehn Jahre (höchstens 5000). Eine neue Regel, die danach
+  früher endet, und ein späterer Beginn unter einem festen `UNTIL` jenseits davon zählen als gelöscht
+  (mindestens 1). Daten außerhalb der Jahre 1 bis 9999 sind `error`.
+- **Umfang wechseln im Editor:** Was unter dem bisherigen Umfang getippt und noch nicht gespeichert ist,
+  speichert der Editor vor dem Wechsel mit diesem Umfang; ist es noch nicht speicherbar oder läuft ein
+  Speichern, bleibt der Umfang, bis es gespeichert ist.
 - **Um Tage verschieben:** Bleibt `BYDAY`/`BYMONTHDAY` stehen, ist das zulässig (RFC 5545: `DTSTART` zählt
   dann als zusätzliches Vorkommen); was wegfällt, zählt als gelöscht (Löschrecht, Freigabe). Der Editor
   schickt die Regel mit dem neuen Wochentag mit.
