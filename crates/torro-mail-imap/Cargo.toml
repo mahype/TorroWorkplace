@@ -31,6 +31,8 @@ rustls.workspace = true
 rustls-platform-verifier.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The fingerprint of a server certificate a person trusts (task M11.2).
+sha2.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 webpki-roots.workspace = true

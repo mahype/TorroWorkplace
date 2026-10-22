@@ -255,7 +255,10 @@ impl SignInError {
         match err {
             ImapError::Auth(_) => SignInError::Refused(Service::Imap),
             ImapError::Offline(_) => SignInError::Offline(Service::Imap),
-            ImapError::Protocol(_) | ImapError::NotFound(_) => SignInError::Failed(Service::Imap),
+            // Task M11.3 answers an untrusted certificate with its fingerprint; until then it fails.
+            ImapError::Protocol(_) | ImapError::NotFound(_) | ImapError::Untrusted(_) => {
+                SignInError::Failed(Service::Imap)
+            }
         }
     }
 
@@ -274,9 +277,12 @@ impl SignInError {
             SmtpError::Auth => SignInError::Refused(Service::Smtp),
             SmtpError::Offline => SignInError::Offline(Service::Smtp),
             SmtpError::Unsupported => SignInError::Unsupported(Service::Smtp),
-            SmtpError::Tls | SmtpError::Rejected { .. } | SmtpError::InvalidEnvelope | SmtpError::Protocol => {
-                SignInError::Failed(Service::Smtp)
-            }
+            // Task M11.3 answers an untrusted certificate with its fingerprint; until then it fails.
+            SmtpError::Tls
+            | SmtpError::Untrusted(_)
+            | SmtpError::Rejected { .. }
+            | SmtpError::InvalidEnvelope
+            | SmtpError::Protocol => SignInError::Failed(Service::Smtp),
         }
     }
 

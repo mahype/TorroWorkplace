@@ -1044,7 +1044,7 @@ läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
   committet; `outcome` mit der neuen Antwort; Tabellen-Test der Rechte und `names_follow_the_rules` grün (Client-Schlüssel weiter `forbidden`).
 
 ### M11.2 TLS: einem bestätigten Zertifikat vertrauen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail-imap/src/{tls,imap,smtp,lib}.rs`
   (`tls.rs` neu), `crates/torro-mail-imap/Cargo.toml` (`sha2.workspace = true`); nur die `match` auf die neuen
   Varianten in `crates/torroworkplace/src/mail/{send,service,sync}.rs`

@@ -134,7 +134,9 @@ impl SendError {
 fn smtp_refusal(error: SmtpError) -> Response {
     let (code, message) = match error {
         SmtpError::Auth => ("auth", tr("The outgoing mail server refused the password. Nothing was sent.").to_string()),
-        SmtpError::Offline | SmtpError::Tls => (
+        // An untrusted certificate (task M11.2) ends the connection before the login, like a
+        // failed handshake: nothing was sent. Task M11.3 gives it words of its own.
+        SmtpError::Offline | SmtpError::Tls | SmtpError::Untrusted(_) => (
             "offline",
             tr("The outgoing mail server cannot be reached. Nothing was sent; try again later.").to_string(),
         ),
