@@ -270,8 +270,9 @@ pub struct Repeat {
     /// The rule as read from the server, without `RRULE:` (`FREQ=WEEKLY;BYDAY=TU`); empty for a
     /// rule a client builds. Only read back: a save writes the stored rule (custom, or the fields
     /// unchanged) or one made from the fields, never this text, except for a custom rule of an event
-    /// that has no rule yet. It must be one line of the `RRULE` grammar (letters, digits, `;=,+-`),
-    /// else the save is refused with `error`.
+    /// that has no rule yet. Sent back unchanged it may be any stored rule; any other text must be
+    /// one line of the `RRULE` grammar (RFC 5545 parts with valid values, `X-NAME=value` in plain
+    /// ASCII), else the save is refused with `error`.
     #[serde(default)]
     pub rule: String,
     /// The rule has parts the fields above do not show (`BYSETPOS`, `BYHOUR`, `BYWEEKNO`,
