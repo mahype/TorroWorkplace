@@ -159,6 +159,23 @@ pub fn target_start(opened: &Opened, dirs: &[PathBuf], bundle: Option<&Path>) ->
     }
 }
 
+/// The command line that starts a window of the control centre's program the core opens itself (issue
+/// #279, decision 7 in `docs/lebenszyklus.md`): the control centre on a page (`ui --section accounts`),
+/// the first-run setup (`ui --setup`) and the template dialog (`ui --template=<id> --saved`). `command`
+/// is the program with its arguments; with the `bundle` of the control centre ([`installed_bundle`] of
+/// [`AppId::WORKPLACE`], never the core's own) `open -n -a <bundle> --args <arguments…>`, so the window
+/// runs as "Torro Workplace.app" with its Dock icon and bundle id, not inside the core's service bundle.
+/// Always a new instance: each of these starts carries arguments a running one would not get, and the
+/// running one may be a template dialog of the same bundle; a second control centre hands over to the
+/// first through its instance channel (`torro_gui::instance`) and ends. Without a bundle `command`
+/// unchanged. Pure, tested on every system; the arguments are what the core built, never a key.
+pub fn workplace_command(command: Vec<String>, bundle: Option<&Path>) -> Vec<String> {
+    match bundle {
+        Some(bundle) => open_command(bundle, Some(command.get(1..).unwrap_or_default())),
+        None => command,
+    }
+}
+
 /// Runs `start` ([`Start`]): a program through the system launcher, `Ok` once it is started; `open`
 /// (macOS only) waited for, `Ok` once the system took the start, an `Err` when it ended with an exit
 /// code other than 0. What `open` printed goes to the core's log only, not into the answer, as it
@@ -959,6 +976,34 @@ pub mod tests {
         );
         assert_eq!(bundle_for(AppId::CALENDAR, Some(service), Some(home), everything), Some(calendar));
         assert_eq!(bundle_for(AppId::CALENDAR, Some(control), Some(home), |_| false), None);
+    }
+
+    /// Issue #279: the windows of the control centre's program the core opens itself start as a new
+    /// instance of "Torro Workplace.app" with exactly the arguments after the program; without the
+    /// bundle the command line stays as it was.
+    #[test]
+    fn the_control_centre_starts_as_a_new_instance_of_its_bundle() {
+        let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        let bundle = Path::new("/Users/anna/Downloads/Torro Workplace.app");
+        let setup = words(&["/opt/torro/torroworkplace", "ui", "--setup"]);
+        assert_eq!(
+            workplace_command(setup.clone(), Some(bundle)),
+            words(&[
+                "/usr/bin/open",
+                "-n",
+                "-a",
+                "/Users/anna/Downloads/Torro Workplace.app",
+                "--args",
+                "ui",
+                "--setup"
+            ])
+        );
+        assert_eq!(workplace_command(setup.clone(), None), setup, "without a bundle as before");
+        assert_eq!(
+            workplace_command(Vec::new(), Some(bundle)),
+            words(&["/usr/bin/open", "-n", "-a", "/Users/anna/Downloads/Torro Workplace.app", "--args"]),
+            "no program, no arguments"
+        );
     }
 
     /// Off macOS there is no bundle and no `open`.

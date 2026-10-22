@@ -83,18 +83,30 @@ pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: 
     settings.setup.state == torro_core::settings::SetupState::Pending && accounts == 0
 }
 
-/// Starts a new control centre in the first-run setup (task W.9); `_section` is for the signature
-/// [`show_control_centre`] takes.
-fn start_setup(_section: Section) -> Result<(), String> {
+/// The command line that starts a window of the control centre's program: `build` adds the arguments
+/// to the program ([`setup_command`], [`control_centre_command`], [`save_dialog_command`]). On macOS
+/// through "Torro Workplace.app" when it is there (issue #279, [`crate::apps::workplace_command`]), so
+/// the window does not run inside the core's service bundle (decision 7), which has no Dock icon and
+/// whose bundle id no window of the control centre carries; else the program [`sibling`] finds, as
+/// before.
+fn workplace_start(build: impl FnOnce(String) -> Vec<String>) -> Vec<String> {
     let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-    SystemLauncher.spawn(&setup_command(program)).map(|_| ()).map_err(|err| err.to_string())
+    let bundle = crate::apps::installed_bundle(AppId::WORKPLACE);
+    crate::apps::workplace_command(build(program), bundle.as_deref())
 }
 
-/// Starts a new control centre on `section`: the accounts page, where a person finishes what a
-/// client asked for (`accounts.connect_github`).
+/// Starts a new control centre in the first-run setup (task W.9, [`workplace_start`]); `_section` is
+/// for the signature [`show_control_centre`] takes. Not waited for: `Ok` once the program, or `open`
+/// for the bundle, is started.
+fn start_setup(_section: Section) -> Result<(), String> {
+    SystemLauncher.spawn(&workplace_start(setup_command)).map(|_| ()).map_err(|err| err.to_string())
+}
+
+/// Starts a new control centre on `section` ([`workplace_start`]): the accounts page, where a person
+/// finishes what a client asked for (`accounts.connect_github`). Not waited for, as [`start_setup`].
 fn start_control_centre(section: Section) -> Result<(), String> {
-    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-    SystemLauncher.spawn(&control_centre_command(program, section)).map(|_| ()).map_err(|err| err.to_string())
+    let command = workplace_start(|program| control_centre_command(program, section));
+    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
 }
 
 /// The command line of the template dialog in its mode "Save" for `id`, the template saved just now
@@ -108,12 +120,12 @@ fn save_dialog_command(program: String, id: &str) -> Vec<String> {
     command
 }
 
-/// Starts the template dialog in its mode "Save" for `id` through `launcher` ([`save_dialog_command`],
-/// the core's own binary as [`sibling`] finds it), without waiting for it: the dialog loads what it
-/// shows itself and ends after Save or Cancel. `false`, with a line on stderr, when it cannot start.
+/// Starts the template dialog in its mode "Save" for `id` through `launcher` ([`save_dialog_command`]
+/// through [`workplace_start`]: "Torro Workplace.app" on macOS when it is there, else the core's own
+/// binary as [`sibling`] finds it), without waiting for it: the dialog loads what it shows itself and
+/// ends after Save or Cancel. `false`, with a line on stderr, when it cannot start.
 fn start_save_dialog(launcher: &impl Launcher, id: &str) -> bool {
-    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-    match launcher.spawn(&save_dialog_command(program, id)) {
+    match launcher.spawn(&workplace_start(|program| save_dialog_command(program, id))) {
         Ok(_) => true,
         Err(err) => {
             eprintln!("torroworkplace: cannot open the dialog of template {id}: {err}");
@@ -10658,9 +10670,33 @@ mod tests {
         );
         let launcher = Recorder::default();
         assert!(start_save_dialog(&launcher, "deep-work"));
-        let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-        assert_eq!(*launcher.started.lock().expect("lock"), [save_dialog_command(program, "deep-work")]);
+        let command = workplace_start(|program| save_dialog_command(program, "deep-work"));
+        assert_eq!(*launcher.started.lock().expect("lock"), [command]);
         assert!(!start_save_dialog(&Recorder { fails: true, ..Recorder::default() }, "deep-work"), "it says so");
+    }
+
+    /// Issue #279: with "Torro Workplace.app" the setup, the control centre on a page and the template
+    /// dialog start as new instances of that bundle, each with its arguments; the program's own path
+    /// (here the core's service program) does not go along.
+    #[test]
+    fn the_control_centre_windows_start_from_its_bundle() {
+        let program = "/Applications/Torro Workplace.app/Contents/Library/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
+        let bundle = std::path::Path::new("/Applications/Torro Workplace.app");
+        let start = |command: Vec<String>| crate::apps::workplace_command(command, Some(bundle));
+        let open = |args: &[&str]| {
+            let mut command = vec!["/usr/bin/open", "-n", "-a", "/Applications/Torro Workplace.app", "--args"];
+            command.extend(args);
+            command.into_iter().map(String::from).collect::<Vec<_>>()
+        };
+        assert_eq!(start(setup_command(program.into())), open(&["ui", "--setup"]));
+        assert_eq!(
+            start(control_centre_command(program.into(), Section::Accounts)),
+            open(&["ui", "--section", Section::Accounts.arg()])
+        );
+        assert_eq!(
+            start(save_dialog_command(program.into(), "deep-work")),
+            open(&["ui", "--template=deep-work", "--saved"])
+        );
     }
 
     /// Task WS.7: a save that fails (here: no window manager) opens no dialog, and the tray reports why.
