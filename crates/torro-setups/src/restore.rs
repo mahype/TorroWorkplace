@@ -25,12 +25,22 @@
 //! (checked on Linux via `/proc`). A window of the same class that does not descend from it
 //! is a second choice: it is used once no other event is waiting. Windows that match nothing
 //! are kept, so a later [`Strategy::Move`] can still take one.
+//!
+//! # Apps of the suite
+//!
+//! An app of the suite started without a target runs once (issue #279): a second process only
+//! brings the running window to the front and ends, so waiting for its window would run into the
+//! timeout. Such a window always loads as [`Strategy::Move`], also from a template saved as
+//! [`Strategy::New`] before #279 ([`load_strategy`]). Its window may be anywhere, the target
+//! workspace included: [`LoadMode::Add`] takes the one already there, and [`LoadMode::Replace`]
+//! keeps it open instead of closing it and racing its end with the new start.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use torro_wm::{Events, Split, Window, WindowId, WindowManager, WmEvent, WorkspaceId};
 
+use crate::capture::suite_single_instance;
 use crate::launch::Launcher;
 use crate::{LayoutTree, LoadMode, SetupsError, Strategy, Template, TemplateWindow};
 
@@ -64,7 +74,44 @@ pub async fn restore(
     mode: LoadMode,
     options: &RestoreOptions,
 ) -> Result<RestoreReport, SetupsError> {
-    restore_with(wm, launcher, template, mode, options, default_ancestors()).await
+    restore_with(wm, launcher, template, mode, options, default_ancestors(), Box::new(crate::launch::command_for)).await
+}
+
+/// The strategy `window` loads with: [`Strategy::Move`] for the one window of an app of the suite
+/// ([`suite_single_instance`]), whatever the template stored; else the stored one.
+pub fn load_strategy(window: &TemplateWindow) -> Strategy {
+    if suite_single_instance(&window.class, &window.command) { Strategy::Move } else { window.strategy }
+}
+
+/// The command that started an open window ([`crate::launch::command_for`]); tests pass a closure.
+type Commands = Box<dyn Fn(&Window) -> Vec<String> + Send + Sync>;
+
+/// Whether the open window `open` can be the one window of the suite app that `template` stands for
+/// ([`suite_single_instance`]): the same class, and itself started without a target. Under AeroSpace
+/// and GlazeWM a side window (a chat, a single task) carries the main window's class, so its command
+/// decides; a window whose command is unknown is taken on the class alone.
+fn is_suite_window(template: &TemplateWindow, open: &Window, commands: &Commands) -> bool {
+    if !open.class.eq_ignore_ascii_case(&template.class) {
+        return false;
+    }
+    let command = commands(open);
+    command.is_empty() || suite_single_instance(&open.class, &command)
+}
+
+/// Splits the windows on the target of a [`LoadMode::Replace`] into those to keep and those to
+/// close: each window of a suite app that runs once ([`suite_single_instance`]) keeps one open
+/// window of its own ([`is_suite_window`]); closing it would race its end with the start that is to
+/// bring it back.
+fn keep_on_replace(template: &Template, occupied: Vec<Window>, commands: &Commands) -> (Vec<Window>, Vec<Window>) {
+    let mut close = occupied;
+    let mut keep = Vec::new();
+    let once = template.windows.iter().filter(|window| suite_single_instance(&window.class, &window.command));
+    for window in once {
+        if let Some(at) = close.iter().position(|open| is_suite_window(window, open, commands)) {
+            keep.push(close.remove(at));
+        }
+    }
+    (keep, close)
 }
 
 /// Maps a window's pid to the pids of it and its ancestors. [`restore`] reads `/proc`; tests
@@ -89,6 +136,7 @@ async fn restore_with(
     mode: LoadMode,
     options: &RestoreOptions,
     ancestors: Ancestors,
+    commands: Commands,
 ) -> Result<RestoreReport, SetupsError> {
     // Starting programs can move the focus, so the target is taken before anything else.
     let target = wm.active_workspace().await?;
@@ -97,17 +145,21 @@ async fn restore_with(
     let events = wm.events().await?;
 
     let occupied = wm.windows(Some(&target)).await?;
-    match mode {
+    // Windows that stay on the target; the suite's apps may take theirs from here.
+    let here = match mode {
         LoadMode::Empty if !occupied.is_empty() => {
             return Err(SetupsError::WorkspaceNotEmpty { windows: occupied.len() });
         }
         LoadMode::Replace => {
-            for window in &occupied {
+            let (keep, close) = keep_on_replace(template, occupied, &commands);
+            for window in &close {
                 wm.close_window(&window.id).await?;
             }
+            keep
         }
-        LoadMode::Empty | LoadMode::Add => {}
-    }
+        LoadMode::Add => occupied,
+        LoadMode::Empty => Vec::new(),
+    };
 
     // Open windows on other workspaces are the candidates for `Strategy::Move`.
     let elsewhere = wm.windows(None).await?.into_iter().filter(|w| w.workspace != target).collect();
@@ -116,11 +168,13 @@ async fn restore_with(
         launcher,
         options,
         target,
+        here,
         elsewhere,
         pending: Vec::new(),
         used: HashSet::new(),
         events,
         ancestors,
+        commands,
     };
 
     let mut outcomes: Outcomes = HashMap::new();
@@ -169,6 +223,9 @@ struct Loader<'a, W, L> {
     launcher: &'a L,
     options: &'a RestoreOptions,
     target: WorkspaceId,
+    /// Open windows on the target that the load keeps; only the suite's apps take one of them
+    /// (see the module docs).
+    here: Vec<Window>,
     /// Open windows on other workspaces when the load started, in the order the window
     /// manager lists them.
     elsewhere: Vec<Window>,
@@ -180,6 +237,7 @@ struct Loader<'a, W, L> {
     /// The subscription opened at the start of the load.
     events: Events,
     ancestors: Ancestors,
+    commands: Commands,
 }
 
 impl<W: WindowManager, L: Launcher> Loader<'_, W, L> {
@@ -188,7 +246,7 @@ impl<W: WindowManager, L: Launcher> Loader<'_, W, L> {
     async fn bring(&mut self, window: &TemplateWindow) -> Result<WindowId, String> {
         // Windows that opened since the last call may be what a later `Move` wants.
         self.absorb().await;
-        match window.strategy {
+        match load_strategy(window) {
             Strategy::Move => {
                 if let Some(open) = self.find_open(window) {
                     return self.claim(open).await;
@@ -202,8 +260,19 @@ impl<W: WindowManager, L: Launcher> Loader<'_, W, L> {
         }
     }
 
-    /// The first unused open window of the same class on another workspace.
+    /// The first unused open window of the same class on another workspace; for the one window of a
+    /// suite app ([`suite_single_instance`]) its window wherever it is ([`is_suite_window`]), the one
+    /// already on the target first.
     fn find_open(&self, window: &TemplateWindow) -> Option<Window> {
+        if suite_single_instance(&window.class, &window.command) {
+            return self
+                .here
+                .iter()
+                .chain(&self.elsewhere)
+                .chain(&self.pending)
+                .find(|open| !self.used.contains(&open.id) && is_suite_window(window, open, &self.commands))
+                .cloned();
+        }
         let class = window.class.to_lowercase();
         self.elsewhere
             .iter()
@@ -488,8 +557,25 @@ mod tests {
         launcher: &impl Launcher,
         template: &Template,
     ) -> Result<RestoreReport, SetupsError> {
+        suite_load(wm, launcher, template, LoadMode::Empty, &[]).await
+    }
+
+    /// Loads in `mode` with a short wait and the test process tree; `commands` tells the start
+    /// command of open windows by id (unknown ones have none).
+    async fn suite_load(
+        wm: &FakeWm,
+        launcher: &impl Launcher,
+        template: &Template,
+        mode: LoadMode,
+        commands: &[(&str, &[&str])],
+    ) -> Result<RestoreReport, SetupsError> {
         let options = RestoreOptions { window_timeout: Duration::from_millis(50) };
-        restore_with(wm, launcher, template, LoadMode::Empty, &options, Box::new(ancestry)).await
+        let commands: HashMap<String, Vec<String>> = commands
+            .iter()
+            .map(|(id, command)| (id.to_string(), command.iter().map(|word| word.to_string()).collect()))
+            .collect();
+        let commands: Commands = Box::new(move |open: &Window| commands.get(&open.id.0).cloned().unwrap_or_default());
+        restore_with(wm, launcher, template, mode, &options, Box::new(ancestry), commands).await
     }
 
     fn ws(name: &str) -> WorkspaceId {
@@ -1065,5 +1151,104 @@ mod tests {
             wm.calls(),
             vec![Call::Move(wid("0xa"), ws("3")), Call::PrepareInsert(wid("0xa"), SplitDirection::LeftRight)]
         );
+    }
+
+    /// The calendar as a template saved before #279 stores it: a plain start, [`Strategy::New`].
+    fn calendar() -> TemplateWindow {
+        started_window("window-cal", "torro-calendar", &["/usr/bin/torrocalendar"])
+    }
+
+    /// A launcher that fails the test when a load starts anything.
+    fn no_start() -> Scripted<impl Fn(&[String]) -> Result<u32, SetupsError> + Send + Sync> {
+        Scripted::new(|command: &[String]| Err(SetupsError::Launch(format!("started {command:?}"))))
+    }
+
+    /// Issue #279: the running calendar would only hand over to itself, so its open window is moved,
+    /// even though the template says `New`.
+    #[tokio::test]
+    async fn a_running_suite_app_is_moved_instead_of_started() {
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xc", "torro-calendar")]);
+        let launcher = no_start();
+
+        let report = suite_load(&wm, &launcher, &template(vec![calendar()]), LoadMode::Empty, &[]).await.unwrap();
+
+        assert_eq!(report, RestoreReport { restored: vec!["window-cal".into()], failed: vec![] });
+        assert!(launcher.started().is_empty());
+        assert_eq!(wm.calls(), vec![Call::Move(wid("0xc"), ws("3"))]);
+        assert_eq!(load_strategy(&calendar()), Strategy::Move);
+    }
+
+    #[tokio::test]
+    async fn a_suite_app_that_is_not_running_is_started() {
+        let wm = Arc::new(FakeWm::new("3"));
+        let opener = Arc::clone(&wm);
+        let launcher = Scripted::new(move |_: &[String]| {
+            opener.open_window("torro-calendar", Some(CHILD_PID));
+            Ok(SPAWNED_PID)
+        });
+
+        let report = start_load(&wm, &launcher, &template(vec![calendar()])).await.unwrap();
+
+        assert_eq!(report.restored, vec!["window-cal".to_string()]);
+        assert_eq!(launcher.started(), vec![vec!["/usr/bin/torrocalendar".to_string()]]);
+    }
+
+    #[tokio::test]
+    async fn add_takes_the_suite_app_already_on_the_target() {
+        let wm = FakeWm::new("3");
+        wm.add_window(window("0xc", "torro-calendar", "3", Rect::default()));
+        let launcher = no_start();
+
+        let report = suite_load(&wm, &launcher, &template(vec![calendar()]), LoadMode::Add, &[]).await.unwrap();
+
+        assert_eq!(report.restored, vec!["window-cal".to_string()]);
+        assert!(launcher.started().is_empty());
+        assert!(wm.calls().is_empty(), "it is in place already");
+    }
+
+    /// Closing the calendar and starting it again would race: the new process may hand over to the
+    /// closing one and end without a window.
+    #[tokio::test]
+    async fn replace_keeps_the_suite_app_on_the_target_and_closes_the_rest() {
+        let wm = FakeWm::new("3");
+        wm.add_window(window("0xc", "torro-calendar", "3", Rect::default()));
+        wm.add_window(window("0xf", "foot", "3", Rect::default()));
+        let launcher = no_start();
+
+        let report = suite_load(&wm, &launcher, &template(vec![calendar()]), LoadMode::Replace, &[]).await.unwrap();
+
+        assert_eq!(report.restored, vec!["window-cal".to_string()]);
+        assert!(launcher.started().is_empty());
+        assert_eq!(wm.calls(), vec![Call::Close(wid("0xf"))]);
+    }
+
+    /// AeroSpace names every window of a bundle by its id: a single task's window is no stand-in for
+    /// the tasks app, and a template window with a target is started as before.
+    #[tokio::test]
+    async fn a_side_window_with_the_same_name_is_not_taken_and_a_target_still_starts() {
+        const TASKS: &str = "io.github.mahype.torro-tasks";
+        let wm = Arc::new(FakeWm::new("3"));
+        open_on_five(&wm, &[("0xt", TASKS)]);
+        let opener = Arc::clone(&wm);
+        let launcher = Scripted::new(move |_: &[String]| {
+            opener.open_window(TASKS, Some(CHILD_PID));
+            Ok(SPAWNED_PID)
+        });
+        let task_window: &[&str] = &["open", "-n", "-a", "/Applications/Torro Tasks.app", "--args", "--task=abc"];
+        let template = template(vec![started_window(
+            "window-tasks",
+            TASKS,
+            &["open", "-n", "-a", "/Applications/Torro Tasks.app"],
+        )]);
+
+        let report = suite_load(&wm, &launcher, &template, LoadMode::Empty, &[("0xt", task_window)]).await.unwrap();
+
+        assert_eq!(report.restored, vec!["window-tasks".to_string()]);
+        assert_eq!(launcher.started().len(), 1, "the main window is started, the task's window stays");
+        assert!(wm.all_windows().iter().any(|w| w.id == wid("0xt") && w.workspace == ws("5")));
+
+        let with_target = started_window("window-task", TASKS, task_window);
+        assert_eq!(load_strategy(&with_target), Strategy::New);
     }
 }

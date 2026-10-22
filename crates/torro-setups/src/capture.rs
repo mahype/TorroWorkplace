@@ -53,12 +53,13 @@ pub async fn capture(
 
     let mut template_windows = Vec::with_capacity(windows.len());
     for (index, window) in windows.iter().enumerate() {
+        let command = resolve(window);
         template_windows.push(TemplateWindow {
             id: format!("window-{}", index + 1),
             class: window.class.clone(),
             title: window.title.clone(),
-            command: resolve(window),
-            strategy: default_strategy(&window.class),
+            strategy: strategy_for(&window.class, &command),
+            command,
             floating: window.floating,
             rect: Rect {
                 x: window.rect.x - origin_x,
@@ -105,6 +106,77 @@ pub fn default_strategy(class: &str) -> Strategy {
     let class = class.to_ascii_lowercase();
     let last = class.rsplit('.').next().unwrap_or_default();
     if SINGLE_INSTANCE.contains(&last) { Strategy::Move } else { Strategy::New }
+}
+
+/// The strategy a captured window gets: [`Strategy::Move`] when its program only runs once – a
+/// [`SINGLE_INSTANCE`] class ([`default_strategy`]) or a plain start of an app of the suite
+/// ([`suite_single_instance`]) – else [`Strategy::New`].
+pub fn strategy_for(class: &str, command: &[String]) -> Strategy {
+    if suite_single_instance(class, command) { Strategy::Move } else { default_strategy(class) }
+}
+
+/// The app of the suite whose windows a window manager names `class` (issue #279), ignoring case:
+/// its window class (Hyprland, `torro-calendar`), its bundle id `io.github.mahype.<window class>`
+/// (AeroSpace on macOS), its program file or binary, with or without `.exe` (AeroSpace for a
+/// program without bundle, GlazeWM on Windows). `None` for any other program.
+///
+/// Under AeroSpace and GlazeWM every window of a program carries that one name, the side windows
+/// too (a chat, a single task, the settings); only the start command tells them apart
+/// ([`suite_single_instance`]).
+pub fn suite_app(class: &str) -> Option<AppId> {
+    let class = class.to_ascii_lowercase();
+    let program = class.strip_suffix(".exe").unwrap_or(&class);
+    let bundled = class.strip_prefix(BUNDLE_ID_PREFIX);
+    AppId::ALL
+        .iter()
+        .find(|app| {
+            app.window_class == class
+                || bundled == Some(app.window_class)
+                || app.program_file() == program
+                || app.binary == program
+        })
+        .copied()
+}
+
+/// What `io.github.mahype.<window class>` starts with: the bundle ids of the suite's apps on macOS
+/// (`packaging/macos/Info.plist.in`, [`WORKPLACE_BUNDLE_ID`]).
+const BUNDLE_ID_PREFIX: &str = "io.github.mahype.";
+
+/// Whether a window of `class` started with `command` is the one window of an app of the suite
+/// ([`suite_app`]) that runs only once (issue #279, `torro_gui::instance`): its command starts the
+/// app without a target, nothing but the arguments of one of the entries of its binary
+/// ([`AppId::args`], `--view mail` also as `--view=mail`).
+///
+/// A second process of such a start only brings the running window to the front and ends, so a
+/// template load must move that window instead of waiting for a new one. A start with a target
+/// (`--task=…`, `--message=…`, `--lane`, `--source`, `--chat`, `--settings`, …) opens a window of its
+/// own and is `false`, as is an empty command (nothing is known about the start).
+pub fn suite_single_instance(class: &str, command: &[String]) -> bool {
+    let (Some(app), Some(args)) = (suite_app(class), start_args(command)) else {
+        return false;
+    };
+    AppId::ALL.iter().filter(|entry| entry.binary == app.binary).any(|entry| args == entry.args)
+}
+
+/// The arguments `command` passes to the program it starts, `--view=mail` split into `--view`,
+/// `mail`: everything after the program, or for a macOS bundle start (`open -n -a <Foo.app> [--args
+/// …]`, `launch::macos::command_from_process`) everything after `--args`. `None` for an empty
+/// command.
+fn start_args(command: &[String]) -> Option<Vec<String>> {
+    let (program, rest) = command.split_first()?;
+    let rest = if program == "open" {
+        rest.iter().position(|arg| arg == "--args").map_or(&[][..], |at| &rest[at + 1..])
+    } else {
+        rest
+    };
+    let mut args = Vec::with_capacity(rest.len());
+    for arg in rest {
+        match arg.strip_prefix("--view=") {
+            Some(view) => args.extend(["--view".to_string(), view.to_string()]),
+            None => args.push(arg.clone()),
+        }
+    }
+    Some(args)
 }
 
 #[cfg(test)]
@@ -282,6 +354,86 @@ mod tests {
         assert_eq!(auto_name("3", fixed_now()), "Workspace 3, 11.10. 14:20");
         let morning = Local.with_ymd_and_hms(2026, 3, 4, 9, 5, 0).unwrap();
         assert_eq!(auto_name("web", morning), "Workspace web, 04.03. 09:05");
+    }
+
+    fn words(command: &[&str]) -> Vec<String> {
+        command.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// Issue #279: an app of the suite runs once, so a template moves its window; by every name a
+    /// window manager gives it. Windows with a target and other programs still start anew.
+    #[tokio::test]
+    async fn a_plain_start_of_a_suite_app_is_moved_and_a_start_with_a_target_is_new() {
+        let wm = FakeWm::new("3");
+        let rect = Rect { x: 0, y: 0, width: 960, height: 1080 };
+        for (id, class) in [("0xa", "torro-calendar"), ("0xb", "torro-tasks"), ("0xc", "foot")] {
+            wm.add_window(window(id, class, "3", rect));
+        }
+        let resolve = |w: &Window| match w.class.as_str() {
+            "torro-calendar" => words(&["/usr/bin/torrocalendar"]),
+            "torro-tasks" => words(&["/usr/bin/torrotasks", "--task=abc"]),
+            _ => words(&["foot"]),
+        };
+
+        let template = capture(&wm, "tpl-6".into(), resolve, fixed_now()).await.expect("captured");
+
+        let strategies: Vec<Strategy> = template.windows.iter().map(|w| w.strategy).collect();
+        assert_eq!(strategies, [Strategy::Move, Strategy::New, Strategy::New]);
+    }
+
+    #[test]
+    fn the_suite_is_known_by_every_name_a_window_manager_gives_it() {
+        for class in [
+            "torro-calendar",
+            "io.github.mahype.torro-calendar",
+            "IO.GITHUB.MAHYPE.TORRO-CALENDAR",
+            "torrocalendar",
+            "torrocalendar.exe",
+            "TorroCalendar.EXE",
+        ] {
+            assert_eq!(suite_app(class), Some(AppId::CALENDAR), "{class}");
+        }
+        assert_eq!(suite_app("io.github.mahype.torro-inbox-mail"), Some(AppId::INBOX_MAIL));
+        assert_eq!(suite_app("torro-inbox-mail.exe"), Some(AppId::INBOX_MAIL));
+        assert_eq!(suite_app("torroinbox"), Some(AppId::INBOX));
+        for other in ["foot", "com.mitchellh.ghostty", "torro-calendar-helper", "io.github.mahype.foot"] {
+            assert_eq!(suite_app(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn only_a_start_without_a_target_is_the_single_instance() {
+        let plain = [
+            ("torro-calendar", words(&["/usr/bin/torrocalendar"])),
+            ("torro-inbox-mail", words(&["/usr/bin/torroinbox", "--view", "mail"])),
+            ("torro-inbox-mail", words(&["/usr/bin/torroinbox", "--view=mail"])),
+            ("torro-inbox-mail", words(&["/usr/bin/torro-inbox-mail"])),
+            ("io.github.mahype.torro-tasks", words(&["open", "-n", "-a", "/Applications/Torro Tasks.app"])),
+            ("torroassistant.exe", words(&["C:\\Torro\\torroassistant.exe"])),
+        ];
+        for (class, command) in plain {
+            assert!(suite_single_instance(class, &command), "{class} {command:?}");
+            assert_eq!(strategy_for(class, &command), Strategy::Move);
+        }
+        let own_window = [
+            ("torro-tasks", words(&["/usr/bin/torrotasks", "--task=abc"])),
+            ("torro-inbox", words(&["/usr/bin/torroinbox", "--lane", "info"])),
+            ("torro-inbox", words(&["/usr/bin/torroinbox", "--source=github"])),
+            ("torro-inbox-mail", words(&["/usr/bin/torroinbox", "--view", "mail", "--message=42"])),
+            ("torro-assistant", words(&["/usr/bin/torroassistant", "--chat", "7"])),
+            ("torro-calendar", words(&["/usr/bin/torrocalendar", "--settings"])),
+            (
+                "io.github.mahype.torro-tasks",
+                words(&["open", "-n", "-a", "/Applications/Torro Tasks.app", "--args", "--task=abc"]),
+            ),
+            ("torro-calendar", Vec::new()),
+            ("foot", words(&["foot"])),
+        ];
+        for (class, command) in own_window {
+            assert!(!suite_single_instance(class, &command), "{class} {command:?}");
+        }
+        assert_eq!(strategy_for("torro-tasks", &words(&["torrotasks", "--task=abc"])), Strategy::New);
+        assert_eq!(strategy_for("Spotify", &words(&["spotify"])), Strategy::Move, "other single instances stay");
     }
 
     #[test]
