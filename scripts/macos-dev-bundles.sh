@@ -9,7 +9,8 @@
 # SERVICE_PROGRAM look for them (`<AppId::display_name>.app/Contents/MacOS/<AppId::program_file>`): the seven apps,
 # the core's service as an agent bundle inside "Torro Workplace.app", and the reminder. Each is signed with the
 # development identity (scripts/macos-dev-sign.sh, the embedded service before the outer bundle); without that
-# identity they stay unsigned. Each bundle gets its icon from packaging/macos/icons/ (task AP.7): the service the
+# identity each bundle is signed ad hoc as a whole, since the linker's signature of the bare program does not cover
+# the bundle's resources and `codesign --verify` would reject the bundle. Each bundle gets its icon from packaging/macos/icons/ (task AP.7): the service the
 # control centre's, the reminder the calendar's. The service keeps the signing identifier of the program
 # `torroworkplace`, so the keychain entries of the development core stay readable.
 #
@@ -55,12 +56,20 @@ fi
 
 mkdir -p "$out"
 
+# Signs `bundle` through its program `program`: with the development identity when there is one, else ad hoc.
+if security find-identity -v -p codesigning 2>/dev/null | grep -q '"Torro Development"'; then
+    sign_bundle() { "$sign" "$2"; }
+else
+    sign_bundle() { codesign --force --sign - "$1" >/dev/null 2>&1 || echo "torro: could not sign $1" >&2; }
+fi
+
 # The core's service first: an agent bundle (no Dock icon), signed, then embedded into "Torro Workplace.app".
 service_dir="$(mktemp -d)"
 trap 'rm -rf "$service_dir"' EXIT
 AGENT_APP=1 "$make_app" torroworkplace torro-workplace-service "Torro Workplace Service" "$version" \
     "$programs/torroworkplace" "$service_dir" "$icons/torro-workplace.png" >/dev/null
-"$sign" "$service_dir/Torro Workplace Service.app/Contents/MacOS/torroworkplace"
+sign_bundle "$service_dir/Torro Workplace Service.app" \
+    "$service_dir/Torro Workplace Service.app/Contents/MacOS/torroworkplace"
 
 while IFS='|' read -r file program appid title agent icon; do
     embed=""
@@ -68,7 +77,7 @@ while IFS='|' read -r file program appid title agent icon; do
     AGENT_APP="$agent" EMBED_APP="$embed" "$make_app" "$file" "$appid" "$title" "$version" "$programs/$program" \
         "$out" "$icons/$icon.png" >/dev/null
     # Signing the program in a bundle signs the bundle; the embedded service is signed already.
-    "$sign" "$out/$title.app/Contents/MacOS/$file"
+    sign_bundle "$out/$title.app" "$out/$title.app/Contents/MacOS/$file"
     echo "$out/$title.app"
 done <<< "$apps"
 echo "$out/Torro Workplace.app/Contents/Library/Torro Workplace Service.app"
