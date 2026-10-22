@@ -779,7 +779,8 @@ pub(crate) struct Invitation {
 impl Invitation {
     /// Reads the first event of the iCalendar object `ics` and what an answer needs: the method of
     /// the object, `SEQUENCE`, `ORGANIZER` and `ATTENDEE` of that event (nested components such as
-    /// `VALARM` left out). `None` without an event with a readable start (or a cancelled one).
+    /// `VALARM` left out). `None` without an event with a readable start; a cancelled one is read
+    /// (`status: cancelled`) but cannot be answered ([`Invitation::answerable`]).
     pub(crate) fn parse(ics: &str) -> Option<Invitation> {
         let event = torro_pim_caldav::parse_events(ics, "").into_iter().next()?;
         let mut invitation =
@@ -813,6 +814,7 @@ impl Invitation {
     /// events only, and an answer would lose the rule.
     pub(crate) fn answerable(&self) -> bool {
         self.method == "REQUEST"
+            && self.event.status != Some(torro_pim::model::EventStatus::Cancelled)
             && !self.event.uid.trim().is_empty()
             && self.organizer.is_some()
             && !self.event.recurring
@@ -1689,6 +1691,9 @@ pub(crate) mod tests {
         let (cancel, invite) = with("METHOD:REQUEST", "METHOD:CANCEL");
         assert_eq!(cancel.map(|invitation| invitation.method), Some("CANCEL".into()));
         assert_eq!(invite, None, "a cancellation is no invitation to answer");
+        let (cancelled, invite) = with("SEQUENCE:2", "SEQUENCE:2\r\nSTATUS:CANCELLED");
+        assert!(cancelled.is_some_and(|invitation| !invitation.answerable()), "a cancelled event is no request");
+        assert_eq!(invite, None);
         let (series, invite) = with("SEQUENCE:2", "SEQUENCE:2\r\nRRULE:FREQ=WEEKLY");
         assert!(series.is_some_and(|invitation| invitation.event.recurring) && invite.is_none());
         let (nobody, invite) = with("ORGANIZER;CN=\"Jonas Weber\":mailto:jonas@example.com", "X-NONE:1");
