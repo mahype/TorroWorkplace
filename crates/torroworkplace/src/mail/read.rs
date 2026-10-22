@@ -1345,7 +1345,9 @@ pub(crate) mod tests {
         let peeks = |lines: Vec<String>| lines.iter().filter(|line| line.contains("BODY.PEEK[]")).count();
         let before = peeks(server.lines());
         message(answer(&service, Reach::Suite, get(&id, true)).await);
-        assert_eq!(peeks(server.lines()), before, "the text is kept now");
+        // The account keeps the texts of the last 90 days (the default policy); a text fetched on demand
+        // from before that is shown but not retained, so the next read fetches it again.
+        assert_eq!(peeks(server.lines()), before + 1, "outside the cache policy the text is not kept");
     }
 
     /// A recent mail with a text and an HTML part; the HTML names an inline picture by its
