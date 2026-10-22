@@ -544,7 +544,8 @@ impl Form {
     }
 
     /// The event this form describes. `original` is the event being edited: its uid, href,
-    /// etag, key of the occurrence and what the form does not show (people) are kept.
+    /// etag, key of the occurrence and what the form does not show (people) are kept. A form
+    /// without a rule for an event that had one ends the series: `recurring` goes false with it.
     /// `today` resolves dates typed without a year.
     pub fn build(&self, today: NaiveDate, original: Option<&Event>) -> Result<Event, Problem> {
         let calendar = self.calendar.as_ref().ok_or(Problem::ChooseCalendar)?;
@@ -605,6 +606,12 @@ impl Form {
         event.description = non_empty(&self.notes);
         event.alarms = self.alarms.clone();
         event.repeat = self.repeat.clone().map(Box::new);
+        // Ending a series ("Never" for all events) says so twice: no rule and no longer recurring.
+        // The core ends a series only then; a missing rule alone keeps it (an occurrence whose rule
+        // it could not read, `Editor::rule_unknown`).
+        if self.repeat.is_none() && original.is_some_and(|event| event.repeat.is_some()) {
+            event.recurring = false;
+        }
         event.time_zone = self.time_zone.clone();
         event.url = non_empty(&self.url);
         event.transparency = self.transparency;
@@ -3314,6 +3321,7 @@ mod tests {
         let mut all = Editor::edit(&occurrence(), &calendars());
         all.update(Message::Scope(SeriesScope::Series));
         let (event, scope) = saves_with(&mut all, Message::PickRepeat(None));
+        assert!(!event.recurring, "ending the series says so: no rule and not recurring");
         assert_eq!((event.repeat, scope), (None, Some(SeriesScope::Series)));
 
         // The same rule again saves nothing, and keeps the stored text.
@@ -3455,6 +3463,7 @@ mod tests {
         editor.update(Message::StartTime("09:30".into()));
         let (event, scope) = saves_with(&mut editor, Message::Flush);
         assert_eq!((event.repeat, scope), (None, Some(SeriesScope::Occurrence)));
+        assert!(event.recurring, "a rule it could not read stays: the series goes on");
         // Never with another scope, however it got there.
         editor.scope = SeriesScope::Series;
         assert_eq!(editor.save_scope(), Some(SeriesScope::Occurrence));
