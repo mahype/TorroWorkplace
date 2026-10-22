@@ -142,22 +142,24 @@ pub struct SavedWorkspace {
     pub dialog: bool,
 }
 
-/// Shows the person the control centre: an open one the window manager lists by its window class
-/// comes to the front ([`focus_open`]), else one starts on `section` through `start`; a second control
-/// centre hands over to an open one through its instance channel and ends. An open one is never closed and restarted, because that would throw
+/// Shows the person the control centre on `section` through `start`. A page other than the overview
+/// opens in a window of its own (issue #279): an open control centre would only come to the front and
+/// stay on the page it shows, since nothing can tell a running one to switch it, and a start with a
+/// page takes no instance channel (`ui::instance_of`). For the overview (the setup at the core's first
+/// start, [`Core::offer_setup`]) an open one the window manager lists by its window class comes to the
+/// front instead ([`focus_open`]). An open one is never closed and restarted, because that would throw
 /// away whatever the person is typing there (a half-pasted token, say).
-///
-/// An open control centre stays on the page it shows: switching it to `section` would need a
-/// channel into the running app, which it does not have yet.
 async fn show_control_centre(
     wm: &impl WindowManager,
     section: Section,
     start: fn(Section) -> Result<(), String>,
 ) -> Result<(), String> {
-    match focus_open(wm, AppId::WORKPLACE).await {
-        Some(focused) => focused,
-        None => start(section),
+    if section == Section::Overview
+        && let Some(focused) = focus_open(wm, AppId::WORKPLACE).await
+    {
+        return focused;
     }
+    start(section)
 }
 
 /// Brings an open window of `app` to the front (issue #279): `Some` with how focusing went when `wm`
@@ -7409,8 +7411,7 @@ impl Core {
     }
 
     /// Shows the person the control centre on `section` (task WS.7, "Manage workspaces…" in the tray):
-    /// an open one comes to the front and stays on its page, else one starts there
-    /// ([`show_control_centre`]).
+    /// a page opens in a window of its own, also next to an open control centre ([`show_control_centre`]).
     pub async fn show_section(&self, section: Section) -> Result<(), String> {
         show_control_centre(&self.backend, section, self.start_control_centre).await
     }
@@ -10558,8 +10559,10 @@ mod tests {
         assert_eq!(setup_command("/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui", "--setup"]);
     }
 
+    /// Issue #279: a page opens in a window of its own next to an open control centre, which is never
+    /// closed; only the overview brings an open one to the front.
     #[tokio::test]
-    async fn an_open_control_centre_comes_to_the_front_and_is_never_closed() {
+    async fn a_page_opens_next_to_an_open_control_centre_and_nothing_is_closed() {
         use torro_wm::fake::{Call, FakeWm};
         let wm = FakeWm::new("1");
         let other = wm.open_window("foot", None);
@@ -10567,16 +10570,22 @@ mod tests {
         let before = started(Section::Accounts);
 
         assert_eq!(show_control_centre(&wm, Section::Accounts, record_start).await, Ok(()));
-        assert_eq!(wm.calls(), vec![Call::Focus(open.clone())], "only focused, nothing closed");
+        assert!(wm.calls().is_empty(), "nothing focused, nothing closed");
         assert!(wm.all_windows().iter().any(|w| w.id == open));
         assert!(wm.all_windows().iter().any(|w| w.id == other));
-        assert_eq!(started(Section::Accounts), before, "no second control centre");
+        assert_eq!(started(Section::Accounts), before + 1, "a window on the page");
 
-        // None open: the page starts.
+        // The overview: the open one comes to the front, nothing starts.
+        let overview = started(Section::Overview);
+        assert_eq!(show_control_centre(&wm, Section::Overview, record_start).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
+        assert_eq!(started(Section::Overview), overview, "no second control centre");
+
+        // None open: the overview starts.
         let empty = FakeWm::new("1");
-        assert_eq!(show_control_centre(&empty, Section::Accounts, record_start).await, Ok(()));
+        assert_eq!(show_control_centre(&empty, Section::Overview, record_start).await, Ok(()));
         assert!(empty.calls().is_empty());
-        assert_eq!(started(Section::Accounts), before + 1);
+        assert_eq!(started(Section::Overview), overview + 1);
     }
 
     /// Issue #279: only the exact window class (Hyprland) is brought forward. AeroSpace names every
@@ -10611,18 +10620,23 @@ mod tests {
     }
 
     /// Issue #279: under its bundle id (AeroSpace) the window may be the template dialog, which runs
-    /// from the same bundle, so the control centre is started and its instance channel decides.
+    /// from the same bundle, so even for the overview the control centre is started and its instance
+    /// channel decides.
     #[tokio::test]
     async fn the_control_centre_under_its_bundle_id_is_started() {
         use torro_wm::fake::FakeWm;
         let wm = FakeWm::new("1");
         wm.open_window(torro_core::app::WORKPLACE_BUNDLE_ID, None);
         wm.open_window(torro_core::app::WORKPLACE_DIALOG_CLASS, None);
-        // A section no other test starts, so the count is this test's alone.
-        let before = started(Section::Mcp);
-        assert_eq!(show_control_centre(&wm, Section::Mcp, record_start).await, Ok(()));
+        // A counter of its own: another test starts the overview at the same time.
+        static STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn count(_: Section) -> Result<(), String> {
+            STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        assert_eq!(show_control_centre(&wm, Section::Overview, count).await, Ok(()));
         assert!(wm.calls().is_empty(), "nothing focused");
-        assert_eq!(started(Section::Mcp), before + 1, "started; a running one takes over through its channel");
+        assert_eq!(STARTS.load(std::sync::atomic::Ordering::SeqCst), 1, "started; a running one takes over");
     }
 
     #[test]
@@ -10640,7 +10654,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_control_centre_starts_on_a_section_or_comes_to_the_front() {
+    async fn the_control_centre_starts_on_a_section_also_when_one_is_open() {
         let dir = tempfile::tempdir().expect("temp dir");
         // The test backend lists no windows, so no control centre is open and one starts.
         let core = core(dir.path());
@@ -10648,13 +10662,13 @@ mod tests {
         assert_eq!(show_control_centre(&core.backend, Section::Approvals, record_start).await, Ok(()));
         assert_eq!(started(Section::Approvals), before + 1);
 
-        // An open one only comes to the front.
-        use torro_wm::fake::{Call, FakeWm};
+        // An open one stays as it is; the page opens in a window of its own (issue #279).
+        use torro_wm::fake::FakeWm;
         let wm = FakeWm::new("1");
-        let open = wm.open_window(AppId::WORKPLACE.window_class, None);
+        wm.open_window(AppId::WORKPLACE.window_class, None);
         assert_eq!(show_control_centre(&wm, Section::Approvals, record_start).await, Ok(()));
-        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
-        assert_eq!(started(Section::Approvals), before + 1);
+        assert!(wm.calls().is_empty());
+        assert_eq!(started(Section::Approvals), before + 2);
     }
 
     /// A launcher that records the command lines instead of starting them, or fails each start.
