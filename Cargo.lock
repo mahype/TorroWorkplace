@@ -7017,10 +7017,12 @@ dependencies = [
 name = "torrocalendar"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "iana-time-zone",
  "iced",
+ "image",
  "torro-core",
  "torro-gui",
  "torro-ipc",

@@ -808,6 +808,8 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
     events.extend([
         Event {
             location: Some("Meeting room Elbe".into()),
+            // Where the room is, so the event editor shows its small map (task TE.8).
+            geo: Some(crate::model::Geo { lat: 53.5458, lon: 9.9672 }),
             description: Some(
                 "Agree on goals and scope for the next sprint. Backlog (sorted by priority): \
                  https://example.org/backlog.\nRemote: https://us02web.zoom.us/j/81234567890"

@@ -35,6 +35,17 @@
 //! follows the input live. (Iced 0.14 reports no "field left" event, so leaving a field alone does
 //! not validate it.) A state that cannot be saved is not saved, also not when the panel is left.
 //!
+//! **Reminders and place** (task TE.8): "Add reminder" opens the card of [`remind`] – chips for the
+//! common leads and "Custom" (n minutes, hours, days or weeks before or after start or end, the day
+//! before at a time, a fixed date), with how it shows. The location is searched only on Enter or
+//! "Search" ([`Action::SearchPlaces`], the core's `search_places`), never while typing; the
+//! suggestions ([`place`]) stand under the field with the service and the attribution, and picking
+//! one sets location and coordinates (`Event::geo`), while typing on clears the coordinates (they
+//! would no longer fit the text). With coordinates and maps on, the app fetches the small map the
+//! editor asks for ([`Editor::map_wanted`]); "Open in Maps" works always ([`Action::OpenMaps`]). Maps
+//! are off until a person turns them on in the control centre: then there is no search, and the first
+//! Enter says so once, quietly.
+//!
 //! Events of read-only calendars show the same rows with plain values, a note why, and no footer.
 //! Location and notes stay selectable there (read-only text editors: a selection and ⌘C / Ctrl+C
 //! work, typing does not).
@@ -51,14 +62,17 @@
 //! gets one day added on save and one day taken off when an event is shown. Times are on the wall
 //! clock of the event's time zone ([`zone`]).
 
+mod place;
+mod remind;
 mod repeat;
 mod zone;
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, rule, scrollable, svg, text, text_editor, text_input, toggler};
+use iced::widget::{column, container, image, row, rule, scrollable, svg, text, text_editor, text_input, toggler};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Theme, keyboard};
 use torro_core::i18n::{tr, trc, trf};
+use torro_core::settings::Maps;
 use torro_gui::datetime::{format_date, format_time, parse_date, parse_time};
 use torro_gui::icon::{self, Icon, icon};
 use torro_gui::links;
@@ -67,11 +81,14 @@ use torro_gui::theme::{self, palette, size, space};
 use torro_gui::typo::text_width;
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, collection_color};
 use torro_gui::{style, typo};
-use torro_pim::model::{Attendee, EventStatus, PartStat, Repeat, SeriesScope};
+use torro_ipc::Place;
+use torro_pim::model::{Attendee, EventStatus, Geo, PartStat, Repeat, SeriesScope};
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, Event, EventTime, Transparency};
 
 use crate::views::short_date;
 
+pub use place::{Failure as PlaceFailure, MAP_HEIGHT, MAP_WIDTH, demo_map, demo_places, openable_map};
+pub use remind::Edit as RemindEdit;
 pub use repeat::Edit as CustomEdit;
 
 /// Id of the title field: the app focuses it when a new event opens ([`Action::Focus`] does the
@@ -136,10 +153,6 @@ pub struct Editor {
     confirm_delete: bool,
     /// Enter asked for a save once: from then on the first problem is shown at its field.
     attempted: bool,
-    /// The menu "Add reminder" is open (task ER2.3).
-    alarm_menu: bool,
-    /// How the next reminder added shows: `None` for its calendar's style.
-    alarm_style: Option<AlarmStyle>,
     /// Which events of the series a change of an occurrence reaches; "This event" at first.
     scope: SeriesScope,
     /// The menu or card open under a property row (task TE.7).
@@ -150,6 +163,37 @@ pub struct Editor {
     machine_zone: Option<String>,
     /// How many changed occurrences the last save reset, as the core counted them.
     reset: u32,
+    /// The maps settings (task TE.8): off until the app hands them over ([`Editor::set_maps`]).
+    maps: Maps,
+    /// The query of the place search under way; its answer comes to [`Editor::places_found`].
+    searched: Option<String>,
+    /// The quiet line under the location: maps are off, the search failed.
+    place_note: Option<PlaceNote>,
+    /// "Turn on maps in Settings" was said once; it is not said again in this editor.
+    told_maps_off: bool,
+    /// The map shown under the location, when it is the map of `form.geo`.
+    map: Option<MapPicture>,
+    /// The map asked for and not answered yet: its point and whether it is dark.
+    map_asked: Option<(Geo, bool)>,
+    /// A point whose map could not be had; not asked for again in this editor.
+    map_failed: Option<Geo>,
+}
+
+/// The quiet line under the location.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PlaceNote {
+    /// Maps are off: "Turn on maps in Settings".
+    MapsOff,
+    /// The search failed, in the core's words.
+    Failed(String),
+}
+
+/// The small map of a point, as the core drew it.
+#[derive(Debug, Clone)]
+struct MapPicture {
+    geo: Geo,
+    dark: bool,
+    picture: image::Handle,
 }
 
 /// A menu or card under a property row.
@@ -165,6 +209,10 @@ enum Popup {
     ShowAs,
     /// "Status": confirmed, tentative, cancelled.
     Status,
+    /// The card "Add reminder", as typed (task TE.8).
+    Remind(remind::Card),
+    /// The suggestions of the place search for `query` (task TE.8).
+    Places { query: String, places: Vec<Place> },
 }
 
 /// A calendar in the calendar menu: the id that goes into the event, the name that is shown.
@@ -206,12 +254,10 @@ pub enum Message {
     OpenLink(String),
     /// "Copy notes": the whole notes to the clipboard.
     CopyNotes,
-    /// "Add reminder": open its menu, or close it (task ER2.3).
+    /// "Add reminder": open its card, or close it (tasks ER2.3, TE.8).
     ToggleAlarms,
-    /// In the menu: how the reminder added next shows.
-    AlarmStyle(Option<AlarmStyle>),
-    /// In the menu: add a reminder at this time.
-    AddAlarm(AlarmTrigger),
+    /// A field of the card "Add reminder", or its Add and Cancel.
+    Remind(RemindEdit),
     /// The ✕ of a reminder's chip.
     RemoveAlarm(usize),
     /// "Preview reminder": show the event's reminder now (`calendar.preview_reminder`).
@@ -256,6 +302,14 @@ pub enum Message {
     CancelDelete,
     /// The panel's ✕ or a click beside it.
     Close,
+    /// Enter in the location or "Search": look the location up (task TE.8).
+    SearchPlaces,
+    /// A suggestion, by its place in the list shown.
+    PickPlace(usize),
+    /// "Use “…” as written": keep the text, without a map.
+    AsWritten,
+    /// "Open in Maps": the place in the maps app of the settings.
+    OpenMaps,
     /// Escape: closes the innermost open thing (a menu or card, the delete question, then the
     /// panel).
     Escape,
@@ -285,6 +339,13 @@ pub enum Action {
     Copy(String),
     /// Show the reminder of the stored event at this `href` now (task ER2.3).
     Preview(String),
+    /// Look this text up (the core's `search_places`, task TE.8; `near` none). Report the answer with
+    /// [`Editor::places_found`] and the same text: `Ok` with the places, `Err(PlaceFailure::MapsOff)`
+    /// for the code `unsupported`, `Err(PlaceFailure::Other(message))` for any other error.
+    SearchPlaces(String),
+    /// Open this place in a maps app (task TE.8): an `https` address or, on Linux, a `geo:` link.
+    /// Check it with [`openable_map`] right before opening.
+    OpenMaps(String),
 }
 
 /// Why the form cannot be saved yet. The first one found is shown as the hint.
@@ -364,6 +425,8 @@ pub struct Form {
     end_date: String,
     end_time: String,
     location: String,
+    /// The coordinates of the location: set by picking a suggestion, cleared by typing (task TE.8).
+    geo: Option<Geo>,
     notes: String,
     /// The event's own reminders (task ER2.3), in their order.
     alarms: Vec<Alarm>,
@@ -397,6 +460,7 @@ impl Form {
             end_date: format_date(end.date()),
             end_time,
             location: String::new(),
+            geo: None,
             notes: String::new(),
             alarms: Vec::new(),
             repeat: None,
@@ -442,6 +506,7 @@ impl Form {
         let mut form = Form::from_span(event.all_day(), start, end, calendar);
         form.title = event.summary.clone();
         form.location = event.location.clone().unwrap_or_default();
+        form.geo = event.geo;
         form.notes = event.description.clone().unwrap_or_default();
         form.alarms = event.alarms.clone();
         form.repeat = event.repeat.as_deref().cloned();
@@ -453,7 +518,7 @@ impl Form {
     }
 
     /// The event this form describes. `original` is the event being edited: its uid, href,
-    /// etag, key of the occurrence and what the form does not show (people, coordinates) are kept.
+    /// etag, key of the occurrence and what the form does not show (people) are kept.
     /// `today` resolves dates typed without a year.
     pub fn build(&self, today: NaiveDate, original: Option<&Event>) -> Result<Event, Problem> {
         let calendar = self.calendar.as_ref().ok_or(Problem::ChooseCalendar)?;
@@ -510,6 +575,7 @@ impl Form {
         event.start = start;
         event.end = Some(end);
         event.location = non_empty(&self.location);
+        event.geo = self.geo;
         event.description = non_empty(&self.notes);
         event.alarms = self.alarms.clone();
         event.repeat = self.repeat.clone().map(Box::new);
@@ -613,13 +679,18 @@ impl Editor {
             menu: false,
             confirm_delete: false,
             attempted: false,
-            alarm_menu: false,
-            alarm_style: None,
             scope: SeriesScope::Occurrence,
             popup: None,
             zone_query: String::new(),
             machine_zone: zone::machine(),
             reset: 0,
+            maps: Maps::default(),
+            searched: None,
+            place_note: None,
+            told_maps_off: false,
+            map: None,
+            map_asked: None,
+            map_failed: None,
         }
     }
 
@@ -631,6 +702,9 @@ impl Editor {
         }
         if matches!(message, Message::CopyNotes) {
             return Action::Copy(self.form.notes.clone());
+        }
+        if matches!(message, Message::OpenMaps) {
+            return Action::OpenMaps(place::maps_link(self.maps.open_with, &self.form.location, self.form.geo));
         }
         // A read-only calendar: location and notes can be selected, the panel closes.
         if self.read_only.is_some() {
@@ -673,14 +747,14 @@ impl Editor {
             Message::StartTime(value) => self.form.start_time = value,
             Message::EndDate(value) => self.form.end_date = value,
             Message::EndTime(value) => self.form.end_time = value,
-            Message::Location(value) => self.form.location = value,
+            Message::Location(value) => self.type_location(value),
             Message::Url(value) => self.form.url = value,
             Message::Notes(action) => {
                 self.notes.perform(action);
                 self.form.notes = self.notes.text();
             }
             // Handled above; the editable location is a `text_input`.
-            Message::OpenLink(_) | Message::CopyNotes | Message::LocationText(_) => {}
+            Message::OpenLink(_) | Message::CopyNotes | Message::LocationText(_) | Message::OpenMaps => {}
             Message::Save => return self.request_save(true),
             Message::Flush => return self.request_save(false),
             Message::Delete => {
@@ -697,17 +771,17 @@ impl Editor {
             Message::CancelDelete => self.confirm_delete = false,
             Message::Close => return Action::Close,
             Message::ToggleAlarms => {
-                let open = self.alarm_menu;
+                let open = matches!(self.popup, Some(Popup::Remind(_)));
                 self.close_menus();
-                self.alarm_menu = !open;
-            }
-            Message::AlarmStyle(style) => self.alarm_style = style,
-            Message::AddAlarm(trigger) => {
-                self.alarm_menu = false;
-                let alarm = Alarm { trigger, style: self.alarm_style };
-                if !self.form.alarms.contains(&alarm) {
-                    self.form.alarms.push(alarm);
+                if !open {
+                    self.popup = Some(Popup::Remind(remind::Card::new(self.start_date())));
                 }
+            }
+            Message::Remind(edit) => return self.remind(edit),
+            Message::SearchPlaces => return self.search(),
+            Message::PickPlace(index) => return self.pick_place(index),
+            Message::AsWritten => {
+                self.popup = None;
                 return self.request_save(false);
             }
             Message::RemoveAlarm(index) => {
@@ -765,8 +839,6 @@ impl Editor {
             Message::Escape => {
                 if self.popup.is_some() {
                     self.popup = None;
-                } else if self.alarm_menu {
-                    self.alarm_menu = false;
                 } else if self.menu {
                     self.menu = false;
                 } else if self.confirm_delete {
@@ -783,7 +855,6 @@ impl Editor {
     fn close_menus(&mut self) {
         self.popup = None;
         self.menu = false;
-        self.alarm_menu = false;
         self.confirm_delete = false;
     }
 
@@ -863,6 +934,163 @@ impl Editor {
         }
         self.form.time_zone = value;
         self.request_save(false)
+    }
+
+    /// A field of the card "Add reminder"; Add adds the reminder when it can be read (once) and saves,
+    /// Cancel leaves the reminders. The card counts from the start on the wall clock of the event's
+    /// zone ([`Editor::shown_zone`]).
+    fn remind(&mut self, edit: RemindEdit) -> Action {
+        let (start, today) = (self.start_wall(), self.today);
+        let zone = self.shown_zone().map(str::to_string);
+        let Some(Popup::Remind(card)) = self.popup.as_mut() else { return Action::None };
+        match edit {
+            RemindEdit::Cancel => self.popup = None,
+            RemindEdit::Add => {
+                card.update(RemindEdit::Add);
+                if let Ok(alarm) = card.build(start, today, |wall| zone::instant(wall, zone.as_deref())) {
+                    self.popup = None;
+                    if !self.form.alarms.contains(&alarm) {
+                        self.form.alarms.push(alarm);
+                    }
+                    return self.request_save(false);
+                }
+            }
+            edit => card.update(edit),
+        }
+        Action::None
+    }
+
+    /// The location as typed. Text that differs drops the coordinates of a place picked before (they
+    /// would no longer fit), the suggestions, a search under way and the quiet line.
+    fn type_location(&mut self, value: String) {
+        if value != self.form.location {
+            self.form.geo = None;
+            self.searched = None;
+        }
+        self.form.location = value;
+        self.place_note = None;
+        if matches!(self.popup, Some(Popup::Places { .. })) {
+            self.popup = None;
+        }
+    }
+
+    /// Enter in the location or "Search": with maps on, a search for the text when it has no place
+    /// yet; otherwise a save as Enter does in the other fields. With maps off the first Enter says so,
+    /// quietly, once.
+    fn search(&mut self) -> Action {
+        let query = self.form.location.trim().to_string();
+        if query.is_empty() || self.form.geo.is_some() {
+            return self.request_save(true);
+        }
+        if !self.maps.enabled {
+            self.say_maps_off();
+            return self.request_save(true);
+        }
+        self.close_menus();
+        self.place_note = None;
+        self.searched = Some(query.clone());
+        Action::SearchPlaces(query)
+    }
+
+    /// "Turn on maps in Settings" under the location, the first time only.
+    fn say_maps_off(&mut self) {
+        if !self.told_maps_off {
+            self.told_maps_off = true;
+            self.place_note = Some(PlaceNote::MapsOff);
+        }
+    }
+
+    /// The suggestion at `index`: its name and address become the location, its point the event's
+    /// coordinates; saved at once.
+    fn pick_place(&mut self, index: usize) -> Action {
+        let Some(Popup::Places { places, .. }) = &self.popup else { return Action::None };
+        let Some(place) = places.get(index).cloned() else { return Action::None };
+        self.popup = None;
+        let detail = place.detail.trim();
+        let location = if detail.is_empty() { place.label.clone() } else { format!("{}, {detail}", place.label) };
+        self.location = text_editor::Content::with_text(&location);
+        self.form.location = location;
+        self.form.geo = Some(place.geo);
+        self.place_note = None;
+        self.request_save(false)
+    }
+
+    /// The start as typed on the wall clock of the event's zone: midnight for an all-day event or a
+    /// time that cannot be read, the day the editor opened on while the date cannot be read.
+    fn start_wall(&self) -> NaiveDateTime {
+        let time = if self.form.all_day { None } else { parse_time(&self.form.start_time) };
+        self.start_date().and_time(time.unwrap_or(NaiveTime::MIN))
+    }
+
+    /// Takes the maps settings (`Settings::maps`, task TE.8): whether search and map are on, the
+    /// search service's name for the suggestions and what "Open in Maps" opens. Call it when the
+    /// editor opens and whenever the settings are read again; until then maps count as off. Turning
+    /// maps off takes the map away.
+    pub fn set_maps(&mut self, maps: Maps) {
+        if !maps.enabled {
+            self.map = None;
+        }
+        self.maps = maps;
+    }
+
+    /// The app's answer to [`Action::SearchPlaces`] for `query`: the suggestions open under the
+    /// location (also when there are none: "No places found" and "Use … as written"). An answer to
+    /// an older search, or for text typed over since, is dropped. `MapsOff` says once that maps are
+    /// off; any other failure stands as a quiet line under the location.
+    pub fn places_found(&mut self, query: &str, answer: Result<Vec<Place>, PlaceFailure>) {
+        if self.searched.as_deref() != Some(query) {
+            return;
+        }
+        self.searched = None;
+        if self.form.location.trim() != query {
+            return;
+        }
+        match answer {
+            Ok(places) => {
+                self.close_menus();
+                self.popup = Some(Popup::Places { query: query.to_string(), places });
+            }
+            Err(PlaceFailure::MapsOff) => {
+                self.maps.enabled = false;
+                self.say_maps_off();
+            }
+            Err(PlaceFailure::Other(message)) => self.place_note = Some(PlaceNote::Failed(message)),
+        }
+    }
+
+    /// The point whose map the app should fetch now (the core's `map_preview`, [`MAP_WIDTH`] ×
+    /// [`MAP_HEIGHT`], `dark` as the window is drawn), or `None`. Ask after every update and answer:
+    /// it names a point once – while maps are on, the form has coordinates a map can show, and there
+    /// is no map of them in this darkness, none asked for and none that failed – and remembers that
+    /// it was asked. Report the answer with [`Editor::map_loaded`].
+    pub fn map_wanted(&mut self, dark: bool) -> Option<Geo> {
+        let geo = self.form.geo.filter(|geo| self.maps.enabled && geo.on_map())?;
+        let have = self.map.as_ref().is_some_and(|map| map.geo == geo && map.dark == dark);
+        if have || self.map_failed == Some(geo) || self.map_asked == Some((geo, dark)) {
+            return None;
+        }
+        self.map_asked = Some((geo, dark));
+        Some(geo)
+    }
+
+    /// The app's answer to [`Editor::map_wanted`]: the map of `geo` drawn `dark` or not, `None` when
+    /// it could not be had (the map then stays away for this point; address and "Open in Maps"
+    /// remain). An answer nobody waits for any more is dropped.
+    pub fn map_loaded(&mut self, geo: Geo, dark: bool, picture: Option<image::Handle>) {
+        if self.map_asked != Some((geo, dark)) {
+            return;
+        }
+        self.map_asked = None;
+        match picture {
+            Some(picture) => self.map = Some(MapPicture { geo, dark, picture }),
+            None => self.map_failed = Some(geo),
+        }
+    }
+
+    /// The map to show: the one of the form's coordinates, while maps are on.
+    fn shown_map(&self) -> Option<&image::Handle> {
+        let map = self.map.as_ref().filter(|map| self.maps.enabled && Some(map.geo) == self.form.geo)?;
+        Some(&map.picture)
     }
 
     /// The event as last stored: the one the panel shows, for marking it in the calendar. `None`
@@ -1073,10 +1301,16 @@ impl Editor {
             Some(Popup::Zone) => return below(self.zone_menu(), Message::ClosePopup),
             Some(Popup::ShowAs) => return below(self.show_as_menu(), Message::ClosePopup),
             Some(Popup::Status) => return below(self.status_menu(), Message::ClosePopup),
+            Some(Popup::Remind(card)) => {
+                let zone = self.shown_zone().map(str::to_string);
+                let instant = move |wall| zone::instant(wall, zone.as_deref());
+                return below(card.view(self.start_wall(), self.today, instant), Message::ClosePopup);
+            }
+            Some(Popup::Places { query, places }) => {
+                let service = place::service_name(self.maps.geocoder_kind);
+                return below(place::suggestions(places, query, service), Message::ClosePopup);
+            }
             None => {}
-        }
-        if self.alarm_menu {
-            return Some(self.alarm_layer(anchor).map(wrap));
         }
         if !self.menu {
             return None;
@@ -1175,28 +1409,6 @@ impl Editor {
         };
         let items = vec![item(EventStatus::Confirmed), item(EventStatus::Tentative), item(EventStatus::Cancelled)];
         widgets::menu(vec![MenuSection::titled(tr("Status"), items)])
-    }
-
-    /// The menu "Add reminder" (task ER2.3): when, then how it shows; a time adds it at once in the
-    /// style chosen below.
-    fn alarm_layer(&self, anchor: &Anchor) -> Element<'_, Message> {
-        let when = ALARM_CHOICES
-            .iter()
-            .map(|&minutes| {
-                let trigger = AlarmTrigger::Before { minutes, of: AlarmAnchor::Start };
-                MenuItem::new(Mark::Icon(Icon::Clock), alarm_when(trigger), Message::AddAlarm(trigger))
-            })
-            .collect();
-        let style = |mark: Icon, label: &'static str, style: Option<AlarmStyle>| {
-            MenuItem::new(Mark::Icon(mark), tr(label), Message::AlarmStyle(style)).current(self.alarm_style == style)
-        };
-        let styles = vec![
-            style(Icon::Calendar, "Calendar default", None),
-            style(Icon::Bell, "Notification", Some(AlarmStyle::Notification)),
-            style(Icon::Eye, "Full screen", Some(AlarmStyle::FullScreen)),
-        ];
-        let menu = widgets::menu(vec![MenuSection::titled(tr("When"), when), MenuSection::titled(tr("Style"), styles)]);
-        widgets::floating(anchor, Placement::Below(Align::Start), menu, Message::ToggleAlarms)
     }
 
     /// The band "Changes apply to: This event · Following · All" of an occurrence, with what the
@@ -1338,13 +1550,7 @@ impl Editor {
         when.push(self.show_as_line(anchor, editable));
         when.push(self.status_line(anchor, editable));
 
-        let mut place = Vec::new();
-        if editable {
-            place.push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), self.location_input(), None));
-        } else if !self.form.location.trim().is_empty() {
-            let text = selectable(&self.location, Message::LocationText, |t| palette(t).text);
-            place.push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), text, None));
-        }
+        let mut place = self.location_lines(anchor, editable);
         if let Some(link) = self.link_line(editable) {
             place.push(link);
         }
@@ -1493,11 +1699,54 @@ impl Editor {
         if self.popup == Some(Popup::Status) { widgets::anchored(anchor, line) } else { line }
     }
 
-    /// The location as a quiet field; Enter saves.
-    fn location_input(&self) -> Element<'_, Message> {
+    /// The rows of "Location" (task TE.8): the field (read-only: the selectable text) with "Search"
+    /// while the text has no place yet and maps are on, and ↗ "Open in Maps" when there is no map;
+    /// under it the map of the coordinates with ↗ on it, and the quiet line ("Searching…", maps off,
+    /// a failed search). Read-only without a location: nothing.
+    fn location_lines(&self, anchor: &Anchor, editable: bool) -> Vec<Element<'_, Message>> {
+        let typed = !self.form.location.trim().is_empty();
+        if !editable && !typed {
+            return Vec::new();
+        }
+        let map = self.shown_map();
+        let mut value = row![self.location_field(editable)].spacing(space::s()).align_y(Alignment::Center);
+        if editable && typed && self.form.geo.is_none() && self.maps.enabled {
+            let search = self.searched.is_none().then_some(Message::SearchPlaces);
+            value = value.push(widgets::icon_button(Icon::Search, tr("Search"), search));
+        }
+        if typed && map.is_none() {
+            value = value.push(widgets::icon_button(Icon::ArrowUpRight, tr("Open in Maps"), Some(Message::OpenMaps)));
+        }
+        let line = widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), value, None);
+        let open = matches!(self.popup, Some(Popup::Places { .. }));
+        let mut lines = vec![if open { widgets::anchored(anchor, line) } else { line }];
+        if let Some(picture) = map {
+            let pin = self.form.calendar.as_ref().map_or(collection_color(None), choice_color);
+            lines.push(under_value(place::map_view(picture, pin, Message::OpenMaps)));
+        }
+        let note = match (&self.searched, &self.place_note) {
+            (Some(_), _) => Some(tr("Searching…").to_string()),
+            (None, Some(PlaceNote::MapsOff)) => Some(tr("Turn on maps in Settings").to_string()),
+            (None, Some(PlaceNote::Failed(message))) => Some(message.clone()),
+            (None, None) => None,
+        };
+        if let Some(note) = note {
+            lines.push(under_value(typo::text(typo::meta(), note).style(theme::text_3).into()));
+        }
+        lines
+    }
+
+    /// The location as a quiet field (Enter searches, [`Editor::search`]), or read-only as selectable
+    /// text.
+    fn location_field(&self, editable: bool) -> Element<'_, Message> {
+        if !editable {
+            return container(selectable(&self.location, Message::LocationText, |t| palette(t).text))
+                .width(Length::Fill)
+                .into();
+        }
         text_input(tr("Add location"), &self.form.location)
             .on_input(Message::Location)
-            .on_submit(Message::Save)
+            .on_submit(Message::SearchPlaces)
             .padding(Padding::ZERO)
             .size(typo::body().size)
             .line_height(typo::body().line_height)
@@ -1535,9 +1784,17 @@ impl Editor {
     /// the name.
     fn alarm_lines(&self, anchor: &Anchor, editable: bool) -> Vec<Element<'_, Message>> {
         let mut rows: Vec<(Mark, Element<'_, Message>, Option<Message>)> = Vec::new();
+        let start = zone::instant(self.start_wall(), self.shown_zone());
         for (index, alarm) in self.form.alarms.iter().enumerate() {
-            let label = typo::text(typo::body(), alarm_label(alarm)).style(theme::text);
-            let mut value = row![container(label).width(Length::Fill)].spacing(space::s()).align_y(Alignment::Center);
+            let words = remind::day_before_words(alarm.trigger, start, |at| zone::wall(at, self.shown_zone()))
+                .unwrap_or_else(|| alarm_when(alarm.trigger));
+            let label = typo::text(typo::body(), words).style(theme::text).wrapping(Wrapping::None);
+            let mut value =
+                row![container(label).width(Length::Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
+            if let Some(style) = alarm.style {
+                value = value
+                    .push(typo::text(typo::body(), style_word(style)).style(theme::text_3).wrapping(Wrapping::None));
+            }
             if editable {
                 value =
                     value.push(widgets::icon_button(Icon::X, tr("Remove reminder"), Some(Message::RemoveAlarm(index))));
@@ -1562,7 +1819,8 @@ impl Editor {
             .map(|(i, (mark, value, on_press))| {
                 let name = if i == 0 { tr("Reminders") } else { "" };
                 let line = widgets::prop_line(name, Some(mark), value, on_press);
-                if editable && i == last && self.alarm_menu { widgets::anchored(anchor, line) } else { line }
+                let open = matches!(self.popup, Some(Popup::Remind(_)));
+                if editable && i == last && open { widgets::anchored(anchor, line) } else { line }
             })
             .collect()
     }
@@ -1735,20 +1993,20 @@ impl Editor {
     }
 }
 
-/// The times "Add reminder" offers, in minutes before the start: at the start, 1, 5, 10, 15 and 30
-/// minutes, an hour, a day.
-const ALARM_CHOICES: [i64; 8] = [0, 1, 5, 10, 15, 30, 60, 1440];
-
-/// When a reminder fires, in words: "At start", "15 min before", "1 day before", "10 min before the
-/// end", "5 min after the start", or the day and time of a fixed one.
-pub fn alarm_when(trigger: AlarmTrigger) -> String {
-    let span = |minutes: i64| match minutes {
+/// A span of minutes in words: "5 min", "1 hour", "3 hours", "1 day", "2 days".
+fn span(minutes: i64) -> String {
+    match minutes {
         m if m % 1440 == 0 && m / 1440 == 1 => tr("1 day").to_string(),
         m if m % 1440 == 0 => trf("{n} days", &[("n", &(m / 1440))]),
         m if m % 60 == 0 && m / 60 == 1 => tr("1 hour").to_string(),
         m if m % 60 == 0 => trf("{n} hours", &[("n", &(m / 60))]),
         m => trf("{n} min", &[("n", &m)]),
-    };
+    }
+}
+
+/// When a reminder fires, in words: "At start", "15 min before", "1 day before", "10 min before the
+/// end", "5 min after the start", or the day and time of a fixed one.
+pub fn alarm_when(trigger: AlarmTrigger) -> String {
     match trigger {
         AlarmTrigger::At(at) => {
             let local = torro_gui::datetime::to_local(at);
@@ -1771,13 +2029,12 @@ pub fn alarm_when(trigger: AlarmTrigger) -> String {
     }
 }
 
-/// A reminder's chip: "15 min before · Full screen"; without a style of its own only the time.
-pub fn alarm_label(alarm: &Alarm) -> String {
-    let when = alarm_when(alarm.trigger);
-    match alarm.style {
-        None => when,
-        Some(AlarmStyle::Notification) => format!("{when} · {}", tr("Notification")),
-        Some(AlarmStyle::FullScreen) => format!("{when} · {}", tr("Full screen")),
+/// How a reminder with a style of its own shows, quietly after its time: "Notification", "Full
+/// screen".
+fn style_word(style: AlarmStyle) -> &'static str {
+    match style {
+        AlarmStyle::Notification => tr("Notification"),
+        AlarmStyle::FullScreen => tr("Full screen"),
     }
 }
 
@@ -1896,6 +2153,11 @@ fn moment<'a>(all_day: bool, date: Input<'a>, time: Input<'a>) -> Element<'a, Me
 /// after it.
 fn value_left() -> f32 {
     style::ITEM_PADDING.left + widgets::prop_label_width() + space::s()
+}
+
+/// `element` under a property row, starting where the values start.
+fn under_value(element: Element<'_, Message>) -> Element<'_, Message> {
+    container(element).padding(Padding::ZERO.left(value_left()).bottom(space::xs())).into()
 }
 
 /// A value as plain text where the form has an input, starting where the input's text does.
@@ -2603,21 +2865,22 @@ mod tests {
         assert_eq!(alarm_when(before(-5)), trf("{span} after the start", &[("span", &trf("{n} min", &[("n", &5)]))]));
         let end = AlarmTrigger::Before { minutes: 10, of: AlarmAnchor::End };
         assert_eq!(alarm_when(end), trf("{span} before the end", &[("span", &trf("{n} min", &[("n", &10)]))]));
-        let full = Alarm { trigger: before(5), style: Some(AlarmStyle::FullScreen) };
-        assert_eq!(alarm_label(&full), format!("{} · {}", alarm_when(before(5)), tr("Full screen")));
-        assert_eq!(alarm_label(&Alarm { style: None, ..full }), alarm_when(before(5)), "the calendar decides");
+        assert_eq!(style_word(AlarmStyle::FullScreen), tr("Full screen"));
     }
 
     #[test]
     fn adding_and_removing_a_reminder_saves_the_event() {
         let mut editor = Editor::edit(&timed(), &calendars());
         let _ = editor.update(Message::ToggleAlarms);
-        assert!(editor.alarm_menu);
-        let _ = editor.update(Message::AlarmStyle(Some(AlarmStyle::FullScreen)));
+        assert!(matches!(editor.popup, Some(Popup::Remind(_))));
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the card shows");
+        let _ = editor.update(Message::Remind(RemindEdit::Preset(5)));
+        let _ = editor.update(Message::Remind(RemindEdit::Style(Some(AlarmStyle::FullScreen))));
         let trigger = AlarmTrigger::Before { minutes: 5, of: AlarmAnchor::Start };
-        let saved = saves(&mut editor, Message::AddAlarm(trigger));
+        let saved = saves(&mut editor, Message::Remind(RemindEdit::Add));
         assert_eq!(saved.alarms, [Alarm { trigger, style: Some(AlarmStyle::FullScreen) }]);
-        assert!(!editor.alarm_menu, "the menu closes");
+        assert!(editor.popup.is_none(), "the card closes");
+        let _ = editor.panel(&Anchor::new(), |m| m);
         let _ = store(&mut editor, saved, "2");
         let saved = saves(&mut editor, Message::RemoveAlarm(0));
         assert!(saved.alarms.is_empty());
@@ -2631,7 +2894,162 @@ mod tests {
         );
         let _ = editor.update(Message::ToggleAlarms);
         let _ = editor.update(Message::Escape);
-        assert!(!editor.alarm_menu, "Escape closes the menu first");
+        assert!(editor.popup.is_none(), "Escape closes the card first");
+    }
+
+    // Reminders and place (task TE.8).
+
+    /// The day before at 18:00 of a 10:00 event is stored as 960 minutes before the start, counted
+    /// in the event's zone, and its row says so.
+    #[test]
+    fn the_day_before_at_six_is_stored_as_960_minutes_before() {
+        let mut event = timed();
+        event.time_zone = Some("Europe/Berlin".into());
+        event.start = EventTime::DateTime(at(2026, 10, 27, 9, 0).and_utc());
+        event.end = Some(EventTime::DateTime(at(2026, 10, 27, 10, 0).and_utc()));
+        let mut editor = Editor::edit(&event, &calendars());
+        assert_eq!(editor.form.start_time, "10:00");
+        editor.update(Message::ToggleAlarms);
+        editor.update(Message::Remind(RemindEdit::DayBefore("18:00".into())));
+        let saved = saves(&mut editor, Message::Remind(RemindEdit::Add));
+        assert_eq!(saved.alarms[0].trigger, AlarmTrigger::Before { minutes: 960, of: AlarmAnchor::Start });
+        assert_eq!(editor.alarm_lines(&Anchor::new(), true).len(), 2, "the reminder and \"Add reminder\"");
+    }
+
+    #[test]
+    fn a_reminder_beyond_the_longest_lead_is_not_added() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        editor.update(Message::ToggleAlarms);
+        editor.update(Message::Remind(RemindEdit::Unit(remind::Unit::Weeks)));
+        editor.update(Message::Remind(RemindEdit::Amount("2".into())));
+        assert!(matches!(editor.update(Message::Remind(RemindEdit::Add)), Action::None));
+        assert!(matches!(editor.popup, Some(Popup::Remind(_))), "the card stays and says why");
+        assert!(editor.form.alarms.is_empty());
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the card shows");
+        editor.update(Message::Remind(RemindEdit::Cancel));
+        assert!(editor.popup.is_none());
+    }
+
+    /// A stored event with maps on (the settings as the app hands them over).
+    fn with_maps() -> Editor {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        editor.set_maps(Maps { enabled: true, ..Maps::default() });
+        editor
+    }
+
+    fn hamburg() -> Place {
+        Place {
+            label: "Hafenstraße 4".into(),
+            detail: "20359 Hamburg, Germany".into(),
+            geo: Geo { lat: 53.5458, lon: 9.9672 },
+            kind: torro_ipc::PlaceKind::Search,
+        }
+    }
+
+    /// Typing never searches; Enter or "Search" does.
+    #[test]
+    fn there_is_no_search_without_enter() {
+        let mut editor = with_maps();
+        for typed in ["H", "Ha", "Hafenstr 4 hamb"] {
+            assert!(matches!(editor.update(Message::Location(typed.into())), Action::None), "{typed}");
+        }
+        assert!(editor.searched.is_none());
+        assert!(matches!(editor.update(Message::SearchPlaces), Action::SearchPlaces(q) if q == "Hafenstr 4 hamb"));
+        assert_eq!(editor.searched.as_deref(), Some("Hafenstr 4 hamb"));
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    /// Picking a suggestion sets location and coordinates; typing on clears the coordinates.
+    #[test]
+    fn picking_sets_geo_and_typing_clears_it() {
+        let mut editor = with_maps();
+        editor.update(Message::Location("Hafenstr 4 hamb".into()));
+        let _ = editor.update(Message::SearchPlaces);
+        // An answer to another text is not this one's.
+        editor.places_found("Somewhere", Ok(vec![hamburg()]));
+        assert!(editor.popup.is_none());
+        editor.places_found("Hafenstr 4 hamb", Ok(vec![hamburg()]));
+        assert!(matches!(&editor.popup, Some(Popup::Places { places, .. }) if places.len() == 1));
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("the suggestions show");
+
+        let saved = saves(&mut editor, Message::PickPlace(0));
+        assert_eq!(saved.location.as_deref(), Some("Hafenstraße 4, 20359 Hamburg, Germany"));
+        assert_eq!(saved.geo, Some(hamburg().geo));
+        assert!(editor.popup.is_none());
+        let _ = store(&mut editor, saved, "\"8\"");
+
+        editor.update(Message::Location("Hafenstraße 4, 20359 Hamburg, Germany, 3rd floor".into()));
+        let (saved, _) = saves_with(&mut editor, Message::Flush);
+        assert_eq!(saved.geo, None, "the point no longer fits the text");
+    }
+
+    #[test]
+    fn as_written_keeps_the_text_without_a_map() {
+        let mut editor = with_maps();
+        editor.update(Message::Location("Garden".into()));
+        let _ = editor.update(Message::SearchPlaces);
+        editor.places_found("Garden", Ok(Vec::new()));
+        let _ = editor.layer(&Anchor::new(), |m| m).expect("\"No places found\" shows");
+        let (saved, _) = saves_with(&mut editor, Message::AsWritten);
+        assert_eq!((saved.location.as_deref(), saved.geo), (Some("Garden"), None));
+    }
+
+    /// Maps off: no search; the first Enter says so once, quietly, and saves as Enter does.
+    #[test]
+    fn with_maps_off_enter_says_so_once() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        editor.update(Message::Location("Garden".into()));
+        assert!(matches!(editor.update(Message::SearchPlaces), Action::Save(..)));
+        assert_eq!(editor.place_note, Some(PlaceNote::MapsOff));
+        editor.update(Message::Location("Garden 2".into()));
+        let _ = editor.update(Message::SearchPlaces);
+        assert_eq!(editor.place_note, None, "once");
+
+        // The core says so too, when the settings changed meanwhile.
+        let mut editor = with_maps();
+        editor.update(Message::Location("Garden".into()));
+        let _ = editor.update(Message::SearchPlaces);
+        editor.places_found("Garden", Err(PlaceFailure::MapsOff));
+        assert_eq!(editor.place_note, Some(PlaceNote::MapsOff));
+        assert!(!editor.maps.enabled);
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    #[test]
+    fn the_map_is_asked_for_once_per_point_and_darkness() {
+        let mut event = timed();
+        event.geo = Some(hamburg().geo);
+        let mut editor = Editor::edit(&event, &calendars());
+        assert_eq!(editor.map_wanted(true), None, "maps are off until the settings say otherwise");
+        editor.set_maps(Maps { enabled: true, ..Maps::default() });
+        assert_eq!(editor.map_wanted(true), Some(hamburg().geo));
+        assert_eq!(editor.map_wanted(true), None, "asked already");
+        editor.map_loaded(hamburg().geo, true, Some(image::Handle::from_rgba(1, 1, vec![0; 4])));
+        assert!(editor.shown_map().is_some());
+        assert_eq!(editor.map_wanted(true), None);
+        assert_eq!(editor.map_wanted(false), Some(hamburg().geo), "the light appearance has its own map");
+        editor.map_loaded(hamburg().geo, false, None);
+        assert_eq!(editor.map_wanted(false), None, "a map that failed is not asked for again");
+        let _ = editor.panel(&Anchor::new(), |m| m);
+
+        editor.update(Message::Location("Elsewhere".into()));
+        assert!(editor.shown_map().is_none() && editor.map_wanted(true).is_none(), "no point, no map");
+    }
+
+    #[test]
+    fn open_in_maps_works_with_maps_off_and_read_only() {
+        let mut event = timed();
+        event.location = Some("Room 3, Hafenstraße 4".into());
+        let calendars = vec![Collection { writable: false, ..calendar("work", "Work") }];
+        let mut editor = Editor::edit(&event, &calendars);
+        match editor.update(Message::OpenMaps) {
+            Action::OpenMaps(url) => {
+                assert!(url.contains("Room%203%2C%20Hafenstra%C3%9Fe%204"), "{url}");
+                assert!(openable_map(&url));
+            }
+            other => panic!("expected OpenMaps, got {other:?}"),
+        }
+        assert!(matches!(editor.update(Message::OpenLink(place::OSM_COPYRIGHT.into())), Action::OpenLink(_)));
     }
 
     // Series, scope and the new fields (task TE.7).

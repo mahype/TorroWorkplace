@@ -50,7 +50,7 @@ use iced::widget::{column, container, pick_list, responsive, row, svg};
 use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Night, Quarter, WorkingHours};
+use torro_core::settings::{Maps, Night, Quarter, WorkingHours};
 use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
@@ -68,7 +68,7 @@ use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
-use torro_pim::model::SeriesScope;
+use torro_pim::model::{Geo, SeriesScope};
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
 
@@ -566,6 +566,9 @@ pub struct App {
     working_hours: WorkingHours,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
+    /// The suite's maps settings for the editor (task TE.8); `None` until read. The demo has no core
+    /// and shows maps on, with its own places and map ([`App::search_places`], [`App::editor_map`]).
+    maps: Option<Maps>,
 }
 
 #[derive(Debug, Clone)]
@@ -682,6 +685,14 @@ pub enum Message {
     Night(Result<(Night, WorkingHours), String>),
     /// The core answered a save of the night.
     NightSaved(Result<(), String>),
+    /// The maps settings (task TE.8), read when the editor opens and on every tick while it is
+    /// open; an error keeps the ones we have.
+    Maps(Result<Maps, String>),
+    /// The answer to a place search of the editor opened as `edits` (task TE.8), for this text.
+    Places(u64, String, Result<Vec<torro_ipc::Place>, editor::PlaceFailure>),
+    /// The map of this point for the editor opened as `edits`, drawn dark or not; `None` when it
+    /// could not be had (task TE.8).
+    Map(u64, Geo, bool, Option<iced::widget::image::Handle>),
 }
 
 /// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
@@ -785,7 +796,11 @@ impl App {
             night_card: None,
             working_hours: WorkingHours::DEFAULT,
             settings: None,
+            maps: None,
         };
+        if app.source.is_demo() {
+            app.maps = Some(Maps { enabled: true, ..Maps::default() });
+        }
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
@@ -1113,7 +1128,9 @@ impl App {
             Message::Editor(message) => {
                 let Some(editor) = self.editor.as_mut() else { return Task::none() };
                 let action = editor.update(message);
-                return self.editor_action(action);
+                let done = self.editor_action(action);
+                // Picking a place gives the form coordinates: their map comes now.
+                return Task::batch([done, self.editor_map()]);
             }
             Message::Saved(edit, result) => {
                 let current = edit == self.edits;
@@ -1159,10 +1176,18 @@ impl App {
                 if self.editor.is_none() {
                     return Task::batch([appearance, accounts, self.load()]);
                 }
-                return Task::batch([appearance, accounts]);
+                // Maps turned on or off in the control centre reach the open editor.
+                return Task::batch([appearance, accounts, self.fetch_maps()]);
             }
-            Message::SystemMode(mode) => self.system_mode = mode,
-            Message::Appearance(Ok(appearance)) => self.appearance = appearance,
+            // The editor's map follows the appearance (task TE.8).
+            Message::SystemMode(mode) => {
+                self.system_mode = mode;
+                return self.editor_map();
+            }
+            Message::Appearance(Ok(appearance)) => {
+                self.appearance = appearance;
+                return self.editor_map();
+            }
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
             // The canvases (week, timeline, radar) keep no cache: the next frame draws with the new
@@ -1233,8 +1258,102 @@ impl App {
                     return self.fetch_night();
                 }
             }
+            Message::Maps(Ok(maps)) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.set_maps(maps.clone());
+                }
+                self.maps = Some(maps);
+                return self.editor_map();
+            }
+            // The core may be starting up: keep the settings we have.
+            Message::Maps(Err(_)) => {}
+            Message::Places(edit, query, answer) => {
+                if let Some(editor) = self.editor.as_mut().filter(|_| edit == self.edits) {
+                    editor.places_found(&query, answer);
+                }
+            }
+            Message::Map(edit, geo, dark, picture) => {
+                if let Some(editor) = self.editor.as_mut().filter(|_| edit == self.edits) {
+                    editor.map_loaded(geo, dark, picture);
+                }
+            }
         }
         Task::none()
+    }
+
+    /// Asks the core for the maps settings (task TE.8), for the editor. The demo keeps its own.
+    fn fetch_maps(&self) -> Task<Message> {
+        let Source::Core(client) = &self.source else { return Task::none() };
+        let socket = client.socket.clone();
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &torro_ipc::Request::Settings).await {
+                    Ok(torro_ipc::Response::Settings { settings }) => Ok(settings.maps),
+                    Ok(other) => Err(format!("unexpected answer: {other:?}")),
+                    Err(err) => Err(err.to_string()),
+                }
+            },
+            Message::Maps,
+        )
+    }
+
+    /// Looks `query` up for the editor open now (the core's `search_places`, task TE.8). `unsupported`
+    /// means maps are off; other errors come back in the core's words. The demo suggests its fixed
+    /// places and sends nothing.
+    fn search_places(&self, query: String) -> Task<Message> {
+        let edit = self.edits;
+        let Source::Core(client) = &self.source else {
+            return Task::done(Message::Places(edit, query, Ok(editor::demo_places())));
+        };
+        let socket = client.socket.clone();
+        let request = torro_ipc::Request::SearchPlaces { query: query.clone(), near: None };
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &request).await {
+                    Ok(torro_ipc::Response::Places { places }) => Ok(places),
+                    Ok(torro_ipc::Response::Error { code, .. }) if code == "unsupported" => {
+                        Err(editor::PlaceFailure::MapsOff)
+                    }
+                    Ok(torro_ipc::Response::Error { message, .. }) => Err(editor::PlaceFailure::Other(message)),
+                    Ok(_) => Err(editor::PlaceFailure::Other(
+                        tr("The place search service gave no usable answer.").to_string(),
+                    )),
+                    Err(_) => Err(editor::PlaceFailure::Other(
+                        tr("Torro Workplace isn't responding. It may still be starting.").to_string(),
+                    )),
+                }
+            },
+            move |answer| Message::Places(edit, query.clone(), answer),
+        )
+    }
+
+    /// Fetches the map the editor asks for, if it asks (task TE.8, [`Editor::map_wanted`]): the
+    /// core's `map_preview` in the darkness the window is drawn in. A map that cannot be had comes
+    /// back as `None`. The demo draws a sketch in the window's colours and sends nothing.
+    fn editor_map(&mut self) -> Task<Message> {
+        let theme = self.theme();
+        let dark = theme.extended_palette().is_dark;
+        let Some(geo) = self.editor.as_mut().and_then(|editor| editor.map_wanted(dark)) else { return Task::none() };
+        let edit = self.edits;
+        let Source::Core(client) = &self.source else {
+            return Task::done(Message::Map(edit, geo, dark, Some(editor::demo_map(&theme))));
+        };
+        let socket = client.socket.clone();
+        let request =
+            torro_ipc::Request::MapPreview { geo, width: editor::MAP_WIDTH, height: editor::MAP_HEIGHT, dark };
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &request).await {
+                    Ok(torro_ipc::Response::Image { png }) => {
+                        use base64::Engine as _;
+                        let bytes = base64::engine::general_purpose::STANDARD.decode(png).ok()?;
+                        Some(iced::widget::image::Handle::from_bytes(bytes))
+                    }
+                    _ => None,
+                }
+            },
+            move |picture| Message::Map(edit, geo, dark, picture),
+        )
     }
 
     /// The window with the zoom badge over it.
@@ -1630,11 +1749,14 @@ impl App {
     }
 
     /// Opens `editor` in the side panel. A change still waiting in the editor open before is saved.
-    fn open_editor(&mut self, editor: Editor) -> Task<Message> {
+    fn open_editor(&mut self, mut editor: Editor) -> Task<Message> {
         let leave = self.close_editor();
         self.edits += 1;
+        if let Some(maps) = &self.maps {
+            editor.set_maps(maps.clone());
+        }
         self.editor = Some(editor);
-        leave
+        Task::batch([leave, self.fetch_maps(), self.editor_map()])
     }
 
     /// Closes the side panel; a change that still waits to be saved is saved.
@@ -1658,6 +1780,12 @@ impl App {
                 Task::perform(async move { webbrowser::open(&url).map_err(|err| err.to_string()) }, Message::LinkOpened)
             }
             editor::Action::OpenLink(_) => Task::none(),
+            editor::Action::SearchPlaces(query) => self.search_places(query),
+            // Checked again here: only web addresses and `geo:` links reach the system.
+            editor::Action::OpenMaps(url) if editor::openable_map(&url) => {
+                Task::perform(async move { open_map(&url) }, Message::LinkOpened)
+            }
+            editor::Action::OpenMaps(_) => Task::none(),
             editor::Action::Copy(text) => iced::clipboard::write(text),
             // Task ER2.3: the core shows the event's reminder now; the demo has no core.
             editor::Action::Preview(href) => {
@@ -2169,6 +2297,17 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     widgets::popover(head, tr("Night"), rows, actions)
 }
 
+/// Opens a link of "Open in Maps" (task TE.8) that passed `editor::openable_map`: a `geo:` link with
+/// the program Linux has for it (`xdg-open`), anything else in the browser.
+fn open_map(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if url.starts_with("geo:") {
+        let status = std::process::Command::new("xdg-open").arg(url).status().map_err(|err| err.to_string())?;
+        return if status.success() { Ok(()) } else { Err(format!("xdg-open ended with {status}")) };
+    }
+    webbrowser::open(url).map_err(|err| err.to_string())
+}
+
 /// The sentence the window shows when a save failed with the error `code` of the core (`message`
 /// is the core's, in English): what happened and what to do now. The calendar loads again either way.
 fn save_failed(code: &str, message: &str) -> String {
@@ -2669,6 +2808,21 @@ mod tests {
         let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
         let _ = app.update(Message::Loaded(Ok((collections, events))));
         app
+    }
+
+    /// Task TE.8: `--demo --open editor` shows a place with its map, from the demo's own places and
+    /// sketch, so the visual check sees the map without any service.
+    #[test]
+    fn the_demo_editor_shows_a_place_with_its_map() {
+        let mut app = launched(&["--demo", "--open", "editor", "--now", "2026-10-13T10:30"]);
+        assert!(app.maps.as_ref().is_some_and(|maps| maps.enabled), "the demo shows maps on");
+        let dark = app.theme().extended_palette().is_dark;
+        let editor = app.editor.as_mut().expect("the editor is open");
+        let geo = editor.event().and_then(|event| event.geo).expect("the event has a place");
+        assert_eq!(editor.map_wanted(dark), None, "its map was asked for when the editor opened");
+        let _ = app.update(Message::Map(app.edits, geo, dark, Some(editor::demo_map(&app.theme()))));
+        let _ = app.update(Message::Places(app.edits, "Hafenstr".into(), Ok(editor::demo_places())));
+        let _ = app.view();
     }
 
     #[test]

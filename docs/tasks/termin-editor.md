@@ -225,7 +225,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
   geht mit dem Request, Lesen-nur-Fälle; Sichtprüfung `torro-design-review` in allen Größen; fmt, clippy, test.
 
 ## TE.8 Editor: Erinnerungen frei, Ort mit Karte
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** TE.5, TE.7 · **Dateien:** `crates/torrocalendar/src/{editor,app}.rs`,
   `crates/torrocalendar/Cargo.toml`, `Cargo.toml` (iced-Feature), `crates/torro-core/src/i18n/de.rs`
 - **Reminders** (`termin-editor-a-remind.png`): „Add reminder“ öffnet eine Karte mit Chips (At start, 5, 10, 15,

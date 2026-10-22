@@ -23,7 +23,13 @@ chrono.workspace = true
 # name of this computer's zone.
 chrono-tz.workspace = true
 iana-time-zone.workspace = true
-iced.workspace = true
+# `image-without-codecs`: the small map of the event editor (task TE.8), a PNG the core sends.
+iced = { workspace = true, features = ["image-without-codecs"] }
+# Not used in code: turns on the PNG decoder of the `image` crate Iced decodes the map with (Iced's
+# own `image` feature would build every codec).
+image.workspace = true
+# The map comes as Base64 in `Response::Image`.
+base64.workspace = true
 # Opens the links of an event's location and notes (issue #126).
 webbrowser.workspace = true
 
