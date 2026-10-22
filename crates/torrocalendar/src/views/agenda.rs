@@ -5,15 +5,15 @@
 //!
 //! - **Days** with a date column at the left (weekday over the day number; today in a red circle,
 //!   weekends quieter) and a quiet head ("Today", "Tomorrow" or a new month at the left, "4 events"
-//!   at the right). Days are separated by lines. Iced's `scrollable` cannot pin the date column
-//!   while its day scrolls past, so it stands at the top of its day.
+//!   at the right). Days are separated by lines where the design draws them. Iced's `scrollable`
+//!   cannot pin the date column while its day scrolls past, so it stands at the top of its day.
 //! - **All-day events** as tinted chips at the top of the day, multi-day ones with "day 2 of 3".
 //! - **Timed events** as rows: start over duration, a bar in the calendar colour, title over the
 //!   place (map pin, or a camera for a link or a video call). Hover `hover`, the event open in the
-//!   side panel `selected`, ended ones at 55 %. The running event is tinted and says "40 min left"
-//!   (not in the narrow layout, where the row has no room for it); after it the red now line.
-//!   Beside it the people invited who have not declined, as avatars with their initials (at most
-//!   three and "+2"; not in the narrow layout either).
+//!   side panel marked as the design marks a chosen row, ended ones at 55 %. The running event is
+//!   tinted and says "40 min left" (not in the narrow layout, where the row has no room for it);
+//!   after it the red now line. Beside it the people invited who have not declined, as avatars with
+//!   their initials (at most three and "+2"; not in the narrow layout either).
 //! - **State** ([`super::Look`], task TE.9): a cancelled event is struck through and at 55 %, and
 //!   it leaves its time free (no "40 min left", no break in "3 h free") and says "· cancelled" after
 //!   its title; a tentative one has a dashed bar and says "· tentative" after its title, a
@@ -23,6 +23,17 @@
 //! - **Empty days** between days with events as one line per week, "3 d · Nothing planned ·
 //!   Tue 20 – Thu 22"; today always shows, even without events.
 //! - **Calendar weeks** as quiet separators ("This week · Week 42", "Week 43").
+//!
+//! **Designs** (issue #291, draft of task L.32 `docs/prototypes/designs/listen.html`): the same
+//! cells in the same places in every design; columns and heights come from the design's tokens
+//! ([`Metrics`]). Standard and Compact draw days with hairlines between them and an event over two
+//! lines; Console draws every entry on one line without hairlines (weekday beside the day number,
+//! start beside the length, the place after the title). The event open in the side panel is marked
+//! as a chosen task row is: the accent bar at its left, or in Console the whole row in the accent
+//! with its text, icons and the calendar's bar (solid or dashed) in `on_accent`. The avatars keep
+//! their own surface there: they lie on the panel's colour, and `on_accent` initials on it would be
+//! unreadable in light mode. In one line they stand at the right as "40 min left" does, the row as
+//! high as without them.
 //!
 //! A click on a row or chip sends `OpenEvent(index)`. No events at all → a friendly empty state.
 
@@ -38,10 +49,11 @@ use iced::widget::{
     Space, button, canvas as canvas_widget, column, container, mouse_area, responsive, row, rule, stack, svg,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Rectangle, Theme};
+use torro_core::design::{ListLook, ListSelection, ListStyle};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, month_name, to_local, week_start, weekday_name};
 use torro_gui::icon::{self, Icon};
-use torro_gui::layout::SizeClass;
+use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, Palette, over, palette, radius, size, space};
 use torro_gui::typo::{ellipsize, text_width};
 use torro_gui::widgets::{self, empty_state};
@@ -51,45 +63,24 @@ use torro_pim::{Event, EventTime};
 
 use super::glance::span;
 use super::week::{BAR, FREE_MINUTES, now_label, now_label_width};
-use super::{DashedShape, Item, Look, ViewData, dashed, takes_time, title_text};
+use super::{DashedShape, Item, Look, ViewData, dashed, dashes, takes_time, title_text};
 use crate::app::Message;
 
-/// Width of the date column (`.day{grid-template-columns:56px 1fr}`): the time axis and a little.
-fn date_column() -> f32 {
-    size::axis() + space::xs()
-}
-/// The date column of the narrow layout (`html[data-size="s"] .day`, 44).
-fn date_column_narrow() -> f32 {
-    size::axis_narrow()
-}
-/// The day number (`.date b{font:600 22px/32px "Inter Tabular"}`).
+/// The day number (`.date b`, `headline` tabular).
 fn day_number() -> typo::Level {
     typo::headline().tabular()
 }
-/// Today's red circle around the day number (`.date b`, 32).
-fn today_circle() -> f32 {
-    size::control()
-}
-/// The start of an event (`.ev .tm b`, 13/500 tabular).
+/// The start of an event (`.ev .tm b`, `body_strong` tabular).
 fn start() -> typo::Level {
     typo::body_strong().tabular()
 }
-/// The quiet head of a day ("Today … 4 events", `.dayhead{height:24px}`) and an all-day chip.
-fn day_head() -> f32 {
-    space::xl()
+/// The length of an event: under the start in `meta`; beside it in a design of one line per entry,
+/// where it reads as the rest of the line (`body`).
+fn length(line: bool) -> typo::Level {
+    if line { typo::body().tabular() } else { typo::meta().tabular() }
 }
-/// An event row: start and duration (36) with 4 above and below (`.ev{min-height:44px}`).
-fn event_row() -> f32 {
-    size::row() + space::xs()
-}
-/// The "3 h free" line (`.free{height:28px}`).
-fn free_row() -> f32 {
-    size::control_sm()
-}
-/// The line of empty days (`.gap{padding:10px 0}` around a 16-high line).
-fn gap_row() -> f32 {
-    size::control_lg()
-}
+/// Width of the bar at the left of the chosen event, as `widgets::selection_bar` draws it.
+const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
 /// Dash and gap of the dotted line after "3 h free" (`repeating-linear-gradient(… 0 3px,
 /// transparent 3px 6px)`).
 const DASH: [f32; 2] = [3.0, 3.0];
@@ -99,6 +90,7 @@ const SEPARATOR: &str = " · ";
 const RANGE: &str = " – ";
 /// Avatars beside a row at most; the others are counted in "+2" (`.av` in the mock-up).
 const AVATARS: usize = 3;
+
 /// One block of the list, in display order.
 #[derive(Debug, Clone, PartialEq)]
 enum Block {
@@ -474,30 +466,130 @@ fn gap_text(first: NaiveDate, last: NaiveDate) -> String {
 // Drawing
 // ---------------------------------------------------------------------------------------------
 
-/// The widths of the list at its current size, for its columns and for cutting titles.
+/// The tokens of the active design the agenda is measured from ([`Base::current`]); the tests build
+/// it from each built-in design ([`Base::of`]) without switching the process's design.
 #[derive(Debug, Clone, Copy)]
+struct Base {
+    /// How the design draws lists (`[list]`, issue #291): one line per entry in Console.
+    look: ListLook,
+    /// The sides of a list row ([`layout::row_padding`]).
+    side: f32,
+    row: f32,
+    row_sidebar: f32,
+    control_lg: f32,
+    axis: f32,
+    axis_narrow: f32,
+    content_max: f32,
+    /// The line of the day number (`headline`).
+    headline: f32,
+    xs: f32,
+    s: f32,
+    m: f32,
+    l: f32,
+    xl: f32,
+}
+
+impl Base {
+    fn current() -> Base {
+        Base {
+            look: layout::list(),
+            side: layout::row_padding().left,
+            row: size::row(),
+            row_sidebar: size::row_sidebar(),
+            control_lg: size::control_lg(),
+            axis: size::axis(),
+            axis_narrow: size::axis_narrow(),
+            content_max: size::content_max(),
+            headline: typo::line_height(typo::headline()),
+            xs: space::xs(),
+            s: space::s(),
+            m: space::m(),
+            l: space::l(),
+            xl: space::xl(),
+        }
+    }
+}
+
+/// The measures of the list in the active design at its current size: its columns, the heights of
+/// its lines and the room for titles. Derived from the design's tokens after the draft of task L.32
+/// (`docs/prototypes/designs/listen.html`, table "Values"); the design format has no keys of its own
+/// for the agenda (issue #291).
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Metrics {
     narrow: bool,
-    /// Left and right of the list (`.inner{padding:… 24px}`, narrow 12).
+    /// One line per entry (`[list] style = "line"`, Console): weekday beside the day number, start
+    /// beside the length, the place after the title.
+    line: bool,
+    /// A hairline between days (`[list] separators`); week heads keep theirs in every design.
+    separators: bool,
+    /// How the event open in the side panel shows (`[list] selection`): the accent bar (Standard,
+    /// Compact) or the whole row in the accent (Console), as a task row does.
+    selection: ListSelection,
+    /// Left and right of the list: the sides of a list row, so the agenda lines up with the task
+    /// list (24 / 16 / 8); 12 in the narrow layout as before.
     side: f32,
+    /// The date column: today's circle and the scale's `xl` around it (64 / 56); in one line the
+    /// weekday beside the number takes a time axis and a gap (56).
     date: f32,
-    /// The start column of a row: as wide as the time axis of the day and week views.
+    /// Today's red circle: the day number's line and the smallest gap (40 / 32 / 20).
+    circle: f32,
+    /// The start column of a row: as wide as the time axis of the day and week views; in one line
+    /// start and length side by side, an axis each.
     time: f32,
     /// Between the cells of a row.
     gap: f32,
     /// What a row's text has beside the start column and the bar.
     text: f32,
+    /// An event row: a task row and the scale's `s`, which holds start over length with `xs` above
+    /// and below (52 / 44); one line in Console, a task row (24).
+    event: f32,
+    /// The quiet head of a day ("Today … 4 events") and an all-day chip: a sidebar row less `xs`
+    /// (28 / 24); one line in Console (24).
+    head: f32,
+    /// The "3 h free" line: a sidebar row (32 / 28 / 24).
+    free: f32,
+    /// The line of empty days: a large control (40 / 36); one line in Console (24).
+    empty: f32,
+    /// Under the head of a day and under its chips: `xs`, none in one line.
+    below_head: f32,
 }
 
 impl Metrics {
     fn new(width: f32, narrow: bool) -> Metrics {
-        let side = if narrow { space::m() } else { space::xl() };
-        let date = if narrow { date_column_narrow() } else { date_column() };
-        let time = if narrow { size::axis_narrow() } else { size::axis() };
-        let gap = if narrow { space::s() } else { space::m() };
-        let events = width.min(size::content_max()) - 2.0 * side - date - 2.0 * space::s();
+        Metrics::of(Base::current(), width, narrow)
+    }
+
+    fn of(b: Base, width: f32, narrow: bool) -> Metrics {
+        let line = b.look.style == ListStyle::Line;
+        let side = if narrow { b.m } else { b.side };
+        let circle = b.headline + b.xs;
+        let axis = if narrow { b.axis_narrow } else { b.axis };
+        let date = match (line, narrow) {
+            (true, _) => axis + b.l,
+            (false, true) => b.axis_narrow,
+            (false, false) => circle + b.xl,
+        };
+        let time = if line { 2.0 * axis } else { axis };
+        let gap = if narrow { b.s } else { b.m };
+        let events = width.min(b.content_max) - 2.0 * side - date - 2.0 * b.s;
         let text = (events - time - BAR - 2.0 * gap).max(0.0);
-        Metrics { narrow, side, date, time, gap, text }
+        Metrics {
+            narrow,
+            line,
+            separators: b.look.separators,
+            selection: b.look.selection,
+            side,
+            date,
+            circle,
+            time,
+            gap,
+            text,
+            event: if line { b.row } else { b.row + b.s },
+            head: if line { b.row } else { b.row_sidebar - b.xs },
+            free: b.row_sidebar,
+            empty: if line { b.row } else { b.control_lg },
+            below_head: if line { 0.0 } else { b.xs },
+        }
     }
 }
 
@@ -505,10 +597,12 @@ impl Metrics {
 fn list<'a>(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
     let mut list = column![].width(Length::Fill);
     for (n, block) in blocks.iter().enumerate() {
-        // Days and gaps are separated by a line, but not from a week head, whose own line already
-        // separates (two lines would double up), nor from the end of the list.
-        let line_below =
-            !matches!(block, Block::Week(_)) && matches!(blocks.get(n + 1), Some(Block::Day(_) | Block::Gap { .. }));
+        // Days and gaps are separated by a line where the design draws lines between rows, but not
+        // from a week head, whose own line already separates (two lines would double up), nor from
+        // the end of the list.
+        let line_below = m.separators
+            && !matches!(block, Block::Week(_))
+            && matches!(blocks.get(n + 1), Some(Block::Day(_) | Block::Gap { .. }));
         list = match block {
             Block::Week(label) => list.push(week_head(label, n == 0)),
             Block::Day(day) => list.push(day_view(day, m, today, selected)),
@@ -549,14 +643,14 @@ fn day_view<'a>(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>
         typo::text(typo::meta().tabular(), count_text(day.count())).style(theme::text_3),
     ]
     .align_y(Alignment::Center)
-    .height(day_head());
+    .height(m.head);
     let mut events =
-        column![container(head).padding(Padding::new(0.0).left(space::s()).right(space::s()).bottom(space::xs()))]
+        column![container(head).padding(Padding::new(0.0).left(space::s()).right(space::s()).bottom(m.below_head))]
             .width(Length::Fill);
     if !day.chips.is_empty() {
         let chips = day.chips.iter().map(|chip| chip_view(chip, m, selected == Some(chip.index))).collect();
         events = events
-            .push(container(widgets::chip_row(chips)).padding(Padding::new(0.0).left(space::s()).bottom(space::xs())));
+            .push(container(widgets::chip_row(chips)).padding(Padding::new(0.0).left(space::s()).bottom(m.below_head)));
     }
     for line in &day.lines {
         events = events.push(match line {
@@ -569,7 +663,7 @@ fn day_view<'a>(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>
         let calm = typo::text(typo::meta(), tr("Nothing planned")).style(theme::text_3);
         events = events.push(container(calm).padding(Padding::new(0.0).left(space::s()).top(space::xs())));
     }
-    row![date_view(day.date, today, m.date), events].padding([space::m(), 0.0]).into()
+    row![date_view(day.date, today, m), events].padding([space::m(), 0.0]).into()
 }
 
 /// "1 event", "4 events"; nothing for none.
@@ -582,8 +676,9 @@ fn count_text(count: usize) -> String {
 }
 
 /// The date column: weekday (`CAPTION`, `text_3`; today `text`) over the day number
-/// (`HEADLINE` tabular; weekends `text_2`; today white in the red circle).
-fn date_view(date: NaiveDate, today: NaiveDate, width: f32) -> Element<'static, Message> {
+/// (`HEADLINE` tabular; weekends `text_2`; today white in the red circle, which stays round in every
+/// design). In one line (Console) the weekday stands beside the number, on the line of the day's head.
+fn date_view(date: NaiveDate, today: NaiveDate, m: Metrics) -> Element<'static, Message> {
     let is_today = date == today;
     let weekend = is_weekend(date);
     let weekday = typo::text(typo::caption(), weekday_name(date, true))
@@ -600,17 +695,22 @@ fn date_view(date: NaiveDate, today: NaiveDate, width: f32) -> Element<'static, 
             }),
         }
     });
-    let circle = container(number).center(today_circle()).style(move |t| container::Style {
+    let edge = m.circle;
+    let circle = container(number).center(edge).style(move |t| container::Style {
         background: is_today.then(|| Background::Color(palette(t).accent)),
-        border: border::rounded(today_circle() / 2.0),
+        border: border::rounded(edge / 2.0),
         ..container::Style::default()
     });
-    column![weekday, circle].align_x(Alignment::Center).width(width).into()
+    if m.line {
+        let both = row![weekday, circle].spacing(space::m()).align_y(Alignment::Center);
+        return container(both).center_x(m.date).center_y(m.head).into();
+    }
+    column![weekday, circle].align_x(Alignment::Center).width(m.date).into()
 }
 
 /// An all-day chip (`.chip`): tinted, the bar at the left, title in `CAPTION`, "day 2 of 3" in
 /// `META` / `text_3`; a cancelled one struck through and at 55 %, a tentative one a dashed outline
-/// without fill. Outlined in `focus_ring` while open in the side panel.
+/// without fill. As high as the day's head. Outlined in `focus_ring` while open in the side panel.
 fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Message> {
     let look = Look::of(chip.status, chip.past);
     let (color, alpha) = (chip.color, look.alpha());
@@ -644,7 +744,7 @@ fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Messag
         });
         row![bar, body].into()
     };
-    let chip_box = container(container(surface).height(day_head())).style(move |t| container::Style {
+    let chip_box = container(container(surface).height(m.head)).style(move |t| container::Style {
         border: if selected {
             border::rounded(radius::xs()).color(palette(t).focus_ring).width(style::FOCUS_RING_WIDTH)
         } else {
@@ -655,37 +755,59 @@ fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Messag
     mouse_area(chip_box).on_press(Message::OpenEvent(chip.index)).interaction(mouse::Interaction::Pointer).into()
 }
 
-/// An event row (`.ev`): start over duration, the bar, title over place, and at the right the
-/// avatars of the people invited and, on the running event, "40 min left". Hover `hover`, open in
-/// the side panel `selected`, running tinted, ended at 55 %; cancelled struck through and at 55 %,
-/// tentative with a dashed bar and "· tentative" after the title, cancelled with "· cancelled".
+/// An event row (`.ev`): start over length, the bar, title over place, and at the right the avatars
+/// of the people invited and, on the running event, "40 min left"; in one line (Console) start
+/// beside length and the place after the title, avatars and "40 min left" still at the right. Hover
+/// `hover`, running tinted, ended at 55 %; cancelled struck through and at 55 %, tentative with a
+/// dashed bar and "· tentative" after the title, cancelled with "· cancelled". The event open in the
+/// side panel is marked as a chosen task row is (draft of L.32, confirmed): the accent bar at its
+/// left on `selected`, or the whole row in the accent with its text, icons and the calendar's bar
+/// (solid or dashed) in `on_accent`; the avatars keep their own surface there (module doc).
 fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message> {
     let look = Look::of(event.status, event.past);
     let alpha = look.alpha();
     let color = event.color;
+    let mark = Mark::of(m.selection, selected);
 
-    let mut time =
-        column![typo::text(start(), format_time(event.start)).style(move |t: &Theme| faded(palette(t).text, alpha))];
-    if let Some(minutes) = event.minutes {
-        time = time.push(
-            typo::text(typo::meta().tabular(), duration(minutes))
-                .style(move |t: &Theme| faded(palette(t).text_3, alpha)),
-        );
-    }
+    let start_text =
+        typo::text(start(), format_time(event.start)).style(move |t: &Theme| faded(palette(t).text, alpha));
+    let length_text = event.minutes.map(|minutes| {
+        typo::text(length(m.line), duration(minutes))
+            .style(move |t: &Theme| faded(palette(t).text_3, alpha))
+            .wrapping(Wrapping::None)
+    });
+    let time: Element<'a, Message> = if m.line {
+        let mut time = row![start_text].spacing(space::m()).align_y(Alignment::Center);
+        if let Some(length) = length_text {
+            time = time.push(length);
+        }
+        time.into()
+    } else {
+        let mut time = column![start_text];
+        if let Some(length) = length_text {
+            time = time.push(length);
+        }
+        time.into()
+    };
     let time = container(time).width(m.time).height(Length::Fill).center_y(Length::Fill).clip(true);
 
-    let bar: Element<'a, Message> = if look.dashed {
-        container(dashed(color, look.faded, DashedShape::Bar)).width(BAR).height(Length::Fill).into()
-    } else {
-        container(Space::new())
+    let filled = mark == Mark::Fill;
+    let bar: Element<'a, Message> = match (look.dashed, filled) {
+        (true, true) => canvas_widget(AccentDashes).width(BAR).height(Length::Fill).into(),
+        (true, false) => container(dashed(color, look.faded, DashedShape::Bar)).width(BAR).height(Length::Fill).into(),
+        (false, _) => container(Space::new())
             .width(BAR)
             .height(Length::Fill)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(color.scale_alpha(alpha))),
+            .style(move |t| container::Style {
+                background: Some(Background::Color(if filled {
+                    palette(t).on_accent
+                } else {
+                    color.scale_alpha(alpha)
+                })),
                 border: border::rounded(BAR / 2.0),
                 ..container::Style::default()
             })
-            .into()
+            .into(),
     };
 
     let left = event.left.filter(|_| !m.narrow).map(|minutes| trf("{span} left", &[("span", &span(minutes))]));
@@ -695,9 +817,68 @@ fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message>
     if faces > 0 {
         side_width += avatars_width(faces) + m.gap;
     }
-    let state = state_word(event.status).map(|word| format!("{SEPARATOR}{word}"));
-    let suffix_width = state.as_deref().map_or(0.0, |text| text_width(text, typo::body()));
     let room = m.text - side_width;
+    let what = if m.line { what_on_one_line(event, room, look) } else { what_on_two_lines(event, room, look) };
+    let what = container(what).width(Length::Fill).height(Length::Fill).center_y(Length::Fill).clip(true);
+
+    // The avatars stand outside the `on_accent` theme of a filled row: they keep the panel's colour
+    // under their initials, which `on_accent` would make unreadable in light mode.
+    let mut cells = row![widgets::row_content(row![time, bar, what].spacing(m.gap).height(Length::Fill), selected)]
+        .spacing(m.gap)
+        .height(Length::Fill);
+    if faces > 0 {
+        let people: Vec<(&str, Color)> =
+            event.people.iter().map(|initial| (initial.as_str(), color.scale_alpha(alpha))).collect();
+        let avatars = widgets::avatar_stack(&people, event.more);
+        cells = cells.push(container(avatars).height(Length::Fill).center_y(Length::Fill));
+    }
+    if let Some(label) = left {
+        let pill = container(widgets::pill(None, label)).height(Length::Fill).center_y(Length::Fill);
+        cells = cells.push(widgets::row_content(pill, selected));
+    }
+    let running = event.left.is_some();
+    // The bar takes its width from the padding, so the cells do not move when the event is chosen.
+    let left_pad = if mark == Mark::Bar { space::s() - SELECTED_BAR } else { space::s() };
+    let body = button(cells)
+        .width(Length::Fill)
+        .height(m.event)
+        .padding(Padding { top: space::xs(), right: space::s(), bottom: space::xs(), left: left_pad })
+        .style(move |t, status| row_style(&palette(t), status, mark, running.then_some(color)))
+        .on_press(Message::OpenEvent(event.index));
+    if mark == Mark::Bar { row![widgets::selection_bar(m.event), body].into() } else { body.into() }
+}
+
+/// Title over the place (`.ev .what`), each cut to `room`.
+fn what_on_two_lines(event: &Row, room: f32, look: Look) -> Element<'static, Message> {
+    let mut what = column![title_view(event, room, look)];
+    if let Some(detail) = detail_view(event, room, look.alpha()) {
+        what = what.push(detail);
+    }
+    what.into()
+}
+
+/// Title and, after a "·", the place on one line (Console, `.d.console .ev .what`). The title takes
+/// what it needs as long as the place keeps at least half of `room`; the place takes the rest.
+fn what_on_one_line(event: &Row, room: f32, look: Look) -> Element<'static, Message> {
+    let alpha = look.alpha();
+    let dot = format!("{} ", SEPARATOR.trim());
+    let detail_need = detail_width(event).map_or(0.0, |width| width + text_width(&dot, typo::meta()) + space::m());
+    let title_room = title_width(event).min(room - detail_need.min(room / 2.0)).max(0.0);
+    let mut what = row![title_view(event, title_room, look)].spacing(space::m()).align_y(Alignment::Center);
+    let detail_room = room - title_room - space::m() - text_width(&dot, typo::meta());
+    if let Some(detail) = detail_view(event, detail_room, alpha) {
+        let dot = typo::text(typo::meta(), dot).style(move |t: &Theme| faded(palette(t).text_2, alpha));
+        what = what.push(row![dot, detail].align_y(Alignment::Center));
+    }
+    what.into()
+}
+
+/// The title in `BODY_STRONG` (struck through when cancelled) and after it, quietly, the state word
+/// ("· tentative", [`state_suffix`]), cut together to `room`: the word stays, the title gives way.
+fn title_view(event: &Row, room: f32, look: Look) -> Element<'static, Message> {
+    let alpha = look.alpha();
+    let state = state_suffix(event.status);
+    let suffix_width = state.as_deref().map_or(0.0, |text| text_width(text, typo::body()));
     let title = ellipsize(&event.title, typo::body_strong(), (room - suffix_width).max(0.0));
     let mut heading =
         row![title_text(typo::body_strong(), title, look.struck, move |t| palette(t).text.scale_alpha(alpha))];
@@ -708,30 +889,13 @@ fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message>
                 .wrapping(Wrapping::None),
         );
     }
-    let mut what = column![heading];
-    if let Some(detail) = detail_view(event, room, alpha) {
-        what = what.push(detail);
-    }
-    let what = container(what).width(Length::Fill).height(Length::Fill).center_y(Length::Fill).clip(true);
+    heading.into()
+}
 
-    let mut cells = row![time, bar, what].spacing(m.gap).height(Length::Fill);
-    if faces > 0 {
-        let people: Vec<(&str, Color)> =
-            event.people.iter().map(|initial| (initial.as_str(), color.scale_alpha(alpha))).collect();
-        let avatars = widgets::avatar_stack(&people, event.more);
-        cells = cells.push(container(avatars).height(Length::Fill).center_y(Length::Fill));
-    }
-    if let Some(label) = left {
-        cells = cells.push(container(widgets::pill(None, label)).height(Length::Fill).center_y(Length::Fill));
-    }
-    let running = event.left.is_some();
-    button(cells)
-        .width(Length::Fill)
-        .height(event_row())
-        .padding([space::xs(), space::s()])
-        .style(move |t, status| row_style(&palette(t), status, selected, running.then_some(color)))
-        .on_press(Message::OpenEvent(event.index))
-        .into()
+/// The width the title wants uncut, its state word included ([`title_view`]).
+fn title_width(event: &Row) -> f32 {
+    let suffix = state_suffix(event.status).map_or(0.0, |text| text_width(&text, typo::body()));
+    text_width(&event.title, typo::body_strong()) + suffix
 }
 
 /// The word after the title of an event that is not simply on: "tentative", "cancelled" (behind
@@ -742,6 +906,21 @@ fn state_word(status: Option<EventStatus>) -> Option<&'static str> {
         EventStatus::Cancelled => Some(tr("cancelled")),
         EventStatus::Confirmed => None,
     }
+}
+
+/// [`state_word`] as it follows the title: " · tentative".
+fn state_suffix(status: Option<EventStatus>) -> Option<String> {
+    state_word(status).map(|word| format!("{SEPARATOR}{word}"))
+}
+
+/// The width the line under the title wants uncut ([`detail_view`]); `None` with neither place nor note.
+fn detail_width(event: &Row) -> Option<f32> {
+    let text = [event.place.as_deref(), event.note.as_deref()].into_iter().flatten().collect::<Vec<_>>();
+    if text.is_empty() {
+        return None;
+    }
+    let icon = if event.place.is_some() { icon::SIZE_SM + space::xs() } else { 0.0 };
+    Some(icon + text_width(&text.join(SEPARATOR), typo::meta()))
 }
 
 /// The line under the title: map pin or camera, the place and "day 2 of 3"; `None` with neither.
@@ -767,19 +946,47 @@ fn detail_view(event: &Row, room: f32, alpha: f32) -> Option<Element<'static, Me
     Some(line.into())
 }
 
-/// The surface of an event row: `selected` while open in the side panel; else `hover` under the
-/// pointer, `selected` while pressed; else the running event's tint, or nothing.
-fn row_style(p: &Palette, status: button::Status, selected: bool, running: Option<Color>) -> button::Style {
-    let background = match status {
-        _ if selected => Some(p.selected),
-        button::Status::Hovered => Some(p.hover),
-        button::Status::Pressed => Some(p.selected),
-        _ => running.map(|color| tint(p, color)),
+/// How an event row is marked: not at all, or as the chosen one in a design's `[list] selection`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    None,
+    /// `selected` with the accent bar at its left (Standard, Compact).
+    Bar,
+    /// The whole row in `accent`, its content in `on_accent` (Console).
+    Fill,
+}
+
+impl Mark {
+    /// The mark of a row that is `selected` (open in the side panel) or not, in a design that marks
+    /// the chosen row with `selection`.
+    fn of(selection: ListSelection, selected: bool) -> Mark {
+        match (selected, selection) {
+            (false, _) => Mark::None,
+            (true, ListSelection::Bar) => Mark::Bar,
+            (true, ListSelection::Fill) => Mark::Fill,
+        }
+    }
+}
+
+/// The surface of an event row: the chosen one `selected` (with the bar beside it, whose side has no
+/// corners) or `accent` with its text in `on_accent`; else `hover` under the pointer, `selected` while
+/// pressed; else the running event's tint, or nothing. Corners `radius::sm()` (none in Console).
+fn row_style(p: &Palette, status: button::Status, mark: Mark, running: Option<Color>) -> button::Style {
+    let background = match (mark, status) {
+        (Mark::Bar, _) => Some(p.selected),
+        (Mark::Fill, _) => Some(p.accent),
+        (Mark::None, button::Status::Hovered) => Some(p.hover),
+        (Mark::None, button::Status::Pressed) => Some(p.selected),
+        (Mark::None, _) => running.map(|color| tint(p, color)),
+    };
+    let radius = match mark {
+        Mark::Bar => Radius::new(radius::sm()).left(0.0),
+        _ => Radius::new(radius::sm()),
     };
     button::Style {
         background: background.map(Background::Color),
-        text_color: p.text,
-        border: border::rounded(radius::sm()),
+        text_color: if mark == Mark::Fill { p.on_accent } else { p.text },
+        border: Border { radius, ..Border::default() },
         ..button::Style::default()
     }
 }
@@ -793,7 +1000,7 @@ fn free_view(hours: i64, m: Metrics) -> Element<'static, Message> {
     row![Space::new().width(m.time), line]
         .spacing(m.gap)
         .align_y(Alignment::Center)
-        .height(free_row())
+        .height(m.free)
         .padding([0.0, space::s()])
         .into()
 }
@@ -824,7 +1031,7 @@ fn gap_view(first: NaiveDate, last: NaiveDate, m: Metrics) -> Element<'static, M
     let text = typo::text(typo::meta(), gap_text(first, last)).style(theme::text_3).wrapping(Wrapping::None);
     row![container(count).center_x(m.date), container(text).padding(Padding::new(0.0).left(space::s())).clip(true)]
         .align_y(Alignment::Center)
-        .height(gap_row())
+        .height(m.empty)
         .into()
 }
 
@@ -865,6 +1072,32 @@ impl canvas::Program<Message> for Dots {
             ..Stroke::default().with_color(palette(theme).line_strong).with_width(size::HAIRLINE)
         };
         frame.stroke(&Path::line(Point::new(0.0, y), Point::new(bounds.width, y)), stroke);
+        vec![frame.into_geometry()]
+    }
+}
+
+/// The dashed bar of a tentative event on the chosen row of a filled design (Console): dashed down
+/// its height as [`super::dashed`] draws it, but in `on_accent`, which that one cannot take (it
+/// draws in a colour given when the view is built).
+struct AccentDashes;
+
+impl canvas::Program<Message> for AccentDashes {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let stroke = Stroke::default().with_color(palette(theme).on_accent).with_width(bounds.width);
+        let x = bounds.width / 2.0;
+        for (from, to) in dashes(bounds.height) {
+            frame.stroke(&Path::line(Point::new(x, from), Point::new(x, to)), stroke);
+        }
         vec![frame.into_geometry()]
     }
 }
@@ -1277,5 +1510,135 @@ mod tests {
         let wide = Metrics::new(size::content_max(), false);
         let narrow = Metrics::new(size::content_max(), true);
         assert!(narrow.text > wide.text, "narrow columns leave the text more room at the same width");
+    }
+
+    fn built_in(id: &str) -> torro_core::design::Design {
+        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+    }
+
+    /// [`Base::current`] as it would read in the design `d`.
+    fn base(d: &torro_core::design::Design) -> Base {
+        Base {
+            look: d.list,
+            side: d.layout.row_padding.horizontal,
+            row: d.size.row,
+            row_sidebar: d.size.row_sidebar,
+            control_lg: d.size.control_lg,
+            axis: d.size.axis,
+            axis_narrow: d.size.axis_narrow,
+            content_max: d.size.content_max,
+            headline: d.typo.headline.line,
+            xs: d.space.xs,
+            s: d.space.s,
+            m: d.space.m,
+            l: d.space.l,
+            xl: d.space.xl,
+        }
+    }
+
+    fn metrics(id: &str) -> Metrics {
+        let d = built_in(id);
+        Metrics::of(base(&d), d.size.content_max, false)
+    }
+
+    /// Issue #291 (task L.36, draft L.32): the agenda's columns and lines follow the design – sides
+    /// as the list rows', date column and today's circle from the day number, rows of two lines in
+    /// Standard and Compact and of one line without hairlines in Console.
+    #[test]
+    fn columns_and_lines_follow_the_design() {
+        // (side, date, circle, time, event, head, free, empty)
+        let measures = |m: Metrics| (m.side, m.date, m.circle, m.time, m.event, m.head, m.free, m.empty);
+        assert_eq!(measures(metrics("torro")), (24.0, 64.0, 40.0, 52.0, 52.0, 28.0, 32.0, 40.0));
+        assert_eq!(measures(metrics("compact")), (16.0, 56.0, 32.0, 52.0, 44.0, 24.0, 28.0, 36.0));
+        assert_eq!(measures(metrics("console")), (8.0, 56.0, 20.0, 96.0, 24.0, 24.0, 24.0, 24.0));
+        let lines = |m: Metrics| (m.line, m.separators, m.selection, m.below_head);
+        assert_eq!(lines(metrics("torro")), (false, true, ListSelection::Bar, 4.0));
+        assert_eq!(lines(metrics("compact")), (false, true, ListSelection::Bar, 4.0));
+        assert_eq!(lines(metrics("console")), (true, false, ListSelection::Fill, 0.0));
+        assert_eq!(Metrics::new(size::content_max(), false), metrics("torro"), "the process draws with the standard");
+    }
+
+    /// Issue #291: every line holds its text – start over length in an event row with `xs` above and
+    /// below, one line in Console –, and today's circle holds the day number.
+    #[test]
+    fn every_line_holds_its_text_in_every_design() {
+        for id in ["torro", "compact", "console"] {
+            let d = built_in(id);
+            let m = metrics(id);
+            let t = &d.typo;
+            let inside = m.event - 2.0 * d.space.xs;
+            let needed = if m.line { t.body_strong.line } else { t.body_strong.line + t.meta.line };
+            assert!(inside >= needed, "{id}: event row {inside} < {needed}");
+            assert!(m.head >= t.caption.line.max(t.meta.line), "{id}: day head");
+            assert!(m.free >= t.meta.line && m.empty >= t.meta.line, "{id}: free time and empty days");
+            assert!(m.circle >= t.headline.line, "{id}: today's circle");
+            assert!(m.date >= m.circle, "{id}: date column");
+        }
+        // In one line the weekday stands beside the circle.
+        let console = metrics("console");
+        assert!(console.date >= console.circle + text_width("Wed", typo::caption()), "weekday and day side by side");
+    }
+
+    /// Issue #291 (draft L.32, confirmed): the event open in the side panel is marked as a chosen task
+    /// row – `selected` with the accent bar beside it (its corners there square), or the whole row in
+    /// the accent with its text in `on_accent`; hover and the running tint only on the others.
+    #[test]
+    fn the_chosen_event_is_marked_as_a_chosen_task_row() {
+        assert_eq!(Mark::of(ListSelection::Bar, true), Mark::Bar);
+        assert_eq!(Mark::of(ListSelection::Fill, true), Mark::Fill);
+        assert_eq!(Mark::of(ListSelection::Fill, false), Mark::None);
+        let p = theme::Palette::dark();
+        let green = p.ok;
+        let style = |mark, status| row_style(&p, status, mark, Some(green));
+        let bar = style(Mark::Bar, button::Status::Hovered);
+        assert_eq!(
+            bar.background,
+            Some(Background::Color(p.selected)),
+            "the chosen one stays chosen under the pointer"
+        );
+        assert_eq!(bar.border.radius, Radius::new(radius::sm()).left(0.0), "square beside the bar");
+        let fill = style(Mark::Fill, button::Status::Active);
+        assert_eq!((fill.background, fill.text_color), (Some(Background::Color(p.accent)), p.on_accent));
+        assert_eq!(style(Mark::None, button::Status::Hovered).background, Some(Background::Color(p.hover)));
+        assert_eq!(style(Mark::None, button::Status::Active).background, Some(Background::Color(tint(&p, green))));
+    }
+
+    /// The list builds in each built-in design's measures, chosen event and chip included – also a
+    /// tentative row with avatars (its dashed bar in `on_accent` when filled), a cancelled row and a
+    /// tentative chip (task TE.9 together with issue #291).
+    #[test]
+    fn the_list_builds_in_every_design() {
+        let guest = |name: &str| Attendee {
+            name: Some(name.to_string()),
+            email: None,
+            partstat: PartStat::Accepted,
+            role: torro_pim::model::AttendeeRole::default(),
+        };
+        let guests = ["Anna Weber", "Jonas", "Lena", "Mia", "Örjan"].map(guest).to_vec();
+        let events = [
+            event("meeting", at(13, 9, 0), Some(at(13, 15, 0))),
+            Event {
+                location: Some("meet.example.org/daily".into()),
+                ..event("call", at(13, 16, 0), Some(at(13, 17, 0)))
+            },
+            event("holiday", date(13), Some(date(15))),
+            event("later", at(20, 9, 0), None),
+            Event {
+                status: Some(EventStatus::Tentative),
+                attendees: guests,
+                ..event("maybe", at(13, 18, 0), Some(at(13, 19, 0)))
+            },
+            Event { status: Some(EventStatus::Cancelled), ..event("called off", at(13, 20, 0), Some(at(13, 21, 0))) },
+            Event { status: Some(EventStatus::Tentative), ..event("trip", date(14), Some(date(15))) },
+        ];
+        let blocks = planned(&events, 13, 30, local(13, 10, 0));
+        for id in ["torro", "compact", "console"] {
+            let d = built_in(id);
+            for narrow in [false, true] {
+                for chosen in [None, Some(0), Some(1), Some(2), Some(4), Some(5), Some(6)] {
+                    let _ = list(&blocks, Metrics::of(base(&d), d.size.content_max, narrow), day(13), chosen);
+                }
+            }
+        }
     }
 }

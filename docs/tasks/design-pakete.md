@@ -753,7 +753,14 @@ es im Kommentar der `design.toml`):
   `on_accent`, Lesebreite; Demo `torroinbox --demo` in allen drei Designs startet.
 
 ### L.36 Aufgaben und Kalender nach dem Entwurf
-- [ ] erledigt
+- [x] erledigt (2026-10-23: Aufgabenliste mit Chevron in der Seitenbreite der Zeilen (12/12/8), Gruppen-Icon auf der
+  Achse der Kreise, „+“ höchstens so hoch wie der Kopf, Fälligkeit mindestens `size::axis_narrow()`; gewählte Zeile in
+  Console mit Punkt, Datum und Prioritätsbalken in `on_accent`. Agenda mit `Metrics` aus den Tokens des Designs
+  (Seiten wie die Zeilen, Datumsspalte, Heute-Kreis, Termin-, Kopf-, Frei- und Leerzeilen), Console in einer Zeile
+  ohne Linien zwischen Tagen, gewählter Termin wie eine gewählte Aufgabenzeile. Abweichungen vom Entwurf: Zeilen- und
+  Kopfhöhen aus `size::row()`/`row_group()` (44/36/24, 40/28/24 statt 48/40/24, 40/32/24), Pille 20 (Baustein),
+  Abstände `space::m()`/`space::s()` (Console 6/4 statt 8/4), Zeitspalte `size::axis()` (52, Console zwei Achsen 96),
+  Heute-Kreis in Console 20, Fälligkeit 44 auch im Standard)
 - **Modell:** Opus · **Braucht:** L.32 (bestätigt), L.34 · **Dateien:** `crates/torrotasks/src/list.rs`,
   `crates/torrocalendar/src/views/agenda.rs`, und was der bestätigte Entwurf darüber hinaus nennt (dann vorher fragen)
 - Die Aufgabenliste (`widgets::list_row` aus L.34 plus `torrotasks::list::row_view`) und die Agenda
