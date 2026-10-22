@@ -54,6 +54,10 @@
 //! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206): the hulls
 //! [`update`] and [`view`] here measure, so the app's own code stays as it is.
+//!
+//! On Windows the three programs are GUI programs without a console window (`windows_subsystem` in
+//! each `main.rs`, never here: it only counts in a program's own crate root). A failed start is
+//! written to [`START_ERROR_FILE`] in the inbox's state directory instead (see [`report_start_error`]).
 
 mod app;
 mod compose;
@@ -71,12 +75,14 @@ mod overview;
 mod search;
 mod suggest;
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
 use iced::{Element, Task};
 use torro_core::AppId;
+use torro_core::paths::AppPaths;
 use torro_core::timing;
 use torro_gui::instance::Claim;
 use torro_gui::source::Source;
@@ -91,6 +97,10 @@ use crate::insights::StatsSource;
 use crate::mail::MailSource;
 use crate::suggest::SuggestSource;
 
+/// Holds the error of the last failed start, in the inbox's state directory (Windows only). One file for
+/// the three programs, which share that directory; each line names the program that failed.
+const START_ERROR_FILE: &str = "start-error.log";
+
 /// Runs the inbox as the program of `app`, one of `AppId::INBOX` (`torroinbox`), `AppId::INBOX_MAIL`
 /// (`torro-inbox-mail`) and `AppId::INBOX_NOTIFICATIONS` (`torro-inbox-notifications`), with `args`,
 /// the words after the program name; what each program's `main` does and all it does (issue #279).
@@ -101,7 +111,8 @@ use crate::suggest::SuggestSource;
 /// start of a window kind brings the running window forward and ends with exit 0
 /// ([`torro_gui::instance`], channel by the kind's window class, so `torro-inbox-mail` and
 /// `torroinbox --view mail` share one), and the window or the compose window runs until it closes.
-/// Messages name the program by `app.program_file()`.
+/// Messages name the program by `app.program_file()`; on Windows a failed start is also written to
+/// [`START_ERROR_FILE`] ([`report_start_error`]).
 pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     timing::start();
     let program = app.program_file();
@@ -114,7 +125,7 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     let mut launch = match Launch::parse(&args) {
         Ok(launch) => launch,
         Err(err) => {
-            eprintln!("{program}: {err}");
+            report_start_error(app, &err.to_string());
             return ExitCode::from(64);
         }
     };
@@ -123,7 +134,7 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     launch.message = match start_message(&args) {
         Ok(message) => message,
         Err(err) => {
-            eprintln!("{program}: {err}");
+            report_start_error(app, &err);
             return ExitCode::from(64);
         }
     };
@@ -147,10 +158,34 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{program}: {err}");
+            report_start_error(app, &err.to_string());
             ExitCode::FAILURE
         }
     }
+}
+
+/// Reports why the program of `app` could not start: on stderr, and on Windows also in [`START_ERROR_FILE`] of the
+/// inbox's state directory, because a GUI program started by a double click has no console that would show stderr.
+fn report_start_error(app: AppId, message: &str) {
+    let line = format!("{}: {message}", app.program_file());
+    eprintln!("{line}");
+    if cfg!(windows)
+        && let Some(paths) = AppPaths::for_app(app)
+    {
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        // Nowhere is left to report a failed write to; the stderr line above is all we can do.
+        let _ = write_start_error(&paths.state, &format!("{stamp} {line}"));
+    }
+}
+
+/// Writes `line` to [`START_ERROR_FILE`] in `dir`, creating `dir` if needed, and returns the file.
+///
+/// Replaces an earlier report, so the file stays small and always shows the latest failed start.
+fn write_start_error(dir: &Path, line: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let file = dir.join(START_ERROR_FILE);
+    std::fs::write(&file, format!("{line}\n"))?;
+    Ok(file)
 }
 
 /// The words the program of `app` runs with (issue #279): `args` behind the entry's own arguments
@@ -292,6 +327,19 @@ mod tests {
 
     fn args(line: &[&str]) -> Vec<String> {
         line.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn the_start_error_replaces_the_last_one_in_a_new_directory() {
+        let root = std::env::temp_dir().join(format!("torroinbox-start-error-{}", std::process::id()));
+        let dir = root.join("state");
+
+        write_start_error(&dir, "first").expect("first write");
+        let file = write_start_error(&dir, "second").expect("second write");
+
+        assert_eq!(file, dir.join(START_ERROR_FILE));
+        assert_eq!(std::fs::read_to_string(&file).expect("read"), "second\n");
+        std::fs::remove_dir_all(&root).expect("clean up");
     }
 
     /// Task E8.7a: the core's `--message=m:…` is read in both forms; anything else is refused.

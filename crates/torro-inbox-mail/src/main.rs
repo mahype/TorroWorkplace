@@ -6,6 +6,9 @@
 //! ([`torroinbox::start`]): without `--view` it opens `--view mail`, a `--view` given stays, and every other
 //! parameter means what it means to `torroinbox`.
 //! Its window class is `torro-inbox-mail`, the name of this program.
+//!
+//! On Windows it is a GUI program without a console window; the library writes a failed start to
+//! `start-error.log` in the inbox's state directory instead.
 
 // Not for the test harness: its output has to reach the console.
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
