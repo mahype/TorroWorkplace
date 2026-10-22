@@ -31,6 +31,11 @@
 //!    the sender name). "Connect" sends `Request::ConnectMail`, or `Request::ConnectCalDav` when
 //!    only calendars and tasks are ticked, and waits in **Connecting**. A refused password
 //!    (`auth`) comes back to the Password step, under the field, with the server that refused it.
+//!    A server whose certificate the system does not trust (`Response::UntrustedCertificate`, task
+//!    M11.4) leads to **Certificate**: host, service and fingerprint, with a clear warning for a
+//!    host on the public internet; "Trust certificate" sends `ConnectMail` again with every
+//!    certificate trusted in this dialog ([`Certificates`]). Only for this question the dialog
+//!    keeps the password; any other answer, "Back" or closing clears it.
 //!    The steps and the check boxes are data, so a step or a service is added without a new screen.
 //! 5. AI providers (task KI.1a, Open First): **AI** – opening it sends `Request::FindAiServers`;
 //!    "On this computer" lists Ollama and LM Studio, each found one with its models and
@@ -81,6 +86,7 @@
 //! puts it on the dialog surface over the whole window (`super::dialog`).
 
 use iced::widget::space as blank;
+use iced::widget::text::Wrapping;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::account::{NtfyTopic, Secret};
@@ -131,8 +137,11 @@ enum Step {
     MailPassword,
     /// Mail provider: which services to use.
     MailServices,
-    /// Mail provider: waiting for the core to sign in (`ConnectCalDav`).
+    /// Mail provider: waiting for the core to sign in (`ConnectMail`, `ConnectCalDav`).
     MailConnecting,
+    /// Mail provider: a server showed a certificate the system does not trust (task M11.4):
+    /// "Trust certificate" sends `ConnectMail` again with it, "Back" leads to the password.
+    MailCertificate,
     /// AI providers: the servers on this computer, OpenRouter and any other server.
     AiChoose,
     /// AI providers: OpenRouter's API key.
@@ -514,6 +523,8 @@ struct Mail {
     /// servers have are chosen ([`Mail::services`]).
     chosen: Option<Vec<Service>>,
     connected: Option<Connected>,
+    /// The certificates trusted on this path and the one asked about (task M11.4).
+    certificates: Certificates,
 }
 
 impl Default for Mail {
@@ -531,6 +542,7 @@ impl Default for Mail {
             sender_name: String::new(),
             chosen: None,
             connected: None,
+            certificates: Certificates::default(),
         }
     }
 }
@@ -798,6 +810,16 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if let Some(taken) = offer_answered(state, result) {
         return taken;
     }
+    // The password stays only while a server's certificate is asked about (task M11.4): then the
+    // password did not go out and is needed again for "Trust certificate".
+    if state.step == Step::MailConnecting {
+        if state.mail.certificates.ask(result) {
+            state.step = Step::MailCertificate;
+            state.error = None;
+            return true;
+        }
+        state.mail.password = Secret::default();
+    }
     match (state.step, result) {
         (
             Step::MailSearching,
@@ -1000,6 +1022,10 @@ fn offer_answered(state: &mut State, result: &Result<Response, String>) -> Optio
                 offer.failed = None;
                 offer.imported = true;
             }
+            // The question needs the password, which the mail path asks for (task M11.4).
+            Ok(Response::UntrustedCertificate { .. }) => {
+                offer.failed = Some((id, tr("The certificate is not trusted.").into()));
+            }
             Ok(_) => offer.failed = Some((id, tr("Torro Workplace did not answer as expected. Try again.").into())),
             Err(message) => offer.failed = Some((id, message.clone())),
         }
@@ -1049,7 +1075,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     // Every message first looks at the latest data, so a finished sign-in is noticed at once.
     observe(state, data);
     match message {
-        Message::Close | Message::LoginLinkEdited => Action::None,
+        // The dialog goes away with its state; the password goes first all the same.
+        Message::Close => {
+            state.mail.password = Secret::default();
+            Action::None
+        }
+        Message::LoginLinkEdited => Action::None,
         // The step the dialog opened at has no way back (task S.30): there is no catalog behind it.
         Message::Back if state.step == state.origin => Action::None,
         Message::Back => {
@@ -1057,6 +1088,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             match state.step {
                 Step::Token => state.step = Step::Github,
                 Step::Github | Step::Server => state.step = state.origin,
+                // The certificate was not trusted: the password is typed again (task M11.4).
+                Step::MailCertificate => {
+                    state.mail.certificates.dismiss();
+                    state.mail.password = Secret::default();
+                    go(state, Step::MailPassword);
+                }
                 step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => match step.mail_previous() {
                     // TorroMail's "Enter password" leads back to its list.
                     Step::Provider => state.step = state.origin,
@@ -1192,7 +1229,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 state.error = None;
                 state.github.send_token()
             }
-            step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => continue_mail(state, step),
+            step @ (Step::MailAddress | Step::MailPassword | Step::MailServices | Step::MailCertificate) => {
+                continue_mail(state, step)
+            }
             Step::AiKey if ai_can_connect(state) => {
                 let provider = cloud(state);
                 // The China platform is another address; the international one is the usual.
@@ -1343,15 +1382,21 @@ fn mail_can_continue(state: &State, step: Step) -> bool {
         },
         Step::MailPassword => !mail.password.is_blank(),
         Step::MailServices => !mail.services().is_empty(),
+        Step::MailCertificate => mail.certificates.asking().is_some(),
         _ => false,
     }
 }
 
 /// Continue on a step of the mail path: search first, then walk [`MAIL_STEPS`]; at the end send
-/// `ConnectMail`, or `ConnectCalDav` when only calendars and tasks are wanted.
+/// `ConnectMail`, or `ConnectCalDav` when only calendars and tasks are wanted. On the question
+/// about a certificate it trusts that certificate and sends `ConnectMail` again with every
+/// certificate trusted so far (task M11.4).
 fn continue_mail(state: &mut State, step: Step) -> Action {
     if !mail_can_continue(state, step) {
         return Action::None;
+    }
+    if step == Step::MailCertificate {
+        state.mail.certificates.trust();
     }
     if step == Step::MailAddress && state.mail.found.is_none() {
         state.step = Step::MailSearching;
@@ -1368,8 +1413,9 @@ fn continue_mail(state: &mut State, step: Step) -> Action {
     Action::Send(request)
 }
 
-/// The request for what the last step chose. The password is taken, so the dialog keeps no copy; a
-/// refusal asks for it again.
+/// The request for what the last step chose. `ConnectMail` gets a copy of the password, which
+/// [`answered`] clears with every answer but the question about a certificate, which needs it again
+/// (task M11.4); `ConnectCalDav` takes it, so the dialog keeps no copy. A refusal asks for it again.
 fn connect_request(mail: &mut Mail) -> Option<Request> {
     let services = mail.services();
     let calendars = services.contains(&Service::Calendars);
@@ -1384,12 +1430,12 @@ fn connect_request(mail: &mut Mail) -> Option<Request> {
             imap,
             smtp,
             login_name,
-            password: std::mem::take(&mut mail.password),
+            password: mail.password.clone(),
             calendars,
             tasks,
             // The CalDAV address only goes with the services that use it.
             caldav: mail.caldav_address().filter(|_| calendars || tasks).map(str::to_string),
-            trusted_certificates: Vec::new(),
+            trusted_certificates: mail.certificates.trusted(),
         });
     }
     Some(Request::ConnectCalDav {
@@ -1421,6 +1467,10 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::MailPassword => mail_password_step(state),
         Step::MailServices => mail_services_step(state),
         Step::MailConnecting => typo::text(typo::body(), tr("Signing in…")).style(theme::text_2).into(),
+        Step::MailCertificate => match state.mail.certificates.asking() {
+            Some(asked) => certificate_question(asked),
+            None => Space::new().into(),
+        },
         Step::AiChoose => ai_step(state),
         Step::AiKey => ai_key_step(state),
         Step::AiServer => ai_server_step(state),
@@ -1452,6 +1502,7 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailPassword, _) => tr("Enter the password of your mailbox."),
         (Step::MailServices, _) => tr("Choose what to use from this account."),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
+        (Step::MailCertificate, _) => certificate_title(),
         (Step::AiChoose, _) => tr("Choose where your AI models run."),
         (Step::AiKey, _) if cloud(state) == AiProvider::OpenRouter => tr("Paste an API key from OpenRouter."),
         (Step::AiKey, _) => tr("Paste an API key from the provider."),
@@ -2159,6 +2210,7 @@ fn has_back(state: &State) -> bool {
             | Step::MailAddress
             | Step::MailPassword
             | Step::MailServices
+            | Step::MailCertificate
             | Step::AiChoose
             | Step::AiKey
             | Step::AiServer
@@ -2213,10 +2265,122 @@ fn footer(state: &State) -> Element<'_, Message> {
             primary(tr("Continue"), mail_can_continue(state, state.step).then_some(Message::Continue))
         }
         Step::MailServices => primary(tr("Connect"), mail_can_continue(state, state.step).then_some(Message::Continue)),
+        Step::MailCertificate => {
+            primary(tr("Trust certificate"), mail_can_continue(state, state.step).then_some(Message::Continue))
+        }
         Step::Token => primary(tr("Continue"), state.github.has_token().then_some(Message::Continue)),
         Step::Done => primary(tr("Done"), Some(Message::Close)),
     };
     row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center).into()
+}
+
+// ----- A certificate the system does not trust (task M11.4, issue #284) ---------------------------
+
+/// A server certificate the system does not trust, as `Response::UntrustedCertificate` named it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Untrusted {
+    /// Which server: `IMAP`, `SMTP` or `CalDAV` (the same in every language).
+    pub(super) service: String,
+    /// The server's host as the request named it.
+    pub(super) host: String,
+    /// SHA-256 of the certificate, `AB:CD:…`.
+    pub(super) sha256: String,
+    /// An address of the host is on the public internet: the question warns clearly.
+    pub(super) public: bool,
+}
+
+/// The certificates of one dialog that sends `ConnectMail` (the add-account dialog's mail path,
+/// "Server settings", "Change password"): the ones the person trusted in it and the one it asks
+/// about now. The core stores a trusted certificate only once the whole sign-in succeeded, so when
+/// a second server asks too (IMAP, then CalDAV with another certificate) every `ConnectMail` of the
+/// dialog has to carry all of them ([`Certificates::trusted`]), not only the last.
+///
+/// The password rule that goes with it lives in each dialog: it keeps the password only while
+/// [`Certificates::asking`] is `Some`; any other answer, "Back" ([`Certificates::dismiss`]) or
+/// closing clears it.
+#[derive(Debug, Default)]
+pub(super) struct Certificates {
+    /// Fingerprints trusted in this dialog, in the order they were asked about, each once.
+    trusted: Vec<String>,
+    /// The certificate the dialog asks about now; `None` while it asks nothing.
+    asking: Option<Untrusted>,
+}
+
+impl Certificates {
+    /// Takes `result` when it is `Response::UntrustedCertificate`: the dialog asks about it from now
+    /// on, and `true` comes back. Every other answer changes nothing and gives `false`.
+    pub(super) fn ask(&mut self, result: &Result<Response, String>) -> bool {
+        let Ok(Response::UntrustedCertificate { service, host, sha256, public }) = result else { return false };
+        self.asking =
+            Some(Untrusted { service: service.clone(), host: host.clone(), sha256: sha256.clone(), public: *public });
+        true
+    }
+
+    /// The certificate the dialog asks about now.
+    pub(super) fn asking(&self) -> Option<&Untrusted> {
+        self.asking.as_ref()
+    }
+
+    /// "Trust certificate": the fingerprint asked about joins the trusted ones (once) and the
+    /// question ends. `false` when nothing was asked.
+    pub(super) fn trust(&mut self) -> bool {
+        let Some(asked) = self.asking.take() else { return false };
+        if !self.trusted.contains(&asked.sha256) {
+            self.trusted.push(asked.sha256);
+        }
+        true
+    }
+
+    /// "Back" from the question: it ends without trusting anything.
+    pub(super) fn dismiss(&mut self) {
+        self.asking = None;
+    }
+
+    /// Every fingerprint trusted in this dialog, for `ConnectMail::trusted_certificates`.
+    pub(super) fn trusted(&self) -> Vec<String> {
+        self.trusted.clone()
+    }
+}
+
+/// The title of the question, in the add-account dialog its subtitle.
+pub(super) fn certificate_title() -> &'static str {
+    tr("Trust this certificate?")
+}
+
+/// The question about `asked`: for a host on the public internet the warning first (its icon in
+/// `attention`, the colour only there), then which server's certificate is not trusted, and last
+/// the fingerprint in a group, so it stands right above the dialog's foot.
+pub(super) fn certificate_question<'a, M: 'a>(asked: &Untrusted) -> Element<'a, M> {
+    let sentence = trf(
+        "The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this is your own server.",
+        &[("host", &asked.host), ("service", &asked.service)],
+    );
+    let mut page = column![].spacing(layout::section_gap());
+    if let Some(warning) = certificate_warning(asked) {
+        let shield = icon::icon(Icon::ShieldAlert, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention) });
+        page = page.push(
+            row![shield, typo::text(typo::body(), warning).width(Fill)].spacing(space::s()).align_y(Alignment::Center),
+        );
+    }
+    let fingerprint = typo::text(typo::meta().tabular(), fingerprint_lines(&asked.sha256)).wrapping(Wrapping::Word);
+    let row = container(fingerprint).width(Fill).padding([space::m(), space::l()]);
+    page.push(typo::text(typo::body(), sentence).style(theme::text_2))
+        .push(widgets::group(tr("Fingerprint (SHA-256)"), vec![row.into()], None))
+        .into()
+}
+
+/// The warning over the question: only for a host on the public internet, where an untrusted
+/// certificate more likely means someone in the middle than a server of one's own.
+fn certificate_warning(asked: &Untrusted) -> Option<&'static str> {
+    asked.public.then(|| tr("This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider."))
+}
+
+/// `AB:CD:…` in groups of eight bytes with a space between them, so the 95 characters break into
+/// lines where the dialog is narrow and line up in the figures font where it is wide.
+fn fingerprint_lines(sha256: &str) -> String {
+    let bytes: Vec<&str> = sha256.split(':').collect();
+    bytes.chunks(8).map(|group| group.join(":")).collect::<Vec<_>>().join(" ")
 }
 
 // ----- Demo states (`--demo --open wizard-mail-…`) --------------------------------------------
@@ -2248,6 +2412,12 @@ pub enum Demo {
     MailOnly,
     /// Connected: what the servers have.
     Done,
+    /// Servers typed for a server at home (`mail.home.lan`), whose certificate the system does
+    /// not trust (task M11.4): the question without the warning.
+    Certificate,
+    /// The same for a host on the public internet (`mail.berg.example`): the question with the
+    /// warning.
+    CertificatePublic,
     /// The step TorroMail (task S.30): the demo's four TorroMail accounts, one of each kind.
     TorroMail,
     /// The step TorroMail after "Use" on TorroMail's Fastmail account, whose password could not be
@@ -2305,7 +2475,8 @@ impl Demo {
 
 /// The messages that lead to `demo` the way a person would get there, once the dialog is open where
 /// [`Demo::start`] says. The demo's answers to the requests come from `launch::demo_answer`; the
-/// passwords "wrong" (IMAP) and "wrong-smtp" are the ones it refuses.
+/// passwords "wrong" (IMAP) and "wrong-smtp" are the ones it refuses, and an IMAP host on `.lan` or
+/// `.example` shows a certificate it does not trust until one is trusted.
 pub fn demo_messages(demo: Demo) -> Vec<Message> {
     // TorroMail's accounts are on its step once the dialog is open (`launch::demo_torromail`).
     match demo {
@@ -2348,6 +2519,9 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         Demo::NotFound => Some("anna@example.org"),
         Demo::Password => Some("anna@icloud.com"),
         Demo::MailOnly => Some("anna@work.example.net"),
+        // Nothing is found for these domains: the servers are typed under "Advanced".
+        Demo::Certificate => Some("anna@home.lan"),
+        Demo::CertificatePublic => Some("anna@berg.example"),
         Demo::Found | Demo::Advanced | Demo::Refused | Demo::RefusedSmtp | Demo::Services | Demo::Done => {
             Some("anna@mailbox.org")
         }
@@ -2370,6 +2544,13 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
             if demo == Demo::Done {
                 steps.push(Message::Continue);
             }
+        }
+        Demo::Certificate | Demo::CertificatePublic => {
+            let host = if demo == Demo::Certificate { "mail.home.lan" } else { "mail.berg.example" };
+            for server in [Server::Imap, Server::Smtp] {
+                steps.push(Message::ServerHostChanged(server, host.to_string()));
+            }
+            steps.extend([Message::Continue, password("demo-password"), Message::Continue, Message::Continue]);
         }
         Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
         // Returned above.
@@ -3176,9 +3357,14 @@ mod tests {
             other => panic!("expected ConnectMail, got {other:?}"),
         }
         assert!(!format!("{action:?}").contains("demo-password"), "a Secret shows nothing");
-        assert!(state.mail.password.is_blank(), "the dialog keeps no copy");
         assert!(!format!("{state:?}").contains("demo-password"));
         assert_eq!(state.step, Step::MailConnecting);
+        // Task M11.4: the copy is held only until the answer, which is no question here.
+        let Action::Send(request) = action else { panic!("expected a request") };
+        let answer = super::super::launch::demo_answer(&request, &data_with_caldav()).expect("the demo answers");
+        assert!(answered(&mut state, &Ok(answer)));
+        assert_eq!(state.step, Step::Done);
+        assert!(state.mail.password.is_blank(), "the dialog keeps no copy");
     }
 
     #[test]
@@ -3349,6 +3535,13 @@ mod tests {
         assert_eq!(at(Demo::Services).step, Step::MailServices);
         assert_eq!(at(Demo::MailOnly).step, Step::MailServices);
         assert_eq!(at(Demo::Done).step, Step::Done);
+        for (demo, public) in [(Demo::Certificate, false), (Demo::CertificatePublic, true)] {
+            let state = at(demo);
+            assert_eq!(state.step, Step::MailCertificate, "{demo:?}");
+            let asked = state.mail.certificates.asking().expect("asked");
+            assert_eq!(asked.public, public, "{demo:?}");
+            assert_eq!(asked.sha256, super::super::launch::DEMO_FINGERPRINT);
+        }
     }
 
     #[test]
@@ -3366,6 +3559,8 @@ mod tests {
             Demo::Services,
             Demo::MailOnly,
             Demo::Done,
+            Demo::Certificate,
+            Demo::CertificatePublic,
         ] {
             let mut state = at_mail(demo);
             drop(view(&state, &Data::default()));
@@ -3892,5 +4087,146 @@ mod tests {
             assert_eq!(state.ntfy.tried && state.ntfy.problem().is_some(), demo == Demo::NtfyInvalid, "{demo:?}");
             drop(view(&state, &data));
         }
+    }
+
+    // ----- A certificate the system does not trust (task M11.4) ---------------------------------
+
+    /// A fingerprint in the core's format, each byte `byte`.
+    fn fingerprint(byte: &str) -> String {
+        vec![byte; 32].join(":")
+    }
+
+    fn untrusted(service: &str, host: &str, sha256: &str, public: bool) -> Response {
+        Response::UntrustedCertificate { service: service.into(), host: host.into(), sha256: sha256.into(), public }
+    }
+
+    /// The services step of mailbox.org with the password typed, "Connect" pressed: the request.
+    fn connecting() -> (State, Request) {
+        let mut state = at_mail(Demo::Services);
+        match send(&mut state, Message::Continue) {
+            Action::Send(request) => (state, request),
+            other => panic!("expected a request, got {other:?}"),
+        }
+    }
+
+    /// The `ConnectMail` of `action` with its password and trusted certificates.
+    fn connect_mail(action: Action) -> (String, Vec<String>) {
+        match action {
+            Action::Send(Request::ConnectMail { password, trusted_certificates, .. }) => {
+                (password.expose().to_string(), trusted_certificates)
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_untrusted_certificate_asks_with_host_service_and_fingerprint() {
+        let (mut state, _) = connecting();
+        let sha = fingerprint("AB");
+        assert!(answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &sha, false))));
+        assert_eq!((state.step, state.error.as_deref()), (Step::MailCertificate, None));
+        assert_eq!(subtitle(&state), tr("Trust this certificate?"));
+        let asked = state.mail.certificates.asking().expect("asked").clone();
+        assert_eq!(
+            (asked.service.as_str(), asked.host.as_str(), asked.sha256.as_str()),
+            ("IMAP", "mail.home.lan", sha.as_str())
+        );
+        assert_eq!(certificate_warning(&asked), None, "a server at home: no warning");
+        assert!(has_back(&state));
+        drop(view(&state, &Data::default()));
+
+        let public = Untrusted { public: true, ..asked };
+        assert!(certificate_warning(&public).is_some_and(|warning| warning.starts_with(tr(
+            "This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider."
+        ))));
+        // The fingerprint breaks into groups of eight bytes and keeps every byte.
+        let lines = fingerprint_lines(&sha);
+        assert_eq!(lines.split(' ').count(), 4);
+        assert_eq!(lines.replace(' ', ":"), sha);
+    }
+
+    #[test]
+    fn trust_certificate_sends_connect_mail_again_with_the_password_and_the_fingerprint() {
+        let (mut state, first) = connecting();
+        assert!(matches!(&first, Request::ConnectMail { trusted_certificates, .. } if trusted_certificates.is_empty()));
+        let sha = fingerprint("AB");
+        answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &sha, false)));
+        assert!(!state.mail.password.is_blank(), "kept for the question");
+        assert!(!format!("{state:?}").contains("demo-password"), "a Secret shows nothing");
+
+        let (password, trusted) = connect_mail(send(&mut state, Message::Continue));
+        assert_eq!((password.as_str(), trusted), ("demo-password", vec![sha]));
+        assert_eq!(state.step, Step::MailConnecting);
+        assert!(state.mail.certificates.asking().is_none(), "the question ended");
+        assert!(matches!(send(&mut state, Message::Continue), Action::None), "once");
+    }
+
+    /// The core stores a certificate only once the whole sign-in succeeded: when CalDAV asks after
+    /// IMAP, the next request carries both, not only the last.
+    #[test]
+    fn every_certificate_trusted_in_the_dialog_goes_with_each_request() {
+        let (mut state, _) = connecting();
+        let (imap, caldav) = (fingerprint("AB"), fingerprint("CD"));
+        answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &imap, false)));
+        let (_, trusted) = connect_mail(send(&mut state, Message::Continue));
+        assert_eq!(trusted, std::slice::from_ref(&imap));
+        answered(&mut state, &Ok(untrusted("CalDAV", "dav.home.lan", &caldav, false)));
+        assert_eq!(state.step, Step::MailCertificate);
+        let (password, trusted) = connect_mail(send(&mut state, Message::Continue));
+        assert_eq!((password.as_str(), trusted), ("demo-password", vec![imap.clone(), caldav.clone()]));
+        // The same certificate asked again is trusted once.
+        answered(&mut state, &Ok(untrusted("SMTP", "mail.home.lan", &imap, false)));
+        let (_, trusted) = connect_mail(send(&mut state, Message::Continue));
+        assert_eq!(trusted, [imap, caldav]);
+    }
+
+    #[test]
+    fn back_from_the_question_clears_the_password() {
+        let (mut state, _) = connecting();
+        answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &fingerprint("AB"), true)));
+        send(&mut state, Message::Back);
+        assert_eq!(state.step, Step::MailPassword);
+        assert!(state.mail.password.is_blank(), "the field is empty");
+        assert!(state.mail.certificates.asking().is_none());
+        assert!(!mail_can_continue(&state, Step::MailPassword), "until it is typed again");
+        // Typed again, the request trusts nothing: the question was not answered.
+        send(&mut state, Message::PasswordChanged(Secret::new("again")));
+        send(&mut state, Message::Continue);
+        let (password, trusted) = connect_mail(send(&mut state, Message::Continue));
+        assert_eq!((password.as_str(), trusted.is_empty()), ("again", true));
+    }
+
+    #[test]
+    fn every_other_answer_and_closing_clear_the_password() {
+        let refused = trf("The {service} server refused the password.", &[("service", &"IMAP")]);
+        for (answer, step) in [
+            (Err(refused), Step::MailPassword),
+            (Err("The server cannot be reached.".to_string()), Step::MailServices),
+            (Ok(Response::Ok), Step::MailServices),
+        ] {
+            let (mut state, _) = connecting();
+            answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &fingerprint("AB"), false)));
+            send(&mut state, Message::Continue);
+            assert!(answered(&mut state, &answer));
+            assert!(state.mail.password.is_blank(), "{answer:?}");
+            assert_eq!(state.step, step, "{answer:?}");
+        }
+        let (mut state, _) = connecting();
+        answered(&mut state, &Ok(untrusted("IMAP", "mail.home.lan", &fingerprint("AB"), false)));
+        send(&mut state, Message::Close);
+        assert!(state.mail.password.is_blank(), "closing");
+    }
+
+    #[test]
+    fn a_take_over_with_an_untrusted_certificate_leads_to_the_password() {
+        let data = Data::default();
+        let mut state = with_torromail(vec![torromail_account("f", "anna@fastmail.com")]);
+        update(&mut state, Message::UseTorroMail("f".into()), &data);
+        assert!(answered(&mut state, &Ok(untrusted("IMAP", "imap.example.org", &fingerprint("AB"), true))));
+        assert_eq!(state.torromail.failed, Some(("f".to_string(), tr("The certificate is not trusted.").to_string())));
+        assert_eq!(state.step, Step::TorroMail);
+        drop(view(&state, &data));
+        update(&mut state, Message::EnterTorroMailPassword("f".into()), &data);
+        assert_eq!(state.step, Step::MailPassword, "the mail path asks there");
     }
 }

@@ -2024,6 +2024,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The certificate of the outgoing mail server changed. Nothing was sent. Check it in Server settings.",
         "Das Zertifikat des Postausgangsservers hat sich geändert. Nichts wurde gesendet. Prüfe es in den Servereinstellungen.",
     ),
+    ("Trust this certificate?", "Diesem Zertifikat vertrauen?"),
+    (
+        "The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this is your own server.",
+        "Dieser Computer vertraut dem Zertifikat von {host} ({service}) nicht. Vertraue ihm nur, wenn es dein eigener Server ist.",
+    ),
+    (
+        "This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider.",
+        "Dieser Server ist im öffentlichen Internet. Ein nicht vertrautes Zertifikat kann dort bedeuten, dass jemand die Verbindung abfängt. Vertraue ihm bei einem Mail-Anbieter nie.",
+    ),
+    ("Fingerprint (SHA-256)", "Fingerabdruck (SHA-256)"),
+    ("Trust certificate", "Zertifikat vertrauen"),
+    ("Trusted certificate", "Vertrautes Zertifikat"),
+    ("The certificate is not trusted.", "Dem Zertifikat wird nicht vertraut."),
     // CalDAV accounts with service discovery (M7.1)
     ("Enter an e-mail address or a domain name.", "Gib eine E-Mail-Adresse oder einen Domainnamen ein."),
     ("Enter the password.", "Gib das Passwort ein."),

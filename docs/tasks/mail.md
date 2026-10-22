@@ -1116,7 +1116,7 @@ läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
 - **Abnahme:** die Tests oben; `TORRO_LANG=de cargo test --workspace` grün; `torro-api-review` ohne Befund.
 
 ### M11.4 Steuerzentrale: Zertifikat bestätigen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M11.1, M11.3 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts,launch}.rs`,
   `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** „Add account“ › Mail, Kontoseite („Server settings…“, „Change password…“), Übernahme aus
