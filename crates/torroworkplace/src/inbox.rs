@@ -6828,7 +6828,7 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "DROP TABLE sort_rules; DROP TABLE custom_categories; DROP TABLE category_edits;
-                     PRAGMA user_version = 10;",
+                     DROP TABLE category_jobs; DROP TABLE category_clear_jobs; PRAGMA user_version = 10;",
                 )?;
                 insert_rule(db, kept("b", None, Some("shop.example"), Category::Promotion, 2))?;
                 insert_rule(db, kept("a", Some("billing@shop.example"), None, Category::Invoice, 1))?;
@@ -6890,6 +6890,7 @@ pub(crate) mod tests {
                     db.execute_batch(
                         "ALTER TABLE category_edits DROP COLUMN icon;
                          ALTER TABLE custom_categories DROP COLUMN icon;
+                         DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
                          PRAGMA user_version = 11;",
                     )?;
                     Ok(())
@@ -8008,7 +8009,8 @@ pub(crate) mod tests {
                 db.execute_batch(
                     "DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
-                     DROP TABLE category_edits; PRAGMA user_version = 8;",
+                     DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
+                     PRAGMA user_version = 8;",
                 )?;
                 Ok(())
             })
@@ -8037,7 +8039,8 @@ pub(crate) mod tests {
                     "DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
-                     DROP TABLE category_edits; PRAGMA user_version = 7;",
+                     DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
+                     PRAGMA user_version = 7;",
                 )?;
                 Ok(())
             })
@@ -9332,7 +9335,8 @@ pub(crate) mod tests {
                      DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      DROP TABLE woken; DROP TABLE sort_rules; DROP TABLE custom_categories;
-                     DROP TABLE category_edits; PRAGMA user_version = 5;",
+                     DROP TABLE category_edits; DROP TABLE category_jobs; DROP TABLE category_clear_jobs;
+                     PRAGMA user_version = 5;",
                 )?;
                 Ok(())
             })
