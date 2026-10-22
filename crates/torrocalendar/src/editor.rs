@@ -921,7 +921,7 @@ impl Editor {
     /// title typed for "This event" does not land on the whole series because "All" was clicked
     /// before the save (the review of PR #294). While a save is under way such a change cannot go out
     /// yet, so the scope stays until the answer; a form that cannot be saved yet (a date half typed)
-    /// goes with the scope chosen next.
+    /// keeps the scope too and shows its problem, as Enter does.
     fn choose_scope(&mut self, scope: SeriesScope) -> Action {
         if scope != SeriesScope::Occurrence && self.rule_unknown() {
             return Action::None;
@@ -930,19 +930,33 @@ impl Editor {
             return Action::None;
         }
         let switching = scope != self.scope;
-        if switching && self.saving && self.changed() && self.check().is_ok() {
-            return Action::None;
+        let mut pending = Action::None;
+        if switching && self.changed() {
+            if self.saving {
+                return Action::None;
+            }
+            if let Err(problem) = self.check() {
+                self.attempted = true;
+                return problem.input().map_or(Action::None, Action::Focus);
+            }
+            pending = self.request_save(false);
         }
-        let pending = if switching { self.request_save(false) } else { Action::None };
         self.scope = scope;
         self.reset = 0;
+        // The form is out with the old scope (now or before): `original` and `base` are the state
+        // before that save, so adjusting the rule to them now would undo what was sent, and the next
+        // save would carry it with the new scope (the second review of PR #294). The answer
+        // ([`Editor::stored`]) brings the rule as stored.
+        if self.saving {
+            return pending;
+        }
         if let Some(original) = &self.original
             && (scope == SeriesScope::Occurrence || (scope != SeriesScope::Series && self.form.repeat.is_none()))
         {
             self.form.repeat = original.repeat.as_deref().cloned();
         }
         self.follow_start();
-        pending
+        Action::None
     }
 
     /// A save is under way that ends the series ("Never" with "All").
@@ -3365,6 +3379,17 @@ mod tests {
         let _ = store(&mut busy, event, "\"10\"");
         assert!(matches!(busy.update(Message::Scope(SeriesScope::Series)), Action::None), "nothing left to save");
         assert_eq!(busy.scope, SeriesScope::Series);
+
+        // The second review of PR #294: a date moved for this event alone does not move the rule of
+        // the series once "All" is chosen; after the answer nothing more goes out.
+        let mut moved = Editor::edit(&occurrence(), &calendars());
+        moved.update(Message::StartDate("14.10.2026".into()));
+        moved.update(Message::EndDate("14.10.2026".into()));
+        let (event, scope) = saves_with(&mut moved, Message::Scope(SeriesScope::Series));
+        assert_eq!(scope, Some(SeriesScope::Occurrence));
+        assert_eq!(moved.form.repeat.as_ref(), occurrence().repeat.as_deref(), "the rule stays on Tuesdays");
+        let answer = Event { recurrence_id: occurrence().recurrence_id, ..event };
+        assert!(matches!(store(&mut moved, answer, "\"11\""), Action::None), "no save for all events follows");
     }
 
     #[test]
@@ -3467,12 +3492,23 @@ mod tests {
     }
 
     #[test]
-    fn going_back_to_this_event_drops_a_rule_not_saved_yet() {
+    fn going_back_to_this_event_saves_a_rule_with_the_scope_it_was_chosen_for() {
+        // A rule chosen for "Following" goes out with "Following" before "This event" takes over
+        // (the second review of PR #294); the answer brings the rule as stored.
         let mut editor = Editor::edit(&occurrence(), &calendars());
         editor.update(Message::Scope(SeriesScope::Following));
-        editor.form.repeat = None;
-        editor.update(Message::Scope(SeriesScope::Occurrence));
-        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref());
+        let daily = repeat::shortlist(day(2026, 10, 13))[0].clone();
+        editor.form.repeat = Some(daily.clone());
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Occurrence));
+        assert_eq!((event.repeat.as_deref(), scope), (Some(&daily), Some(SeriesScope::Following)));
+        assert_eq!(editor.form.repeat.as_ref(), Some(&daily), "not taken back while the save is under way");
+        assert!(matches!(store(&mut editor, event, "\"8\""), Action::None), "nothing more goes out");
+        assert_eq!(editor.scope, SeriesScope::Occurrence);
+        // Without a save under way, "This event" still shows the stored rule.
+        let mut idle = Editor::edit(&occurrence(), &calendars());
+        idle.update(Message::Scope(SeriesScope::Following));
+        idle.update(Message::Scope(SeriesScope::Occurrence));
+        assert_eq!(idle.form.repeat.as_ref(), occurrence().repeat.as_deref());
     }
 
     #[test]
@@ -3604,10 +3640,17 @@ mod tests {
     #[test]
     fn a_new_date_moves_a_rule_taken_from_the_old_one() {
         let wednesday = vec![RepeatDay { day: Weekday::Wednesday, nth: None }];
+        let mut alone = Editor::edit(&occurrence(), &calendars());
+        alone.update(Message::StartDate("14.10.2026".into()));
+        assert_eq!(alone.form.repeat.as_ref(), occurrence().repeat.as_deref(), "This event keeps the rule");
+        // A date typed for this event alone is no change of the series: choosing "Following" first
+        // asks for the end date, which is before the start now (the second review of PR #294).
+        assert!(matches!(alone.update(Message::Scope(SeriesScope::Following)), Action::Focus(_)));
+        assert_eq!(alone.scope, SeriesScope::Occurrence);
+
         let mut editor = Editor::edit(&occurrence(), &calendars());
-        editor.update(Message::StartDate("14.10.2026".into()));
-        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "This event keeps the rule");
         editor.update(Message::Scope(SeriesScope::Following));
+        editor.update(Message::StartDate("14.10.2026".into()));
         assert_eq!(editor.form.repeat.as_ref().map(|r| r.weekdays.clone()), Some(wednesday.clone()), "taken over");
         // Half-typed dates on the way do not stick: the rule is always moved from the stored one.
         for typed in ["1", "15.10.", "14.10.2026"] {
