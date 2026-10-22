@@ -51,13 +51,11 @@ use crate::suggest::Wanted;
 use crate::tools::Maker;
 use crate::ui::Section;
 
-/// `name` next to the daemon's binary, else from `PATH`.
+/// `name` next to the daemon's binary; on macOS else the program `name` in its app's bundle (issue
+/// #279: a core in its service bundle has no app beside it, and launchd's `PATH` has none either); else
+/// `name` from `PATH`. The apps' own lookup, [`torro_gui::source::sibling`].
 pub(crate) fn sibling(name: &str) -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| std::path::PathBuf::from(name))
+    torro_gui::source::sibling(name)
 }
 
 /// The command line that starts the control centre at `program` on `section`

@@ -142,6 +142,35 @@ pub fn app_start(app: AppId, dirs: &[PathBuf], bundle: Option<&Path>) -> Start {
     }
 }
 
+/// How the core starts a window of `app`'s program with `args` after the entry's own (issue #279): the
+/// assistant's chat window (`--chat <id>`, `--bot <id>`, `assistant.open_window`). With its `bundle`
+/// ([`installed_bundle`]) `open -n -a <bundle> --args <args…>`, as [`target_start`] does; without one
+/// [`AppId::command`] of [`program_for`] in `dirs`, then `args`. So the window starts from the same
+/// bundle `apps.list_apps` counts as installed, also for a core in its service bundle, beside which no
+/// app lies and whose `PATH` (launchd's) has none.
+pub fn args_start(app: AppId, args: &[String], dirs: &[PathBuf], bundle: Option<&Path>) -> Start {
+    let mut command = app.command(program_for(app, dirs));
+    command.extend(args.iter().cloned());
+    match bundle {
+        Some(bundle) => Start::Open(open_command(bundle, command.get(1..))),
+        None => Start::Program(command),
+    }
+}
+
+/// `app`'s program file inside its bundle ([`installed_bundle`], `…/Torro Assistant.app/Contents/MacOS/
+/// torroassistant`), for a program the core runs itself and reads the output of, which `open` cannot
+/// give: the voice listener ([`Listener`]). `None` without a bundle and off macOS.
+pub fn bundled_program(app: AppId) -> Option<PathBuf> {
+    installed_bundle(app).map(|bundle| bundle.join("Contents/MacOS").join(app.program_file()))
+}
+
+/// The voice listener's program (issue #279): `bundled` ([`bundled_program`] of the assistant) first, as
+/// the core starts apps from their bundles first (decision 6 in `docs/lebenszyklus.md`), else
+/// `torroassistant` in `dirs` ([`search_dirs`]); `None` when neither is there.
+fn listener_program(bundled: Option<PathBuf>, dirs: &[PathBuf]) -> Option<PathBuf> {
+    bundled.or_else(|| find_in(AppId::ASSISTANT.binary, dirs))
+}
+
 /// The entry whose bundle starts a window showing `opened` ([`target_start`]): [`Opened::app`], but
 /// for a file the Notification Hub, whose program is `torroinbox` with the compose window
 /// ([`target_program`]).
@@ -300,8 +329,8 @@ pub fn target_program(opened: &Opened, dirs: &[PathBuf]) -> String {
 /// Where the listener's program comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Program {
-    /// `torroassistant` next to the core or on `PATH`, looked up each time it is needed, so an
-    /// app installed later is found.
+    /// `torroassistant` in its bundle on macOS, else next to the core or on `PATH` ([`listener_program`]),
+    /// looked up each time it is needed, so an app installed later is found.
     Installed,
     /// This file (tests: a fake program).
     #[cfg(all(test, unix))]
@@ -356,7 +385,7 @@ impl Listener {
     /// The program, when it is installed.
     pub fn program(&self) -> Option<PathBuf> {
         match &self.program {
-            Program::Installed => find_in(AppId::ASSISTANT.binary, &search_dirs()),
+            Program::Installed => listener_program(bundled_program(AppId::ASSISTANT), &search_dirs()),
             #[cfg(all(test, unix))]
             Program::At(path) => Some(path.clone()),
             Program::Missing => None,
@@ -937,6 +966,46 @@ pub mod tests {
         fs::write(dir.path().join(binary("torrocalendar")), b"").expect("write binary");
         let calendar = at(dir.path(), "torrocalendar");
         assert_eq!(app_start(AppId::CALENDAR, &dirs, None), Start::Program(vec![calendar]));
+    }
+
+    /// Issue #279: the assistant's chat window starts from its bundle like every app, so a core in its
+    /// service bundle (no app beside it, launchd's `PATH`) finds it; without a bundle the program with the
+    /// arguments as before.
+    #[test]
+    fn a_chat_window_starts_from_the_assistants_bundle() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dirs = [dir.path().to_path_buf()];
+        let args = ["--chat".to_string(), "c1".to_string()];
+        let bundle = Path::new("/Applications/Torro Assistant.app");
+        let open = ["/usr/bin/open", "-n", "-a", "/Applications/Torro Assistant.app", "--args", "--chat", "c1"];
+        assert_eq!(
+            args_start(AppId::ASSISTANT, &args, &dirs, Some(bundle)),
+            Start::Open(open.map(String::from).to_vec())
+        );
+        assert_eq!(
+            args_start(AppId::ASSISTANT, &args, &dirs, None),
+            Start::Program(vec!["torroassistant".into(), "--chat".into(), "c1".into()])
+        );
+        fs::write(dir.path().join(binary("torroassistant")), b"").expect("write binary");
+        assert_eq!(
+            args_start(AppId::ASSISTANT, &args, &dirs, None),
+            Start::Program(vec![at(dir.path(), "torroassistant"), "--chat".into(), "c1".into()])
+        );
+    }
+
+    /// Issue #279: the voice listener runs the assistant's program in its bundle first, else the one
+    /// beside the core or on `PATH`; with neither it is not installed.
+    #[test]
+    fn the_listener_finds_the_assistant_in_its_bundle_first() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dirs = [dir.path().to_path_buf()];
+        let bundled = PathBuf::from("/Applications/Torro Assistant.app/Contents/MacOS/torroassistant");
+        assert_eq!(listener_program(Some(bundled.clone()), &dirs), Some(bundled.clone()));
+        assert_eq!(listener_program(None, &dirs), None);
+        fs::write(dir.path().join(binary("torroassistant")), b"").expect("write binary");
+        let beside = dir.path().join(binary("torroassistant"));
+        assert_eq!(listener_program(None, &dirs), Some(beside));
+        assert_eq!(listener_program(Some(bundled.clone()), &dirs), Some(bundled));
     }
 
     /// Issue #279: with a target a new instance of the bundle starts, `open -n -a <bundle> --args …` with
