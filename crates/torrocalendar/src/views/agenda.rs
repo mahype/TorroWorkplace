@@ -12,7 +12,7 @@
 //!   place (map pin, or a camera for a link or a video call). Hover `hover`, the event open in the
 //!   side panel `selected`, ended ones at 55 %. The running event is tinted and says "40 min left"
 //!   (not in the narrow layout, where the row has no room for it); after it the red now line.
-//!   Beside it the people invited who have not declined, as avatars with their initial (at most
+//!   Beside it the people invited who have not declined, as avatars with their initials (at most
 //!   three and "+2"; not in the narrow layout either).
 //! - **State** ([`super::Look`], task TE.9): a cancelled event is struck through and at 55 %, and
 //!   it leaves its time free (no "40 min left", no break in "3 h free"); a tentative one has a
@@ -99,20 +99,12 @@ const SEPARATOR: &str = " · ";
 const RANGE: &str = " – ";
 /// Avatars beside a row at most; the others are counted in "+2" (`.av` in the mock-up).
 const AVATARS: usize = 3;
-/// The initials of the avatars for the letters a–z, upper case: an avatar shows a slice of its
-/// person's name, and a lower-case letter there ("anna@…") is upper case here.
-const CAPITALS: [&str; 26] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W",
-    "X", "Y", "Z",
-];
-
-/// One block of the list, in display order. `'a` is the lifetime of the events: the avatars borrow
-/// their initials from the names.
+/// One block of the list, in display order.
 #[derive(Debug, Clone, PartialEq)]
-enum Block<'a> {
+enum Block {
     /// A calendar week begins: "This week · Week 42", "Week 43".
     Week(String),
-    Day(Day<'a>),
+    Day(Day),
     /// Empty days in a row, never across a week boundary.
     Gap {
         first: NaiveDate,
@@ -122,17 +114,17 @@ enum Block<'a> {
 
 /// A day with events (or today, which always shows).
 #[derive(Debug, Clone, PartialEq)]
-struct Day<'a> {
+struct Day {
     date: NaiveDate,
     /// "Today", "Tomorrow", or the month's name on the first day shown of a new month.
     label: Option<String>,
     /// The all-day events, earliest first day first.
     chips: Vec<Chip>,
     /// The timed events with the free time between them and, on today, the now line.
-    lines: Vec<Line<'a>>,
+    lines: Vec<Line>,
 }
 
-impl Day<'_> {
+impl Day {
     /// The events of the day, all-day ones included: "4 events".
     fn count(&self) -> usize {
         self.chips.len() + self.lines.iter().filter(|line| matches!(line, Line::Event(_))).count()
@@ -156,8 +148,8 @@ struct Chip {
 
 /// A line under the chips of a day.
 #[derive(Debug, Clone, PartialEq)]
-enum Line<'a> {
-    Event(Row<'a>),
+enum Line {
+    Event(Row),
     /// Free time of at least [`FREE_MINUTES`] before the next event, in whole hours.
     Free(i64),
     /// The now line, at this time (only on today).
@@ -166,7 +158,7 @@ enum Line<'a> {
 
 /// A timed event as it shows on one day.
 #[derive(Debug, Clone, PartialEq)]
-struct Row<'a> {
+struct Row {
     /// Index into the app's event list, for `OpenEvent`.
     index: usize,
     color: Color,
@@ -188,7 +180,7 @@ struct Row<'a> {
     /// Whether it takes place (`STATUS`), for its [`Look`] and the free time around it.
     status: Option<EventStatus>,
     /// The initials of the first [`AVATARS`] people invited who have not declined ([`people`]).
-    people: Vec<&'a str>,
+    people: Vec<String>,
     /// How many more of them there are: "+2".
     more: usize,
 }
@@ -214,7 +206,7 @@ pub fn view(data: ViewData<'_>, class: SizeClass) -> Element<'_, Message> {
 /// week begins, the days with events (and today when it is in the window), and runs of empty days
 /// between them, split at week boundaries. Empty days before the first and after the last shown
 /// day are left out. No events in the window → nothing at all (the empty state).
-fn plan<'a>(items: &[Item<'a>], start: NaiveDate, end: NaiveDate, now: NaiveDateTime) -> Vec<Block<'a>> {
+fn plan<'a>(items: &[Item<'a>], start: NaiveDate, end: NaiveDate, now: NaiveDateTime) -> Vec<Block> {
     let window_last = end - Duration::days(1);
     let mut by_day: BTreeMap<NaiveDate, Vec<&Item<'a>>> = BTreeMap::new();
     for item in items {
@@ -258,7 +250,7 @@ fn plan<'a>(items: &[Item<'a>], start: NaiveDate, end: NaiveDate, now: NaiveDate
 }
 
 /// Adds the head of `date`'s calendar week unless it is the week shown last.
-fn push_week(blocks: &mut Vec<Block<'_>>, week: &mut Option<NaiveDate>, date: NaiveDate, today: NaiveDate) {
+fn push_week(blocks: &mut Vec<Block>, week: &mut Option<NaiveDate>, date: NaiveDate, today: NaiveDate) {
     let monday = week_start(date);
     if *week != Some(monday) {
         *week = Some(monday);
@@ -322,8 +314,8 @@ fn chips(items: &[&Item<'_>], date: NaiveDate, today: NaiveDate) -> Vec<Chip> {
 /// follows two or more free hours, and on today the now line before the first event still ahead
 /// (at the end when none is). On today free time counts from now: what is behind is not free any
 /// more. A cancelled event leaves its time free: it neither ends nor starts free time.
-fn lines<'a>(items: &[&Item<'a>], date: NaiveDate, now: NaiveDateTime) -> Vec<Line<'a>> {
-    let mut rows: Vec<(NaiveDateTime, NaiveDateTime, Row<'a>)> =
+fn lines<'a>(items: &[&Item<'a>], date: NaiveDate, now: NaiveDateTime) -> Vec<Line> {
+    let mut rows: Vec<(NaiveDateTime, NaiveDateTime, Row)> =
         items.iter().filter(|item| !item.event.all_day()).map(|item| segment(item, date, now)).collect();
     rows.sort_by(|(a, _, x), (b, _, y)| {
         a.cmp(b).then_with(|| by_title(&x.title, &y.title)).then(x.index.cmp(&y.index))
@@ -360,7 +352,7 @@ fn lines<'a>(items: &[&Item<'a>], date: NaiveDate, now: NaiveDateTime) -> Vec<Li
 
 /// The part of a timed event on `date` as `(start, end, row)`: from its start (00:00 on the days
 /// after its first) to its end or midnight, whichever comes first. A cancelled event never runs.
-fn segment<'a>(item: &Item<'a>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Row<'a>) {
+fn segment<'a>(item: &Item<'a>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Row) {
     let event = item.event;
     let (first, last) = covered_days(event);
     let event_start = local_at(event.start);
@@ -389,27 +381,14 @@ fn segment<'a>(item: &Item<'a>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDa
     (start, end, row)
 }
 
-/// The avatars of an event: the initials ([`initial`]) of the first [`AVATARS`] of `attendees` who
-/// have not declined, in their stored order, and how many more of them there are. Someone without
-/// a name or address to take a letter from still counts among the more.
-fn people(attendees: &[Attendee]) -> (Vec<&str>, usize) {
+/// The avatars of an event: the initials ([`super::initials`]) of the first [`AVATARS`] of
+/// `attendees` who have not declined, in their stored order, and how many more of them there are.
+/// Someone without a name or address to take a letter from still counts among the more.
+fn people(attendees: &[Attendee]) -> (Vec<String>, usize) {
     let coming: Vec<&Attendee> = attendees.iter().filter(|a| a.partstat != PartStat::Declined).collect();
-    let shown: Vec<&str> = coming.iter().take(AVATARS).filter_map(|a| initial(a)).collect();
+    let shown: Vec<String> = coming.iter().take(AVATARS).filter_map(|a| super::initials(a)).collect();
     let more = coming.len() - shown.len();
     (shown, more)
-}
-
-/// The letter on someone's avatar: the first letter or digit of their name, or of their address
-/// when they have no name; a–z upper case. `None` when neither has one.
-fn initial(attendee: &Attendee) -> Option<&str> {
-    let name = attendee.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
-    let source = name.or(attendee.email.as_deref())?;
-    let (at, letter) = source.char_indices().find(|(_, c)| c.is_alphanumeric())?;
-    if letter.is_ascii_lowercase() {
-        CAPITALS.get(usize::from(letter as u8 - b'a')).copied()
-    } else {
-        source.get(at..at + letter.len_utf8())
-    }
 }
 
 /// The length of an event under its start: "15 min", "2 h", and "1 h 30" without the second
@@ -523,7 +502,7 @@ impl Metrics {
 }
 
 /// The whole list in a scrollable, at most [`size::content_max()`] wide.
-fn list<'a>(blocks: &[Block<'a>], m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
+fn list<'a>(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
     let mut list = column![].width(Length::Fill);
     for (n, block) in blocks.iter().enumerate() {
         // Days and gaps are separated by a line, but not from a week head, whose own line already
@@ -563,7 +542,7 @@ fn week_head(label: &str, first: bool) -> Element<'static, Message> {
 }
 
 /// A day: the date column, and beside it the head, the chips and the lines.
-fn day_view<'a>(day: &Day<'a>, m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
+fn day_view<'a>(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
     let head = row![
         typo::text(typo::caption(), day.label.clone().unwrap_or_default()).style(theme::text_2),
         Space::new().width(Length::Fill),
@@ -680,7 +659,7 @@ fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Messag
 /// avatars of the people invited and, on the running event, "40 min left". Hover `hover`, open in
 /// the side panel `selected`, running tinted, ended at 55 %; cancelled struck through and at 55 %,
 /// tentative with a dashed bar and "· tentative" after the title.
-fn row_view<'a>(event: &Row<'a>, m: Metrics, selected: bool) -> Element<'a, Message> {
+fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message> {
     let look = Look::of(event.status, event.past);
     let alpha = look.alpha();
     let color = event.color;
@@ -737,8 +716,8 @@ fn row_view<'a>(event: &Row<'a>, m: Metrics, selected: bool) -> Element<'a, Mess
 
     let mut cells = row![time, bar, what].spacing(m.gap).height(Length::Fill);
     if faces > 0 {
-        let people: Vec<(&'a str, Color)> =
-            event.people.iter().map(|initial| (*initial, color.scale_alpha(alpha))).collect();
+        let people: Vec<(&str, Color)> =
+            event.people.iter().map(|initial| (initial.as_str(), color.scale_alpha(alpha))).collect();
         let avatars = widgets::avatar_stack(&people, event.more);
         cells = cells.push(container(avatars).height(Length::Fill).center_y(Length::Fill));
     }
@@ -839,11 +818,10 @@ fn gap_view(first: NaiveDate, last: NaiveDate, m: Metrics) -> Element<'static, M
         .into()
 }
 
-/// The width of [`widgets::avatar_stack`] with `faces` avatars (22 across, each further one 20 to the
-/// right), a little generously in tokens, so the title is cut before the avatars and never under
-/// them.
+/// The width of [`widgets::avatar_stack`] with `faces` avatars, so the title is cut before the
+/// avatars and never under them.
 fn avatars_width(faces: usize) -> f32 {
-    faces as f32 * size::tile_sm() + space::xs()
+    widgets::avatar_stack_width(faces)
 }
 
 /// The tinted surface of an event in `color`, composed over the panel.
@@ -943,11 +921,11 @@ mod tests {
             .collect()
     }
 
-    fn planned(events: &[Event], start: u32, end: u32, now: NaiveDateTime) -> Vec<Block<'_>> {
+    fn planned(events: &[Event], start: u32, end: u32, now: NaiveDateTime) -> Vec<Block> {
         plan(&items(events), day(start), day(end), now)
     }
 
-    fn days<'b, 'a>(blocks: &'b [Block<'a>]) -> Vec<&'b Day<'a>> {
+    fn days(blocks: &[Block]) -> Vec<&Day> {
         blocks
             .iter()
             .filter_map(|block| match block {
@@ -958,7 +936,7 @@ mod tests {
     }
 
     /// The shape of the list: `W` week head, `D13` day 13, `G20-22` empty days.
-    fn shape(blocks: &[Block<'_>]) -> Vec<String> {
+    fn shape(blocks: &[Block]) -> Vec<String> {
         blocks
             .iter()
             .map(|block| match block {
@@ -970,7 +948,7 @@ mod tests {
     }
 
     /// The lines of a day as short words: `09:30` an event by its start, `free 3`, `now`.
-    fn words(day: &Day<'_>) -> Vec<String> {
+    fn words(day: &Day) -> Vec<String> {
         day.lines
             .iter()
             .map(|line| match line {
@@ -981,7 +959,7 @@ mod tests {
             .collect()
     }
 
-    fn rows<'b, 'a>(day: &'b Day<'a>) -> Vec<&'b Row<'a>> {
+    fn rows(day: &Day) -> Vec<&Row> {
         day.lines
             .iter()
             .filter_map(|line| match line {
@@ -1088,13 +1066,14 @@ mod tests {
             person(Some("Mia"), None, PartStat::Accepted),
             person(None, None, PartStat::Accepted),
         ];
-        assert_eq!(people(&attendees), (vec!["A", "L", "Ö"], 2), "Jonas declined; Mia and one without a name");
-        assert_eq!(people(&attendees[..1]), (vec!["A"], 0));
-        assert_eq!(people(&[]), (Vec::<&str>::new(), 0));
+        let initials = |all: &[&str]| all.iter().map(|i| i.to_string()).collect::<Vec<_>>();
+        assert_eq!(people(&attendees), (initials(&["AW", "L", "Ö"]), 2), "Jonas declined; Mia and one without a name");
+        assert_eq!(people(&attendees[..1]), (initials(&["AW"]), 0));
+        assert_eq!(people(&[]), (Vec::new(), 0));
         let events = [Event { attendees, ..event("team", at(14, 9, 0), Some(at(14, 10, 0))) }];
         let blocks = planned(&events, 14, 15, local(10, 8, 0));
         let row = rows(days(&blocks)[0])[0];
-        assert_eq!((row.people.clone(), row.more), (vec!["A", "L", "Ö"], 2));
+        assert_eq!((row.people.clone(), row.more), (initials(&["AW", "L", "Ö"]), 2));
     }
 
     #[test]

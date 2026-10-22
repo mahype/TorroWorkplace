@@ -85,7 +85,7 @@ use torro_ipc::Place;
 use torro_pim::model::{Attendee, EventStatus, Geo, PartStat, Repeat, SeriesScope};
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, Event, EventTime, Transparency};
 
-use crate::views::short_date;
+use crate::views::{initials, short_date};
 
 pub use place::{Failure as PlaceFailure, MAP_HEIGHT, MAP_WIDTH, demo_map, demo_places, openable_map};
 pub use remind::Edit as RemindEdit;
@@ -1835,8 +1835,8 @@ impl Editor {
         }
         let colour = self.form.calendar.as_ref().map_or(collection_color(None), choice_color);
         let coming: Vec<&Attendee> = event.attendees.iter().filter(|a| a.partstat != PartStat::Declined).collect();
-        let faces: Vec<(&str, Color)> =
-            coming.iter().take(AVATARS).filter_map(|a| initial(a)).map(|letter| (letter, colour)).collect();
+        let faces: Vec<(String, Color)> =
+            coming.iter().take(AVATARS).filter_map(|a| initials(a)).map(|letters| (letters, colour)).collect();
         let more = coming.len().saturating_sub(faces.len());
         let who = match event.organizer.as_deref().and_then(person_name) {
             Some(name) => trf("{name} organizes", &[("name", &name)]),
@@ -2081,15 +2081,6 @@ fn divider<'a>() -> Element<'a, Message> {
 fn person_name(person: &Attendee) -> Option<String> {
     let name = person.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
     name.or(person.email.as_deref()).map(str::to_string)
-}
-
-/// The letter on someone's avatar: the first letter or digit of their name, or of their address when
-/// they have no name (as the agenda shows them, task TE.9). `None` when neither has one.
-fn initial(person: &Attendee) -> Option<&str> {
-    let name = person.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
-    let source = name.or(person.email.as_deref())?;
-    let (at, letter) = source.char_indices().find(|(_, c)| c.is_alphanumeric())?;
-    source.get(at..at + letter.len_utf8())
 }
 
 /// The widest date and time the inputs have to show: figures are tabular, so any will do.
@@ -3347,7 +3338,7 @@ mod tests {
         let editor = Editor::edit(&event, &calendars());
         assert_eq!(editor.people_lines().len(), 2, "the row and the note about the server");
         assert!(Editor::edit(&timed(), &calendars()).people_lines().is_empty());
-        assert_eq!((initial(&anna), person_name(&anna).as_deref()), (Some("A"), Some("Anna Berg")));
+        assert_eq!((initials(&anna).as_deref(), person_name(&anna).as_deref()), (Some("AB"), Some("Anna Berg")));
         let _ = editor.panel(&Anchor::new(), |m| m);
     }
 

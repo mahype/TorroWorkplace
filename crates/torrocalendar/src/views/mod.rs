@@ -9,7 +9,8 @@
 //! cancelled ones are struck through and faded like ended ones and leave their time free
 //! ([`takes_time`]); tentative ones are a dashed outline without a fill (rule "Termine" in the
 //! design skill). The drawing helpers for that ([`strike`], [`dashed_outline`], [`dashes`],
-//! [`dashed`], [`dot`], [`title_text`]) are shared too, so the views cannot drift apart.
+//! [`dashed`], [`dot`], [`title_text`]) are shared too, so the views cannot drift apart. So are the
+//! [`initials`] on the avatars of the people invited (agenda and editor).
 
 pub mod agenda;
 pub mod glance;
@@ -31,7 +32,7 @@ use torro_gui::datetime::weekday_name;
 use torro_gui::theme::{mix, palette, radius, size};
 use torro_gui::typo;
 use torro_pim::Event;
-use torro_pim::model::EventStatus;
+use torro_pim::model::{Attendee, EventStatus};
 
 /// Short month names for [`short_date`], January first (translated with `tr`).
 const MONTHS_SHORT: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -41,6 +42,29 @@ const MONTHS_SHORT: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul
 pub fn short_date(date: NaiveDate) -> String {
     let month = MONTHS_SHORT.get(date.month0() as usize).map(|name| tr(name)).unwrap_or_default();
     trf("{weekday}, {day} {month}", &[("weekday", &weekday_name(date, true)), ("day", &date.day()), ("month", &month)])
+}
+
+/// Up to two initials on the avatar of someone invited, upper case: the first letters of the first
+/// and the last word of their name ("Anna Weber" → "AW", "Mia" → "M"), or, without a name, of the
+/// local part of their address split at dots, dashes and underscores ("lena.hoffmann@…" → "LH",
+/// "ben@…" → "B"). A word counts from its first letter or digit ("(Jonas)" → "J"). `None` when
+/// neither name nor address has one. The agenda and the editor show the same.
+pub fn initials(person: &Attendee) -> Option<String> {
+    let name = person.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let source = match name {
+        Some(name) => name,
+        None => person.email.as_deref()?.split('@').next().unwrap_or_default(),
+    };
+    let firsts: Vec<char> = source
+        .split(|c: char| c.is_whitespace() || matches!(c, '.' | '_' | '-'))
+        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .collect();
+    let picked: String = match firsts.as_slice() {
+        [] => return None,
+        [only] => only.to_string(),
+        [first, .., last] => [*first, *last].iter().collect(),
+    };
+    Some(picked.to_uppercase())
 }
 
 /// One visible event.
@@ -243,6 +267,33 @@ mod tests {
         let expected = trf("{weekday}, {day} {month}", &[("weekday", &tr("Sun")), ("day", &11), ("month", &tr("Oct"))]);
         assert_eq!(short_date(date), expected);
         assert_eq!(MONTHS_SHORT[9], "Oct");
+    }
+
+    /// Review of #278: initials are upper case and up to two letters, in the agenda as in the
+    /// editor.
+    #[test]
+    fn initials_are_up_to_two_capitals() {
+        let person = |name: Option<&str>, email: Option<&str>| Attendee {
+            name: name.map(str::to_string),
+            email: email.map(str::to_string),
+            partstat: torro_pim::model::PartStat::Accepted,
+            role: torro_pim::model::AttendeeRole::default(),
+        };
+        let cases = [
+            (Some("Anna Weber"), None, Some("AW")),
+            (Some("  anna maria weber "), Some("x@example.org"), Some("AW")),
+            (Some("Mia"), None, Some("M")),
+            (Some("  örjan"), None, Some("Ö")),
+            (Some("(Jonas) Berg"), None, Some("JB")),
+            (Some("   "), Some("lena.hoffmann@example.org"), Some("LH")),
+            (None, Some("ben@example.org"), Some("B")),
+            (None, Some("@example.org"), None),
+            (Some("—"), None, None),
+            (None, None, None),
+        ];
+        for (name, email, want) in cases {
+            assert_eq!(initials(&person(name, email)).as_deref(), want, "{name:?} {email:?}");
+        }
     }
 
     #[test]
