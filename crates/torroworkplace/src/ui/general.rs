@@ -518,19 +518,22 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     column![language, apps(data), maps(state, &settings.maps), startup, setup].spacing(layout::section_gap()).into()
 }
 
-/// The links under "Maps": the rules of the standard services, and the licence of the map data
-/// (ODbL), which asks to name OpenStreetMap wherever its data is shown.
-const MAP_LINKS: [(&str, &str); 4] = [
-    ("Tile usage policy", "https://operations.osmfoundation.org/policies/tiles/"),
-    ("Photon", "https://photon.komoot.io/"),
-    ("Nominatim usage policy", "https://operations.osmfoundation.org/policies/nominatim/"),
+/// The links under "Maps": the usage rules of the OpenStreetMap services (map tiles and Nominatim on
+/// one page), and the licence of the map data (ODbL), which asks to name OpenStreetMap wherever its
+/// data is shown. Two quiet links rather than one per service, so the group stays calm.
+const MAP_LINKS: [(&str, &str); 2] = [
+    ("Usage rules", "https://operations.osmfoundation.org/policies/"),
     ("© OpenStreetMap contributors", "https://www.openstreetmap.org/copyright"),
 ];
 
 /// The group "Maps" (task TE.10, concept `docs/termin-editor.md` "Ort und Karte"), part of the
 /// calendar: the switch "Maps and place search", the place search service's address with its
-/// protocol, the map tiles' address, and "Open in Maps with". Under it, why it is off until a
-/// person turns it on – what each service gets – and the links to their rules and the licence.
+/// protocol, the map tiles' address, and "Open in Maps with". Each address row says under its name
+/// what that service gets, and "Press Enter to save" in the same line while its address is typed
+/// and not saved, so the row never changes its height. The group's footer says that it is off until
+/// a person turns it on and that the services are others'; under it two quiet links, the usage
+/// rules and the licence. While maps are off the address fields are drawn at 40 % – they can still
+/// be set (a service of one's own before turning maps on), they only do nothing yet.
 ///
 /// Every row sets only its own field (`settings.set_setting maps`). Turning maps on and changing an
 /// address is a person's alone; the control centre is that person (app key), so it may. The
@@ -538,14 +541,15 @@ const MAP_LINKS: [(&str, &str); 4] = [
 /// says why in a quiet line under the group.
 fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     let draft = &state.maps;
+    let off = !maps.enabled;
     let address = |which: Address, placeholder: &'static str| {
         let typed = draft.draft(which).map_or(which.stored(maps), |typed| typed.text.as_str());
         field(placeholder, typed)
             .on_input(move |text| Message::AddressInput(which, text))
             .on_submit(Message::SaveAddress(which))
+            .style(move |theme, status| address_style(theme, status, off))
     };
-    // While an address is typed and not saved, its row says how to save it.
-    let hint = |which: Address| draft.dirty(which, maps).then(|| tr("Press Enter to save").to_string());
+    let hint = |which: Address| Some(address_detail(draft, maps, which).to_string());
     let kind =
         picker(KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0));
     let search = row![address(Address::Geocoder, Maps::PHOTON), kind]
@@ -565,20 +569,39 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
         setting_row(None, tr("Map tiles"), hint(Address::Tiles), tiles),
         setting_row(None, tr("Open in Maps with"), None, open_with),
     ];
-    let footer = tr(
-        "Off until you turn it on. The place search service gets what you search for and the IP address of this computer; the map tile service gets the coordinates of the place. Both are services of others with their own rules, and nothing promises they are available.",
-    );
+    let footer = tr("Off until you turn it on. Both services are run by others, under their own rules.");
     let links = MAP_LINKS.map(|(label, url)| {
         widgets::text_button(Some(Icon::ArrowUpRight), tr(label), style::button::ghost, Some(Message::OpenLink(url)))
     });
-    let mut block = column![widgets::group(tr("Maps"), rows, None)].spacing(layout::item_gap());
+    let mut block = column![widgets::group(tr("Maps"), rows, Some(footer.to_string()))].spacing(layout::item_gap());
     if let Some((_, why)) = &draft.problem {
         block = block.push(notice(trf("Not saved: {reason}", &[("reason", why)])));
     }
-    block
-        .push(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2))
-        .push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs()))
-        .into()
+    block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
+}
+
+/// The line under the name of an address row of "Maps": "Press Enter to save" while its address is
+/// typed and not saved, else what that service gets. Always a line, so the row keeps its height
+/// when the hint comes and goes.
+fn address_detail(draft: &MapsDraft, maps: &Maps, which: Address) -> &'static str {
+    match which {
+        _ if draft.dirty(which, maps) => tr("Press Enter to save"),
+        Address::Geocoder => tr("Gets what you search for and this computer's IP address"),
+        Address::Tiles => tr("Gets the coordinates of the place"),
+    }
+}
+
+/// An address field of "Maps": an input of the suite, drawn at 40 % (`style::text_input`'s disabled
+/// look) while maps are `off` and it does not have the focus. It still takes typing: a service of
+/// one's own can be set before maps are turned on.
+fn address_style(
+    theme: &Theme,
+    status: iced::widget::text_input::Status,
+    off: bool,
+) -> iced::widget::text_input::Style {
+    let focused = matches!(status, iced::widget::text_input::Status::Focused { .. });
+    let shown = if off && !focused { iced::widget::text_input::Status::Disabled } else { status };
+    style::text_input(theme, shown)
 }
 
 /// A protocol of a place search service in its picker: the service's own name.
@@ -1685,6 +1708,30 @@ mod tests {
         };
         let _ = update(&mut state, Message::OpenLink(MAP_LINKS[0].1), &stored);
         assert_eq!(state.maps.draft(Address::Tiles), None);
+    }
+
+    /// Review of #278: an address row says what its service gets, and "Press Enter to save" in the
+    /// same line while its address is typed, so the row keeps its height; with maps off the fields
+    /// are drawn faded and still take typing.
+    #[test]
+    fn an_address_row_keeps_its_height_and_fades_while_maps_are_off() {
+        let data = Data::default();
+        let mut state = State::default();
+        let maps = &data.settings.maps;
+        let before = address_detail(&state.maps, maps, Address::Geocoder);
+        assert_eq!(before, tr("Gets what you search for and this computer's IP address"));
+        let _ =
+            update(&mut state, Message::AddressInput(Address::Geocoder, "https://photon.example.org".into()), &data);
+        assert_eq!(address_detail(&state.maps, maps, Address::Geocoder), tr("Press Enter to save"));
+        assert_eq!(address_detail(&state.maps, maps, Address::Tiles), tr("Gets the coordinates of the place"));
+
+        let theme = Theme::Dark;
+        let active = iced::widget::text_input::Status::Active;
+        let faded = address_style(&theme, active, true);
+        assert_eq!(faded.value, style::text_input(&theme, iced::widget::text_input::Status::Disabled).value);
+        assert_eq!(address_style(&theme, active, false).value, style::text_input(&theme, active).value);
+        let focused = iced::widget::text_input::Status::Focused { is_hovered: false };
+        assert_eq!(address_style(&theme, focused, true).border, style::text_input(&theme, focused).border);
     }
 
     /// Task TE.10: the links under the group open the services' rules and the licence; Apple Maps

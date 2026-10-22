@@ -4106,6 +4106,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Delete this event?", "Diesen Termin löschen?"),
     ("Add notes…", "Notizen hinzufügen …"),
     ("cancelled", "abgesagt"),
+    ("Usage rules", "Nutzungsregeln"),
+    (
+        "Off until you turn it on. Both services are run by others, under their own rules.",
+        "Aus, bis du es einschaltest. Beide Dienste betreiben andere, nach ihren eigenen Regeln.",
+    ),
+    (
+        "Gets what you search for and this computer's IP address",
+        "Bekommt, was du suchst, und die IP-Adresse dieses Computers",
+    ),
+    ("Gets the coordinates of the place", "Bekommt die Koordinaten des Orts"),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),
