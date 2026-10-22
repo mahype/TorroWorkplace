@@ -1975,9 +1975,11 @@ static SAVE_EVENT: Command = Command {
                   the same account, a series only with `scope: series`; moving to another account fails with \
                   `unsupported`. Errors: `not-found` (no such occurrence: reload), `conflict` (changed meanwhile or \
                   sent without `etag`: reload), `unsupported` (moving with `occurrence` or `following`, switching \
-                  a series between all-day and timed, a rule that cannot be counted for `following`), `error` \
+                  a series between all-day and timed, a rule that cannot be counted for `following`, `following` at a date \
+                  added apart from the rule), `error` \
                   (`scope` without `href`, a `repeat.rule` that is not one line of RRULE and not the stored \
-                  one, `repeat` fields outside their ranges or `nth` on a daily or weekly rule).",
+                  one, `repeat` fields outside their ranges or `nth` on a daily or weekly rule, a date of a series \
+                  outside the years 1 to 9999).",
 };
 
 static DELETE_EVENT: Command = Command {

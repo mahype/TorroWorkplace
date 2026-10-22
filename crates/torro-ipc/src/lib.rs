@@ -847,8 +847,10 @@ pub enum Request {
     /// the right to delete and waits for approval like `calendar.delete_event`. Errors: `not-found`
     /// (no such occurrence: reload), `conflict` (the series changed meanwhile, or no `etag`),
     /// `unsupported` (switching between all-day and timed for `following`/`series`, a rule that
-    /// cannot be counted for `following`, moving with `occurrence`/`following`), `error` (`scope`
-    /// without `href`, a `repeat.rule` that is no valid RRULE value).
+    /// cannot be counted for `following`, `following` at a date added apart from the rule (`RDATE`),
+    /// moving with `occurrence`/`following`), `error` (`scope` without `href`, a `repeat.rule` that
+    /// is no valid RRULE value, `repeat` fields outside their ranges or `nth` on a daily or weekly
+    /// rule, a date of a series outside the years 1 to 9999).
     #[serde(rename = "calendar.save_event")]
     SaveEvent {
         event: Event,
