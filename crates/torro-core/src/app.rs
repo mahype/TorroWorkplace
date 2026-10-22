@@ -21,10 +21,6 @@ pub const WORKPLACE_DIALOG_CLASS: &str = "torro-workplace-dialog";
 /// from this bundle, carry it there instead of their window class. Never changes once released.
 pub const WORKPLACE_BUNDLE_ID: &str = "io.github.mahype.torro-workplace";
 
-/// What every bundle id of the suite starts with: `packaging/macos/Info.plist.in` names an entry's
-/// bundle `io.github.mahype.<window class>` ([`WORKPLACE_BUNDLE_ID`] is the core's).
-const BUNDLE_ID_PREFIX: &str = "io.github.mahype.";
-
 /// An app of the suite, or one kind of window of an app with several ([`AppId::INBOX_MAIL`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AppId {
@@ -158,26 +154,6 @@ impl AppId {
     pub fn program_file(self) -> &'static str {
         if self == AppId::INBOX_MAIL || self == AppId::INBOX_NOTIFICATIONS { self.window_class } else { self.binary }
     }
-
-    /// Whether a window the window manager lists with `class` is this entry's (issue #279). Each
-    /// window manager names a window differently: Hyprland by its window class (`torro-calendar`),
-    /// AeroSpace by its app's bundle id (`io.github.mahype.torro-calendar`, else the program's name),
-    /// GlazeWM by the process name (`torrocalendar`, maybe with `.exe`). So all three count: the window
-    /// class, `io.github.mahype.` followed by it, and [`AppId::program_file`] with or without `.exe`
-    /// (in any case, as Windows does not tell file names apart by case).
-    ///
-    /// No two entries of [`AppId::ALL`] own the same class: `torroinbox` is the hub's only, Mail and
-    /// App Feed have programs of their own. A bundle id of anyone else never matches.
-    pub fn owns_class(self, class: &str) -> bool {
-        if class == self.window_class || class.strip_prefix(BUNDLE_ID_PREFIX) == Some(self.window_class) {
-            return true;
-        }
-        let program = class.len().checked_sub(".exe".len()).and_then(|end| {
-            let (name, suffix) = (class.get(..end)?, class.get(end..)?);
-            suffix.eq_ignore_ascii_case(".exe").then_some(name)
-        });
-        program.unwrap_or(class).eq_ignore_ascii_case(self.program_file())
-    }
 }
 
 #[cfg(test)]
@@ -262,47 +238,6 @@ mod tests {
                 "{} twice",
                 app.program_file()
             );
-        }
-    }
-
-    /// Issue #279: every name a window manager gives an entry's window finds that entry and no other.
-    #[test]
-    fn an_entry_owns_its_class_bundle_id_and_program() {
-        for &app in AppId::ALL {
-            let bundle = format!("io.github.mahype.{}", app.window_class);
-            let exe = format!("{}.exe", app.program_file());
-            let shouted = format!("{}.EXE", app.program_file().to_uppercase());
-            let names = [app.window_class, bundle.as_str(), app.program_file(), exe.as_str(), shouted.as_str()];
-            for &other in AppId::ALL {
-                for name in names {
-                    assert_eq!(other.owns_class(name), other == app, "{} owns {name}?", other.window_class);
-                }
-            }
-        }
-        assert!(AppId::WORKPLACE.owns_class(WORKPLACE_BUNDLE_ID));
-        assert!(AppId::INBOX.owns_class("torroinbox"));
-        assert!(!AppId::INBOX_MAIL.owns_class("torroinbox"), "the binary names the hub only");
-        assert!(!AppId::INBOX_NOTIFICATIONS.owns_class("torroinbox"));
-    }
-
-    #[test]
-    fn foreign_classes_belong_to_no_entry() {
-        let foreign = [
-            "",
-            ".exe",
-            "io.github.mahype.",
-            "io.github.other.torro-calendar",
-            "com.example.torro-calendar",
-            "io.github.mahype.torro-calendar.helper",
-            "io.github.mahype.torrocalendar",
-            "torrocalendar.app",
-            "torrocalendar.exe.exe",
-            WORKPLACE_DIALOG_CLASS,
-            "torro-assistant-chat",
-            "com.apple.finder",
-        ];
-        for class in foreign {
-            assert!(AppId::ALL.iter().all(|app| !app.owns_class(class)), "{class:?} is nobody's");
         }
     }
 }

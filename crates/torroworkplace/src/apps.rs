@@ -6,9 +6,11 @@
 //! `Request::OpenApp` starts apps from, so a listed app that is installed can be opened.
 //!
 //! On macOS the core starts an app through its bundle when there is one (issue #279, decision 6 in
-//! `docs/lebenszyklus.md`): `open -a <absolute bundle path>` ([`Start::Open`]), so the system starts it
+//! `docs/lebenszyklus.md`): `open -n -a <absolute bundle path>` ([`Start::Open`]), so the system starts it
 //! with its bundle id, Dock icon and activation; without a bundle, and elsewhere, the program itself
-//! ([`Start::Program`]).
+//! ([`Start::Program`]). Always a new process: whether the app's main window already runs is for the
+//! app's instance channel to tell (`torro_gui::instance`), since the system would activate any running
+//! process of the bundle, a compose window or a chat as well.
 //!
 //! The inbox is three entries (task E8.1): its mail window, its notifications window and its hub,
 //! one binary `torroinbox` with three window classes. Mail and App Feed also have programs of their
@@ -72,27 +74,28 @@ pub enum Start {
     /// system launcher: detached, not waited for, as before.
     Program(Vec<String>),
     /// macOS: [`OPEN`] with the absolute path of the entry's bundle ([`open_command`]). The system
-    /// starts the app with its bundle id and icon, or activates it when it runs. Waited for: its exit
-    /// code says whether the system took the start.
+    /// starts a new process of the app with its bundle id and icon. Waited for: its exit code says
+    /// whether the system took the start.
     Open(Vec<String>),
 }
 
 /// The command line of [`Start::Open`] for `bundle` (an absolute path, `/Applications/Torro
-/// Calendar.app`): `open -a <bundle>` without arguments, which starts the app on its own window or
-/// brings the running one forward; with `args` (a target) `open -n -a <bundle> --args <args…>`, a new
-/// instance, since a running one cannot be told what to show. Never the app's name, which the system
-/// could resolve to another app of that name. `open` passes no environment on (there is no `--env`
+/// Calendar.app`): always a new process, `open -n -a <bundle>`; with `args` (a target) followed by
+/// `--args <args…>`. Without `-n` the system would only activate a running process of the bundle, which
+/// may be a compose window, a chat or the template dialog; a new process without a target asks the
+/// app's instance channel instead (`torro_gui::instance`): a running main window comes to the front and
+/// the new process ends, else it opens the main window. With a target a running one could not be told
+/// what to show anyway. Never the app's name, which the system could resolve to another app of that
+/// name. `open` passes no environment on (there is no `--env`
 /// here), and `args` come unchanged from [`target_command`]: what the core looked up, never a key.
 pub fn open_command(bundle: &Path, args: Option<&[String]>) -> Vec<String> {
     let bundle = bundle.to_string_lossy().into_owned();
-    match args {
-        None => vec![OPEN.to_string(), "-a".to_string(), bundle],
-        Some(args) => {
-            let mut command = vec![OPEN.to_string(), "-n".to_string(), "-a".to_string(), bundle, "--args".to_string()];
-            command.extend(args.iter().cloned());
-            command
-        }
+    let mut command = vec![OPEN.to_string(), "-n".to_string(), "-a".to_string(), bundle];
+    if let Some(args) = args {
+        command.push("--args".to_string());
+        command.extend(args.iter().cloned());
     }
+    command
 }
 
 /// The bundle that opens `app`'s window for the core running as `exe` (issue #279): the bundle around
@@ -128,8 +131,9 @@ pub fn installed_bundle(app: AppId) -> Option<PathBuf> {
     }
 }
 
-/// How `Core::open_app` starts `app`'s window when none is open (issue #279): with its `bundle`
-/// ([`installed_bundle`]) `open -a <bundle>`, whose program opens the entry's window without arguments;
+/// How `Core::open_app` starts `app`'s window when the window manager shows none (issue #279): with
+/// its `bundle` ([`installed_bundle`]) `open -n -a <bundle>`, a new process whose program opens the
+/// entry's window without arguments or hands over to a running one through its instance channel;
 /// without one the program as before, [`AppId::command`] of [`program_for`] in `dirs`.
 pub fn app_start(app: AppId, dirs: &[PathBuf], bundle: Option<&Path>) -> Start {
     match bundle {
@@ -885,9 +889,10 @@ pub mod tests {
         );
     }
 
-    /// Issue #279: with a bundle the core asks the system to start it by its absolute path, `open -a
-    /// <bundle>` and nothing else (no name, no arguments, no environment); without one the program as
-    /// before.
+    /// Issue #279: with a bundle the core asks the system to start a new process of it by its absolute
+    /// path, `open -n -a <bundle>` and nothing else (no name, no arguments, no environment): without `-n`
+    /// the system would activate any running process of the bundle, a compose window as well. Without
+    /// one the program as before.
     #[test]
     fn an_app_with_a_bundle_starts_through_open_with_its_absolute_path() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -896,7 +901,12 @@ pub mod tests {
         let mail = AppId::INBOX_MAIL;
         assert_eq!(
             app_start(mail, &dirs, Some(bundle)),
-            Start::Open(vec!["/usr/bin/open".into(), "-a".into(), "/Applications/Torro Workplace Mail.app".into()])
+            Start::Open(vec![
+                "/usr/bin/open".into(),
+                "-n".into(),
+                "-a".into(),
+                "/Applications/Torro Workplace Mail.app".into()
+            ])
         );
         assert_eq!(
             app_start(mail, &dirs, None),

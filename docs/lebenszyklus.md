@@ -96,10 +96,14 @@ hat (Marke `core-start`). So kann keine Startschleife entstehen.
 
 Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
 
-- **Fenster wiederfinden.** `AppId::owns_class` nimmt als Klasse eines Eintrags die Fensterklasse, die
-  Bundle-ID `io.github.mahype.<fensterklasse>` und den Namen der Programmdatei (`AppId::program_file`, ohne
-  `.exe`) an. So findet der Dienst das Fenster unter Hyprland (Klasse), AeroSpace (Bundle-ID) und GlazeWM
-  (Prozessname). `apps.list_apps` antwortet weiter mit `torroinbox` für alle drei Eingangs-Apps.
+- **Fenster wiederfinden: der Instanz-Kanal entscheidet.** Der Dienst holt ein Fenster nur dann über den
+  Fenstermanager nach vorn, wenn es genau die Fensterklasse des Eintrags trägt (`torro-calendar`); das liefert
+  nur Hyprland. AeroSpace nennt alle Fenster eines Programms nach der Bundle-ID bzw. dem Programmnamen,
+  GlazeWM nach dem Prozess. Dort wäre auch ein Nebenfenster (Verfassen, Chat, Vorlagen-Dialog, `--task`)
+  ein Treffer und käme statt des Hauptfensters nach vorn. Ohne genaue Klasse startet der Dienst die App
+  deshalb neu, und der neue Prozess fragt den Instanz-Kanal: Läuft das Hauptfenster, schickt er `show`
+  und endet; läuft nur ein Nebenfenster, öffnet er das Hauptfenster. Für die Steuerzentrale gilt dasselbe.
+  `apps.list_apps` antwortet weiter mit `torroinbox` für alle drei Eingangs-Apps.
 - **Marke `core-start`.** `ensure_core` schreibt den Zeitpunkt des Versuchs in das State-Verzeichnis des Dienstes,
   neben `core.sock`, und startet nichts, wenn die Marke jünger als 10 Sekunden ist. Der Dienst öffnet die
   Einrichtung erst, wenn sein Socket auf `system.ping` antwortet; scheitert der Socket, öffnet sich nichts.
@@ -123,8 +127,11 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
   `torro-inbox-notifications` setzen `--view` und starten die Bibliothek. Der Dienst startet Mail und App Feed
   über ihr eigenes Programm, wenn es da ist, sonst über `torroinbox --view …`. Das Verfassen bleibt bei
   `torroinbox`.
-- **macOS: Start über das Bündel.** Der Dienst startet eine App mit `open -a <absoluter Bündelpfad>`, nie mit
-  dem Anzeigenamen; mit Ziel mit `open -n -a <Pfad> --args …`. Gesucht wird neben dem eigenen Bündel, in
+- **macOS: Start über das Bündel.** Der Dienst startet eine App immer als neuen Prozess mit
+  `open -n -a <absoluter Bündelpfad>`, nie mit dem Anzeigenamen; mit Ziel mit `open -n -a <Pfad> --args …`.
+  Ohne `-n` würde das System irgendeinen laufenden Prozess des Bündels aktivieren, auch ein Nebenfenster;
+  ob das Hauptfenster schon läuft, sagt der Instanz-Kanal. Ohne Bündel, unter Windows und Linux startet der
+  Dienst das Programm. Gesucht wird neben dem eigenen Bündel, in
   `/Applications` und in `~/Applications`, danach neben dem Programm und im `PATH`. Ein Bündel in
   `/Applications` geht also einem Entwicklungs-Build vor: Wer entwickelt und ein Release installiert hat,
   startet das Release.
@@ -154,18 +161,27 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
 | Starter | `.app` in `/Applications` (Finder, Spotlight, Dock) | `.desktop` (Launcher, `StartupWMClass` = Fensterklasse) | Startmenü (Scoop `shortcuts`) |
 | Identität | Bundle-ID `io.github.mahype.<fensterklasse>` | Wayland-App-ID = Fensterklasse | eigene `.exe` je App mit eingebettetem Icon |
 | Dienst | Agenten-Bündel im Workplace-Bündel | `torroworkplace daemon` (systemd, `exec-once` oder erste App) | `torroworkplace.exe daemon` |
-| zweiter Start | lokaler Kanal der App (das System aktiviert das Bündel zusätzlich) | lokaler Kanal der App | lokaler Kanal der App |
+| Tray, App-Umschalter, `apps.open_app` | neuer Prozess (`open -n -a`), dann lokaler Kanal der App | Fenster mit genauer Klasse über Hyprland nach vorn, sonst neuer Prozess und lokaler Kanal | neues Programm, dann lokaler Kanal der App |
+| zweiter Start | lokaler Kanal der App | lokaler Kanal der App | lokaler Kanal der App |
 | Beenden | ⌘Q, Dock › Beenden, rotes Fenster-Symbol | Fenster schließen | Fenster schließen |
 
 ## Von Hand prüfen
 
 Die Abnahme von AP.8 macht ein Mensch; Tests und Doku ersetzen sie nicht. Nichts davon startet ein Agent.
 
+Offen ist, ob das Nach-vorn-Holen über den Instanz-Kanal unter macOS und Windows gegen die Aktivierungsregeln
+des Systems ankommt: Die laufende App ruft nur `gain_focus`; das System darf stattdessen das Dock-Icon hüpfen
+lassen bzw. das Taskleisten-Symbol blinken lassen. Das zeigt erst die Prüfung von Hand.
+
 ### macOS
 
 Bündel bauen: `cargo build --workspace`, dann `scripts/macos-dev-bundles.sh ~/Applications/Torro\ Dev`. Das Skript
 signiert mit „Torro Development“ (`scripts/macos-dev-cert.sh`), sonst ad hoc. Dienst vorher beenden
 (Tray › Quit), danach `~/Applications/Torro Dev` im Finder und in Spotlight prüfen.
+
+`open` gibt keine Umgebung weiter: Eine App, die der Dienst über ihr Bündel startet, sieht weder
+`TORRO_STATE_HOME` noch andere `TORRO_*`-Variablen. Von Hand also mit den Standardpfaden prüfen, nicht mit
+eigenem `TORRO_STATE_HOME`; sonst sprechen Dienst und App über verschiedene Sockets.
 
 - [ ] `plutil -lint` auf alle `Info.plist`; neun Bündel sind da.
 - [ ] Jede der sieben Apps aus Finder und Spotlight starten, ohne laufenden Dienst: Das Fenster öffnet, der Dienst
@@ -175,7 +191,12 @@ signiert mit „Torro Development“ (`scripts/macos-dev-cert.sh`), sonst ad hoc
       Instanz.
 - [ ] Dasselbe aus dem Terminal: `torrocalendar` zweimal, und `torro-inbox-mail` neben `torroinbox` (zwei
       verschiedene Fenster).
-- [ ] Tray › „Calendar“ dreimal wählen: genau ein Kalender, beim zweiten und dritten Mal nach vorn geholt.
+- [ ] Tray › „Calendar“ dreimal wählen: genau ein Kalender, beim zweiten und dritten Mal nach vorn geholt
+      (neuer Prozess, der über den Instanz-Kanal übergibt und endet).
+- [ ] Mit offenem Verfassen-Fenster (bzw. Chat, Vorlagen-Dialog) Tray › „Mail“ (bzw. „Assistant“,
+      Steuerzentrale): Das Hauptfenster öffnet sich, nicht das Nebenfenster kommt nach vorn.
+- [ ] Unter AeroSpace dasselbe: Kein Nebenfenster kommt statt des Hauptfensters nach vorn.
+- [ ] Kommt das Fenster wirklich nach vorn, oder hüpft nur das Dock-Icon? Ergebnis hier festhalten.
 - [ ] ⌘Q, rotes Fenster-Symbol und Dock › Beenden schließen die App. Der Dienst bleibt im Tray.
 - [ ] Doppelklick auf „Torro Workplace“ bei laufendem Dienst öffnet die Steuerzentrale (nicht nur den Dienst).
 - [ ] Eingang: ein Fenster mit `--lane info` bzw. `--source …` öffnet neben dem einfachen Hub-Fenster.
@@ -199,7 +220,8 @@ signiert mit „Torro Development“ (`scripts/macos-dev-cert.sh`), sonst ad hoc
 - [ ] Scoop-Manifest installieren: sieben Startmenü-Einträge mit Icon.
 - [ ] Jede App aus dem Startmenü: ohne Konsolenfenster, der Dienst startet losgelöst mit.
 - [ ] Die Taskleiste zeigt für Mail und App Feed ein eigenes Icon und gruppiert sie getrennt vom Hub.
-- [ ] Zweiter Start holt das Fenster nach vorn (Named Pipe), keine zweite Instanz.
+- [ ] Zweiter Start holt das Fenster nach vorn (Named Pipe), keine zweite Instanz; auch aus Tray und
+      App-Umschalter unter GlazeWM. Kommt es wirklich nach vorn oder blinkt nur das Taskleisten-Symbol?
 - [ ] Die Pipe `\\.\pipe\torro-<fensterklasse>-<SID>` ist nur für den Benutzer zugänglich.
 - [ ] Ein Startfehler erscheint in der Datei im State-Verzeichnis des Eingangs, nicht in einer Konsole.
 

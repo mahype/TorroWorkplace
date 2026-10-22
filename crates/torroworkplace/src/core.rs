@@ -144,8 +144,9 @@ pub struct SavedWorkspace {
     pub dialog: bool,
 }
 
-/// Shows the person the control centre: an open one comes to the front, else one starts on
-/// `section` through `start`. An open one is never closed and restarted, because that would throw
+/// Shows the person the control centre: an open one the window manager lists by its window class
+/// comes to the front ([`focus_open`]), else one starts on `section` through `start`; a second control
+/// centre hands over to an open one through its instance channel and ends. An open one is never closed and restarted, because that would throw
 /// away whatever the person is typing there (a half-pasted token, say).
 ///
 /// An open control centre stays on the page it shows: switching it to `section` would need a
@@ -162,12 +163,16 @@ async fn show_control_centre(
 }
 
 /// Brings an open window of `app` to the front (issue #279): `Some` with how focusing went when `wm`
-/// lists a window that is `app`'s by any of the names window managers give it ([`AppId::owns_class`]:
-/// window class, bundle id, program), `None` when it lists none. A window manager that cannot list
-/// windows has none to bring forward: `None` as well, so the caller starts the app.
+/// lists a window with exactly `app`'s [`AppId::window_class`], `None` otherwise. Only Hyprland names
+/// windows by their class; AeroSpace names every window of a program by its bundle id or program name
+/// and GlazeWM by its process, so the compose window, a chat or the template dialog would pass for the
+/// main window there. `None` then, and the caller starts the app: a new process that hands `show` to a
+/// running main window over its instance channel (`torro_gui::instance`) and ends, or opens the main
+/// window when only other windows of the program run. A window manager that cannot list windows has
+/// none to bring forward: `None` as well.
 async fn focus_open(wm: &impl WindowManager, app: AppId) -> Option<Result<(), String>> {
     let open = wm.windows(None).await.ok()?;
-    let window = open.iter().find(|window| app.owns_class(&window.class))?;
+    let window = open.iter().find(|window| window.class == app.window_class)?;
     Some(wm.focus_window(&window.id).await.map_err(|err| err.to_string()))
 }
 
@@ -7422,11 +7427,13 @@ impl Core {
         }
     }
 
-    /// Brings the app's window to the front, or starts the app when it has none – with the
-    /// arguments of its entry (`torroinbox --view mail`, [`AppId::command`]); Mail and App Feed with
-    /// their own program when it is there (`torro-inbox-mail --view mail`, issue #279,
-    /// [`crate::apps::program_for`]). On macOS through the entry's bundle when there is one
-    /// (`open -a <bundle>`, [`crate::apps::app_start`]); `Ok` then means the system took the start.
+    /// Brings the app's window to the front when the window manager lists it by its window class
+    /// ([`focus_open`], Hyprland), or starts the app – with the arguments of its entry (`torroinbox
+    /// --view mail`, [`AppId::command`]); Mail and App Feed with their own program when it is there
+    /// (`torro-inbox-mail --view mail`, issue #279, [`crate::apps::program_for`]). On macOS through the
+    /// entry's bundle when there is one, always as a new process (`open -n -a <bundle>`,
+    /// [`crate::apps::app_start`]); `Ok` then means the system took the start. A start while the app's
+    /// main window runs hands `show` to it over the instance channel and ends.
     pub async fn open_app(&self, app: AppId) -> Result<(), String> {
         if let Some(focused) = focus_open(&self.backend, app).await {
             return focused;
@@ -10574,22 +10581,30 @@ mod tests {
         assert_eq!(started(Section::Accounts), before + 1);
     }
 
-    /// Issue #279: AeroSpace names a window by its bundle id, GlazeWM by its process, so an app that
-    /// is open under either name comes to the front instead of starting a second time.
+    /// Issue #279: only the exact window class (Hyprland) is brought forward. AeroSpace names every
+    /// window of a program by its bundle id or program name, GlazeWM by its process, so such a window may
+    /// be the compose window or a chat: it is not focused, the app starts and its instance channel decides.
     #[tokio::test]
-    async fn an_open_app_is_found_by_its_bundle_id_or_program() {
+    async fn only_the_exact_window_class_is_brought_forward() {
         use torro_wm::fake::{Call, FakeWm};
-        for class in ["io.github.mahype.torro-calendar", "torrocalendar", "torrocalendar.exe", "torro-calendar"] {
-            let wm = FakeWm::new("1");
-            wm.open_window("io.github.mahype.torro-tasks", None);
-            let open = wm.open_window(class, None);
-            assert_eq!(focus_open(&wm, AppId::CALENDAR).await, Some(Ok(())), "{class}");
-            assert_eq!(wm.calls(), vec![Call::Focus(open)], "{class}");
-        }
-        // The inbox's binary is the hub's: an open hub does not stand in for Mail.
         let wm = FakeWm::new("1");
+        wm.open_window("io.github.mahype.torro-tasks", None);
+        let open = wm.open_window("torro-calendar", None);
+        assert_eq!(focus_open(&wm, AppId::CALENDAR).await, Some(Ok(())));
+        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
+
+        for class in ["io.github.mahype.torro-calendar", "torrocalendar", "torrocalendar.exe", "Torro-Calendar"] {
+            let wm = FakeWm::new("1");
+            wm.open_window(class, None);
+            assert_eq!(focus_open(&wm, AppId::CALENDAR).await, None, "{class} is started, not focused");
+            assert!(wm.calls().is_empty(), "{class}");
+        }
+        // A side window of the program is no main window: the assistant's chat, the inbox's hub for Mail.
+        let wm = FakeWm::new("1");
+        wm.open_window("torro-assistant-chat", None);
         wm.open_window("torroinbox", None);
-        wm.open_window("com.example.torro-inbox-mail", None);
+        wm.open_window("torro-inbox", None);
+        assert_eq!(focus_open(&wm, AppId::ASSISTANT).await, None);
         assert_eq!(focus_open(&wm, AppId::INBOX_MAIL).await, None);
         assert!(wm.calls().is_empty());
         // Without windows to list there is nothing to bring forward.
@@ -10597,17 +10612,19 @@ mod tests {
         assert_eq!(focus_open(&core(dir.path()).backend, AppId::CALENDAR).await, None);
     }
 
-    /// Issue #279: the control centre from its bundle (AeroSpace) comes to the front too.
+    /// Issue #279: under its bundle id (AeroSpace) the window may be the template dialog, which runs
+    /// from the same bundle, so the control centre is started and its instance channel decides.
     #[tokio::test]
-    async fn the_control_centre_is_found_by_its_bundle_id() {
-        use torro_wm::fake::{Call, FakeWm};
+    async fn the_control_centre_under_its_bundle_id_is_started() {
+        use torro_wm::fake::FakeWm;
         let wm = FakeWm::new("1");
-        let open = wm.open_window(torro_core::app::WORKPLACE_BUNDLE_ID, None);
+        wm.open_window(torro_core::app::WORKPLACE_BUNDLE_ID, None);
+        wm.open_window(torro_core::app::WORKPLACE_DIALOG_CLASS, None);
         // A section no other test starts, so the count is this test's alone.
         let before = started(Section::Mcp);
         assert_eq!(show_control_centre(&wm, Section::Mcp, record_start).await, Ok(()));
-        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
-        assert_eq!(started(Section::Mcp), before, "no second control centre");
+        assert!(wm.calls().is_empty(), "nothing focused");
+        assert_eq!(started(Section::Mcp), before + 1, "started; a running one takes over through its channel");
     }
 
     #[test]
