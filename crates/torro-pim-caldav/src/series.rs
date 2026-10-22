@@ -51,7 +51,7 @@
 
 use std::fmt;
 
-use chrono::{DateTime, Duration, NaiveDateTime, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDateTime, NaiveTime, Utc};
 use chrono_tz::Tz;
 use torro_pim::model::{Repeat, RepeatEnd, SeriesScope};
 use torro_pim::{Event, EventTime, ProviderError};
@@ -112,14 +112,18 @@ pub enum SeriesError {
     NoOccurrence,
     /// A change the suite cannot write yet, with the reason for people.
     Unsupported(&'static str),
+    /// A date of the event lies outside the years 1 to 9999, the dates iCalendar can write; counting
+    /// with it could leave the dates chrono knows (the review of PR #294).
+    OutOfRange,
 }
 
 impl SeriesError {
-    /// The API's error code: `not-found` or `unsupported`.
+    /// The API's error code: `not-found`, `unsupported` or `error`.
     pub fn code(&self) -> &'static str {
         match self {
             SeriesError::NoOccurrence => "not-found",
             SeriesError::Unsupported(_) => "unsupported",
+            SeriesError::OutOfRange => "error",
         }
     }
 }
@@ -131,6 +135,7 @@ impl fmt::Display for SeriesError {
                 "the series has no such occurrence (any more): reload the events and send its recurrence_id",
             ),
             SeriesError::Unsupported(why) => f.write_str(why),
+            SeriesError::OutOfRange => f.write_str("the dates of an event lie between the years 1 and 9999"),
         }
     }
 }
@@ -207,7 +212,8 @@ pub fn delete(stored: &str, event: &Event, scope: SeriesScope, now: DateTime<Utc
 
 /// How many events of the series `stored` a save of `event` with `scope` removes or resets: dates the
 /// series no longer has (a shorter `UNTIL` or `COUNT`, another rule; compared as far as dates are
-/// counted) and changed occurrences that fall away ([`resets`]). At least 1 when the rule goes. Read
+/// counted) and changed occurrences that fall away ([`resets`]). At least 1 when the rule goes, and
+/// when a new rule may end sooner than the old one beyond the dates counted ([`ends_sooner`]). Read
 /// from the stored object only, never from what the client says the series is; when it cannot tell
 /// (no such occurrence, a rule the counter cannot read and a change of time or rule), 1. Changing a
 /// single occurrence and a stored single event drop nothing.
@@ -715,7 +721,7 @@ fn rule_dates(start: EventTime, rule: &str, zone: Option<Tz>) -> Option<Dates> {
         (EventTime::DateTime(_), Some(tz)) => rrule::Tz::Tz(tz),
         _ => rrule::Tz::UTC,
     };
-    let horizon = instant(start) + Duration::days(HORIZON_DAYS);
+    let horizon = instant(start).checked_add_signed(Duration::days(HORIZON_DAYS))?;
     let mut ends = None;
     match repeat.end {
         RepeatEnd::Count(count) => parsed = parsed.count(count),
@@ -817,6 +823,7 @@ impl Found {
 }
 
 fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
+    in_range(event)?;
     let object = Object::read(stored);
     let main = object.master().and_then(|block| Main::of(block));
     let series = main.as_ref().is_some_and(Main::is_series) || !object.exception_keys().is_empty();
@@ -838,6 +845,26 @@ fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
     }
     let before = held.at(key);
     Ok(Found { object, main, before, key: Some(key) })
+}
+
+/// Whether the dates the client sends lie in the years 1 to 9999, as iCalendar writes them: start,
+/// end, key and the end of the rule. Every count and shift here starts from them and stays within
+/// chrono's dates then (the stored dates have four digits too), so a date at chrono's edge is `error`
+/// before [`drops`] runs, which runs before any right is checked.
+fn in_range(event: &Event) -> Result<(), SeriesError> {
+    let until = event.repeat.as_deref().and_then(|repeat| match repeat.end {
+        RepeatEnd::Until(until) => Some(until),
+        RepeatEnd::Never | RepeatEnd::Count(_) => None,
+    });
+    let year = |time: EventTime| match time {
+        EventTime::Date(day) => day.year(),
+        EventTime::DateTime(at) => at.year(),
+    };
+    let fine = [Some(event.start), event.end, event.recurrence_id, until]
+        .into_iter()
+        .flatten()
+        .all(|time| (1..=9999).contains(&year(time)));
+    if fine { Ok(()) } else { Err(SeriesError::OutOfRange) }
 }
 
 /// How a save changes the rule of the series.
@@ -1234,7 +1261,15 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
             .collect(),
         (_, None) => changed,
     };
-    let mut gone: Vec<EventTime> = match (main.occurrences(), &new) {
+    let old_dates = main.occurrences();
+    // Dates are compared only as far as they are counted; a new rule that ends sooner than the old
+    // one beyond that drops events nobody counted (the review of PR #294).
+    let cut_short = old_dates.as_ref().is_some_and(|old| old.known_until.is_some())
+        && match &rule {
+            Rule::Set(text) => ends_sooner(crate::recur::read(text, zone).end, main.repeat().map(|r| r.end)),
+            Rule::Keep | Rule::Remove => false,
+        };
+    let mut gone: Vec<EventTime> = match (old_dates, &new) {
         (Some(old), Some(new)) => old
             .list
             .into_iter()
@@ -1253,10 +1288,22 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
         }
     }
     let mut dropped = gone.len() as u32;
-    if rule == Rule::Remove {
+    if rule == Rule::Remove || cut_short {
         dropped = dropped.max(1);
     }
     Ok(Lost { dropped, reset: reset.len() as u32 })
+}
+
+/// Whether a series ending with `new` may end before one ending with `old` (`None`: no rule): an
+/// end after a series that never ends, a count (whose last date is not known here) or an `UNTIL`
+/// before the old one. A new rule that never ends, or ends later on the same kind of end, does not.
+fn ends_sooner(new: RepeatEnd, old: Option<RepeatEnd>) -> bool {
+    match (new, old) {
+        (RepeatEnd::Never, _) => false,
+        (RepeatEnd::Until(new), Some(RepeatEnd::Until(old))) => instant(new) < instant(old),
+        (RepeatEnd::Count(new), Some(RepeatEnd::Count(old))) => new < old,
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -1530,6 +1577,26 @@ mod tests {
     }
 
     #[test]
+    fn an_end_beyond_the_counted_dates_still_drops_events() {
+        // The review of PR #294: weekly without end, ended in eleven years – beyond the ten counted.
+        let key = berlin(2026, 10, 13, 10);
+        let stored = occurrence(EXCEPTIONS, key);
+        let ending = |end| {
+            let mut repeat = stored.repeat.as_deref().cloned().expect("rule");
+            repeat.end = end;
+            Event { repeat: Some(Box::new(repeat)), ..stored.clone() }
+        };
+        let far = EventTime::Date(NaiveDate::from_ymd_opt(2037, 12, 31).expect("day"));
+        assert_eq!(drops(EXCEPTIONS, &ending(RepeatEnd::Until(far)), SeriesScope::Series), 1);
+        assert_eq!(drops(EXCEPTIONS, &ending(RepeatEnd::Count(900)), SeriesScope::Series), 1);
+        assert_eq!(drops(EXCEPTIONS, &ending(RepeatEnd::Count(900)), SeriesScope::Following), 1);
+        assert_eq!(drops(EXCEPTIONS, &stored, SeriesScope::Series), 0, "the rule unchanged drops nothing");
+        assert!(ends_sooner(RepeatEnd::Count(3), Some(RepeatEnd::Never)));
+        assert!(!ends_sooner(RepeatEnd::Never, Some(RepeatEnd::Count(3))));
+        assert!(!ends_sooner(RepeatEnd::Until(far), Some(RepeatEnd::Until(day(2030, 1, 1)))));
+    }
+
+    #[test]
     fn an_all_day_series_moves_by_days() {
         let key = day(2026, 10, 9);
         let event = Event { start: day(2026, 10, 10), end: Some(day(2026, 10, 11)), ..occurrence(ALL_DAY, key) };
@@ -1641,6 +1708,28 @@ mod tests {
         assert!(save(RDATES, &event, SeriesScope::Series, &writing()).is_ok());
         let ended = delete(RDATES, &event, SeriesScope::Following, now()).expect("deleted");
         assert!(dates_of(replaced_ics(&ended)).iter().all(|date| instant(*date) < instant(key)));
+    }
+
+    #[test]
+    fn dates_beyond_what_icalendar_writes_are_an_error_not_a_panic() {
+        // The review of PR #294: counting from a date at chrono's edge would overflow.
+        let key = berlin(2026, 10, 13, 10);
+        let edge = EventTime::Date(NaiveDate::MAX);
+        let far = EventTime::DateTime(Utc.with_ymd_and_hms(10000, 1, 1, 0, 0, 0).single().expect("far"));
+        for (start, end) in [(edge, None), (far, None), (berlin(2026, 10, 13, 9), Some(far))] {
+            let event = Event { start, end, ..occurrence(EXCEPTIONS, key) };
+            for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+                assert_eq!(save(EXCEPTIONS, &event, scope, &writing()).map(|_| ()), Err(SeriesError::OutOfRange));
+            }
+            assert_eq!(drops(EXCEPTIONS, &event, SeriesScope::Series), 1);
+            assert_eq!(SeriesError::OutOfRange.code(), "error");
+        }
+        let until = Repeat {
+            end: RepeatEnd::Until(far),
+            ..occurrence(EXCEPTIONS, key).repeat.as_deref().cloned().expect("rule")
+        };
+        let event = Event { repeat: Some(Box::new(until)), ..occurrence(EXCEPTIONS, key) };
+        assert_eq!(drops(EXCEPTIONS, &event, SeriesScope::Series), 1);
     }
 
     #[test]
