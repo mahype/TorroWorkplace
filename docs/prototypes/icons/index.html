@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Torro-Icons: Entwürfe</title>
+<!-- AP.6 (Issue #279): drei Varianten des Icon-Sets zur Auswahl. Öffnet ohne Netz: keine Webfonts, kein CDN,
+     die SVGs liegen relativ daneben (<variante>/<app>.svg). -->
+<style>
+:root{
+  --bg:#F4F5F6; --panel:#FFFFFF; --raised:#F8F9FA; --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D; --accent:#D50C0C; --selected:#E9EAED;
+  --font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#08090A; --panel:#0F1011; --raised:#141518; --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98; --selected:#1C1E22; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#08090A; --panel:#0F1011; --raised:#141518; --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98; --selected:#1C1E22; color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 14px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 16px 64px;display:grid;gap:48px}
+header{display:grid;gap:12px;max-width:72ch}
+.brand{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500;color:var(--text2)}
+.brand img{width:22px;height:22px}
+h1{margin:0;font-size:clamp(24px,4vw,32px);line-height:1.2;font-weight:600;letter-spacing:-.015em}
+h2{margin:0;font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em}
+h3{margin:0;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+p{margin:0}
+.lead{color:var(--text2)}
+code{font:12px/1 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--raised);border:1px solid var(--line);border-radius:4px;padding:2px 4px}
+section{display:grid;gap:20px}
+.idea{color:var(--text2);max-width:72ch}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:12px;min-width:0}
+.stack{display:grid;gap:16px}
+.pair{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
+
+/* Fester Grund je Probe: hell und dunkel, unabhängig vom Thema der Seite. */
+.on-light{background:#FFFFFF;color:#18191B;--muted:#62666D}
+.on-dark{background:#08090A;color:#EDEEF0;--muted:#8A8F98}
+.stage{border-radius:8px;border:1px solid var(--line-strong);padding:16px;overflow:hidden}
+
+/* Kleine Größen: eine Zeile je App, die echten Größen 16 und 32 und daneben die Pixelansicht (1x, vergrößert). */
+table.small{border-collapse:collapse;width:100%;font-size:13px}
+table.small th{font-size:12px;font-weight:500;color:var(--muted);text-align:left;padding:0 8px 8px 0;white-space:nowrap}
+table.small td{padding:4px 8px 4px 0;vertical-align:middle;white-space:nowrap}
+table.small td.name{width:100%;white-space:normal}
+table.small img{display:block}
+canvas.px{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+
+.row128{display:flex;flex-wrap:wrap;gap:8px 4px}
+.row128 figure{margin:0;display:grid;justify-items:center;gap:4px;width:128px}
+.row128 img{width:128px;height:128px;display:block}
+.row128 figcaption{font-size:12px;color:var(--muted);text-align:center;line-height:16px}
+
+.big{display:grid;gap:12px}
+.big .stages{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
+.big .stage{display:grid;place-items:center}
+.big .stage img{width:512px;max-width:100%;height:auto;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px 0 6px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text2);font:500 12px/1 var(--font);cursor:pointer}
+.chip img{width:18px;height:18px}
+.chip:hover{color:var(--text)}
+.chip[aria-pressed="true"]{background:var(--selected);color:var(--text);border-color:rgba(127,127,127,.45)}
+.chip:focus-visible{outline:2px solid var(--text3);outline-offset:1px}
+
+/* Nachgestelltes Dock (macOS): Hintergrundbild aus Verläufen, Dock als matte Glasleiste. */
+.desk{border-radius:10px;min-height:220px;display:grid;align-items:end;justify-items:center;padding:56px 12px 10px;overflow:hidden;position:relative}
+.desk.light{background:radial-gradient(120% 90% at 20% 0%,#DCE6F5 0%,transparent 60%),radial-gradient(90% 80% at 90% 20%,#F3DCD4 0%,transparent 60%),linear-gradient(#E9ECF1,#CDD3DD)}
+.desk.dark{background:radial-gradient(120% 90% at 20% 0%,#24304A 0%,transparent 60%),radial-gradient(90% 80% at 90% 20%,#3A1E22 0%,transparent 60%),linear-gradient(#11141B,#05070A)}
+.desk .label{position:absolute;top:12px;left:16px;font-size:12px;font-weight:500}
+.desk.light .label{color:#4F535A}.desk.dark .label{color:#B4B8BF}
+.dock{display:flex;align-items:flex-end;gap:2px;padding:6px 8px 4px;border-radius:22px;max-width:100%;flex-wrap:wrap;justify-content:center}
+.desk.light .dock{background:rgba(255,255,255,.42);border:1px solid rgba(255,255,255,.6);box-shadow:0 8px 30px rgba(0,0,0,.12)}
+.desk.dark .dock{background:rgba(40,40,46,.55);border:1px solid rgba(255,255,255,.12);box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.dock .app{display:grid;justify-items:center;gap:3px;position:relative}
+.dock .app img,.dock .app .other{width:64px;height:64px;display:block}
+.dock .app .dot{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:.75}
+.desk.light .dock .app{color:#1d1d1f}.desk.dark .dock .app{color:#f5f5f7}
+.dock .app .dot.off{opacity:0}
+.dock .app .tip{position:absolute;bottom:84px;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:12px;padding:3px 8px;border-radius:6px;background:rgba(30,30,32,.85);color:#fff;opacity:0;pointer-events:none;transition:opacity .12s ease-out}
+.dock .app:hover .tip{opacity:1}
+.dock .sep{width:1px;align-self:stretch;margin:6px 6px 10px;background:currentColor;opacity:.25}
+/* Fremde Apps als Vergleich: neutrale Squircle-Flächen im selben Raster (824 von 1024). */
+.other{position:relative}
+.other::before{content:"";position:absolute;inset:9.77%;border-radius:22.5%;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+.other.blue::before{background:linear-gradient(#5AA9FF,#1F6FE0)}
+.other.green::before{background:linear-gradient(#5FD38A,#21A35A)}
+.other.grey::before{background:linear-gradient(#9BA1AA,#5E646D)}
+
+.overview{display:grid;gap:16px}
+.overview .line{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.overview .line b{width:88px;font-weight:600;font-size:13px}
+.overview .line img{width:64px;height:64px}
+footer{color:var(--text3);font-size:13px;max-width:72ch}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><img src="red/workplace.svg" alt="">Torro Workplace · Icons</div>
+    <h1>Icons der Suite: drei Entwürfe zur Auswahl</h1>
+    <p class="lead">Ein Set für alle sieben Apps (AP.6, Issue #279). Gemeinsam: die Grundform der macOS-Vorlage
+      (Fläche 1024, Körper 824 mit 100 Rand, durchgehend gerundete Ecken, leichter Schatten), ein Motiv je App auf
+      einem 24er-Raster mit Strich 3 (72 px auf 1024, damit es bei 16 und 32 px noch trägt) und Torro-Rot
+      <code>#D50C0C</code> als Markenfarbe. Die Varianten unterscheiden sich nur in Fläche, Motivfarbe und Tiefe.</p>
+    <p class="lead">Bitte eine Variante im Issue nennen (<code>red</code>, <code>light</code> oder <code>gradient</code>);
+      danach baut AP.7 sie ein.</p>
+  </header>
+
+  <section aria-labelledby="ov">
+    <h2 id="ov">Überblick</h2>
+    <div class="card overview" id="overview"></div>
+  </section>
+
+  <div id="variants"></div>
+
+  <footer>Die Pixelansicht zeichnet das Icon in echter Größe (1x) und vergrößert es viermal bzw. zweimal, so wie ein
+    Bildschirm ohne Retina es zeigt. Auf Retina-Bildschirmen zeigen die Spalten 16 und 32 doppelt so viele Pixel.
+    Das Dock zeigt drei neutrale Flächen als fremde Apps zum Vergleich; mit der Maus über einem Icon erscheint der Name.</footer>
+</div>
+
+<script>
+// Apps in der Reihenfolge von AppId::ALL; Namen wie display_name in crates/torro-core/src/app.rs.
+const APPS = [
+  ["workplace", "Torro Workplace", "Kacheln: ein hohes Fenster, zwei gestapelte"],
+  ["notification-hub", "Torro Notification Hub", "Glocke"],
+  ["mail", "Torro Workplace Mail", "Umschlag"],
+  ["app-feed", "Torro App Feed", "Feed: Quelle mit zwei Wellen"],
+  ["tasks", "Torro Tasks", "Kreis mit Haken"],
+  ["calendar", "Torro Calendar", "Kalenderblatt mit Heute"],
+  ["assistant", "Torro Assistant", "Funken"],
+];
+const VARIANTS = [
+  ["red", "Rot", "Volle Torro-Rot-Fläche mit weißem Motiv: die Marke am stärksten, im Dock sofort als Familie erkennbar."],
+  ["light", "Hell", "Helle Fläche (Weiß, leicht nach Grau verlaufend) mit rotem Motiv: ruhig, im Stil der Apple-Apps, Rot nur im Zeichen."],
+  ["gradient", "Verlauf", "Rot von warm oben nach tief unten, feiner Glanz an der Oberkante, weißes Motiv mit leichtem Schlagschatten: plastischer, wie die Big-Sur-Icons."],
+];
+
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  for (const k of kids) n.append(k);
+  return n;
+};
+const src = (variant, app) => `${variant}/${app}.svg`;
+
+// Pixelansicht: das SVG in echter Größe auf ein Canvas zeichnen und vergrößert anzeigen.
+function pixels(url, size, zoom) {
+  const c = el("canvas", { class: "px", width: size, height: size, "aria-hidden": "true" });
+  c.style.width = c.style.height = `${size * zoom}px`;
+  const img = new Image();
+  img.onload = () => c.getContext("2d").drawImage(img, 0, 0, size, size);
+  img.src = url;
+  return c;
+}
+
+function smallTable(variant) {
+  const t = el("table", { class: "small" });
+  t.append(el("tr", {}, el("th", {}, "16"), el("th", {}, "32"), el("th", {}, "16 · 1x ×4"), el("th", {}, "32 · 1x ×2"), el("th", {}, "App")));
+  for (const [app, name] of APPS) {
+    const u = src(variant, app);
+    t.append(el("tr", {},
+      el("td", {}, el("img", { src: u, width: 16, height: 16, alt: "" })),
+      el("td", {}, el("img", { src: u, width: 32, height: 32, alt: "" })),
+      el("td", {}, pixels(u, 16, 4)),
+      el("td", {}, pixels(u, 32, 2)),
+      el("td", { class: "name" }, name)));
+  }
+  return t;
+}
+
+function stage(cls, ...kids) { return el("div", { class: `stage ${cls}` }, ...kids); }
+
+function row128(variant) {
+  const r = el("div", { class: "row128" });
+  for (const [app, name] of APPS) {
+    r.append(el("figure", {}, el("img", { src: src(variant, app), alt: name }), el("figcaption", {}, name.replace("Torro ", ""))));
+  }
+  return r;
+}
+
+function big(variant, label) {
+  const imgs = [el("img", { alt: "" }), el("img", { alt: "" })];
+  const chips = el("div", { class: "chips", role: "group", "aria-label": `App für 512 px (${label})` });
+  const pick = (app, name) => {
+    for (const i of imgs) { i.src = src(variant, app); i.alt = name; }
+    for (const b of chips.children) b.setAttribute("aria-pressed", String(b.dataset.app === app));
+  };
+  for (const [app, name] of APPS) {
+    const b = el("button", { class: "chip", type: "button", "data-app": app }, el("img", { src: src(variant, app), alt: "" }), name.replace("Torro ", ""));
+    b.addEventListener("click", () => pick(app, name));
+    chips.append(b);
+  }
+  pick(APPS[0][0], APPS[0][1]);
+  return el("div", { class: "card big" }, el("h3", {}, "512 px"), chips,
+    el("div", { class: "stages" }, stage("on-light", imgs[0]), stage("on-dark", imgs[1])));
+}
+
+function desk(variant, mode) {
+  const dock = el("div", { class: "dock" });
+  const other = (color, name, on) => el("div", { class: "app" }, el("div", { class: `other ${color}` }), el("span", { class: on ? "dot" : "dot off" }), el("span", { class: "tip" }, name));
+  dock.append(other("blue", "Andere App", true), other("grey", "Andere App", false), el("span", { class: "sep" }));
+  APPS.forEach(([app, name], i) => {
+    dock.append(el("div", { class: "app" }, el("img", { src: src(variant, app), alt: name }),
+      el("span", { class: i % 3 === 2 ? "dot off" : "dot" }), el("span", { class: "tip" }, name)));
+  });
+  dock.append(el("span", { class: "sep" }), other("green", "Andere App", false));
+  return el("div", { class: `desk ${mode}` }, el("span", { class: "label" }, mode === "light" ? "Dock, hell" : "Dock, dunkel"), dock);
+}
+
+const overview = document.getElementById("overview");
+for (const [variant, label] of VARIANTS) {
+  const line = el("div", { class: "line" }, el("b", {}, label));
+  for (const [app, name] of APPS) line.append(el("img", { src: src(variant, app), alt: `${name} (${label})`, title: name }));
+  overview.append(line);
+}
+
+const root = document.getElementById("variants");
+root.style.display = "grid";
+root.style.gap = "48px";
+for (const [variant, label, idea] of VARIANTS) {
+  root.append(el("section", { id: variant, "aria-labelledby": `h-${variant}` },
+    el("h2", { id: `h-${variant}` }, `${label} `, el("code", {}, variant)),
+    el("p", { class: "idea" }, idea),
+    el("div", { class: "card" }, el("h3", {}, "16 und 32 px"),
+      el("div", { class: "pair" }, stage("on-light", smallTable(variant)), stage("on-dark", smallTable(variant)))),
+    el("div", { class: "card" }, el("h3", {}, "128 px"),
+      el("div", { class: "stack" }, stage("on-light", row128(variant)), stage("on-dark", row128(variant)))),
+    big(variant, label),
+    el("div", { class: "card" }, el("h3", {}, "Dock"),
+      el("div", { class: "stack" }, desk(variant, "light"), desk(variant, "dark")))));
+}
+</script>
+</body>
+</html>

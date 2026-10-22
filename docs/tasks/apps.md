@@ -194,7 +194,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
   `Info.plist`; `desktop-file-validate` auf die `.desktop`-Dateien, falls vorhanden.
 
 ### AP.6 Icons: Entwürfe zur Auswahl
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Gestaltung) · **Braucht:** – · **Dateien:** `docs/prototypes/icons/` (neu: SVGs und
   `index.html`)
 - Ein einheitliches Set für Torro Workplace, Notification Hub, Mail, App Feed, Calendar, Tasks und Assistant:
