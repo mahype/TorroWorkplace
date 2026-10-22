@@ -346,6 +346,12 @@ pub struct KnownModel {
 ///   sent, since that is what will be written); replacing one `Replace the draft "<subject as
 ///   stored>"`, or "Replace an unknown draft".
 ///
+/// - `mail.set_cache_policy` and `mail.start_cache_job`: the account by the address the core knows
+///   ([`MailFacts::account`], else the id), then what is kept on this device (`Change how
+///   <account> keeps mail on this device: keep the texts of the last 90 days, …`) or the
+///   maintenance that runs (`Maintain the mail kept on this device for <account>: clean the
+///   cache`). Cleaning and applying the strategy remove local copies, so the words say so.
+///
 /// Task M3.2 fills [`DraftFacts::subject`] only (replacing a draft); M3.3 counts the recipients
 /// with Bcc and the attachments of the stored draft for sending (`crate::mail::send`).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1355,6 +1361,16 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 false => trf("Delete {messages}", &[("messages", &messages)]),
             }
         }
+        // The mail kept on this device (issue #281): the account as the core knows it, and what
+        // changes or runs in words, so the person sees that local copies may go.
+        Request::SetMailCachePolicy { policy } => trf(
+            "Change how {account} keeps mail on this device: {changes}",
+            &[("account", &mail_cache_account(facts, &policy.account)), ("changes", &mail_cache_changes(policy))],
+        ),
+        Request::StartMailCacheJob { account, action } => trf(
+            "Maintain the mail kept on this device for {account}: {action}",
+            &[("account", &mail_cache_account(facts, account)), ("action", &mail_cache_action(*action))],
+        ),
         Request::SaveDraft { draft } => match (&draft.id, facts.mail.as_ref().and_then(|mail| mail.draft.as_ref())) {
             (Some(_), Some(stored)) => trf("Replace the draft {subject}", &[("subject", &subject(&stored.subject))]),
             (Some(_), None) => tr("Replace an unknown draft").to_string(),
@@ -2503,6 +2519,41 @@ fn mail_account_changes(
     changes.join(", ")
 }
 
+/// The account of a cache command: the address the core knows ([`MailFacts::account`]), else the
+/// id the command runs with.
+fn mail_cache_account(facts: &Facts, id: &str) -> String {
+    quote(facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or(id))
+}
+
+/// What a new cache policy sets, in words, for its summary: how much mail text stays, then the
+/// attachments. The mode comes first because it decides what is removed from the device.
+fn mail_cache_changes(policy: &torro_ipc::mail::MailCachePolicy) -> String {
+    use torro_ipc::mail::MailCacheMode;
+    let mode = match policy.mode {
+        MailCacheMode::HeadersOnly => tr("keep no mail texts"),
+        MailCacheMode::Recent90Days => tr("keep the mail texts of the last 90 days"),
+        MailCacheMode::AllOffline => tr("keep all mail texts"),
+    };
+    let attachments = match policy.prefetch_attachments {
+        true => tr("download attachments in advance"),
+        false => tr("download attachments only when opened"),
+    };
+    let days = trf("delete downloaded attachments after {days} days", &[("days", &policy.attachment_retention_days)]);
+    format!("{mode}, {attachments}, {days}")
+}
+
+/// A cache maintenance action in words, for its summary.
+fn mail_cache_action(action: torro_ipc::mail::MailCacheAction) -> &'static str {
+    use torro_ipc::mail::MailCacheAction;
+    match action {
+        MailCacheAction::ApplyPolicy => tr("apply the strategy (removes texts it does not keep)"),
+        MailCacheAction::FetchMissingBodies => tr("download the mail texts it keeps"),
+        MailCacheAction::FetchAttachments => tr("download the attachments"),
+        MailCacheAction::RebuildIndex => tr("rebuild the search index"),
+        MailCacheAction::CleanCache => tr("clean the cache (removes downloaded texts and attachments)"),
+    }
+}
+
 /// The messages a mail command names, from what the store holds ([`MailFacts`]): one known
 /// message by its subject, several by their number and the first subject, else "an unknown
 /// message" or "<n> unknown messages". `count` is how many ids the request names.
@@ -3509,6 +3560,71 @@ pub(crate) mod tests {
             summary(&add("github:torro/app#12"), &bugs),
             trf("Pin {item} to filter list \"{list}\"", &[item, ("list", &"Open bugs")])
         );
+    }
+
+    /// Issue #281: the mail kept on this device. The account is the address the core knows (else
+    /// the id), the policy says what stays and what goes, and a job says whether it removes copies.
+    #[test]
+    fn the_mail_kept_on_this_device_is_summed_up_by_what_stays_and_what_goes() {
+        use torro_ipc::mail::{MailCacheAction, MailCacheMode, MailCachePolicy};
+        let known = Facts {
+            mail: Some(MailFacts { account: Some("anna@mailbox.org".into()), ..MailFacts::default() }),
+            ..Facts::default()
+        };
+        let set = |mode, prefetch_attachments, days| Request::SetMailCachePolicy {
+            policy: MailCachePolicy {
+                account: "mail:anna@mailbox.org".into(),
+                mode,
+                prefetch_attachments,
+                attachment_retention_days: days,
+            },
+        };
+        let changes = trf(
+            "Change how {account} keeps mail on this device: {changes}",
+            &[
+                ("account", &"anna@mailbox.org"),
+                (
+                    "changes",
+                    &format!(
+                        "{}, {}, {}",
+                        tr("keep no mail texts"),
+                        tr("download attachments in advance"),
+                        trf("delete downloaded attachments after {days} days", &[("days", &7)])
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(summary(&set(MailCacheMode::HeadersOnly, true, 7), &known), changes);
+        // Without the address the id the command runs with shows, never nothing.
+        let unknown = summary(&set(MailCacheMode::AllOffline, false, 1), &Facts::default());
+        assert!(unknown.contains("mail:anna@mailbox.org"), "{unknown}");
+        assert!(unknown.contains(tr("keep all mail texts")), "{unknown}");
+        assert!(unknown.contains(tr("download attachments only when opened")), "{unknown}");
+
+        let run = |action| Request::StartMailCacheJob { account: "mail:anna@mailbox.org".into(), action };
+        assert_eq!(
+            summary(&run(MailCacheAction::CleanCache), &known),
+            trf(
+                "Maintain the mail kept on this device for {account}: {action}",
+                &[
+                    ("account", &"anna@mailbox.org"),
+                    ("action", &tr("clean the cache (removes downloaded texts and attachments)"))
+                ]
+            )
+        );
+        // Every action has its own words, and none falls back to the generic "Run …".
+        let words: std::collections::HashSet<String> = [
+            MailCacheAction::ApplyPolicy,
+            MailCacheAction::FetchMissingBodies,
+            MailCacheAction::FetchAttachments,
+            MailCacheAction::RebuildIndex,
+            MailCacheAction::CleanCache,
+        ]
+        .into_iter()
+        .map(|action| summary(&run(action), &known))
+        .collect();
+        assert_eq!(words.len(), 5);
+        assert!(words.iter().all(|text| !text.starts_with(&trf("Run {command}", &[("command", &"")]))));
     }
 
     /// Task M2.1: the account by the name the core knows, the fields that change, the start of a

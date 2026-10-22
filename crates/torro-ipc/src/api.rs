@@ -1744,6 +1744,12 @@ pub static CATALOGUE: &[&Command] = &[
     &GET_QUIET,
     &LIST_FOLDERS,
     &ACCOUNT_STATS,
+    &GET_CACHE_POLICY,
+    &PREVIEW_CACHE,
+    &SET_CACHE_POLICY,
+    &START_CACHE_JOB,
+    &CACHE_JOB_STATUS,
+    &CONTROL_CACHE_JOB,
     &SEARCH_MESSAGES,
     &INDEX_STATUS,
     &GET_MESSAGE,
@@ -3077,7 +3083,7 @@ static GET_CATEGORIZATION: Command = Command {
     mcp: Mcp::Tool,
     description: "How the sorting of mail by a decision model stands: whether it is on, which AI account and \
                   model it uses, and per mail account how far the backlog has come (`messages`, `done`, `state` \
-                  `not_started`, `running`, `complete` or `cancelled`). Only accounts this key may read.",
+                  `not_started`, `running`, `complete` or `cancelled`). Only accounts this key may read. `clear_job` holds the latest all-account category reset with its persistent progress and errors.",
 };
 
 // Admin: one call starts up to 500 model calls per mail account and keeps the machine busy for
@@ -3102,7 +3108,7 @@ static PREVIEW_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only.",
+    description: "Counts locally known mail in selected accounts, folders and date range before sorting. Empty account and folder lists mean all accessible accounts and all folders. Reports unclassified, model categorized, protected person/rule and eligible mail without a 30-day or 500-message limit. Sidebar badges count unread mail only. `scope.accounts` and `scope.folders` are lists of ids; `scope.since` is inclusive and `scope.before` exclusive (RFC 3339), and without a date there is no time limit. `scope.again` also counts mail a model categorized earlier as `eligible`. The answer separates `total`, `unclassified`, `automatic`, `protected` (manual or by rule) and `eligible`; the counts cover read and unread mail.",
 };
 
 static START_CATEGORY_JOB: Command = Command {
@@ -3110,7 +3116,7 @@ static START_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress.",
+    description: "Starts one persistent categorization job over the selected locally known mail. The core freezes account cursors, processes in batches and preserves person and rule categories. A model may be on this computer or in the cloud according to the existing mail AI permission. Returns job ID and progress. Use the same `scope` as the preview. `scope.engine` and `scope.model` together choose a decision model, otherwise the current `inbox.categorize` assignment applies; the mail cloud setting is enforced even for an explicit model. The answer holds `job.id`, the frozen account cursors, `eligible`, `processed`, `changed`, errors, the model location and the state. Only one run goes at a time; new mail still gets the normal incoming sorting.",
 };
 
 static GET_CATEGORY_JOB: Command = Command {
@@ -3118,7 +3124,7 @@ static GET_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Reads the latest persistent mail categorization job or a job by ID, including scope, processed and changed counts, errors and running/paused/cancelled/complete state.",
+    description: "Reads the latest persistent mail categorization job or a job by ID, including scope, processed and changed counts, errors and running/paused/cancelled/complete state. A run whose service was restarted shows as `paused` and can be resumed.",
 };
 
 static CONTROL_CATEGORY_JOB: Command = Command {
@@ -3126,7 +3132,7 @@ static CONTROL_CATEGORY_JOB: Command = Command {
     area: Area::Inbox,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged.",
+    description: "Pauses, resumes or cancels a persistent categorization job by ID. Resume keeps its original scope and cursor after an app or daemon restart. Already categorized mail remains unchanged. Categories already saved stay; manual and rule categories are not overwritten even when they change while a model answers.",
 };
 
 static PREVIEW_CLEAR_CATEGORIES: Command = Command {
@@ -3134,7 +3140,7 @@ static PREVIEW_CLEAR_CATEGORIES: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Counts every category assignment in every accessible mail account and folder, including read mail, by account. No mail is changed.",
+    description: "Counts every category assignment in every accessible mail account and folder, including read mail, by account. No mail is changed. The count is per account, over all folders, for read and unread mail.",
 };
 
 static CLEAR_CATEGORIES: Command = Command {
@@ -3142,7 +3148,7 @@ static CLEAR_CATEGORIES: Command = Command {
     area: Area::Inbox,
     access: Access::Delete,
     mcp: Mcp::Tool,
-    description: "Starts one resumable job to remove all manual, rule and model category assignments and model answers in every accessible mail account. Requires all_accounts: true and the person's approval. Mail, folders and sorting rules remain. The caller may also switch off automatic categorization; if left on, future mail can gain categories again.",
+    description: "Starts one resumable job to remove all manual, rule and model category assignments and model answers in every accessible mail account. Requires all_accounts: true and the person's approval. Mail, folders and sorting rules remain. The caller may also switch off automatic categorization; if left on, future mail can gain categories again. Also removes `needs_reply` and `urgency` of the model answers, in batches. Posts, folders, attachments, index, drafts and sorting rules stay. Running sorting jobs are ended first, and incoming automatic categorization is suspended while the reset runs. `inbox.get_categorization.clear_job` shows id, state, account counters and errors.",
 };
 
 static CONTROL_CLEAR_CATEGORIES: Command = Command {
@@ -3150,7 +3156,7 @@ static CONTROL_CLEAR_CATEGORIES: Command = Command {
     area: Area::Inbox,
     access: Access::Delete,
     mcp: Mcp::Tool,
-    description: "Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored account cursors. Requires the person's approval.",
+    description: "Pause, resume or cancel a bulk category reset by ID. Resume keeps its stored account cursors. Requires the person's approval. Resume uses the stored cursor even after a cancel. Categories already removed stay removed.",
 };
 
 // Admin, like `inbox.set_item_category` with `remember`: a category changes how every later mail
@@ -3386,7 +3392,7 @@ static ACCOUNT_STATS: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. These are local counts, not verified server totals. Changes nothing.",
+    description: "Returns locally known message, read/unread, folder, body-cache and index counts, oldest and newest known message dates, and last sync state for reachable mail accounts. These are local counts, not verified server totals. Changes nothing. The response also separates `body_cache_bytes`, `oldest_cached_body`, `search_index_bytes` (when SQLite `dbstat` is available), `last_index_run`, index states and per-account attachment bytes. Deleted reading texts may stay in the SQLite file until it reuses or compacts pages, so estimated reclaim bytes need not equal an immediate file-size drop.",
 };
 
 static GET_CACHE_POLICY: Command = Command {
@@ -3394,42 +3400,42 @@ static GET_CACHE_POLICY: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention.",
+    description: "Reads one mail account's body and attachment cache strategy. Search indexing is independent of body retention. `mode` is `headers_only`, `recent90_days` or `all_offline`; `prefetch_attachments` is separate, with `attachment_retention_days` from 1 to 365.",
 };
 static SET_CACHE_POLICY: Command = Command {
     name: "mail.set_cache_policy",
     area: Area::Mail,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text.",
+    description: "Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.",
 };
 static PREVIEW_CACHE: Command = Command {
     name: "mail.preview_cache",
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything.",
+    description: "Estimates how many message bodies and bytes a cache strategy will fetch or remove, using local counts and average size; does not change anything. Returns the current body count, the bodies to fetch or remove and the estimated download and reclaim bytes. The average locally kept text size is used because IMAP sizes are not stored.",
 };
 static START_CACHE_JOB: Command = Command {
     name: "mail.start_cache_job",
     area: Area::Mail,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Starts a resumable cache or index maintenance job for one account. A job has progress and never deletes server mail or drafts.",
+    description: "Starts a resumable cache or index maintenance job for one account. A job has progress and never deletes server mail or drafts. `action` is `apply_policy` (first removes reading texts outside the retention, then fetches missing in-scope texts), `fetch_missing_bodies`, `fetch_attachments`, `rebuild_index` or `clean_cache` (removes only local reading texts outside the policy; search index, drafts, send journal and server mail stay). Returns a durable job with `id`, `state`, `processed`, `total`, estimated bytes and any error. It works in bounded steps with `BODY.PEEK[]`, so it does not mark mail read.",
 };
 static CACHE_JOB_STATUS: Command = Command {
     name: "mail.cache_job_status",
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Reads the durable cache maintenance job of one account with progress and error.",
+    description: "Reads the durable cache maintenance job of one account with progress and error. Returns the latest job or `null`; a job left running by a daemon restart is marked paused and can resume.",
 };
 static CONTROL_CACHE_JOB: Command = Command {
     name: "mail.control_cache_job",
     area: Area::Mail,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Pauses or resumes a cache maintenance job by id.",
+    description: "Pauses or resumes a cache maintenance job by id. `resume: true` continues the job and `false` pauses it; a failed job can be resumed once the server is available.",
 };
 
 static SEARCH_MESSAGES: Command = Command {
@@ -4301,6 +4307,32 @@ mod tests {
             },
             Request::MailFolders { account: None },
             Request::MailAccountStats { account: None },
+            Request::GetMailCachePolicy { account: "mail:anna@mailbox.org".into() },
+            Request::SetMailCachePolicy {
+                policy: crate::mail::MailCachePolicy {
+                    account: "mail:anna@mailbox.org".into(),
+                    mode: crate::mail::MailCacheMode::Recent90Days,
+                    prefetch_attachments: false,
+                    attachment_retention_days: 1,
+                },
+            },
+            Request::PreviewMailCache {
+                account: "mail:anna@mailbox.org".into(),
+                mode: crate::mail::MailCacheMode::AllOffline,
+            },
+            Request::StartMailCacheJob {
+                account: "mail:anna@mailbox.org".into(),
+                action: crate::mail::MailCacheAction::ApplyPolicy,
+            },
+            Request::MailCacheJobStatus { account: "mail:anna@mailbox.org".into() },
+            Request::ControlMailCacheJob { account: "mail:anna@mailbox.org".into(), id: "job-1".into(), resume: false },
+            Request::PreviewCategoryJob { scope: Default::default() },
+            Request::StartCategoryJob { scope: Default::default() },
+            Request::GetCategoryJob { id: None },
+            Request::ControlCategoryJob { id: "job-1".into(), action: crate::inbox::CategoryJobControl::Pause },
+            Request::PreviewClearCategories,
+            Request::ClearCategories { all_accounts: true, disable_automatic: false },
+            Request::ControlClearCategories { id: "job-1".into(), action: crate::inbox::CategoryJobControl::Cancel },
             Request::SearchMail {
                 account: Some("mail:anna@mailbox.org".into()),
                 folder: None,
@@ -5640,6 +5672,13 @@ mod tests {
                 "inbox.classify_item",
                 "inbox.get_categorization",
                 "inbox.catch_up_categories",
+                "inbox.preview_category_job",
+                "inbox.start_category_job",
+                "inbox.get_category_job",
+                "inbox.control_category_job",
+                "inbox.preview_clear_categories",
+                "inbox.clear_categories",
+                "inbox.control_clear_categories",
                 "inbox.create_category",
                 "inbox.update_category",
                 "inbox.remove_category",
@@ -5968,7 +6007,7 @@ mod tests {
 
         let mail: Vec<&str> = CATALOGUE.iter().filter(|c| c.area == Area::Mail).map(|c| c.name).collect();
         // Issue #136: mail.index_status reads how far the search index is.
-        assert_eq!(mail.len(), 12);
+        assert_eq!(mail.len(), 19);
         assert_eq!(INDEX_STATUS.access, Access::Read);
         assert!(CATALOGUE.iter().filter(|c| c.area == Area::Mail).all(|c| c.mcp == Mcp::Tool));
         assert!(Area::Mail.grantable() && Area::Mail.prefix() == "mail");

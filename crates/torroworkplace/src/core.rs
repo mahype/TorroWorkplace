@@ -3264,6 +3264,18 @@ impl Core {
                     ..Facts::default()
                 }
             }
+            // The account of the mail kept on this device by its address (issue #281), never the
+            // id's or the client's words; its reach was checked before.
+            Request::SetMailCachePolicy { .. } | Request::StartMailCacheJob { .. } => {
+                let account = match request.mail_account() {
+                    Some(id) => self.mail.config(id).await.ok().map(|config| config.address),
+                    None => None,
+                };
+                Facts {
+                    mail: Some(crate::approvals::MailFacts { account, ..crate::approvals::MailFacts::default() }),
+                    ..Facts::default()
+                }
+            }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
             }
@@ -15819,6 +15831,111 @@ mod tests {
         assert!(!on_server(&server, "INBOX").contains(&"Hello".to_string()));
     }
 
+    /// Issue #281: the six commands for the mail kept on this device reach their handlers, and the
+    /// app key runs them at once.
+    #[tokio::test]
+    async fn the_mail_kept_on_this_device_is_managed_through_the_core() {
+        use torro_ipc::mail::{MailCacheAction, MailCacheMode, MailCachePolicy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server, app_key) = changing_mail_core(dir.path()).await;
+        let read = |account: &str| Request::GetMailCachePolicy { account: account.into() };
+        let Response::MailCachePolicy { policy: held } = ask(&core, Some(&app_key), read(ANNA)).await else {
+            panic!("the policy of the account")
+        };
+        assert_eq!(held.account, ANNA);
+        let preview = Request::PreviewMailCache { account: ANNA.into(), mode: MailCacheMode::AllOffline };
+        assert!(matches!(ask(&core, Some(&app_key), preview).await, Response::MailCacheEstimate { .. }));
+        let status = Request::MailCacheJobStatus { account: ANNA.into() };
+        assert_eq!(ask(&core, Some(&app_key), status).await, Response::MailCacheJob { job: None });
+
+        // The app key changes the policy and starts and steers a job without being asked.
+        let policy = |mode, prefetch_attachments| MailCachePolicy {
+            account: ANNA.into(),
+            mode,
+            prefetch_attachments,
+            attachment_retention_days: 3,
+        };
+        let headers = policy(MailCacheMode::HeadersOnly, true);
+        let set = Request::SetMailCachePolicy { policy: headers.clone() };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::MailCachePolicy { policy: headers.clone() });
+        let start = Request::StartMailCacheJob { account: ANNA.into(), action: MailCacheAction::RebuildIndex };
+        let Response::MailCacheJob { job: Some(job) } = ask(&core, Some(&app_key), start).await else {
+            panic!("the job that started")
+        };
+        let steer = Request::ControlMailCacheJob { account: ANNA.into(), id: job.id, resume: false };
+        assert!(matches!(ask(&core, Some(&app_key), steer).await, Response::MailCacheJob { .. }));
+    }
+
+    /// Issue #281: a client names only an account it reaches (`not-found` otherwise, before
+    /// anything runs or anyone is asked).
+    #[tokio::test]
+    async fn the_mail_kept_on_this_device_stays_with_the_granted_accounts() {
+        use torro_ipc::mail::{MailCacheAction, MailCacheMode, MailCachePolicy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server, _app_key) = changing_mail_core(dir.path()).await;
+        let policy = |mode| MailCachePolicy {
+            account: ANNA.into(),
+            mode,
+            prefetch_attachments: false,
+            attachment_retention_days: 3,
+        };
+        let mut stranger = with_mail_level(Level::Full);
+        stranger.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, stranger).await;
+        for request in [
+            Request::GetMailCachePolicy { account: ANNA.into() },
+            Request::PreviewMailCache { account: ANNA.into(), mode: MailCacheMode::AllOffline },
+            Request::SetMailCachePolicy { policy: policy(MailCacheMode::AllOffline) },
+            Request::StartMailCacheJob { account: ANNA.into(), action: MailCacheAction::CleanCache },
+            Request::MailCacheJobStatus { account: ANNA.into() },
+            Request::ControlMailCacheJob { account: ANNA.into(), id: "j:1".into(), resume: true },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&stranger), request.clone()).await), "not-found", "{request:?}");
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked for another's account");
+    }
+
+    /// Issue #281: changing the policy needs admin access, then waits for a person who is told the
+    /// account by its address, and changes nothing before the yes.
+    #[tokio::test]
+    async fn changing_the_mail_kept_on_this_device_waits_for_a_person() {
+        use torro_ipc::mail::{MailCacheMode, MailCachePolicy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server, app_key) = changing_mail_core(dir.path()).await;
+        let read = Request::GetMailCachePolicy { account: ANNA.into() };
+        let Response::MailCachePolicy { policy: held } = ask(&core, Some(&app_key), read.clone()).await else {
+            panic!("the policy of the account")
+        };
+        // Without admin access the policy is `forbidden`; with it a person is asked first.
+        let (_, writer) = client(&core, with_mail_level(Level::Full)).await;
+        let wider = MailCachePolicy { mode: MailCacheMode::AllOffline, prefetch_attachments: false, ..held.clone() };
+        let change = Request::SetMailCachePolicy { policy: wider.clone() };
+        assert_eq!(code(&ask(&core, Some(&writer), change.clone()).await), "forbidden");
+        let mut admin = with_mail_level(Level::Full);
+        admin.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        let (_, admin) = client(&core, admin).await;
+        let asked = waits(ask(&core, Some(&admin), change.clone()).await);
+        assert_eq!(asked.command, "mail.set_cache_policy");
+        let words = crate::approvals::summary(
+            &change,
+            &Facts {
+                mail: Some(crate::approvals::MailFacts {
+                    account: Some("anna@example.org".into()),
+                    ..Default::default()
+                }),
+                ..Facts::default()
+            },
+        );
+        assert_eq!(asked.summary, words, "the account by its address, what is kept in words");
+        assert!(asked.summary.contains("anna@example.org"), "{}", asked.summary);
+        assert_eq!(ask(&core, Some(&app_key), read.clone()).await, Response::MailCachePolicy { policy: held });
+
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        assert_eq!(ask(&core, Some(&app_key), read).await, Response::MailCachePolicy { policy: wider });
+    }
+
     /// Into a trash folder by its id is deleting: write access is not enough. Archiving is.
     /// Messages of an account the client does not reach are `not-found`.
     #[tokio::test]
@@ -17804,6 +17921,9 @@ mod tests {
         let ollama = fake_ollama().await;
         let script = Script::new(Vec::new());
         let mut rights = Rights::assistant();
+        // Only `tools`: with every area of the assistant the catalogue is longer than `MAX_TOOLS`, and the
+        // model would get the reading tools and `find_tools` instead of every allowed tool at once.
+        rights.areas.retain(|area, _| *area == Area::Tools);
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let (core, _host, engine, client) =
