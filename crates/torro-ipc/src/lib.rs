@@ -823,14 +823,29 @@ pub enum Request {
     /// An occurrence of a series (`recurring: true`) needs `scope` (`docs/termin-editor.md`,
     /// decisions 3 to 5): without one it stays `unsupported`, so a client that does not know series
     /// never overwrites one. `scope` without `href` (an event not saved yet) is `error`; moving to
-    /// another calendar together with `occurrence` or `following` is `unsupported`. The answer is
-    /// the occurrence with the same `recurrence_id`, for `following` the first event of the new
-    /// series; its `reset` counts the changed events of the series that were reset (task TE.4).
+    /// another calendar together with `occurrence` or `following` is `unsupported`.
+    ///
+    /// The answer is always the occurrence written, with the `recurrence_id` it has now (moved
+    /// along when the series moved), never another one: for `following` the first event of the new
+    /// series, with the new series' `uid`, `href`, `etag` and rule (the rest of a `COUNT`); when the
+    /// series cannot be read again (the occurrence lies outside the cached window, or reading
+    /// failed) it is built from the object written. Its `reset` counts the changed events of the
+    /// series that were reset (task TE.4).
+    ///
+    /// The rule: `repeat` set changes it as its fields say; [`torro_pim::model::Repeat::rule`] is
+    /// only read back, never written, except for a custom rule of an event that has no rule yet. A
+    /// `repeat.rule` that is not one line of the `RRULE` grammar is `error`, whatever the scope.
+    /// `repeat: None` ends the series only together with `recurring: false` (for `series` the
+    /// occurrence becomes a single event, for `following` the series ends before it and this one
+    /// stays alone); with `recurring: true` the stored rule stays as it is, so an occurrence a client
+    /// got without its rule never ends its series by being sent back.
+    ///
     /// A save that removes events of the series (a shorter or removed rule, reset exceptions) needs
     /// the right to delete and waits for approval like `calendar.delete_event`. Errors: `not-found`
-    /// (no such occurrence: reload), `conflict` (the series changed meanwhile), `unsupported`
-    /// (switching between all-day and timed for `following`/`series`, a rule that cannot be counted
-    /// for `following`), `error` (no `href` or `etag`).
+    /// (no such occurrence: reload), `conflict` (the series changed meanwhile, or no `etag`),
+    /// `unsupported` (switching between all-day and timed for `following`/`series`, a rule that
+    /// cannot be counted for `following`, moving with `occurrence`/`following`), `error` (`scope`
+    /// without `href`, a `repeat.rule` that is no valid RRULE value).
     #[serde(rename = "calendar.save_event")]
     SaveEvent {
         event: Event,

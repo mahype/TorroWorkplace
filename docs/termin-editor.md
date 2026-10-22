@@ -167,6 +167,31 @@ Kacheln, zu Photon, zu den Regeln von Nominatim und „© OpenStreetMap contribu
 
 `recurring` bleibt (verträglich), ist `true` genau dann, wenn `recurrence_id` oder `repeat` gesetzt ist.
 
+### Nach dem Review (2026-10-22)
+
+- **Regel beenden nur ausdrücklich:** `repeat: None` beendet eine Serie (Umfang `series` oder `following`)
+  nur zusammen mit `recurring: false`. Mit `recurring: true` bleibt die gespeicherte Regel – ein Vorkommen,
+  das ohne Regel beim Client ankam (Rohobjekt nicht zur Hand), macht die Serie beim Zurückschicken nie zum
+  Einzeltermin. Termine außerhalb des Cache-Fensters holt der Dienst samt Rohobjekt (`calendar-multiget`),
+  damit `repeat`, `time_zone` und `exceptions` auch dort gesetzt sind.
+- **Regeltext nur lesen:** `repeat.rule` schreibt der Dienst nie; er schreibt die gespeicherte Regel
+  (`custom`, oder Felder unverändert) oder eine aus den Feldern. Nur ein neuer Termin mit eigener Regel
+  (`custom`, noch keine gespeichert) bekommt den Text – wenn er eine Zeile der RRULE-Grammatik ist. Sonst
+  `error`, auf jedem Weg, bevor etwas geschrieben wird.
+- **Antwort:** immer das geschriebene Vorkommen mit seinem neuen `recurrence_id`, nach „folgende“ mit `uid`
+  und Regel der neuen Serie; liegt es außerhalb des Fensters, baut der Dienst es aus dem geschriebenen
+  Objekt.
+- **„Folgende“ auf einer verschobenen Ausnahme:** Die neue Serie ist das Vorkommen, wie der Client es
+  schickt (Zeit und eigene Felder), gemessen vom Raster der Regel: 10:00 → 14:00 verschoben, als „folgende“
+  auf 15:00 gesetzt, ergibt eine Serie um 15:00.
+- **Um Tage verschieben:** Bleibt `BYDAY`/`BYMONTHDAY` stehen, ist das zulässig (RFC 5545: `DTSTART` zählt
+  dann als zusätzliches Vorkommen); was wegfällt, zählt als gelöscht (Löschrecht, Freigabe). Der Editor
+  schickt die Regel mit dem neuen Wochentag mit.
+- **Windows-Zonen:** Die häufigsten Windows-Namen (`W. Europe Standard Time` …) gelten als ihre IANA-Zone;
+  Serien in unbekannter oder ohne Zone zählt der Dienst in der Zone des Rechners, in der er sie liest.
+- **Umzug einer Serie** in einen anderen Kalender: Scheitert das Löschen des alten Objekts, löscht der Dienst
+  das neue wieder.
+
 ## Oberfläche
 
 Drei Layouts liegen als Entwurf vor (`?layout=a|b|c`), jedes mit eigenem Vorschlag für Wiederholung und
@@ -205,8 +230,13 @@ die Segmente aus B sind Ideen für später.
 | Erinnerungen mit freier Zeit | Editor „Reminders“ | `calendar.save_event` (Feld `alarms`, gibt es) | Write | `calendar_save_event` (kurz: `reminder_minutes`, gibt es) |
 | URL, Frei/Belegt, Status, Zeitzone, Koordinaten | Editor | `calendar.save_event` | Write | `calendar_save_event` (kurz: `url`, `status`, `time_zone`, `free`) |
 | Ort suchen | Editor „Location“ | `calendar.search_places` | Read | `calendar_search_places` |
-| Karte zeigen | Editor | `calendar.map_preview` | Read | `calendar_map_preview` (Bild) |
-| Karten und Suche ein/aus, Dienste | Steuerzentrale › General › Maps | `settings.set_setting` (Schlüssel `maps`) | Admin; einschalten nur App-Schlüssel | `settings_set_setting` (nur ausschalten) |
+| Karte zeigen | Editor | `calendar.map_preview` | Read | `calendar_map_preview` (Bild; nicht für den Assistenten: das PNG passt in kein Tool-Ergebnis) |
+| „Open in Maps“ | Editor, Knopf ↗ unter der Karte | – (kein Befehl) | – | – (kein Tool) |
+| Karten und Suche ein/aus, Dienste | Steuerzentrale › General › Maps | `settings.set_setting` (Schlüssel `maps`) | Admin; einschalten nur App-Schlüssel | `settings_set_setting`: Clients mit Admin dürfen ausschalten und `geocoderKind`/`openWith` setzen, nie einschalten |
+
+„Open in Maps“ ist kein Befehl: Die App baut aus `geo` bzw. `location` einen Link und öffnet ihn lokal im
+Browser oder Kartenprogramm; der Dienst liest und schreibt dabei nichts. Ein Agent hat `geo` und `location`
+aus `calendar.list_events` und baut denselben Link selbst, wenn er ihn braucht.
 
 Freigaben: Die Zusammenfassung nennt den Umfang aus dem Cache („Change all events of “Weekly product sync”“,
 „Delete “Weekly product sync” on Tue, 27 Oct and all following“). Protokoll ohne Suchtext und ohne

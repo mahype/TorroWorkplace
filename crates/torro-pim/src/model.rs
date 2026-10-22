@@ -109,6 +109,8 @@ pub struct Event {
     /// (`calendar.save_event`, `calendar.delete_event`, [`SeriesScope`]); without one the core
     /// answers `unsupported`, so a client that does not know series never overwrites one. `true`
     /// exactly when [`Event::recurrence_id`] or [`Event::repeat`] is set (task TE.3 fills both in).
+    /// Sent as `false` with `repeat: None` and scope `series` or `following`, it ends the series
+    /// ([`Event::repeat`]).
     pub recurring: bool,
     /// Whether the event blocks the time (iCalendar `TRANSP`): `opaque` (busy) or
     /// `transparent` (free, e.g. a reminder or "working from home"). Missing means `opaque`, as
@@ -127,8 +129,11 @@ pub struct Event {
     #[serde(default)]
     pub recurrence_id: Option<EventTime>,
     /// The rule of the series (iCalendar `RRULE` of the series' main event), the same on every
-    /// occurrence; `None` for an event that does not repeat. Setting it on a single event makes it
-    /// a series; `None` on an occurrence saved with `scope: series` ends the series.
+    /// occurrence; `None` for an event that does not repeat, and for an occurrence whose stored
+    /// object the core could not read. Setting it on a single event makes it a series. `None` on an
+    /// occurrence saved with `scope: series` or `following` ends the series only together with
+    /// `recurring: false`; with `recurring: true` the stored rule stays, so an occurrence that came
+    /// without its rule is never turned into a single event by being sent back.
     // Boxed, like `organizer`: an event lives in many futures and answers, and the rule and the
     // organiser would double its size although most events have neither (the wire is the same).
     #[serde(default)]
@@ -263,12 +268,16 @@ pub struct Repeat {
     #[serde(default)]
     pub end: RepeatEnd,
     /// The rule as read from the server, without `RRULE:` (`FREQ=WEEKLY;BYDAY=TU`); empty for a
-    /// rule a client builds. Sent back unchanged with [`Repeat::custom`] set, the stored rule stays
-    /// as it is.
+    /// rule a client builds. Only read back: a save writes the stored rule (custom, or the fields
+    /// unchanged) or one made from the fields, never this text, except for a custom rule of an event
+    /// that has no rule yet. It must be one line of the `RRULE` grammar (letters, digits, `;=,+-`),
+    /// else the save is refused with `error`.
     #[serde(default)]
     pub rule: String,
     /// The rule has parts the fields above do not show (`BYSETPOS`, `BYHOUR`, `BYWEEKNO`,
-    /// `RDATE` …): the editor shows it as "Custom rule" and can only replace it whole.
+    /// `RDATE` …): the editor shows it as "Custom rule" and can only replace it whole. Sent with
+    /// `custom` set, the stored rule stays as it is, whatever the fields and [`Repeat::rule`] say;
+    /// to change it, send the new fields with `custom: false`.
     #[serde(default)]
     pub custom: bool,
 }
