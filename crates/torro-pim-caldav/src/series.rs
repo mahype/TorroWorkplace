@@ -1054,12 +1054,17 @@ fn tail(object: &Object, main: &Main, key: EventTime, uid: &str) -> Result<Objec
 /// the rule there: weekly on Tuesdays at 10:00 would become Thursdays at 15:00 (the review of PR #294).
 /// Such a key is refused; so is a key whose place in the rule cannot be told (more than [`LIMIT`]
 /// dates before it): split there, the rule would be anchored on a date it may not have. A series
-/// without a rule has nothing to move.
+/// without a rule has nothing to move. A rule the counter cannot read at all (one without `FREQ` a
+/// server stores) is split as before, refused only at an extra date: what it means is not known
+/// here, and its series stays changeable.
 fn check_split(main: &Main, key: EventTime) -> Result<(), SeriesError> {
     let Some(rule) = &main.rule else { return Ok(()) };
-    let dates = rule_dates_through(main.event.start, rule, main.zone, Some(key))
-        .filter(|dates| dates.knows(key))
-        .ok_or(SeriesError::Unsupported(UNCOUNTED))?;
+    let Some(dates) = rule_dates_through(main.event.start, rule, main.zone, Some(key)) else {
+        return if main.extra.contains(&key) { Err(SeriesError::Unsupported(EXTRA_DATE)) } else { Ok(()) };
+    };
+    if !dates.knows(key) {
+        return Err(SeriesError::Unsupported(UNCOUNTED));
+    }
     if dates.list.contains(&key) { Ok(()) } else { Err(SeriesError::Unsupported(EXTRA_DATE)) }
 }
 
