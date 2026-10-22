@@ -2141,7 +2141,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{role} → \"{path}\"", "{role} → „{path}“"),
     // Mail backup and restore (#267, MB.1)
     ("Backup archive is not available.", "Das Backup-Archiv ist nicht verfügbar."),
-    ("Backup archive is not available for this account.", "Das Backup-Archiv ist für dieses Konto nicht verfügbar."),
     ("Backup archive failed verification.", "Die Prüfung des Backup-Archivs ist fehlgeschlagen."),
     ("A backup for this mail account is already running.", "Für dieses Mail-Konto läuft bereits ein Backup."),
     ("Backup job is not available.", "Der Backup-Auftrag ist nicht verfügbar."),

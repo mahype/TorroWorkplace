@@ -256,23 +256,53 @@ impl Default for DiskSpace {
 }
 
 /// The free space of the disk `dir` is on, from the disks the system lists: the one whose mount
-/// point is the longest prefix of the canonical `dir`. `None` when the folder or no disk matches.
+/// point is the longest prefix of the canonical `dir`, if it really holds `dir` ([`free_on`]).
+/// `None` when the folder or no disk matches, or when the match is another file system.
+///
+/// The disk list is not complete: on Linux sysinfo leaves out network and virtual file systems
+/// (nfs, cifs, autofs, tmpfs) and everything under `/run` (an SMB share opened through gvfs), on
+/// macOS volumes that are not local. A folder on a NAS then matches `/` by its path, and the
+/// system disk's free space would refuse or allow its backup. On Unix the device of the folder
+/// and of the matched mount point must therefore be the same; when they differ, the free space
+/// is unknown and nothing is refused for it. Windows lists no network drives either; there a
+/// folder on one matches no mount point and is unknown already.
 /// Blocking: listing disks asks every mounted file system.
 fn system_free_space(dir: &Path) -> Option<u64> {
     let dir = without_verbatim(dir.canonicalize().ok()?);
     let refresh = sysinfo::DiskRefreshKind::nothing().with_storage();
     let disks = sysinfo::Disks::new_with_refreshed_list_specifics(refresh);
-    free_on(disks.list().iter().map(|disk| (disk.mount_point(), disk.available_space())), &dir)
+    free_on(disks.list().iter().map(|disk| (disk.mount_point(), disk.available_space())), &dir, device_of)
 }
 
 /// The free bytes of the disk among `disks` (mount point, free bytes) whose mount point is the
-/// longest prefix of `dir`, by whole path components.
-fn free_on<'d>(disks: impl IntoIterator<Item = (&'d Path, u64)>, dir: &Path) -> Option<u64> {
-    disks
+/// longest prefix of `dir`, by whole path components, when `device` (the file system a path is
+/// on, `None` when unknown) gives the same answer for `dir` and that mount point; otherwise
+/// `None`, since the list then lacks the disk `dir` is really on ([`system_free_space`]).
+fn free_on<'d>(
+    disks: impl IntoIterator<Item = (&'d Path, u64)>,
+    dir: &Path,
+    device: impl Fn(&Path) -> Option<u64>,
+) -> Option<u64> {
+    let (mount, free) = disks
         .into_iter()
         .filter(|(mount, _)| dir.starts_with(mount))
-        .max_by_key(|(mount, _)| mount.components().count())
-        .map(|(_, free)| free)
+        .max_by_key(|(mount, _)| mount.components().count())?;
+    (device(dir)? == device(mount)?).then_some(free)
+}
+
+/// The device id of the file system `path` is on; `None` when it cannot be read.
+#[cfg(unix)]
+fn device_of(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).ok().map(|metadata| metadata.dev())
+}
+
+/// Windows has no device id in the standard library: every path that exists counts as the same
+/// device, so the mount point alone decides. Network drives are not in the disk list there and
+/// match no mount point ([`system_free_space`]).
+#[cfg(not(unix))]
+fn device_of(path: &Path) -> Option<u64> {
+    fs::metadata(path).ok().map(|_| 0)
 }
 
 /// On Windows `canonicalize` gives `\\?\C:\…`, while disks are mounted at `C:\`: the plain form,
@@ -1687,7 +1717,8 @@ impl RestoreProblem {
     /// For the person.
     pub(crate) fn user_message(self) -> &'static str {
         match self {
-            Self::OtherAccount => tr("Backup archive is not available for this account."),
+            // The words of a missing archive: a client must not tell the two apart (#267).
+            Self::OtherAccount => tr("Backup archive is not available."),
             Self::UnsafeFolderName => tr("The archive names a folder that cannot be restored safely."),
             Self::PlanGone => tr("Restore plan is no longer available."),
             Self::ArchiveChanged => tr("The archive changed after the restore test. Run the restore test again."),
@@ -2581,6 +2612,35 @@ async fn open_restore_archive(path: &Path) -> Result<RestoreArchive<File>, Backu
     blocking(move || Ok(RestoreArchive::open(File::open(path)?)?)).await
 }
 
+/// Whether the archive at `path` is of another mail account than `account` (`mail:<address>`),
+/// from its manifest alone ([`torro_mail_backup::archive_account`]), before the costly full
+/// verification (#267): a client must neither tell an archive of another account from a missing
+/// one nor make the core check such an archive in full. `false` when the owner cannot be read (no
+/// file, no manifest, damaged): the full verification after it then says why. Blocking.
+pub(crate) fn of_other_account(path: &Path, account: &str) -> bool {
+    let Ok(file) = File::open(path) else { return false };
+    torro_mail_backup::archive_account(file).is_ok_and(|address| !same_account(&address, account))
+}
+
+/// The address `address` from an archive names the account `account`: as the id the core makes of
+/// it ([`torro_mail::account_id`], as `mail.backup_verify` compares) or exactly (as a restore
+/// compares, [`check_restore_archive`]). Either counts, so the early check never refuses what the
+/// full one accepts.
+fn same_account(address: &str, account: &str) -> bool {
+    torro_mail::account_id(address).is_ok_and(|id| id == account)
+        || account.strip_prefix(torro_mail::ACCOUNT_PREFIX) == Some(address)
+}
+
+/// [`of_other_account`] on the blocking pool: [`RestoreProblem::OtherAccount`] for an archive of
+/// another account, before it is verified.
+async fn refuse_other_account(path: &Path, account: &str) -> Result<(), BackupRunError> {
+    let (path, account) = (path.to_path_buf(), account.to_string());
+    if blocking(move || Ok(of_other_account(&path, &account))).await? {
+        return Err(BackupRunError::Restore(RestoreProblem::OtherAccount));
+    }
+    Ok(())
+}
+
 /// Checks what every restore checks first: safe folder names and the account the archive is of.
 fn check_restore_archive(manifest: &Manifest, account: &str) -> Result<(), BackupRunError> {
     validate_restore_paths(manifest)?;
@@ -2698,6 +2758,7 @@ impl RestorePlans {
         caller: Option<&str>,
     ) -> Result<RestorePlan, BackupRunError> {
         let slot = self.reserve(caller)?;
+        refuse_other_account(path, account).await?;
         let archive = open_restore_archive(path).await?;
         check_restore_archive(archive.manifest(), account)?;
         let digest = archive.manifest_sha256().to_string();
@@ -2812,6 +2873,7 @@ impl RestorePlans {
             let item = item.ok_or(BackupRunError::Restore(RestoreProblem::PlanGone))?;
             (item.manifest_sha256.clone(), item.plan.clone(), item.target.clone())
         };
+        refuse_other_account(path, account).await?;
         let archive = open_restore_archive(path).await?;
         if archive.manifest_sha256() != planned_digest {
             return Err(BackupRunError::Restore(RestoreProblem::ArchiveChanged));
@@ -4394,15 +4456,40 @@ pub(crate) mod tests {
         backup_folder_holds(root.path(), &[]);
     }
 
+    /// A share the disk list leaves out (an SMB share under `/run/user/…/gvfs`, an NFS mount) matches
+    /// `/` by its path; its own device shows that the system disk's free space is not its own.
+    #[test]
+    fn a_folder_on_another_device_than_its_mount_point_has_unknown_free_space() {
+        use std::path::Path;
+        let disks = [(Path::new("/"), 1), (Path::new("/home"), 2)];
+        let share = Path::new("/run/user/1000/gvfs/smb-share:server=nas,share=backup");
+        let device = |path: &Path| Some(if path.starts_with("/run/user/1000/gvfs") { 9 } else { 1 });
+        assert_eq!(super::free_on(disks, share, device), None, "the NAS is not the system disk");
+        assert_eq!(super::free_on(disks, Path::new("/srv/backups"), device), Some(1), "same device: the disk's");
+        let unreadable = |path: &Path| (path != share).then_some(1);
+        assert_eq!(super::free_on(disks, share, unreadable), None, "an unknown device is unknown space");
+        // A real folder and the mount point it is under, as the system lists them: when a disk
+        // matches, it is the folder's own file system.
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().canonicalize().expect("canonical");
+        assert_eq!(
+            super::free_on([(dir.as_path(), 5)], &dir.join("missing"), super::device_of),
+            None,
+            "a missing folder has no device"
+        );
+        assert_eq!(super::free_on([(dir.as_path(), 5)], &dir, super::device_of), Some(5));
+    }
+
     #[test]
     fn the_disk_of_a_folder_is_the_one_with_the_longest_mount_point() {
         use std::path::Path;
         let disks =
             [(Path::new("/"), 1), (Path::new("/home"), 2), (Path::new("/home/anna/media"), 3), (Path::new("/ho"), 4)];
-        assert_eq!(super::free_on(disks, Path::new("/home/anna/backups")), Some(2));
-        assert_eq!(super::free_on(disks, Path::new("/home/anna/media/x")), Some(3));
-        assert_eq!(super::free_on(disks, Path::new("/srv/backups")), Some(1), "whole components: not /ho");
-        assert_eq!(super::free_on([], Path::new("/srv")), None);
+        let one_device = |_: &Path| Some(7);
+        assert_eq!(super::free_on(disks, Path::new("/home/anna/backups"), one_device), Some(2));
+        assert_eq!(super::free_on(disks, Path::new("/home/anna/media/x"), one_device), Some(3));
+        assert_eq!(super::free_on(disks, Path::new("/srv/backups"), one_device), Some(1), "whole components: not /ho");
+        assert_eq!(super::free_on([], Path::new("/srv"), one_device), None);
         // A folder that does not exist has no disk; an existing one is looked up without a panic.
         let root = tempfile::tempdir().expect("tempdir");
         assert_eq!(DiskSpace::system().free(&root.path().join("missing")), None);
@@ -5309,6 +5396,21 @@ pub(crate) mod tests {
         assert!(matches!(run(&plans, None).await, Err(BackupRunError::Io(_))));
     }
 
+    /// #267: the early look at whose archive it is (verify, restore plan and apply) refuses only an
+    /// archive that names another account; what it cannot read is left to the full verification.
+    #[test]
+    fn only_an_archive_that_names_another_account_is_refused_early() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let archive = dir.path().join("anna.zip");
+        fs::write(&archive, SAMPLE_ZIP).expect("archive");
+        assert!(super::of_other_account(&archive, "mail:bob@example.org"));
+        assert!(!super::of_other_account(&archive, "mail:anna@example.org"));
+        assert!(!super::of_other_account(&dir.path().join("missing.zip"), "mail:bob@example.org"), "missing");
+        let damaged = dir.path().join("damaged.zip");
+        fs::write(&damaged, b"not a ZIP").expect("damaged");
+        assert!(!super::of_other_account(&damaged, "mail:bob@example.org"), "left to the full check");
+    }
+
     #[test]
     fn every_restore_problem_has_a_code_and_its_own_text() {
         let problems = [
@@ -5328,6 +5430,11 @@ pub(crate) mod tests {
             assert!(["not-found", "conflict", "error"].contains(&problem.code()), "{problem:?}");
         }
         assert_eq!(RestoreProblem::TargetChanged.code(), "conflict");
+        // An archive of another account answers as a missing one does (#267).
+        assert_eq!(
+            RestoreProblem::OtherAccount.user_message(),
+            torro_core::i18n::tr("Backup archive is not available.")
+        );
     }
 
     #[test]

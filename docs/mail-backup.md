@@ -210,6 +210,16 @@ Schreibrecht durch ein Backup nach dem anderen die Platte füllt.
 - Der freie Platz ist der des Datenträgers, dessen Einhängepunkt das längste Präfix des
   kanonischen Zielordners ist (`sysinfo`, Linux, macOS und Windows). Lässt er sich nicht
   bestimmen, blockiert das nichts.
+- Die Liste der Datenträger ist nicht vollständig: Unter Linux fehlen Netz- und virtuelle
+  Dateisysteme (nfs, cifs, autofs, tmpfs) und alles unter `/run` (eine SMB-Freigabe über gvfs),
+  unter macOS nicht lokale Volumes. Ein Ordner auf einem NAS passte dann über seinen Pfad zu `/`,
+  und der freie Platz der Systemplatte würde sein Backup ablehnen oder erlauben, ohne das
+  eigentliche Ziel zu schützen. Unter Unix vergleicht der Dienst darum die Geräte-ID
+  (`st_dev`) des Zielordners mit der des gefundenen Einhängepunkts; weichen sie ab, gilt der
+  freie Platz als unbekannt und blockiert nichts. Das trifft auch einen Ordner in einem nicht
+  eigens eingehängten btrfs-Subvolume (eigene Geräte-ID); dort fehlt die Reserve, statt falsch
+  zu greifen. Unter Windows fehlen Netzlaufwerke in der Liste, passen zu keinem Einhängepunkt und
+  sind schon so unbekannt.
 
 Die Serverquelle (MB.3) arbeitet auf einer **eigenen IMAP-Sitzung**, nicht auf der
 Befehlsverbindung des Kontos: Sync, Lesen und Senden laufen während eines stundenlangen Backups
@@ -241,7 +251,13 @@ Ordner, ein Wechsel zwischen auswählbar und nicht auswählbar oder Neues noch i
 machen den Lauf unvollständig; dann wird keine Datei veröffentlicht. Das archivierte
 UID-Inventar wird mit den geschriebenen Nachrichten und Aliasen verglichen. Der Job meldet
 Zähler, Phase und Abbruchstatus; `verify` benötigt weder Kontozugang noch Netzwerk. Ein Archiv
-einer neueren Torro-Version nennt `verify` als solches, nicht als defekt.
+einer neueren Torro-Version nennt `verify` als solches, nicht als defekt. Vor der vollständigen
+Prüfung liest `verify` (wie `restore_plan` und `restore_apply`) nur `manifest.json` mit denselben
+Grenzen (`torro_mail_backup::archive_account`) und vergleicht das Konto: Ein Archiv eines anderen
+Kontos antwortet wie ein fehlendes (`not-found`, „Backup archive is not available.“), ohne dass
+seine Mails gelesen werden. So kann ein Client weder Archive anderer Konten erkennen noch ihre
+teure Prüfung auslösen. Lässt sich das Manifest nicht lesen, sagt die vollständige Prüfung danach,
+was fehlt.
 
 **Veröffentlichen.** `ArchiveWriter::finish` prüft die fertige Datei offline; genau diese
 geprüfte Temp-Datei wird danach per `fsync` gesichert, ohne Überschreiben umbenannt und der

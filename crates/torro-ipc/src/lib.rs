@@ -2127,6 +2127,8 @@ pub enum Request {
     },
     /// Verifies an archive offline without contacting any mail account. An app key may name a
     /// selected absolute file; a client key may name only an archive in the managed backup folder.
+    /// An archive of another account is `not-found` with the words of a missing one, before it is
+    /// verified (only its manifest's account is read).
     /// Returns [`Response::MailBackupVerified`]. Errors: `not-found`, `forbidden`, `error`.
     #[serde(rename = "mail.backup_verify")]
     MailBackupVerify {
@@ -2140,7 +2142,8 @@ pub enum Request {
     /// never writes to the server or a local journal; unconfirmed uploads of an earlier restore
     /// are reported as `unconfirmed`. The file rule is the same as backup_verify. Folder rows name
     /// each folder twice: the exact IMAP name (`archive_path`, `target_path`, modified UTF-7) and
-    /// the name for people (`archive_display`, `target_display`).
+    /// the name for people (`archive_display`, `target_display`). An archive of another account is
+    /// `not-found` as for backup_verify, before anything is verified or read from the server.
     /// Returns [`Response::MailRestorePlanned`]. Errors: `not-found`, `offline`, `auth`, `busy`
     /// (already four test runs of this client key under way, or all plans and runs of all callers
     /// at their limit), `error`.

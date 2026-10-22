@@ -3747,7 +3747,14 @@ impl Core {
             Request::MailBackupVerify { file, account } => match backup_file_for_verify(&file, reach, self.mail_dirs())
             {
                 Ok(path) => {
+                    let owner = account.clone();
                     let result = tokio::task::spawn_blocking(move || {
+                        // Whose archive it is, from the manifest alone, before the costly full
+                        // check (#267): another account's archive answers as a missing one, so a
+                        // client neither finds archives of other accounts nor has them checked.
+                        if crate::mail::backup::of_other_account(&path, &owner) {
+                            return Err(None);
+                        }
                         let opened = std::fs::File::open(path).map_err(|_| None)?;
                         torro_mail_backup::verify_archive(opened).map_err(Some)
                     })
@@ -3773,11 +3780,9 @@ impl Core {
                                 },
                             }
                         }
-                        Ok(Ok(_)) => Response::Error {
-                            code: "not-found".into(),
-                            message: tr("Backup archive is not available for this account.").into(),
-                        },
-                        Ok(Err(None)) => Response::Error {
+                        // Another account's (the file changed after the early look) or none: the
+                        // same answer.
+                        Ok(Ok(_)) | Ok(Err(None)) => Response::Error {
                             code: "not-found".into(),
                             message: tr("Backup archive is not available.").into(),
                         },
@@ -9005,6 +9010,100 @@ mod tests {
         assert_eq!(code(&other), "not-found");
         assert!(!server.lines().iter().any(|line| line.contains(" APPEND ") || line.contains(" CREATE ")));
         assert!(!dirs.data.join("restore-journals").exists());
+    }
+
+    /// Anna's and Bob's mail accounts on `server` (workers paused) in a core whose managed backup
+    /// folder is in `dir`; Anna's account remembers `directory` as its backup folder.
+    async fn two_mail_accounts(
+        dir: &std::path::Path,
+        server: &crate::mail::sync::fake::FakeImap,
+        directory: Option<&str>,
+    ) -> (Core, String, String, crate::mail::MailDirs) {
+        use crate::account::github::tests::MemoryTokens;
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+
+        let secrets = MemoryTokens::default();
+        let mut anna = mail_account("anna@example.org", &server.endpoint);
+        let mut settings = torro_mail::MailSettings::default();
+        settings.backup.directory = directory.map(str::to_string);
+        anna.mail_settings = Some(settings);
+        let bob = mail_account("bob@example.org", &server.endpoint);
+        store_accounts(dir, &secrets, &[(&anna, PASSWORD), (&bob, PASSWORD)]);
+        let mail = service_in(dir, &secrets);
+        mail.pause_from_start(true);
+        mail.reload().await;
+        let dirs = crate::mail::MailDirs::new(&dir.join("data"), &dir.join("cache"));
+        (core(dir).with_mail(mail).with_mail_dirs(dirs.clone()), anna.id, bob.id, dirs)
+    }
+
+    /// The sample archive of Anna's account with one byte of its message changed: the manifest
+    /// still says whose it is, the full verification fails.
+    fn damaged_sample_archive() -> Vec<u8> {
+        let mut zip = SAMPLE_ARCHIVE.to_vec();
+        let field = |at: usize| usize::from(u16::from_le_bytes([zip[at], zip[at + 1]]));
+        let (name, extra) = (field(26), field(28));
+        assert_eq!(&zip[30..30 + name], b"mail/f000001/m000000001.eml", "the message is the first member");
+        zip[30 + name + extra + 8] ^= 0xFF;
+        zip
+    }
+
+    /// #267: for a client, an archive of another account answers exactly as a missing one, in
+    /// `mail.backup_verify` and `mail.restore_plan`, and before the archive is checked in full:
+    /// Anna's archive with a damaged message is `not-found` for Bob, `error` only for Anna.
+    #[tokio::test]
+    async fn a_foreign_archive_answers_as_a_missing_one_before_it_is_checked() {
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::sync::fake::FakeImap;
+
+        let dir = tempfile::tempdir().expect("test directory");
+        let server = FakeImap::start(PASSWORD).await;
+        let (core, anna, bob, dirs) = two_mail_accounts(dir.path(), &server, None).await;
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        std::fs::create_dir_all(dirs.data.join("backups")).expect("managed backup folder");
+        std::fs::write(dirs.data.join("backups").join("anna.zip"), damaged_sample_archive()).expect("archive");
+        let verify =
+            |file: &str, account: &str| Request::MailBackupVerify { file: file.into(), account: account.into() };
+        let plan = |file: &str, account: &str| Request::MailRestorePlan { file: file.into(), account: account.into() };
+        let missing =
+            Response::Error { code: "not-found".into(), message: tr("Backup archive is not available.").into() };
+        for request in
+            [verify("anna.zip", &bob), verify("missing.zip", &bob), plan("anna.zip", &bob), plan("missing.zip", &bob)]
+        {
+            let shown = format!("{request:?}");
+            assert_eq!(ask(&core, Some(&key), request).await, missing, "{shown}");
+        }
+        // Anna's own archive is checked in full, and the damage is found.
+        assert_eq!(code(&ask(&core, Some(&key), verify("anna.zip", &anna)).await), "error");
+        assert_eq!(code(&ask(&core, Some(&key), plan("anna.zip", &anna)).await), "error");
+        assert!(!server.lines().iter().any(|line| line.contains("LOGIN")), "no mail server was asked");
+    }
+
+    /// #267: the folder a person chose for backups stays with the app: `accounts.list_accounts`
+    /// gives it to the app key and never to a client key. No other answer carries the mail
+    /// settings of an account a client can ask for (`accounts.connect_mail`, the only other one,
+    /// is the app's alone).
+    #[tokio::test]
+    async fn client_keys_never_see_the_backup_folder_of_an_account() {
+        use crate::mail::service::tests::PASSWORD;
+        use crate::mail::sync::fake::FakeImap;
+
+        let dir = tempfile::tempdir().expect("test directory");
+        let server = FakeImap::start(PASSWORD).await;
+        let (core, anna, _, _) = two_mail_accounts(dir.path(), &server, Some("/Users/anna/Mail backups")).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let directory = |answer: Response| match answer {
+            Response::Accounts { accounts } => {
+                let account = accounts.into_iter().find(|account| account.id == anna).expect("Anna's account");
+                account.mail.expect("the mail view").settings.backup.directory
+            }
+            other => panic!("the accounts, got {other:?}"),
+        };
+        assert_eq!(
+            directory(ask(&core, Some(&app_key), Request::Accounts).await).as_deref(),
+            Some("/Users/anna/Mail backups")
+        );
+        assert_eq!(directory(ask(&core, Some(&key), Request::Accounts).await), None);
     }
 
     /// Plans belong to the client that made them: a client's request that reaches the core without

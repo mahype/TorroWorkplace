@@ -5,7 +5,7 @@ pub mod restore;
 mod verify;
 pub mod writer;
 
-pub use verify::verify_archive;
+pub use verify::{archive_account, verify_archive};
 
 /// Ceiling for `manifest.json`; `format::MAX_MESSAGES` typical entries fit (a test checks it).
 pub(crate) const MAX_MANIFEST_BYTES: u64 = 512 * 1024 * 1024;

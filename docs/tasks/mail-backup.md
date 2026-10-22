@@ -162,6 +162,21 @@ MB.1 Format und Verträge ── MB.2 Archiv-Engine ── MB.3 Serverquelle ─
     `crates/torroworkplace/src/{core,approvals,cli}.rs`, `crates/torroworkplace/src/mail/backup.rs`,
     `crates/torro-settings-ui/src/mail/backup.rs`, `crates/torro-core/src/i18n/de.rs`,
     `docs/{mail-backup,api-reference}.md`, diese Aufgabenliste.
+- **PR-Review-Nacharbeit, zweite Runde (PR #285):**
+  - Reserve misst das richtige Ziel: Unter Unix muss die Geräte-ID des Zielordners der des
+    gefundenen Einhängepunkts gleichen, sonst ist der freie Platz unbekannt (NAS, gvfs, nfs, die
+    `sysinfo` nicht listet); Windows unverändert. `free_on` bekommt die Geräte-IDs als Funktion
+    und ist ohne echte Einhängepunkte getestet.
+  - `mail.backup_verify`, `mail.restore_plan` und `mail.restore_apply` vergleichen das Konto vor der
+    vollständigen Prüfung (`torro_mail_backup::archive_account` liest nur `manifest.json`); ein
+    fremdes Archiv antwortet wie ein fehlendes (`not-found`, „Backup archive is not available.“).
+    Der Text „Backup archive is not available for this account.“ entfällt.
+  - Test: Client-Schlüssel sehen `backup.directory` in `accounts.list_accounts` nie, die App schon.
+  - Katalog: `mail.backup_create` sagt „app key“ statt „suite key“.
+  - Dateien: `crates/torro-mail-backup/src/{lib,format,verify}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+    `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/mail/backup.rs`,
+    `crates/torro-core/src/i18n/de.rs`, `docs/{api,mail-backup,api-reference}.md`, diese
+    Aufgabenliste.
 - Unter Mail-Kontoeinstellungen den Ablauf aus dem Mock-up anbinden: Quelle,
   Datum, Speicherort, Fortschritt/Abbruch, Verify, Restore-Plan und echte Bestätigung,
   verständliche Fehler und Hinweis auf unverschlüsseltes ZIP. CLI als

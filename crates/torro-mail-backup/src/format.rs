@@ -289,6 +289,15 @@ impl Head {
     }
 }
 
+/// The fields that say whose archive it is, read without `deny_unknown_fields` so that the rest
+/// of the manifest is skipped unchecked ([`crate::archive_account`]).
+#[derive(Deserialize)]
+pub(crate) struct Owner {
+    #[serde(deserialize_with = "text")]
+    pub format: String,
+    pub account: Account,
+}
+
 /// Allowances shared by every list in one manifest being parsed by [`parse_manifest`].
 #[derive(Debug, Clone, Copy)]
 struct Budget {

@@ -190,7 +190,9 @@ im verwalteten Mail-Backup-Ordner übergeben (`<Mail-Daten>/backups`); Unterordn
 absolute Pfade, Symlinks und andere Endungen liefern `not-found`. Der Inhalt wird ohne
 Extraktion und ohne Netzwerk gegen Manifest, SHA-256-Liste und EML-Hashes geprüft. Die
 Antwort nennt Quelle, Datumsgrenze, Start/Ende, `complete`, Ordner, Mails, Bytes und Warnungen, nie Mailinhalte oder
-Zugangsdaten. Ein gültiges Archiv eines anderen Kontos liefert ebenfalls `not-found`. Ein
+Zugangsdaten. Ein Archiv eines anderen Kontos liefert dieselbe Antwort wie ein fehlendes
+(`not-found`, „Backup archive is not available.“), schon bevor es vollständig geprüft wird (nur
+das Konto aus `manifest.json`); dasselbe gilt für `mail.restore_plan` und `mail.restore_apply`. Ein
 Archiv einer neueren Torro-Version liefert `error` mit der Meldung „This backup was made by a
 newer version of Torro.“ statt „failed verification“.
 Die externe Verfügbarkeit des gewählten Archivs ist Sache des Speicherorts; der Dienst

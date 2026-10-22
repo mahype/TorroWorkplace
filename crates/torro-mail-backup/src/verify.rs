@@ -13,7 +13,9 @@ use zip::ZipArchive;
 use zip::read::ZipFile;
 use zip::result::ZipError;
 
-use crate::format::{Head, MAX_MESSAGE_BYTES, MAX_MESSAGES, Manifest, Status, parse_manifest};
+use crate::format::{
+    FORMAT, FormatError, Head, MAX_MESSAGE_BYTES, MAX_MESSAGES, Manifest, Owner, Status, parse_manifest,
+};
 use crate::writer::README;
 use crate::{ArchiveError, MAX_INDEX_BYTES, MAX_MANIFEST_BYTES, VerifiedArchive, hex_digest};
 
@@ -50,6 +52,22 @@ pub(crate) struct Verified<R> {
 /// files. Size and expansion limits apply while reading, so forged ZIP headers cannot bypass them.
 pub fn verify_archive<R: Read + Seek>(input: R) -> Result<VerifiedArchive, ArchiveError> {
     verify_into(input).map(|verified| verified.report)
+}
+
+/// The mail address an archive is of, read from `manifest.json` alone with the same size and
+/// expansion limits as [`verify_archive`], and nothing else checked: no checksums, no messages,
+/// not the manifest contract. It lets a caller refuse an archive of another account before the
+/// costly full verification; it never replaces that verification. Errors when the input is no
+/// ZIP, has no readable `manifest.json`, is not a Torro mail backup or has no readable account.
+pub fn archive_account<R: Read + Seek>(input: R) -> Result<String, ArchiveError> {
+    let mut zip = ZipArchive::new(input)?;
+    let owner = read_metadata(&mut zip, "manifest.json", MAX_MANIFEST_BYTES, |reader| {
+        serde_json::from_reader::<_, Owner>(reader)
+    })?;
+    if owner.format != FORMAT {
+        return Err(FormatError("not a Torro mail backup").into());
+    }
+    Ok(owner.account.address)
 }
 
 /// What a single entry of the ZIP must be.
@@ -283,7 +301,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-    use super::{CSV_HEADER, csv_row, verify_archive};
+    use super::{CSV_HEADER, archive_account, csv_row, verify_archive};
     use crate::ArchiveError;
     use crate::format::{FormatError, Manifest};
     use crate::writer::README;
@@ -389,6 +407,23 @@ mod tests {
         let report = verify_archive(Cursor::new(SAMPLE_ZIP)).expect("standard ZIP fixture");
         assert_eq!(report.account, "anna@example.org");
         assert_eq!(report.messages, 1);
+    }
+
+    #[test]
+    fn the_account_is_read_from_the_manifest_alone() {
+        assert_eq!(archive_account(Cursor::new(SAMPLE_ZIP)).expect("sample"), "anna@example.org");
+        // A damaged message does not hide whose archive it is: nothing but the manifest is read.
+        let damaged = archive(b"Different original message", &[]);
+        assert!(verify_archive(Cursor::new(damaged.clone())).is_err());
+        assert_eq!(archive_account(Cursor::new(damaged)).expect("damaged message"), "anna@example.org");
+        assert!(matches!(archive_account(Cursor::new(b"not a ZIP")), Err(ArchiveError::Zip(_))));
+        let mut other_format = MANIFEST.to_vec();
+        patch(&mut other_format, b"torro-mail-backup", b"other-mail-backup", 1);
+        let foreign = Members::standard(&other_format, EML).zip(|sums| sums, &[]);
+        assert!(matches!(
+            archive_account(Cursor::new(foreign)),
+            Err(ArchiveError::Format(FormatError("not a Torro mail backup")))
+        ));
     }
 
     #[test]
