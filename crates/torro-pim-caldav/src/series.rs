@@ -163,6 +163,8 @@ const KIND_CHANGE: &str =
     "a series cannot change between all-day and timed events yet: change one event, or make a new series";
 const NO_MAIN: &str =
     "the server holds only changed events of this series, not the series itself: change them one by one";
+const UNCOUNTED: &str =
+    "the rule of this series cannot be counted up to this event, so it cannot be split: change all events or one";
 const EXTRA_DATE: &str = "this event was added to the series apart from its rule, so the series cannot be split here: \
      change all events or this one";
 
@@ -657,8 +659,14 @@ impl Main {
     /// The occurrences of the series in order: the dates of its rule and its extra dates, without the
     /// excluded ones; `None` when the rule cannot be counted.
     fn occurrences(&self) -> Option<Dates> {
+        self.occurrences_through(None)
+    }
+
+    /// [`Main::occurrences`], counted at least up to `through` (a key the client names, which may lie
+    /// beyond the years counted from the start of an old series).
+    fn occurrences_through(&self, through: Option<EventTime>) -> Option<Dates> {
         let mut dates = match &self.rule {
-            Some(rule) => rule_dates(self.event.start, rule, self.zone)?,
+            Some(rule) => rule_dates_through(self.event.start, rule, self.zone, through)?,
             None => Dates { list: vec![self.event.start], known_until: None },
         };
         dates.list.extend(self.extra.iter().copied());
@@ -706,7 +714,11 @@ impl Dates {
 /// start always first (RFC 5545 counts it as the first occurrence), none excluded. `UNTIL` and `COUNT`
 /// are read by [`crate::recur::read`], which reads what servers write (an `UNTIL` without `Z`), and
 /// handed to the counter as it wants them. `None` when the counter cannot read the rule.
-fn rule_dates(start: EventTime, rule: &str, zone: Option<Tz>) -> Option<Dates> {
+///
+/// Counted [`HORIZON_DAYS`] from the start, and with `through` at least a day past it (still at most
+/// [`LIMIT`] dates), so a key the client names in a series older than that is known (the review of
+/// PR #294).
+fn rule_dates_through(start: EventTime, rule: &str, zone: Option<Tz>, through: Option<EventTime>) -> Option<Dates> {
     let repeat = crate::recur::read(rule, zone);
     let rest: Vec<&str> = rule
         .split(';')
@@ -721,7 +733,10 @@ fn rule_dates(start: EventTime, rule: &str, zone: Option<Tz>) -> Option<Dates> {
         (EventTime::DateTime(_), Some(tz)) => rrule::Tz::Tz(tz),
         _ => rrule::Tz::UTC,
     };
-    let horizon = instant(start).checked_add_signed(Duration::days(HORIZON_DAYS))?;
+    let mut horizon = instant(start).checked_add_signed(Duration::days(HORIZON_DAYS))?;
+    if let Some(through) = through {
+        horizon = horizon.max(instant(through).checked_add_signed(Duration::days(1))?);
+    }
     let mut ends = None;
     match repeat.end {
         RepeatEnd::Count(count) => parsed = parsed.count(count),
@@ -789,13 +804,14 @@ fn until_part(time: EventTime) -> String {
 }
 
 /// The rule of the part of `main`'s series from `key` on, when it is split there: the same rule, with
-/// a `COUNT` reduced by the dates before `key`. `NoOccurrence` when none are left.
+/// a `COUNT` reduced by the dates before `key`, counted up to `key` (else the rest would come out too
+/// large and the new series would run past the old end). `NoOccurrence` when none are left.
 fn rest_rule(main: &Main, key: EventTime) -> Result<Option<String>, SeriesError> {
     let Some(rule) = &main.rule else { return Ok(None) };
     let Some(RepeatEnd::Count(count)) = main.repeat().map(|repeat| repeat.end) else { return Ok(Some(rule.clone())) };
-    let dates = rule_dates(main.event.start, rule, main.zone).ok_or(SeriesError::Unsupported(
-        "the rule of this series cannot be counted, so it cannot be split: change all events or one",
-    ))?;
+    let dates = rule_dates_through(main.event.start, rule, main.zone, Some(key))
+        .filter(|dates| dates.knows(key))
+        .ok_or(SeriesError::Unsupported(UNCOUNTED))?;
     let before = dates.list.iter().filter(|time| instant(**time) < instant(key)).count();
     let rest = (count as usize).checked_sub(before).filter(|rest| *rest > 0).ok_or(SeriesError::NoOccurrence)?;
     Ok(Some(with_end(rule, &format!("COUNT={rest}"))))
@@ -836,8 +852,9 @@ fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
         return Ok(Found { object, main, before, key: Some(key) });
     }
     let held = main.as_ref().ok_or(SeriesError::NoOccurrence)?;
-    // A key the series does not have would make an extra event on the server.
-    if let Some(dates) = held.occurrences()
+    // A key the series does not have would make an extra event on the server; counted up to the key,
+    // also in a series older than the years counted from its start.
+    if let Some(dates) = held.occurrences_through(Some(key))
         && dates.knows(key)
         && !dates.list.contains(&key)
     {
@@ -849,8 +866,10 @@ fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
 
 /// Whether the dates the client sends lie in the years 1 to 9999, as iCalendar writes them: start,
 /// end, key and the end of the rule. Every count and shift here starts from them and stays within
-/// chrono's dates then (the stored dates have four digits too), so a date at chrono's edge is `error`
-/// before [`drops`] runs, which runs before any right is checked.
+/// chrono's dates then (the stored dates have four digits too), so a date at chrono's edge is refused
+/// instead of panicking: the save answers `error`. [`drops`], which runs before any right is checked,
+/// counts such a refused change as dropping (fail closed), so a client without the right to delete
+/// gets `forbidden` first.
 fn in_range(event: &Event) -> Result<(), SeriesError> {
     let until = event.repeat.as_deref().and_then(|repeat| match repeat.end {
         RepeatEnd::Until(until) => Some(until),
@@ -1033,16 +1052,15 @@ fn tail(object: &Object, main: &Main, key: EventTime, uid: &str) -> Result<Objec
 /// Whether `main`'s series can be split at `key`. The new series' rule counts from its start, so a
 /// start on an extra date (`RDATE`, written by another program) that is no date of the rule would move
 /// the rule there: weekly on Tuesdays at 10:00 would become Thursdays at 15:00 (the review of PR #294).
-/// Such a key is refused, also when it lies beyond the dates counted; a series without a rule has
-/// nothing to move.
+/// Such a key is refused; so is a key whose place in the rule cannot be told (more than [`LIMIT`]
+/// dates before it): split there, the rule would be anchored on a date it may not have. A series
+/// without a rule has nothing to move.
 fn check_split(main: &Main, key: EventTime) -> Result<(), SeriesError> {
     let Some(rule) = &main.rule else { return Ok(()) };
-    if !main.extra.contains(&key) {
-        return Ok(());
-    }
-    let on_rule = rule_dates(main.event.start, rule, main.zone)
-        .is_some_and(|dates| dates.knows(key) && dates.list.contains(&key));
-    if on_rule { Ok(()) } else { Err(SeriesError::Unsupported(EXTRA_DATE)) }
+    let dates = rule_dates_through(main.event.start, rule, main.zone, Some(key))
+        .filter(|dates| dates.knows(key))
+        .ok_or(SeriesError::Unsupported(UNCOUNTED))?;
+    if dates.list.contains(&key) { Ok(()) } else { Err(SeriesError::Unsupported(EXTRA_DATE)) }
 }
 
 /// What [`edit_series`] did.
@@ -1274,10 +1292,19 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
     };
     // Dates are compared only as far as they are counted; a new rule that ends sooner than the old
     // one beyond that drops events nobody counted (the review of PR #294).
+    // So does a later start under a fixed `UNTIL`: the last dates move past it.
+    let old_end = main.repeat().map(|r| r.end);
+    let new_end = match &rule {
+        Rule::Set(text) => Some(crate::recur::read(text, zone).end),
+        Rule::Keep => old_end,
+        Rule::Remove => None,
+    };
+    let later = shift > Duration::zero() && matches!(new_end, Some(RepeatEnd::Until(_)));
     let cut_short = old_dates.as_ref().is_some_and(|old| old.known_until.is_some())
         && match &rule {
-            Rule::Set(text) => ends_sooner(crate::recur::read(text, zone).end, main.repeat().map(|r| r.end)),
-            Rule::Keep | Rule::Remove => false,
+            Rule::Set(_) => new_end.is_some_and(|end| ends_sooner(end, old_end)) || later,
+            Rule::Keep => later,
+            Rule::Remove => false,
         };
     let mut gone: Vec<EventTime> = match (old_dates, &new) {
         (Some(old), Some(new)) => old
@@ -1692,15 +1719,7 @@ mod tests {
     #[test]
     fn following_in_a_series_older_than_the_counted_years_still_counts_what_it_drops() {
         // The API review of PR #294: Tuesdays and Thursdays since 2014, from 13 Oct 2026 Tuesdays only.
-        // Without the changed occurrence of the fixture, so only the dates of the rule count.
-        let second = COUNTED.match_indices("BEGIN:VEVENT").nth(1).map(|(at, _)| at).expect("a changed occurrence");
-        let end = COUNTED[second..].find("END:VEVENT\r\n").or_else(|| COUNTED[second..].find("END:VEVENT\n"));
-        let end = second + end.expect("its end") + "END:VEVENT\n".len();
-        let without = format!("{}{}", &COUNTED[..second], COUNTED[end..].trim_start_matches('\n'));
-        let old = without
-            .replace("DTSTART;TZID=Europe/Berlin:20261012T080000", "DTSTART;TZID=Europe/Berlin:20140107T080000")
-            .replace("DTEND;TZID=Europe/Berlin:20261012T083000", "DTEND;TZID=Europe/Berlin:20140107T083000")
-            .replace("RRULE:FREQ=DAILY;COUNT=10", "RRULE:FREQ=WEEKLY;BYDAY=TU,TH");
+        let old = old_series("FREQ=WEEKLY;BYDAY=TU,TH");
         assert!(!old.contains("RECURRENCE-ID") && old.contains("BEGIN:VTIMEZONE"), "{old}");
         let key = berlin(2026, 10, 13, 8);
         let stored = occurrence(&old, key);
@@ -1713,6 +1732,62 @@ mod tests {
         assert!(drops(&old, &event, SeriesScope::Following) > 0, "every other week");
         let renamed = Event { summary: "Run".into(), ..stored };
         assert_eq!(drops(&old, &renamed, SeriesScope::Following), 0, "a new title drops nothing");
+    }
+
+    /// `COUNTED` without its changed occurrence, starting on Tuesday 7 Jan 2014 at 08:00 with `rule`.
+    fn old_series(rule: &str) -> String {
+        plain_series(rule, "20140107")
+    }
+
+    /// `COUNTED` without its changed occurrence, starting on `day` (`YYYYMMDD`) at 08:00 with `rule`.
+    fn plain_series(rule: &str, day: &str) -> String {
+        let second = COUNTED.match_indices("BEGIN:VEVENT").nth(1).map(|(at, _)| at).expect("a changed occurrence");
+        let end = COUNTED[second..].find("END:VEVENT\r\n").or_else(|| COUNTED[second..].find("END:VEVENT\n"));
+        let end = second + end.expect("its end") + "END:VEVENT\n".len();
+        format!("{}{}", &COUNTED[..second], COUNTED[end..].trim_start_matches('\n'))
+            .replace("DTSTART;TZID=Europe/Berlin:20261012T080000", &format!("DTSTART;TZID=Europe/Berlin:{day}T080000"))
+            .replace("DTEND;TZID=Europe/Berlin:20261012T083000", &format!("DTEND;TZID=Europe/Berlin:{day}T083000"))
+            .replace("RRULE:FREQ=DAILY;COUNT=10", &format!("RRULE:{rule}"))
+    }
+
+    #[test]
+    fn a_key_beyond_the_counted_years_is_checked_against_the_rule() {
+        // The second review of PR #294: Tuesdays since 2014; a Thursday is no event of it, also now.
+        let old = old_series("FREQ=WEEKLY;BYDAY=TU");
+        let thursday = berlin(2026, 10, 15, 15);
+        let event = Event { summary: "Moved".into(), ..occurrence(&old, berlin(2026, 10, 13, 8)) };
+        let event = Event { recurrence_id: Some(thursday), start: thursday, end: None, ..event };
+        for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+            assert_eq!(save(&old, &event, scope, &writing()).map(|_| ()), Err(SeriesError::NoOccurrence), "{scope:?}");
+        }
+        assert_eq!(drops(&old, &event, SeriesScope::Following), 1);
+        // A Tuesday now still splits, with the rule anchored on it.
+        let tuesday = Event { summary: "Run".into(), ..occurrence(&old, berlin(2026, 10, 13, 8)) };
+        let outcome = save(&old, &tuesday, SeriesScope::Following, &writing()).expect("split");
+        let (new, _) = split(&outcome);
+        assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261013T080000"), "{new}");
+    }
+
+    #[test]
+    fn the_rest_of_a_count_is_counted_up_to_a_key_beyond_the_counted_years() {
+        // 1000 Tuesdays from 7 Jan 2014: 666 lie before 13 Oct 2026, 334 are left.
+        let old = old_series("FREQ=WEEKLY;BYDAY=TU;COUNT=1000");
+        let event = Event { summary: "Run".into(), ..occurrence(&old, berlin(2026, 10, 13, 8)) };
+        let outcome = save(&old, &event, SeriesScope::Following, &writing()).expect("split");
+        let (new, _) = split(&outcome);
+        assert!(has(new, "RRULE:FREQ=WEEKLY;BYDAY=TU;COUNT=334"), "{new}");
+    }
+
+    #[test]
+    fn a_later_start_under_an_until_beyond_the_counted_years_drops_the_last_event() {
+        // Tuesdays from 2026 until the last one in 2040; an hour later, that last one passes the end.
+        let until = plain_series("FREQ=WEEKLY;UNTIL=20401225T070000Z", "20261013");
+        let key = berlin(2026, 10, 20, 8);
+        let stored = occurrence(&until, key);
+        let later = Event { start: berlin(2026, 10, 20, 9), end: Some(berlin(2026, 10, 20, 10)), ..stored.clone() };
+        assert_eq!(drops(&until, &later, SeriesScope::Series), 1);
+        let earlier = Event { start: berlin(2026, 10, 20, 7), end: Some(berlin(2026, 10, 20, 8)), ..stored };
+        assert_eq!(drops(&until, &earlier, SeriesScope::Series), 0, "an earlier start keeps every event");
     }
 
     #[test]
