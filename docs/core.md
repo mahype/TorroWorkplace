@@ -24,7 +24,7 @@ Pro System gibt es genau einen Tiling-Window-Manager, den der Kern unterstützt.
 | **Ereignisse** (Fenster auf/zu, Workspace gewechselt) | Ereignis-Socket `.socket2.sock` | keine Ereignisschnittstelle, nur Callbacks in der Konfiguration; deshalb Abfragen in kurzen Abständen | `sub` über denselben WebSocket |
 | **Layoutmodell** | dwindle: Binärbaum mit Teilungsverhältnissen (`preselect`, `splitratio`) | i3-artiger Baum aus Kacheln und Akkordeons (`join-with`, `layout`, `resize`) | i3-artiger Baum (`set-tiling-direction`, `resize`) |
 | **Tastenkürzel** | Zur Laufzeit über `hl.bind` (Lua unter Omarchy 4), vom Kern gesetzt | `~/.aerospace.toml` | GlazeWM-Konfiguration |
-| **Autostart** | `exec-once` oder systemd-User-Dienst | LaunchAgent | Autostart-Eintrag |
+| **Autostart** | `exec-once` oder systemd-User-Dienst; sonst die erste App | LaunchAgent (Service-Bündel in `Torro Workplace.app`); sonst die erste App | Autostart-Eintrag; sonst die erste App |
 
 Warum diese drei: Hyprland ist gesetzt. AeroSpace braucht kein Abschalten des
 Systemschutzes (SIP), wird aktiv gepflegt und hat eine JSON-CLI; yabai bräuchte für Spaces

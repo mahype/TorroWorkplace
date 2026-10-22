@@ -20,6 +20,10 @@
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.
 //!
+//! One tasks window per person (issue #279, [`torro_gui::instance`]): a second plain start brings the
+//! running window to the front and ends; a start on a task (`--task`), the settings (`--settings`)
+//! or the demo opens its window as before ([`instance_of`]).
+//!
 //! On Windows the app is a GUI program without a console window; a failed start is written to
 //! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]).
 
@@ -41,6 +45,7 @@ use iced::{Element, Task};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_core::timing;
+use torro_gui::instance::Claim;
 
 const APP: AppId = AppId::TASKS;
 
@@ -71,6 +76,12 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // Before the core is started: a second start only brings the first window to the front.
+    if let Some(app) = instance_of(&args, &launch)
+        && torro_gui::instance::claim(app) == Claim::Shown
+    {
+        return ExitCode::SUCCESS;
+    }
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&source, &launch.forced());
@@ -89,6 +100,14 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
+/// #279): the tasks app's for a plain start, `None` for a start on a task (`--task`), the settings
+/// (`--settings`) and the demo, which the visual checks start next to the real window.
+fn instance_of(args: &[String], launch: &app::Launch) -> Option<AppId> {
+    let demo = args.iter().any(|arg| arg == "--demo");
+    (!demo && launch.task.is_none() && launch.settings.is_none()).then_some(APP)
 }
 
 /// The longest uid `--task` takes.
@@ -187,6 +206,24 @@ mod tests {
         assert_eq!(start_task(&args(&["--demo", "--tasks"])), Ok(None));
         for bad in [&["--task"][..], &["--task="], &["--task=a\nb"]] {
             assert!(start_task(&args(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Issue #279: only the plain tasks window is one per person.
+    #[test]
+    fn only_a_plain_start_is_a_single_instance() {
+        let of = |line: &[&str]| {
+            let args: Vec<String> = line.iter().map(|arg| (*arg).to_string()).collect();
+            let mut launch = app::Launch::parse(&args).expect("valid parameters");
+            launch.task = start_task(&args).expect("a valid task");
+            instance_of(&args, &launch)
+        };
+        assert_eq!(of(&[]), Some(AppId::TASKS));
+        assert_eq!(of(&["--appearance", "light"]), Some(AppId::TASKS));
+        for exception in
+            [&["--demo"][..], &["--demo", "--open", "detail"], &["--task=7d1e-5b2a"], &["--settings", "lists"]]
+        {
+            assert_eq!(of(exception), None, "{exception:?}");
         }
     }
 }

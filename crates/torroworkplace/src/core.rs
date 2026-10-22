@@ -54,13 +54,11 @@ use crate::suggest::Wanted;
 use crate::tools::Maker;
 use crate::ui::Section;
 
-/// `name` next to the daemon's binary, else from `PATH`.
+/// `name` next to the daemon's binary; on macOS else the program `name` in its app's bundle (issue
+/// #279: a core in its service bundle has no app beside it, and launchd's `PATH` has none either); else
+/// `name` from `PATH`. The apps' own lookup, [`torro_gui::source::sibling`].
 pub(crate) fn sibling(name: &str) -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| std::path::PathBuf::from(name))
+    torro_gui::source::sibling(name)
 }
 
 /// The command line that starts the control centre at `program` on `section`
@@ -86,11 +84,16 @@ pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: 
     settings.setup.state == torro_core::settings::SetupState::Pending && accounts == 0
 }
 
-/// Starts a new control centre in the first-run setup (task W.9); `_section` is for the signature
-/// [`show_control_centre`] takes.
-fn start_setup(_section: Section) -> Result<(), String> {
+/// The command line that starts a window of the control centre's program: `build` adds the arguments
+/// to the program ([`setup_command`], [`control_centre_command`], [`save_dialog_command`]). On macOS
+/// through "Torro Workplace.app" when it is there (issue #279, [`crate::apps::workplace_command`]), so
+/// the window does not run inside the core's service bundle (decision 7), which has no Dock icon and
+/// whose bundle id no window of the control centre carries; else the program [`sibling`] finds, as
+/// before.
+fn workplace_start(build: impl FnOnce(String) -> Vec<String>) -> Vec<String> {
     let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-    SystemLauncher.spawn(&setup_command(program)).map(|_| ()).map_err(|err| err.to_string())
+    let bundle = crate::apps::installed_bundle(AppId::WORKPLACE);
+    crate::apps::workplace_command(build(program), bundle.as_deref())
 }
 
 /// A client may name only one ordinary ZIP in the core's managed backup folder. The app key may
@@ -189,11 +192,18 @@ fn restore_error_response(error: BackupRunError) -> Response {
     Response::Error { code: code.into(), message: message.into() }
 }
 
-/// Starts a new control centre on `section`: the accounts page, where a person finishes what a
-/// client asked for (`accounts.connect_github`).
+/// Starts a new control centre in the first-run setup (task W.9, [`workplace_start`]); `_section` is
+/// for the signature [`show_control_centre`] takes. Not waited for: `Ok` once the program, or `open`
+/// for the bundle, is started.
+fn start_setup(_section: Section) -> Result<(), String> {
+    SystemLauncher.spawn(&workplace_start(setup_command)).map(|_| ()).map_err(|err| err.to_string())
+}
+
+/// Starts a new control centre on `section` ([`workplace_start`]): the accounts page, where a person
+/// finishes what a client asked for (`accounts.connect_github`). Not waited for, as [`start_setup`].
 fn start_control_centre(section: Section) -> Result<(), String> {
-    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-    SystemLauncher.spawn(&control_centre_command(program, section)).map(|_| ()).map_err(|err| err.to_string())
+    let command = workplace_start(|program| control_centre_command(program, section));
+    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
 }
 
 /// The command line of the template dialog in its mode "Save" for `id`, the template saved just now
@@ -207,12 +217,12 @@ fn save_dialog_command(program: String, id: &str) -> Vec<String> {
     command
 }
 
-/// Starts the template dialog in its mode "Save" for `id` through `launcher` ([`save_dialog_command`],
-/// the core's own binary as [`sibling`] finds it), without waiting for it: the dialog loads what it
-/// shows itself and ends after Save or Cancel. `false`, with a line on stderr, when it cannot start.
+/// Starts the template dialog in its mode "Save" for `id` through `launcher` ([`save_dialog_command`]
+/// through [`workplace_start`]: "Torro Workplace.app" on macOS when it is there, else the core's own
+/// binary as [`sibling`] finds it), without waiting for it: the dialog loads what it shows itself and
+/// ends after Save or Cancel. `false`, with a line on stderr, when it cannot start.
 fn start_save_dialog(launcher: &impl Launcher, id: &str) -> bool {
-    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-    match launcher.spawn(&save_dialog_command(program, id)) {
+    match launcher.spawn(&workplace_start(|program| save_dialog_command(program, id))) {
         Ok(_) => true,
         Err(err) => {
             eprintln!("torroworkplace: cannot open the dialog of template {id}: {err}");
@@ -231,23 +241,38 @@ pub struct SavedWorkspace {
     pub dialog: bool,
 }
 
-/// Shows the person the control centre: an open one comes to the front, else one starts on
-/// `section` through `start`. An open one is never closed and restarted, because that would throw
+/// Shows the person the control centre on `section` through `start`. A page other than the overview
+/// opens in a window of its own (issue #279): an open control centre would only come to the front and
+/// stay on the page it shows, since nothing can tell a running one to switch it, and a start with a
+/// page takes no instance channel (`ui::instance_of`). For the overview (the setup at the core's first
+/// start, [`Core::offer_setup`]) an open one the window manager lists by its window class comes to the
+/// front instead ([`focus_open`]). An open one is never closed and restarted, because that would throw
 /// away whatever the person is typing there (a half-pasted token, say).
-///
-/// An open control centre stays on the page it shows: switching it to `section` would need a
-/// channel into the running app, which it does not have yet.
 async fn show_control_centre(
     wm: &impl WindowManager,
     section: Section,
     start: fn(Section) -> Result<(), String>,
 ) -> Result<(), String> {
-    // A window manager that cannot list windows has none we could bring forward; start the page.
-    let open = wm.windows(None).await.unwrap_or_default();
-    match open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
-        Some(window) => wm.focus_window(&window.id).await.map_err(|err| err.to_string()),
-        None => start(section),
+    if section == Section::Overview
+        && let Some(focused) = focus_open(wm, AppId::WORKPLACE).await
+    {
+        return focused;
     }
+    start(section)
+}
+
+/// Brings an open window of `app` to the front (issue #279): `Some` with how focusing went when `wm`
+/// lists a window with exactly `app`'s [`AppId::window_class`], `None` otherwise. Only Hyprland names
+/// windows by their class; AeroSpace names every window of a program by its bundle id or program name
+/// and GlazeWM by its process, so the compose window, a chat or the template dialog would pass for the
+/// main window there. `None` then, and the caller starts the app: a new process that hands `show` to a
+/// running main window over its instance channel (`torro_gui::instance`) and ends, or opens the main
+/// window when only other windows of the program run. A window manager that cannot list windows has
+/// none to bring forward: `None` as well.
+async fn focus_open(wm: &impl WindowManager, app: AppId) -> Option<Result<(), String>> {
+    let open = wm.windows(None).await.ok()?;
+    let window = open.iter().find(|window| window.class == app.window_class)?;
+    Some(wm.focus_window(&window.id).await.map_err(|err| err.to_string()))
 }
 
 /// The window class of the reminder window (`torrocalendar --reminders`, task ER2.2).
@@ -3432,6 +3457,18 @@ impl Core {
                     ..Facts::default()
                 }
             }
+            // The account of the mail kept on this device by its address (issue #281), never the
+            // id's or the client's words; its reach was checked before.
+            Request::SetMailCachePolicy { .. } | Request::StartMailCacheJob { .. } => {
+                let account = match request.mail_account() {
+                    Some(id) => self.mail.config(id).await.ok().map(|config| config.address),
+                    None => None,
+                };
+                Facts {
+                    mail: Some(crate::approvals::MailFacts { account, ..crate::approvals::MailFacts::default() }),
+                    ..Facts::default()
+                }
+            }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
             }
@@ -6406,9 +6443,11 @@ impl Core {
                     if matches!(opened, crate::apps::Opened::Template { .. }) {
                         self.float_dialog().await;
                     }
-                    let program = sibling(opened.app().binary).to_string_lossy().into_owned();
-                    let command = crate::apps::target_command(program, &opened);
-                    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
+                    // On macOS through the entry's bundle; a mail opens in the mail window's own
+                    // program when it is there (issue #279).
+                    let bundle = crate::apps::installed_bundle(crate::apps::target_entry(&opened));
+                    let dirs = crate::apps::search_dirs();
+                    crate::apps::launch(crate::apps::target_start(&opened, &dirs, bundle.as_deref())).await
                 }
                 Err(refused) => return *refused,
             },
@@ -7776,8 +7815,7 @@ impl Core {
     }
 
     /// Shows the person the control centre on `section` (task WS.7, "Manage workspaces…" in the tray):
-    /// an open one comes to the front and stays on its page, else one starts there
-    /// ([`show_control_centre`]).
+    /// a page opens in a window of its own, also next to an open control centre ([`show_control_centre`]).
     pub async fn show_section(&self, section: Section) -> Result<(), String> {
         show_control_centre(&self.backend, section, self.start_control_centre).await
     }
@@ -7792,16 +7830,20 @@ impl Core {
         }
     }
 
-    /// Brings the app's window to the front, or starts the app when it has none – with the
-    /// arguments of its entry (`torroinbox --view mail`, [`AppId::command`]).
+    /// Brings the app's window to the front when the window manager lists it by its window class
+    /// ([`focus_open`], Hyprland), or starts the app – with the arguments of its entry (`torroinbox
+    /// --view mail`, [`AppId::command`]); Mail and App Feed with their own program when it is there
+    /// (`torro-inbox-mail --view mail`, issue #279, [`crate::apps::program_for`]). On macOS through the
+    /// entry's bundle when there is one, always as a new process (`open -n -a <bundle>`,
+    /// [`crate::apps::app_start`]); `Ok` then means the system took the start. A start while the app's
+    /// main window runs hands `show` to it over the instance channel and ends.
     pub async fn open_app(&self, app: AppId) -> Result<(), String> {
-        if let Ok(windows) = self.backend.windows(None).await
-            && let Some(window) = windows.iter().find(|w| w.class == app.window_class)
-        {
-            return self.backend.focus_window(&window.id).await.map_err(|err| err.to_string());
+        if let Some(focused) = focus_open(&self.backend, app).await {
+            return focused;
         }
-        let program = sibling(app.binary).to_string_lossy().into_owned();
-        SystemLauncher.spawn(&app.command(program)).map(|_| ()).map_err(|err| err.to_string())
+        let bundle = crate::apps::installed_bundle(app);
+        let dirs = crate::apps::search_dirs();
+        crate::apps::launch(crate::apps::app_start(app, &dirs, bundle.as_deref())).await
     }
 
     /// The status for `reach`. A client without read access to `workspaces` gets no workspace
@@ -11452,8 +11494,10 @@ mod tests {
         assert_eq!(setup_command("/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui", "--setup"]);
     }
 
+    /// Issue #279: a page opens in a window of its own next to an open control centre, which is never
+    /// closed; only the overview brings an open one to the front.
     #[tokio::test]
-    async fn an_open_control_centre_comes_to_the_front_and_is_never_closed() {
+    async fn a_page_opens_next_to_an_open_control_centre_and_nothing_is_closed() {
         use torro_wm::fake::{Call, FakeWm};
         let wm = FakeWm::new("1");
         let other = wm.open_window("foot", None);
@@ -11461,16 +11505,73 @@ mod tests {
         let before = started(Section::Accounts);
 
         assert_eq!(show_control_centre(&wm, Section::Accounts, record_start).await, Ok(()));
-        assert_eq!(wm.calls(), vec![Call::Focus(open.clone())], "only focused, nothing closed");
+        assert!(wm.calls().is_empty(), "nothing focused, nothing closed");
         assert!(wm.all_windows().iter().any(|w| w.id == open));
         assert!(wm.all_windows().iter().any(|w| w.id == other));
-        assert_eq!(started(Section::Accounts), before, "no second control centre");
+        assert_eq!(started(Section::Accounts), before + 1, "a window on the page");
 
-        // None open: the page starts.
+        // The overview: the open one comes to the front, nothing starts.
+        let overview = started(Section::Overview);
+        assert_eq!(show_control_centre(&wm, Section::Overview, record_start).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
+        assert_eq!(started(Section::Overview), overview, "no second control centre");
+
+        // None open: the overview starts.
         let empty = FakeWm::new("1");
-        assert_eq!(show_control_centre(&empty, Section::Accounts, record_start).await, Ok(()));
+        assert_eq!(show_control_centre(&empty, Section::Overview, record_start).await, Ok(()));
         assert!(empty.calls().is_empty());
-        assert_eq!(started(Section::Accounts), before + 1);
+        assert_eq!(started(Section::Overview), overview + 1);
+    }
+
+    /// Issue #279: only the exact window class (Hyprland) is brought forward. AeroSpace names every
+    /// window of a program by its bundle id or program name, GlazeWM by its process, so such a window may
+    /// be the compose window or a chat: it is not focused, the app starts and its instance channel decides.
+    #[tokio::test]
+    async fn only_the_exact_window_class_is_brought_forward() {
+        use torro_wm::fake::{Call, FakeWm};
+        let wm = FakeWm::new("1");
+        wm.open_window("io.github.mahype.torro-tasks", None);
+        let open = wm.open_window("torro-calendar", None);
+        assert_eq!(focus_open(&wm, AppId::CALENDAR).await, Some(Ok(())));
+        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
+
+        for class in ["io.github.mahype.torro-calendar", "torrocalendar", "torrocalendar.exe", "Torro-Calendar"] {
+            let wm = FakeWm::new("1");
+            wm.open_window(class, None);
+            assert_eq!(focus_open(&wm, AppId::CALENDAR).await, None, "{class} is started, not focused");
+            assert!(wm.calls().is_empty(), "{class}");
+        }
+        // A side window of the program is no main window: the assistant's chat, the inbox's hub for Mail.
+        let wm = FakeWm::new("1");
+        wm.open_window("torro-assistant-chat", None);
+        wm.open_window("torroinbox", None);
+        wm.open_window("torro-inbox", None);
+        assert_eq!(focus_open(&wm, AppId::ASSISTANT).await, None);
+        assert_eq!(focus_open(&wm, AppId::INBOX_MAIL).await, None);
+        assert!(wm.calls().is_empty());
+        // Without windows to list there is nothing to bring forward.
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(focus_open(&core(dir.path()).backend, AppId::CALENDAR).await, None);
+    }
+
+    /// Issue #279: under its bundle id (AeroSpace) the window may be the template dialog, which runs
+    /// from the same bundle, so even for the overview the control centre is started and its instance
+    /// channel decides.
+    #[tokio::test]
+    async fn the_control_centre_under_its_bundle_id_is_started() {
+        use torro_wm::fake::FakeWm;
+        let wm = FakeWm::new("1");
+        wm.open_window(torro_core::app::WORKPLACE_BUNDLE_ID, None);
+        wm.open_window(torro_core::app::WORKPLACE_DIALOG_CLASS, None);
+        // A counter of its own: another test starts the overview at the same time.
+        static STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn count(_: Section) -> Result<(), String> {
+            STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        assert_eq!(show_control_centre(&wm, Section::Overview, count).await, Ok(()));
+        assert!(wm.calls().is_empty(), "nothing focused");
+        assert_eq!(STARTS.load(std::sync::atomic::Ordering::SeqCst), 1, "started; a running one takes over");
     }
 
     #[test]
@@ -11488,7 +11589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_control_centre_starts_on_a_section_or_comes_to_the_front() {
+    async fn the_control_centre_starts_on_a_section_also_when_one_is_open() {
         let dir = tempfile::tempdir().expect("temp dir");
         // The test backend lists no windows, so no control centre is open and one starts.
         let core = core(dir.path());
@@ -11496,13 +11597,13 @@ mod tests {
         assert_eq!(show_control_centre(&core.backend, Section::Approvals, record_start).await, Ok(()));
         assert_eq!(started(Section::Approvals), before + 1);
 
-        // An open one only comes to the front.
-        use torro_wm::fake::{Call, FakeWm};
+        // An open one stays as it is; the page opens in a window of its own (issue #279).
+        use torro_wm::fake::FakeWm;
         let wm = FakeWm::new("1");
-        let open = wm.open_window(AppId::WORKPLACE.window_class, None);
+        wm.open_window(AppId::WORKPLACE.window_class, None);
         assert_eq!(show_control_centre(&wm, Section::Approvals, record_start).await, Ok(()));
-        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
-        assert_eq!(started(Section::Approvals), before + 1);
+        assert!(wm.calls().is_empty());
+        assert_eq!(started(Section::Approvals), before + 2);
     }
 
     /// A launcher that records the command lines instead of starting them, or fails each start.
@@ -11533,9 +11634,33 @@ mod tests {
         );
         let launcher = Recorder::default();
         assert!(start_save_dialog(&launcher, "deep-work"));
-        let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-        assert_eq!(*launcher.started.lock().expect("lock"), [save_dialog_command(program, "deep-work")]);
+        let command = workplace_start(|program| save_dialog_command(program, "deep-work"));
+        assert_eq!(*launcher.started.lock().expect("lock"), [command]);
         assert!(!start_save_dialog(&Recorder { fails: true, ..Recorder::default() }, "deep-work"), "it says so");
+    }
+
+    /// Issue #279: with "Torro Workplace.app" the setup, the control centre on a page and the template
+    /// dialog start as new instances of that bundle, each with its arguments; the program's own path
+    /// (here the core's service program) does not go along.
+    #[test]
+    fn the_control_centre_windows_start_from_its_bundle() {
+        let program = "/Applications/Torro Workplace.app/Contents/Library/LoginItems/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
+        let bundle = std::path::Path::new("/Applications/Torro Workplace.app");
+        let start = |command: Vec<String>| crate::apps::workplace_command(command, Some(bundle));
+        let open = |args: &[&str]| {
+            let mut command = vec!["/usr/bin/open", "-n", "-a", "/Applications/Torro Workplace.app", "--args"];
+            command.extend(args);
+            command.into_iter().map(String::from).collect::<Vec<_>>()
+        };
+        assert_eq!(start(setup_command(program.into())), open(&["ui", "--setup"]));
+        assert_eq!(
+            start(control_centre_command(program.into(), Section::Accounts)),
+            open(&["ui", "--section", Section::Accounts.arg()])
+        );
+        assert_eq!(
+            start(save_dialog_command(program.into(), "deep-work")),
+            open(&["ui", "--template=deep-work", "--saved"])
+        );
     }
 
     /// Task WS.7: a save that fails (here: no window manager) opens no dialog, and the tray reports why.
@@ -16742,6 +16867,111 @@ mod tests {
         assert!(!on_server(&server, "INBOX").contains(&"Hello".to_string()));
     }
 
+    /// Issue #281: the six commands for the mail kept on this device reach their handlers, and the
+    /// app key runs them at once.
+    #[tokio::test]
+    async fn the_mail_kept_on_this_device_is_managed_through_the_core() {
+        use torro_ipc::mail::{MailCacheAction, MailCacheMode, MailCachePolicy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server, app_key) = changing_mail_core(dir.path()).await;
+        let read = |account: &str| Request::GetMailCachePolicy { account: account.into() };
+        let Response::MailCachePolicy { policy: held } = ask(&core, Some(&app_key), read(ANNA)).await else {
+            panic!("the policy of the account")
+        };
+        assert_eq!(held.account, ANNA);
+        let preview = Request::PreviewMailCache { account: ANNA.into(), mode: MailCacheMode::AllOffline };
+        assert!(matches!(ask(&core, Some(&app_key), preview).await, Response::MailCacheEstimate { .. }));
+        let status = Request::MailCacheJobStatus { account: ANNA.into() };
+        assert_eq!(ask(&core, Some(&app_key), status).await, Response::MailCacheJob { job: None });
+
+        // The app key changes the policy and starts and steers a job without being asked.
+        let policy = |mode, prefetch_attachments| MailCachePolicy {
+            account: ANNA.into(),
+            mode,
+            prefetch_attachments,
+            attachment_retention_days: 3,
+        };
+        let headers = policy(MailCacheMode::HeadersOnly, true);
+        let set = Request::SetMailCachePolicy { policy: headers.clone() };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::MailCachePolicy { policy: headers.clone() });
+        let start = Request::StartMailCacheJob { account: ANNA.into(), action: MailCacheAction::RebuildIndex };
+        let Response::MailCacheJob { job: Some(job) } = ask(&core, Some(&app_key), start).await else {
+            panic!("the job that started")
+        };
+        let steer = Request::ControlMailCacheJob { account: ANNA.into(), id: job.id, resume: false };
+        assert!(matches!(ask(&core, Some(&app_key), steer).await, Response::MailCacheJob { .. }));
+    }
+
+    /// Issue #281: a client names only an account it reaches (`not-found` otherwise, before
+    /// anything runs or anyone is asked).
+    #[tokio::test]
+    async fn the_mail_kept_on_this_device_stays_with_the_granted_accounts() {
+        use torro_ipc::mail::{MailCacheAction, MailCacheMode, MailCachePolicy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server, _app_key) = changing_mail_core(dir.path()).await;
+        let policy = |mode| MailCachePolicy {
+            account: ANNA.into(),
+            mode,
+            prefetch_attachments: false,
+            attachment_retention_days: 3,
+        };
+        let mut stranger = with_mail_level(Level::Full);
+        stranger.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, stranger).await;
+        for request in [
+            Request::GetMailCachePolicy { account: ANNA.into() },
+            Request::PreviewMailCache { account: ANNA.into(), mode: MailCacheMode::AllOffline },
+            Request::SetMailCachePolicy { policy: policy(MailCacheMode::AllOffline) },
+            Request::StartMailCacheJob { account: ANNA.into(), action: MailCacheAction::CleanCache },
+            Request::MailCacheJobStatus { account: ANNA.into() },
+            Request::ControlMailCacheJob { account: ANNA.into(), id: "j:1".into(), resume: true },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&stranger), request.clone()).await), "not-found", "{request:?}");
+        }
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked for another's account");
+    }
+
+    /// Issue #281: changing the policy needs admin access, then waits for a person who is told the
+    /// account by its address, and changes nothing before the yes.
+    #[tokio::test]
+    async fn changing_the_mail_kept_on_this_device_waits_for_a_person() {
+        use torro_ipc::mail::{MailCacheMode, MailCachePolicy};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _server, app_key) = changing_mail_core(dir.path()).await;
+        let read = Request::GetMailCachePolicy { account: ANNA.into() };
+        let Response::MailCachePolicy { policy: held } = ask(&core, Some(&app_key), read.clone()).await else {
+            panic!("the policy of the account")
+        };
+        // Without admin access the policy is `forbidden`; with it a person is asked first.
+        let (_, writer) = client(&core, with_mail_level(Level::Full)).await;
+        let wider = MailCachePolicy { mode: MailCacheMode::AllOffline, prefetch_attachments: false, ..held.clone() };
+        let change = Request::SetMailCachePolicy { policy: wider.clone() };
+        assert_eq!(code(&ask(&core, Some(&writer), change.clone()).await), "forbidden");
+        let mut admin = with_mail_level(Level::Full);
+        admin.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: true });
+        let (_, admin) = client(&core, admin).await;
+        let asked = waits(ask(&core, Some(&admin), change.clone()).await);
+        assert_eq!(asked.command, "mail.set_cache_policy");
+        let words = crate::approvals::summary(
+            &change,
+            &Facts {
+                mail: Some(crate::approvals::MailFacts {
+                    account: Some("anna@example.org".into()),
+                    ..Default::default()
+                }),
+                ..Facts::default()
+            },
+        );
+        assert_eq!(asked.summary, words, "the account by its address, what is kept in words");
+        assert!(asked.summary.contains("anna@example.org"), "{}", asked.summary);
+        assert_eq!(ask(&core, Some(&app_key), read.clone()).await, Response::MailCachePolicy { policy: held });
+
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        assert_eq!(ask(&core, Some(&app_key), read).await, Response::MailCachePolicy { policy: wider });
+    }
+
     /// Into a trash folder by its id is deleting: write access is not enough. Archiving is.
     /// Messages of an account the client does not reach are `not-found`.
     #[tokio::test]
@@ -18727,8 +18957,9 @@ mod tests {
         let ollama = fake_ollama().await;
         let script = Script::new(Vec::new());
         let mut rights = Rights::assistant();
-        // Keep this test below the model's tool cap so it exercises the PDF switch itself.
-        rights.areas.clear();
+        // Only `tools`: with every area of the assistant the catalogue is longer than `MAX_TOOLS`, and the
+        // model would get the reading tools and `find_tools` instead of every allowed tool at once.
+        rights.areas.retain(|area, _| *area == Area::Tools);
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let (core, _host, engine, client) =

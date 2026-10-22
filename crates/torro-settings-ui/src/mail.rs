@@ -913,6 +913,7 @@ pub mod storage {
     use iced::Element;
     use iced::widget::{column, row, space as blank};
     use torro_core::i18n::{tr, trf};
+    use torro_gui::theme::space;
     use torro_gui::{layout, style, typo, widgets};
     use torro_ipc::mail::{MailCacheAction, MailCacheEstimate, MailCacheJobState, MailCacheMode, MailCachePolicy};
     use torro_ipc::{Request, Response};
@@ -1167,9 +1168,9 @@ pub mod storage {
         }
         page = page.push(widgets::group(tr("Attachment cache"), vec![
             line("Keep downloaded attachments", trf("{days} days", &[("days", &current.attachment_retention_days)])),
-            row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(torro_gui::theme::space::s()), false),
+            row_frame(row![button("1 day", Some(Message::Retention(1))), button("7 days", Some(Message::Retention(7))), button("30 days", Some(Message::Retention(30)))].spacing(space::s()), false),
             line("Prefetch attachments", if current.prefetch_attachments { tr("On") } else { tr("Off") }.to_string()),
-            row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(torro_gui::theme::space::s()), false),
+            row_frame(row![button("Turn on", (!current.prefetch_attachments).then_some(Message::Prefetch(true))), button("Turn off", current.prefetch_attachments.then_some(Message::Prefetch(false)))].spacing(space::s()), false),
         ], Some(tr("Newly fetched mail can also download its attachment parts. Existing mail can be fetched by a maintenance job. Files have separate retention and can be large.").to_string())));
         let job = data.mail_cache_jobs.iter().find(|job| job.account == account);
         let running = job.is_some_and(|job| job.state == MailCacheJobState::Running);
@@ -1222,7 +1223,7 @@ pub mod storage {
                             .then(|| Message::Resume(job.id.clone()))
                     ),
                 ]
-                .spacing(torro_gui::theme::space::s()),
+                .spacing(space::s()),
                 false,
             ));
         }
@@ -1916,7 +1917,7 @@ pub mod categorization {
                         typo::text(typo::body_strong(), tr("Selected mail")),
                         typo::text(typo::body(), preview_words).wrapping(Wrapping::WordOrGlyph),
                     ]
-                    .spacing(torro_gui::theme::space::xs()),
+                    .spacing(theme::space::xs()),
                     false,
                 ),
                 row_frame(start, false),

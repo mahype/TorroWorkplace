@@ -21,6 +21,8 @@ members = [
     "crates/torrotasks",
     "crates/torrocalendar",
     "crates/torroinbox",
+    "crates/torro-inbox-mail",
+    "crates/torro-inbox-notifications",
     "crates/torroassistant",
     "crates/torro-htmlview",
 ]
@@ -55,6 +57,8 @@ torro-gui = { path = "crates/torro-gui" }
 torro-settings-ui = { path = "crates/torro-settings-ui" }
 torro-appkit = { path = "crates/torro-appkit" }
 torro-htmlview = { path = "crates/torro-htmlview" }
+# The inbox as a library (issue #279): the programs of Mail and App Feed start it with their window kind.
+torroinbox = { path = "crates/torroinbox" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 # The desktop folder of each system for the PDF tool's files (torroworkplace, WZ.4): XDG `user-dirs.dirs` on Linux,

@@ -21,9 +21,21 @@
 //! (task C.9); `--voice-status` and `--voice-test` answer the core's `settings.voice_status` and
 //! `settings.test_voice` ([`voice::cli`]).
 //!
+//! One main window per person (issue #279, [`torro_gui::instance`]): a second plain start brings the
+//! running one to the front and ends; chat windows (`--chat`, `--bot`), the settings (`--settings`),
+//! the voice modes and the demo start as before ([`instance_of`]).
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when the conversations first came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.
+//!
+//! On Windows the app is a GUI program without a console window; a failed start is written to
+//! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]). The core still
+//! reads the voice answers (`--voice-status`, `--voice-test`) from its pipe, which a GUI program has
+//! as well.
+
+// Not for the test harness: its output has to reach the console.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 mod app;
 mod backend;
@@ -35,17 +47,24 @@ mod stream;
 mod view;
 mod voice;
 
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Instant;
 
 use iced::{Element, Task};
+use torro_core::AppId;
+use torro_core::paths::AppPaths;
 use torro_core::timing;
+use torro_gui::instance::Claim;
 use torro_gui::source::Source;
 
 use crate::app::{App, CHAT, CHAT_SIZE, MAIN, Message};
 use crate::backend::Backend;
 use crate::launch::{Launch, Open, Window};
+
+/// Holds the error of the last failed start, in the app's state directory (Windows only).
+const START_ERROR_FILE: &str = "start-error.log";
 
 fn main() -> ExitCode {
     timing::start();
@@ -59,7 +78,7 @@ fn main() -> ExitCode {
         Ok(Some(mode)) => return mode.run(),
         Ok(None) => {}
         Err(err) => {
-            eprintln!("{}: {err}", MAIN.binary);
+            report_start_error(&err);
             return ExitCode::from(64);
         }
     }
@@ -67,10 +86,16 @@ fn main() -> ExitCode {
     let launch = match Launch::parse(&args) {
         Ok(launch) => launch,
         Err(err) => {
-            eprintln!("{}: {err}", MAIN.binary);
+            report_start_error(&err.to_string());
             return ExitCode::from(64);
         }
     };
+    // Before the core is started: a second start only brings the main window to the front.
+    if let Some(app) = instance_of(&args, &launch)
+        && torro_gui::instance::claim(app) == Claim::Shown
+    {
+        return ExitCode::SUCCESS;
+    }
     // Appearance, zoom, design and "open another app" come from the core; with `--demo` there is
     // none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
@@ -79,10 +104,43 @@ fn main() -> ExitCode {
     match run(backend, suite, launch) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{}: {err}", MAIN.binary);
+            report_start_error(&err.to_string());
             ExitCode::FAILURE
         }
     }
+}
+
+/// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
+/// #279): the main window's for a plain start; `None` for a chat window (`--chat`, `--bot`), the
+/// settings (`--settings`), a voice mode without window (`--listen`, `--voice-*`) and the demo.
+fn instance_of(args: &[String], launch: &Launch) -> Option<AppId> {
+    let voice = !matches!(voice::cli::Mode::parse(args), Ok(None));
+    let own_window = voice || launch.demo || launch.window != Window::Main || launch.settings.is_some();
+    (!own_window).then_some(MAIN)
+}
+
+/// Reports why the app could not start: on stderr, and on Windows also in [`START_ERROR_FILE`],
+/// because a GUI program started by a double click has no console that would show stderr.
+fn report_start_error(message: &str) {
+    let line = format!("{}: {message}", MAIN.binary);
+    eprintln!("{line}");
+    if cfg!(windows)
+        && let Some(paths) = AppPaths::for_app(MAIN)
+    {
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        // Nowhere is left to report a failed write to; the stderr line above is all we can do.
+        let _ = write_start_error(&paths.state, &format!("{stamp} {line}"));
+    }
+}
+
+/// Writes `line` to [`START_ERROR_FILE`] in `dir`, creating `dir` if needed, and returns the file.
+///
+/// Replaces an earlier report, so the file stays small and always shows the latest failed start.
+fn write_start_error(dir: &Path, line: &str) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let file = dir.join(START_ERROR_FILE);
+    std::fs::write(&file, format!("{line}\n"))?;
+    Ok(file)
 }
 
 /// The demo for a start state: the first start without the assistant's client, no AI account, no
@@ -135,4 +193,45 @@ fn view(app: &App) -> Element<'_, Message> {
     timing::once("first frame");
     timing::slow("view", started);
     element
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_start_error_replaces_the_last_one_in_a_new_directory() {
+        let root = std::env::temp_dir().join(format!("torroassistant-start-error-{}", std::process::id()));
+        let dir = root.join("state");
+
+        write_start_error(&dir, "first").expect("first write");
+        let file = write_start_error(&dir, "second").expect("second write");
+
+        assert_eq!(file, dir.join(START_ERROR_FILE));
+        assert_eq!(std::fs::read_to_string(&file).expect("read"), "second\n");
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// Issue #279: only the plain main window is one per person.
+    #[test]
+    fn only_a_plain_start_is_a_single_instance() {
+        let of = |line: &[&str]| {
+            let args: Vec<String> = line.iter().map(|arg| (*arg).to_string()).collect();
+            let launch = Launch::parse(&args).expect("valid parameters");
+            instance_of(&args, &launch)
+        };
+        assert_eq!(of(&[]), Some(AppId::ASSISTANT));
+        assert_eq!(of(&["--appearance", "dark"]), Some(AppId::ASSISTANT));
+        for exception in [
+            &["--demo"][..],
+            &["--chat", "new"],
+            &["--bot=1a2b3c4d"],
+            &["--settings", "voice"],
+            &["--listen"],
+            &["--voice-status"],
+            &["--voice-test"],
+        ] {
+            assert_eq!(of(exception), None, "{exception:?}");
+        }
+    }
 }

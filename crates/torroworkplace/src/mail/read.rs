@@ -1374,8 +1374,17 @@ pub(crate) mod tests {
         assert!(lines.iter().any(|line| line.contains("UID FETCH") && line.contains("BODY.PEEK[]")), "{lines:?}");
         assert!(!lines.iter().any(|line| line.contains(" BODY[") || line.contains("UID STORE")), "{lines:?}");
 
-        // In the standard mode a recent text stays once read; nothing keeps an original.
+        // The account keeps the texts of the last 90 days (the default policy); a text fetched on demand
+        // from before that is shown but not retained, so the next read fetches it again.
         let peeks = |lines: Vec<String>| lines.iter().filter(|line| line.contains("BODY.PEEK[]")).count();
+        let before = peeks(server.lines());
+        assert_eq!(
+            message(answer(&service, Reach::Suite, get(&id, true)).await).text.as_deref(),
+            Some("From long ago\n")
+        );
+        assert_eq!(peeks(server.lines()), before + 1, "outside the cache policy the text is not kept");
+
+        // In the standard mode a recent text stays once read; nothing keeps an original.
         let id = id_of(&service, "Large news").await;
         assert!(message(answer(&service, Reach::Suite, get(&id, true)).await).text.is_some());
         let before = peeks(server.lines());

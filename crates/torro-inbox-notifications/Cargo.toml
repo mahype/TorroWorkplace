@@ -1,0 +1,22 @@
+[package]
+name = "torro-inbox-notifications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Torro App Feed for the tiled desktop: the inbox's App Feed window as a program of its own, with its own icon."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+# The inbox's code (issue #279): this program only starts it with its window kind.
+torroinbox.workspace = true
+
+# Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
+# script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.
+[build-dependencies]
+winresource.workspace = true

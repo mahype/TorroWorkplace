@@ -2083,6 +2083,39 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // "Archive" as a button (issue #121, `trc("action", …)`); the folder above.
     ("action|Archive", "Archivieren"),
     ("Change the mail account {account}: {changes}", "Mail-Konto {account} ändern: {changes}"),
+    (
+        "Change how {account} keeps mail on this device: {changes}",
+        "Ändern, wie {account} E-Mails auf diesem Gerät behält: {changes}",
+    ),
+    (
+        "Maintain the mail kept on this device for {account}: {action}",
+        "Lokal gespeicherte E-Mails von {account} warten: {action}",
+    ),
+    ("keep no mail texts", "keine E-Mail-Texte behalten"),
+    ("keep the mail texts of the last 90 days", "die E-Mail-Texte der letzten 90 Tage behalten"),
+    ("keep all mail texts", "alle E-Mail-Texte behalten"),
+    ("download attachments in advance", "Anhänge im Voraus laden"),
+    ("download attachments only when opened", "Anhänge nur beim Öffnen laden"),
+    ("delete downloaded attachments after {days} days", "geladene Anhänge nach {days} Tagen löschen"),
+    (
+        "apply the strategy (removes mail texts it does not keep, downloads missing ones)",
+        "Strategie anwenden (entfernt E-Mail-Texte, die sie nicht behält, und lädt fehlende)",
+    ),
+    ("download the mail texts it keeps", "die E-Mail-Texte laden, die sie behält"),
+    ("download the attachments", "die Anhänge laden"),
+    ("rebuild the search index", "den Suchindex neu aufbauen"),
+    (
+        "clean the cache (removes mail texts the strategy does not keep)",
+        "den Zwischenspeicher leeren (entfernt E-Mail-Texte, die die Strategie nicht behält)",
+    ),
+    (
+        "Resume the maintenance of the mail kept on this device for {account}",
+        "Wartung der lokal gespeicherten E-Mails von {account} fortsetzen",
+    ),
+    (
+        "Pause the maintenance of the mail kept on this device for {account}",
+        "Wartung der lokal gespeicherten E-Mails von {account} anhalten",
+    ),
     ("Drafts", "Entwürfe"),
     ("Folders, messages and drafts", "Ordner, Nachrichten und Entwürfe"),
     ("Junk", "Spam"),

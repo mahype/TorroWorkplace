@@ -40,6 +40,12 @@
 //! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 //!
+//! One control centre per person (issue #279, [`torro_gui::instance`]): a second `torroworkplace ui`
+//! brings the running window to the front and ends. A start with a target – a page (`--section`), the
+//! setup (`--setup`, `--setup-if-open`, `--step`) –, the template dialog (`--template`) and the demo
+//! open a window of their own as before ([`instance_of`]), since the running one cannot be told to
+//! switch its page.
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when the first data came, how long each
 //! load took and every `update` or `view` that takes a frame or longer ([`torro_core::timing`],
 //! issue #206), measured by [`timed_update`] and [`timed_view`].
@@ -372,6 +378,9 @@ pub struct Ui {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// Another `torroworkplace ui` asked for this window (issue #279, [`torro_gui::instance`]): bring
+    /// it to the front.
+    Raise,
     /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
     /// load follows either way.
     CoreReady,
@@ -427,6 +436,12 @@ pub fn run(launch: Launch) -> iced::Result {
     if launch.template.is_some() {
         return template_form::run(launch);
     }
+    // Before the core is started: a second start only brings the first window to the front.
+    if let Some(app) = instance_of(&launch)
+        && torro_gui::instance::claim(app) == torro_gui::instance::Claim::Shown
+    {
+        return Ok(());
+    }
     let socket = torro_ipc::socket_path().filter(|_| !launch.demo);
     if let Some(socket) = &socket {
         torro_gui::source::ensure_core(socket);
@@ -444,6 +459,22 @@ pub fn run(launch: Launch) -> iced::Result {
         .subscription(Ui::subscription)
         .window(torro_gui::window(AppId::WORKPLACE))
         .run()
+}
+
+/// The kind of window whose single instance this start is ([`torro_gui::instance::claim`], issue
+/// #279): the control centre's for a plain `torroworkplace ui`. `None` for a start with a target, which
+/// opens a window of its own, since the instance channel only knows `show` and a running control centre
+/// would stay on its page: a page (`--section accounts`, also `assistant` and `bot:<id>`), the setup
+/// (`--setup`, `--setup-if-open`, `--step`), the template dialog (`--template`); and for the demo, which
+/// the visual checks start next to the real window. `--section overview` asks for the page a plain
+/// start shows and counts as plain.
+fn instance_of(launch: &Launch) -> Option<AppId> {
+    let target = launch.section != Section::Overview
+        || launch.client.is_some()
+        || launch.setup.is_some()
+        || launch.setup_if_open
+        || launch.template.is_some();
+    (!target && !launch.demo).then_some(AppId::WORKPLACE)
 }
 
 /// [`Ui::update`], timed: the first data without error marks "first data", a slow update is
@@ -897,6 +928,8 @@ impl Ui {
             // Tick only while a change of a client's rights waits to be saved.
             api::subscription(&self.api).map(Message::Api),
             mcp::subscription(&self.mcp).map(Message::Mcp),
+            // A second start of the control centre brings this window to the front (issue #279).
+            torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
         // The demo has nothing to reload.
         if !self.launch.demo && !self.waiting {
@@ -908,6 +941,7 @@ impl Ui {
     fn update(&mut self, message: Message) -> Task<Message> {
         let action = match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::CoreReady => {
                 self.waiting = false;
                 // `--section assistant`: the core starts the assistant's window or brings it up.
@@ -1897,6 +1931,32 @@ mod tests {
     fn started(words: &[&str]) -> Ui {
         let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
         Ui::new(Launch::parse(&args).expect("valid parameters")).0
+    }
+
+    /// Issue #279: the control centre itself is one per person. A start with a target (a page, the
+    /// setup), the template dialog and the demo open a window of their own: a running control centre
+    /// would only come to the front and stay on its page.
+    #[test]
+    fn only_the_control_centre_itself_is_a_single_instance() {
+        let of = |words: &[&str]| {
+            let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+            instance_of(&Launch::parse(&args).expect("valid parameters"))
+        };
+        assert_eq!(of(&[]), Some(AppId::WORKPLACE));
+        assert_eq!(of(&["--section", "overview"]), Some(AppId::WORKPLACE), "the page a plain start shows");
+        for exception in [
+            &["--section", "accounts"][..],
+            &["--section", "workspaces"],
+            &["--section", "assistant"],
+            &["--setup"],
+            &["--setup", "--step", "calendar"],
+            &["--section", "accounts", "--setup-if-open", "--step", "calendar"],
+            &["--demo"],
+            &["--template=deep-work"],
+            &["--template", "deep-work", "--saved"],
+        ] {
+            assert_eq!(of(exception), None, "{exception:?}");
+        }
     }
 
     #[test]

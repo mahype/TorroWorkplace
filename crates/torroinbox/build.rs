@@ -1,0 +1,46 @@
+//! Build script: embeds the icon and the version information into `torroinbox.exe`, the Notification Hub.
+//!
+//! Explorer ("Properties > Details"), the taskbar and SmartScreen read name, version, publisher and icon from this
+//! Windows resource. It is only built for Windows targets with MSVC (what the release builds); on Linux and macOS
+//! this script does nothing.
+//!
+//! Only MSVC, because this crate is also the library behind Mail and App Feed (`torro-inbox-mail`,
+//! `torro-inbox-notifications`, issue #279), which embed their own icon: with MSVC `winresource` hands the resource to
+//! the linker of this crate's own programs only (`rustc-link-arg`), while with the GNU toolchain it links a static
+//! library that would travel with the library into theirs and give them two icons.
+
+use std::error::Error;
+use std::path::PathBuf;
+
+/// The icon, relative to this crate (a placeholder until the real artwork, task AP.7 of issue #279).
+const ICON: &str = "../../packaging/windows/torro-inbox.ico";
+
+/// The product name Windows shows: the entry's `display_name` (`AppId::INBOX`).
+const PRODUCT: &str = "Torro Notification Hub";
+
+fn main() -> Result<(), Box<dyn Error>> {
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed={ICON}");
+
+    // The target decides, not the machine that builds: `cfg!(windows)` here would describe the host, which is wrong
+    // for cross builds in both directions.
+    if std::env::var("CARGO_CFG_TARGET_OS")? != "windows" || std::env::var("CARGO_CFG_TARGET_ENV")? != "msvc" {
+        return Ok(());
+    }
+
+    let icon = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join(ICON);
+    let icon = icon.to_str().ok_or("the icon path is not valid UTF-8")?;
+
+    // `FileVersion` and `ProductVersion` come from `CARGO_PKG_VERSION`. Windows shows `FileDescription` as the
+    // application's name (task manager, "Open with"), so it is the plain product name.
+    let mut resource = winresource::WindowsResource::new();
+    resource
+        .set_icon(icon)
+        .set("ProductName", PRODUCT)
+        .set("FileDescription", PRODUCT)
+        .set("CompanyName", "Sven Wagener")
+        .set("LegalCopyright", "Copyright (C) Sven Wagener")
+        .set("OriginalFilename", "torroinbox.exe");
+    resource.compile()?;
+    Ok(())
+}

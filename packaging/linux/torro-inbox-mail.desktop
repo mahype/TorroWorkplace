@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Workplace Mail
+GenericName=Mail
+Comment=Mail of the TorroWorkplace suite
+Exec=torro-inbox-mail
+Icon=torro-inbox-mail
+Terminal=false
+Categories=Network;Email;
+# Must equal the window class / Wayland app id set in torro-core (AppId::INBOX_MAIL); Exec is its own program
+# (AppId::program_file, issue #279).
+StartupWMClass=torro-inbox-mail

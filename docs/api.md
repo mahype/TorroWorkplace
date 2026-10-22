@@ -749,6 +749,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    durch einen Menschen in der Oberfläche oder per Benachrichtigung.
 4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
+   Nach einem Quit startet kein MCP-Server den Dienst neu, siehe [lebenszyklus.md](lebenszyklus.md).
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, API-Schlüssel eines
    KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Import aus einem fremden

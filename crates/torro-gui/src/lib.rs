@@ -16,6 +16,8 @@
 //! - [`split`]: the divider between two panes side by side that the pointer drags (list and reader).
 //! - [`style`]: the style functions for every Iced widget, light and dark.
 //! - [`icon`]: the bundled Lucide icons.
+//! - [`instance`]: one process per kind of window (issue #279): a second start brings the running
+//!   window to the front instead of opening another.
 //! - [`layout`]: the size classes of tiled windows (`layout::of(size)`) and the layout gaps by role
 //!   (`layout::inset()`, `layout::page_padding()` …).
 //! - [`links`]: web and mail addresses in plain text (`links::pieces`, `links::openable`,
@@ -38,6 +40,7 @@ pub mod design;
 pub mod dialog;
 pub mod font;
 pub mod icon;
+pub mod instance;
 pub mod layout;
 pub mod links;
 pub mod markdown;

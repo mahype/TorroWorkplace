@@ -116,11 +116,73 @@ fn is_on(value: &bool) -> bool {
     *value
 }
 
-/// Named pipe names on Windows, where the core listens on a pipe instead of a socket file.
+/// Named pipes on Windows, where the core listens on a pipe instead of a socket file.
+/// Public for [`pipe::user_sid`] and [`pipe::user_only_listener`]: `torro_gui::instance` names its
+/// pipes after the user too and gives them the same access list as the core's pipe.
 #[cfg(windows)]
-pub(crate) mod pipe {
+pub mod pipe {
+    use std::io::{Error, ErrorKind};
     use std::path::Path;
     use std::sync::OnceLock;
+
+    /// A tokio pipe server in byte mode (lines, as on a Unix socket) from [`user_only_listener`].
+    /// `accept().await` waits for a client, opens the next instance of the pipe and hands out the
+    /// connected one. The stream, and a shared reference to it, is `tokio::io::AsyncRead` and
+    /// `AsyncWrite`.
+    pub type UserOnlyListener = interprocess::os::windows::named_pipe::tokio::PipeListener<
+        interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+        interprocess::os::windows::named_pipe::pipe_mode::Bytes,
+    >;
+
+    /// Creates the named pipe `path` (`\\.\pipe\…`) as a server only the current user can reach,
+    /// the way the core's own pipe is made ([`crate::server::serve_with_key`]):
+    ///
+    /// - the access list allows everything to the user running this process and nothing to anyone
+    ///   else (SDDL `D:P(A;;GA;;;<user SID>)`, protected, nothing inherited), on every instance;
+    /// - remote clients are refused (`PIPE_REJECT_REMOTE_CLIENTS`) on every instance;
+    /// - the first instance carries `FILE_FLAG_FIRST_PIPE_INSTANCE`: if the name already exists,
+    ///   held by another process of this suite or by a foreign program, creation fails with
+    ///   [`ErrorKind::PermissionDenied`] instead of joining that pipe, so the caller never shares
+    ///   its clients with whoever holds the name. Callers that want to reach the holder instead
+    ///   connect as a client and only then call this again.
+    ///
+    /// Must be called inside a tokio runtime (the instance is registered with its reactor), and
+    /// the listener must be used on that runtime. Errors: [`ErrorKind::InvalidInput`] for a path
+    /// that is no pipe name or contains NUL, [`ErrorKind::Other`] when the user's SID is unknown,
+    /// otherwise what the system reports. Safe code only: `interprocess` sets the descriptor, as
+    /// tokio's own call for it is `unsafe`.
+    pub fn user_only_listener(path: &Path) -> std::io::Result<UserOnlyListener> {
+        use interprocess::os::windows::ToWtf16;
+        use interprocess::os::windows::named_pipe::pipe_mode::Bytes;
+        use interprocess::os::windows::named_pipe::{PipeListenerOptions, PipeMode};
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+
+        if !is_pipe_name(path) {
+            let message = format!("{} is not a named pipe (\\\\.\\pipe\\…)", path.display());
+            return Err(Error::new(ErrorKind::InvalidInput, message));
+        }
+        let nul = |_| Error::new(ErrorKind::InvalidInput, "a NUL character in the pipe name");
+        let sid = user_sid().ok_or_else(|| Error::other("the user's SID is unknown"))?;
+        let sddl = owner_only_sddl(sid).to_wtf_16().map_err(nul)?;
+        let descriptor = SecurityDescriptor::deserialize(&sddl)?;
+        let name = path.to_wtf_16().map_err(nul)?;
+
+        // `create_tokio_duplex` sets FILE_FLAG_FIRST_PIPE_INSTANCE on this first instance, and
+        // `accept_remote(false)` sets PIPE_REJECT_REMOTE_CLIENTS on every instance; the listener
+        // keeps the options, so each later instance gets the same descriptor.
+        PipeListenerOptions::new()
+            .path(name)
+            .mode(PipeMode::Bytes)
+            .accept_remote(false)
+            .security_descriptor(Some(descriptor))
+            .create_tokio_duplex::<Bytes>()
+    }
+
+    /// The access list of a pipe in SDDL: protected (`P`, nothing inherited), one entry allowing
+    /// everything (`GA`) to `sid`, nothing to anyone else.
+    pub(crate) fn owner_only_sddl(sid: &str) -> String {
+        format!("D:P(A;;GA;;;{sid})")
+    }
 
     /// The namespace of all local named pipes; a path is a pipe name only below it.
     pub(crate) const PREFIX: &str = r"\\.\pipe\";
@@ -132,7 +194,7 @@ pub(crate) mod pipe {
     }
 
     /// The SID of the account this process runs as (`S-1-5-21-…`), looked up once per process.
-    pub(crate) fn user_sid() -> Option<&'static str> {
+    pub fn user_sid() -> Option<&'static str> {
         static SID: OnceLock<Option<String>> = OnceLock::new();
         SID.get_or_init(look_up_user_sid).as_deref()
     }
@@ -4824,5 +4886,24 @@ mod tests {
         for path in [r"\\.\pipe\", r"C:\state\core.sock", "core.sock", r"\\server\pipe\x"] {
             assert!(!pipe::is_pipe_name(Path::new(path)), "{path}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_access_list_names_only_the_user() {
+        assert_eq!(pipe::owner_only_sddl("S-1-5-21-1-2-3-1001"), "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_user_only_pipe_is_its_first_instance_alone() {
+        let path = std::path::PathBuf::from(format!(r"\\.\pipe\torro-test-user-only-{}", std::process::id()));
+        let listener = pipe::user_only_listener(&path).expect("the name is free");
+        let again = pipe::user_only_listener(&path).map(|_| ());
+        assert!(matches!(&again, Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied), "{again:?}");
+        drop(listener);
+
+        let file = pipe::user_only_listener(Path::new(r"C:\state\core.sock")).map(|_| ());
+        assert!(matches!(&file, Err(err) if err.kind() == std::io::ErrorKind::InvalidInput), "{file:?}");
     }
 }
