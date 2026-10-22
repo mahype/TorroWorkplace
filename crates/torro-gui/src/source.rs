@@ -8,6 +8,11 @@
 //! core's state directory first, and none starts it again within [`CORE_START_GAP`] of that (issue
 //! #279): a core that fails right after its start must not be started over and over by the windows
 //! it opened.
+//!
+//! On macOS the programs of the suite live in bundles (decisions 6 and 7 in `docs/lebenszyklus.md`):
+//! [`bundle_program`] finds an entry's program in its bundle, [`service_program`] the core's in the
+//! agent bundle "Torro Workplace Service.app" inside "Torro Workplace.app". Both only decide paths, so
+//! they are tested on every system; only their callers ask the file system on macOS.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,14 +80,10 @@ impl Source {
     }
 }
 
-/// How long an app waits at its start for the core to answer ([`Source::ready`]): on Unix, where
-/// [`ensure_core`] has just started it.
-#[cfg(unix)]
+/// How long an app waits at its start for the core to answer ([`Source::ready`]), which
+/// [`ensure_core`] may have just started: on every system, since Windows starts it too (issue #279,
+/// decision 8 in `docs/lebenszyklus.md`).
 pub const CORE_START_WAIT: Duration = Duration::from_secs(10);
-
-/// Elsewhere no app starts the core, so waiting would only hold back the error: one ask.
-#[cfg(not(unix))]
-pub const CORE_START_WAIT: Duration = Duration::ZERO;
 
 /// How often [`wait_for_core`] asks.
 const CORE_POLL: Duration = Duration::from_millis(50);
@@ -109,22 +110,26 @@ pub async fn wait_for_core(socket: &Path, limit: Duration) -> bool {
 }
 
 /// Starts `torroworkplace daemon` in the background when nothing listens on `socket`. The
-/// app then retries until the core answers. Unix only for now.
+/// app then retries until the core answers ([`Source::ready`]). On Unix and Windows (issue #279).
+///
+/// The program is [`core_program`]: on macOS the core's own bundle first, else the binary next to
+/// this one or on `PATH`.
 ///
 /// Not when a program of the suite tried to start it within the last [`CORE_START_GAP`]
 /// ([`claim_core_start`], issue #279): that start is still under way, or the core failed at once,
 /// and starting it again would only repeat that.
 pub fn ensure_core(socket: &std::path::Path) {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+        if !nobody_listens(socket) {
             return;
         }
         if !claim_core_start(socket, Utc::now()) {
             return;
         }
-        let program = sibling(torro_core::AppId::WORKPLACE.binary);
-        let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(std::path::PathBuf::from);
+        let exe = std::env::current_exe().ok();
+        let home = home_dir();
+        let program = core_program(exe.as_deref(), home.as_deref());
         match daemon_command(&program, home).spawn() {
             // Reap the daemon if it ever exits while the app still runs.
             Ok(mut child) => {
@@ -133,19 +138,67 @@ pub fn ensure_core(socket: &std::path::Path) {
             Err(err) => eprintln!("cannot start {}: {err}", program.display()),
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     let _ = socket;
 }
 
-/// The command [`ensure_core`] starts the core with: `program daemon`, detached from the
-/// caller's terminal and process group, so it outlives the app or MCP server that started it.
+/// Whether no core listens on the socket `socket`, so [`ensure_core`] should start one. Connecting
+/// is the test; the core drops a connection that sends nothing.
+#[cfg(unix)]
+fn nobody_listens(socket: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(socket).is_err()
+}
+
+/// Whether no core listens on the named pipe `socket` (`\\.\pipe\torro-workplace-<SID>`), so
+/// [`ensure_core`] should start one. Opening the pipe is the test, as connecting on Unix. Only "no
+/// such pipe" means nobody: a busy pipe (all instances connected) has a core, and a name held by
+/// another program would refuse a new core as well. A socket that is no pipe name (the user's SID
+/// unknown) is one no core can listen on, so none is started for it.
+#[cfg(windows)]
+fn nobody_listens(socket: &Path) -> bool {
+    const PIPES: &str = r"\\.\pipe\";
+    let is_pipe =
+        socket.to_str().and_then(|path| path.get(..PIPES.len())).is_some_and(|start| start.eq_ignore_ascii_case(PIPES));
+    if !is_pipe {
+        return false;
+    }
+    match std::fs::OpenOptions::new().read(true).write(true).open(socket) {
+        Ok(_) => false,
+        Err(err) => err.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// The user's home directory from the environment (`HOME`, on Windows `USERPROFILE`); `None` when
+/// unset or empty.
+fn home_dir() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(name).filter(|home| !home.is_empty()).map(PathBuf::from)
+}
+
+/// The core's program for [`ensure_core`] (decision 6 in `docs/lebenszyklus.md`): on macOS the agent
+/// bundle of the service ([`service_program`]) beside this program's bundle or in an Applications
+/// folder, so the core runs with its own bundle id and without a Dock icon; else, and without that
+/// bundle (development, Homebrew), `torroworkplace` as [`sibling`] finds it.
+fn core_program(exe: Option<&Path>, home: Option<&Path>) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(program) = service_program(exe, home, Path::is_file) {
+        return program;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (exe, home);
+    sibling(torro_core::AppId::WORKPLACE.binary)
+}
+
+/// The command [`ensure_core`] starts the core with: `program daemon`, detached from the caller's
+/// terminal and process group (Unix) or console and process group (Windows: `DETACHED_PROCESS`,
+/// `CREATE_NEW_PROCESS_GROUP`), so it outlives the app or MCP server that started it and a Ctrl+C
+/// in the caller's console does not reach it.
 ///
 /// It runs in `home` (else `/`), not in the caller's directory, which it would otherwise keep
 /// busy for as long as it runs. `TORRO_TOKEN` is not passed on: it is the key of the agent whose
 /// MCP server started the core, and the core has no use for it.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn daemon_command(program: &std::path::Path, home: Option<std::path::PathBuf>) -> std::process::Command {
-    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     let mut command = Command::new(program);
@@ -155,8 +208,20 @@ fn daemon_command(program: &std::path::Path, home: Option<std::path::PathBuf>) -
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_remove("TORRO_TOKEN")
-        .current_dir(home.unwrap_or_else(|| std::path::PathBuf::from("/")))
-        .process_group(0);
+        .current_dir(home.unwrap_or_else(|| std::path::PathBuf::from("/")));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // From `winbase.h`; as numbers, so no binding crate is needed for two flags.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
     command
 }
 
@@ -233,14 +298,104 @@ pub fn claim_core_start(socket: &Path, now: DateTime<Utc>) -> bool {
     true
 }
 
-/// `name` next to the running binary (an install puts the suite in one directory), else
-/// `name` from `PATH`.
+/// `name` next to the running binary (an install puts the suite in one directory); on macOS else the
+/// program `name` in its bundle ([`bundled_program_file`], issue #279: an app in its own bundle has no
+/// other program beside it, so the mail program finds `torroinbox` for the compose window in the
+/// bundle of the Notification Hub); else `name` from `PATH`.
 pub fn sibling(name: &str) -> std::path::PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| std::path::PathBuf::from(name))
+    let exe = std::env::current_exe().ok();
+    let beside = exe.as_deref().and_then(Path::parent).map(|dir| dir.join(name)).filter(|path| path.exists());
+    #[cfg(target_os = "macos")]
+    let beside = beside.or_else(|| bundled_program_file(name, exe.as_deref(), home_dir().as_deref(), Path::is_file));
+    beside.unwrap_or_else(|| std::path::PathBuf::from(name))
+}
+
+/// The bundle of the core's service inside the bundle of the control centre, relative to the folder
+/// that holds "Torro Workplace.app" (decision 7 in `docs/lebenszyklus.md`): an agent bundle without a
+/// Dock icon, so a double click on "Torro Workplace" opens the control centre even while the core runs.
+pub const SERVICE_PROGRAM: &str =
+    "Torro Workplace.app/Contents/Library/Torro Workplace Service.app/Contents/MacOS/torroworkplace";
+
+/// The folders the suite's bundles are looked for in (issue #279, decision 6 in
+/// `docs/lebenszyklus.md`), in this order: the folder holding each bundle that `exe` (this program)
+/// runs in, innermost first, then `/Applications`, then `<home>/Applications`.
+///
+/// "Each bundle", because the core's service runs in a bundle inside "Torro Workplace.app"
+/// ([`SERVICE_PROGRAM`]): beside its own bundle is `Torro Workplace.app/Contents/Library`, and the
+/// apps lie beside the outer bundle. A program in no bundle (development, Homebrew) adds none.
+/// Only paths from the root, so nothing is ever looked up relative to the working directory, and
+/// each folder once.
+pub fn bundle_folders(exe: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
+    let beside = exe
+        .into_iter()
+        .flat_map(Path::ancestors)
+        .filter(|folder| folder.extension().is_some_and(|ext| ext == "app"))
+        .filter_map(Path::parent);
+    let applications = [Some(PathBuf::from("/Applications")), home.map(|home| home.join("Applications"))];
+    let mut folders: Vec<PathBuf> = Vec::new();
+    for folder in beside.map(Path::to_path_buf).chain(applications.into_iter().flatten()) {
+        if folder.has_root() && !folders.contains(&folder) {
+            folders.push(folder);
+        }
+    }
+    folders
+}
+
+/// `inside` (a path below a folder, `Torro Reminder.app/Contents/MacOS/torro-reminder`) in the first of
+/// [`bundle_folders`] where `exists` says it is; `None` when in none. Pure: `exists` is
+/// [`Path::is_file`] for real and a fake in tests.
+pub fn find_bundled(
+    inside: &Path,
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    bundle_folders(exe, home).into_iter().map(|folder| folder.join(inside)).find(|program| exists(program))
+}
+
+/// The program of the entry `app` in its bundle (issue #279, decision 6 in `docs/lebenszyklus.md`):
+/// `<display_name>.app/Contents/MacOS/<program_file>` ([`torro_core::AppId::display_name`],
+/// [`torro_core::AppId::program_file`]), so `Torro Workplace Mail.app/Contents/MacOS/torro-inbox-mail`,
+/// looked for with [`find_bundled`]: beside the bundle `exe` runs in, in `/Applications`, in
+/// `<home>/Applications`. `None` when there is none.
+///
+/// For [`torro_core::AppId::WORKPLACE`] this is the control centre's bundle, `Torro Workplace.app`; the
+/// core's service is [`service_program`]. Pure, tested on every system; only callers on macOS ask the
+/// file system (`exists` = [`Path::is_file`]).
+pub fn bundle_program(
+    app: torro_core::AppId,
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let inside = Path::new(&format!("{}.app", app.display_name)).join("Contents/MacOS").join(app.program_file());
+    find_bundled(&inside, exe, home, exists)
+}
+
+/// The core's program in its agent bundle ([`SERVICE_PROGRAM`]), looked for as [`bundle_program`]
+/// looks for an app; `None` when there is none. What [`ensure_core`] starts first on macOS.
+pub fn service_program(exe: Option<&Path>, home: Option<&Path>, exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    find_bundled(Path::new(SERVICE_PROGRAM), exe, home, exists)
+}
+
+/// The program file `name` (`torroinbox`) in the bundle of the first entry of
+/// [`torro_core::AppId::ALL`] whose [`torro_core::AppId::program_file`] it is ([`bundle_program`]): the
+/// Notification Hub's bundle for `torroinbox`, the control centre's for `torroworkplace`. `None` for a
+/// name of no entry or without its bundle. What [`sibling`] falls back on, on macOS.
+pub fn bundled_program_file(
+    name: &str,
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let app = torro_core::AppId::ALL.iter().find(|app| app.program_file() == name)?;
+    bundle_program(*app, exe, home, exists)
+}
+
+/// The bundle a program in it runs from: `…/Torro Calendar.app` for
+/// `…/Torro Calendar.app/Contents/MacOS/torrocalendar`; `None` for a program in no bundle.
+pub fn bundle_of(program: &Path) -> Option<&Path> {
+    program.ancestors().nth(3).filter(|bundle| bundle.extension().is_some_and(|ext| ext == "app"))
 }
 
 macro_rules! delegate {
@@ -476,7 +631,7 @@ mod tests {
         assert_eq!(core_state_file(Path::new("core.sock"), CORE_START_MARK), None, "never the current directory");
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_core_starts_in_home_without_the_agent_key() {
         use std::ffi::OsStr;
@@ -491,5 +646,99 @@ mod tests {
 
         let homeless = daemon_command(program, None);
         assert_eq!(homeless.get_current_dir(), Some(Path::new("/")));
+    }
+
+    /// The program of `app` in its bundle in `folder`, as [`bundle_program`] names it.
+    fn in_bundle(folder: &str, app: torro_core::AppId) -> PathBuf {
+        Path::new(folder).join(format!("{}.app/Contents/MacOS/{}", app.display_name, app.program_file()))
+    }
+
+    /// Issue #279: every entry is found beside the bundle the caller runs in first, then in
+    /// `/Applications`, then in `~/Applications`; without any, `None`.
+    #[test]
+    fn every_entry_is_found_in_its_bundle_beside_then_in_the_applications_folders() {
+        let exe = Path::new("/Volumes/Apps/Torro Calendar.app/Contents/MacOS/torrocalendar");
+        let home = Path::new("/Users/anna");
+        for app in torro_core::AppId::ALL.iter().copied() {
+            let beside = in_bundle("/Volumes/Apps", app);
+            let system = in_bundle("/Applications", app);
+            let own = in_bundle("/Users/anna/Applications", app);
+            let all = |path: &Path| path == beside || path == system || path == own;
+            assert_eq!(bundle_program(app, Some(exe), Some(home), all), Some(beside.clone()), "{}", app.window_class);
+            let installed = |path: &Path| path == system || path == own;
+            assert_eq!(bundle_program(app, Some(exe), Some(home), installed), Some(system.clone()));
+            assert_eq!(bundle_program(app, Some(exe), Some(home), |path| path == own), Some(own.clone()));
+            assert_eq!(bundle_program(app, Some(exe), None, |path| path == own), None, "no home, no ~/Applications");
+            assert_eq!(bundle_program(app, Some(exe), Some(home), |_| false), None);
+        }
+        let mail = in_bundle("/Applications", torro_core::AppId::INBOX_MAIL);
+        assert!(mail.ends_with("Torro Workplace Mail.app/Contents/MacOS/torro-inbox-mail"), "{mail:?}");
+        let control = in_bundle("/Applications", torro_core::AppId::WORKPLACE);
+        assert!(control.ends_with("Torro Workplace.app/Contents/MacOS/torroworkplace"), "{control:?}");
+    }
+
+    /// Issue #279 (decision 7): the core's service in its agent bundle inside "Torro Workplace.app",
+    /// found the same way; and the service, running there, finds the apps beside the outer bundle.
+    #[test]
+    fn the_service_lies_in_its_agent_bundle_inside_torro_workplace() {
+        let home = Path::new("/Users/anna");
+        let calendar = Path::new("/Volumes/Apps/Torro Calendar.app/Contents/MacOS/torrocalendar");
+        let service = |folder: &str| Path::new(folder).join(SERVICE_PROGRAM);
+        let (beside, system, own) =
+            (service("/Volumes/Apps"), service("/Applications"), service("/Users/anna/Applications"));
+        let all = |path: &Path| path == beside || path == system || path == own;
+        assert_eq!(service_program(Some(calendar), Some(home), all), Some(beside.clone()));
+        assert_eq!(service_program(Some(calendar), Some(home), |path| path == system || path == own), Some(system));
+        assert_eq!(service_program(Some(calendar), Some(home), |path| path == own), Some(own));
+        assert_eq!(service_program(Some(calendar), Some(home), |_| false), None);
+        assert!(beside.ends_with("Torro Workplace Service.app/Contents/MacOS/torroworkplace"));
+
+        // The control centre finds the service in its own bundle.
+        let control = Path::new("/Volumes/Apps/Torro Workplace.app/Contents/MacOS/torroworkplace");
+        assert_eq!(service_program(Some(control), None, |path| path == beside), Some(beside.clone()));
+
+        // The service runs in Torro Workplace.app/Contents/Library: the apps lie beside the outer bundle.
+        assert_eq!(
+            bundle_folders(Some(&beside), Some(home)),
+            [
+                PathBuf::from("/Volumes/Apps/Torro Workplace.app/Contents/Library"),
+                PathBuf::from("/Volumes/Apps"),
+                PathBuf::from("/Applications"),
+                PathBuf::from("/Users/anna/Applications"),
+            ]
+        );
+        let tasks = in_bundle("/Volumes/Apps", torro_core::AppId::TASKS);
+        assert_eq!(bundle_program(torro_core::AppId::TASKS, Some(&beside), None, |path| path == tasks), Some(tasks));
+    }
+
+    /// Issue #279: a program in no bundle looks only in the Applications folders, and never relative
+    /// to the working directory.
+    #[test]
+    fn a_program_in_no_bundle_looks_in_the_applications_folders_only() {
+        let dev = Path::new("/home/anna/torro/target/debug/torrocalendar");
+        assert_eq!(bundle_folders(Some(dev), None), [PathBuf::from("/Applications")]);
+        assert_eq!(bundle_folders(None, Some(Path::new("relative"))), [PathBuf::from("/Applications")]);
+        let inside = Path::new("Torro Reminder.app/Contents/MacOS/torro-reminder");
+        let installed = Path::new("/Applications").join(inside);
+        assert_eq!(find_bundled(inside, Some(dev), None, |path| path == installed), Some(installed.clone()));
+    }
+
+    /// Issue #279: on macOS `sibling` finds a program in its entry's bundle, `torroinbox` (compose
+    /// from the mail program) in the Notification Hub's; a name of no entry has none.
+    #[test]
+    fn a_program_file_is_found_in_the_bundle_of_its_entry() {
+        let mail = Path::new("/Applications/Torro Workplace Mail.app/Contents/MacOS/torro-inbox-mail");
+        let hub = in_bundle("/Applications", torro_core::AppId::INBOX);
+        assert!(hub.ends_with("Torro Notification Hub.app/Contents/MacOS/torroinbox"), "{hub:?}");
+        assert_eq!(bundled_program_file("torroinbox", Some(mail), None, |path| path == hub), Some(hub.clone()));
+        assert_eq!(bundled_program_file("torro-inbox-mail", Some(mail), None, |path| path == mail), Some(mail.into()));
+        assert_eq!(bundled_program_file("bash", Some(mail), None, |_| true), None);
+    }
+
+    #[test]
+    fn the_bundle_of_a_program_is_three_folders_up() {
+        let program = Path::new("/Applications/Torro Calendar.app/Contents/MacOS/torrocalendar");
+        assert_eq!(bundle_of(program), Some(Path::new("/Applications/Torro Calendar.app")));
+        assert_eq!(bundle_of(Path::new("/home/anna/torro/target/debug/torrocalendar")), None);
     }
 }

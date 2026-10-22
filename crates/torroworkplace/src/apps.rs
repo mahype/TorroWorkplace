@@ -1,8 +1,14 @@
 //! The suite's apps as the core reports them (`Request::ListApps`): every app of
 //! `torro_core::AppId::ALL` except the core itself, and whether it is installed.
 //!
-//! "Installed" means the binary was found next to the core's executable or on `PATH`, the same
-//! places `Request::OpenApp` starts apps from, so a listed app that is installed can be opened.
+//! "Installed" means the binary was found next to the core's executable or on `PATH`, or (macOS) the
+//! entry's bundle beside the core's bundle or in an Applications folder, the same places
+//! `Request::OpenApp` starts apps from, so a listed app that is installed can be opened.
+//!
+//! On macOS the core starts an app through its bundle when there is one (issue #279, decision 6 in
+//! `docs/lebenszyklus.md`): `open -a <absolute bundle path>` ([`Start::Open`]), so the system starts it
+//! with its bundle id, Dock icon and activation; without a bundle, and elsewhere, the program itself
+//! ([`Start::Program`]).
 //!
 //! The inbox is three entries (task E8.1): its mail window, its notifications window and its hub,
 //! one binary `torroinbox` with three window classes. Mail and App Feed also have programs of their
@@ -33,11 +39,12 @@ use torro_ipc::{AppInfo, Response, VoiceState};
 
 /// The suite's apps with their install state, looked up now (a handful of file checks).
 pub fn list() -> Vec<AppInfo> {
-    list_in(&search_dirs())
+    list_in(&search_dirs(), |app| installed_bundle(app).is_some())
 }
 
-/// [`list`] with the folders to look in; tests pass temporary ones.
-fn list_in(dirs: &[PathBuf]) -> Vec<AppInfo> {
+/// [`list`] with the folders to look in and whether an entry's bundle is there ([`installed_bundle`]);
+/// tests pass temporary folders and a fake.
+fn list_in(dirs: &[PathBuf], bundled: impl Fn(AppId) -> bool) -> Vec<AppInfo> {
     AppId::ALL
         .iter()
         // The core is the service answering this; it is not one of the apps it opens.
@@ -46,10 +53,150 @@ fn list_in(dirs: &[PathBuf]) -> Vec<AppInfo> {
             binary: app.binary.to_string(),
             name: app.display_name.to_string(),
             window_class: app.window_class.to_string(),
-            // Either program opens the window (issue #279); the answer keeps naming `torroinbox`.
-            installed: is_installed(app.binary, dirs) || is_installed(app.program_file(), dirs),
+            // Either program opens the window, and so does its bundle on macOS (issue #279); the answer
+            // keeps naming `torroinbox`, never the file in the bundle.
+            installed: is_installed(app.binary, dirs) || is_installed(app.program_file(), dirs) || bundled(*app),
         })
         .collect()
+}
+
+/// The program that asks macOS to start a bundle (issue #279), by its absolute path, so no `open`
+/// earlier on `PATH` stands in for it.
+pub const OPEN: &str = "/usr/bin/open";
+
+/// How the core starts a window (issue #279, decision 6 in `docs/lebenszyklus.md`): [`app_start`],
+/// [`target_start`], run by [`launch`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Start {
+    /// The program itself with its arguments (`torrocalendar`, `torroinbox --view mail`), through the
+    /// system launcher: detached, not waited for, as before.
+    Program(Vec<String>),
+    /// macOS: [`OPEN`] with the absolute path of the entry's bundle ([`open_command`]). The system
+    /// starts the app with its bundle id and icon, or activates it when it runs. Waited for: its exit
+    /// code says whether the system took the start.
+    Open(Vec<String>),
+}
+
+/// The command line of [`Start::Open`] for `bundle` (an absolute path, `/Applications/Torro
+/// Calendar.app`): `open -a <bundle>` without arguments, which starts the app on its own window or
+/// brings the running one forward; with `args` (a target) `open -n -a <bundle> --args <args…>`, a new
+/// instance, since a running one cannot be told what to show. Never the app's name, which the system
+/// could resolve to another app of that name. `open` passes no environment on (there is no `--env`
+/// here), and `args` come unchanged from [`target_command`]: what the core looked up, never a key.
+pub fn open_command(bundle: &Path, args: Option<&[String]>) -> Vec<String> {
+    let bundle = bundle.to_string_lossy().into_owned();
+    match args {
+        None => vec![OPEN.to_string(), "-a".to_string(), bundle],
+        Some(args) => {
+            let mut command = vec![OPEN.to_string(), "-n".to_string(), "-a".to_string(), bundle, "--args".to_string()];
+            command.extend(args.iter().cloned());
+            command
+        }
+    }
+}
+
+/// The bundle that opens `app`'s window for the core running as `exe` (issue #279): the bundle around
+/// [`torro_gui::source::bundle_program`], but never the bundle the core itself runs as. A core still
+/// running in "Torro Workplace.app" (before its own service bundle, decision 7) would otherwise ask the
+/// system to start itself, which only activates the core and opens no control centre. `None` then, and
+/// when there is no bundle.
+pub fn bundle_for(
+    app: AppId,
+    exe: Option<&Path>,
+    home: Option<&Path>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let program = torro_gui::source::bundle_program(app, exe, home, exists)?;
+    let bundle = torro_gui::source::bundle_of(&program)?;
+    let own = exe.and_then(torro_gui::source::bundle_of);
+    (own != Some(bundle)).then(|| bundle.to_path_buf())
+}
+
+/// [`bundle_for`] on this system, for this program: on macOS only (the file system, `HOME`); `None`
+/// elsewhere, where apps start as programs.
+pub fn installed_bundle(app: AppId) -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let exe = std::env::current_exe().ok();
+        let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(PathBuf::from);
+        bundle_for(app, exe.as_deref(), home.as_deref(), Path::is_file)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        None
+    }
+}
+
+/// How `Core::open_app` starts `app`'s window when none is open (issue #279): with its `bundle`
+/// ([`installed_bundle`]) `open -a <bundle>`, whose program opens the entry's window without arguments;
+/// without one the program as before, [`AppId::command`] of [`program_for`] in `dirs`.
+pub fn app_start(app: AppId, dirs: &[PathBuf], bundle: Option<&Path>) -> Start {
+    match bundle {
+        Some(bundle) => Start::Open(open_command(bundle, None)),
+        None => Start::Program(app.command(program_for(app, dirs))),
+    }
+}
+
+/// The entry whose bundle starts a window showing `opened` ([`target_start`]): [`Opened::app`], but
+/// for a file the Notification Hub, whose program is `torroinbox` with the compose window
+/// ([`target_program`]).
+pub fn target_entry(opened: &Opened) -> AppId {
+    match opened {
+        Opened::File { .. } => AppId::INBOX,
+        _ => opened.app(),
+    }
+}
+
+/// How `apps.open_app` with a target starts a window showing `opened` (issue #279): with the `bundle`
+/// of [`target_entry`] `open -n -a <bundle> --args …`, the arguments of [`target_command`] after its
+/// program; without one [`target_command`] of [`target_program`] in `dirs`, as before.
+pub fn target_start(opened: &Opened, dirs: &[PathBuf], bundle: Option<&Path>) -> Start {
+    let command = target_command(target_program(opened, dirs), opened);
+    match bundle {
+        Some(bundle) => Start::Open(open_command(bundle, command.get(1..))),
+        None => Start::Program(command),
+    }
+}
+
+/// Runs `start` ([`Start`]): a program through the system launcher, `Ok` once it is started; `open`
+/// (macOS only) waited for, `Ok` once the system took the start, an `Err` when it ended with an exit
+/// code other than 0. What `open` printed goes to the core's log only, not into the answer, as it
+/// names paths.
+pub async fn launch(start: Start) -> Result<(), String> {
+    use torro_setups::launch::{Launcher, SystemLauncher};
+
+    match start {
+        Start::Program(command) => SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string()),
+        Start::Open(command) => run_open(&command).await,
+    }
+}
+
+/// Runs the `open` command line `command` and waits for it (see [`launch`]).
+#[cfg(target_os = "macos")]
+async fn run_open(command: &[String]) -> Result<(), String> {
+    let Some((program, args)) = command.split_first() else { return Err("empty command".into()) };
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|err| format!("cannot run {program}: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&output.stderr);
+    eprintln!("torroworkplace: {program} failed ({}): {}", output.status, said.trim());
+    Err(format!("the system could not start the app ({})", output.status))
+}
+
+/// Elsewhere there is no `open`, and no bundle leads here.
+#[cfg(not(target_os = "macos"))]
+async fn run_open(command: &[String]) -> Result<(), String> {
+    let _ = command;
+    Err("starting an app through its bundle needs macOS".into())
 }
 
 /// The folders an app binary is looked for in: the folder of this executable, then `PATH`.
@@ -543,7 +690,7 @@ pub mod tests {
     fn lists_every_app_but_the_core_with_its_state() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::write(dir.path().join(binary("torrotasks")), b"").expect("write binary");
-        let apps = list_in(&[dir.path().to_path_buf()]);
+        let apps = list_in(&[dir.path().to_path_buf()], |_| false);
         assert_eq!(apps.len(), AppId::ALL.len() - 1);
         assert!(apps.iter().all(|app| app.binary != AppId::WORKPLACE.binary));
         let tasks = apps.iter().find(|app| app.binary == "torrotasks").expect("tasks listed");
@@ -681,7 +828,7 @@ pub mod tests {
     fn mail_is_installed_with_only_its_own_program() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::write(dir.path().join(binary("torro-inbox-mail")), b"").expect("write binary");
-        let apps = list_in(&[dir.path().to_path_buf()]);
+        let apps = list_in(&[dir.path().to_path_buf()], |_| false);
         let inbox: Vec<(&str, &str, bool)> = apps
             .iter()
             .filter(|app| app.window_class.starts_with("torro-inbox"))
@@ -697,11 +844,137 @@ pub mod tests {
         );
     }
 
+    /// Issue #279: with only the Mail bundle (macOS), Mail is installed and still listed with the
+    /// binary `torroinbox`, not with the file in its bundle; the hub and App Feed are not.
+    #[test]
+    fn mail_is_installed_with_only_its_bundle() {
+        let empty = tempfile::tempdir().expect("temp dir");
+        let home = Path::new("/Users/anna");
+        let mail = Path::new("/Applications/Torro Workplace Mail.app/Contents/MacOS/torro-inbox-mail");
+        let bundled = |app| bundle_for(app, None, Some(home), |path: &Path| path == mail).is_some();
+        let apps = list_in(&[empty.path().to_path_buf()], bundled);
+        let installed: Vec<(&str, &str, bool)> =
+            apps.iter().map(|app| (app.window_class.as_str(), app.binary.as_str(), app.installed)).collect();
+        assert_eq!(
+            installed,
+            [
+                ("torro-inbox", "torroinbox", false),
+                ("torro-inbox-mail", "torroinbox", true),
+                ("torro-inbox-notifications", "torroinbox", false),
+                ("torro-tasks", "torrotasks", false),
+                ("torro-calendar", "torrocalendar", false),
+                ("torro-assistant", "torroassistant", false),
+            ]
+        );
+    }
+
+    /// Issue #279: with a bundle the core asks the system to start it by its absolute path, `open -a
+    /// <bundle>` and nothing else (no name, no arguments, no environment); without one the program as
+    /// before.
+    #[test]
+    fn an_app_with_a_bundle_starts_through_open_with_its_absolute_path() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dirs = [dir.path().to_path_buf()];
+        let bundle = Path::new("/Applications/Torro Workplace Mail.app");
+        let mail = AppId::INBOX_MAIL;
+        assert_eq!(
+            app_start(mail, &dirs, Some(bundle)),
+            Start::Open(vec!["/usr/bin/open".into(), "-a".into(), "/Applications/Torro Workplace Mail.app".into()])
+        );
+        assert_eq!(
+            app_start(mail, &dirs, None),
+            Start::Program(vec!["torroinbox".into(), "--view".into(), "mail".into()])
+        );
+        fs::write(dir.path().join(binary("torrocalendar")), b"").expect("write binary");
+        let calendar = at(dir.path(), "torrocalendar");
+        assert_eq!(app_start(AppId::CALENDAR, &dirs, None), Start::Program(vec![calendar]));
+    }
+
+    /// Issue #279: with a target a new instance of the bundle starts, `open -n -a <bundle> --args …` with
+    /// exactly the arguments of `target_command`; a file opens the compose window in the Notification
+    /// Hub's bundle, whose program is `torroinbox`.
+    #[test]
+    fn a_target_starts_a_new_instance_of_the_bundle_with_its_arguments() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let dirs = [dir.path().to_path_buf()];
+        let open = |bundle: &str, args: &[&str]| {
+            let mut command = vec!["/usr/bin/open", "-n", "-a", bundle, "--args"];
+            command.extend(args);
+            Start::Open(command.into_iter().map(String::from).collect())
+        };
+
+        let mail = Opened::Mail { message: "m:0a1b".into() };
+        assert_eq!(target_entry(&mail), AppId::INBOX_MAIL);
+        let bundle = Path::new("/Applications/Torro Workplace Mail.app");
+        assert_eq!(
+            target_start(&mail, &dirs, Some(bundle)),
+            open("/Applications/Torro Workplace Mail.app", &["--view", "mail", "--message=m:0a1b"])
+        );
+        let task = Opened::Task { uid: "-rf".into() };
+        let tasks = Path::new("/Users/anna/Applications/Torro Tasks.app");
+        assert_eq!(
+            target_start(&task, &dirs, Some(tasks)),
+            open("/Users/anna/Applications/Torro Tasks.app", &["--task=-rf"])
+        );
+        let file = Opened::File { path: "/Users/anna/Offer.pdf".into() };
+        assert_eq!(target_entry(&file), AppId::INBOX);
+        let hub = Path::new("/Applications/Torro Notification Hub.app");
+        assert_eq!(
+            target_start(&file, &dirs, Some(hub)),
+            open("/Applications/Torro Notification Hub.app", &["--compose", "--attach=/Users/anna/Offer.pdf"])
+        );
+        let template = Opened::Template { id: "dev".into() };
+        let control = Path::new("/Applications/Torro Workplace.app");
+        assert_eq!(
+            target_start(&template, &dirs, Some(control)),
+            open("/Applications/Torro Workplace.app", &["ui", "--template=dev"])
+        );
+
+        assert_eq!(
+            target_start(&task, &dirs, None),
+            Start::Program(vec!["torrotasks".into(), "--task=-rf".into()]),
+            "without a bundle as before"
+        );
+    }
+
+    /// Issue #279: the bundle of an entry is found beside the core's bundle and in the Applications
+    /// folders, but never the bundle the core runs as itself: asking the system to start that would
+    /// only activate the core.
+    #[test]
+    fn the_core_never_starts_its_own_bundle() {
+        let home = Path::new("/Users/anna");
+        let control = Path::new("/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace");
+        let service = Path::new(
+            "/Applications/Torro Workplace.app/Contents/Library/Torro Workplace Service.app/Contents/MacOS/torroworkplace",
+        );
+        let installed = [control, service, Path::new("/Applications/Torro Calendar.app/Contents/MacOS/torrocalendar")];
+        let everything = |path: &Path| installed.contains(&path);
+        let calendar = PathBuf::from("/Applications/Torro Calendar.app");
+        assert_eq!(bundle_for(AppId::CALENDAR, Some(control), Some(home), everything), Some(calendar.clone()));
+        assert_eq!(bundle_for(AppId::WORKPLACE, Some(control), Some(home), everything), None, "the core itself");
+        assert_eq!(
+            bundle_for(AppId::WORKPLACE, Some(service), Some(home), everything),
+            Some(PathBuf::from("/Applications/Torro Workplace.app")),
+            "from its service bundle the core opens the control centre's"
+        );
+        assert_eq!(bundle_for(AppId::CALENDAR, Some(service), Some(home), everything), Some(calendar));
+        assert_eq!(bundle_for(AppId::CALENDAR, Some(control), Some(home), |_| false), None);
+    }
+
+    /// Off macOS there is no bundle and no `open`.
+    #[cfg(not(target_os = "macos"))]
+    #[tokio::test]
+    async fn open_is_refused_off_macos() {
+        assert_eq!(installed_bundle(AppId::CALENDAR), None);
+        let start = Start::Open(open_command(Path::new("/Applications/Torro Calendar.app"), None));
+        assert!(launch(start).await.is_err());
+    }
+
     #[test]
     fn the_inbox_is_listed_as_three_windows() {
         let dir = tempfile::tempdir().expect("temp dir");
         fs::write(dir.path().join(binary("torroinbox")), b"").expect("write binary");
-        let apps = list_in(&[dir.path().to_path_buf()]);
+        let apps = list_in(&[dir.path().to_path_buf()], |_| false);
         let inbox: Vec<(&str, &str, bool)> = apps
             .iter()
             .filter(|app| app.binary == "torroinbox")

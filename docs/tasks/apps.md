@@ -132,7 +132,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
   Mail-Fenster mit der Klasse `torro-inbox-mail`.
 
 ### AP.4 macOS: Apps und Dienst aus ihren Bündeln starten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Plattformpfade, Startwege) · **Braucht:** AP.1, AP.3 · **Dateien:**
   `crates/torro-gui/src/source.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/reminders.rs`,
   `crates/torroworkplace/src/apps.rs`

@@ -748,14 +748,14 @@ fn runs(slot: &Mutex<Option<std::process::Child>>) -> bool {
 /// The program of the reminder window: on macOS the agent app "Torro Reminder.app" (task ER2.2),
 /// beside the core's own bundle or in an Applications folder, so it shows over apps in full screen;
 /// else, and without that bundle, the calendar next to the core (`torrocalendar --reminders`).
+///
+/// The bundle is looked for as the suite's apps are ([`torro_gui::source::find_bundled`], issue #279):
+/// beside each bundle the core runs in, so also beside "Torro Workplace.app" when the core runs in its
+/// service bundle inside it.
 pub fn reminder_program(core: Option<&Path>, home: Option<&Path>, exists: impl Fn(&Path) -> bool) -> PathBuf {
     if cfg!(target_os = "macos") {
         let inside = Path::new("Torro Reminder.app/Contents/MacOS/torro-reminder");
-        // The core runs as …/Torro Workplace.app/Contents/MacOS/torroworkplace.
-        let beside = core.and_then(|exe| exe.ancestors().nth(4)).map(|folder| folder.join(inside));
-        let applications = [Some(PathBuf::from("/Applications")), home.map(|home| home.join("Applications"))];
-        let candidates = beside.into_iter().chain(applications.into_iter().flatten().map(|folder| folder.join(inside)));
-        if let Some(found) = candidates.into_iter().find(|candidate| exists(candidate)) {
+        if let Some(found) = torro_gui::source::find_bundled(inside, core, home, exists) {
             return found;
         }
     }

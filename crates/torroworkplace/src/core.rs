@@ -6027,10 +6027,11 @@ impl Core {
                     if matches!(opened, crate::apps::Opened::Template { .. }) {
                         self.float_dialog().await;
                     }
-                    // A mail opens in the mail window's own program when it is there (issue #279).
-                    let program = crate::apps::target_program(&opened, &crate::apps::search_dirs());
-                    let command = crate::apps::target_command(program, &opened);
-                    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
+                    // On macOS through the entry's bundle; a mail opens in the mail window's own
+                    // program when it is there (issue #279).
+                    let bundle = crate::apps::installed_bundle(crate::apps::target_entry(&opened));
+                    let dirs = crate::apps::search_dirs();
+                    crate::apps::launch(crate::apps::target_start(&opened, &dirs, bundle.as_deref())).await
                 }
                 Err(refused) => return *refused,
             },
@@ -7412,13 +7413,15 @@ impl Core {
     /// Brings the app's window to the front, or starts the app when it has none – with the
     /// arguments of its entry (`torroinbox --view mail`, [`AppId::command`]); Mail and App Feed with
     /// their own program when it is there (`torro-inbox-mail --view mail`, issue #279,
-    /// [`crate::apps::program_for`]).
+    /// [`crate::apps::program_for`]). On macOS through the entry's bundle when there is one
+    /// (`open -a <bundle>`, [`crate::apps::app_start`]); `Ok` then means the system took the start.
     pub async fn open_app(&self, app: AppId) -> Result<(), String> {
         if let Some(focused) = focus_open(&self.backend, app).await {
             return focused;
         }
-        let program = crate::apps::program_for(app, &crate::apps::search_dirs());
-        SystemLauncher.spawn(&app.command(program)).map(|_| ()).map_err(|err| err.to_string())
+        let bundle = crate::apps::installed_bundle(app);
+        let dirs = crate::apps::search_dirs();
+        crate::apps::launch(crate::apps::app_start(app, &dirs, bundle.as_deref())).await
     }
 
     /// The status for `reach`. A client without read access to `workspaces` gets no workspace
