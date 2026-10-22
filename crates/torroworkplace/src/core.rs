@@ -6859,8 +6859,11 @@ impl Core {
             typed => typed.to_string(),
         };
         // The servers trust what the account trusts and what the person just confirmed (issue #284).
-        let stored_pins =
-            existing.and_then(|account| Some(account.mail.as_ref()?.trusted_certificates.clone())).unwrap_or_default();
+        // The stored ones in the account's form, so one written by hand (small letters, no `:`)
+        // still matches what a server showed and is kept ([`kept_certificates`]).
+        let stored_pins = existing
+            .and_then(|account| Some(stored_fingerprints(&account.mail.as_ref()?.trusted_certificates)))
+            .unwrap_or_default();
         let mut offered_pins = stored_pins.clone();
         offered_pins.extend(confirmed.into_iter().filter(|pin| !stored_pins.contains(pin)));
         let mut config = torro_mail::MailAccountConfig {
@@ -8554,13 +8557,28 @@ fn url_host(url: &str) -> Option<(String, u16)> {
 /// The trusted certificates a mail account keeps after a sign-in that worked (issue #284): of
 /// `offered` (the stored ones `stored`, oldest first, then those the person just confirmed) each
 /// one a server showed at this sign-in (`used`), and while CalDAV was not asked (`caldav_asked`
-/// false) the other stored ones too, since they may be CalDAV's. At most
+/// false) the other stored ones too, since they may be CalDAV's. All of them in the account's form
+/// ([`stored_fingerprints`], `Fingerprint`'s `Display`), so equal ones compare equal. At most
 /// [`torro_mail::account::TRUSTED_CERTIFICATES_MAX`]; the oldest go first.
 fn kept_certificates(offered: &[String], stored: &[String], used: &[String], caldav_asked: bool) -> Vec<String> {
     let kept: Vec<&String> =
         offered.iter().filter(|pin| used.contains(pin) || (!caldav_asked && stored.contains(pin))).collect();
     let over = kept.len().saturating_sub(torro_mail::account::TRUSTED_CERTIFICATES_MAX);
     kept.into_iter().skip(over).cloned().collect()
+}
+
+/// The trusted certificates `stored` with an account in the form the account writes
+/// (`torro_mail::account::certificate_fingerprint`, `AB:CD:…`), in their order and each once, so
+/// they compare with the fingerprints servers show. An entry without that form is left out: no
+/// certificate can match it.
+fn stored_fingerprints(stored: &[String]) -> Vec<String> {
+    let mut pins: Vec<String> = Vec::new();
+    for pin in stored.iter().filter_map(|text| torro_mail::account::certificate_fingerprint(text)) {
+        if !pins.contains(&pin) {
+            pins.push(pin);
+        }
+    }
+    pins
 }
 
 /// `typed` as fingerprints in the form the account stores
@@ -15747,6 +15765,69 @@ mod tests {
         assert_eq!(kept.len(), torro_mail::account::TRUSTED_CERTIFICATES_MAX);
         assert_eq!(kept.first(), Some(&pin(2)), "the oldest went first");
         assert!(kept_certificates(&many, &many, &[], true).is_empty());
+    }
+
+    /// Issue #284: stored fingerprints are compared in the account's form, each once; one without
+    /// that form is left out.
+    #[test]
+    fn stored_fingerprints_take_the_form_of_the_account() {
+        let pin = format!("AB{}", ":CD".repeat(31));
+        let by_hand = [pin.to_lowercase(), format!(" {} ", pin.replace(':', "")), "AB:CD".to_string(), pin.clone()];
+        assert_eq!(stored_fingerprints(&by_hand), [pin]);
+    }
+
+    /// Issue #284 (M11.3) over real TLS: a CalDAV address at home whose certificate is self-signed
+    /// (`self-signed.der` of `torro-mail-imap`'s fixtures) is answered with
+    /// [`Response::UntrustedCertificate`] for `CalDAV` before the password reaches it, and nothing
+    /// is stored. Trusted, the account keeps it in its own form; written by hand in small letters
+    /// without `:` it is still kept the next time the account connects with CalDAV.
+    #[tokio::test]
+    async fn a_caldav_certificate_is_asked_about_and_kept_however_it_is_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, record) = crate::pim::tests::fake_tls_server(crate::pim::tests::split_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let trusting = |pins: Vec<String>| {
+            let mut request = anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav));
+            if let Request::ConnectMail { trusted_certificates, .. } = &mut request {
+                *trusted_certificates = pins;
+            }
+            request
+        };
+        let shown = crate::pim::tests::self_signed().to_string();
+        let by_hand = shown.replace(':', "").to_lowercase();
+
+        let asked = ask(&core, Some(&app_key), trusting(Vec::new())).await;
+        let expected = Response::UntrustedCertificate {
+            service: "CalDAV".into(),
+            host: "127.0.0.1".into(),
+            sha256: shown.clone(),
+            public: false,
+        };
+        assert_eq!(asked, expected);
+        assert!(record.lock().expect("record").is_empty(), "nothing reached the CalDAV server");
+        assert!(!mail_accounts_file(dir.path()).exists(), "nothing stored");
+
+        let connected = ask(&core, Some(&app_key), trusting(vec![by_hand.clone()])).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let trusted = |stored: &[torro_core::Account]| stored[0].mail.as_ref().map(|m| m.trusted_certificates.clone());
+        assert_eq!(trusted(&stored), Some(vec![shown.clone()]), "in the account's form");
+
+        // Written by hand into `accounts.json`, it still matches what CalDAV shows.
+        let mut changed = stored.clone();
+        if let Some(mail) = changed[0].mail.as_mut() {
+            mail.trusted_certificates = vec![by_hand];
+        }
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), &changed).expect("written");
+        let again = ask(&core, Some(&app_key), trusting(Vec::new())).await;
+        let Response::MailConnected { account, .. } = &again else { panic!("connected, got {again:?}") };
+        assert_eq!(account.mail.as_ref().map(|m| m.trusted_certificates.clone()), Some(vec![shown.clone()]));
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(trusted(&stored), Some(vec![shown]), "kept, not lost");
+        nowhere(dir.path(), MAIL_PASSWORD, &[&asked, &connected, &again]);
     }
 
     /// Task E12.4: the counts of `inbox.list_categories` and `inbox.get_categorization` cover

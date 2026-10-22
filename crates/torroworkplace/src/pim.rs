@@ -90,7 +90,10 @@
 //!   same sign-in in the same step, so the same collections are never synced twice. Its health
 //!   goes into the mail account's one check ([`PimService::calendar_health`]). Like the mail
 //!   sync it connects to the server a person typed, wherever it is (issue #284), and trusts the
-//!   certificates the person confirmed for the account besides the system's ([`mail_http`]).
+//!   certificates the person confirmed for the account besides the system's: its sync goes
+//!   through the same kind of client as the check at sign-in ([`mail_http`]: no proxy, redirects
+//!   within the same origin only), never the shared client of Nextcloud and CalDAV accounts, so a
+//!   sign-in that worked also syncs behind a system proxy ([`PimService::http_for`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -780,7 +783,12 @@ fn sign_in_of(app_password: &Secret) -> [u8; 32] {
 /// See the module docs.
 #[derive(Debug)]
 pub struct PimService {
+    /// The shared client of Nextcloud and CalDAV accounts (`torro_pim_caldav::http_client`).
     http: Option<reqwest::Client>,
+    /// The client for the calendars of every mail account without trusted certificates
+    /// ([`mail_http`] with the system's trust), built on first use and then shared: `None`
+    /// inside when it cannot be built ([`PimService::http_for`]).
+    mail_http: OnceLock<Option<reqwest::Client>>,
     state: RwLock<State>,
     /// One sync of an account at a time.
     syncing: Mutex<()>,
@@ -816,6 +824,7 @@ impl PimService {
         };
         PimService {
             http,
+            mail_http: OnceLock::new(),
             state: RwLock::new(State::default()),
             syncing: Mutex::new(()),
             settings,
@@ -825,23 +834,23 @@ impl PimService {
         }
     }
 
-    /// The HTTP client for the calendars of `account`: for a mail account that trusts certificates
-    /// a person confirmed (issue #284, `MailAccountConfig::trusted_certificates`) one of its own,
-    /// built here and held in the account's slot with its CalDAV client ([`mail_http`]); else the
-    /// shared one.
+    /// The HTTP client for the calendars of `account` (issue #284). A mail account gets a client
+    /// like the one its CalDAV address was checked with at sign-in ([`mail_http`]: no proxy, as
+    /// the server is the one a person typed, and redirects within the same origin only): one that
+    /// trusts the certificates a person confirmed (`MailAccountConfig::trusted_certificates`)
+    /// besides the system's, built here and held in the account's slot with its CalDAV client;
+    /// without such certificates the one of [`PimService::mail_http`], built once for all of them.
+    /// Every other account gets the shared client. `None` when the client cannot be built (logged).
     fn http_for(&self, account: &torro_core::Account) -> Option<reqwest::Client> {
         let pins = match (account.kind, account.mail.as_ref()) {
-            (AccountKind::Mail, Some(mail)) if !mail.trusted_certificates.is_empty() => &mail.trusted_certificates,
+            (AccountKind::Mail, Some(mail)) => &mail.trusted_certificates,
             _ => return self.http.clone(),
         };
-        let fingerprints = pins.iter().filter_map(|pin| pin.parse().ok()).collect();
-        match mail_http(&Trust::System.with_pins(fingerprints)) {
-            Ok((http, _)) => Some(http),
-            Err(err) => {
-                eprintln!("torroworkplace: no HTTP client for the calendars of {}: {err}", account.id);
-                None
-            }
+        if pins.is_empty() {
+            return self.mail_http.get_or_init(|| built_mail_http(&Trust::System, "mail accounts")).clone();
         }
+        let fingerprints = pins.iter().filter_map(|pin| pin.parse().ok()).collect();
+        built_mail_http(&Trust::System.with_pins(fingerprints), &account.id)
     }
 
     /// The service on `settings` with its filter lists in `filters_file`, for tests.
@@ -3707,6 +3716,19 @@ pub(crate) fn mail_http(trust: &Trust) -> Result<(reqwest::Client, Seen), String
     Ok((http, seen))
 }
 
+/// [`mail_http`] for the calendars of `whose` (an account id, or "mail accounts" for the shared
+/// one), without its [`Seen`]: nobody asks about a certificate while syncing. `None` when it
+/// cannot be built, with a line in the log.
+fn built_mail_http(trust: &Trust, whose: &str) -> Option<reqwest::Client> {
+    match mail_http(trust) {
+        Ok((http, _)) => Some(http),
+        Err(err) => {
+            eprintln!("torroworkplace: no HTTP client for the calendars of {whose}: {err}");
+            None
+        }
+    }
+}
+
 /// Redirects of [`mail_http`]: at most ten, and only to the origin the first request went to.
 fn same_origin_redirects() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
@@ -4758,62 +4780,115 @@ pub(crate) mod tests {
     pub(crate) async fn fake_server(
         reply: impl Fn(&Seen) -> Reply + Send + Sync + 'static,
     ) -> (String, Arc<std::sync::Mutex<Vec<Seen>>>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
         let base = format!("http://{}/remote.php/dav/", listener.local_addr().expect("address"));
         let record = Arc::new(std::sync::Mutex::new(Vec::new()));
         let (log, reply) = (Arc::clone(&record), Arc::new(reply));
         tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let (log, reply) = (Arc::clone(&log), Arc::clone(&reply));
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(answer(stream, Arc::clone(&log), Arc::clone(&reply)));
+            }
+        });
+        (base, record)
+    }
+
+    /// The certificate of [`fake_tls_server`]: `self-signed.der` of `torro-mail-imap`'s fixtures,
+    /// for `mail.home.arpa`, signed by itself, as on a server at home.
+    pub(crate) const SELF_SIGNED_DER: &[u8] =
+        include_bytes!("../../torro-mail-imap/tests/fixtures/imap-tls/self-signed.der");
+
+    /// [`SELF_SIGNED_DER`] as a fingerprint.
+    pub(crate) fn self_signed() -> torro_mail_imap::tls::Fingerprint {
+        torro_mail_imap::tls::Fingerprint::of(SELF_SIGNED_DER)
+    }
+
+    /// [`fake_server`] behind TLS (issue #284): it shows [`SELF_SIGNED_DER`], which no system
+    /// trusts, with its own key, so only a client that pinned it gets an answer. Returns its DAV
+    /// base URL (`https://127.0.0.1:…/remote.php/dav/`) and the record; a request whose handshake
+    /// failed is not in it.
+    pub(crate) async fn fake_tls_server(
+        reply: impl Fn(&Seen) -> Reply + Send + Sync + 'static,
+    ) -> (String, Arc<std::sync::Mutex<Vec<Seen>>>) {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        const KEY: &[u8] = include_bytes!("../../torro-mail-imap/tests/fixtures/imap-tls/self-signed.key.der");
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(KEY.to_vec()));
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![CertificateDer::from(SELF_SIGNED_DER.to_vec())], key)
+            .expect("the fixture's certificate and key");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let base = format!("https://{}/remote.php/dav/", listener.local_addr().expect("address"));
+        let record = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (log, reply) = (Arc::clone(&record), Arc::new(reply));
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                let (acceptor, log, reply) = (acceptor.clone(), Arc::clone(&log), Arc::clone(&reply));
                 tokio::spawn(async move {
-                    let mut buf = Vec::new();
-                    let mut chunk = [0u8; 4096];
-                    let head_end = loop {
-                        match stream.read(&mut chunk).await {
-                            Ok(0) | Err(_) => return,
-                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                        }
-                        if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-                            break at + 4;
-                        }
-                    };
-                    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
-                    let header = |name: &str| {
-                        head.lines()
-                            .filter_map(|line| line.split_once(':'))
-                            .find(|(key, _)| key.trim().eq_ignore_ascii_case(name))
-                            .map(|(_, value)| value.trim().to_string())
-                    };
-                    let length: usize = header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
-                    while buf.len() < head_end + length {
-                        match stream.read(&mut chunk).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                        }
+                    // A client that does not trust the certificate ends the handshake: no request.
+                    if let Ok(tls) = acceptor.accept(tcp).await {
+                        answer(tls, log, reply).await;
                     }
-                    let mut first = head.lines().next().unwrap_or_default().split(' ');
-                    let body = buf.get(head_end..).unwrap_or_default();
-                    let seen = Seen {
-                        method: first.next().unwrap_or_default().to_string(),
-                        path: first.next().unwrap_or_default().to_string(),
-                        if_match: header("if-match"),
-                        if_none_match: header("if-none-match"),
-                        body: String::from_utf8_lossy(body).to_string(),
-                    };
-                    let (status, etag, body) = reply(&seen);
-                    log.lock().expect("record").push(seen);
-                    let etag = etag.map(|etag| format!("ETag: {etag}\r\n")).unwrap_or_default();
-                    let answer = format!(
-                        "HTTP/1.1 {status} Fake\r\n{etag}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = stream.write_all(answer.as_bytes()).await;
-                    let _ = stream.shutdown().await;
                 });
             }
         });
         (base, record)
+    }
+
+    /// Reads one request from `stream`, records it in `log` and answers it with `reply`, then
+    /// closes the connection: the one connection of [`fake_server`] and [`fake_tls_server`].
+    async fn answer<S, R>(mut stream: S, log: Arc<std::sync::Mutex<Vec<Seen>>>, reply: Arc<R>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+        R: Fn(&Seen) -> Reply + Send + Sync + 'static,
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+            if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break at + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+        let header = |name: &str| {
+            head.lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.trim().to_string())
+        };
+        let length: usize = header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+        while buf.len() < head_end + length {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+        let mut first = head.lines().next().unwrap_or_default().split(' ');
+        let body = buf.get(head_end..).unwrap_or_default();
+        let seen = Seen {
+            method: first.next().unwrap_or_default().to_string(),
+            path: first.next().unwrap_or_default().to_string(),
+            if_match: header("if-match"),
+            if_none_match: header("if-none-match"),
+            body: String::from_utf8_lossy(body).to_string(),
+        };
+        let (status, etag, body) = reply(&seen);
+        log.lock().expect("record").push(seen);
+        let etag = etag.map(|etag| format!("ETag: {etag}\r\n")).unwrap_or_default();
+        let answer = format!(
+            "HTTP/1.1 {status} Fake\r\n{etag}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(answer.as_bytes()).await;
+        let _ = stream.shutdown().await;
     }
 
     /// The requests the fake server saw so far, as [`Seen::line`]s.
@@ -5301,15 +5376,19 @@ pub(crate) mod tests {
     }
 
     /// Issue #284: a mail account with trusted certificates gets an HTTP client of its own for its
-    /// calendars, one without keeps the shared one; both reach the server (plain http here, where
-    /// no certificate is shown).
+    /// calendars; one without gets the client of all mail accounts without them, built once and
+    /// not the shared one (which may go through a system proxy the check at sign-in did not use);
+    /// both reach the server (plain http here, where no certificate is shown).
     #[tokio::test]
     async fn a_mail_account_with_trusted_certificates_gets_a_client_of_its_own() {
         let (dav, record) = fake_server(split_server).await;
         let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
         let on = torro_mail::Services { mail: true, calendars: true, tasks: true };
         let mut mail = mail_with_calendars(&dav.replace("127.0.0.1", "localhost"), on);
-        assert!(service.http_for(&mail).is_some(), "the shared client");
+        let caldav = torro_core::Account::caldav(&dav, "anna", "example.org");
+        assert!(service.http_for(&caldav).is_some() && service.mail_http.get().is_none(), "the shared client");
+        assert!(service.http_for(&mail).is_some(), "the client of mail accounts");
+        assert!(service.mail_http.get().is_some_and(Option::is_some), "built once, kept for the next");
         if let Some(config) = mail.mail.as_mut() {
             config.trusted_certificates = vec![format!("AB{}", ":CD".repeat(31))];
         }
@@ -5317,6 +5396,30 @@ pub(crate) mod tests {
         service.put_mail_account(mail.clone(), Secret::new(PASSWORD), None).await.expect("put");
         service.sync_account(&mail.id).await.expect("synced with its own client");
         assert!(lines(&record).iter().any(|line| line.starts_with("REPORT")), "{:?}", lines(&record));
+    }
+
+    /// Issue #284: the calendars of a mail account over real TLS, at a server at home with a
+    /// self-signed certificate. Without a pin the request fails in the handshake, before anything
+    /// reaches the server, and [`torro_mail_imap::tls::Seen::rejected`] names the certificate (what
+    /// the question shows); with it pinned the request goes through and
+    /// [`torro_mail_imap::tls::Seen::accepted`] names the pin (what the account keeps).
+    #[tokio::test]
+    async fn a_pinned_certificate_lets_the_calendars_of_a_mail_account_through() {
+        let (base, record) = fake_tls_server(split_server).await;
+        let dav = torro_pim_caldav::CalDavAccount { url: base, username: "anna".into() };
+
+        let (http, seen) = mail_http(&Trust::System).expect("a client");
+        let client = CalDavClient::new(http, &dav, Secret::new(PASSWORD)).expect("a CalDAV client");
+        assert!(client.services().await.is_err(), "the system does not trust it");
+        assert_eq!((seen.rejected(), seen.accepted()), (Some(self_signed()), None));
+        assert!(lines(&record).is_empty(), "no request reached the server, so no password did");
+
+        let (http, seen) = mail_http(&Trust::System.with_pins(vec![self_signed()])).expect("a client");
+        let client = CalDavClient::new(http, &dav, Secret::new(PASSWORD)).expect("a CalDAV client");
+        let offered = client.services().await.expect("through with the pin");
+        assert!(offered.calendars && offered.tasks, "{offered:?}");
+        assert_eq!((seen.rejected(), seen.accepted()), (None, Some(self_signed())));
+        assert!(lines(&record).iter().any(|line| line.starts_with("PROPFIND")), "{:?}", lines(&record));
     }
 
     #[test]
