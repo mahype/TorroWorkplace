@@ -17804,6 +17804,9 @@ mod tests {
         let ollama = fake_ollama().await;
         let script = Script::new(Vec::new());
         let mut rights = Rights::assistant();
+        // Only `tools`: with every area of the assistant the catalogue is longer than `MAX_TOOLS`, and the
+        // model would get the reading tools and `find_tools` instead of every allowed tool at once.
+        rights.areas.retain(|area, _| *area == Area::Tools);
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let (core, _host, engine, client) =
