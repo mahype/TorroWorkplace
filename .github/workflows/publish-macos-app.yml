@@ -1,6 +1,11 @@
-# Builds signed and notarised macOS `.app` bundles for the core and the two GUIs from the binaries that dist already
-# put into the GitHub Release, and attaches them to the same release as `<bin>-<arch>-apple-darwin.app.zip`.
+# Builds signed and notarised macOS `.app` bundles for every app of the suite from the binaries that dist already put
+# into the GitHub Release, and attaches them to the same release as `<bin>-<arch>-apple-darwin.app.zip`.
 # dist itself only ships bare binaries and no `.app` bundles. Background: docs/release.md.
+#
+# Names and layout must match what the suite looks for (torro_gui::source::bundle_program, issue #279):
+# `<title>.app/Contents/MacOS/<bin>` with title = AppId::display_name, bin = AppId::program_file and the bundle id
+# io.github.mahype.<appid>, appid = AppId::window_class. "Torro Workplace.app" carries the core's service as an agent
+# bundle in Contents/Library (torro_gui::source::SERVICE_PROGRAM, decision 7 in docs/lebenszyklus.md).
 #
 # Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
 #   * automatically after a release: dist calls it as a custom publish job
@@ -43,8 +48,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, arch: aarch64, runner: macos-14 }
-          - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, arch: x86_64, runner: macos-15-intel }
+          # The control centre; `service` embeds "Torro Workplace Service.app" (the same binary, started as `daemon`).
+          - { bin: torroworkplace, service: "1", appid: torro-workplace, title: Torro Workplace, arch: aarch64, runner: macos-14 }
+          - { bin: torroworkplace, service: "1", appid: torro-workplace, title: Torro Workplace, arch: x86_64, runner: macos-15-intel }
+          # The inbox's three apps (decision 2 in docs/lebenszyklus.md), each a program of its own.
+          - { bin: torroinbox, appid: torro-inbox, title: Torro Notification Hub, arch: aarch64, runner: macos-14 }
+          - { bin: torroinbox, appid: torro-inbox, title: Torro Notification Hub, arch: x86_64, runner: macos-15-intel }
+          - { bin: torro-inbox-mail, appid: torro-inbox-mail, title: Torro Workplace Mail, arch: aarch64, runner: macos-14 }
+          - { bin: torro-inbox-mail, appid: torro-inbox-mail, title: Torro Workplace Mail, arch: x86_64, runner: macos-15-intel }
+          - { bin: torro-inbox-notifications, appid: torro-inbox-notifications, title: Torro App Feed, arch: aarch64, runner: macos-14 }
+          - { bin: torro-inbox-notifications, appid: torro-inbox-notifications, title: Torro App Feed, arch: x86_64, runner: macos-15-intel }
+          - { bin: torroassistant, appid: torro-assistant, title: Torro Assistant, arch: aarch64, runner: macos-14 }
+          - { bin: torroassistant, appid: torro-assistant, title: Torro Assistant, arch: x86_64, runner: macos-15-intel }
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: aarch64, runner: macos-14 }
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
@@ -57,6 +72,7 @@ jobs:
       TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
       TARGET: ${{ matrix.arch }}-apple-darwin
       APP: out/${{ matrix.title }}.app
+      SERVICE: out/${{ matrix.title }}.app/Contents/Library/Torro Workplace Service.app
     steps:
       - uses: actions/checkout@v6
         with:
@@ -69,10 +85,19 @@ jobs:
 
       - name: Build the .app bundle
         run: |
+          set -euo pipefail
           version="${TAG#v}"
+          binary="${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}"
+          embed=""
+          if [ "${{ matrix.service }}" = "1" ]; then
+            # The core's service: an agent bundle without a Dock icon, embedded into the control centre's bundle.
+            AGENT_APP=1 packaging/macos/make-app.sh torroworkplace torro-workplace-service "Torro Workplace Service" \
+              "$version" "$binary" service
+            embed="service/Torro Workplace Service.app"
+          fi
           # Pass a 1024x1024 PNG as the last argument once real artwork exists (packaging/macos/icons/).
-          AGENT_APP="${{ matrix.agent }}" packaging/macos/make-app.sh "${{ matrix.exe || matrix.bin }}" \
-            "${{ matrix.appid }}" "${{ matrix.title }}" "$version" "${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}" out
+          AGENT_APP="${{ matrix.agent }}" EMBED_APP="$embed" packaging/macos/make-app.sh "${{ matrix.exe || matrix.bin }}" \
+            "${{ matrix.appid }}" "${{ matrix.title }}" "$version" "$binary" out
 
       - name: Import the signing certificate
         env:
@@ -106,6 +131,12 @@ jobs:
       - name: Sign (hardened runtime)
         run: |
           set -euo pipefail
+          # Nested code first: the outer signature seals the embedded service bundle as it is then.
+          if [ "${{ matrix.service }}" = "1" ]; then
+            codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" \
+              "$SERVICE/Contents/MacOS/torroworkplace"
+            codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" "$SERVICE"
+          fi
           codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" \
             "$APP/Contents/MacOS/${{ matrix.exe || matrix.bin }}"
           codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" "$APP"

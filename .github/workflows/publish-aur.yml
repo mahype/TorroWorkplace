@@ -33,6 +33,11 @@ jobs:
           - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, desc: "TorroWorkplace core: tray icon, workspace templates and one MCP server for the suite" }
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, desc: "Calendar for the tiled desktop (Nextcloud/CalDAV)" }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, desc: "Tasks for the tiled desktop" }
+          # The inbox's three programs (decision 2 in docs/lebenszyklus.md): each its own package, .desktop entry and icon.
+          - { bin: torroinbox, appid: torro-inbox, title: Torro Notification Hub, desc: "Notification Hub for the tiled desktop: what wants your attention from agents, the suite and scripts" }
+          - { bin: torro-inbox-mail, appid: torro-inbox-mail, title: Torro Workplace Mail, desc: "Mail for the tiled desktop, the mail window of the TorroWorkplace inbox" }
+          - { bin: torro-inbox-notifications, appid: torro-inbox-notifications, title: Torro App Feed, desc: "App Feed for the tiled desktop: notifications from GitHub, Nextcloud, Talk, ntfy and scripts" }
+          - { bin: torroassistant, appid: torro-assistant, title: Torro Assistant, desc: "Assistant for the tiled desktop: chat with mail, calendar, tasks and inbox" }
     steps:
       - uses: actions/checkout@v6
         with:

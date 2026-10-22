@@ -9,6 +9,14 @@
 #   AGENT_APP=1 make-app.sh torro-reminder torro-reminder "Torro Reminder" 0.1.0 ./torrocalendar ./out
 # The calendar binary sees its name `torro-reminder` and starts as the reminder window.
 #
+# With EMBED_APP=<path of a finished .app> that bundle is copied into `Contents/Library/` of this one. The control
+# centre carries the core's service this way (decision 7 in docs/lebenszyklus.md, issue #279): an agent bundle
+# without a Dock icon, where `torro_gui::source::SERVICE_PROGRAM` looks for it:
+#   AGENT_APP=1 make-app.sh torroworkplace torro-workplace-service "Torro Workplace Service" 0.1.0 ./torroworkplace ./svc
+#   EMBED_APP="./svc/Torro Workplace Service.app" make-app.sh torroworkplace torro-workplace "Torro Workplace" \
+#     0.1.0 ./torroworkplace ./out
+# Sign the embedded bundle before the outer one: the outer signature seals the nested code as it is.
+#
 # Signing and notarisation are separate steps (see .github/workflows/publish-macos-app.yml).
 set -euo pipefail
 
@@ -20,6 +28,18 @@ fi
 bin="$1"; appid="$2"; title="$3"; version="$4"; binary="$5"; out="$6"; icon_png="${7:-}"
 here="$(cd "$(dirname "$0")" && pwd)"
 app="$out/$title.app"
+
+# Checked before anything is made, so a wrong path leaves no half bundle behind.
+if [ -n "${EMBED_APP:-}" ]; then
+  case "$EMBED_APP" in
+    *.app | *.app/) ;;
+    *) echo "EMBED_APP must name an .app bundle: $EMBED_APP" >&2; exit 2 ;;
+  esac
+  if [ ! -d "$EMBED_APP" ]; then
+    echo "EMBED_APP is not a directory: $EMBED_APP" >&2
+    exit 2
+  fi
+fi
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
@@ -33,6 +53,12 @@ sed -e "s|@TITLE@|$title|g" -e "s|@BIN@|$bin|g" -e "s|@APPID@|$appid|g" -e "s|@V
   "$here/Info.plist.in" > "$app/Contents/Info.plist"
 if [ "${AGENT_APP:-}" = "1" ]; then
   plutil -insert LSUIElement -bool true "$app/Contents/Info.plist"
+fi
+
+if [ -n "${EMBED_APP:-}" ]; then
+  mkdir -p "$app/Contents/Library"
+  # ditto keeps symlinks, permissions and extended attributes of the bundle (and a signature, if it has one).
+  ditto "$EMBED_APP" "$app/Contents/Library/$(basename "$EMBED_APP")"
 fi
 
 # Optional icon: a 1024x1024 PNG becomes an .icns through sips + iconutil (both ship with macOS).

@@ -164,7 +164,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
 - Abnahme: Tests grün. Von Hand mit den Bündeln aus AP.5 (`scripts/macos-dev-bundles.sh`).
 
 ### AP.5 Paketierung: Bündel, Starter und Einträge für alle Apps
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** AP.4 · **Dateien:** `packaging/macos/make-app.sh`,
   `.github/workflows/publish-macos-app.yml`, `packaging/linux/*.desktop` (neu:
   `torro-inbox.desktop`, `torro-inbox-mail.desktop`, `torro-inbox-notifications.desktop`,

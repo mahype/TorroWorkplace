@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Notification Hub
+GenericName=Notification centre
+Comment=What wants your attention from agents, the suite and scripts
+Exec=torroinbox
+Icon=torro-inbox
+Terminal=false
+Categories=Utility;
+# Must equal the window class / Wayland app id set in torro-core (AppId::INBOX).
+StartupWMClass=torro-inbox

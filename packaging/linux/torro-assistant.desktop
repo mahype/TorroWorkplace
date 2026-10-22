@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Assistant
+GenericName=Assistant
+Comment=Chat with the suite: mail, calendar, tasks and inbox
+Exec=torroassistant
+Icon=torro-assistant
+Terminal=false
+Categories=Utility;
+# Must equal the window class / Wayland app id set in torro-core (AppId::ASSISTANT).
+StartupWMClass=torro-assistant

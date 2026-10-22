@@ -6939,6 +6939,7 @@ dependencies = [
  "torro-settings-ui",
  "unicode-segmentation",
  "webbrowser",
+ "winresource",
 ]
 
 [[package]]
@@ -6975,6 +6976,7 @@ dependencies = [
  "torro-pim",
  "torro-settings-ui",
  "webbrowser",
+ "winresource",
 ]
 
 [[package]]

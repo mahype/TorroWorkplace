@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Torro App Feed
+GenericName=App notifications
+Comment=Notifications from GitHub, Nextcloud, Talk, ntfy and scripts
+Exec=torro-inbox-notifications
+Icon=torro-inbox-notifications
+Terminal=false
+Categories=Network;
+# Must equal the window class / Wayland app id set in torro-core (AppId::INBOX_NOTIFICATIONS); Exec is its own
+# program (AppId::program_file, issue #279).
+StartupWMClass=torro-inbox-notifications
