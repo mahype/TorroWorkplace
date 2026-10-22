@@ -77,7 +77,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
-| `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` | |
+| `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹ ²⁴, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` ²⁴ | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
@@ -674,6 +674,13 @@ Zusammenfassung jetzt auch `shortcut`, `startup`, `workspace` und `monitor` trä
 Leserecht in `workspaces`. Die Freigabe nennt die Namen beider Vorlagen aus dem Speicher („Give "Deep work" key 1,
 taken from "Mail"“), ins Protokoll kommen die Kennungen gehasht, bei einer umgezogenen Taste auch die der bisherigen
 Inhaberin (`taken-from:<hash>`), nie der Bildschirm.
+
+²⁴ **Serien** (Issue #278, [termin-editor.md](termin-editor.md)): `save_event` ist `Write`, braucht aber Löschrecht
+in `calendar` (und wartet wie `delete_event` auf eine Freigabe), wenn die Änderung Termine wegfallen lässt: eine
+Regel entfernt oder gekürzt, eine andere Regel ohne einige bisherige Termine, geänderte Termine zurückgesetzt. Was
+wegfällt, zählt der Dienst aus dem gespeicherten Objekt, nie aus dem, was der Client über die Serie sagt; kann er es
+nicht zählen, gilt die Änderung als Löschen. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
+die ganze Serie.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
