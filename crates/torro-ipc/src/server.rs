@@ -162,49 +162,18 @@ where
 }
 
 /// A pipe server on `path` that only the current user can reach, as the first instance of that
-/// name (see [`serve_with_key`]).
+/// name ([`crate::pipe::user_only_listener`]); a name held by another program says so.
 #[cfg(windows)]
-fn pipe_listener(
-    path: &Path,
-) -> Result<interprocess::os::windows::named_pipe::tokio::PipeListener<Bytes, Bytes>, IpcError> {
+fn pipe_listener(path: &Path) -> Result<crate::pipe::UserOnlyListener, IpcError> {
     use std::io::{Error, ErrorKind};
 
-    use interprocess::os::windows::ToWtf16;
-    use interprocess::os::windows::named_pipe::{PipeListenerOptions, PipeMode};
-    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-
-    let nul = |_| IpcError::Io(Error::new(ErrorKind::InvalidInput, "a NUL character in the pipe name"));
-    let sid = crate::pipe::user_sid().ok_or_else(|| IpcError::Io(Error::other("the user's SID is unknown")))?;
-    let sddl = owner_only_sddl(sid).to_wtf_16().map_err(nul)?;
-    let descriptor = SecurityDescriptor::deserialize(&sddl).map_err(IpcError::Io)?;
-    let name = path.to_wtf_16().map_err(nul)?;
-
-    // `create_tokio_duplex` sets FILE_FLAG_FIRST_PIPE_INSTANCE on this first instance, and
-    // `accept_remote(false)` sets PIPE_REJECT_REMOTE_CLIENTS on every instance.
-    PipeListenerOptions::new()
-        .path(name)
-        .mode(PipeMode::Bytes)
-        .accept_remote(false)
-        .security_descriptor(Some(descriptor))
-        .create_tokio_duplex::<Bytes>()
-        .map_err(|err| match err.kind() {
-            ErrorKind::PermissionDenied => {
-                let message = format!("the pipe {} is held by another program", path.display());
-                IpcError::Io(Error::new(ErrorKind::PermissionDenied, message))
-            }
-            _ => IpcError::Io(err),
-        })
-}
-
-/// Byte stream mode for both directions of the pipe: lines, as on the Unix socket.
-#[cfg(windows)]
-type Bytes = interprocess::os::windows::named_pipe::pipe_mode::Bytes;
-
-/// The access list of the pipe in SDDL: protected (`P`, nothing inherited), one entry allowing
-/// everything (`GA`) to `sid`, nothing to anyone else.
-#[cfg(windows)]
-fn owner_only_sddl(sid: &str) -> String {
-    format!("D:P(A;;GA;;;{sid})")
+    crate::pipe::user_only_listener(path).map_err(|err| match err.kind() {
+        ErrorKind::PermissionDenied => {
+            let message = format!("the pipe {} is held by another program", path.display());
+            IpcError::Io(Error::new(ErrorKind::PermissionDenied, message))
+        }
+        _ => IpcError::Io(err),
+    })
 }
 
 /// The envelope with the request still unparsed, so that a malformed request can be told apart
@@ -837,10 +806,5 @@ mod windows_tests {
         // The malformed client did not take the server down with it.
         assert_eq!(client::call_with_key(&path, None, &Request::Ping).await.expect("a pong"), pong());
         server.abort();
-    }
-
-    #[test]
-    fn the_access_list_names_only_the_user() {
-        assert_eq!(owner_only_sddl("S-1-5-21-1-2-3-1001"), "D:P(A;;GA;;;S-1-5-21-1-2-3-1001)");
     }
 }

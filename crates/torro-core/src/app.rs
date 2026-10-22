@@ -145,6 +145,15 @@ impl AppId {
         command.extend(self.args.iter().map(|arg| (*arg).to_string()));
         command
     }
+
+    /// The name of the program file that opens this entry's window on its own (issue #279, decision 2
+    /// in `docs/lebenszyklus.md`): [`AppId::binary`], but for Mail and App Feed their window class
+    /// (`torro-inbox-mail`, `torro-inbox-notifications`), each a program of its own so the taskbar and
+    /// the Dock show it with its own icon. Without `.exe`. [`AppId::binary`] stays what `apps.list_apps`
+    /// answers (`torroinbox`), so nothing changes for clients.
+    pub fn program_file(self) -> &'static str {
+        if self == AppId::INBOX_MAIL || self == AppId::INBOX_NOTIFICATIONS { self.window_class } else { self.binary }
+    }
 }
 
 #[cfg(test)]
@@ -203,5 +212,32 @@ mod tests {
         assert_eq!(AppId::INBOX_MAIL.command("/usr/bin/torroinbox"), ["/usr/bin/torroinbox", "--view", "mail"]);
         assert_eq!(AppId::INBOX.command("torroinbox"), ["torroinbox"]);
         assert_eq!(AppId::WORKPLACE.command("torroworkplace"), ["torroworkplace", "ui"]);
+    }
+
+    /// Issue #279: Mail and App Feed get programs of their own, named like their window class; every
+    /// other entry's program is its binary, and the binary itself stays as it was.
+    #[test]
+    fn the_program_file_is_the_binary_but_for_mail_and_app_feed() {
+        let programs: Vec<_> = AppId::ALL.iter().map(|app| app.program_file()).collect();
+        assert_eq!(
+            programs,
+            [
+                "torroworkplace",
+                "torroinbox",
+                "torro-inbox-mail",
+                "torro-inbox-notifications",
+                "torrotasks",
+                "torrocalendar",
+                "torroassistant"
+            ]
+        );
+        assert_eq!(AppId::INBOX_MAIL.binary, "torroinbox", "apps.list_apps answers as before");
+        for (i, app) in AppId::ALL.iter().enumerate() {
+            assert!(
+                AppId::ALL[i + 1..].iter().all(|other| other.program_file() != app.program_file()),
+                "{} twice",
+                app.program_file()
+            );
+        }
     }
 }

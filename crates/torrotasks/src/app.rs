@@ -727,6 +727,9 @@ pub struct App {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// Another start of the tasks app asked for this window (issue #279, [`torro_gui::instance`]):
+    /// bring it to the front.
+    Raise,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
@@ -1031,6 +1034,8 @@ impl App {
             self.zoom.subscription().map(Message::Zoom),
             // The design pack polls the core every 2 s itself and wakes the window only for a change.
             self.design.subscription().map(Message::Design),
+            // A second start of the app brings this window to the front (issue #279), in every size.
+            torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
@@ -1104,6 +1109,7 @@ impl App {
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::Resized(size) => self.size = size,
             Message::CoreReady => {
                 self.waiting = false;

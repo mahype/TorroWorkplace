@@ -2320,6 +2320,9 @@ pub struct App<S> {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// Another start of this kind of window asked for it (issue #279, [`torro_gui::instance`]):
+    /// bring it to the front.
+    Raise,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     /// The source's answer for the view it was asked for; answers for another view are dropped.
@@ -3245,6 +3248,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.zoom.subscription().map(Message::Zoom),
             // The design pack polls the core every 2 s itself and wakes the window only for a change.
             self.design.subscription().map(Message::Design),
+            // A second start of this kind of window brings it to the front (issue #279), in every size.
+            torro_gui::instance::subscription().map(|()| Message::Raise),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like `e` must not mark an entry done that nobody sees.)
@@ -3417,6 +3422,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::Raise => return torro_gui::instance::bring_to_front(),
             Message::Resized(size) => self.size = size,
             Message::Loaded(view, result) => {
                 // An answer for a view the user has left since would show the wrong entries; one in

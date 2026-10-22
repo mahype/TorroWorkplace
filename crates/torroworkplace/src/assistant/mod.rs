@@ -1106,13 +1106,15 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
     }
 }
 
-/// `torroassistant` with `arguments[1..]`, from next to the core's binary or `PATH`, like
-/// `apps.open_app`. A missing app fails here, as any app that is not installed.
+/// `torroassistant` with `arguments[1..]`, started as `apps.open_app` starts apps (issue #279,
+/// [`crate::apps::args_start`]): on macOS through its bundle, `open -n -a <bundle> --args …`, else the
+/// program next to the core's binary or on `PATH`. Not waited for, as the core's own windows
+/// (`core::workplace_start`). A missing app fails here, as any app that is not installed.
 fn start_app(arguments: &[String]) -> Result<(), String> {
-    let mut command = arguments.to_vec();
-    if let Some(program) = command.first_mut() {
-        *program = crate::core::sibling(program).to_string_lossy().into_owned();
-    }
+    let args = arguments.get(1..).unwrap_or_default();
+    let bundle = crate::apps::installed_bundle(AppId::ASSISTANT);
+    let start = crate::apps::args_start(AppId::ASSISTANT, args, &crate::apps::search_dirs(), bundle.as_deref());
+    let (crate::apps::Start::Program(command) | crate::apps::Start::Open(command)) = start;
     SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
 }
 

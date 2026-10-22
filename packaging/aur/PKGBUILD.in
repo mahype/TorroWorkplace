@@ -1,12 +1,17 @@
-# Template for the AUR `-bin` packages (torroworkplace-bin, torrocalendar-bin, torrotasks-bin).
-# .github/workflows/publish-aur.yml replaces the @PLACEHOLDERS@ with sed and lets updpkgsums fill
-# in the checksums. Maintainer of the AUR package: see docs/release.md.
+# Template for every AUR `-bin` package of the suite, one per program: torroworkplace-bin,
+# torrocalendar-bin, torrotasks-bin, torroinbox-bin, torro-inbox-mail-bin,
+# torro-inbox-notifications-bin and torroassistant-bin (the list is the matrix of
+# .github/workflows/publish-aur.yml). That workflow replaces the @PLACEHOLDERS@ with sed and lets
+# updpkgsums fill in the checksums. Maintainer of the AUR package: see docs/release.md.
 #
 # @BIN@     binary name, e.g. torrocalendar
 # @APPID@   window class / desktop file / icon name, e.g. torro-calendar
 # @TITLE@   human name, e.g. "Torro Calendar"
 # @DESC@    one-line description
 # @VERSION@ version without the leading "v"
+# @DEPENDS@ other packages of the suite this one needs, each quoted and led by a space, e.g.
+#           " 'torroinbox-bin'" (Mail and App Feed open the compose window of torroinbox);
+#           empty for most packages
 
 # Maintainer: TorroWorkplace contributors
 pkgname=@BIN@-bin
@@ -17,7 +22,8 @@ arch=('x86_64' 'aarch64')
 url='https://github.com/mahype/TorroWorkplace'
 license=('MIT OR Apache-2.0')
 # The Iced GUIs dlopen these at runtime (wayland, xkbcommon, vulkan/EGL; X11 is optional).
-depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader')
+# Behind them the suite's own packages this program needs (the depends placeholder, see the head).
+depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader'@DEPENDS@)
 optdepends=('libx11: run on X11 instead of Wayland')
 provides=('@BIN@')
 conflicts=('@BIN@')

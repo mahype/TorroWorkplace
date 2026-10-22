@@ -6730,6 +6730,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-inbox-mail"
+version = "0.1.0"
+dependencies = [
+ "torro-core",
+ "torroinbox",
+ "winresource",
+]
+
+[[package]]
+name = "torro-inbox-notifications"
+version = "0.1.0"
+dependencies = [
+ "torro-core",
+ "torroinbox",
+ "winresource",
+]
+
+[[package]]
 name = "torro-ipc"
 version = "0.1.0"
 dependencies = [
@@ -6921,6 +6939,7 @@ dependencies = [
  "torro-settings-ui",
  "unicode-segmentation",
  "webbrowser",
+ "winresource",
 ]
 
 [[package]]
@@ -6957,6 +6976,7 @@ dependencies = [
  "torro-pim",
  "torro-settings-ui",
  "webbrowser",
+ "winresource",
 ]
 
 [[package]]

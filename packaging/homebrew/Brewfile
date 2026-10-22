@@ -2,5 +2,9 @@
 # Needs the tap mahype/homebrew-torro (created by the maintainer, see docs/release.md).
 tap "mahype/torro"
 brew "mahype/torro/torroworkplace"
+brew "mahype/torro/torroinbox"
+brew "mahype/torro/torro-inbox-mail"
+brew "mahype/torro/torro-inbox-notifications"
 brew "mahype/torro/torrocalendar"
 brew "mahype/torro/torrotasks"
+brew "mahype/torro/torroassistant"

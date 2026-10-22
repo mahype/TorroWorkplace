@@ -53,7 +53,9 @@
 //!
 //! The server starts the core like the apps do, but only in a desktop session
 //! ([`desktop_session`]): a core started from an SSH login or a container would run without
-//! the window manager and tray the person expects.
+//! the window manager and tray the person expects. Nor after a person quit it (issue #279, decision
+//! 4 in `docs/lebenszyklus.md`, [`crate::daemon::stopped_by_person`]): the tools then answer
+//! `offline` until a person opens an app of the suite again.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -104,6 +106,10 @@ const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
 /// The answer when no core runs and none may be started here.
 const NO_DESKTOP: &str = "cannot reach the Torro Workplace core: start Torro Workplace in your desktop session";
+
+/// The answer (code `offline`) when no core runs because a person quit it (issue #279): agents do
+/// not start it again. Without a path: the agent needs to know why, not where the marker lies.
+const STOPPED: &str = "The person stopped Torro Workplace; it starts again when they open a Torro app.";
 
 /// How many entries `inbox_list_items` lists without `limit`.
 const INBOX_LIMIT: u32 = 50;
@@ -230,14 +236,20 @@ impl TorroMcp {
     }
 
     /// Starts the core unless it runs ([`torro_gui::source::ensure_core`]), but only when
-    /// starting is allowed and this server has not started it within the last 10 seconds.
-    /// Blocks briefly (a socket connect and a spawn). Returns whether it tried to start it.
+    /// starting is allowed, no person quit the core ([`crate::daemon::stopped_by_person`], issue
+    /// #279), and this server has not started it within the last 10 seconds. Blocks briefly (a socket
+    /// connect and a spawn). Returns whether it tried to start it.
     pub fn start_core(&self) -> bool {
-        if !self.start_core || !self.may_start(Instant::now()) {
+        if !self.start_core || self.stopped_by_person() || !self.may_start(Instant::now()) {
             return false;
         }
         torro_gui::source::ensure_core(&self.socket);
         true
+    }
+
+    /// Whether a person quit the core (tray › Quit, `ctl quit`): its marker stands next to the socket.
+    fn stopped_by_person(&self) -> bool {
+        crate::daemon::stopped_by_person(&self.socket)
     }
 
     /// Whether a start at `now` is due, recording it if so: never twice within
@@ -270,6 +282,7 @@ impl TorroMcp {
                 self.wait_for_answer(conversation, entries).await
             }
             Ok(response) => result_of(response),
+            Err(IpcError::NotRunning) if self.stopped_by_person() => failure("offline", STOPPED),
             Err(IpcError::NotRunning) if !self.start_core => failure("error", NO_DESKTOP),
             Err(err) => failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
         })
@@ -350,7 +363,7 @@ impl TorroMcp {
     /// ([`TorroMcp::start_core`]) and waits for it.
     async fn send(&self, request: &Request) -> Result<Response, IpcError> {
         let first = client::call_with_key_via(&self.socket, self.key.as_ref(), Door::Mcp, request).await;
-        if !matches!(first, Err(IpcError::NotRunning)) || !self.start_core {
+        if !matches!(first, Err(IpcError::NotRunning)) || !self.start_core || self.stopped_by_person() {
             return first;
         }
         // A local connect and a spawn: short enough to run here, once per 10 seconds at most.
@@ -2307,6 +2320,36 @@ mod tests {
         assert!(server.may_start(now + START_TIMEOUT));
         // Without a desktop session nothing is started at all.
         assert!(!TorroMcp::new(PathBuf::from("/nowhere/core.sock"), None, false).start_core());
+    }
+
+    /// Issue #279: after a person's quit the server starts no core, also in a desktop session, and
+    /// every tool answers `offline` with its own message at once; once the marker is gone, it is the
+    /// old answer again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn after_a_quit_by_a_person_nothing_starts_and_tools_answer_offline() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("core.sock");
+        let mark = dir.path().join(crate::daemon::QUIT_MARK);
+        torro_gui::source::write_mark(&mark, Utc::now()).expect("marked");
+
+        let desktop = TorroMcp::new(socket.clone(), None, true);
+        assert!(!desktop.start_core(), "nothing is started");
+        assert_eq!(*desktop.started.lock().expect("lock"), None, "and no start is recorded");
+        let started = Instant::now();
+        let offline = desktop.call("system_ping", JsonObject::new()).await.expect("a tool result");
+        assert!(started.elapsed() < START_TIMEOUT, "no wait for a core that will not come");
+        assert_eq!(offline.is_error, Some(true));
+        assert_eq!(offline.structured_content, Some(json!({"code": "offline", "message": STOPPED})));
+        assert!(!STOPPED.contains(&*dir.path().to_string_lossy()), "no path in the message");
+
+        let elsewhere = TorroMcp::new(socket, None, false);
+        let offline = elsewhere.call("calendar_list_calendars", JsonObject::new()).await.expect("a tool result");
+        assert_eq!(offline.structured_content, Some(json!({"code": "offline", "message": STOPPED})));
+
+        std::fs::remove_file(&mark).expect("removed");
+        let missing = elsewhere.call("system_ping", JsonObject::new()).await.expect("a tool result");
+        assert_eq!(missing.structured_content, Some(json!({"code": "error", "message": NO_DESKTOP})));
     }
 
     #[test]

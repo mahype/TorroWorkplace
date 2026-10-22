@@ -1,22 +1,89 @@
 {
     "version": "0.1.0",
-    "description": "TorroWorkplace core: background service, tray icon and workspace templates",
+    "description": "TorroWorkplace suite: core with tray icon, Notification Hub, Mail, App Feed, Calendar, Tasks and Assistant",
     "homepage": "https://github.com/mahype/TorroWorkplace",
     "license": "MIT OR Apache-2.0",
+    "##": [
+        "One manifest for the whole suite (decision 8 in docs/lebenszyklus.md): every program lands in one folder, where",
+        "the apps and the core find each other, and each app gets a Start menu entry without arguments. Each zip is a",
+        "release archive of dist; the hashes are filled in per release (checkver/autoupdate)."
+    ],
     "architecture": {
         "64bit": {
-            "url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroworkplace-x86_64-pc-windows-msvc.zip",
-            "hash": "TODO-sha256-of-the-zip"
+            "url": [
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroworkplace-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroinbox-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torro-inbox-mail-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torro-inbox-notifications-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torrocalendar-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torrotasks-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroassistant-x86_64-pc-windows-msvc.zip"
+            ],
+            "hash": [
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip",
+                "TODO-sha256-of-the-zip"
+            ]
         }
     },
-    "bin": "torroworkplace.exe",
+    "bin": [
+        "torroworkplace.exe",
+        "torroinbox.exe",
+        "torro-inbox-mail.exe",
+        "torro-inbox-notifications.exe",
+        "torrocalendar.exe",
+        "torrotasks.exe",
+        "torroassistant.exe"
+    ],
+    "shortcuts": [
+        [
+            "torroworkplace.exe",
+            "Torro Workplace"
+        ],
+        [
+            "torroinbox.exe",
+            "Torro Notification Hub"
+        ],
+        [
+            "torro-inbox-mail.exe",
+            "Torro Workplace Mail"
+        ],
+        [
+            "torro-inbox-notifications.exe",
+            "Torro App Feed"
+        ],
+        [
+            "torrocalendar.exe",
+            "Torro Calendar"
+        ],
+        [
+            "torrotasks.exe",
+            "Torro Tasks"
+        ],
+        [
+            "torroassistant.exe",
+            "Torro Assistant"
+        ]
+    ],
     "checkver": {
         "github": "https://github.com/mahype/TorroWorkplace"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroworkplace-x86_64-pc-windows-msvc.zip"
+                "url": [
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroworkplace-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroinbox-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torro-inbox-mail-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torro-inbox-notifications-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torrocalendar-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torrotasks-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroassistant-x86_64-pc-windows-msvc.zip"
+                ]
             }
         }
     }
