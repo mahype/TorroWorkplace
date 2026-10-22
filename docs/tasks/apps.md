@@ -16,13 +16,13 @@ Gemeinsam für alle Aufgaben:
 - Nutzertexte englisch mit `tr()`; Übersetzungen nennt die Aufgabe im Bericht.
 
 Reihenfolge: AP.1 behebt das Schließen und die Neustarts und geht allein. AP.2 und AP.3 bauen darauf
-auf, AP.4 auf AP.3. AP.5 (Entwürfe der Icons) ist unabhängig; AP.6 wartet auf die Auswahl durch den
-Menschen. AP.7 schließt ab.
+auf, AP.4 auf AP.3, AP.5 auf AP.4. AP.6 (Entwürfe der Icons) ist unabhängig; AP.7 wartet auf die
+Auswahl durch den Menschen. AP.8 schließt ab.
 
 ```
-AP.1 (Schließen, Neustarts) ─┬─ AP.2 (eine Instanz je App) ──────────────┐
-                             └─ AP.3 (macOS: Start über Bündel) ─ AP.4 ──┼─ AP.7 (Doku, Abnahme)
-AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einbauen) ┘
+AP.1 (Schließen, Neustarts) ─┬─ AP.2 (eine Instanz je App) ─────────────────────────────┐
+                             └─ AP.3 (Eingang: drei Programme) ─ AP.4 (Start über Bündel) ─ AP.5 ─┼─ AP.8 (Doku, Abnahme)
+AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einbauen) ───────────────┘
 ```
 
 ## Aufgaben
@@ -34,11 +34,11 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
   `crates/torroworkplace/src/mcp.rs`, `crates/torro-gui/src/source.rs`
 - **Fenster wiederfinden (macOS, Windows):** `Core::open_app` und `show_control_centre` vergleichen heute
   `Window::class` mit `AppId::window_class`. Neu ist eine reine Funktion an `AppId`, etwa
-  `AppId::owns_class(class)`, die auch die Bundle-ID `io.github.mahype.<window_class>` und den Namen des
-  Programms (`binary`, ohne `.exe`) als Klasse dieses Eintrags annimmt; beide Aufrufer nutzen sie. Teilen
-  sich Einträge ein Programm (`torroinbox`), nimmt nur der Eintrag den Programmnamen an, den
-  `AppId::find(binary)` liefert (der Hub). Die anderen beiden findet nur ihre Bundle-ID; ohne Treffer
-  startet der Dienst wie bisher (AP.2 fängt den zweiten Start ab).
+  `AppId::owns_class(class)`, die auch die Bundle-ID `io.github.mahype.<window_class>` und den Namen der
+  Programmdatei des Eintrags (ohne `.exe`) als Klasse dieses Eintrags annimmt; beide Aufrufer nutzen sie.
+  Die Programmdatei liefert eine neue reine Funktion `AppId::program_file()`: `binary`, nur für Mail und
+  App Feed deren Fensterklasse (`torro-inbox-mail`, `torro-inbox-notifications`, die Programme aus AP.3).
+  `AppId` selbst und `binary` bleiben unverändert (`apps.list_apps` antwortet weiter mit `torroinbox`).
 - **Keine Startschleife:** `ensure_core` startet den Dienst nicht, wenn ein Programm der Suite das
   innerhalb von 10 s schon versucht hat. Dafür schreibt es eine Marke (`core-start`, Zeitpunkt) ins
   State-Verzeichnis des Dienstes, neben `core.sock`, und liest sie vor jedem Start. Der Dienst öffnet
@@ -53,9 +53,8 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
   eigenen englischen Meldung (etwa „The person stopped Torro Workplace; it starts again when they open a
   Torro app.“, ohne Pfad), nicht mit `NO_DESKTOP`. Apps und Steuerzentrale achten nicht auf die Marke:
   Wer eine App öffnet, will den Dienst.
-- Tests: `owns_class` für alle Einträge von `AppId::ALL` (Fensterklasse, Bundle-ID, Programmname, fremde
-  Klasse, der Programmname nur für den ersten Eintrag eines Programms; eine fremde Bundle-ID trifft
-  nicht); Marke `core-start`: zweiter Versuch innerhalb von 10 s unterbleibt, danach nicht (Zeit als
+- Tests: `program_file` und `owns_class` für alle Einträge von `AppId::ALL` (Fensterklasse, Bundle-ID,
+  Programmdatei, fremde Klasse; `torroinbox` trifft nur den Hub; eine fremde Bundle-ID trifft nicht); Marke `core-start`: zweiter Versuch innerhalb von 10 s unterbleibt, danach nicht (Zeit als
   Parameter); `quit`-Marke: geschrieben nach Quit über den Tray-Weg und über den Socket, gelöscht beim
   Start, MCP startet dann nicht und antwortet `offline` (`TorroMcp` mit Temp-Verzeichnis); Einrichtung
   erst nach Antwort des Sockets (Fake-Socket, der nicht antwortet: kein Start).
@@ -102,14 +101,43 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
   verschiedene Fenster). Auf macOS prüfen, ob das Nach-vorn-Holen gegen die Aktivierungsregeln des
   Systems ankommt. Wenn nicht, ist das ein Befund im Bericht, kein Grund zu nativem Code.
 
-### AP.3 macOS: Apps und Dienst aus ihren Bündeln starten
+### AP.3 Eingang: drei Programme mit eigenem Icon
 - [ ] erledigt
-- **Modell:** Opus (Plattformpfade, Startwege) · **Braucht:** AP.1 · **Dateien:**
+- **Modell:** Opus (Umbau in Bibliothek, neue Crates) · **Braucht:** AP.1 · **Dateien:** `Cargo.toml`
+  (Mitglieder und `[workspace.dependencies]`), `crates/torroinbox/Cargo.toml`, `crates/torroinbox/src/lib.rs`
+  (neu), `crates/torroinbox/src/main.rs`, `crates/torro-inbox-mail/` (neu: `Cargo.toml`, `src/main.rs`,
+  `build.rs`), `crates/torro-inbox-notifications/` (neu, ebenso), `packaging/windows/torro-inbox-mail.ico`,
+  `packaging/windows/torro-inbox-notifications.ico` (neu, Platzhalter), `crates/torroworkplace/src/core.rs`,
+  `crates/torroworkplace/src/apps.rs`
+- Warum (Entscheidung 8): Windows gruppiert die Taskleiste nach `.exe` und zeigt das Icon, das beim Bauen
+  in die `.exe` kommt; `winresource` bettet es in alle Programme eines Crates gleich ein. Getrennte Icons
+  gibt es also nur mit getrennten Crates. Auf macOS liegen dieselben Programme in den Bündeln, auf Linux
+  starten die `.desktop`-Dateien sie.
+- `torroinbox` wird Bibliothek und Programm: die Module wandern hinter `lib.rs`, das eine Funktion zum
+  Starten mit den Argumenten anbietet (der heutige Inhalt von `main`); `main.rs` ruft sie nur auf. Kein
+  Verhalten ändert sich, die Tests bleiben, wo sie sind.
+- Zwei neue Crates `torro-inbox-mail` und `torro-inbox-notifications`, je ein Programm gleichen Namens
+  (= Fensterklasse, = `AppId::program_file()` aus AP.1): `main` setzt `--view mail` bzw.
+  `--view notifications` vor die übrigen Argumente, wenn kein `--view` dabei ist, und startet die
+  Bibliothek. `#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]` wie in den anderen
+  Apps. `build.rs` mit `winresource` wie in `crates/torrocalendar/build.rs`, mit eigenem `.ico`
+  (Platzhalter nach `packaging/windows/README.md` aus einem neuen Platzhalter-SVG; AP.7 bringt die echten) und eigenem Produktnamen (`display_name`).
+- Der Dienst startet Mail und App Feed über ihr eigenes Programm, wenn es installiert ist (`Core::open_app`,
+  `target_command` für `Opened::Mail`), sonst wie bisher `torroinbox --view …`. Die Antwort von
+  `apps.list_apps` bleibt (`binary` = `torroinbox`); `installed` ist für Mail und App Feed wahr, wenn
+  `torroinbox` oder ihr eigenes Programm da ist. Das Verfassen (`--compose`) bleibt bei `torroinbox`.
+- Tests: Argumente der beiden Programme (`--view` ergänzt, ein übergebenes `--view` bleibt); Befehlszeile
+  des Dienstes mit und ohne eigenes Programm, mit Ziel `--message=…`; `list_in` mit nur `torro-inbox-mail`.
+- Abnahme: Tests grün; `cargo build --workspace` baut die drei Programme; `torro-inbox-mail` öffnet das
+  Mail-Fenster mit der Klasse `torro-inbox-mail`.
+
+### AP.4 macOS: Apps und Dienst aus ihren Bündeln starten
+- [ ] erledigt
+- **Modell:** Opus (Plattformpfade, Startwege) · **Braucht:** AP.1, AP.3 · **Dateien:**
   `crates/torro-gui/src/source.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/reminders.rs`,
-  `crates/torroworkplace/src/apps.rs`, `crates/torroinbox/src/main.rs`
+  `crates/torroworkplace/src/apps.rs`
 - Reine Funktion `torro_gui::source::bundle_program(app, exe, home, exists)`: das Programm eines Eintrags
-  im Bündel `<display_name>.app/Contents/MacOS/<datei>`. `<datei>` ist `binary`; für Mail und App Feed die
-  Fensterklasse (`torro-inbox-mail`, `torro-inbox-notifications`, Entscheidung 2). Gesucht wird neben dem
+  im Bündel `<display_name>.app/Contents/MacOS/<AppId::program_file()>`. Gesucht wird neben dem
   eigenen Bündel (`exe.ancestors().nth(4)`, wie `reminder_program`), in `/Applications` und in
   `~/Applications`. Für den Dienst gilt `Torro Workplace.app/Contents/Library/Torro Workplace Service.app/
   Contents/MacOS/torroworkplace` (Entscheidung 7). `reminder_program` nutzt dieselbe Suche.
@@ -127,36 +155,37 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
   Antwort. Die Katalogbeschreibung von `apps.open_app` stimmt danach auf allen Systemen und bleibt;
   ändert sie sich doch, `api.rs` und `docs/api-reference.md` (`TORRO_BLESS=1 cargo test -p torro-ipc`)
   mitnehmen.
-- `torroinbox` erkennt am Namen seiner Datei (`current_exe`, wie `started_as_reminder` im Kalender), welche
-  Fensterart es ist, wenn kein `--view` übergeben wurde.
-- Linux und Windows ändern sich nicht. Windows: `ensure_core` startet den Dienst auch dort (losgelöst, ohne
+- Linux und Windows ändern sich hier nicht weiter (ihre Programme kommen aus AP.3). Windows: `ensure_core` startet den Dienst auch dort (losgelöst, ohne
   Konsole: `CommandExt::creation_flags` mit `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`, ohne `unsafe`), und
   `CORE_START_WAIT` gilt dann für alle Systeme.
 - Tests: `bundle_program` für alle Einträge und den Dienst (neben dem Bündel, `/Applications`,
   `~/Applications`, keins → `None`); Befehlszeile mit und ohne Bündel, mit Ziel (absoluter Pfad, `--args`,
-  keine Umgebung); `list_in` mit nur einem Bündel (`installed`, `binary` = `torroinbox`); Erkennung der
-  Fensterart in `torroinbox` am Dateinamen.
-- Abnahme: Tests grün. Von Hand mit den Bündeln aus AP.4 (`scripts/macos-dev-bundles.sh`).
+  keine Umgebung); `list_in` mit nur einem Bündel (`installed`, `binary` = `torroinbox`).
+- Abnahme: Tests grün. Von Hand mit den Bündeln aus AP.5 (`scripts/macos-dev-bundles.sh`).
 
-### AP.4 Paketierung: Bündel, Starter und Einträge für alle Apps
+### AP.5 Paketierung: Bündel, Starter und Einträge für alle Apps
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** AP.3 · **Dateien:** `packaging/macos/make-app.sh`,
+- **Modell:** Sonnet · **Braucht:** AP.4 · **Dateien:** `packaging/macos/make-app.sh`,
   `.github/workflows/publish-macos-app.yml`, `packaging/linux/*.desktop` (neu:
   `torro-inbox.desktop`, `torro-inbox-mail.desktop`, `torro-inbox-notifications.desktop`,
   `torro-assistant.desktop`), `packaging/linux/icons/` (Platzhalter für die neuen Einträge),
   `.github/workflows/publish-aur.yml`, `packaging/homebrew/torro-suite.rb`, `packaging/homebrew/Brewfile`,
-  `packaging/scoop/torroworkplace.json` (→ Manifest der Suite), `packaging/windows/` (neue `.ico`),
-  `crates/torroinbox/build.rs` (neu), `crates/torroassistant/build.rs` (neu), `crates/torroinbox/Cargo.toml`,
-  `crates/torroassistant/Cargo.toml`, `scripts/macos-dev-bundles.sh` (neu), `packaging/README.md`
+  `packaging/scoop/torroworkplace.json` (→ Manifest der Suite), `packaging/windows/` (neue `.ico` für Hub und
+  Assistant), `crates/torroinbox/build.rs` (neu), `crates/torroassistant/build.rs` (neu),
+  `crates/torroinbox/Cargo.toml`, `crates/torroassistant/Cargo.toml`, `scripts/macos-dev-bundles.sh` (neu),
+  `packaging/README.md`
 - `make-app.sh`: neuer Schalter, der ein fertiges Agenten-Bündel unter `Contents/Library/` des Bündels
   einbettet (für „Torro Workplace Service.app“; Bundle-ID `io.github.mahype.torro-workplace-service`).
-  Workflow-Matrix: Notification Hub (`torroinbox`), Mail (`torroinbox` als `torro-inbox-mail`),
-  App Feed (`torroinbox` als `torro-inbox-notifications`), Assistant (`torroassistant`), dazu das
+  Workflow-Matrix: Notification Hub (`torroinbox`), Mail (`torro-inbox-mail`), App Feed
+  (`torro-inbox-notifications`), Assistant (`torroassistant`), dazu das
   Service-Bündel in Torro Workplace. Bundle-ID je Eintrag `io.github.mahype.<window_class>`, Titel
   `display_name`. Das eingebettete Bündel wird vor dem äußeren signiert.
-- `.desktop` je neuem Eintrag: `Exec` mit den Argumenten aus `AppId::args`, `StartupWMClass` = Fensterklasse.
-- Windows: `build.rs` mit `winresource` für Eingang und Assistent wie beim Kalender; Scoop-Manifest der
-  Suite mit allen Programmen und `shortcuts` für die sieben Einträge (Mail und App Feed mit Argumenten).
+- `.desktop` je neuem Eintrag: `Exec` = Programmdatei des Eintrags (`torro-inbox-mail` usw.),
+  `StartupWMClass` = Fensterklasse. AUR-Pakete und Homebrew-Formeln für Eingang (alle drei Programme) und
+  Assistent.
+- Windows: `build.rs` mit `winresource` für Hub und Assistent wie beim Kalender (Mail und App Feed haben
+  ihres aus AP.3); Scoop-Manifest der Suite mit allen Programmen und `shortcuts` für die sieben Einträge,
+  ohne Argumente.
 - `scripts/macos-dev-bundles.sh`: baut aus `target/debug` alle Bündel nach `target/debug/bundles/` (oder
   in einen übergebenen Ordner), mit `make-app.sh` und der Entwicklungs-Signatur
   (`macos-dev-sign.sh`). So lässt sich alles von Hand prüfen, ohne Release.
@@ -164,7 +193,7 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
   Bündel (sieben Apps, Workplace mit eingebettetem Dienst, Reminder); `plutil -lint` auf alle
   `Info.plist`; `desktop-file-validate` auf die `.desktop`-Dateien, falls vorhanden.
 
-### AP.5 Icons: Entwürfe zur Auswahl
+### AP.6 Icons: Entwürfe zur Auswahl
 - [ ] erledigt
 - **Modell:** Opus (Gestaltung) · **Braucht:** – · **Dateien:** `docs/prototypes/icons/` (neu: SVGs und
   `index.html`)
@@ -175,11 +204,11 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
 - `index.html` zeigt jede Variante in 16, 32, 128 und 512 px auf hellem und dunklem Grund und als
   nachgestelltes Dock.
 - Abnahme: Seite öffnet ohne Netz; Bericht nennt die Varianten. **Danach hält die Umsetzung an:** Der Mensch
-  wählt eine Variante (Kommentar im Issue), erst dann folgt AP.6.
+  wählt eine Variante (Kommentar im Issue), erst dann folgt AP.7.
 
-### AP.6 Icons einbauen
+### AP.7 Icons einbauen
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** AP.4, AP.5 und die Auswahl · **Dateien:** `packaging/linux/icons/*.svg`,
+- **Modell:** Haiku · **Braucht:** AP.5, AP.6 und die Auswahl · **Dateien:** `packaging/linux/icons/*.svg`,
   `packaging/macos/icons/*.png` (neu, 1024 px), `packaging/windows/*.ico`,
   `.github/workflows/publish-macos-app.yml`, `scripts/macos-dev-bundles.sh`, `packaging/windows/README.md`
 - Die gewählte Variante ersetzt die Platzhalter: SVG für Linux, 1024-px-PNG für `make-app.sh` (letztes
@@ -187,9 +216,9 @@ AP.5 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.6 (Icons einba
 - Abnahme: Bündel aus `scripts/macos-dev-bundles.sh` zeigen im Finder die neuen Icons; `.ico` enthalten alle
   sieben Größen.
 
-### AP.7 Doku und Abnahme
+### AP.8 Doku und Abnahme
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** AP.1–AP.4, AP.6 · **Dateien:** `docs/lebenszyklus.md`, `docs/core.md`,
+- **Modell:** Sonnet · **Braucht:** AP.1–AP.5, AP.7 · **Dateien:** `docs/lebenszyklus.md`, `docs/core.md`,
   `docs/architecture.md`, `docs/release.md`, `docs/api.md` (nur Verweis), `packaging/README.md`
 - `lebenszyklus.md` auf den gebauten Stand bringen (Abschnitt „Ausgangslage“ wird „Vorher“). Autostart-Tabellen in
   `core.md` und `architecture.md` um „erste App“ und das Service-Bündel ergänzen. `release.md`: sieben Bündel,

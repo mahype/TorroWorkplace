@@ -39,9 +39,11 @@ eigenständige Programme bleiben.
    `.desktop`-Datei und eigenem Icon und bleibt ein dünner Client des Dienstes. Verworfen: eine App mit
    mehreren Fenstern. Sie hätte ein einziges Dock-Icon (gegen den Wunsch) und hieße großen Umbau, weil
    heute jedes Fenster ein eigener Prozess ist.
-2. **Der Eingang wird drei Apps**: Notification Hub, Mail und App Feed, je mit eigenem Bündel, eigener
-   `.desktop`-Datei und eigenem Icon, alle mit dem Programm `torroinbox`. Auf macOS erkennt das Programm
-   am Namen seiner Datei im Bündel, welches Fenster es ist, wie heute schon „Torro Reminder“.
+2. **Der Eingang wird drei Apps**: Notification Hub, Mail und App Feed, je mit eigenem Programm
+   (`torroinbox`, `torro-inbox-mail`, `torro-inbox-notifications`), eigenem Bündel, eigener
+   `.desktop`-Datei und eigenem Icon. Der Code bleibt einer: `torroinbox` wird Bibliothek, die beiden neuen
+   Programme starten sie mit fester Fensterart. Nach außen ändert sich nichts: `apps.list_apps` nennt
+   weiter `torroinbox` als Programm.
 3. **Der Dienst bleibt.** Er startet beim Anmelden, wenn „Start at login“ an ist, sonst mit der ersten
    App. Schließt die letzte App, läuft er im Tray weiter: Erinnerungen, Benachrichtigungen, Sync und MCP
    brauchen keine offene App. Er endet nur über Tray › Quit bzw. `ctl quit`.
@@ -65,9 +67,12 @@ eigenständige Programme bleiben.
    Dienst nur den Dienst wecken, und kein Fenster ginge auf. Verworfen: den Weckruf im Dienst selbst
    abfangen. Das bräuchte nativen AppKit-Code mit `unsafe`.
 8. **Windows:** Die Apps starten den Dienst auch dort selbst. Startmenü-Einträge kommen über das
-   Scoop-Manifest der Suite (`shortcuts`). Die drei Eingangs-Fenster teilen sich eine `.exe` und zeigen
-   in der Taskleiste dasselbe Icon (das Icon steckt in der `.exe`); eigene Taskleisten-Icons bräuchten
-   eigene Programme.
+   Scoop-Manifest der Suite (`shortcuts`). Windows gruppiert die Taskleiste nach `.exe` und zeigt das
+   beim Bauen eingebettete Icon; deshalb bekommen Mail und App Feed eigene Programme (Entscheidung 2),
+   je in einem eigenen Crate, denn `winresource` bettet ein Icon in alle Programme eines Crates ein.
+   Verworfen: eine `.exe` mit eigener App-ID je Fensterart (`SetCurrentProcessExplicitAppUserModelID`).
+   Das bräuchte nativen Code mit `unsafe` und Startmenü-Verknüpfungen mit dieser ID, die Scoop nicht
+   anlegen kann; ohne sie bliebe das Anheften kaputt.
 9. **Icons:** Ein Agent entwirft ein einheitliches Set für alle Apps mit Vorschauseite unter
    `docs/prototypes/icons/`, der Mensch wählt; daraus entstehen `.icns`, `.ico` und die SVGs für Linux.
 
@@ -89,14 +94,15 @@ hat. So kann keine Startschleife entstehen.
 | | macOS | Linux (Hyprland) | Windows |
 |---|---|---|---|
 | Starter | `.app` in `/Applications` (Finder, Spotlight, Dock) | `.desktop` (Launcher, `StartupWMClass` = Fensterklasse) | Startmenü (Scoop `shortcuts`) |
-| Identität | Bundle-ID `io.github.mahype.<fensterklasse>` | Wayland-App-ID = Fensterklasse | `.exe` mit eingebettetem Icon |
+| Identität | Bundle-ID `io.github.mahype.<fensterklasse>` | Wayland-App-ID = Fensterklasse | eigene `.exe` je App mit eingebettetem Icon |
 | Dienst | Agenten-Bündel im Workplace-Bündel | `torroworkplace daemon` (systemd, `exec-once` oder erste App) | `torroworkplace.exe daemon` |
 | zweiter Start | System aktiviert das Bündel; sonst lokaler Kanal der App | lokaler Kanal der App | lokaler Kanal der App |
 | Beenden | ⌘Q, Dock › Beenden, rotes Fenster-Symbol | Fenster schließen | Fenster schließen |
 
 ## Folgen
 
-- **Paketierung:** sieben Bündel statt drei, dazu das Agenten-Bündel des Dienstes. Jedes wird
+- **Paketierung:** sieben Bündel statt drei, dazu das Agenten-Bündel des Dienstes; zwei Programme mehr
+  im Release (`torro-inbox-mail`, `torro-inbox-notifications`), jedes etwa so groß wie der Eingang. Jedes wird
   signiert und notarisiert; der Workflow wird länger, aber nicht anders.
 - **Updates** kommen weiter für die ganze Suite über die Paketmanager; Apps und Dienst gleicher Version
   bleiben die Regel, das Protokoll ist versioniert ([api.md](api.md)).
