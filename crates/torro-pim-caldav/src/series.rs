@@ -1261,7 +1261,17 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
             .collect(),
         (_, None) => changed,
     };
-    let old_dates = main.occurrences();
+    // "Following" compares the series from `key` on as the split's new object holds it before the
+    // change (the rule from `key`, as [`tail`] writes it), so dates are counted from the key and not
+    // from a start that may lie more than the counted ten years back (the API review of PR #294).
+    let old_dates = if following {
+        let rest = rest_rule(main, key)?;
+        let extra = main.extra.iter().copied().filter(|time| from(*time)).collect();
+        let excluded = main.excluded.clone();
+        Main { event: Event { start: key, ..main.event.clone() }, rule: rest, zone, excluded, extra }.occurrences()
+    } else {
+        main.occurrences()
+    };
     // Dates are compared only as far as they are counted; a new rule that ends sooner than the old
     // one beyond that drops events nobody counted (the review of PR #294).
     let cut_short = old_dates.as_ref().is_some_and(|old| old.known_until.is_some())
@@ -1677,6 +1687,32 @@ mod tests {
         let object = Object::read(ics);
         let main = object.master().and_then(|block| Main::of(block)).expect("a main event");
         main.occurrences().expect("countable").list
+    }
+
+    #[test]
+    fn following_in_a_series_older_than_the_counted_years_still_counts_what_it_drops() {
+        // The API review of PR #294: Tuesdays and Thursdays since 2014, from 13 Oct 2026 Tuesdays only.
+        // Without the changed occurrence of the fixture, so only the dates of the rule count.
+        let second = COUNTED.match_indices("BEGIN:VEVENT").nth(1).map(|(at, _)| at).expect("a changed occurrence");
+        let end = COUNTED[second..].find("END:VEVENT\r\n").or_else(|| COUNTED[second..].find("END:VEVENT\n"));
+        let end = second + end.expect("its end") + "END:VEVENT\n".len();
+        let without = format!("{}{}", &COUNTED[..second], COUNTED[end..].trim_start_matches('\n'));
+        let old = without
+            .replace("DTSTART;TZID=Europe/Berlin:20261012T080000", "DTSTART;TZID=Europe/Berlin:20140107T080000")
+            .replace("DTEND;TZID=Europe/Berlin:20261012T083000", "DTEND;TZID=Europe/Berlin:20140107T083000")
+            .replace("RRULE:FREQ=DAILY;COUNT=10", "RRULE:FREQ=WEEKLY;BYDAY=TU,TH");
+        assert!(!old.contains("RECURRENCE-ID") && old.contains("BEGIN:VTIMEZONE"), "{old}");
+        let key = berlin(2026, 10, 13, 8);
+        let stored = occurrence(&old, key);
+        let mut tuesdays = stored.repeat.as_deref().cloned().expect("rule");
+        tuesdays.weekdays.retain(|day| day.day == torro_pim::model::Weekday::Tuesday);
+        let event = Event { repeat: Some(Box::new(tuesdays)), ..stored.clone() };
+        assert!(drops(&old, &event, SeriesScope::Following) > 0, "the Thursdays from 15 Oct 2026 on");
+        let every_other = Repeat { interval: 2, ..stored.repeat.as_deref().cloned().expect("rule") };
+        let event = Event { repeat: Some(Box::new(every_other)), ..stored.clone() };
+        assert!(drops(&old, &event, SeriesScope::Following) > 0, "every other week");
+        let renamed = Event { summary: "Run".into(), ..stored };
+        assert_eq!(drops(&old, &renamed, SeriesScope::Following), 0, "a new title drops nothing");
     }
 
     #[test]
