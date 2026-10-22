@@ -9650,13 +9650,17 @@ mod tests {
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let listed = list(ask(&core, Some(&reader), Request::ListDesigns).await);
         let ids: Vec<&str> = listed.iter().map(|design| design.id.as_str()).collect();
-        assert_eq!(ids, ["torro", "pale", "teal"], "the standard first, then by folder name");
+        assert_eq!(
+            ids,
+            ["torro", "compact", "console", "pale", "teal"],
+            "the built-in designs first (issue #291), then by folder name"
+        );
         assert!(listed[0].standard && listed[0].valid && listed[0].active);
-        assert!(!listed[1].valid && !listed[1].problems.is_empty(), "{:?}", listed[1]);
-        assert!(listed[1].problems.iter().any(|problem| problem.contains("size.row")));
-        assert_eq!((listed[2].name.as_str(), listed[2].version.as_str()), ("Teal", "1.2.0"));
-        assert_eq!(listed[2].author.as_deref(), Some("Anna"));
-        assert!(listed[2].valid && listed[2].problems.is_empty() && !listed[2].standard);
+        assert!(!listed[3].valid && !listed[3].problems.is_empty(), "{:?}", listed[3]);
+        assert!(listed[3].problems.iter().any(|problem| problem.contains("size.row")));
+        assert_eq!((listed[4].name.as_str(), listed[4].version.as_str()), ("Teal", "1.2.0"));
+        assert_eq!(listed[4].author.as_deref(), Some("Anna"));
+        assert!(listed[4].valid && listed[4].problems.is_empty() && !listed[4].standard);
 
         let choose = |id: &str| Request::SetSetting { key: SettingKey::Design, value: serde_json::json!(id) };
         assert_eq!(code(&ask(&core, Some(&reader), choose("teal")).await), "forbidden", "choosing is Admin");

@@ -9823,7 +9823,7 @@ mod tests {
     fn the_density_follows_the_design() {
         let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("temp dir");
-        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[layout]\ndensity = \"comfortable\"\n";
+        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[list]\nstyle = \"cards\"\n";
         std::fs::create_dir_all(dir.path().join("roomy")).expect("pack folder");
         std::fs::write(dir.path().join("roomy").join("design.toml"), toml).expect("design.toml");
 

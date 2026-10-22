@@ -10,8 +10,10 @@
 //!   `color-schemes/<id>/color-scheme.toml` ([`color_scheme_dir`], [`load_color_scheme`],
 //!   [`list_color_schemes`]) with an optional `logo.svg`.
 //!
-//! `torro` ([`STANDARD_ID`]) is all three, built in: exactly the values `torro_gui::theme`,
-//! `torro_gui::typo` and [`crate::theme`] had as constants. The parts meet only through fixed roles (the
+//! `torro` ([`STANDARD_ID`]) is all three, built in. Its design is the file `designs/torro/design.toml` of
+//! the repository, embedded at build time; two more designs are built in the same way, `compact` and
+//! `console` ([`BUILT_IN_IDS`], issue #291). The standard font and colour scheme are exactly the values
+//! `torro_gui::theme`, `torro_gui::typo` and [`crate::theme`] had as constants. The parts meet only through fixed roles (the
 //! three font roles and four weights, the colour roles of [`Palette`]), and every rule checks one part
 //! only, so any valid design, font and colour scheme go together. [`Selection`] puts them together and
 //! gives a text level as it is drawn ([`Selection::level`]: size adjustment, nearest weight).
@@ -35,10 +37,11 @@ mod testdata;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use crate::AppId;
-use crate::i18n::tr;
 use crate::paths::AppPaths;
+use crate::settings::MailFormat;
 use crate::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_INACTIVE, STATUS_OK, TORRO_RED};
 
 pub use error::DesignError;
@@ -49,6 +52,13 @@ pub use scheme::{list_color_schemes, load_color_scheme};
 /// The id of the standard design. It has no folder; [`load`] answers it without touching the disk,
 /// and a folder of that name under [`dir`] is refused ([`DesignError::BadId`]).
 pub const STANDARD_ID: &str = "torro";
+
+/// The designs built into the suite, in the order [`list`] gives them: the standard ("Standard"),
+/// "Compact" and "Console" (issue #291). Each is `designs/<id>/design.toml` in the repository,
+/// embedded at build time. [`load`] answers each without touching the disk, and a folder of one of
+/// these names under [`dir`] is refused ([`DesignError::BadId`]). Fonts and colour schemes have only
+/// [`STANDARD_ID`] built in.
+pub const BUILT_IN_IDS: [&str; 3] = [STANDARD_ID, "compact", "console"];
 
 /// The folder that holds the designs: `designs/` in the core's data directory (`TORRO_DATA_HOME`
 /// overrides the root). `None` when no home directory is known.
@@ -117,8 +127,8 @@ impl Part {
 pub struct Design {
     /// [`STANDARD_ID`] or the folder name.
     pub id: String,
-    /// Name, version and author, for the list in the control centre; with the font and colour scheme
-    /// the design suggests.
+    /// Name, version and author, for the list in the control centre; with the font, colour scheme and
+    /// mail view the design suggests.
     pub about: About,
     /// The eleven text levels (`torro_gui::typo`), sizes for Inter.
     pub typo: TypeScale,
@@ -130,6 +140,8 @@ pub struct Design {
     pub layout: Layout,
     /// Fixed sizes of controls, rows and regions (`torro_gui::theme::size`).
     pub size: Size,
+    /// How lists are drawn (`[list]`, issue #291); the inbox's [`Density`] follows from it.
+    pub list: ListLook,
     /// `preview.png` in the folder (at most 1200 × 800), for the control centre; `None` shows a
     /// swatch.
     pub preview: Option<PathBuf>,
@@ -150,8 +162,12 @@ pub struct About {
     /// part is checked on its own). Always `None` for fonts and colour schemes.
     pub font: Option<String>,
     /// Designs only (`[about] color_scheme`): the id of the colour scheme the design is meant for, as
-    /// [`About::font`].
+    /// [`About::font`]. Leaves the format with task L.33: colours never belong to a design.
     pub color_scheme: Option<String>,
+    /// Designs only (`[about] mail_view`, issue #291): how the design suggests a mail with HTML shows in
+    /// the reader – `text` for Console. A suggestion like [`About::font`]; the core service applies it
+    /// when the design is chosen (task L.33). Always `None` for fonts and colour schemes.
+    pub mail_view: Option<MailFormat>,
 }
 
 /// The three font roles a text level can use.
@@ -231,9 +247,10 @@ pub enum Face {
 }
 
 /// Which of the [`Fonts`] a level uses (`font = "heading"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FontRole {
+    #[default]
     Text,
     Heading,
     Numbers,
@@ -250,10 +267,11 @@ impl fmt::Display for FontRole {
 }
 
 /// A font weight (`weight = "medium"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Weight {
     /// 400.
+    #[default]
     Regular,
     /// Weight 500.
     Medium,
@@ -276,7 +294,11 @@ impl fmt::Display for Weight {
 
 /// One text level: font role, weight, size and absolute line height (logical pixels). In a [`Design`]
 /// the size is meant for Inter; [`Selection::level`] gives the level as drawn in the chosen font.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `Default` (and the `Default` of the other parts of a [`Design`]) is all zeros: nothing to draw with,
+/// only the ground the complete built-in standard is read onto. A design comes from [`load`] or
+/// [`Design::standard`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Level {
     pub font: FontRole,
     pub weight: Weight,
@@ -335,7 +357,7 @@ impl LevelName {
 }
 
 /// The eleven text levels, named as in `torro_gui::typo` (lowercase).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct TypeScale {
     /// Time axis, times in events, weekday letters. Uses `numbers` in the standard.
     pub micro: Level,
@@ -407,7 +429,7 @@ impl TypeScale {
 }
 
 /// The spacing scale (`space = [xs, s, m, l, xl, xxl]`), ascending.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Space {
     pub xs: f32,
     pub s: f32,
@@ -417,8 +439,9 @@ pub struct Space {
     pub xxl: f32,
 }
 
-/// The radius scale (`radius = [xs, sm, md, lg]`), ascending.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// The radius scale (`radius = [xs, sm, md, lg]`), never falling from small to large: equal steps
+/// are allowed (Console: all 0, Standard and Compact: all 4).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Radius {
     pub xs: f32,
     pub sm: f32,
@@ -427,18 +450,20 @@ pub struct Radius {
 }
 
 /// Padding as `[vertical, horizontal]`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Pad {
     pub vertical: f32,
     pub horizontal: f32,
 }
 
-/// How close the inbox's entries stand (`density = "compact"`), a value of the design and not a
-/// choice made per window: `Compact` draws one row per entry, `Comfortable` draws cards with a
-/// preview, chips and buttons (`torro_gui::widgets::card`, task E8.2). The whole suite shows the
-/// density of the design that is active, so every window agrees (task E13.1, issue #226).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+/// How close the inbox's entries stand, a value of the design and not a choice made per window:
+/// `Compact` draws one row per entry, `Comfortable` draws cards with a preview, chips and buttons
+/// (`torro_gui::widgets::card`, task E8.2). The whole suite shows the density of the design that is
+/// active, so every window agrees (task E13.1, issue #226).
+///
+/// Since issue #291 it is no key of its own (`layout.density` is gone): it follows the list style,
+/// [`ListLook::density`] – `cards` is `Comfortable`, `rows` and `line` are `Compact`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Density {
     /// One row per entry; what the standard design "Torro" shows.
     Compact,
@@ -447,7 +472,7 @@ pub enum Density {
 }
 
 /// Margins, paddings and gaps by role (`[layout]`), the same for every element of that role.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Layout {
     /// The margin around the inset content panel beside the sidebar (top, right, bottom).
     /// Standard 8: `torro_gui::theme::size::INSET`, used in `torro_gui::shell`.
@@ -468,14 +493,83 @@ pub struct Layout {
     pub section_gap: f32,
     /// Between elements inside a group. Standard 8: `torro_gui::widgets::group`.
     pub item_gap: f32,
-    /// Rows or cards in the inbox ([`Density`]). Standard [`Density::Compact`]:
-    /// `torro_gui::layout::density`.
-    pub density: Density,
+    /// The padding of a mail in the reader, inside the reading column [`Size::reading_max`]
+    /// (`[layout] reading_padding`, issue #291): Standard 24 × 24 so far (the page padding the reader
+    /// has today), Compact 32 × 40, Console 14 × 18. Read by `torro_gui` from task L.34 on.
+    pub reading_padding: Pad,
+}
+
+/// How lists are drawn (`[list]`, issue #291): the same cells in the same places in every design, only
+/// drawn another way – several lines or one, lines between rows or not, how the chosen row shows.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ListLook {
+    /// Rows with several lines, one line, or cards ([`ListStyle`]).
+    pub style: ListStyle,
+    /// A hairline below each row.
+    pub separators: bool,
+    /// How the chosen row shows ([`ListSelection`]).
+    pub selection: ListSelection,
+    /// The edge of a sender's avatar in a mail row and in the reader's head, 20–48; `0` draws no avatar
+    /// and gives its place to the text.
+    pub avatar: f32,
+    /// Lines of preview under the subject of a mail row, 1 or 2.
+    pub preview_lines: u8,
+}
+
+impl ListLook {
+    /// The inbox's [`Density`] of this list style: [`ListStyle::Cards`] is `Comfortable`, the others
+    /// are `Compact`.
+    pub fn density(&self) -> Density {
+        match self.style {
+            ListStyle::Cards => Density::Comfortable,
+            ListStyle::Rows | ListStyle::Line => Density::Compact,
+        }
+    }
+}
+
+/// How the entries of a list are drawn (`[list] style`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ListStyle {
+    /// `"rows"`: a row per entry with its lines (a mail: avatar, sender, subject, preview). Standard
+    /// and Compact.
+    #[default]
+    Rows,
+    /// `"line"`: one line per entry in fixed columns, as tall as [`Size::row_message`]. Console.
+    Line,
+    /// `"cards"`: a card per entry with its buttons shown ([`Density::Comfortable`]).
+    Cards,
+}
+
+/// How the chosen row of a list shows (`[list] selection`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ListSelection {
+    /// `"bar"`: a bar at the left edge of the row. Standard and Compact.
+    #[default]
+    Bar,
+    /// `"fill"`: the whole row in `accent`, its text and icons in `on_accent`. Console.
+    Fill,
+}
+
+/// How much a design shows at once, for the list of designs (task L.33, `DesignInfo::density`):
+/// decided by the height of a mail row ([`Design::density_level`]), so a design can't put itself
+/// in the wrong class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DensityLevel {
+    /// A mail row of 110 or more.
+    Airy,
+    /// 88 to 109 (Standard: 100).
+    Balanced,
+    /// 56 to 87 (Compact: 76).
+    Dense,
+    /// Below 56 (Console: 24, one line).
+    VeryDense,
 }
 
 /// Fixed sizes (`torro_gui::theme::size`, lowercase). `INSET` moved to [`Layout::inset`];
 /// `HAIRLINE` stays a constant in `torro_gui` (always one logical pixel, not a design choice).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Size {
     pub control_sm: f32,
     pub control: f32,
@@ -523,11 +617,20 @@ pub struct Size {
     /// A Torro pill in the mail reader (task E11.1: Task, Event, Mute…) and the sender's avatar
     /// beside them in the reader's head.
     pub pill: f32,
+    /// The collapsed sidebar and the collapsed action rail of the mail window (issue #291), 40–80 and
+    /// at least [`Size::control_lg`], the rail's button. Standard 52 so far (`torro_gui::shell::rail()`).
+    pub rail: f32,
+    /// The expanded action rail of the mail window (issue #291), 180–320. Standard 232 so far (the
+    /// sidebar's width, as `torro_gui::widgets::RailMode::Expanded` has it today).
+    pub rail_wide: f32,
+    /// The widest the text of a mail stands in the reader (issue #291), 480–1200. Standard 1200 so far:
+    /// the reader has no reading width yet, and 1200 is the most the rule allows.
+    pub reading_max: f32,
 }
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 29] {
+    pub fn entries(&self) -> [(&'static str, f32); 32] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
@@ -558,6 +661,9 @@ impl Size {
             ("tile_lg", self.tile_lg),
             ("command", self.command),
             ("pill", self.pill),
+            ("rail", self.rail),
+            ("rail_wide", self.rail_wide),
+            ("reading_max", self.reading_max),
         ]
     }
 
@@ -592,6 +698,9 @@ impl Size {
             "tile_lg" => &mut self.tile_lg,
             "command" => &mut self.command,
             "pill" => &mut self.pill,
+            "rail" => &mut self.rail,
+            "rail_wide" => &mut self.rail_wide,
+            "reading_max" => &mut self.reading_max,
             _ => return None,
         })
     }
@@ -902,56 +1011,44 @@ impl Rgba {
 }
 
 impl Design {
-    /// The standard design "Torro": exactly the form the suite had as constants before design packs
-    /// (`torro_gui::theme`, `torro_gui::typo`); with [`FontSet::standard`] and [`ColorScheme::standard`]
-    /// the whole look of before.
+    /// The standard design: `designs/torro/design.toml` of the repository, embedded at build time and
+    /// read once per process. The file sets every key, so nothing here fills in a value; with
+    /// [`FontSet::standard`] and [`ColorScheme::standard`] it is the whole look of the suite as it ships.
+    ///
+    /// # Panics
+    ///
+    /// When the embedded file can't be read or breaks a rule. That is a broken build, never a state of
+    /// the disk: the test `the_built_in_designs_load_without_reasons` stops such a build, and there are
+    /// no stand-in values in the code that would have to be kept in step with the file.
     pub fn standard() -> Design {
-        let level = |font, weight, size, line| Level { font, weight, size, line };
-        Design {
-            id: STANDARD_ID.to_string(),
-            about: About {
-                name: "Torro".to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                author: Some("Torro".to_string()),
-                description: Some(tr("Inter, quiet surfaces, Torro red").to_string()),
-                font: None,
-                color_scheme: None,
-            },
-            typo: TypeScale {
-                micro: level(FontRole::Numbers, Weight::Regular, 11.0, 14.0),
-                caption: level(FontRole::Text, Weight::Medium, 12.0, 16.0),
-                meta: level(FontRole::Text, Weight::Regular, 12.0, 16.0),
-                body: level(FontRole::Text, Weight::Regular, 13.0, 20.0),
-                body_strong: level(FontRole::Text, Weight::Medium, 13.0, 20.0),
-                read: level(FontRole::Text, Weight::Regular, 14.0, 22.0),
-                title: level(FontRole::Heading, Weight::Semibold, 16.0, 22.0),
-                headline: level(FontRole::Heading, Weight::Semibold, 22.0, 28.0),
-                display: level(FontRole::Text, Weight::Semibold, 28.0, 32.0),
-                hero: level(FontRole::Heading, Weight::Semibold, 48.0, 56.0),
-                countdown: level(FontRole::Numbers, Weight::Medium, 28.0, 32.0),
-            },
-            space: Space { xs: 4.0, s: 8.0, m: 12.0, l: 16.0, xl: 24.0, xxl: 32.0 },
-            radius: Radius { xs: 4.0, sm: 6.0, md: 8.0, lg: 10.0 },
-            layout: Layout {
-                inset: 8.0,
-                page_padding: Pad { vertical: 24.0, horizontal: 24.0 },
-                panel_padding: Pad { vertical: 16.0, horizontal: 16.0 },
-                row_padding: Pad { vertical: 0.0, horizontal: 16.0 },
-                control_padding: Pad { vertical: 0.0, horizontal: 10.0 },
-                section_gap: 24.0,
-                item_gap: 8.0,
-                density: Density::Compact,
-            },
-            size: STANDARD_SIZE,
-            preview: None,
-        }
+        STANDARD.clone()
     }
 
     /// Whether this is the standard design.
     pub fn is_standard(&self) -> bool {
         self.id == STANDARD_ID
     }
+
+    /// How much this design shows at once, from the height of a mail row ([`Size::row_message`]): from
+    /// 110 [`DensityLevel::Airy`], from 88 `Balanced`, from 56 `Dense`, below that `VeryDense`.
+    pub fn density_level(&self) -> DensityLevel {
+        match self.size.row_message {
+            h if h >= 110.0 => DensityLevel::Airy,
+            h if h >= 88.0 => DensityLevel::Balanced,
+            h if h >= 56.0 => DensityLevel::Dense,
+            _ => DensityLevel::VeryDense,
+        }
+    }
 }
+
+/// The standard design, read from the embedded file on first use ([`Design::standard`]).
+static STANDARD: LazyLock<Design> = LazyLock::new(|| match pack::built_in_standard() {
+    Ok(design) => design,
+    Err(problems) => {
+        let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        panic!("designs/torro/design.toml, built into torro-core, can't be used – a broken build: {reasons:?}")
+    }
+});
 
 /// The families of a font with their faces, its licence and its size adjustment: the standard or one
 /// from [`font_dir`], merged with the standard and checked.
@@ -1027,10 +1124,14 @@ pub struct ColorScheme {
     pub id: String,
     /// Name, version, author and description from `color-scheme.toml`.
     pub about: About,
-    /// The colours of both modes.
+    /// The colours of both modes. For a scheme that is [`ColorScheme::dark_only`], `light` is a copy of
+    /// `dark`.
     pub colors: Colors,
     /// Its own logo, if it brings one.
     pub logo: Logo,
+    /// `dark_only = true` in `color-scheme.toml` (issue #291): the scheme has dark colours only, so
+    /// every app draws it dark in either mode. Such a file may not have `[colors.light]`.
+    pub dark_only: bool,
 }
 
 impl ColorScheme {
@@ -1046,6 +1147,7 @@ impl ColorScheme {
             },
             colors: STANDARD_COLORS,
             logo: Logo::default(),
+            dark_only: false,
         }
     }
 
@@ -1113,39 +1215,6 @@ fn inter() -> Fonts {
 }
 
 const STANDARD_COLORS: Colors = Colors { dark: STANDARD_DARK, light: STANDARD_LIGHT };
-
-/// The sizes of the standard design (also the list of valid `[size]` keys).
-pub(crate) const STANDARD_SIZE: Size = Size {
-    control_sm: 28.0,
-    control: 32.0,
-    control_lg: 36.0,
-    control_xl: 44.0,
-    row: 40.0,
-    row_two: 52.0,
-    row_message: 92.0,
-    row_notice: 64.0,
-    row_sidebar: 28.0,
-    row_group: 32.0,
-    header: 44.0,
-    sidebar: 232.0,
-    props: 300.0,
-    panel: 400.0,
-    list: 460.0,
-    list_medium: 380.0,
-    hour: 48.0,
-    axis: 52.0,
-    axis_narrow: 44.0,
-    content_max: 720.0,
-    form_max: 640.0,
-    card_gap: 12.0,
-    avatar: 36.0,
-    avatar_lg: 40.0,
-    tile_sm: 20.0,
-    tile: 28.0,
-    tile_lg: 36.0,
-    command: 46.0,
-    pill: 42.0,
-};
 
 const STANDARD_DARK: Palette = Palette {
     bg: Rgba::hex(0x08090A),
@@ -1305,9 +1374,9 @@ mod tests {
         assert_eq!([d.size.row_message, d.size.row_notice], [92.0, 64.0], "the inbox's rows (tasks E3.9, E11.1)");
         // The comfortable density of the inbox (task E8.2).
         assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
-        // The standard shows rows, not cards (task E13.1): the density is the design's, and "Torro"
-        // is compact. Only a pack switches the cards on.
-        assert_eq!(d.layout.density, Density::Compact);
+        // The standard shows rows, not cards (task E13.1): the density is the design's list style, and
+        // the standard's rows are compact. Only a pack switches the cards on.
+        assert_eq!(d.list.density(), Density::Compact);
         // A reminder over the whole screen (task ER1.5).
         assert_eq!(d.typo.hero, Level { font: FontRole::Heading, weight: Weight::Semibold, size: 48.0, line: 56.0 });
         assert_eq!(d.typo.countdown, Level { font: FontRole::Numbers, weight: Weight::Medium, size: 28.0, line: 32.0 });
@@ -1321,6 +1390,29 @@ mod tests {
         assert_eq!(c.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);
         assert_eq!(c.light.chart.map(hex), [0x2F6BC9, 0xB8621A, 0x2A9466, 0xA8448C]);
         assert_eq!((hex(c.dark.chart_other), hex(c.light.chart_other)), (0x5C6068, 0x50545B));
+    }
+
+    /// Issue #291: the inbox's density follows the list style – only cards are comfortable.
+    #[test]
+    fn cards_are_the_comfortable_density() {
+        let look = |style| ListLook { style, ..Design::standard().list };
+        assert_eq!(look(ListStyle::Cards).density(), Density::Comfortable);
+        assert_eq!(look(ListStyle::Rows).density(), Density::Compact);
+        assert_eq!(look(ListStyle::Line).density(), Density::Compact);
+    }
+
+    /// Issue #291: the density level comes from the height of a mail row, at the bounds 110, 88 and 56.
+    #[test]
+    fn the_density_level_follows_the_mail_row() {
+        let level = |row_message: f32| {
+            let mut d = Design::standard();
+            d.size.row_message = row_message;
+            d.density_level()
+        };
+        assert_eq!([level(120.0), level(110.0)], [DensityLevel::Airy; 2]);
+        assert_eq!([level(109.0), level(88.0)], [DensityLevel::Balanced; 2]);
+        assert_eq!([level(87.0), level(56.0)], [DensityLevel::Dense; 2]);
+        assert_eq!([level(55.0), level(24.0)], [DensityLevel::VeryDense; 2]);
     }
 
     /// `colour` as `0xRRGGBB`.

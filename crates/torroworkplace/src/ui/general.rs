@@ -1428,7 +1428,7 @@ mod tests {
         assert_eq!((paper.font, paper.scheme), (None, Some("paper")), "Paper suggests no font");
         settings.design = "neon".into();
         let standard = suggestion(&state, &settings).expect("listed");
-        assert_eq!(standard, Suggestion { design: "Torro", font: None, scheme: None }, "a broken one is not drawn");
+        assert_eq!(standard, Suggestion { design: "Standard", font: None, scheme: None }, "a broken one is not drawn");
         assert_eq!(suggestion(&State::default(), &settings), None);
 
         let (note, tip) = noted(true, "Harbor", Some("1.2.0".into()));

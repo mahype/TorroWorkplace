@@ -11,8 +11,8 @@
 //! padding of pages, panels, list rows and controls, and the gaps between and inside groups. They
 //! come from the active design (`[layout]` in a pack, concept `docs/design-pakete.md`), so a pack
 //! can give the whole suite more or less room in one place. Use them exactly where the role fits;
-//! everything else stays on [`crate::theme::space`]. [`density`] belongs to the same `[layout]`
-//! table but is a word, not a measure: it says whether the inbox draws a row per entry or cards.
+//! everything else stays on [`crate::theme::space`]. [`density`] is no measure: it says whether the
+//! inbox draws a row per entry or cards, and follows the design's list style (`[list] style`).
 //!
 //! ```ignore
 //! container(page).padding(layout::page_padding());            // a settings page
@@ -146,10 +146,10 @@ pub fn wide_column_from() -> f32 {
 
 /// How close the inbox's entries stand: [`Density::Compact`] in the standard design, one row per
 /// entry. This is the density of the *design*, not of a window – every window of the suite shows
-/// the same one, and only a pack with `layout.density = "comfortable"` asks for cards (task E13.2,
-/// issue #226).
+/// the same one, and only a design with `[list] style = "cards"` asks for cards (task E13.2, issue
+/// #226; since issue #291 from `ListLook::density`).
 pub fn density() -> Density {
-    design::with(|t| t.design.layout.density)
+    design::with(|t| t.design.list.density())
 }
 
 fn padding(pad: Pad) -> Padding {

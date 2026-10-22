@@ -1,0 +1,170 @@
+# Console, built into the suite (issue #291): very dense and square, one line per mail, like a mail
+# client in a terminal. Same elements in the same places; lists are drawn as single lines without
+# hairlines, and the chosen row is a bar of the accent colour.
+#
+# Embedded at build time. A key left out would follow the standard; this file sets every key anyway, so
+# Console stays as it is when the standard changes (task L.34). Values from the boards "The three
+# designs side by side" and "Building block: mail window" of issue #291; values the boards do not name
+# are derived below, each with its reason. No capitals and no column head: the format can't write
+# capitals, and a head would add an element.
+#
+# Sizes of text are meant for Inter. The id `console` is taken: a folder of that name in the data
+# folder is refused.
+
+format = 1
+
+[about]
+name = "Console"
+version = "1.0.0"   # a built-in design shows the suite's version instead
+author = "Torro"
+description = "Very dense and square, one line per mail"
+font = "jetbrains-mono"   # suggested; applied when the design is chosen, if that font is there
+mail_view = "text"        # suggested: mail as plain text
+
+# ------------------------------------------------------------------------------------------------
+# Text: from the boards body 12/18 (strong in bold), meta and caption 11/16, read 12/18, title and
+# headline 12/18 bold – one size for everything that is read. The time axis stays at the smallest size
+# (11); the glance number and the reminder over the whole screen keep their sizes, because they are read
+# from a distance, and take the bold of Console's headings.
+# ------------------------------------------------------------------------------------------------
+
+[type.micro]
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+
+[type.caption]
+font = "text"
+size = 11
+line = 16
+weight = "medium"
+
+[type.meta]
+font = "text"
+size = 11
+line = 16
+weight = "regular"
+
+[type.body]
+font = "text"
+size = 12
+line = 18
+weight = "regular"
+
+[type.body_strong]
+font = "text"
+size = 12
+line = 18
+weight = "bold"
+
+[type.read]
+font = "text"
+size = 12
+line = 18
+weight = "regular"
+
+[type.title]
+font = "heading"
+size = 12
+line = 18
+weight = "bold"
+
+[type.headline]
+font = "heading"
+size = 12
+line = 18
+weight = "bold"
+
+[type.display]
+font = "text"
+size = 28
+line = 32
+weight = "bold"
+
+[type.hero]
+font = "heading"
+size = 48
+line = 56
+weight = "bold"
+
+[type.countdown]
+font = "numbers"
+size = 28
+line = 32
+weight = "medium"
+
+# ------------------------------------------------------------------------------------------------
+# Scales. Spacing: `s` is the gap inside a group (item_gap 4 from the boards), so the scale is the
+# suite's scale halved. Corners: none, as the boards draw them.
+# ------------------------------------------------------------------------------------------------
+
+[space]
+scale = [2, 4, 6, 8, 12, 16]
+
+[radius]
+scale = [0, 0, 0, 0]
+
+# ------------------------------------------------------------------------------------------------
+# Gaps. From the boards: inset 0, rows 0 × 8, item gap 4, reading 14 × 18. Derived: pages 12 × 12, a
+# little more than a row's 8, so text does not touch the edge of a settings page; panels and cards
+# 8 × 8, a row's side padding; buttons 6 at the sides for buttons of 24; 12 between groups, three times
+# the gap inside one, the least that still separates groups at this density (the rule's least is 8).
+# ------------------------------------------------------------------------------------------------
+
+[layout]
+inset = 0
+page_padding = [12, 12]
+panel_padding = [8, 8]
+row_padding = [0, 8]
+control_padding = [0, 6]
+section_gap = 12
+item_gap = 4
+reading_padding = [14, 18]
+
+# ------------------------------------------------------------------------------------------------
+# Sizes. From the boards: buttons 24 (control_sm), the action rail's button 28 (control_lg), mail and
+# notice rows 24 (one line), sidebar row 24, header 32, sidebar 196, list 600, rail 40 and 200, reading
+# column 1200 (the mail fills the reader).
+# ------------------------------------------------------------------------------------------------
+
+[size]
+control_sm = 24
+control = 26        # inputs: between the buttons (24) and the rail's button (28)
+control_lg = 28
+control_xl = 36     # reminder over the whole screen: still a step above the rest, but dense
+row = 24            # a task row is one line, like a mail row
+row_two = 40        # two lines of 18 with 2 above and below
+row_message = 24
+row_notice = 24
+row_sidebar = 24
+row_group = 24      # a group head as tall as a row: the smallest click target the rules allow
+header = 32
+sidebar = 196
+props = 280         # the narrowest the rules allow: more room for the content
+panel = 360         # as Compact: a detail panel narrower than the suite's 400
+list = 600
+list_medium = 480   # list in the medium layout: 0.8 of the wide list, about the ratio the suite had
+hour = 36           # an hour in the calendar: two lines of 18
+axis = 48           # "00:00" in the widest figures at size 11 needs 40 with this xs; 48 gives it room
+axis_narrow = 44
+content_max = 960   # one-line lists show more columns; still within the rule's 1200
+form_max = 640      # forms read best at the suite's width
+card_gap = 4        # the gap inside a group
+avatar = 24         # cards keep an avatar; the smallest the rules allow (rows have none)
+avatar_lg = 28
+tile_sm = 16        # source tiles: the smallest the rules allow
+tile = 20
+tile_lg = 24
+command = 32        # a step above control_lg, the rule's least
+pill = 28           # the reader's head: as large as the rail's button
+rail = 40
+rail_wide = 200
+reading_max = 1200
+
+[list]
+style = "line"
+separators = false
+selection = "fill"
+avatar = 0          # no avatar: the text starts at the row's edge
+preview_lines = 1

@@ -7,13 +7,14 @@ use std::fmt;
 
 use crate::i18n::{tr, trf};
 
-use super::{Mode, Part};
+use super::{BUILT_IN_IDS, Mode, Part, STANDARD_ID};
 
 /// One reason a design, a font or a colour scheme can't be used. [`super::load`],
 /// [`super::load_font`] and [`super::load_color_scheme`] collect every reason they find.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesignError {
-    /// The folder name is not a valid id (`a-z`, `0-9`, `-`, at most 32) or is the standard's.
+    /// The folder name is not a valid id (`a-z`, `0-9`, `-`, at most 32) or is the standard's; for a
+    /// design also the id of a built-in design (`compact`, `console`, issue #291).
     BadId { id: String },
     /// There is no folder for this id in the folder of `part`.
     NotFound { part: Part, id: String },
@@ -51,9 +52,14 @@ pub enum DesignError {
     AccentContrast { mode: Mode, ratio: f32 },
     /// A number outside its range (type sizes, scales, layout gaps, sizes, `tint`).
     OutOfRange { key: String, value: f32, min: f32, max: f32 },
+    /// A number that is neither 0 (off) nor within its range: `list.avatar` (issue #291).
+    OffOrRange { key: String, value: f32, min: f32, max: f32 },
+    /// A colour scheme with `dark_only = true` that has `[colors.light]` (issue #291).
+    DarkOnlyLight,
     /// A line height below the size or above twice the size.
     LineHeight { key: String, line: f32, size: f32 },
-    /// `space.scale` or `radius.scale` does not grow from small to large.
+    /// `space.scale` does not grow from small to large, `radius.scale` falls, or the avatars or tiles
+    /// do not grow.
     NotAscending { key: String },
     /// A file named in the TOML file has the wrong type (`expected`: "SVG", "TTF or OTF").
     WrongFileType { key: String, path: String, expected: &'static str },
@@ -81,6 +87,9 @@ impl fmt::Display for DesignError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ratio = |r: &f32| format!("{r:.2}");
         let text = match self {
+            DesignError::BadId { id } if id != STANDARD_ID && BUILT_IN_IDS.contains(&id.as_str()) => {
+                trf("“{id}” is the name of a design built into the suite. Give the folder another name.", &[("id", id)])
+            }
             DesignError::BadId { id } => trf(
                 "“{id}” can't be a folder name here. Use up to 32 characters a–z, 0–9 and -; “torro” is built in.",
                 &[("id", id)],
@@ -142,6 +151,13 @@ impl fmt::Display for DesignError {
                 "“{key}” is {value}; allowed are {min} to {max}.",
                 &[("key", key), ("value", value), ("min", min), ("max", max)],
             ),
+            DesignError::OffOrRange { key, value, min, max } => trf(
+                "“{key}” is {value}; allowed are 0 (off) or {min} to {max}.",
+                &[("key", key), ("value", value), ("min", min), ("max", max)],
+            ),
+            DesignError::DarkOnlyLight => {
+                tr("A color scheme with dark_only = true has no [colors.light]. Remove one of them.").to_string()
+            }
             DesignError::LineHeight { key, line, size } => trf(
                 "The line height of “{key}” is {line}; it must be between {size} and twice that.",
                 &[("key", key), ("line", line), ("size", size)],
@@ -206,6 +222,24 @@ mod tests {
         let range = DesignError::OutOfRange { key: "size.row".into(), value: 20.0, min: 32.0, max: 64.0 };
         assert!(range.to_string().contains("size.row"));
         assert_eq!(DesignError::FontLicense.to_string(), tr("Fonts need their license in LICENSE.txt."));
+    }
+
+    /// Issue #291: a folder named like a built-in design is told so; the standard's id keeps the old
+    /// sentence, because it is refused in every folder.
+    #[test]
+    fn a_built_in_id_is_named_as_such() {
+        let taken = DesignError::BadId { id: "console".into() }.to_string();
+        assert_eq!(
+            taken,
+            trf(
+                "“{id}” is the name of a design built into the suite. Give the folder another name.",
+                &[("id", &"console")]
+            )
+        );
+        let torro = DesignError::BadId { id: "torro".into() }.to_string();
+        assert!(torro.contains("a–z"), "{torro}");
+        let avatar = DesignError::OffOrRange { key: "list.avatar".into(), value: 12.0, min: 20.0, max: 48.0 };
+        assert!(avatar.to_string().contains("list.avatar") && avatar.to_string().contains("48"));
     }
 
     /// Task L.19: a part that is not there is named by its kind.

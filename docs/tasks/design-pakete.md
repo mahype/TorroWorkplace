@@ -607,7 +607,10 @@ es im Kommentar der `design.toml`):
 | `[about] font` · `mail_view` | – · – | – · – | `jetbrains-mono` · `text` |
 
 ### L.31 Kern: neue Schlüssel, eingebaute Designs, Regeln
-- [ ] erledigt
+- [x] erledigt (2026-10-22: `designs/torro/design.toml` mit den Werten von vorher und dem Namen „Standard“; Compact und
+  Console setzen jeden Schlüssel, damit sie sich mit L.34 nicht verschieben; die Beschreibungen der eingebauten Designs
+  laufen über `tr()`; neue Fehler `OffOrRange` und `DarkOnlyLight`; freigegeben angepasst: Testerwartungen in
+  `torro-gui/src/design.rs`, `torroworkplace/src/core.rs`, `torroworkplace/src/ui/general.rs`)
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
   `crates/torro-core/src/design/{pack,rules,error,scheme,testdata}.rs`, `crates/torro-core/tests/fixtures/**`, neu
   `designs/{torro,compact,console}/design.toml`, entfernt `designs/{plex,commitr,channelr,guildr,quattro,ribbon}/`,

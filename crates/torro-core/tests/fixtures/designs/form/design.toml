@@ -1,4 +1,4 @@
-# Every key the format knows since task L.19, with valid values: the form only.
+# Every key the format knows since issue #291, with valid values: the form only.
 format = 1
 
 [about]
@@ -8,6 +8,7 @@ author = "Torro tests"
 description = "Every key set once"
 font = "plex"
 color_scheme = "torro"
+mail_view = "text"
 
 [type.micro]
 font = "numbers"
@@ -71,7 +72,7 @@ row_padding = [8, 16]
 control_padding = [0, 12]
 section_gap = 28
 item_gap = 10
-density = "comfortable"
+reading_padding = [40, 48]
 
 [size]
 control_sm = 28
@@ -103,3 +104,13 @@ tile = 28
 tile_lg = 36
 command = 46
 pill = 42
+rail = 56
+rail_wide = 240
+reading_max = 680
+
+[list]
+style = "cards"
+separators = false
+selection = "fill"
+avatar = 36
+preview_lines = 2

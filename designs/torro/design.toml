@@ -1,0 +1,166 @@
+# The standard design, built into the suite (`torro_core::design::Design::standard`, issue #291).
+#
+# This file is embedded at build time and read once per process. It must set every key: there are no
+# stand-in values in the code, and a test stops a build whose standard leaves a key out or breaks a
+# rule. Compact and Console take what they leave out from here.
+#
+# Until task L.34 it holds the form the suite had before issue #291, so every app looks as it did
+# ("same picture"). L.34 sets the new standard (text 14/22, flush content, hairlines, reading column).
+#
+# Sizes of text are meant for Inter; a font with another x-height scales them (docs/design-pakete.md).
+# Copy this file into the folder `designs/<id>/` of the data folder to make a design of your own; the
+# id must not be `torro`, `compact` or `console`.
+
+format = 1
+
+[about]
+# The id stays `torro` (settings and the API name it); the name the list shows is "Standard".
+name = "Standard"
+# A built-in design shows the suite's version instead of this one.
+version = "1.0.0"
+author = "Torro"
+description = "Inter, quiet surfaces, Torro red"
+
+# ------------------------------------------------------------------------------------------------
+# Text levels: font role (text | heading | numbers), size, line height, weight (regular | medium |
+# semibold | bold).
+# ------------------------------------------------------------------------------------------------
+
+[type.micro]        # time axis, times in events, weekday letters
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+
+[type.caption]      # group titles, buttons, chips, badges
+font = "text"
+size = 12
+line = 16
+weight = "medium"
+
+[type.meta]         # metadata, counters, due dates
+font = "text"
+size = 12
+line = 16
+weight = "regular"
+
+[type.body]         # lists, sidebar, inputs, running text
+font = "text"
+size = 13
+line = 20
+weight = "regular"
+
+[type.body_strong]  # header and row titles
+font = "text"
+size = 13
+line = 20
+weight = "medium"
+
+[type.read]         # the whole of a mail in the reader
+font = "text"
+size = 14
+line = 22
+weight = "regular"
+
+[type.title]        # card and dialog titles
+font = "heading"
+size = 16
+line = 22
+weight = "semibold"
+
+[type.headline]     # detail titles
+font = "heading"
+size = 22
+line = 28
+weight = "semibold"
+
+[type.display]      # the big number of a mini tile
+font = "text"
+size = 28
+line = 32
+weight = "semibold"
+
+[type.hero]         # title of a reminder over the whole screen
+font = "heading"
+size = 48
+line = 56
+weight = "semibold"
+
+[type.countdown]    # countdown of a reminder over the whole screen
+font = "numbers"
+size = 28
+line = 32
+weight = "medium"
+
+# ------------------------------------------------------------------------------------------------
+# Scales
+# ------------------------------------------------------------------------------------------------
+
+[space]             # xs s m l xl xxl, growing
+scale = [4, 8, 12, 16, 24, 32]
+
+[radius]            # xs sm md lg, never falling
+scale = [4, 6, 8, 10]
+
+# ------------------------------------------------------------------------------------------------
+# Gaps by role: [vertical, horizontal] for paddings
+# ------------------------------------------------------------------------------------------------
+
+[layout]
+inset = 8                   # margin around the content panel beside the sidebar; 0 draws it flush
+page_padding = [24, 24]     # content and pages
+panel_padding = [16, 16]    # panels, floating cards, dialogs
+row_padding = [0, 16]       # list rows (the height comes from [size])
+control_padding = [0, 10]   # buttons, chips, inputs
+section_gap = 24            # between groups and sections
+item_gap = 8                # between elements inside a group
+reading_padding = [24, 24]  # a mail in the reader: the page padding the reader has had so far
+
+# ------------------------------------------------------------------------------------------------
+# Sizes
+# ------------------------------------------------------------------------------------------------
+
+[size]
+control_sm = 28     # buttons, icon buttons, segments
+control = 32        # inputs, property rows
+control_lg = 36     # quick entry, primary button in a dialog, the action rail's button
+control_xl = 44     # buttons of a reminder over the whole screen
+row = 40            # a list row (tasks)
+row_two = 52        # a row with two lines
+row_message = 92    # a mail row: three lines of 20 and 16 above and below
+row_notice = 64     # any other inbox row: two lines
+row_sidebar = 28    # sidebar and menu rows
+row_group = 32      # the head of a group in a list
+header = 44         # the header bar
+sidebar = 232       # the sidebar
+props = 300         # the properties column
+panel = 400         # the side panel for details
+list = 460          # a list beside its detail (wide)
+list_medium = 380   # the same in the medium layout
+hour = 48           # an hour in the calendar
+axis = 52           # the calendar's time axis
+axis_narrow = 44    # the same in the narrow layout
+content_max = 720   # reading width of lists and pages
+form_max = 640      # reading width of forms
+card_gap = 12       # between cards and the parts of a card
+avatar = 36         # the avatar of a card
+avatar_lg = 40      # the large avatar
+tile_sm = 20        # source tiles: small, medium, large
+tile = 28
+tile_lg = 36
+command = 46        # kept in the format, no building block uses it any more
+pill = 42           # the sender's avatar in the reader's head
+rail = 52           # collapsed sidebar and action rail: control_lg and 8 at either side, as today
+rail_wide = 232     # expanded action rail: as wide as the sidebar, as today
+reading_max = 1200  # widest a mail's text stands: the reader has no limit yet, 1200 is the rule's most
+
+# ------------------------------------------------------------------------------------------------
+# How lists are drawn
+# ------------------------------------------------------------------------------------------------
+
+[list]
+style = "rows"      # rows (several lines) | line (one line, fixed columns) | cards
+separators = true   # a hairline below each row
+selection = "bar"   # bar (a bar at the left) | fill (the whole row in the accent colour)
+avatar = 32         # the sender's avatar in a mail row (today: the width of the row's marks); 0 = none
+preview_lines = 1   # lines of preview under the subject, 1 or 2

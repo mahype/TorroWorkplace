@@ -1056,8 +1056,10 @@ mod tests {
     }
 
     /// Task L.21: every example of the repository, as all three parts of its id, draws its levels as
-    /// `Selection::level` gives them – task L.20 holds those within 0.5 px of the look before the
-    /// split – in the families of its font and the colours of its colour scheme.
+    /// `Selection::level` gives them, in the families of its font and the colours of its colour
+    /// scheme. Since issue #291 the examples are fonts and colour schemes only: the designs under
+    /// `designs/` are the built-in Standard, Compact and Console, so an example like Plex draws in the
+    /// standard's form.
     #[test]
     fn the_examples_draw_as_their_selection() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1085,7 +1087,8 @@ mod tests {
             assert_eq!(tokens.dark.accent, theme::rgba(look.scheme.colors.dark.accent), "{id}");
         }
         let plex = folders.look("plex");
-        assert_eq!((plex.level(LevelName::Body).size, plex.level(LevelName::Body).line), (14.0, 22.0), "as before");
+        let body = plex.level(LevelName::Body);
+        assert_eq!((body.size, body.line), (14.0, 20.0), "the standard's 13/20 in IBM Plex Sans (× 1.058)");
         assert_eq!(plex.font.fonts.text.family, "IBM Plex Sans");
         assert!(plex.scheme.logo.mark.is_some(), "the logo comes with the colour scheme");
         let nord = folders.look("nord");
@@ -1157,7 +1160,11 @@ mod tests {
     #[test]
     fn only_valid_parts_of_the_flags_folder_are_choices() {
         let (root, folders) = folders();
-        assert_eq!(choices_in(&folders, Part::Design), ["torro", "twin"], "the standard first, never broken");
+        assert_eq!(
+            choices_in(&folders, Part::Design),
+            ["torro", "compact", "console", "twin"],
+            "the built-in designs first, never broken"
+        );
         assert_eq!(choices_in(&folders, Part::ColorScheme), ["torro", "harbor", "twin"]);
         assert_eq!(choices_in(&folders, Part::Font), ["torro"]);
         assert_eq!(choices_in(&Folders::default(), Part::Design), ["torro"]);
