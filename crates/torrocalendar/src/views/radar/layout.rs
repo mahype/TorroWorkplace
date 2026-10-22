@@ -1,7 +1,7 @@
 //! Geometry of the radar, free of Iced widgets so that it can be tested: where the window of a
 //! day starts, time to angle and back within the window, how the last quarter fades out, the
 //! ticks and numerals of the dial, the radii of the rings, the arcs of the events with their
-//! lanes, the nights in the window, hit-testing, turning the dial by dragging, where the letters
+//! lanes, the nights and the working hours in the window, hit-testing, turning the dial by dragging, where the letters
 //! of a title go along an arc, where each ring names its calendar and where a tooltip goes.
 //! `radar.rs` draws the result.
 //!
@@ -12,7 +12,7 @@
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::{Point, Rectangle, Size};
-use torro_core::settings::Night;
+use torro_core::settings::{Night, WorkingHours};
 use torro_gui::theme::space;
 use torro_gui::typo::{self, ellipsize, text_width};
 
@@ -591,6 +591,25 @@ pub fn nights(window: &Window, night: Night) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// The working `hours` in the window (task K.33): minutes after its start, cut to `[0, END]`, in
+/// order, as [`nights`] does; none without working hours. Those of the day before and after the
+/// window's start count too, since the window may reach into them.
+pub fn working(window: &Window, hours: WorkingHours) -> Vec<(f32, f32)> {
+    if hours.is_none() {
+        return Vec::new();
+    }
+    let at = |days: i64, minutes: u32| {
+        let day = window.start.date() + Duration::days(days);
+        day.and_time(NaiveTime::MIN) + Duration::minutes(i64::from(minutes))
+    };
+    (-1..=1)
+        .map(|days| {
+            (window.rel(at(days, hours.from.minutes())).max(0.0), window.rel(at(days, hours.to.minutes())).min(END))
+        })
+        .filter(|(from, to)| to > from)
+        .collect()
+}
+
 /// `[from, to)` cut at the edges of `nights` (sorted, apart, as from [`nights`]): the stretches in
 /// order, each with whether it lies in a night. Drawing them one by one puts the right ground under
 /// every piece.
@@ -925,6 +944,22 @@ mod tests {
     fn night(from: (u32, u32), to: (u32, u32)) -> Night {
         let quarter = |(hour, minute)| torro_core::settings::Quarter::new(hour, minute).expect("quarter");
         Night { from: quarter(from), to: quarter(to) }
+    }
+
+    fn hours(from: (u32, u32), to: (u32, u32)) -> WorkingHours {
+        let quarter = |(hour, minute)| torro_core::settings::Quarter::new(hour, minute).expect("quarter");
+        WorkingHours { from: quarter(from), to: quarter(to) }
+    }
+
+    /// Task K.33: the arc of the working hours runs from their start to their end in the window.
+    #[test]
+    fn the_working_arc_runs_from_start_to_end_in_the_window() {
+        let day = hours((7, 30), (16, 0));
+        assert_eq!(working(&Window::new(at(13, 6, 0)), day), [(90.0, 600.0)]);
+        assert_eq!(working(&Window::new(at(13, 10, 30)), day), [(0.0, 330.0)], "begun before the window");
+        assert!(working(&Window::new(at(13, 18, 0)), day).is_empty(), "the evening has none");
+        assert_eq!(working(&Window::new(at(13, 20, 0)), day), [(690.0, END)], "the next morning");
+        assert!(working(&Window::new(at(13, 6, 0)), hours((9, 0), (9, 0))).is_empty(), "no working hours");
     }
 
     #[test]

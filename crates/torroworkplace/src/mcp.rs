@@ -470,7 +470,7 @@ pub fn tools() -> &'static [Tool] {
 
 /// Where the catalogue's schema says less than the request takes, the tool says more: the
 /// `value` of `settings.set_setting` is any JSON in the request, but every setting takes a
-/// string, a boolean, a number (`zoom`) or an object (`night`, `list_order`).
+/// string, a boolean, a number (`zoom`) or an object (`night`, `working_hours`, `list_order`).
 fn narrow_schema(command: &str, schema: &mut JsonObject) {
     if command != "settings.set_setting" {
         return;
@@ -1555,6 +1555,13 @@ mod tests {
         let night = json!({"from": "23:30", "to": "07:00"});
         let request = request_for("settings_set_setting", args(json!({"key": "night", "value": night})), &Utc);
         assert_eq!(request, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Night, value: night }));
+    }
+
+    #[test]
+    fn the_working_hours_are_set_with_an_object() {
+        let hours = json!({"from": "07:30", "to": "16:00"});
+        let request = request_for("settings_set_setting", args(json!({"key": "working_hours", "value": hours})), &Utc);
+        assert_eq!(request, Ok(Request::SetSetting { key: torro_ipc::SettingKey::WorkingHours, value: hours }));
     }
 
     #[test]

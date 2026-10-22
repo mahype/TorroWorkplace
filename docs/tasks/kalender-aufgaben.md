@@ -615,13 +615,15 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   hell/dunkel.
 
 ### K.33 Arbeitszeit einstellen und anzeigen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.27 · **Dateien:** `crates/torro-core/src/settings.rs`,
+  `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/scheme.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs`,
-  `crates/torroworkplace/src/ui/general.rs`, `crates/torroworkplace/src/mcp.rs` (nur die
-  Beschreibung von `settings_set_setting`), `crates/torrocalendar/src/app.rs`,
+  `crates/torroworkplace/src/mcp.rs` (nur Doc-Kommentar von `narrow_schema` und ein Test),
+  `crates/torro-gui/src/theme.rs`, `crates/torro-gui/src/design/legacy.rs`,
+  `crates/torro-settings-ui/src/calendar.rs`, `crates/torrocalendar/src/app.rs`,
   `crates/torrocalendar/src/views/{week,timeline,radar}.rs` und ihre `layout.rs`,
-  `docs/api-reference.md`
+  `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`, `docs/design-pakete.md`
 - Wunsch des Nutzers (2026-10-12, Issue #66): in den Einstellungen eine Arbeitszeit angeben, der
   Kalender zeigt ihren ganzen Bereich als dünne, gedämpfte Linie. Entschieden: gilt für jeden Tag
   gleich (keine Arbeitstage), eine Arbeitszeit für alle Kalender und Konten.
@@ -630,30 +632,31 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   gibt den Standard). Anders als die Nacht nie über Mitternacht: `from < to`; `from == to` heißt
   „keine Arbeitszeit“ (keine Linie). `WorkingHours::from_value` lehnt alles andere mit Grund ab,
   auch `from > to`. Gilt suite-weit; offene Kalenderfenster übernehmen eine Änderung live (wie
-  `night`).
+  `night`, aus derselben Antwort des Dienstes).
 - **Oberfläche:**
-  - Kalender: eine dünne, gedämpfte senkrechte Linie über den ganzen Bereich der Arbeitszeit, von
-    Beginn bis Ende – in Woche und Tag am linken Rand jeder Tagesspalte, im Zeitstrahl entlang der
-    Zeitachse, im Radar als dünner Bogen am Ring. Monat, Agenda, Mini-Ansichten und Mini-Radare (K.30)
-    bleiben ohne. Die Linie liegt hinter den Terminen und ist nicht mit der Jetzt-Linie, der
-    Nacht-Schattierung oder dem Farbstreifen eines Termins zu verwechseln (Farbe, Stärke und genaue
-    Lage nach `torro-design`; im Bericht nennen). Fällt ein Teil der Arbeitszeit in die eingeklappte
-    Nacht, endet die Linie am Rand des eingeklappten Bands.
-  - Steuerzentrale: Zeile „Working hours“ mit „From“/„To“ (15-min-Raster) unter „Night“ in General
-    und „No working hours“ wie bei der Nacht. Wählt man ein „From“ nach „To“, rückt das andere Feld
-    mit (kein Fehlerzustand in der Oberfläche).
-  - Texte: „Working hours“, „No working hours“ (deutsch im Bericht: „Arbeitszeit“, „Keine
-    Arbeitszeit“).
+  - Kalender: eine dünne, gedämpfte Linie (2 px) über den ganzen Bereich der Arbeitszeit, von
+    Beginn bis Ende – in Woche und Tag senkrecht im Spalt am linken Rand jeder Tagesspalte, im
+    Zeitstrahl waagerecht am unteren Rand der Stundenreihe, im Radar als Bogen knapp innerhalb des
+    innersten Rings. Monat, Agenda, Mini-Ansichten und Mini-Radare (K.30) bleiben ohne. Die Linie
+    liegt hinter den Terminen; Farbe ist der Farbwert `working_hours` des Farbschemas (Standard das
+    Grau von `line_selected`, fehlt er, gilt `line_selected` des Schemas). Fällt ein Teil der
+    Arbeitszeit in die eingeklappte Nacht, endet die Linie am Rand des eingeklappten Bands.
+  - Einstellungen des Kalenders (Zahnrad): eigener Abschnitt „Working hours“ mit „From“/„Until“
+    (15-min-Raster) nach „Night“; die Nacht steht seit S.19/S.21 dort, nicht in der Steuerzentrale.
+    Kein Knopf „No working hours“: Der Satz unter der Gruppe sagt, dass zweimal dieselbe Zeit keine
+    Arbeitszeit heißt. Wählt man ein „From“ nach „Until“ (oder umgekehrt), rückt das andere Ende
+    mit, die Länge bleibt, begrenzt auf 00:00 und 23:45 (kein Fehlerzustand in der Oberfläche).
+  - Texte: „Working hours“ und der Satz unter der Gruppe („From“/„Until“ gibt es schon).
 - **API:** `SettingKey::WorkingHours` mit Wert `{ "from": "08:00", "to": "17:00" }` über den
   vorhandenen `Request::SetSetting` · `settings.set_setting` · Admin; Katalogbeschreibung ergänzen;
   gelesen über `settings.get_settings`. Kein neuer Request.
 - **MCP:** vorhandenes Tool `settings_set_setting`; Beschreibung nennt `working_hours`.
 - **Abnahme:** Tests: Standard, `from == to`, `from > to` und ungültige Werte abgelehnt (`error`
-  mit Grund), Lesen einer kaputten Datei gibt den Standard, Anfang und Ende der Linie in Woche,
-  Zeitstrahl (auch bei eingeklappter Nacht, z. B. Arbeitszeit 05:00–09:00) und Radar-Bogen mit
-  anderen Zeiten (z. B. 07:30–16:00); API-Referenz neu erzeugt; `torro-api-review` ohne Befund;
-  fmt/clippy/test (auch `TORRO_LANG=de`) grün; Screenshots Woche, Zeitstrahl, Radar und
-  Einstellungszeile, hell/dunkel.
+  mit Grund), Lesen einer kaputten Datei gibt den Standard, Mitrücken in der Oberfläche, Anfang und
+  Ende der Linie in Woche, Zeitstrahl (auch bei eingeklappter Nacht, z. B. Arbeitszeit 05:00–09:00)
+  und Radar-Bogen mit anderen Zeiten (z. B. 07:30–16:00); API-Referenz neu erzeugt;
+  `torro-api-review` ohne Befund; fmt/clippy/test (auch `TORRO_LANG=de`) grün; Screenshots Woche,
+  Zeitstrahl, Radar und Einstellungen, hell/dunkel.
 
 ### K.34 Zeitstrahl der Leiste: Titel auch für kurze Termine
 - [x] erledigt
