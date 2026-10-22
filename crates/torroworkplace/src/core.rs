@@ -4259,9 +4259,20 @@ impl Core {
                 calendars,
                 tasks,
                 caldav,
+                trusted_certificates,
             } => {
-                let sign_in =
-                    MailSignIn { address, sender_name, imap, smtp, login_name, password, calendars, tasks, caldav };
+                let sign_in = MailSignIn {
+                    address,
+                    sender_name,
+                    imap,
+                    smtp,
+                    login_name,
+                    password,
+                    calendars,
+                    tasks,
+                    caldav,
+                    trusted_certificates,
+                };
                 // Who syncs the calendars of this sign-in is decided under one lock (task M2.7b).
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
@@ -6744,8 +6755,8 @@ impl Core {
     /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
     /// out): checks the sign-in, stores it and starts the account. In this order:
     ///
-    /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, servers and
-    ///    sender name (`error`); then the stored accounts (`error` without a home directory, before
+    /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, sender name,
+    ///    the form of the trusted certificates (issue #284) and servers (`error`); then the stored accounts (`error` without a home directory, before
     ///    any server is asked);
     /// 2. connecting an account that exists keeps its settings, hidden collections and rights, but
     ///    `calendars` and `tasks` switch those services on (task M3.5: adding calendars to an
@@ -6769,7 +6780,18 @@ impl Core {
     /// it, what the CalDAV address offers and the folder roles the server leaves open. The
     /// password goes to the keychain and the servers only.
     async fn connect_mail(&self, sign_in: MailSignIn) -> Response {
-        let MailSignIn { address, sender_name, imap, smtp, login_name, password, calendars, tasks, caldav } = sign_in;
+        let MailSignIn {
+            address,
+            sender_name,
+            imap,
+            smtp,
+            login_name,
+            password,
+            calendars,
+            tasks,
+            caldav,
+            trusted_certificates,
+        } = sign_in;
         let id = match torro_mail::account_id(&address) {
             Ok(id) => id,
             Err(invalid) => return refusal("error", invalid.to_string()),
@@ -6783,6 +6805,10 @@ impl Core {
         }
         if let Some(refused) = mail_text_refusal(Some(&sender_name), None) {
             return refused;
+        }
+        // Checked before any server is asked (issue #284); trusting them is task M11.3.
+        if trusted_fingerprints(&trusted_certificates).is_none() {
+            return refusal("error", tr("A trusted certificate is not a SHA-256 fingerprint.").into());
         }
         for (service, server) in [(Service::Imap, &imap), (Service::Smtp, &smtp)] {
             if server.host.trim().is_empty() || server.port == 0 {
@@ -6827,8 +6853,14 @@ impl Core {
             "" => existing.and_then(|account| Some(account.mail.as_ref()?.sender_name.clone())).unwrap_or_default(),
             typed => typed.to_string(),
         };
-        let config =
-            torro_mail::MailAccountConfig { address: address.trim().to_string(), sender_name, imap, smtp, caldav };
+        let config = torro_mail::MailAccountConfig {
+            address: address.trim().to_string(),
+            sender_name,
+            imap,
+            smtp,
+            caldav,
+            trusted_certificates: Vec::new(),
+        };
         let open_roles = match self.mail.check_sign_in(&config, login, &password, &settings.folder_roles).await {
             Ok(open) => open,
             Err(failed) => return failed.response(),
@@ -6982,6 +7014,7 @@ impl Core {
             calendars: false,
             tasks: false,
             caldav: None,
+            trusted_certificates: Vec::new(),
         };
         self.connect_mail(sign_in).await
     }
@@ -8464,6 +8497,15 @@ struct MailSignIn {
     calendars: bool,
     tasks: bool,
     caldav: Option<String>,
+    /// Fingerprints the person just trusted, as the request has them (issue #284).
+    trusted_certificates: Vec<String>,
+}
+
+/// `typed` as fingerprints in the form the account stores
+/// (`torro_mail::account::certificate_fingerprint`), in their order; `None` when one of them has
+/// no such form.
+fn trusted_fingerprints(typed: &[String]) -> Option<Vec<String>> {
+    typed.iter().map(|text| torro_mail::account::certificate_fingerprint(text)).collect()
 }
 
 /// What `accounts.update_mail_account` changes (task M2.7), as [`Request::UpdateMailAccount`] has
@@ -15340,6 +15382,7 @@ mod tests {
             calendars: false,
             tasks: false,
             caldav: None,
+            trusted_certificates: Vec::new(),
         }
     }
 
@@ -15444,6 +15487,7 @@ mod tests {
             calendars: caldav.is_some(),
             tasks: caldav.is_some(),
             caldav: caldav.map(str::to_string),
+            trusted_certificates: Vec::new(),
         }
     }
 
@@ -15507,6 +15551,34 @@ mod tests {
         assert!(!format!("{:?}", core.mail.infos(Reach::Suite).await).contains(MAIL_PASSWORD));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval was asked for");
         nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &listed]);
+    }
+
+    /// Issue #284 (M11.1): a trusted certificate without the form of a SHA-256 fingerprint is
+    /// `error` before any server is asked; one in small letters without `:` is taken.
+    #[tokio::test]
+    async fn trusted_certificates_are_checked_before_any_server_is_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let (core, smtp) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let trusting = |pins: Vec<String>| {
+            let mut request = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+            if let Request::ConnectMail { trusted_certificates, .. } = &mut request {
+                *trusted_certificates = pins;
+            }
+            request
+        };
+
+        let wrong = ask(&core, Some(&app_key), trusting(vec!["AB:CD".into()])).await;
+        assert_eq!(code(&wrong), "error", "{wrong:?}");
+        assert_eq!(server.logins(), 0, "IMAP was not asked");
+        assert!(smtp.lock().expect("record").is_empty(), "SMTP was not asked");
+        assert!(!mail_accounts_file(dir.path()).exists(), "nothing stored");
+        assert_eq!(secrets.get_plain(ANNA_MAIL), None);
+
+        let bare = ask(&core, Some(&app_key), trusting(vec!["ab".repeat(32)])).await;
+        assert!(matches!(bare, Response::MailConnected { .. }), "{bare:?}");
     }
 
     /// Task E12.4: the counts of `inbox.list_categories` and `inbox.get_categorization` cover
@@ -16895,6 +16967,7 @@ mod tests {
             open_roles: Vec::new(),
             mail: torro_ipc::ServiceState { last_sync: Some(now), problem: None },
             calendars: None,
+            trusted_certificates: Vec::new(),
         };
         let viewed = AccountInfo { mail: Some(view), ..part(Some(now), None, vec![]) };
         let joined = joined_info(viewed, part(Some(earlier), Some("offline"), vec![])).mail.expect("the view stays");

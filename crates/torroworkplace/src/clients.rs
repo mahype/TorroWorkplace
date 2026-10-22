@@ -1996,6 +1996,7 @@ pub(crate) mod tests {
             calendars: false,
             tasks: false,
             caldav: None,
+            trusted_certificates: Vec::new(),
         };
         let refused = Refused::Lacks { command: "accounts.connect_mail", lack: Lack::ForPeople };
         assert_eq!(clients.admit(Some(&key), &connect), Err(refused));

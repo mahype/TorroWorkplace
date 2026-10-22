@@ -811,6 +811,7 @@ impl Mailbox {
             open_roles: self.open_roles.lock().unwrap_or_else(PoisonError::into_inner).clone(),
             mail,
             calendars: None,
+            trusted_certificates: self.config.trusted_certificates.clone(),
         };
         AccountInfo {
             id: self.account.id.clone(),
@@ -2327,6 +2328,7 @@ pub(crate) mod tests {
             imap: server.clone(),
             smtp: Endpoint { host: "smtp.example.org".into(), port: 587, security: Security::StartTls },
             caldav: None,
+            trusted_certificates: Vec::new(),
         };
         Account::mail(config, address, "example.org", MailSettings::default()).expect("a valid address")
     }

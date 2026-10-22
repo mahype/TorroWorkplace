@@ -123,6 +123,47 @@ pub struct MailAccountConfig {
     /// (task M7.1 finds it); `None` when the account is mail only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caldav: Option<String>,
+    /// The certificates a person trusted for this account although the system does not (issue
+    /// #284, self-signed ones on a server of their own): the SHA-256 of each server certificate
+    /// (its DER), as [`certificate_fingerprint`] writes it (`AB:CD:…`, 95 characters). They count
+    /// for every server of the account: IMAP, SMTP and CalDAV. At most
+    /// [`TRUSTED_CERTIFICATES_MAX`]; a new one pushes the oldest out, so the list is oldest first.
+    /// Empty (and not written) for an account whose servers the system trusts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_certificates: Vec<String>,
+}
+
+/// The most certificates a mail account trusts ([`MailAccountConfig::trusted_certificates`]).
+pub const TRUSTED_CERTIFICATES_MAX: usize = 8;
+
+/// The bytes of a SHA-256 fingerprint.
+const FINGERPRINT_BYTES: usize = 32;
+
+/// `text` as a fingerprint of [`MailAccountConfig::trusted_certificates`]: the 32 bytes of a
+/// SHA-256 in capital hex digits, two per byte, joined by `:` (`AB:CD:…:EF`, 95 characters).
+///
+/// Taken are exactly two spellings, with small or capital letters and surrounding white space:
+/// the 32 pairs joined by `:` each, or the 64 digits without any `:`. `None` for anything else
+/// (another length, other characters, `:` in some places only), so a person never trusts a
+/// certificate other than the one they read.
+pub fn certificate_fingerprint(text: &str) -> Option<String> {
+    let text = text.trim();
+    let digits: String = match text.contains(':') {
+        true => {
+            let pairs: Vec<&str> = text.split(':').collect();
+            if pairs.len() != FINGERPRINT_BYTES || pairs.iter().any(|pair| pair.len() != 2) {
+                return None;
+            }
+            pairs.concat()
+        }
+        false => text.to_string(),
+    };
+    if digits.len() != 2 * FINGERPRINT_BYTES || !digits.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let upper = digits.to_ascii_uppercase();
+    let pairs: Vec<&str> = (0..FINGERPRINT_BYTES).filter_map(|byte| upper.get(2 * byte..2 * byte + 2)).collect();
+    Some(pairs.join(":"))
 }
 
 /// Which notices of new mail the account puts into the inbox (task E4.1).
@@ -284,11 +325,13 @@ mod tests {
             imap: Endpoint { host: "imap.mailbox.org".into(), port: 993, security: Security::Tls },
             smtp: Endpoint { host: "smtp.mailbox.org".into(), port: 587, security: Security::StartTls },
             caldav: None,
+            trusted_certificates: Vec::new(),
         };
         let json = serde_json::to_value(&config).expect("json");
         assert_eq!(json["imap"]["security"], "tls");
         assert_eq!(json["smtp"]["security"], "starttls");
         assert!(json.get("caldav").is_none());
+        assert!(json.get("trusted_certificates").is_none(), "an empty list is not written");
         assert_eq!(serde_json::from_value::<MailAccountConfig>(json).expect("read back"), config);
 
         let settings: MailSettings = serde_json::from_str("{}").expect("all defaults");
@@ -305,5 +348,44 @@ mod tests {
         assert_eq!(json["folder_roles"]["sent"], "INBOX.Gesendete Objekte");
         assert_eq!(json["notify"], "for_me_only");
         assert_eq!(serde_json::from_value::<MailSettings>(json).expect("read back"), chosen);
+    }
+
+    /// Issue #284: an `accounts.json` written before the field loads as it is; a trusted
+    /// certificate is written and read back.
+    #[test]
+    fn trusted_certificates_are_optional_in_stored_configs() {
+        let old = r#"{"address": "anna@home.lan",
+            "imap": {"host": "mail.home.lan", "port": 993, "security": "tls"},
+            "smtp": {"host": "mail.home.lan", "port": 465, "security": "tls"}}"#;
+        let config: MailAccountConfig = serde_json::from_str(old).expect("a config from before issue #284");
+        assert!(config.trusted_certificates.is_empty());
+        let pin = format!("AB{}", ":CD".repeat(31));
+        let trusting = MailAccountConfig { trusted_certificates: vec![pin.clone()], ..config };
+        let json = serde_json::to_value(&trusting).expect("json");
+        assert_eq!(json["trusted_certificates"], serde_json::json!([pin]));
+        assert_eq!(serde_json::from_value::<MailAccountConfig>(json).expect("read back"), trusting);
+    }
+
+    #[test]
+    fn fingerprints_are_read_in_both_spellings_and_written_in_one() {
+        let written = format!("0A{}", ":B1".repeat(31));
+        assert_eq!(written.len(), 95);
+        assert_eq!(certificate_fingerprint(&written).as_deref(), Some(written.as_str()));
+        assert_eq!(certificate_fingerprint(&written.to_lowercase()).as_deref(), Some(written.as_str()));
+        let bare = format!(" 0a{} ", "b1".repeat(31));
+        assert_eq!(certificate_fingerprint(&bare).as_deref(), Some(written.as_str()));
+        for wrong in [
+            String::new(),
+            "AB:CD".into(),
+            written[3..].to_string(),
+            format!("{written}:00"),
+            written.replacen("0A", "0G", 1),
+            written.replacen(':', "", 1),
+            written.replacen(":B1", ":B:1", 1),
+            "ab".repeat(33),
+            format!("{written} x"),
+        ] {
+            assert_eq!(certificate_fingerprint(&wrong), None, "{wrong:?}");
+        }
     }
 }

@@ -1051,6 +1051,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         open_roles: Vec::new(),
         mail: ServiceState { last_sync: Some(last_sync), problem: None },
         calendars: None,
+        trusted_certificates: Vec::new(),
     };
     AccountInfo {
         id: format!("mail:{address}"),
@@ -1926,6 +1927,7 @@ mod tests {
             calendars: true,
             tasks: true,
             caldav: caldav.map(str::to_string),
+            trusted_certificates: Vec::new(),
         };
         for (password, server) in [("wrong", "IMAP"), ("wrong-smtp", "SMTP")] {
             assert!(matches!(

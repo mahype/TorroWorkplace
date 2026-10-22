@@ -1389,6 +1389,7 @@ fn connect_request(mail: &mut Mail) -> Option<Request> {
             tasks,
             // The CalDAV address only goes with the services that use it.
             caldav: mail.caldav_address().filter(|_| calendars || tasks).map(str::to_string),
+            trusted_certificates: Vec::new(),
         });
     }
     Some(Request::ConnectCalDav {
@@ -3161,7 +3162,9 @@ mod tests {
                 calendars,
                 tasks,
                 caldav,
+                trusted_certificates,
             }) => {
+                assert!(trusted_certificates.is_empty());
                 assert_eq!((address.as_str(), sender_name.as_str()), ("anna@mailbox.org", "Anna Example"));
                 assert_eq!((imap.host.as_str(), imap.port, imap.security), ("imap.mailbox.org", 993, Security::Tls));
                 assert_eq!((smtp.host.as_str(), smtp.port, smtp.security), ("smtp.mailbox.org", 465, Security::Tls));

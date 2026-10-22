@@ -5218,6 +5218,7 @@ pub(crate) mod tests {
             imap: server("imap.example.org"),
             smtp: server("smtp.example.org"),
             caldav: Some(dav.into()),
+            trusted_certificates: Vec::new(),
         };
         let settings = torro_mail::MailSettings { services, ..torro_mail::MailSettings::default() };
         torro_core::Account::mail(config, "anna", "example.org", settings).expect("a valid address")

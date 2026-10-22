@@ -1011,7 +1011,7 @@ M11.1 und M11.2 sind unabhängig voneinander. M11.4 braucht nur die Typen aus M1
 läuft nach M11.3, damit die Übersetzungen in `de.rs` nacheinander entstehen.
 
 ### M11.1 API und Kontodaten: gemerkte Zertifikate
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/account.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/audit.rs`, `docs/api-reference.md`; nur das neue Feld (leer) in den Literalen von
   `MailAccountConfig`, `Request::ConnectMail` und `MailView`: `crates/torro-core/src/account.rs`,

@@ -874,6 +874,7 @@ fn submit_servers(state: &mut State, data: &Data) -> Action {
         calendars: services.calendars || dialog.adding == Some(MailService::Calendars),
         tasks: services.tasks || dialog.adding == Some(MailService::Tasks),
         caldav: dialog.caldav_address(),
+        trusted_certificates: Vec::new(),
     })
 }
 
@@ -922,6 +923,7 @@ fn password_request(account: &AccountInfo, password: Secret) -> Option<Request> 
             calendars: mail.settings.services.calendars,
             tasks: mail.settings.services.tasks,
             caldav: mail.caldav.clone(),
+            trusted_certificates: Vec::new(),
         });
     }
     let (server, login_name) = caldav_connection(account)?;
@@ -3248,7 +3250,9 @@ mod tests {
                 calendars,
                 tasks,
                 caldav,
+                trusted_certificates,
             } => {
+                assert!(trusted_certificates.is_empty());
                 assert_eq!(address, "anna@mailbox.org");
                 assert!(sender_name.is_empty(), "empty keeps the stored name");
                 assert_eq!((imap.host.as_str(), smtp.host.as_str()), ("imap.mailbox.org", "smtp.mailbox.org"));
