@@ -1,6 +1,6 @@
 # Termin-Editor: Wiederholung, Erinnerungen, Felder, Ort mit Karte
 
-Stand: 2026-10-22, **Planung zu Issue #278, Freigabe ausstehend; Layout A gewählt.** Aufgaben:
+Stand: 2026-10-22, **umgesetzt in #278 (Layout A); die Abnahme mit Nextcloud und Handy (TE.10) steht aus.** Aufgaben:
 [tasks/termin-editor.md](tasks/termin-editor.md). Entwürfe:
 [prototypes/calendar/termin-editor.html](prototypes/calendar/termin-editor.html) (Bilder daneben,
 `termin-editor-*.png`).
@@ -142,6 +142,16 @@ Recherche am 2026-10-22 bei den Betreibern. Torro hat keinen eigenen Server; jed
 Karte die Koordinaten. Darum: aus, bis ein Mensch es einschaltet; die Einstellung nennt die Dienste mit Link;
 Termine aus Einladungen werden nie von selbst gesucht, eine Karte kommt nur für Termine mit Koordinaten.
 
+**Einstellung in der Steuerzentrale** (General › Maps, TE.10): Schalter „Maps and place search“, Adresse der
+Ortssuche mit ihrer Art (Photon oder Nominatim), Adresse der Kacheln und „Open in Maps with“ (OpenStreetMap,
+Google Maps, Apple Maps nur auf macOS, `geo:` nur auf Linux). Jede Zeile setzt nur ihr Feld
+(`settings.set_setting maps`). Die Adressen werden mit Enter gespeichert oder wenn man in der Gruppe
+weitermacht (anderes Feld, Schalter, Auswahl), nie bei jedem Tastendruck. Eine Adresse, die der Dienst ablehnt
+(`?key=…`, Anmeldung `user@`, Kacheln ohne `{z}`/`{x}`/`{y}`), wird gar nicht erst geschickt: Die Prüfung ist
+dieselbe wie im Dienst (`Maps::merged`), der Grund steht leise unter der Gruppe, das Feld behält den Text.
+Darunter der Satz, wer was bekommt und dass es keine Verfügbarkeitszusage gibt, und Links zu den Regeln der
+Kacheln, zu Photon, zu den Regeln von Nominatim und „© OpenStreetMap contributors“ (Seite `copyright`).
+
 ## Datenmodell (neu in `Event`, alles optional, `#[serde(default)]`)
 
 | Feld | iCalendar | Bedeutung |
@@ -195,7 +205,7 @@ die Segmente aus B sind Ideen für später.
 | URL, Frei/Belegt, Status, Zeitzone, Koordinaten | Editor | `calendar.save_event` | Write | `calendar_save_event` (kurz: `url`, `status`, `time_zone`, `free`) |
 | Ort suchen | Editor „Location“ | `calendar.search_places` | Read | `calendar_search_places` |
 | Karte zeigen | Editor | `calendar.map_preview` | Read | `calendar_map_preview` (Bild) |
-| Karten und Suche ein/aus, Dienste | Steuerzentrale › General › Calendar › Maps | `settings.set_setting` (Schlüssel `maps`) | Admin; einschalten nur App-Schlüssel | `settings_set_setting` (nur ausschalten) |
+| Karten und Suche ein/aus, Dienste | Steuerzentrale › General › Maps | `settings.set_setting` (Schlüssel `maps`) | Admin; einschalten nur App-Schlüssel | `settings_set_setting` (nur ausschalten) |
 
 Freigaben: Die Zusammenfassung nennt den Umfang aus dem Cache („Change all events of “Weekly product sync”“,
 „Delete “Weekly product sync” on Tue, 27 Oct and all following“). Protokoll ohne Suchtext und ohne

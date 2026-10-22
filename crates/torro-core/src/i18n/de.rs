@@ -3936,6 +3936,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{change}; ends the series", "{change}; beendet die Serie"),
     ("{change}; may remove events", "{change}; entfernt womöglich Termine"),
     ("tentative", "vorläufig"),
+    // Maps in the control centre, General › Maps (TE.10)
+    ("Maps", "Karten"),
+    ("Maps and place search", "Karten und Ortssuche"),
+    (
+        "Find places and see a small map in the calendar's event editor",
+        "Orte finden und eine kleine Karte im Termin-Editor des Kalenders sehen",
+    ),
+    ("Place search", "Ortssuche"),
+    ("Map tiles", "Kartenkacheln"),
+    ("Open in Maps with", "In Karten öffnen mit"),
+    ("Apple Maps", "Apple Karten"),
+    ("System maps app (geo:)", "Karten-App des Systems (geo:)"),
+    ("Press Enter to save", "Zum Speichern Enter drücken"),
+    ("Not saved: {reason}", "Nicht gespeichert: {reason}"),
+    (
+        "Off until you turn it on. The place search service gets what you search for and the IP address of this computer; the map tile service gets the coordinates of the place. Both are services of others with their own rules, and nothing promises they are available.",
+        "Aus, bis du es einschaltest. Der Dienst für die Ortssuche bekommt, wonach du suchst, und die IP-Adresse dieses Rechners; der Kartendienst bekommt die Koordinaten des Ortes. Beides sind Dienste anderer mit eigenen Regeln, und niemand sagt zu, dass sie erreichbar sind.",
+    ),
+    ("Tile usage policy", "Regeln für die Kacheln"),
+    ("Nominatim usage policy", "Regeln für Nominatim"),
+    ("© OpenStreetMap contributors", "© OpenStreetMap-Mitwirkende"),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),

@@ -5,7 +5,9 @@
 //!   button, a check mark at the chosen one (Deutsch is shown in its own name, like the language
 //!   picker of any app); "Apps" ([`apps`], task S.21) has every part of the suite with its switch,
 //!   its window class under the name (for window rules) and "Open", the App Feed among them;
-//!   "Startup" has the "Start at login" switch; "Setup" runs the first-run setup again.
+//!   "Maps" ([`maps`], task TE.10) switches the calendar's place search and small map on and sets
+//!   their services; "Startup" has the "Start at login" switch; "Setup" runs the first-run setup
+//!   again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance; compact since L.18): "Color mode" is one row with a segment of three parts, each with
 //!   its symbol and word (System, Light, Dark); "Design", "Font" and "Colour scheme" are grids of
@@ -67,7 +69,7 @@ use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Leng
 use torro_core::AppId;
 use torro_core::design::{ColorScheme, Design, FontRole, FontSet, Mode, Part, STANDARD_ID, Weight};
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Component, ComponentSwitch, Language, Settings, Zoom};
+use torro_core::settings::{Component, ComponentSwitch, GeocoderKind, Language, Maps, MapsApp, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
@@ -75,7 +77,7 @@ use torro_gui::widgets::PreviewState;
 use torro_gui::zoom::{self, Step};
 use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{ColorSchemeInfo, DesignInfo, FontInfo, Request, SettingKey};
-use torro_settings_ui::parts::{choice, switch};
+use torro_settings_ui::parts::{choice, field, notice, picker, switch};
 
 use super::setup::component_name;
 use super::{Action, Data, Section, setting_row};
@@ -91,6 +93,96 @@ pub struct State {
     /// a click on its tile; `None` while no reasons are shown. The part, because one id can name a
     /// design, a font and a colour scheme at once (`plex`).
     problems: Option<(Part, String)>,
+    /// The addresses of "Maps" as typed and not saved yet ([`maps`]).
+    maps: MapsDraft,
+}
+
+/// One of the two addresses under "Maps": the place search service or the map tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Address {
+    Geocoder,
+    Tiles,
+}
+
+impl Address {
+    /// The field of `settings.set_setting maps` it sets.
+    fn field(self) -> &'static str {
+        match self {
+            Address::Geocoder => "geocoder",
+            Address::Tiles => "tiles",
+        }
+    }
+
+    /// The address as stored.
+    fn stored(self, maps: &Maps) -> &str {
+        match self {
+            Address::Geocoder => &maps.geocoder,
+            Address::Tiles => &maps.tiles,
+        }
+    }
+
+    /// The other one of the two: typing into one leaves the other.
+    fn other(self) -> Address {
+        match self {
+            Address::Geocoder => Address::Tiles,
+            Address::Tiles => Address::Geocoder,
+        }
+    }
+}
+
+/// What is typed into the two address fields of "Maps" and not saved yet. An address is saved on
+/// Enter, or when the person moves on to another control of the group (Iced 0.14 tells a page
+/// nothing about a field losing the focus, so "leaving" is the next thing done in the group);
+/// never on every key, because each save is a request and a half-typed address is no address.
+#[derive(Debug, Default)]
+struct MapsDraft {
+    /// The place search address as typed; `None` while the field shows what is stored.
+    geocoder: Option<Draft>,
+    /// The map tile address as typed; `None` alike.
+    tiles: Option<Draft>,
+    /// The address whose last save was refused, and why: the service's own check
+    /// (`Maps::merged`, which `settings.set_setting maps` runs), shown quietly under the group.
+    problem: Option<(Address, String)>,
+}
+
+/// One address as typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Draft {
+    text: String,
+    /// Saved or refused since the last key: leaving the field again does not send it again (while
+    /// the core is still answering, or after it refused), only Enter does.
+    handed_in: bool,
+}
+
+impl MapsDraft {
+    fn draft(&self, which: Address) -> Option<&Draft> {
+        match which {
+            Address::Geocoder => self.geocoder.as_ref(),
+            Address::Tiles => self.tiles.as_ref(),
+        }
+    }
+
+    fn draft_mut(&mut self, which: Address) -> &mut Option<Draft> {
+        match which {
+            Address::Geocoder => &mut self.geocoder,
+            Address::Tiles => &mut self.tiles,
+        }
+    }
+
+    /// Whether `which` holds typed text that differs from what is stored.
+    fn dirty(&self, which: Address, maps: &Maps) -> bool {
+        self.draft(which).is_some_and(|typed| typed.text.trim() != which.stored(maps))
+    }
+
+    /// Forgets the drafts that are stored now (saved, or the stored text typed again), so the
+    /// fields follow the core again when another client changes them.
+    fn settle(&mut self, maps: &Maps) {
+        for which in [Address::Geocoder, Address::Tiles] {
+            if !self.dirty(which, maps) {
+                *self.draft_mut(which) = None;
+            }
+        }
+    }
 }
 
 /// One entry of a list of the core – a design, a font or a colour scheme (`info`) – with the part
@@ -266,9 +358,24 @@ pub enum Message {
     OpenFolder(Part),
     /// "Run setup again" (task W.9).
     RunSetup,
+    /// The switch "Maps and place search" (task TE.10).
+    MapsOn(bool),
+    /// The protocol of the place search service, beside its address.
+    GeocoderKind(GeocoderKind),
+    /// "Open in Maps with".
+    OpenWith(MapsApp),
+    /// A key in one of the two address fields: kept as typed, not sent. Saves the other field's
+    /// address if it was changed, since the person has left it.
+    AddressInput(Address, String),
+    /// Enter in an address field: saves it if it changed.
+    SaveAddress(Address),
+    /// One of the links under "Maps" (the rules of the services, the OpenStreetMap licence).
+    OpenLink(&'static str),
 }
 
-pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
+pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
+    let maps = &data.settings.maps;
+    state.maps.settle(maps);
     // The core takes the same names the settings file uses (`"german"`, `"dark"`, `true`), so the
     // values come from the enums' own serialisation. A value that cannot serialise (none here)
     // would become `null`, which the core refuses.
@@ -297,12 +404,80 @@ pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
         Message::Reload => return Action::ListLooks,
         Message::OpenFolder(part) => return Action::OpenFolder(part),
         Message::RunSetup => return Action::OpenSetup,
+        Message::MapsOn(on) => return maps_change(state, maps, "enabled", serde_json::Value::Bool(on)),
+        Message::GeocoderKind(kind) => {
+            return maps_change(state, maps, "geocoderKind", serde_json::to_value(kind).unwrap_or_default());
+        }
+        Message::OpenWith(app) => {
+            return maps_change(state, maps, "openWith", serde_json::to_value(app).unwrap_or_default());
+        }
+        Message::AddressInput(which, text) => {
+            let left = leave_address(state, maps, which.other());
+            *state.maps.draft_mut(which) = Some(Draft { text, handed_in: false });
+            return left.map_or(Action::None, Action::Send);
+        }
+        Message::SaveAddress(which) => return save_address(state, maps, which).map_or(Action::None, Action::Send),
+        Message::OpenLink(url) => return Action::OpenUrl(url.to_string()),
     };
     Action::Send(Request::SetSetting { key, value })
 }
 
-/// The page General: language, calendar, startup.
-pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// `settings.set_setting maps` with the one field `field` set to `value`: every row of "Maps" sets
+/// only its own field, so two windows changing two fields never undo each other.
+fn maps_request(field: &str, value: serde_json::Value) -> Request {
+    Request::SetSetting { key: SettingKey::Maps, value: maps_field(field, value) }
+}
+
+/// `{field: value}`, the one field of a change to the maps.
+fn maps_field(field: &str, value: serde_json::Value) -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::from_iter([(field.to_string(), value)]))
+}
+
+/// A control of "Maps" other than an address field: its own field, after the addresses the person
+/// typed and left without Enter (each its own request; the core writes settings one at a time).
+fn maps_change(state: &mut State, maps: &Maps, field: &str, value: serde_json::Value) -> Action {
+    let mut requests: Vec<Request> =
+        [Address::Geocoder, Address::Tiles].into_iter().filter_map(|which| leave_address(state, maps, which)).collect();
+    requests.push(maps_request(field, value));
+    match requests.len() {
+        1 => requests.pop().map_or(Action::None, Action::Send),
+        _ => Action::SendAll(requests),
+    }
+}
+
+/// The request that saves the address `which` as typed (trimmed), or `None` when nothing is typed
+/// or it is what is stored. An address the service would refuse (`Maps::merged`, the check
+/// `settings.set_setting maps` runs: a query such as `?key=`, a sign-in, tiles without `{z}`,
+/// `{x}` and `{y}`) is not sent: its reason is kept for the quiet line under the group, and the
+/// field keeps the text so it can be fixed.
+fn save_address(state: &mut State, maps: &Maps, which: Address) -> Option<Request> {
+    let typed = state.maps.draft(which)?.text.trim().to_string();
+    if typed == which.stored(maps) {
+        return None;
+    }
+    let value = serde_json::Value::String(typed.clone());
+    *state.maps.draft_mut(which) = Some(Draft { text: typed, handed_in: true });
+    if let Err(why) = maps.merged(&maps_field(which.field(), value.clone())) {
+        state.maps.problem = Some((which, why));
+        return None;
+    }
+    if state.maps.problem.as_ref().is_some_and(|(refused, _)| *refused == which) {
+        state.maps.problem = None;
+    }
+    Some(maps_request(which.field(), value))
+}
+
+/// [`save_address`] when the person has left the field `which` for another control of the group:
+/// only once per typing, so keys in the other field do not send it again and again.
+fn leave_address(state: &mut State, maps: &Maps, which: Address) -> Option<Request> {
+    if state.maps.draft(which)?.handed_in {
+        return None;
+    }
+    save_address(state, maps, which)
+}
+
+/// The page General: language, apps, maps, startup, setup.
+pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings;
     let language = |label: &'static str, language: Language| {
         choice(label, settings.language == language, Message::Language(language))
@@ -340,7 +515,114 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Some(tr("What is connected stays; the steps show it.").to_string()),
     );
 
-    column![language, apps(data), startup, setup].spacing(layout::section_gap()).into()
+    column![language, apps(data), maps(state, &settings.maps), startup, setup].spacing(layout::section_gap()).into()
+}
+
+/// The links under "Maps": the rules of the standard services, and the licence of the map data
+/// (ODbL), which asks to name OpenStreetMap wherever its data is shown.
+const MAP_LINKS: [(&str, &str); 4] = [
+    ("Tile usage policy", "https://operations.osmfoundation.org/policies/tiles/"),
+    ("Photon", "https://photon.komoot.io/"),
+    ("Nominatim usage policy", "https://operations.osmfoundation.org/policies/nominatim/"),
+    ("© OpenStreetMap contributors", "https://www.openstreetmap.org/copyright"),
+];
+
+/// The group "Maps" (task TE.10, concept `docs/termin-editor.md` "Ort und Karte"), part of the
+/// calendar: the switch "Maps and place search", the place search service's address with its
+/// protocol, the map tiles' address, and "Open in Maps with". Under it, why it is off until a
+/// person turns it on – what each service gets – and the links to their rules and the licence.
+///
+/// Every row sets only its own field (`settings.set_setting maps`). Turning maps on and changing an
+/// address is a person's alone; the control centre is that person (app key), so it may. The
+/// address fields save on Enter or when the person moves on ([`MapsDraft`]); a refused address
+/// says why in a quiet line under the group.
+fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
+    let draft = &state.maps;
+    let address = |which: Address, placeholder: &'static str| {
+        let typed = draft.draft(which).map_or(which.stored(maps), |typed| typed.text.as_str());
+        field(placeholder, typed)
+            .on_input(move |text| Message::AddressInput(which, text))
+            .on_submit(Message::SaveAddress(which))
+    };
+    // While an address is typed and not saved, its row says how to save it.
+    let hint = |which: Address| draft.dirty(which, maps).then(|| tr("Press Enter to save").to_string());
+    let kind =
+        picker(KIND_CHOICES, KindChoice(maps.geocoder_kind), |chosen: KindChoice| Message::GeocoderKind(chosen.0));
+    let search = row![address(Address::Geocoder, Maps::PHOTON), kind]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .width(Length::FillPortion(2));
+    let tiles = container(address(Address::Tiles, Maps::OSM_TILES)).width(Length::FillPortion(2));
+    let open_with = picker(app_choices(), AppChoice(maps.open_with), |chosen: AppChoice| Message::OpenWith(chosen.0));
+    let rows = vec![
+        setting_row(
+            None,
+            tr("Maps and place search"),
+            Some(tr("Find places and see a small map in the calendar's event editor").to_string()),
+            switch(maps.enabled, Message::MapsOn),
+        ),
+        setting_row(None, tr("Place search"), hint(Address::Geocoder), search),
+        setting_row(None, tr("Map tiles"), hint(Address::Tiles), tiles),
+        setting_row(None, tr("Open in Maps with"), None, open_with),
+    ];
+    let footer = tr(
+        "Off until you turn it on. The place search service gets what you search for and the IP address of this computer; the map tile service gets the coordinates of the place. Both are services of others with their own rules, and nothing promises they are available.",
+    );
+    let links = MAP_LINKS.map(|(label, url)| {
+        widgets::text_button(Some(Icon::ArrowUpRight), tr(label), style::button::ghost, Some(Message::OpenLink(url)))
+    });
+    let mut block = column![widgets::group(tr("Maps"), rows, None)].spacing(layout::item_gap());
+    if let Some((_, why)) = &draft.problem {
+        block = block.push(notice(trf("Not saved: {reason}", &[("reason", why)])));
+    }
+    block
+        .push(typo::text(typo::meta(), footer).style(torro_gui::theme::text_2))
+        .push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs()))
+        .into()
+}
+
+/// A protocol of a place search service in its picker: the service's own name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KindChoice(GeocoderKind);
+
+const KIND_CHOICES: [KindChoice; 2] = [KindChoice(GeocoderKind::Photon), KindChoice(GeocoderKind::Nominatim)];
+
+impl std::fmt::Display for KindChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            GeocoderKind::Photon => "Photon",
+            GeocoderKind::Nominatim => "Nominatim",
+        })
+    }
+}
+
+/// What "Open in Maps" opens, in its picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AppChoice(MapsApp);
+
+impl std::fmt::Display for AppChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Names of services stay as they are; Apple calls its app by the system's language.
+        f.write_str(match self.0 {
+            MapsApp::Osm => "OpenStreetMap",
+            MapsApp::Google => "Google Maps",
+            MapsApp::Apple => tr("Apple Maps"),
+            MapsApp::Geo => tr("System maps app (geo:)"),
+        })
+    }
+}
+
+/// The choices of "Open in Maps with" on this system: OpenStreetMap and Google Maps everywhere,
+/// Apple Maps only on macOS, a `geo:` link only on Linux (where a program may be registered for it).
+fn app_choices() -> Vec<AppChoice> {
+    let mut choices = vec![AppChoice(MapsApp::Osm), AppChoice(MapsApp::Google)];
+    if cfg!(target_os = "macos") {
+        choices.push(AppChoice(MapsApp::Apple));
+    }
+    if cfg!(target_os = "linux") {
+        choices.push(AppChoice(MapsApp::Geo));
+    }
+    choices
 }
 
 /// The group "Apps" (task S.21): one row per part of the suite with its switch – a part turned off
@@ -1286,6 +1568,140 @@ mod tests {
         );
         drop(view(&State::default(), &data));
         drop(second_window(&none, AppId::INBOX_NOTIFICATIONS, tr("App Feed")));
+    }
+
+    /// Task TE.10: the switch, the protocol of the place search and "Open in Maps with" each set
+    /// only their own field of `maps`, under the names the core reads.
+    #[test]
+    fn each_maps_row_sets_only_its_field() {
+        let data = Data::default();
+        let set = |message| sent(update(&mut State::default(), message, &data));
+        assert_eq!(set(Message::MapsOn(true)), (SettingKey::Maps, serde_json::json!({"enabled": true})));
+        assert_eq!(set(Message::MapsOn(false)), (SettingKey::Maps, serde_json::json!({"enabled": false})));
+        assert_eq!(
+            set(Message::GeocoderKind(GeocoderKind::Nominatim)),
+            (SettingKey::Maps, serde_json::json!({"geocoderKind": "nominatim"}))
+        );
+        assert_eq!(
+            set(Message::OpenWith(MapsApp::Google)),
+            (SettingKey::Maps, serde_json::json!({"openWith": "google"}))
+        );
+        // Each change reads as a change of the core's own settings, touching nothing else.
+        for message in [Message::MapsOn(true), Message::OpenWith(MapsApp::Geo)] {
+            let (_, value) = set(message);
+            let merged = Maps::default().merged(&value).expect("the core takes it");
+            let untouched = Maps { enabled: merged.enabled, open_with: merged.open_with, ..Maps::default() };
+            assert_eq!(merged, untouched);
+        }
+    }
+
+    /// Task TE.10: an address is sent on Enter, trimmed and alone, not on every key; Enter on what
+    /// is stored sends nothing.
+    #[test]
+    fn an_address_is_saved_on_enter_with_only_its_field() {
+        let data = Data::default();
+        let mut state = State::default();
+        let typed =
+            update(&mut state, Message::AddressInput(Address::Geocoder, " https://photon.example.org ".into()), &data);
+        assert!(matches!(typed, Action::None), "no request while typing: {typed:?}");
+        assert!(state.maps.dirty(Address::Geocoder, &data.settings.maps));
+        assert_eq!(
+            sent(update(&mut state, Message::SaveAddress(Address::Geocoder), &data)),
+            (SettingKey::Maps, serde_json::json!({"geocoder": "https://photon.example.org"}))
+        );
+
+        let tiles = "https://tiles.example.org/{z}/{x}/{y}.png";
+        let _ = update(&mut state, Message::AddressInput(Address::Tiles, tiles.into()), &data);
+        assert_eq!(
+            sent(update(&mut state, Message::SaveAddress(Address::Tiles), &data)),
+            (SettingKey::Maps, serde_json::json!({"tiles": tiles}))
+        );
+
+        let mut same = State::default();
+        let _ = update(&mut same, Message::AddressInput(Address::Tiles, Maps::OSM_TILES.into()), &data);
+        let enter = update(&mut same, Message::SaveAddress(Address::Tiles), &data);
+        assert!(matches!(enter, Action::None), "unchanged: {enter:?}");
+        assert!(matches!(update(&mut State::default(), Message::SaveAddress(Address::Tiles), &data), Action::None));
+    }
+
+    /// Task TE.10: moving on to the other field or another control of the group saves the address
+    /// left behind, each field in its own request.
+    #[test]
+    fn leaving_an_address_saves_it() {
+        let data = Data::default();
+        let mut state = State::default();
+        let _ =
+            update(&mut state, Message::AddressInput(Address::Geocoder, "https://photon.example.org".into()), &data);
+        let left = update(&mut state, Message::AddressInput(Address::Tiles, "h".into()), &data);
+        assert_eq!(sent(left), (SettingKey::Maps, serde_json::json!({"geocoder": "https://photon.example.org"})));
+        // The next keys in the other field send it no second time, while the core answers.
+        let again = update(&mut state, Message::AddressInput(Address::Tiles, "ht".into()), &data);
+        assert!(matches!(again, Action::None), "{again:?}");
+
+        let mut state = State::default();
+        let tiles = "https://tiles.example.org/{z}/{x}/{y}.png";
+        let _ = update(&mut state, Message::AddressInput(Address::Tiles, tiles.into()), &data);
+        let Action::SendAll(requests) = update(&mut state, Message::MapsOn(true), &data) else {
+            panic!("expected two requests");
+        };
+        let values: Vec<serde_json::Value> = requests
+            .into_iter()
+            .map(|request| match request {
+                Request::SetSetting { key: SettingKey::Maps, value } => value,
+                other => panic!("expected maps, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(values, [serde_json::json!({"tiles": tiles}), serde_json::json!({"enabled": true})]);
+    }
+
+    /// Task TE.10: an address the service refuses (a key in the query) is not sent; the field keeps
+    /// it and the group says why, with the service's own reason, until it is fixed.
+    #[test]
+    fn a_refused_address_says_why_and_is_not_sent() {
+        let data = Data::default();
+        let mut state = State::default();
+        let keyed = "https://tiles.example.org/{z}/{x}/{y}.png?key=secret";
+        let _ = update(&mut state, Message::AddressInput(Address::Tiles, keyed.into()), &data);
+        let enter = update(&mut state, Message::SaveAddress(Address::Tiles), &data);
+        assert!(matches!(enter, Action::None), "{enter:?}");
+        let why = Maps::default().merged(&serde_json::json!({"tiles": keyed})).expect_err("refused by the core");
+        assert_eq!(state.maps.problem, Some((Address::Tiles, why)));
+        assert_eq!(state.maps.draft(Address::Tiles).map(|d| d.text.as_str()), Some(keyed), "kept to be fixed");
+        // Over to the other field (typing what is stored there, so it has nothing to save).
+        let away = update(&mut state, Message::AddressInput(Address::Geocoder, Maps::PHOTON.into()), &data);
+        assert!(matches!(away, Action::None), "refused once, leaving does not try again: {away:?}");
+        assert!(state.maps.problem.is_some(), "and still says why");
+        let _: Element<'_, Message> = view(&state, &data);
+
+        let fixed = "https://tiles.example.org/{z}/{x}/{y}.png";
+        let _ = update(&mut state, Message::AddressInput(Address::Tiles, fixed.into()), &data);
+        assert_eq!(sent(update(&mut state, Message::SaveAddress(Address::Tiles), &data)).1["tiles"], fixed);
+        assert_eq!(state.maps.problem, None);
+
+        // Once the core stores it, the field follows the core again.
+        let stored = Data {
+            settings: Settings { maps: Maps { tiles: fixed.into(), ..Maps::default() }, ..Settings::default() },
+            ..Data::default()
+        };
+        let _ = update(&mut state, Message::OpenLink(MAP_LINKS[0].1), &stored);
+        assert_eq!(state.maps.draft(Address::Tiles), None);
+    }
+
+    /// Task TE.10: the links under the group open the services' rules and the licence; Apple Maps
+    /// is offered on macOS only, the `geo:` link on Linux only.
+    #[test]
+    fn the_maps_links_open_and_the_apps_fit_the_system() {
+        for (label, url) in MAP_LINKS {
+            let open = update(&mut State::default(), Message::OpenLink(url), &Data::default());
+            assert!(matches!(open, Action::OpenUrl(ref sent) if sent == url), "{label}: {open:?}");
+        }
+        assert!(MAP_LINKS.iter().any(|(_, url)| *url == "https://www.openstreetmap.org/copyright"));
+        let apps: Vec<MapsApp> = app_choices().into_iter().map(|choice| choice.0).collect();
+        assert_eq!(apps.contains(&MapsApp::Apple), cfg!(target_os = "macos"));
+        assert_eq!(apps.contains(&MapsApp::Geo), cfg!(target_os = "linux"));
+        assert_eq!(AppChoice(MapsApp::Apple).to_string(), tr("Apple Maps"));
+        assert_eq!(AppChoice(MapsApp::Geo).to_string(), tr("System maps app (geo:)"));
+        assert_eq!(KIND_CHOICES.map(|choice| choice.to_string()), ["Photon", "Nominatim"]);
     }
 
     #[test]
