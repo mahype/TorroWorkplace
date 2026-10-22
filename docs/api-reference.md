@@ -1055,7 +1055,7 @@ Estimates how many message bodies and bytes a cache strategy will fetch or remov
 
 Zugriff `admin` · MCP-Tool `mail_set_cache_policy`
 
-Sets an account's offline body and attachment retention policy after a mail_preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.
+Sets an account's offline body and attachment retention policy after a mail.preview_cache estimate. Does not delete server mail, drafts, or search text. Pass `policy` as mail.get_cache_policy returns it, with the changed mode, attachment prefetch or retention. It persists per account; automatic sync and indexing use the new choice, and mail.start_cache_job applies it to already synchronized mail at once. Draft texts and search text remain.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

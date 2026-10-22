@@ -2099,15 +2099,23 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("download attachments only when opened", "Anhänge nur beim Öffnen laden"),
     ("delete downloaded attachments after {days} days", "geladene Anhänge nach {days} Tagen löschen"),
     (
-        "apply the strategy (removes texts it does not keep)",
-        "Strategie anwenden (entfernt Texte, die sie nicht behält)",
+        "apply the strategy (removes mail texts it does not keep, downloads missing ones)",
+        "Strategie anwenden (entfernt E-Mail-Texte, die sie nicht behält, und lädt fehlende)",
     ),
     ("download the mail texts it keeps", "die E-Mail-Texte laden, die sie behält"),
     ("download the attachments", "die Anhänge laden"),
     ("rebuild the search index", "den Suchindex neu aufbauen"),
     (
-        "clean the cache (removes downloaded texts and attachments)",
-        "den Zwischenspeicher leeren (entfernt geladene Texte und Anhänge)",
+        "clean the cache (removes mail texts the strategy does not keep)",
+        "den Zwischenspeicher leeren (entfernt E-Mail-Texte, die die Strategie nicht behält)",
+    ),
+    (
+        "Resume the maintenance of the mail kept on this device for {account}",
+        "Wartung der lokal gespeicherten E-Mails von {account} fortsetzen",
+    ),
+    (
+        "Pause the maintenance of the mail kept on this device for {account}",
+        "Wartung der lokal gespeicherten E-Mails von {account} anhalten",
     ),
     ("Drafts", "Entwürfe"),
     ("Folders, messages and drafts", "Ordner, Nachrichten und Entwürfe"),

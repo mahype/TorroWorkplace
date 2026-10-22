@@ -346,7 +346,7 @@ pub struct KnownModel {
 ///   sent, since that is what will be written); replacing one `Replace the draft "<subject as
 ///   stored>"`, or "Replace an unknown draft".
 ///
-/// - `mail.set_cache_policy` and `mail.start_cache_job`: the account by the address the core knows
+/// - `mail.set_cache_policy`, `mail.start_cache_job` and `mail.control_cache_job`: the account by the address the core knows
 ///   ([`MailFacts::account`], else the id), then what is kept on this device (`Change how
 ///   <account> keeps mail on this device: keep the texts of the last 90 days, …`) or the
 ///   maintenance that runs (`Maintain the mail kept on this device for <account>: clean the
@@ -1367,6 +1367,18 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             "Change how {account} keeps mail on this device: {changes}",
             &[("account", &mail_cache_account(facts, &policy.account)), ("changes", &mail_cache_changes(policy))],
         ),
+        Request::ControlMailCacheJob { account, resume, .. } => {
+            let account = mail_cache_account(facts, account);
+            match resume {
+                true => trf(
+                    "Resume the maintenance of the mail kept on this device for {account}",
+                    &[("account", &account)],
+                ),
+                false => {
+                    trf("Pause the maintenance of the mail kept on this device for {account}", &[("account", &account)])
+                }
+            }
+        }
         Request::StartMailCacheJob { account, action } => trf(
             "Maintain the mail kept on this device for {account}: {action}",
             &[("account", &mail_cache_account(facts, account)), ("action", &mail_cache_action(*action))],
@@ -2546,11 +2558,13 @@ fn mail_cache_changes(policy: &torro_ipc::mail::MailCachePolicy) -> String {
 fn mail_cache_action(action: torro_ipc::mail::MailCacheAction) -> &'static str {
     use torro_ipc::mail::MailCacheAction;
     match action {
-        MailCacheAction::ApplyPolicy => tr("apply the strategy (removes texts it does not keep)"),
+        MailCacheAction::ApplyPolicy => {
+            tr("apply the strategy (removes mail texts it does not keep, downloads missing ones)")
+        }
         MailCacheAction::FetchMissingBodies => tr("download the mail texts it keeps"),
         MailCacheAction::FetchAttachments => tr("download the attachments"),
         MailCacheAction::RebuildIndex => tr("rebuild the search index"),
-        MailCacheAction::CleanCache => tr("clean the cache (removes downloaded texts and attachments)"),
+        MailCacheAction::CleanCache => tr("clean the cache (removes mail texts the strategy does not keep)"),
     }
 }
 
@@ -3608,7 +3622,7 @@ pub(crate) mod tests {
                 "Maintain the mail kept on this device for {account}: {action}",
                 &[
                     ("account", &"anna@mailbox.org"),
-                    ("action", &tr("clean the cache (removes downloaded texts and attachments)"))
+                    ("action", &tr("clean the cache (removes mail texts the strategy does not keep)"))
                 ]
             )
         );
@@ -3624,6 +3638,11 @@ pub(crate) mod tests {
         .map(|action| summary(&run(action), &known))
         .collect();
         assert_eq!(words.len(), 5);
+        let steer =
+            |resume| Request::ControlMailCacheJob { account: "mail:anna@mailbox.org".into(), id: "j:1".into(), resume };
+        let (resumed, paused) = (summary(&steer(true), &known), summary(&steer(false), &known));
+        assert_ne!(resumed, paused);
+        assert!(resumed.contains("anna@mailbox.org") && paused.contains("anna@mailbox.org"), "{resumed} / {paused}");
         assert!(words.iter().all(|text| !text.starts_with(&trf("Run {command}", &[("command", &"")]))));
     }
 
