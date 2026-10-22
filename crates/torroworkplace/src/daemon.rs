@@ -28,7 +28,9 @@
 //! the next start removes (issue #279, decision 4 in `docs/lebenszyklus.md`): while it stands, no MCP
 //! server starts the service again. The first-run setup opens only once the socket answers
 //! ([`once_listening`]), so a service that fails on its socket opens no window that would start the
-//! next one.
+//! next one. Then, too, the service removes the marker of the last try to start it
+//! ([`torro_gui::source::CORE_START_MARK`]): it runs, so a quit right after may be followed by a start
+//! at once.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -142,9 +144,12 @@ pub fn stopped_by_person(socket: &Path) -> bool {
     torro_gui::source::core_state_file(socket, QUIT_MARK).is_some_and(|mark| mark.is_file())
 }
 
-/// Removes the marker of a person's quit, as the service starts: whoever started it wants it. A
-/// marker that cannot be removed is only logged, it keeps nothing but MCP from starting the core.
-fn clear_quit(mark: Option<&Path>) {
+/// Removes the marker `mark`: a person's quit ([`QUIT_MARK`]) as the service starts, since whoever
+/// started it wants it; the last try to start it ([`torro_gui::source::CORE_START_MARK`]) once its
+/// socket answers ([`once_listening`]). A marker that cannot be removed is only logged: a quit marker
+/// keeps nothing but MCP from starting the core, a start marker no start for longer than
+/// [`torro_gui::source::CORE_START_GAP`].
+fn remove_mark(mark: Option<&Path>) {
     let Some(mark) = mark else { return };
     match std::fs::remove_file(mark) {
         Ok(()) => {}
@@ -330,7 +335,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
     }
     // A person who quit and starts the service again (or logs in) wants it: MCP may start it again.
     let quit_mark = torro_gui::source::core_state_file(&socket, QUIT_MARK);
-    clear_quit(quit_mark.as_deref());
+    remove_mark(quit_mark.as_deref());
     // The app key goes next to the socket, where `torro_ipc::client` looks for it.
     let config = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.config;
     // Reading or creating the files may wait for another core starting at the same time.
@@ -396,13 +401,23 @@ async fn serve(shows: Shows) -> Result<(), String> {
     // The tray shows whether the voice listener listens or records (task C.9).
     let voice_changes = core.voice_changes();
     let front = Front::start(&daemon, shows, core.snapshot().await).await?;
-    // A first start without accounts opens the setup (task W.9); a headless core opens no window.
-    // Only once the socket answers (issue #279): the setup starts a core of its own when it finds
-    // none, so a service that fails on its socket must not open it.
-    if !matches!(front, Front::None) {
+    // Once the socket answers (issue #279) the start marker goes, so a start after a quit is not held
+    // back, and a first start without accounts opens the setup (task W.9); a headless core opens no
+    // window. The setup starts a core of its own when it finds none, so a service that fails on its
+    // socket must not open it.
+    {
         let core = Arc::clone(&core);
         let socket = socket.clone();
-        tokio::spawn(async move { once_listening(&socket, SETUP_WAIT, core.offer_setup()).await });
+        let start_mark = torro_gui::source::core_state_file(&socket, torro_gui::source::CORE_START_MARK);
+        let setup = !matches!(front, Front::None);
+        tokio::spawn(async move {
+            let offer = async {
+                if setup {
+                    core.offer_setup().await;
+                }
+            };
+            once_listening(&socket, SETUP_WAIT, start_mark.as_deref(), offer).await
+        });
     }
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
@@ -455,13 +470,21 @@ const RELEASE_WAIT: Duration = Duration::from_secs(2);
 /// ([`once_listening`]).
 const SETUP_WAIT: Duration = Duration::from_secs(10);
 
-/// Runs `then` once the core at `socket` answers `system.ping`, within `limit` (issue #279); `true`
-/// when it ran. A socket that does not answer in time runs nothing: `false`, with a line on stderr.
-async fn once_listening(socket: &Path, limit: Duration, then: impl Future<Output = ()>) -> bool {
+/// Once the core at `socket` answers `system.ping` within `limit` (issue #279): removes the marker of
+/// the last try to start it at `start_mark` ([`remove_mark`]), then runs `then`; `true`. A socket that
+/// does not answer in time does neither: `false`, with a line on stderr. The marker then stays, so the
+/// apps do not start a failing core over and over.
+async fn once_listening(
+    socket: &Path,
+    limit: Duration,
+    start_mark: Option<&Path>,
+    then: impl Future<Output = ()>,
+) -> bool {
     if !torro_gui::source::wait_for_core(socket, limit).await {
         eprintln!("torroworkplace: the socket does not answer; not opening the setup");
         return false;
     }
+    remove_mark(start_mark);
     then.await;
     true
 }
@@ -1008,15 +1031,16 @@ mod tests {
         torro_gui::source::write_mark(&mark, chrono::Utc::now()).expect("written");
         assert!(stopped_by_person(&socket));
 
-        clear_quit(Some(&mark));
+        remove_mark(Some(&mark));
         assert!(!mark.exists());
         assert!(!stopped_by_person(&socket));
-        clear_quit(Some(&mark));
-        clear_quit(None);
+        remove_mark(Some(&mark));
+        remove_mark(None);
     }
 
     /// Issue #279: the setup opens only once the socket answers; a socket that takes connections but
-    /// never answers (or none at all) opens nothing.
+    /// never answers (or none at all) opens nothing. The start marker goes when the socket answers, so
+    /// a quit and a start a few seconds later start the core again; without an answer it stays.
     #[cfg(unix)]
     #[tokio::test]
     async fn the_setup_waits_for_an_answering_socket() {
@@ -1028,11 +1052,16 @@ mod tests {
         let opened = AtomicBool::new(false);
         let open = || async { opened.store(true, Ordering::SeqCst) };
 
+        let start = dir.path().join(torro_gui::source::CORE_START_MARK);
+        torro_gui::source::write_mark(&start, chrono::Utc::now()).expect("written");
+
         let silent = dir.path().join("silent.sock");
         let _held = std::os::unix::net::UnixListener::bind(&silent).expect("binds");
-        assert!(!once_listening(&silent, Duration::from_millis(500), open()).await);
-        assert!(!once_listening(&dir.path().join("none.sock"), Duration::from_millis(200), open()).await);
+        assert!(!once_listening(&silent, Duration::from_millis(500), Some(&start), open()).await);
+        let none = dir.path().join("none.sock");
+        assert!(!once_listening(&none, Duration::from_millis(200), Some(&start), open()).await);
         assert!(!opened.load(Ordering::SeqCst), "no setup without an answer");
+        assert!(start.exists(), "a core that does not answer keeps the start marker");
 
         let answering = dir.path().join("core.sock");
         let listener = tokio::net::UnixListener::bind(&answering).expect("binds");
@@ -1048,8 +1077,17 @@ mod tests {
                 let _ = write.write_all(&reply).await;
             }
         });
-        assert!(once_listening(&answering, Duration::from_secs(5), open()).await);
+        assert_eq!(
+            torro_gui::source::core_state_file(&answering, torro_gui::source::CORE_START_MARK),
+            Some(start.clone())
+        );
+        assert!(once_listening(&answering, Duration::from_secs(5), Some(&start), open()).await);
         assert!(opened.load(Ordering::SeqCst), "the setup opens once the socket answers");
+        assert!(!start.exists(), "the start marker is gone");
+        assert!(
+            torro_gui::source::claim_core_start(&answering, chrono::Utc::now()),
+            "a start right after a quit is due again"
+        );
         core.abort();
     }
 

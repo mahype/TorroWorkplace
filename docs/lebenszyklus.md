@@ -107,6 +107,8 @@ Was bei der Umsetzung (AP.1–AP.7) zusätzlich entschieden wurde.
 - **Marke `core-start`.** `ensure_core` schreibt den Zeitpunkt des Versuchs in das State-Verzeichnis des Dienstes,
   neben `core.sock`, und startet nichts, wenn die Marke jünger als 10 Sekunden ist. Der Dienst öffnet die
   Einrichtung erst, wenn sein Socket auf `system.ping` antwortet; scheitert der Socket, öffnet sich nichts.
+  Antwortet der Socket, löscht der Dienst die Marke: Wer ihn kurz nach dem Start über Tray › Quit beendet und
+  gleich darauf eine App öffnet, startet ihn wieder. Ein Dienst, der nie antwortet, lässt die Marke stehen.
 - **Marke `quit`.** Beendet ein Mensch den Dienst, schreibt der Dienst die Marke `quit` (0600, nur der
   Zeitpunkt). Das geschieht an einer Stelle für beide Wege, Tray › Quit und `system.quit` (`ctl quit`, nur mit
   dem App-Schlüssel). Beim nächsten Start löscht er sie. Solange sie steht, startet der MCP-Server nichts und
