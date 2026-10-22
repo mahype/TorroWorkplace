@@ -830,11 +830,14 @@ pub enum Request {
     /// series, with the new series' `uid`, `href`, `etag` and rule (the rest of a `COUNT`); when the
     /// series cannot be read again (the occurrence lies outside the cached window, or reading
     /// failed) it is built from the object written. Its `reset` counts the changed events of the
-    /// series that were reset (task TE.4).
+    /// series that were reset (task TE.4). For `following` only what the client changed against the
+    /// occurrence as stored goes to the new series; time counts as changed only when start or length
+    /// differ from the stored occurrence (a changed occurrence keeps its own changes).
     ///
     /// The rule: `repeat` set changes it as its fields say; [`torro_pim::model::Repeat::rule`] is
     /// only read back, never written, except for a custom rule of an event that has no rule yet. A
-    /// `repeat.rule` that is not one line of the `RRULE` grammar is `error`, whatever the scope.
+    /// `repeat.rule` that is not one line of the `RRULE` grammar is `error`, whatever the scope,
+    /// unless it is the rule the server stores (sent back unchanged).
     /// `repeat: None` ends the series only together with `recurring: false` (for `series` the
     /// occurrence becomes a single event, for `following` the series ends before it and this one
     /// stays alone); with `recurring: true` the stored rule stays as it is, so an occurrence a client

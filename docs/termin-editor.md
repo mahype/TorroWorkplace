@@ -176,21 +176,36 @@ Kacheln, zu Photon, zu den Regeln von Nominatim und „© OpenStreetMap contribu
   damit `repeat`, `time_zone` und `exceptions` auch dort gesetzt sind.
 - **Regeltext nur lesen:** `repeat.rule` schreibt der Dienst nie; er schreibt die gespeicherte Regel
   (`custom`, oder Felder unverändert) oder eine aus den Feldern. Nur ein neuer Termin mit eigener Regel
-  (`custom`, noch keine gespeichert) bekommt den Text – wenn er eine Zeile der RRULE-Grammatik ist. Sonst
-  `error`, auf jedem Weg, bevor etwas geschrieben wird.
+  (`custom`, noch keine gespeichert) bekommt den Text – wenn er eine Zeile der RRULE-Grammatik ist (keine
+  Leerzeichen, genau ein gültiges `FREQ`, `COUNT`/`INTERVAL` positive Zahlen, `UNTIL` als Datum oder
+  Zeitpunkt, `BY…`-Listen mit gültigen Werten, `X-NAME=wert` ohne `:`/`;`/`"`). Sonst `error`, auf jedem
+  Weg, bevor etwas geschrieben wird – außer der Text ist genau die gespeicherte Regel: Eine Serie, deren
+  gespeicherte Regel die Prüfung nicht besteht (ohne `FREQ`, `X-`-Teil mit `:` …), lässt sich weiter
+  ändern; der Dienst vergleicht dazu mit dem Rohobjekt im Cache oder liest es vom Server.
 - **Antwort:** immer das geschriebene Vorkommen mit seinem neuen `recurrence_id`, nach „folgende“ mit `uid`
   und Regel der neuen Serie; liegt es außerhalb des Fensters, baut der Dienst es aus dem geschriebenen
   Objekt.
-- **„Folgende“ auf einer verschobenen Ausnahme:** Die neue Serie ist das Vorkommen, wie der Client es
-  schickt (Zeit und eigene Felder), gemessen vom Raster der Regel: 10:00 → 14:00 verschoben, als „folgende“
-  auf 15:00 gesetzt, ergibt eine Serie um 15:00.
+- **„Folgende“ auf einer verschobenen Ausnahme** (zweites Review): Auf die neue Serie geht nur, was der
+  Client gegenüber dem gespeicherten Vorkommen (der Ausnahme) geändert hat; was die Ausnahme selbst
+  geändert hatte (Zeit, abgesagt, Titel, Notizen, Erinnerungen, Länge), bleibt ihr eigenes und bleibt bei
+  ihr. Zeit: Lässt der Client Beginn und Länge wie gespeichert, bleibt die neue Serie im Raster der alten
+  (10:00 → 14:00 verschoben, nur neuer Titel: Serie um 10:00, nichts zurückgesetzt, spätere `EXDATE`
+  bleiben, kein Löschrecht nötig). Ändert er sie, beginnt die neue Serie bei seiner Zeit, gemessen vom
+  Raster (14:00 → 15:00: Serie um 15:00), und spätere Ausnahmen werden zurückgesetzt. Kern (`drops`,
+  `resets`) und Editor (Band) zählen mit derselben Bedingung.
 - **Um Tage verschieben:** Bleibt `BYDAY`/`BYMONTHDAY` stehen, ist das zulässig (RFC 5545: `DTSTART` zählt
   dann als zusätzliches Vorkommen); was wegfällt, zählt als gelöscht (Löschrecht, Freigabe). Der Editor
   schickt die Regel mit dem neuen Wochentag mit.
 - **Windows-Zonen:** Die häufigsten Windows-Namen (`W. Europe Standard Time` …) gelten als ihre IANA-Zone;
   Serien in unbekannter oder ohne Zone zählt der Dienst in der Zone des Rechners, in der er sie liest.
-- **Umzug einer Serie** in einen anderen Kalender: Scheitert das Löschen des alten Objekts, löscht der Dienst
-  das neue wieder.
+- **Umzug einer Serie** in einen anderen Kalender: Lehnt der Server das Löschen des alten Objekts ab
+  (HTTP-Fehler, z. B. 412/403), löscht der Dienst das neue wieder; ebenso beim Teilen („folgende“), wenn der
+  Server das Kürzen der alten Serie ablehnt. Kommt keine Antwort (Verbindung weg, Zeitüberschreitung),
+  nimmt er nichts zurück – der Server hat den Schritt vielleicht schon getan, und Zurücknehmen könnte Termine
+  verlieren. Er meldet den Fehler; der nächste Sync zeigt beide Objekte, wie der Server sie hält.
+- **„Never“ nur mit „All“:** Der Editor schickt das Ende einer Serie (`recurring: false`) nur mit dem
+  Umfang „All“. Wechselt der Umfang, kommt die gespeicherte Regel zurück; solange das Speichern läuft, das
+  die Serie beendet, bleibt der Umfang stehen.
 
 ## Oberfläche
 

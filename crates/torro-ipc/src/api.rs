@@ -1965,7 +1965,8 @@ static SAVE_EVENT: Command = Command {
     description: "Creates an event (without `href`) or changes one (with `href` and `etag` from list_events) on \
                   the server and returns it as stored. An occurrence of a series (`recurring: true`) needs `scope`: \
                   `occurrence` changes only it, `following` splits the series there and changes it and all after \
-                  it (later changed events are reset when time or rule change; the answer's `reset` counts them), \
+                  it (only what the client changed against the stored occurrence goes along; later changed \
+                  events are reset when time, length or rule differ from it; the answer's `reset` counts them), \
                   `series` changes all of them; without `scope` it fails with `unsupported`. The answer is the \
                   occurrence with its new `recurrence_id`, after `following` the first of the new series with its \
                   `uid`. To end a series send `repeat: null` and `recurring: false`; `repeat: null` alone keeps the \
@@ -1975,7 +1976,8 @@ static SAVE_EVENT: Command = Command {
                   `unsupported`. Errors: `not-found` (no such occurrence: reload), `conflict` (changed meanwhile or \
                   sent without `etag`: reload), `unsupported` (moving with `occurrence` or `following`, switching \
                   a series between all-day and timed, a rule that cannot be counted for `following`), `error` \
-                  (`scope` without `href`, a `repeat.rule` that is not one line of RRULE).",
+                  (`scope` without `href`, a `repeat.rule` that is not one line of RRULE and not the stored \
+                  one).",
 };
 
 static DELETE_EVENT: Command = Command {

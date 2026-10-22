@@ -23,11 +23,14 @@
 //!   stored series ends the second before the occurrence (a `COUNT` becomes `UNTIL`), a new object with
 //!   a new UID and `RELATED-TO;RELTYPE=SIBLING` starts at it with the rest of the count, and the later
 //!   changed occurrences and `EXDATE`s move into it – unless time or rule change, then they are reset
-//!   and [`Outcome::reset`] says how many. The new series takes the occurrence as the client sends
-//!   it, its time and the fields a changed occurrence changed itself included, measured from where
-//!   the rule puts it: a changed occurrence moved from 10:00 to 14:00 and saved for "following" at
-//!   15:00 starts a series at 15:00. The first occurrence counts as the whole series. Deleting only
-//!   ends the stored series.
+//!   and [`Outcome::reset`] says how many. Only what the client changed against the occurrence as
+//!   stored (its changed occurrence, if any) goes to the new series; what a changed occurrence changed
+//!   itself (moved, cancelled, its own title …) stays its own and stays with it. Time counts as
+//!   changed only when the client sends another start or length than the stored occurrence has: a
+//!   changed occurrence moved from 10:00 to 14:00 and saved for "following" with a new title keeps
+//!   the series at 10:00 and resets nothing; saved at 15:00, the new series starts at 15:00 (measured
+//!   from where the rule puts the occurrence). [`drops`] and [`resets`] measure the same way. The first
+//!   occurrence counts as the whole series. Deleting only ends the stored series.
 //!
 //! **Ending a series** takes `repeat: None` *and* `recurring: false` ([`ends_series`]). `repeat: None`
 //! alone keeps the rule: an occurrence a client got without its rule (the stored object was not at
@@ -914,26 +917,35 @@ fn save_series(found: Found, key: EventTime, event: &Event, writing: &Writing<'_
 fn save_following(found: Found, key: EventTime, event: &Event, writing: &Writing<'_>) -> Result<Outcome, SeriesError> {
     let main = found.main.as_ref().ok_or(SeriesError::Unsupported(NO_MAIN))?;
     let rule = rule_change(main, event);
-    // The new series is the occurrence as the client sends it, measured from where the rule puts it,
-    // not from where a changed occurrence was moved to (finding 4 of the review of #278).
-    let base = main.at(key);
-    let shift = shift_between(base.start, event.start, main.zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
-    let resized = main.length() != length(event.start, event.end);
+    let reference = following_reference(main, &found.before, key, event);
+    let shift = shift_between(reference.start, event.start, main.zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
+    let resized = length(reference.start, reference.end) != length(event.start, event.end);
     let head = head(&found.object, main, key, writing.now);
     let mut tail = tail(&found.object, main, key, writing.new_uid)?;
-    // Its own changed occurrence becomes the new main event (the fields it changed itself are carried
-    // from `base`), so it is not kept a second time.
-    tail.retain_vevents(|block| key_of(block) != Some(key));
     let mut reset = 0;
-    // Nextcloud's rule (decision 4): later changed occurrences move only while the dates stay.
+    // Nextcloud's rule (decision 4): later changed occurrences move only while the dates stay. The
+    // occurrence's own changed occurrence stays: what it changed itself is its own, not the series'.
     if !shift.is_zero() || resized || rule != Rule::Keep {
-        reset = tail.exception_keys().len() as u32;
-        tail.retain_vevents(is_master);
+        reset = tail.exception_keys().into_iter().filter(|other| *other != key).count() as u32;
+        tail.retain_vevents(|block| is_master(block) || key_of(block) == Some(key));
         tail.edit_master(|block| set(block, &["EXDATE", "RDATE"], Vec::new()));
     }
-    let edited = edit_series(&mut tail, &base, key, event, &rule, writing)?;
+    let edited = edit_series(&mut tail, &reference, key, event, &rule, writing)?;
     let plan = Plan::Split { new: zoned(&tail, Some(main)), old: zoned(&head, Some(main)) };
     Ok(Outcome { plan, reset: reset + edited.reset, key: edited.key })
+}
+
+/// What "following" measures a change of the occurrence at `key` against (the second review of #278,
+/// findings 2 and 3): the fields of `before`, the occurrence as stored (its changed occurrence, if
+/// any), so only what the client changed goes to the new series. The time is that of `before` while
+/// the client keeps its start: then the new series keeps the clock of the main event (no shift, no
+/// reset), also when `before` was moved by itself. A new start is measured from where the rule puts
+/// the occurrence (`main` at `key`), so the new series starts where the client put it. The length is
+/// always `before`'s: a length the client did not change changes nothing.
+fn following_reference(main: &Main, before: &Event, key: EventTime, event: &Event) -> Event {
+    let start = if event.start == before.start { before.start } else { main.at(key).start };
+    let end = length(before.start, before.end).map(|length| plus(start, length));
+    Event { start, end, ..before.clone() }
 }
 
 /// The stored series ending just before `key`: `UNTIL` the second (all-day: the day) before, without
@@ -1153,8 +1165,8 @@ fn lost(stored: &str, event: &Event, scope: SeriesScope) -> Result<Lost, SeriesE
     let zone = main.zone;
     let rule = rule_change(main, event);
     let following = scope == SeriesScope::Following && !found.is_first(key);
-    // As the save measures it: "following" from where the rule puts the occurrence.
-    let reference = if following { main.at(key) } else { found.before.clone() };
+    // As the save measures it ([`following_reference`]).
+    let reference = if following { following_reference(main, &found.before, key, event) } else { found.before.clone() };
     let shift = shift_between(reference.start, event.start, zone).ok_or(SeriesError::Unsupported(KIND_CHANGE))?;
     let resized = length(reference.start, reference.end) != length(event.start, event.end);
     let from = |time: EventTime| !following || instant(time) >= instant(key);
@@ -1730,7 +1742,8 @@ mod tests {
     }
 
     /// Finding 4: "following" on a changed occurrence moved from 10:00 to 14:00, saved at 15:00,
-    /// starts the new series at 15:00 with the fields it changed itself.
+    /// starts the new series at 15:00; the fields the occurrence changed itself stay its own (the
+    /// second review of #278, findings 2 and 3).
     #[test]
     fn following_on_a_moved_occurrence_starts_where_the_client_put_it() {
         let moved = EXCEPTIONS
@@ -1746,17 +1759,58 @@ mod tests {
         assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261027T150000"), "{new}");
         assert!(has(new, "DTEND;TZID=Europe/Berlin:20261027T160000"), "{new}");
         let new_events = events(new);
-        assert_eq!(new_events.len(), 1, "its changed occurrence went into the new main event");
-        assert_eq!(new_events[0].summary, "Weekly product sync (Q4 review)", "its own title stays");
-        assert_eq!(new_events[0].description.as_deref(), Some("Q4 numbers first."), "its own notes stay");
+        assert_eq!(new_events.len(), 2, "the main event and the occurrence's own change");
+        assert_eq!(new_events[0].summary, "Weekly product sync", "its own title is not the series'");
+        assert_eq!(new_events[0].description.as_deref(), Some("Roadmap, blockers, next steps."));
+        let own = &new_events[1];
+        assert_eq!((own.recurrence_id, own.start), (Some(berlin(2026, 10, 27, 15)), berlin(2026, 10, 27, 15)));
+        assert_eq!(own.summary, "Weekly product sync (Q4 review)", "its own title stays with it");
+        assert_eq!(own.description.as_deref(), Some("Q4 numbers first."), "its own notes stay with it");
         // 27 Oct 10:00 in Berlin is 09:00 UTC (winter time).
         assert!(has(old, "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261027T085959Z"), "{old}");
         assert_eq!(drops(&moved, &event, SeriesScope::Following), 0);
-        // Only the title changed: the new series keeps the occurrence's 14:00, and says so.
-        let renamed = Event { summary: "Q4 review".into(), ..stored };
-        let following = save(&moved, &renamed, SeriesScope::Following, &writing()).expect("split");
-        let (new, _) = split(&following);
-        assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261027T140000"), "{new}");
+        assert_eq!(resets(&moved, &event, SeriesScope::Following), 0);
+    }
+
+    /// The second review of #278, findings 2 and 3: "following" with only a new title on a changed
+    /// occurrence moved from 10:00 to 11:00 and cancelled keeps the new series at 10:00, resets
+    /// nothing, keeps the later changes and excluded dates (no right to delete needed), and carries
+    /// neither the move nor the cancellation to the other events.
+    #[test]
+    fn following_with_a_new_title_on_a_moved_occurrence_keeps_the_clock_of_the_series() {
+        let cancelled = EXCEPTIONS
+            .replace(
+                "DTEND;TZID=Europe/Berlin:20261006T120000\nSTATUS:CONFIRMED",
+                "DTEND;TZID=Europe/Berlin:20261006T120000\nSTATUS:CANCELLED",
+            )
+            .replace(
+                "EXDATE;TZID=Europe/Berlin:20260922T100000",
+                "EXDATE;TZID=Europe/Berlin:20260922T100000\nEXDATE;TZID=Europe/Berlin:20261020T100000",
+            );
+        let key = berlin(2026, 10, 6, 10);
+        let stored = occurrence(&cancelled, key);
+        assert_eq!(stored.start, berlin(2026, 10, 6, 11), "moved to 11:00");
+        assert_eq!(stored.status, Some(torro_pim::model::EventStatus::Cancelled), "and cancelled");
+        let renamed = Event { summary: "Product sync".into(), ..stored };
+        assert_eq!(resets(&cancelled, &renamed, SeriesScope::Following), 0);
+        assert_eq!(drops(&cancelled, &renamed, SeriesScope::Following), 0, "no right to delete needed");
+        let outcome = save(&cancelled, &renamed, SeriesScope::Following, &writing()).expect("split");
+        assert_eq!((outcome.reset, outcome.key), (0, Some(key)));
+        let (new, old) = split(&outcome);
+        assert!(has(new, "DTSTART;TZID=Europe/Berlin:20261006T100000"), "the clock of the series: {new}");
+        assert!(has(new, "EXDATE;TZID=Europe/Berlin:20261020T100000"), "the cancelled 20 Oct stays cancelled");
+        assert!(has(old, "RRULE:FREQ=WEEKLY;BYDAY=TU;UNTIL=20261006T075959Z"), "{old}");
+        let new_events = events(new);
+        assert_eq!(new_events.len(), 3, "the main event, this occurrence's own change and that of 27 Oct");
+        let main = &new_events[0];
+        assert_eq!(main.summary, "Product sync", "the new title goes to the series");
+        assert_eq!(main.status, Some(torro_pim::model::EventStatus::Confirmed), "the cancellation does not");
+        let own = new_events.iter().find(|e| e.recurrence_id == Some(key)).expect("its own change stays");
+        assert_eq!((own.start, own.summary.as_str()), (berlin(2026, 10, 6, 11), "Product sync"));
+        assert_eq!(own.status, Some(torro_pim::model::EventStatus::Cancelled), "still cancelled");
+        let later = new_events.iter().find(|e| e.recurrence_id == Some(berlin(2026, 10, 27, 10))).expect("27 Oct");
+        assert_eq!(later.summary, "Weekly product sync (Q4 review)", "its own title stays");
+        keeps_foreign_lines(new);
     }
 
     /// Finding 5: a series moved by a day without a new rule keeps its `BYDAY`; what falls away is
