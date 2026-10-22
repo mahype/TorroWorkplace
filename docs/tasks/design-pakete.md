@@ -768,7 +768,13 @@ es im Kommentar der `design.toml`):
 - **Abnahme:** wie im Entwurf, Tests der Zeilenhöhen und Spannen, Demos in allen drei Designs.
 
 ### L.37 Steuerzentrale: Appearance in Variante B
-- [ ] erledigt
+- [x] erledigt (2026-10-23: Vorschau als Canvas `MailPreview` aus den Werten des Designs, 4 × `size::control_sm()`
+  breit; Schriften als Knöpfe im Stil `choice_chip` in ihrer eigenen Schrift, vorgeschlagene mit Punkt; Dropdown als
+  eigene Karte im Menü-Stil (`general::overlay`); Hinweis „Also switched“ nach dem Neuladen, das das Design trägt
+  (`general::loaded`), die Demo wendet die Vorschläge selbst an. Demo: die drei Designs, „Neon“ ungültig, Schema
+  „Midnight“ nur dunkel, neu `--open design-schemes` und `design-switched`. Abweichungen vom Board: Haken statt
+  Radio in Akzent (Auswahl neutral), keine eigene Seitenüberschrift mit Satz (die Kopfleiste trägt den Titel), Zoom
+  ohne eigene Zeile Text (Satz unter der Gruppe). Kein Baustein in `torro-gui` nötig)
 - **Modell:** Opus · **Braucht:** L.33, L.34 · **Dateien:** `crates/torroworkplace/src/ui/{general,mod,launch}.rs`,
   `crates/torro-gui/src/widgets.rs` (nur, falls ein Baustein fehlt)
 - Nach dem Board „Appearance · Variant B (chosen)“: Gruppe **Design** als kompakte Liste (Zeile je Design: Vorschau, Name,

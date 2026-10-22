@@ -145,8 +145,13 @@ pub enum Open {
     /// "Connect client" with the key of a new "Other MCP client" and its command, shown once.
     ConnectClientOther,
     /// Appearance with the demo's designs, fonts and colour schemes ([`demo_looks`]), one of each
-    /// broken; the design "Harbor" is chosen, so its suggestions are marked.
+    /// broken; the design `--design` names is drawn, else the standard.
     Design,
+    /// Appearance with the colour scheme's dropdown open (task L.37).
+    DesignSchemes,
+    /// Appearance after Console was chosen: the demo switched the mail view as the core would, and
+    /// the page says so ("Also switched: plain-text mail", task L.37).
+    DesignSwitched,
     /// The first-run setup at this step (task W.4), with the demo's sample data.
     Setup(super::setup::Step),
     /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
@@ -238,6 +243,8 @@ impl Open {
         ("connect-client-done", Open::ConnectClientDone),
         ("connect-client-other", Open::ConnectClientOther),
         ("design", Open::Design),
+        ("design-schemes", Open::DesignSchemes),
+        ("design-switched", Open::DesignSwitched),
         ("setup", Open::Setup(super::setup::Step::Welcome)),
         ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
         ("setup-nextcloud-address", Open::SetupNextcloudAddress),
@@ -508,27 +515,26 @@ fn sample_about(name: &str, version: &str, description: &str) -> torro_core::des
     }
 }
 
-/// The designs, fonts and colour schemes of `--demo` (Appearance, tasks L.4 and L.23), in memory like
-/// all its data, each list with the standard first, samples that can be chosen and are drawn at
-/// once, and one that breaks rules and says so:
+/// The designs, fonts and colour schemes of `--demo` (Appearance, tasks L.4, L.23 and L.37), in memory
+/// like all its data, each list with the standard first, samples that can be chosen and are drawn
+/// at once, and one that breaks rules and says so:
 ///
-/// - designs: "Harbor" (the standard's form under its own name, so the demo can show it chosen
-///   without changing the window; it suggests the font "Tabular"), "Paper" (rounder and roomier,
-///   suggests nothing), "Neon" (broken);
+/// - designs: the three built-in ones, Standard, Compact and Console (Console suggests JetBrains
+///   Mono, which the demo does not have, and plain-text mail), and "Neon" (broken);
 /// - fonts: "Tabular" (Inter's tabular cut as text font: the only other family the demo has without
 ///   a folder), "Brush" (broken);
 /// - colour schemes: "Harbor" (teal accent, cool surfaces), "Paper" (warm light surfaces, blue
-///   accent), "Neon" (broken).
+///   accent), "Midnight" (dark only), "Neon" (broken).
 ///
 /// A part `--design`, `--font` or `--color-scheme` names (read from its folder at start, so it is the
-/// active one) joins its list after the samples, so its tile carries the check mark.
+/// active one) joins its list after the samples, so it carries the check mark.
 pub fn demo_looks() -> Lists {
     Lists { designs: Ok(demo_designs()), fonts: Ok(demo_fonts()), schemes: Ok(demo_schemes()) }
 }
 
 /// The designs of [`demo_looks`].
 fn demo_designs() -> Vec<DesignEntry> {
-    use torro_core::design::{Design, DesignError, Radius, Space};
+    use torro_core::design::{BUILT_IN_IDS, Design, DesignError};
     let info = |design: &Design| DesignInfo {
         id: design.id.clone(),
         name: design.about.name.clone(),
@@ -543,12 +549,6 @@ fn demo_designs() -> Vec<DesignEntry> {
         mail_view: design.about.mail_view,
         density: design.density_level(),
     };
-    let sample = |id: &str, about| Design { id: id.into(), about, ..Design::standard() };
-    let mut harbor = sample("harbor", sample_about("Harbor", "1.2.0", "The standard's form, own suggestions"));
-    harbor.about.font = Some("tabular".into());
-    let mut paper = sample("paper", sample_about("Paper", "0.9.1", "Rounder and roomier"));
-    paper.radius = Radius { xs: 6.0, sm: 8.0, md: 10.0, lg: 14.0 };
-    paper.space = Space { xs: 6.0, s: 10.0, m: 14.0, l: 20.0, xl: 28.0, xxl: 40.0 };
     let neon = DesignInfo {
         id: "neon".into(),
         name: "Neon".into(),
@@ -570,7 +570,9 @@ fn demo_designs() -> Vec<DesignEntry> {
         mail_view: None,
         density: Default::default(),
     };
-    let mut designs: Vec<Design> = vec![Design::standard(), harbor, paper];
+    // The built-in designs need no folder: `load` answers them from the embedded files.
+    let mut designs: Vec<Design> =
+        BUILT_IN_IDS.iter().filter_map(|id| torro_core::design::load(std::path::Path::new(""), id).ok()).collect();
     let forced = torro_gui::design::active();
     if !designs.iter().any(|design| design.id == forced.id) {
         designs.push((*forced).clone());
@@ -683,7 +685,14 @@ fn demo_schemes() -> Vec<SchemeEntry> {
         active: false,
         dark_only: false,
     };
-    let mut schemes = vec![ColorScheme::standard(), harbor, paper];
+    // Dark only: the light mode is a copy of the dark one, as the core reads such a scheme.
+    let mut midnight = sample("midnight", sample_about("Midnight", "1.0.0", "Deep blue, dark only"));
+    let dark = &mut midnight.colors.dark;
+    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x070B14), Rgba::hex(0x0C1220), Rgba::hex(0x111A2C));
+    (dark.accent, dark.on_accent) = (Rgba::hex(0x6E8BFF), Rgba::hex(0x0A1030));
+    midnight.colors.light = midnight.colors.dark;
+    midnight.dark_only = true;
+    let mut schemes = vec![ColorScheme::standard(), harbor, paper, midnight];
     let forced = torro_gui::scheme::active();
     if !schemes.iter().any(|scheme| scheme.id == forced.id) {
         schemes.push((*forced).clone());
