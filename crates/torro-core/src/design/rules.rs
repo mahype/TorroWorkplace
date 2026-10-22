@@ -558,7 +558,7 @@ mod tests {
             min: 12.0,
             max: 18.0
         }));
-        assert!(problems.contains(&DesignError::LineHeight { key: "type.meta".into(), line: 40.0, size: 12.0 }));
+        assert!(problems.contains(&DesignError::LineHeight { key: "type.meta".into(), line: 40.0, size: 13.0 }));
         assert_eq!(problems.len(), 3, "a weight is no rule of a design any more (task L.19): {problems:?}");
     }
 
@@ -609,7 +609,7 @@ mod tests {
         assert!(problems.contains(&DesignError::OutOfRange {
             key: "type.read.size".into(),
             value: 12.0,
-            min: 13.0,
+            min: 14.0,
             max: 20.0
         }));
         assert!(problems.contains(&DesignError::OutOfRange {

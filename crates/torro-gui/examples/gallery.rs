@@ -21,9 +21,13 @@
 //! Escape or a click on the dimmed window closes it). The "Styles ·
 //! Blocks · Window" switch in the header changes the page, "Dark · Light" the mode.
 //!
-//! `-- --design <id>` draws everything with the design pack `<id>` from the designs folder
-//! (`TORRO_DATA_HOME/designs`, e.g. `plex`), as `--design` does in the apps; an id that is not a
-//! valid pack is said on stderr and the standard stays.
+//! `-- --design <id>` draws everything with the design `<id>`: the built-in `compact` and `console`
+//! (issue #291), or a design of its own from the designs folder (`TORRO_DATA_HOME/designs`), as
+//! `--design` does in the apps; an id that is not a valid design is said on stderr and the standard
+//! stays. `--font` and `--color-scheme` do the same for the font (e.g. `plex`) and the colours.
+//!
+//! `--shot <file.bmp>` saves the window as a picture after three seconds and quits (task L.34): a
+//! visual check where no tool may capture other windows (macOS without screen recording rights).
 //!
 //! States are forced through the style closure (`.style(move |theme, _| f(theme,
 //! Status::Hovered))`), so one screenshot shows hover, pressed, focus and disabled at once; the
@@ -75,7 +79,8 @@ fn main() -> iced::Result {
         Page::Mailbar => iced::Size::new(2160.0, 1180.0),
         _ => iced::Size::new(3700.0, 1060.0),
     };
-    iced::application(move || Gallery::new(start), Gallery::update, Gallery::view)
+    let shot = args.iter().position(|a| a == "--shot").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+    iced::application(move || Gallery::new(start, shot.clone()), Gallery::step, Gallery::view)
         .settings(torro_gui::settings())
         .title("Torro style gallery")
         .theme(Gallery::theme)
@@ -158,6 +163,8 @@ impl Start {
 }
 
 struct Gallery {
+    /// `--shot`: where to save the window as a picture, after which the gallery quits.
+    shot: Option<std::path::PathBuf>,
     light: bool,
     page: Page,
     section: usize,
@@ -222,6 +229,9 @@ enum Msg {
     Mode(usize),
     Tile(usize),
     Reasons,
+    /// `--shot`: take the picture now, then save it.
+    Shoot,
+    Shot(iced::window::Screenshot),
 }
 
 const SECTIONS: [&str; 5] = ["Buttons", "Rows", "Inputs", "Checks", "Surfaces"];
@@ -232,8 +242,9 @@ const NAME_WIDTH: f32 = 160.0;
 type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
 
 impl Gallery {
-    fn new(start: Start) -> Self {
+    fn new(start: Start, shot: Option<std::path::PathBuf>) -> Self {
         Self {
+            shot,
             light: start.light,
             page: start.page,
             section: 0,
@@ -266,10 +277,33 @@ impl Gallery {
     }
 
     fn subscription(&self) -> Subscription<Msg> {
+        let shot = match self.shot {
+            Some(_) => iced::time::every(std::time::Duration::from_secs(3)).map(|_| Msg::Shoot),
+            None => Subscription::none(),
+        };
         if self.menu.is_some() || self.drawer || self.panel {
-            widgets::escape().map(|()| Msg::Escape)
+            Subscription::batch([widgets::escape().map(|()| Msg::Escape), shot])
         } else {
-            Subscription::none()
+            shot
+        }
+    }
+
+    /// [`Gallery::update`], and `--shot`: the picture of the window is taken as a task.
+    fn step(&mut self, msg: Msg) -> iced::Task<Msg> {
+        match msg {
+            Msg::Shoot => iced::window::latest().and_then(iced::window::screenshot).map(Msg::Shot),
+            Msg::Shot(picture) => {
+                if let Some(path) = self.shot.take()
+                    && let Err(err) = std::fs::write(&path, bmp(&picture))
+                {
+                    eprintln!("gallery: can't save {}: {err}", path.display());
+                }
+                iced::exit()
+            }
+            other => {
+                self.update(other);
+                iced::Task::none()
+            }
         }
     }
 
@@ -327,6 +361,8 @@ impl Gallery {
                 self.reasons = false;
             }
             Msg::Reasons => self.reasons = !self.reasons,
+            // Handled in `step`.
+            Msg::Shoot | Msg::Shot(_) => {}
         }
     }
 
@@ -359,17 +395,23 @@ impl Gallery {
         row![first, second, third].spacing(space::xxl()).padding(space::xl()).into()
     }
 
-    /// A gallery page: sidebar, header and the scrolling `body` in the inset panel.
+    /// A gallery page: sidebar, header and the scrolling `body` beside it, as `torro_gui::shell` lays
+    /// out a window – flush with a line when the design's inset is 0 (issue #291), else inset.
     fn page_frame<'a>(&'a self, body: Element<'a, Msg>) -> Element<'a, Msg> {
         let content = column![
             self.header(),
             rule::horizontal(1).style(style::rule),
             scrollable(body).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
         ];
-        let panel = container(content).width(Fill).height(Fill).style(style::container::panel);
-        container(row![self.sidebar(), container(panel).padding(iced::Padding { left: 0.0, ..layout::inset().into() })])
-            .style(style::container::sidebar)
-            .into()
+        let inset = layout::inset();
+        let frame = if inset > 0.0 {
+            let panel = container(content).width(Fill).height(Fill).style(style::container::panel);
+            row![self.sidebar(), container(panel).padding(iced::Padding { left: 0.0, ..inset.into() })]
+        } else {
+            let panel = container(content).width(Fill).height(Fill).style(style::container::panel_flush);
+            row![self.sidebar(), rule::vertical(1).style(style::rule), panel]
+        };
+        container(frame).style(style::container::sidebar).into()
     }
 
     fn sidebar(&self) -> Element<'_, Msg> {
@@ -839,6 +881,9 @@ fn rows() -> Element<'static, Msg> {
                     typo::text(typo::meta().tabular(), "Oct 14").style(theme::text_3)
                 ]
                 .align_y(Alignment::Center);
+                // Issue #291: on the chosen row of a design with `selection = "fill"` (Console) the cells
+                // are drawn in `on_accent`.
+                let content = widgets::row_content(content, selected);
                 let item = forced(container(content).center_y(Fill), style::button::list_row(selected), status)
                     .width(240)
                     .height(size::row())
@@ -1422,8 +1467,9 @@ impl Gallery {
             typo::text(typo::meta().tabular(), t.due)
                 .style(coloured(move |p| if late { p.attention } else { p.text_3 })),
         )
-        .width(44)
-        .align_right(44);
+        // Room for "Mon 12" in the standard's meta (13) on one line.
+        .width(56)
+        .align_right(56);
         let mut cells = vec![
             task_check(done, t.list, Some(Msg::Done(i, !done))),
             priority(t.priority, t.urgent),
@@ -2612,4 +2658,27 @@ fn rail_groups(anchors: &[Anchor]) -> Vec<widgets::RailGroup<'static, Msg>> {
 /// `body` under a small `CAPTION` title in `text_3`, as the fields of a dialog.
 fn labelled<'a>(title: &'a str, body: Element<'a, Msg>) -> Element<'a, Msg> {
     column![typo::text(typo::caption(), title).style(theme::text_3), body].spacing(space::xs()).into()
+}
+
+/// `picture` as an uncompressed 32-bit BMP (top-down, BGRA): the simplest picture file, written
+/// without a crate of its own; `sips -s format png` turns it into a PNG.
+fn bmp(picture: &iced::window::Screenshot) -> Vec<u8> {
+    let (width, height) = (picture.size.width, picture.size.height);
+    let pixels = picture.rgba.len() as u32;
+    let mut out = Vec::with_capacity(pixels as usize + 54);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&(54 + pixels).to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&width.to_le_bytes());
+    // A negative height: the rows run from the top down, as the screenshot's.
+    out.extend_from_slice(&(-(height as i32)).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&[0; 24]);
+    for [r, g, b, a] in picture.rgba.as_chunks::<4>().0 {
+        out.extend_from_slice(&[*b, *g, *r, *a]);
+    }
+    out
 }

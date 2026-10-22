@@ -1367,28 +1367,29 @@ mod tests {
         assert_eq!((c.dark.line.a, c.dark.focus_ring.a), (0.06, 0.35));
         assert_eq!((c.light.line_selected.a, c.light.focus_ring.a), (0.32, 0.5));
         assert_eq!((c.dark.tint, c.light.tint), (0.18, 0.14));
-        assert_eq!(d.typo.body, Level { font: FontRole::Text, weight: Weight::Regular, size: 13.0, line: 20.0 });
+        // Issue #291 (task L.34): the new standard's measures.
+        assert_eq!(d.typo.body, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
         assert_eq!(d.typo.micro.font, FontRole::Numbers);
         assert_eq!(f.fonts.text.family, "Inter");
         assert_eq!(f.fonts.numbers.family, "Inter Tabular");
         assert_eq!(f.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
         assert_eq!((f.size_adjust, f.license.as_str()), (1.0, "OFL-1.1"));
-        assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
-        assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
-        assert_eq!([d.size.row_message, d.size.row_notice], [92.0, 64.0], "the inbox's rows (tasks E3.9, E11.1)");
+        assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 4.0, 0.0]);
+        assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [44.0, 240.0, 720.0]);
+        assert_eq!([d.size.row_message, d.size.row_notice], [100.0, 80.0], "the inbox's rows (tasks E3.9, E11.1)");
         // The comfortable density of the inbox (task E8.2).
-        assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
+        assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 16.0, line: 26.0 });
         // The standard shows rows, not cards (task E13.1): the density is the design's list style, and
         // the standard's rows are compact. Only a pack switches the cards on.
         assert_eq!(d.list.density(), Density::Compact);
         // A reminder over the whole screen (task ER1.5).
         assert_eq!(d.typo.hero, Level { font: FontRole::Heading, weight: Weight::Semibold, size: 48.0, line: 56.0 });
         assert_eq!(d.typo.countdown, Level { font: FontRole::Numbers, weight: Weight::Medium, size: 28.0, line: 32.0 });
-        assert_eq!(d.size.control_xl, 44.0);
-        assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 36.0, 40.0]);
+        assert_eq!(d.size.control_xl, 48.0);
+        assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 40.0, 48.0]);
         assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
         // The mail window's large buttons (task E11.1).
-        assert_eq!([d.size.command, d.size.pill], [46.0, 42.0]);
+        assert_eq!([d.size.command, d.size.pill], [46.0, 40.0]);
         assert_eq!(ColorScheme::standard().logo, Logo::default());
         // The chart colours as the dataviz validator checked them (task E8.8b).
         assert_eq!(c.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);

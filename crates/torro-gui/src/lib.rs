@@ -52,6 +52,7 @@ pub mod source;
 pub mod split;
 pub mod style;
 pub mod theme;
+mod themed;
 pub mod typo;
 pub mod ui_state;
 pub mod widgets;
@@ -86,7 +87,7 @@ pub fn fonts() -> [&'static [u8]; 5] {
 
 /// Iced settings for every app: the files of the active font loaded ([`design::font_files`]; the
 /// embedded Inter for the standard), its text font as default font ([`theme::font`]) and the
-/// [`typo::body`] size (13 in the standard) as default text size – Iced's own default is 16 in the
+/// [`typo::body`] size (14 in the standard) as default text size – Iced's own default is 16 in the
 /// system sans-serif.
 ///
 /// Use as `iced::application(…).settings(torro_gui::settings())`. It replaces all settings, so it
@@ -288,11 +289,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_load_inter_at_13() {
+    fn settings_load_inter_at_the_body_size() {
         let settings = settings();
         assert_eq!(settings.fonts.len(), fonts().len());
         assert_eq!(settings.default_font, theme::font());
-        assert_eq!(settings.default_text_size, iced::Pixels(13.0));
+        assert_eq!(settings.default_text_size, iced::Pixels(14.0), "the standard's body (issue #291)");
         assert!(settings.antialiasing);
     }
 }

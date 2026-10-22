@@ -854,16 +854,17 @@ mod tests {
 
     #[test]
     fn the_all_day_row_grows_with_its_chips() {
+        // The standard's day head and free row are its buttons (36, issue #291), the hour row 24.
         let one = Rows { height: 600.0, chip_rows: 0 };
-        assert_eq!(one.all_day(), (52.0, 80.0), "one row is kept");
+        assert_eq!(one.all_day(), (60.0, 88.0), "one row is kept");
         let two = Rows { chip_rows: 2, ..one };
-        assert_eq!(two.all_day(), (52.0, 104.0));
+        assert_eq!(two.all_day(), (60.0, 112.0));
         assert!(two.lanes().0 > one.lanes().0);
-        assert_eq!(one.lanes(), (84.0, 84.0 + max_lanes_height()), "columns stop at their maximum height");
-        assert_eq!(one.free(), (472.0, 496.0), "free time right under the columns");
+        assert_eq!(one.lanes(), (92.0, 92.0 + max_lanes_height()), "columns stop at their maximum height");
+        assert_eq!(one.free(), (480.0, 512.0), "free time right under the columns");
         let low = Rows { height: 300.0, ..one };
-        assert_eq!(low.lanes(), (84.0, 268.0));
-        assert_eq!(low.free(), (272.0, 296.0));
+        assert_eq!(low.lanes(), (92.0, 260.0));
+        assert_eq!(low.free(), (264.0, 296.0));
     }
 
     #[test]

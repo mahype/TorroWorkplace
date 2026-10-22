@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(look.font.fonts.text.family, "IBM Plex Sans");
         assert_eq!(look.font.fonts.numbers, look.font.fonts.text, "Plex's figures are tabular already");
         let body = look.level(LevelName::Body);
-        assert_eq!((body.size, body.line), (14.0, 20.0), "the standard's 13/20 in IBM Plex Sans: 13 × 1.058");
+        assert_eq!((body.size, body.line), (15.0, 22.0), "the standard's 14/22 in IBM Plex Sans: 14 × 1.058");
         assert_eq!(look.scheme.colors.dark.accent, Rgba::hex(0x3AA6A0));
         assert!(look.scheme.logo.mark.is_some());
     }

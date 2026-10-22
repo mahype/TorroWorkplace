@@ -709,7 +709,11 @@ es im Kommentar der `design.toml`):
   `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` committen. `torro-api-review`.
 
 ### L.34 torro-gui: neuer Standard, Listendarstellung, bündige Fläche, Aktionsleiste
-- [ ] erledigt
+- [x] erledigt (2026-10-23: abgeleitete Werte des Standards mit Grund in `designs/torro/design.toml`; gewählte
+  Zeile `fill` über ein eigenes Theme `theme::on_accent_theme` (`widgets::row_content`, `widgets::selection_bar` für
+  Ansichten mit eigenen Zeilen); `Folders::choices` bietet Compact und Console ohne Ordner an; `Palette::of` zeichnet
+  `dark_only` in beiden Modi dunkel; Galerie mit `--shot`; zusätzlich nur Tests angepasst: `torro-core`
+  (`standard_of_before` → `standard_of_the_table`, Regeltests), `torro-gui/src/design/legacy.rs` ohne die alten Maße)
 - **Modell:** Opus · **Braucht:** L.33 · **Dateien:** `designs/torro/design.toml` (Werte des neuen Standards nach der
   Tabelle), `crates/torro-gui/src/**` (vor allem `theme.rs`, `layout.rs`, `shell.rs`, `style.rs`, `widgets.rs`),
   `crates/torro-gui/examples/gallery.rs`, Tests in `crates/{torrocalendar,torrotasks,torroinbox,torroassistant}/src/**`,

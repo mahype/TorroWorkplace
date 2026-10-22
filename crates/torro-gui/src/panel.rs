@@ -20,7 +20,7 @@
 //!   whole window, full height, with the menu shadow to the left; the rest of the window is dimmed
 //!   (scrim) and a click on it sends the panel's `on_close`. Narrow windows show it full width.
 //!
-//! The panel itself ([`panel`]): `panel` surface; a 44-high head ([`size::header()`], in line with
+//! The panel itself ([`panel`]): `panel` surface; a head ([`size::header()`], in line with
 //! the window's header bar) with the path ([`path`]), optional actions and a close button; the
 //! title ([`title`] or the app's own borderless title field); the body, which scrolls together
 //! with the title; and an optional fixed footer for actions below a line. A fixed bar under the

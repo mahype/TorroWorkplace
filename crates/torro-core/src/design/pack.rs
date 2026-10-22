@@ -552,7 +552,7 @@ fn merge_layout(design: &mut Design, file: &LayoutFile) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::design::testdata::{Data, fixture_names, standard_of_before};
+    use crate::design::testdata::{Data, fixture_names, standard_of_the_table};
     use crate::design::{Density, DensityLevel};
 
     fn problems(dir: &Path, id: &str) -> Vec<DesignError> {
@@ -605,11 +605,11 @@ mod tests {
         }
     }
 
-    /// Issue #291, task L.31: until task L.34 the standard gives exactly the form of before, read from
-    /// its file.
+    /// Issue #291, task L.34: the standard gives exactly the values of the table, read from its file;
+    /// a mail row of 100 is "balanced".
     #[test]
-    fn the_standard_has_the_values_of_before() {
-        assert_eq!(Design::standard(), standard_of_before());
+    fn the_standard_has_the_values_of_the_table() {
+        assert_eq!(Design::standard(), standard_of_the_table());
         assert_eq!(Design::standard().density_level(), DensityLevel::Balanced);
     }
 
@@ -619,7 +619,7 @@ mod tests {
         let whole = BUILT_IN_FILES[0].1;
         // Without the whole `[list]` table, the weight of one level and one size.
         let cut = whole.find("[list]").map_or(whole, |at| &whole[..at]);
-        let text = cut.replacen("weight = \"medium\"\n", "", 1).replace("rail_wide = 232", "");
+        let text = cut.replacen("weight = \"medium\"\n", "", 1).replace("rail_wide = 248", "");
         let file: DesignFile = toml::from_str(&text).expect("toml");
         let keys: Vec<String> = missing(&file)
             .into_iter()

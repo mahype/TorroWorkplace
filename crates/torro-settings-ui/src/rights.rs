@@ -1908,13 +1908,21 @@ mod tests {
 
     #[test]
     fn segmented_controls_get_a_line_of_their_own_where_the_row_would_cut_them_off() {
-        // The page widths of a narrow window (480, 16 margin) and of a medium one (800: rail,
-        // inset and 24 margin).
+        // The page widths of a narrow window (480, 16 margin) and of a medium one (1000: rail,
+        // inset and 24 margin). Since issue #291 the standard's text (14) and segments are larger: in a
+        // medium window of 800 the German names leave the controls no room beside them any more.
         let narrow = 480.0 - 2.0 * space::l();
-        let medium = 800.0 - torro_gui::shell::rail() - torro_gui::layout::inset() - 2.0 * space::xl();
+        let medium = 1000.0 - torro_gui::shell::rail() - torro_gui::layout::inset() - 2.0 * space::xl();
         assert_eq!(control_column(narrow), None);
         assert_eq!(control_column(medium), Some(segment_slot()));
-        assert_eq!(control_column(torro_gui::theme::size::content_max()), Some(segment_slot()));
+        // At the reading width (720) it depends on the language since issue #291: English keeps the
+        // column, the longer German lines in the standard's meta (13) put the controls under their names.
+        let english = torro_core::i18n::tr("Send on my behalf") == "Send on my behalf";
+        let reading = control_column(torro_gui::theme::size::content_max());
+        assert!(reading.is_none() || reading == Some(segment_slot()));
+        if english {
+            assert_eq!(reading, Some(segment_slot()));
+        }
     }
 
     #[test]

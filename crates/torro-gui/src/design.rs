@@ -100,6 +100,14 @@ pub(crate) struct Tokens {
     /// the window's by identity: [`Tokens::sidebar_mode`].
     pub sidebar_dark_theme: Theme,
     pub sidebar_light_theme: Theme,
+    /// The colours of the content of a chosen row drawn in the accent colour (issue #291, `[list]
+    /// selection = "fill"`): the window's, with every text colour `on_accent` (`Palette::on_accent_row`).
+    pub on_accent_dark: Palette,
+    pub on_accent_light: Palette,
+    /// The Iced themes that content is drawn in (`theme::on_accent_theme`), told apart by identity
+    /// like the sidebar's: [`Tokens::on_accent_mode`].
+    pub on_accent_dark_theme: Theme,
+    pub on_accent_light_theme: Theme,
 }
 
 impl Tokens {
@@ -120,6 +128,10 @@ impl Tokens {
         let sidebar_light = Palette::of_sidebar(&scheme, Mode::Light);
         let sidebar_dark_theme = theme::iced_theme(name("Dark sidebar"), &sidebar_dark);
         let sidebar_light_theme = theme::iced_theme(name("Light sidebar"), &sidebar_light);
+        let on_accent_dark = dark.on_accent_row();
+        let on_accent_light = light.on_accent_row();
+        let on_accent_dark_theme = theme::iced_theme(name("Dark on accent"), &on_accent_dark);
+        let on_accent_light_theme = theme::iced_theme(name("Light on accent"), &on_accent_light);
         Tokens {
             drawn: drawn(&design, &font),
             design,
@@ -133,6 +145,10 @@ impl Tokens {
             sidebar_light,
             sidebar_dark_theme,
             sidebar_light_theme,
+            on_accent_dark,
+            on_accent_light,
+            on_accent_dark_theme,
+            on_accent_light_theme,
         }
     }
 
@@ -140,22 +156,34 @@ impl Tokens {
     /// identity of the theme's palette (an `Arc` the clones share), not by name: cheap enough for
     /// every style call, and a sidebar theme's own brightness says nothing about the window's mode.
     pub fn sidebar_mode(&self, theme: &Theme) -> Option<Mode> {
-        let same = |sidebar: &Theme| match (theme, sidebar) {
-            (Theme::Custom(a), Theme::Custom(b)) => Arc::ptr_eq(a, b),
-            _ => false,
-        };
-        if same(&self.sidebar_dark_theme) {
-            Some(Mode::Dark)
-        } else if same(&self.sidebar_light_theme) {
-            Some(Mode::Light)
-        } else {
-            None
-        }
+        mode_of(theme, &self.sidebar_dark_theme, &self.sidebar_light_theme)
+    }
+
+    /// The mode of `theme` if it is one of the on-accent themes of these tokens (issue #291), else
+    /// `None`; by identity, as [`Tokens::sidebar_mode`].
+    pub fn on_accent_mode(&self, theme: &Theme) -> Option<Mode> {
+        mode_of(theme, &self.on_accent_dark_theme, &self.on_accent_light_theme)
     }
 
     /// The Iced font of `role` at `weight` in the active font.
     pub fn font(&self, role: FontRole, weight: Weight) -> Font {
         font_of(&self.font, role, weight)
+    }
+}
+
+/// `Some(Mode::Dark)` when `theme` is `dark` itself (a clone sharing its palette), `Some(Mode::Light)`
+/// when it is `light`, else `None`.
+fn mode_of(theme: &Theme, dark: &Theme, light: &Theme) -> Option<Mode> {
+    let same = |other: &Theme| match (theme, other) {
+        (Theme::Custom(a), Theme::Custom(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    };
+    if same(dark) {
+        Some(Mode::Dark)
+    } else if same(light) {
+        Some(Mode::Light)
+    } else {
+        None
     }
 }
 
@@ -425,10 +453,12 @@ impl Folders {
     }
 
     /// The ids `--design`, `--font` or `--color-scheme` take for `part` (task L.22): the standard
-    /// first, then every id the folder of `part` holds a valid entry for, by name.
+    /// first, then the other built-in ones (the designs Compact and Console, issue #291, also without
+    /// a folder), then every id the folder of `part` holds a valid entry for, by name.
     pub fn choices(&self, part: Part) -> Vec<String> {
         fn valid<T>(dir: Option<&Path>, list: fn(&Path) -> Vec<Listed<T>>) -> Vec<String> {
-            let listed = dir.map(list).unwrap_or_default();
+            // A missing folder lists the built-in entries alone, as `part` reads them without one.
+            let listed = list(dir.unwrap_or(Path::new("")));
             listed.into_iter().filter(|entry| entry.valid() && !entry.standard).map(|entry| entry.id).collect()
         }
         let mut ids = match part {
@@ -788,15 +818,31 @@ mod tests {
         assert_eq!(theme::attention(), legacy::DARK.attention);
     }
 
+    /// Issue #291 (task L.34): the standard has new measures, read from its file; every level is the
+    /// file's level as Inter draws it (unchanged), in the fonts the suite always had.
     #[test]
-    fn the_standard_design_gives_the_old_type_scale() {
-        let levels = typo::all();
-        assert_eq!(levels.len(), legacy::LEVELS.len());
-        for (level, (name, size, line, font)) in levels.into_iter().zip(legacy::LEVELS) {
-            assert_eq!(level.size.0, size, "size of {name}");
-            assert_eq!(level.line_height, LineHeight::Absolute(iced::Pixels(line)), "line height of {name}");
-            assert_eq!(level.font, font, "font of {name}");
+    fn the_standard_design_draws_the_type_scale_of_its_file() {
+        let t = Design::standard().typo;
+        let levels = [
+            (typo::micro(), t.micro, legacy::FONT_TABULAR),
+            (typo::caption(), t.caption, legacy::FONT_MEDIUM),
+            (typo::meta(), t.meta, legacy::FONT),
+            (typo::body(), t.body, legacy::FONT),
+            (typo::body_strong(), t.body_strong, legacy::FONT_MEDIUM),
+            (typo::read(), t.read, legacy::FONT),
+            (typo::title(), t.title, legacy::FONT_SEMIBOLD),
+            (typo::headline(), t.headline, legacy::FONT_SEMIBOLD),
+            (typo::display(), t.display, legacy::FONT_SEMIBOLD),
+            (typo::hero(), t.hero, legacy::FONT_SEMIBOLD),
+            (typo::countdown(), t.countdown, legacy::FONT_TABULAR_MEDIUM),
+        ];
+        for (drawn, level, font) in levels {
+            assert_eq!(drawn.size.0, level.size);
+            assert_eq!(drawn.line_height, LineHeight::Absolute(iced::Pixels(level.line)), "{}", level.size);
+            assert_eq!(drawn.font, font, "font of the {} level", level.size);
         }
+        // The new standard's text (the table in `docs/tasks/design-pakete.md`).
+        assert_eq!((typo::body().size.0, typo::read().size.0, typo::headline().size.0), (14.0, 16.0, 28.0));
         // Tabular cuts: Regular stays Regular, everything heavier is the tabular Medium.
         assert_eq!(typo::meta().tabular().font, legacy::FONT_TABULAR);
         assert_eq!(typo::micro().tabular().font, legacy::FONT_TABULAR);
@@ -820,10 +866,16 @@ mod tests {
         );
     }
 
+    /// Issue #291 (task L.34): every measure token is the standard file's value, unchanged.
     #[test]
-    fn the_standard_design_gives_the_old_spacing_radii_and_sizes() {
-        assert_eq!([space::xs(), space::s(), space::m(), space::l(), space::xl(), space::xxl()], legacy::SPACE);
-        assert_eq!([radius::xs(), radius::sm(), radius::md(), radius::lg()], legacy::RADIUS);
+    fn the_standard_design_gives_the_spacing_radii_and_sizes_of_its_file() {
+        let d = Design::standard();
+        let (sp, r, l, z) = (d.space, d.radius, d.layout, d.size);
+        assert_eq!(
+            [space::xs(), space::s(), space::m(), space::l(), space::xl(), space::xxl()],
+            [sp.xs, sp.s, sp.m, sp.l, sp.xl, sp.xxl]
+        );
+        assert_eq!([radius::xs(), radius::sm(), radius::md(), radius::lg()], [r.xs, r.sm, r.md, r.lg]);
         let now = [
             size::control_sm(),
             size::control(),
@@ -841,17 +893,44 @@ mod tests {
             size::hour(),
             size::axis(),
             size::axis_narrow(),
-            layout::inset(),
             size::content_max(),
             size::form_max(),
-            size::HAIRLINE,
+            size::rail(),
+            size::rail_wide(),
+            size::reading_max(),
             shell::rail(),
+            layout::inset(),
         ];
-        for (value, (name, old)) in now.into_iter().zip(legacy::SIZES) {
-            assert_eq!(value, old, "{name}");
-        }
-        assert_eq!(style::button_padding(), legacy::BUTTON_PADDING);
-        assert_eq!(style::pick_list_padding(), legacy::PICK_LIST_PADDING);
+        let file = [
+            z.control_sm,
+            z.control,
+            z.control_lg,
+            z.row,
+            z.row_two,
+            z.row_sidebar,
+            z.row_group,
+            z.header,
+            z.sidebar,
+            z.props,
+            z.panel,
+            z.list,
+            z.list_medium,
+            z.hour,
+            z.axis,
+            z.axis_narrow,
+            z.content_max,
+            z.form_max,
+            z.rail,
+            z.rail_wide,
+            z.reading_max,
+            z.rail,
+            l.inset,
+        ];
+        assert_eq!(now, file);
+        assert_eq!(size::HAIRLINE, 1.0, "a line stays one logical pixel");
+        let sides = l.control_padding.horizontal;
+        assert_eq!(style::button_padding(), iced::Padding::new(0.0).left(sides).right(sides));
+        assert_eq!(style::pick_list_padding(), iced::Padding::new(6.0).left(sides).right(sides));
     }
 
     #[test]
@@ -861,7 +940,7 @@ mod tests {
         let loaded: Vec<&[u8]> = settings.fonts.iter().map(|f| f.as_ref()).collect();
         assert_eq!(loaded, embedded, "the five Inter files, in the old order");
         assert_eq!(settings.default_font, legacy::FONT);
-        assert_eq!(settings.default_text_size, iced::Pixels(13.0));
+        assert_eq!(settings.default_text_size, iced::Pixels(14.0), "the new standard's body (issue #291)");
     }
 
     /// Tokens of the standard design and font with `scheme`.
@@ -909,6 +988,22 @@ mod tests {
         // A theme with the same name and colours is not the sidebar's: identity counts.
         let lookalike = theme::iced_theme(tokens.sidebar_light_theme.to_string().into(), &side);
         assert_eq!(tokens.sidebar_mode(&lookalike), None);
+    }
+
+    /// Issue #291: a colour scheme that is `dark_only` draws dark in light mode too – the light
+    /// palette, its derived text colours and the light theme are the dark ones, so a window in light
+    /// mode looks the same as in dark mode.
+    #[test]
+    fn a_dark_only_scheme_draws_dark_in_light_mode() {
+        let mut scheme = ColorScheme::standard();
+        scheme.colors.light = scheme.colors.dark;
+        scheme.dark_only = true;
+        let tokens = tokens_of(scheme);
+        assert_eq!(tokens.light, tokens.dark, "derived attention and error text included");
+        assert_eq!(tokens.light.attention_text, legacy::DARK.attention_text);
+        assert_eq!(tokens.sidebar_light, tokens.sidebar_dark);
+        assert!(tokens.light_theme.extended_palette().is_dark, "Iced's own widgets draw dark too");
+        assert_eq!(tokens.light_theme.palette(), tokens.dark_theme.palette());
     }
 
     /// Held by the tests that switch the process's look, so they do not see each other's.
@@ -1050,7 +1145,7 @@ mod tests {
         font.id = "twin".into();
         crate::font::set(font);
         assert_eq!((crate::font::active().id.as_str(), crate::scheme::active().id.as_str()), ("twin", "twin"));
-        assert_eq!(crate::typo::body().size.0, 13.0, "Inter by another id: the same size");
+        assert_eq!(crate::typo::body().size.0, 14.0, "Inter by another id: the same size");
         replace(Some(Design::standard()), Some(FontSet::standard()), Some(ColorScheme::standard()));
         assert!(crate::scheme::active().is_standard() && crate::font::active().is_standard());
     }
@@ -1088,7 +1183,7 @@ mod tests {
         }
         let plex = folders.look("plex");
         let body = plex.level(LevelName::Body);
-        assert_eq!((body.size, body.line), (14.0, 20.0), "the standard's 13/20 in IBM Plex Sans (× 1.058)");
+        assert_eq!((body.size, body.line), (15.0, 22.0), "the standard's 14/22 in IBM Plex Sans (× 1.058)");
         assert_eq!(plex.font.fonts.text.family, "IBM Plex Sans");
         assert!(plex.scheme.logo.mark.is_some(), "the logo comes with the colour scheme");
         let nord = folders.look("nord");
@@ -1167,7 +1262,12 @@ mod tests {
         );
         assert_eq!(choices_in(&folders, Part::ColorScheme), ["torro", "harbor", "twin"]);
         assert_eq!(choices_in(&folders, Part::Font), ["torro"]);
-        assert_eq!(choices_in(&Folders::default(), Part::Design), ["torro"]);
+        assert_eq!(
+            choices_in(&Folders::default(), Part::Design),
+            ["torro", "compact", "console"],
+            "the built-in designs need no folder (`--design console` with a fresh data folder)"
+        );
+        assert!(is_choice_in(&Folders::default(), Part::Design, "console"));
         assert!(is_choice_in(&folders, Part::Design, "twin") && is_choice_in(&folders, Part::ColorScheme, "harbor"));
         assert!(!is_choice_in(&folders, Part::Design, "harbor"), "a colour scheme is no design");
         assert!(is_choice_in(&Folders::default(), Part::Font, "torro"), "the standard needs no folder");

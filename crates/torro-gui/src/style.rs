@@ -118,6 +118,8 @@ pub mod button {
     use iced::widget::button::{Status, Style};
     use iced::{Background, Color, Theme};
 
+    use torro_core::design::ListSelection;
+
     use super::{faded, mix, outline};
     use crate::theme::{Palette, palette, radius};
 
@@ -392,17 +394,29 @@ pub mod button {
         }
     }
 
-    /// A row in a list (tasks, agenda), 40 high ([`crate::theme::size::row()`]), full width without
-    /// radius; the line between rows is a [`super::rule`]. Text `text`; hover `hover`; the
-    /// `selected` row (the one shown in the detail) is `selected`.
+    /// A row in a list (tasks, agenda, mail), [`crate::theme::size::row()`] high in
+    /// `widgets::list_row`, full width without radius; the line between rows is a [`super::rule`].
+    /// Text `text`; hover `hover`. The `selected` row (the one shown in the detail) follows the
+    /// design's [`crate::layout::list`] (issue #291):
+    ///
+    /// - `selection = "bar"` (Standard, Compact): `selected`, neutral; the bar of the accent colour
+    ///   at its left is drawn beside the button (`widgets::selection_bar`).
+    /// - `selection = "fill"` (Console): the whole row in `accent`, its plain text in `on_accent`;
+    ///   cells with colours of their own are drawn in `on_accent` by `widgets::row_content`.
     pub fn list_row(selected: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
+        move |theme, status| list_row_in(crate::layout::list().selection, selected)(theme, status)
+    }
+
+    /// [`list_row`] for the selection `selection` instead of the active design's: for building blocks
+    /// that already hold the list look, and for tests.
+    pub(crate) fn list_row_in(selection: ListSelection, selected: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
         move |theme, status| {
             let p = palette(theme);
             let rest = Rest { background: Color::TRANSPARENT, text: p.text, border: Color::TRANSPARENT, radius: 0.0 };
-            if selected {
-                chosen(status, Rest { background: p.selected, ..rest })
-            } else {
-                neutral(&p, status, rest, p.text)
+            match (selected, selection) {
+                (false, _) => neutral(&p, status, rest, p.text),
+                (true, ListSelection::Bar) => chosen(status, Rest { background: p.selected, ..rest }),
+                (true, ListSelection::Fill) => chosen(status, Rest { background: p.accent, text: p.on_accent, ..rest }),
             }
         }
     }
@@ -442,16 +456,17 @@ pub mod container {
         Style { background: Some(Background::Color(background)), ..Style::default() }
     }
 
-    /// The inset content area next to the sidebar (wide layout): `panel`, 1-px `line` border,
-    /// radius [`radius::md()`], with [`crate::layout::inset()`] margin top, right and bottom
-    /// (the margin is the parent's padding).
+    /// The inset content area next to the sidebar (a design with [`crate::layout::inset()`] above 0):
+    /// `panel`, 1-px `line` border, radius [`radius::md()`], with the inset as margin top, right and
+    /// bottom (the margin is the parent's padding). With an inset of 0 (the built-in designs) the
+    /// shell draws [`panel_flush`] with a line beside the sidebar instead.
     pub fn panel(theme: &Theme) -> Style {
         let p = palette(theme);
         Style { border: outline(p.line, radius::md()), ..surface(p.panel) }
     }
 
-    /// The content area without a sidebar (medium, narrow): `panel`, flush with the window, no
-    /// border, no radius.
+    /// The content area flush with the window: `panel`, no border, no radius – without a sidebar
+    /// (narrow), and beside the sidebar or rail when the design's inset is 0.
     pub fn panel_flush(theme: &Theme) -> Style {
         surface(palette(theme).panel)
     }
@@ -919,6 +934,30 @@ mod tests {
 
     fn same(a: Color, b: Color) -> bool {
         (a.r - b.r).abs() < 1e-4 && (a.g - b.g).abs() < 1e-4 && (a.b - b.b).abs() < 1e-4 && (a.a - b.a).abs() < 1e-4
+    }
+
+    /// Issue #291 (task L.34): the chosen list row in both selections – `bar` keeps the neutral
+    /// `selected` (the accent bar stands beside the button), `fill` is the one chosen surface in the
+    /// accent, with `on_accent` text readable on it; a row that is not chosen is neutral in both.
+    #[test]
+    fn a_chosen_list_row_is_neutral_with_a_bar_and_accent_with_fill() {
+        use torro_core::design::ListSelection;
+        for (mode, theme, p) in modes() {
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let bar = button::list_row_in(ListSelection::Bar, true)(&theme, status);
+                assert!(same(bg(&bar), p.selected) && same(bar.text_color, p.text), "{mode}: bar {status:?}");
+                let fill = button::list_row_in(ListSelection::Fill, true)(&theme, status);
+                assert!(same(bg(&fill), p.accent), "{mode}: fill {status:?}");
+                assert!(same(fill.text_color, p.on_accent), "{mode}: text on the accent");
+                assert!(fill.text_color.relative_contrast(bg(&fill)) >= 4.5, "{mode}: readable on the accent");
+                for selection in [ListSelection::Bar, ListSelection::Fill] {
+                    let plain = button::list_row_in(selection, false)(&theme, status);
+                    assert!(!same(bg(&plain), p.accent), "{mode}: {selection:?} not chosen is neutral");
+                }
+            }
+            let standard = button::list_row(true)(&theme, Status::Active);
+            assert!(same(bg(&standard), p.selected), "{mode}: the standard's selection is the bar");
+        }
     }
 
     #[test]

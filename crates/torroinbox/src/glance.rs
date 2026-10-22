@@ -699,10 +699,11 @@ mod tests {
 
     #[test]
     fn the_height_of_the_tile_decides_how_many_rows_fit() {
-        // 240×160: 12 above and below, the figures (32), 8 gap, rows of 28.
+        // 240×160: 12 above and below, the figures (32), 8 gap, rows of 32 (the standard's sidebar
+        // row since issue #291).
         assert_eq!(rows_that_fit(160.0, false, false), 3);
         assert_eq!(rows_that_fit(150.0, true, false), 2, "the error line takes room");
-        assert_eq!(rows_that_fit(120.0, false, false), 2, "the smallest window");
+        assert_eq!(rows_that_fit(120.0, false, false), 1, "the smallest window");
         assert_eq!(rows_that_fit(160.0, false, true), 2, "the senders' line takes room (task E8.11)");
         assert_eq!(rows_that_fit(40.0, false, false), 0);
         assert!(rows_that_fit(480.0, false, false) > SHOWN, "a tall tile fills its height");
