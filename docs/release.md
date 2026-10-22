@@ -1,12 +1,12 @@
 # Release-Pipeline
 
-Stand: 2026-10-11. Entwurf (Aufgabe K.16). Nichts davon ist veröffentlicht: kein Tag, keine Repositories,
+Stand: 2026-10-22 (Apps eigenständig, #279; Entwurf von 2026-10-11, Aufgabe K.16). Nichts davon ist veröffentlicht: kein Tag, keine Repositories,
 keine Secrets. Alles, was ein Secret braucht, ist abgeschaltet, bis die Checkliste unten abgehakt ist.
 
 **Schritt für Schritt für 0.1.0:** [release-0.1.0.md](release-0.1.0.md).
 
-Ziel: `git tag v0.1.0 && git push --tags` baut die ganze Suite (`torroworkplace`, `torrocalendar`,
-`torrotasks`) für Linux, macOS und Windows, legt sie in ein GitHub Release und aktualisiert die
+Ziel: `git tag v0.1.0 && git push --tags` baut die ganze Suite (`torroworkplace`, `torroinbox`, `torro-inbox-mail`,
+`torro-inbox-notifications`, `torrocalendar`, `torrotasks`, `torroassistant`) für Linux, macOS und Windows, legt sie in ein GitHub Release und aktualisiert die
 Paketquellen.
 
 ## Empfehlung
@@ -16,9 +16,9 @@ Paketquellen.
 | Baustein | Aufgabe | Wer |
 |---|---|---|
 | `dist-workspace.toml` + `.github/workflows/release.yml` | Binärarchive für 5 Ziele, Shell-/PowerShell-Installer, Homebrew-Formeln, GitHub Release | `dist` (Workflow ist generiert, nicht von Hand ändern) |
-| `.github/workflows/publish-aur.yml` | AUR-Pakete `-bin` und `torro-suite` aktualisieren | automatisch nach dem Release („custom publish job“) oder von Hand |
-| `.github/workflows/publish-macos-app.yml` | signierte, notarisierte `.app`-Bündel für die GUIs | automatisch nach dem Release („custom publish job“) oder von Hand |
-| `packaging/` | `.desktop`-Dateien, Icons, PKGBUILD-Vorlagen, Meta-Formel, Brewfile, Scoop-Vorlage | von Hand |
+| `.github/workflows/publish-aur.yml` | sieben AUR-Pakete `-bin` und `torro-suite` aktualisieren | automatisch nach dem Release („custom publish job“) oder von Hand |
+| `.github/workflows/publish-macos-app.yml` | signierte, notarisierte `.app`-Bündel: sieben Apps, das Service-Bündel im Workplace-Bündel und die Erinnerung | automatisch nach dem Release („custom publish job“) oder von Hand |
+| `packaging/` | `.desktop`-Dateien, Icons, PKGBUILD-Vorlagen, Meta-Formel, Brewfile, Scoop-Manifest der Suite | von Hand |
 
 Gründe:
 
@@ -59,8 +59,8 @@ Gründe:
 | 9 | CI `announce` | Schließt den Lauf ab. |
 
 Wo die Artefakte landen: GitHub Release `v0.1.0` im Repository (Archive, Installer, Formeln, Prüfsummen);
-Tap `mahype/homebrew-torro` (`Formula/*.rb`); AUR-Repositories `torroworkplace-bin`, `torrocalendar-bin`,
-`torrotasks-bin`, `torro-suite`.
+Tap `mahype/homebrew-torro` (`Formula/*.rb`); AUR-Repositories `torroworkplace-bin`, `torroinbox-bin`, `torro-inbox-mail-bin`,
+`torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin` und `torro-suite`.
 
 Pull Requests und Merges starten keinen Workflow (`pr-run-mode = "skip"`, `ci.yml` nur bei Tags und von
 Hand): Jede Minute auf GitHub Actions kostet Geld, macOS- und Windows-Runner ein Vielfaches. Die Prüfungen
@@ -75,11 +75,11 @@ lässt sich die CI von Hand starten: `gh workflow run CI --ref main`. Eine geän
 | System | Ziele | Format | Signierung | Installieren |
 |---|---|---|---|---|
 | Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | `.tar.xz`; AUR-Pakete | nicht nötig; Prüfsummen im Release | Arch: `yay -S torro-suite`; sonst: Shell-Installer je App oder Tarball |
-| macOS | `aarch64-apple-darwin`, `x86_64-apple-darwin` | `.tar.xz` mit Binary; später `.app.zip` für die GUIs | Binary: optional. `.app`: Developer ID + Notarisierung nötig, damit ein Doppelklick nach Download nicht blockiert | `brew install mahype/torro/torro-suite` |
+| macOS | `aarch64-apple-darwin`, `x86_64-apple-darwin` | `.tar.xz` mit Binary; `.app.zip` für jedes Bündel | Binary: optional. `.app`: Developer ID + Notarisierung nötig, damit ein Doppelklick nach Download nicht blockiert | `brew install mahype/torro/torro-suite` |
 | Windows | `x86_64-pc-windows-msvc` | `.zip`, PowerShell-Installer | optional; ohne Signatur zeigt SmartScreen eine Warnung | `powershell -c "irm <URL>/torroworkplace-installer.ps1 \| iex"`; später `scoop install` |
 
 Der Shell-Installer legt je App eine Datei in `~/.cargo/bin` (`install-path = "CARGO_HOME"`). Die ganze
-Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/research.md`, Abschnitt 7).
+Suite heißt also sieben Aufrufe oder das geplante `install.sh` (siehe `docs/research.md`, Abschnitt 7).
 
 ### Linux
 
@@ -90,12 +90,17 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
 - Der Build braucht keine Systembibliotheken (`Cargo.lock` enthält weder `libdbus-sys` noch `openssl-sys`;
   Tray und Benachrichtigungen laufen über `zbus`, TLS über `rustls`).
 - Die Linux-Binaries entstehen auf Ubuntu 22.04 (glibc 2.35). Ältere Distributionen laufen damit nicht.
-- Startmenü: `packaging/linux/torro-calendar.desktop`, `torro-tasks.desktop`, `torro-workplace.desktop`.
-  `StartupWMClass` entspricht der App-ID aus `torro-core` (`AppId::window_class`), damit Hyprland-Regeln
-  und Launcher das Fenster zuordnen. Die Icons sind **Platzhalter** (`packaging/linux/icons/*.svg`).
+- Startmenü: eine `.desktop`-Datei je Eintrag in `packaging/linux/` (`torro-workplace`, `torro-inbox`,
+  `torro-inbox-mail`, `torro-inbox-notifications`, `torro-calendar`, `torro-tasks`, `torro-assistant`).
+  `Exec` ist die Programmdatei des Eintrags, `StartupWMClass` die App-ID aus `torro-core`
+  (`AppId::window_class`), damit Hyprland-Regeln und Launcher das Fenster zuordnen. Die Icons sind die echten
+  (`packaging/linux/icons/*.svg`, Variante „red“, flach mit 4 % Rand).
 - systemd-Nutzereinheit für den Kern: `packaging/linux/torroworkplace.service` (`/usr/bin/torroworkplace daemon`).
-- AUR: `torroworkplace-bin`, `torrocalendar-bin`, `torrotasks-bin` (je `x86_64` und `aarch64`, Quelle ist das
-  Release-Archiv, Prüfsummen setzt `updpkgsums`) und das Metapaket `torro-suite` (`arch=any`, nur `depends`).
+- AUR: sieben `-bin`-Pakete, eines je Programm: `torroworkplace-bin`, `torroinbox-bin`, `torro-inbox-mail-bin`,
+  `torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin` (je `x86_64` und
+  `aarch64`, Quelle ist das Release-Archiv, Prüfsummen setzt `updpkgsums`). Mail und App Feed hängen an
+  `torroinbox-bin`, weil sie das Verfassen dort öffnen. Das Metapaket `torro-suite` (`arch=any`, nur `depends`)
+  hängt an allen sieben.
   Vorlagen: `packaging/aur/PKGBUILD.in`, `PKGBUILD.suite.in`. Der Job nutzt
   `KSXGitHub/github-actions-deploy-aur` (Eingaben `pkgname`, `pkgbuild`, `updpkgsums`, `test`,
   `ssh_private_key`, `commit_username`, `commit_email`).
@@ -110,9 +115,23 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
   Gatekeeper prüft es nicht. Das gilt für den Kern und für Start aus dem Terminal. Ein Doppelklick auf eine
   heruntergeladene GUI-App ohne Notarisierung wird blockiert.
 - Für die GUIs gibt es deshalb `publish-macos-app.yml`: lädt das fertige Binary aus dem
-  Release, `packaging/macos/make-app.sh` baut `Torro Calendar.app` (Info.plist aus `Info.plist.in`, optional
-  `.icns` aus einem 1024-px-PNG), dann `codesign --options runtime`, `xcrun notarytool submit --wait`,
+  Release, `packaging/macos/make-app.sh` baut das Bündel (Info.plist aus `Info.plist.in`, `.icns` aus dem
+  1024-px-PNG in `packaging/macos/icons/`), dann `codesign --options runtime`, `xcrun notarytool submit --wait`,
   `xcrun stapler staple`, `ditto` zu `<bin>-<arch>-apple-darwin.app.zip`, Upload ans Release.
+- **Sieben Bündel, dazu Service-Bündel und Reminder** (#279, [lebenszyklus.md](lebenszyklus.md)): Torro Workplace,
+  Torro Notification Hub, Torro Workplace Mail, Torro App Feed, Torro Calendar, Torro Tasks und Torro Assistant,
+  je mit der Bundle-ID `io.github.mahype.<fensterklasse>`. In „Torro Workplace.app“ steckt unter
+  `Contents/Library/` das Service-Bündel „Torro Workplace Service.app“ (`io.github.mahype.torro-workplace-service`,
+  `LSUIElement`, ohne Dock-Icon): Aus ihm läuft der Dienst, damit ein Doppelklick auf „Torro Workplace“ bei
+  laufendem Dienst die Steuerzentrale öffnet. Dazu kommt „Torro Reminder.app“ (Agent, das Binary des Kalenders
+  als `torro-reminder`). Die Matrix des Workflows hat je Eintrag zwei Zeilen (arm64 und x86_64).
+- **Signaturreihenfolge:** erst das eingebettete Service-Bündel (sein Programm, dann das Bündel), dann das
+  Programm des äußeren Bündels, zuletzt das äußere Bündel; sonst bricht dessen Siegel. `codesign --verify --deep
+  --strict` prüft alles zusammen. Notarisiert wird das äußere Bündel mit dem eingebetteten.
+- **Icons:** die echten, Variante „red“ aus `docs/prototypes/icons/red/` (AP.6/AP.7). macOS mit Big-Sur-Rand und
+  Schatten (`packaging/macos/icons/*.png`, 1024 px), Linux und Windows flach mit 4 % Rand
+  (`packaging/linux/icons/*.svg`, `packaging/windows/*.ico`). Das Service-Bündel trägt das Icon des Workplace,
+  der Reminder das des Kalenders.
 - Nötig dafür: Apple Developer Program (99 USD/Jahr), Zertifikat „Developer ID Application: Sven Wagener
   (2GA7DQ3P3Z)“, für die Notarisierung Apple-ID, Team-ID und ein app-spezifisches Passwort (wie TorroMail).
   Die Signier-Identität liest der Workflow aus dem importierten Zertifikat. `notarytool` nimmt `.zip`, `.dmg`
@@ -127,13 +146,20 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
 - **Schlüsselbund** (X.13): Alle Konto-Geheimnisse liegen auf macOS in einem Eintrag (Dienst `torroworkplace`,
   Konto `torro-vault`), den der Dienst einmal je Start liest. macOS fragt also höchstens einmal; mit „Immer
   erlauben“ gar nicht mehr, solange die Signatur gleich bleibt. Einträge von früher (ein Eintrag je Konto) zieht
-  der Dienst beim ersten Lesen um.
+  der Dienst beim ersten Lesen um. **Mit #279 ändert sich die Signatur-Kennung des Dienstes im Release** auf die
+  Bundle-ID des Service-Bündels (`io.github.mahype.torro-workplace-service`): Der Schlüsselbund fragt einmal neu.
+  Das ist hinnehmbar, weil es bisher kein Bündel-Release gab, also keine Kennung, die sich ändert; ab jetzt darf
+  sie sich nicht mehr ändern (offene Frage 2).
 - **Entwicklungs-Builds** (X.14): Debug-Builds sind ad hoc signiert, mit einer Kennung, die sich mit jedem Build
   ändert; der Schlüsselbund erkennt sie danach nicht wieder. Einmal `scripts/macos-dev-cert.sh` ausführen (legt
   das Zertifikat „Torro Development“ an und vertraut ihm für Codesignatur, fragt nach dem Passwort). Danach
   signiert `cargo run` über den Runner in `.cargo/config.toml` jedes Programm mit diesem Zertifikat und der
   Kennung `io.github.mahype.dev.<name>`; wer die Binaries anders startet, signiert sie mit
   `scripts/macos-dev-sign.sh`. Ohne das Zertifikat (CI, andere Rechner) tun beide nichts.
+  Die Entwicklungs-Bündel baut `scripts/macos-dev-bundles.sh` aus `target/debug` (neun Bündel, auch in einen
+  übergebenen Ordner); es signiert mit diesem Zertifikat und ohne es ad hoc als Ganzes, damit `codesign
+  --verify` die Bündel annimmt. Der Dienst im Service-Bündel behält dabei die Kennung des Programms
+  `torroworkplace` (`io.github.mahype.dev.torroworkplace`), damit die Schlüsselbund-Einträge lesbar bleiben.
 - Homebrew: `dist` erzeugt nur Formeln (kein Cask). Ein Cask für die `.app.zip` kann später von Hand in
   `Casks/` des Taps liegen; Versions- und Prüfsummen-Update müsste ein eigener Schritt übernehmen.
 
@@ -145,14 +171,18 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
   GitHub-Environment `release`); früher nur SSL.com eSigner. Für 0.1.0 nicht eingeschaltet.
 - Der Tray-Dienst ist unter Windows noch nicht implementiert (`tray/` kennt nur Linux). Das Release baut
   trotzdem, die CI ist auf allen drei Systemen grün.
-- Scoop später: ein Bucket `mahype/scoop-torro`, je App ein Manifest mit `checkver`/`autoupdate`
-  (Vorlage `packaging/scoop/`). Ein Manifest beschreibt genau eine App; ein Metapaket gibt es nicht, also
-  `scoop install torroworkplace torrocalendar torrotasks`.
+- Scoop später: ein Bucket `mahype/scoop-torro` mit **einem Manifest für die ganze Suite**
+  (`packaging/scoop/torroworkplace.json`, `checkver`/`autoupdate`): alle sieben Programme landen in einem Ordner,
+  wo Apps und Dienst einander finden, und `shortcuts` legt sieben Startmenü-Einträge an. Installieren:
+  `scoop install torroworkplace`. Mail und App Feed sind eigene Programme, weil Windows die Taskleiste nach
+  `.exe` gruppiert und das eingebettete Icon zeigt ([lebenszyklus.md](lebenszyklus.md), Entscheidung 8).
+- Die Programme sind GUI-Programme ohne Konsolenfenster; die Apps starten den Dienst selbst, losgelöst.
 
 ### Homebrew-Tap
 
 - Repository `mahype/homebrew-torro` (Name muss mit `homebrew-` beginnen). `dist` schreibt
-  `Formula/torroworkplace.rb`, `torrocalendar.rb`, `torrotasks.rb` bei jedem Release.
+  `Formula/torroworkplace.rb`, `torroinbox.rb`, `torro-inbox-mail.rb`, `torro-inbox-notifications.rb`,
+  `torrocalendar.rb`, `torrotasks.rb`, `torroassistant.rb` bei jedem Release.
 - Die Suite als Ganzes: Meta-Formel `torro-suite` (`packaging/homebrew/torro-suite.rb`, einmal von Hand in den
   Tap legen) oder das Brewfile (`brew bundle --file=packaging/homebrew/Brewfile`).
 - Formeln sind nur für fertige Archive möglich (kein Bauen aus dem Quelltext). Linux-Nutzer von Homebrew
@@ -186,7 +216,8 @@ Reihenfolge ist egal, außer wo vermerkt. Erst wenn ein Punkt erledigt ist, die 
 
 - [ ] AUR-Konto, SSH-Schlüsselpaar nur für CI erzeugen, öffentlichen Teil im AUR-Konto eintragen.
 - [ ] Secrets `AUR_SSH_PRIVATE_KEY`, `AUR_USERNAME`, `AUR_EMAIL`.
-- [ ] Prüfen, ob die Paketnamen `torroworkplace-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torro-suite` frei sind.
+- [ ] Prüfen, ob die Paketnamen `torroworkplace-bin`, `torroinbox-bin`, `torro-inbox-mail-bin`,
+      `torro-inbox-notifications-bin`, `torrocalendar-bin`, `torrotasks-bin`, `torroassistant-bin`, `torro-suite` frei sind.
 - [ ] Neuesten Tag von `KSXGitHub/github-actions-deploy-aur` prüfen und in `publish-aur.yml` eintragen
       (Entwurf nutzt `v4.1.1`, nicht verifiziert).
 - [ ] In `dist-workspace.toml` `publish-jobs` um `"./publish-aur"` erweitern, `dist generate`.
@@ -212,8 +243,10 @@ Achtung: Die `.p12` muss „Developer ID Application“ enthalten, nicht „Appl
 - [x] Die fünf Secrets oben in diesem Repository eingetragen (2026-10-11).
 - [x] Repository-Variable `MACOS_APP_ENABLED` auf `true` gesetzt (2026-10-11, Schalter im Workflow).
 - [x] `publish-jobs` um `"./publish-macos-app"` erweitert: Nach jedem Release entstehen signierte und
-      notarisierte `Torro Workplace.app`, `Torro Calendar.app`, `Torro Tasks.app` (arm64 und x86_64).
-- [ ] Echte Icons (1024-px-PNG) in `packaging/macos/icons/` ablegen und an `make-app.sh` übergeben.
+      notarisierte Bündel (arm64 und x86_64) für alle sieben Apps und die Erinnerung; „Torro Workplace.app“ trägt
+      das Service-Bündel (#279).
+- [x] Echte Icons (1024-px-PNG) in `packaging/macos/icons/`, im Workflow und in `scripts/macos-dev-bundles.sh`
+      an `make-app.sh` übergeben (AP.7, #279).
 - [ ] Vor 2027-02-01: Zertifikat erneuern (siehe oben).
 
 ### Windows (später)
@@ -234,13 +267,14 @@ Was Windows bis zur vollen Unterstützung fehlt (Named Pipes, Konsolenfenster, T
 3. **Minimale Linux-Basis.** Ubuntu 22.04 (glibc 2.35) als Build-System ist der Standard von `dist`. Reicht
    das, oder soll es eine ältere Basis sein (Container)?
 4. **Intel-Macs.** Lohnt `x86_64-apple-darwin` bis Herbst 2027? Ohne den Eintrag spart es einen Build.
-5. **Windows-Konsolenfenster.** Die GUI-Binaries haben kein `#![windows_subsystem = "windows"]`; unter Windows
-   würde neben dem Fenster eine Konsole aufgehen. Gehört in eine Rust-Aufgabe, nicht in dieses Gerüst.
+5. **Windows-Konsolenfenster.** Erledigt (#279): Die GUI-Programme tragen `windows_subsystem = "windows"`, ein
+   Startfehler landet in einer Datei im State-Verzeichnis.
 6. **Sichtbarkeit des Repositories.** Der ARM-Runner `ubuntu-22.04-arm` war bei Public-Repositories kostenlos
    (seit August 2025 allgemein verfügbar); bei privaten Repositories gelten Minuten-Kontingente.
-7. **Echte Icons** für alle drei Apps; die SVGs sind Platzhalter.
+7. **Echte Icons** für alle Apps. Erledigt (#279, AP.6/AP.7): Variante „red“, für alle sieben Apps; siehe
+   „macOS“ und `packaging/README.md`.
 8. **Ein Installer für alles.** Der Shell-Installer von `dist` gilt je App. Reicht ein `install.sh` im
-   Repository, das die drei Installer nacheinander aufruft, oder soll es ein Sammel-Release geben?
+   Repository, das die sieben Installer nacheinander aufruft, oder soll es ein Sammel-Release geben?
 
 ## Quellen
 

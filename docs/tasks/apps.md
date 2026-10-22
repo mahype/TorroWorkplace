@@ -217,7 +217,7 @@ AP.6 (Icon-Entwürfe) ── Auswahl durch den Menschen ── AP.7 (Icons einba
   sieben Größen.
 
 ### AP.8 Doku und Abnahme
-- [ ] erledigt
+- [x] erledigt (Doku; Abnahme von Hand offen, siehe PR)
 - **Modell:** Sonnet · **Braucht:** AP.1–AP.5, AP.7 · **Dateien:** `docs/lebenszyklus.md`, `docs/core.md`,
   `docs/architecture.md`, `docs/release.md`, `docs/api.md` (nur Verweis), `packaging/README.md`
 - `lebenszyklus.md` auf den gebauten Stand bringen (Abschnitt „Ausgangslage“ wird „Vorher“). Autostart-Tabellen in

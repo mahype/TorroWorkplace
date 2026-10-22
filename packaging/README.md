@@ -6,12 +6,12 @@ the repositories and secrets listed there.
 
 | Directory | Content | Used by |
 |---|---|---|
-| `linux/` | `.desktop` files, placeholder icons, systemd user unit | AUR packages, manual installs |
-| `aur/` | `PKGBUILD.in` templates (`-bin` per app, `torro-suite` meta package) | `.github/workflows/publish-aur.yml` |
-| `macos/` | `make-app.sh`, `Info.plist.in`: wrap a GUI binary into a `.app`, optionally with an embedded bundle | `.github/workflows/publish-macos-app.yml`, `scripts/macos-dev-bundles.sh` |
-| `windows/` | placeholder `.ico` per program, embedded by each crate's `build.rs` | `cargo build` for Windows targets |
-| `homebrew/` | meta formula `torro-suite.rb` and `Brewfile` for the tap | copy into `mahype/homebrew-torro` once |
-| `scoop/` | `torroworkplace.json`: one Scoop manifest for the whole suite (Windows, later) | copy into `mahype/scoop-torro` once |
+| `linux/` | one `.desktop` file and SVG icon per app, systemd user unit | AUR packages, manual installs |
+| `aur/` | `PKGBUILD.in` templates (a `-bin` package per program, seven in all; `torro-suite` meta package for all of them) | `.github/workflows/publish-aur.yml` |
+| `macos/` | `make-app.sh`, `Info.plist.in`, `icons/` (1024 px PNG per app): wrap a GUI binary into a `.app`, optionally with an embedded bundle (the core's service) | `.github/workflows/publish-macos-app.yml`, `scripts/macos-dev-bundles.sh` |
+| `windows/` | `.ico` per program, embedded by each crate's `build.rs` | `cargo build` for Windows targets |
+| `homebrew/` | meta formula `torro-suite.rb` and `Brewfile` for the tap (the formulae of the seven programs come from `dist`) | copy into `mahype/homebrew-torro` once |
+| `scoop/` | `torroworkplace.json`: one Scoop manifest for the whole suite, seven Start menu entries (Windows, later) | copy into `mahype/scoop-torro` once |
 
 ## One entry per app
 
@@ -32,8 +32,9 @@ The names come from `AppId` in `crates/torro-core/src/app.rs`; the suite finds t
 
 The bundle id is `io.github.mahype.<window class>`, the service's `io.github.mahype.torro-workplace-service`. Sign
 the embedded service before the outer bundle. To check all bundles by hand without a release, build the workspace
-and run `scripts/macos-dev-bundles.sh [folder]` (default `target/debug/bundles`); it signs them with the development
-identity when there is one (`scripts/macos-dev-cert.sh`).
+and run `scripts/macos-dev-bundles.sh [folder]` (default `target/debug/bundles`); it makes the nine bundles and signs
+them with the development identity when there is one (`scripts/macos-dev-cert.sh`), else ad hoc. What to check by hand
+with them: "Von Hand prüfen" in [docs/lebenszyklus.md](../docs/lebenszyklus.md).
 
 The per-app Homebrew formulae are not written by hand: `dist` generates them on every release
 (see `dist-workspace.toml`).
