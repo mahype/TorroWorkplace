@@ -29,7 +29,7 @@ use std::sync::{Mutex, PoisonError};
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
     self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, PdfSettings,
-    PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice, Zoom,
+    PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -413,6 +413,7 @@ enum Change {
     StartAtLogin(bool),
     Zoom(Zoom),
     Night(Night),
+    WorkingHours(WorkingHours),
     /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
     ListOrder(ListOrderEntry),
     QuietWhenBusy(bool),
@@ -485,6 +486,7 @@ impl Change {
             ),
             // Strict as well: the file's reading falls back to 22:00–06:00 instead.
             SettingKey::Night => Change::Night(Night::from_value(value)?),
+            SettingKey::WorkingHours => Change::WorkingHours(WorkingHours::from_value(value)?),
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Design => Change::Design(part_id(key, value)?),
@@ -551,6 +553,7 @@ impl Change {
             Change::StartAtLogin(enabled) => settings.start_at_login = enabled,
             Change::Zoom(zoom) => settings.zoom = zoom,
             Change::Night(night) => settings.night = night,
+            Change::WorkingHours(hours) => settings.working_hours = hours,
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::Design(id) => settings.design = id,
@@ -1296,6 +1299,8 @@ mod tests {
         Change::parse(SettingKey::Zoom, &json!(1.25)).expect("valid zoom").apply(&mut settings);
         let night = json!({"from": "23:30", "to": "07:00"});
         Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
+        let working = json!({"from": "07:30", "to": "16:00"});
+        Change::parse(SettingKey::WorkingHours, &working).expect("valid working hours").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
         Change::parse(SettingKey::Design, &json!("plex")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::Font, &json!("channelr")).expect("an id").apply(&mut settings);
@@ -1320,6 +1325,7 @@ mod tests {
                 hidden_collections: vec!["work".into()],
                 zoom: Zoom::nearest(1.25),
                 night: Night::from_value(&night).expect("valid night"),
+                working_hours: WorkingHours::from_value(&working).expect("valid working hours"),
                 list_orders: Default::default(),
                 quiet_when_busy: false,
                 design: "plex".into(),
@@ -1724,6 +1730,25 @@ mod tests {
             assert!(store.set(SettingKey::Night, &bad).is_err(), "{bad}");
         }
         assert!(store.current().night.is_none(), "a refused value changes nothing");
+    }
+
+    #[test]
+    fn working_hours_are_stored_and_bad_ones_refused_with_their_reason() {
+        let (_dir, store) = store();
+        assert_eq!(store.current().working_hours, WorkingHours::DEFAULT);
+        store.set(SettingKey::WorkingHours, &json!({"from": "07:30", "to": "16:00"})).expect("valid hours");
+        let stored = store.current().working_hours;
+        assert_eq!((stored.from.to_string(), stored.to.to_string()), ("07:30".into(), "16:00".into()));
+        store.set(SettingKey::WorkingHours, &json!({"from": "09:00", "to": "09:00"})).expect("no working hours");
+        assert!(store.current().working_hours.is_none());
+        let refused = store.set(SettingKey::WorkingHours, &json!({"from": "17:00", "to": "08:00"}));
+        assert!(refused.as_ref().is_err_and(|reason| reason.contains("midnight")), "{refused:?}");
+        let refused = store.set(SettingKey::WorkingHours, &json!({"from": "08:10", "to": "17:00"}));
+        assert!(refused.as_ref().is_err_and(|reason| reason.contains("quarter hour")), "{refused:?}");
+        for bad in [json!("08:00-17:00"), json!(8), json!({"from": "08:00"})] {
+            assert!(store.set(SettingKey::WorkingHours, &bad).is_err(), "{bad}");
+        }
+        assert!(store.current().working_hours.is_none(), "a refused value changes nothing");
     }
 
     #[test]

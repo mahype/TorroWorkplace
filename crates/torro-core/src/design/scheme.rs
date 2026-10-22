@@ -13,7 +13,10 @@ use serde::Deserialize;
 
 use super::files::{Kind, Root};
 use super::pack::{AboutFile, Listed, header, listing, open, parse};
-use super::{About, ColorScheme, DesignError, Logo, Mode, Palette, Part, Rgba, SIDEBAR_FALLBACK, STANDARD_ID, rules};
+use super::{
+    About, ColorScheme, DesignError, Logo, Mode, Palette, Part, Rgba, SIDEBAR_FALLBACK, STANDARD_ID,
+    WORKING_HOURS_FALLBACK, rules,
+};
 
 /// Every colour scheme: the standard first, then each folder under `dir` (the colour schemes folder,
 /// see [`super::color_scheme_dir`]) by name, valid or with its reasons. Hidden folders and names that
@@ -66,7 +69,7 @@ struct LogoFile {
 }
 
 /// The keys of `[colors.dark]` and `[colors.light]`: the fields of [`Palette`].
-pub(super) const PALETTE_KEYS: [&str; 35] = [
+pub(super) const PALETTE_KEYS: [&str; 36] = [
     "bg",
     "panel",
     "raised",
@@ -95,6 +98,7 @@ pub(super) const PALETTE_KEYS: [&str; 35] = [
     "shadow",
     "scrim",
     "night",
+    "working_hours",
     "sidebar",
     "sidebar_hover",
     "sidebar_selected",
@@ -194,7 +198,8 @@ pub(super) fn merge_palette(
     }
     // A sidebar key the scheme leaves out follows the scheme's own colour, not the standard's: a
     // scheme that sets only `bg` gets a sidebar in its `bg`, and looks as before sidebar keys existed.
-    for (key, base) in SIDEBAR_FALLBACK {
+    // The working hours likewise follow the scheme's own `line_selected`.
+    for (key, base) in SIDEBAR_FALLBACK.into_iter().chain([WORKING_HOURS_FALLBACK]) {
         if values.contains_key(key) {
             continue;
         }
@@ -413,6 +418,25 @@ mod tests {
         merge_palette(Mode::Dark, &mut palette, &values, &mut problems);
         assert!(problems.is_empty());
         assert_eq!(palette.unread, Rgba::hex(0x77A8FF));
+    }
+
+    /// Task K.33: `working_hours` is read like any colour; left out, it is the scheme's own
+    /// `line_selected`, not the standard's grey.
+    #[test]
+    fn working_hours_colour_can_be_set_and_follows_line_selected() {
+        let standard = ColorScheme::standard().colors.dark;
+        let merged = |text: &str| {
+            let mut palette = standard;
+            let values: BTreeMap<String, toml::Value> = toml::from_str(text).expect("toml");
+            let mut problems = Vec::new();
+            merge_palette(Mode::Dark, &mut palette, &values, &mut problems);
+            assert!(problems.is_empty(), "{problems:?}");
+            palette
+        };
+        assert_eq!(merged("panel = \"#222222\"").working_hours, standard.line_selected);
+        assert_eq!(merged("line_selected = \"#808080\"").working_hours, Rgba::hex(0x808080));
+        let own = merged("line_selected = \"#808080\"\nworking_hours = \"#3A6EA5\"");
+        assert_eq!(own.working_hours, Rgba::hex(0x3A6EA5));
     }
 
     /// Task E8.8b: chart keys are read like the calendar's; left out, they follow the scheme's own

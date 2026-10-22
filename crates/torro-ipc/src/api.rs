@@ -2510,7 +2510,7 @@ static GET_SETTINGS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Returns the suite-wide settings: language, appearance, start at login, zoom, the night of the \
-                  calendar, the hidden calendars and task lists, the task lists ordered by hand \
+                  calendar, the working hours of the calendar (`workingHours`), the hidden calendars and task lists, the task lists ordered by hand \
                   (`listOrders`), whether inbox popups stay quiet during busy events (`quietWhenBusy`), the \
                   chosen design, font and colour scheme (`design`, `font`, `colorScheme`), how long the assistant keeps conversations \
                   (`assistantRetention`), talking to the assistant by voice (`voice`), how mail shows in the \
@@ -2533,6 +2533,9 @@ static SET_SETTING: Command = Command {
                   2.0, 1.0 = 100 %, rounded to the nearest browser zoom step; every open window follows), `night` \
                   ({\"from\": \"22:00\", \"to\": \"06:00\"}, times on the quarter hour; the calendar's timeline and \
                   radar fold or shade it and do not count it as free time; the same time twice means no night) or \
+                  `working_hours` ({\"from\": \"08:00\", \"to\": \"17:00\"}, times on the quarter hour, the same \
+                  every day, from not after to, never over midnight; the calendar draws them as a thin line in \
+                  day, week, timeline and radar; the same time twice means no working hours) or \
                   `list_order` ({\"list\": \"<the id from tasks.list_lists>\", \"order\": \"manual\"} to order a \
                   task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again) or \
                   `quiet_when_busy` (true, false; while on, only urgent inbox entries pop up during a busy event) \
@@ -5467,6 +5470,7 @@ mod tests {
                 "start_at_login",
                 "zoom",
                 "night",
+                "working_hours",
                 "list_order",
                 "quiet_when_busy",
                 "design",
@@ -5564,6 +5568,7 @@ mod tests {
             "hiddenCollections",
             "zoom",
             "night",
+            "workingHours",
             "listOrders",
             "quietWhenBusy",
             "mailView",

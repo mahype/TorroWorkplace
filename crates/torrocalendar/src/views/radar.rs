@@ -27,6 +27,10 @@
 //! opens the night's card (`EditNight`). The night fades with the last quarter, piece by piece
 //! like the rest.
 //!
+//! The working hours (the suite's setting, 08:00–17:00 by default; task K.33) are a thin, muted
+//! arc just inside the innermost ring, from their start to their end, where neither the night nor
+//! the moon lie; they fade with the last quarter like the tracks.
+//!
 //! Resting on something for a moment shows a tooltip in the canvas beside the pointer: an event's
 //! title, time and place; the calendar of an empty track; how to set the night on the moon. The
 //! pointer is the hand over events and the moon, the open hand over the rest of the dial.
@@ -67,7 +71,7 @@ use iced::widget::text::Alignment;
 use iced::widget::{column, container, responsive, row, rule, scrollable, stack};
 use iced::{Color, Element, Event, Length, Padding, Point, Rectangle, Size, Theme, mouse};
 use torro_core::i18n::tr;
-use torro_core::settings::Night;
+use torro_core::settings::{Night, WorkingHours};
 use torro_gui::datetime::format_time;
 use torro_gui::icon::{self, Icon};
 use torro_gui::style;
@@ -188,6 +192,9 @@ fn drag_dead() -> f32 {
 /// The round plaque under the moon (panel with a line around it), so the moon reads on any ground:
 /// 22 across, 3 around the 16 icon.
 const MOON_PLAQUE: f32 = icon::SIZE + 6.0;
+/// Width of the arc of the working hours, [`layout::RING_GAP`] inside the innermost ring: as thin
+/// as the line of the working hours in the week and the timeline.
+const WORK_ARC: f32 = 2.0;
 /// A tooltip is at most this wide; longer titles and places are cut with "…".
 fn tip_max() -> f32 {
     size::props() - 2.0 * space::xl()
@@ -215,8 +222,9 @@ pub struct Ring {
 /// day ([`start`]), a ring for each of `calendars` (the visible ones, in the order of the sidebar)
 /// whether or not it has events, each named in its last hour, the mini radars of the page starting
 /// on `coming` `at` their place (over the events of `data`: load them through the page's last
-/// day), `night` behind the rings. The dial's canvas is anchored at `anchor`, so the night's card
-/// can float beside the moon.
+/// day), `night` behind the rings and the arc of the `working` hours inside them. The dial's canvas
+/// is anchored at `anchor`, so the night's card can float beside the moon.
+#[allow(clippy::too_many_arguments, reason = "what the app hands the view, every part named at the call")]
 pub fn view<'a>(
     data: ViewData<'a>,
     calendars: &[Ring],
@@ -224,9 +232,10 @@ pub fn view<'a>(
     coming: NaiveDate,
     at: ListAt,
     night: Night,
+    working: WorkingHours,
     anchor: &Anchor,
 ) -> Element<'a, Message> {
-    let plan = Plan::new(&data, calendars, offset, night);
+    let plan = Plan::new(&data, calendars, offset, night, working);
     match at {
         ListAt::Props => stage(plan, anchor.clone()),
         ListAt::Beside => {
@@ -355,6 +364,8 @@ struct Plan {
     rings: Vec<RingLabel>,
     /// The nights in the window ([`layout::nights`]).
     nights: Vec<(f32, f32)>,
+    /// The working hours in the window ([`layout::working`]).
+    working: Vec<(f32, f32)>,
     /// The app's index of the event open in the side panel.
     selected: Option<usize>,
 }
@@ -379,7 +390,7 @@ fn ring_label(calendar: &Ring, calendars: &[Ring]) -> String {
 }
 
 impl Plan {
-    fn new(data: &ViewData<'_>, calendars: &[Ring], offset: i64, night: Night) -> Plan {
+    fn new(data: &ViewData<'_>, calendars: &[Ring], offset: i64, night: Night, working: WorkingHours) -> Plan {
         let window = Window::new(start(data, offset, night));
         let mut entries: Vec<Entry> = data
             .items
@@ -422,6 +433,7 @@ impl Plan {
             })
             .collect::<Vec<Span>>();
         let nights = layout::nights(&window, night);
+        let working = layout::working(&window, working);
         Plan {
             window,
             now: data.now,
@@ -430,6 +442,7 @@ impl Plan {
             spans,
             rings: labels,
             nights,
+            working,
             selected: data.selected,
         }
     }
@@ -827,6 +840,18 @@ impl canvas::Program<Message> for Radar {
                 let angle = window.angle(rel);
                 let (from, to) = (dial.point(dial.inner, angle), dial.point(dial.outer, angle));
                 line(&mut frame, from, to, p.line.scale_alpha(opacity(rel)), size::HAIRLINE);
+            }
+        }
+
+        // The working hours: a thin arc just inside the innermost ring, fading like the tracks.
+        // Faded with `scale_alpha` like the hour lines, since the colour is translucent too; without
+        // rings there is nothing for it to run along.
+        let (work_inner, work_outer) = (dial.inner - layout::RING_GAP - WORK_ARC, dial.inner - layout::RING_GAP);
+        for (from, to) in plan.working.iter().filter(|_| dial.rings > 0) {
+            for piece in pieces(*from, *to) {
+                let (start, end) = (window.angle(piece.from), seam(window, piece.to, *to));
+                let colour = p.working_hours.scale_alpha(piece.opacity);
+                sector(&mut frame, &dial, work_inner, work_outer, start, end, colour);
             }
         }
 
@@ -1358,7 +1383,7 @@ mod tests {
     #[test]
     fn every_visible_calendar_has_a_ring_in_sidebar_order() {
         let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         // Family has only breakfast (over) and an all-day holiday, and still its ring, the first.
         assert_eq!(plan.rings.len(), 3);
         let ring_of = |title: &str| {
@@ -1369,7 +1394,7 @@ mod tests {
         let workshop = plan.spans.iter().find(|s| s.ring == 2 && !s.starts).expect("the workshop runs");
         assert_eq!(workshop.from, 0.0, "cut to the start of the window");
         // Looking back brings breakfast into the family ring; the rings stay as they are.
-        let back = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT);
+        let back = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!(back.rings.len(), 3);
         assert!(back.looking);
         assert_eq!(back.spans.iter().find(|s| plan.entries[s.id].event.title == "Breakfast").map(|s| s.ring), Some(0));
@@ -1377,13 +1402,13 @@ mod tests {
 
     #[test]
     fn rings_show_without_any_events() {
-        let plan = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!((plan.rings.len(), plan.spans.len()), (3, 0));
         // A hidden calendar is not in the list the app passes: no ring for it.
-        let plan = Plan::new(&data(&[]), &calendars()[1..], 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&[]), &calendars()[1..], 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!(plan.rings.len(), 2);
         // No calendars at all: a bare dial.
-        assert_eq!(Plan::new(&data(&[]), &[], 0, Night::DEFAULT).rings.len(), 0);
+        assert_eq!(Plan::new(&data(&[]), &[], 0, Night::DEFAULT, WorkingHours::DEFAULT).rings.len(), 0);
     }
 
     #[test]
@@ -1395,7 +1420,7 @@ mod tests {
         assert_eq!(order, ["family", "personal", "work", "zeta"]);
         // A ring the sidebar does not know has no name, only the dot in its events' colour.
         let events = [event("zeta", "Stray", local(13, 15, 0), local(13, 16, 0))];
-        let plan = Plan::new(&data_on(&events, 13), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data_on(&events, 13), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!(plan.rings.last().map(|ring| ring.name.as_str()), Some(""));
     }
 
@@ -1412,7 +1437,7 @@ mod tests {
         let without = Ring { host: None, ..other };
         assert_eq!(ring_label(&without, &[personal, without.clone()]), "Persönlich", "no account, no host");
         // The plan carries the names and colours in ring order.
-        let plan = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         let named: Vec<(&str, Color)> = plan.rings.iter().map(|ring| (ring.name.as_str(), ring.colour)).collect();
         assert_eq!(named, [("Family", RED), ("Personal", TEAL), ("Work", BLUE)]);
     }
@@ -1421,13 +1446,13 @@ mod tests {
     fn the_night_comes_with_the_window() {
         let events = events();
         // 14:20: the night from 22:00 holds the late call.
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!(plan.nights, [(460.0, END)]);
         // An empty Sunday: no night between 08:00 and 19:54.
-        let sunday = Plan::new(&data_on(&[], 18), &calendars(), 0, Night::DEFAULT);
+        let sunday = Plan::new(&data_on(&[], 18), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert!(sunday.nights.is_empty());
         // Looking back at last night: the night until 06:00 lies in the window.
-        let back = Plan::new(&data(&events), &calendars(), -12 * 60, Night::DEFAULT);
+        let back = Plan::new(&data(&events), &calendars(), -12 * 60, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!(back.window.start, at(13, 2, 20));
         assert_eq!(back.nights, [(0.0, 220.0)], "until 06:00");
     }
@@ -1437,14 +1462,14 @@ mod tests {
         let events = events();
         let dial = |plan: &Plan| Dial::fit(Size::new(800.0, 600.0), stage_margin(), plan.rings.len());
         // Today at 14:20: date and time only, no button.
-        let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert!(!today.looking);
         // Another day, and the dial turned on today: the button is there.
-        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0, Night::DEFAULT);
-        let turned = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT);
+        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
+        let turned = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT, WorkingHours::DEFAULT);
         assert!(tomorrow.looking && turned.looking);
         // The middle builds in each case, with and without events in the window.
-        let empty = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
+        let empty = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         for plan in [&today, &tomorrow, &turned, &empty] {
             let _ = middle(plan, &dial(plan));
         }
@@ -1453,19 +1478,19 @@ mod tests {
     /// The input layer of the dial of a 1000 × 900 canvas with the demo events.
     fn radar() -> Radar {
         let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         Radar { plan, margin: stage_margin(), wheel: true, layer: Layer::Input }
     }
 
     #[test]
     fn today_starts_at_now_with_a_red_edge_and_other_days_in_the_morning_with_a_grey_one() {
         let events = events();
-        let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!((today.window.start, today.looking), (at(13, 14, 20), false));
-        let turned = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT);
+        let turned = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!((turned.window.start, turned.looking), (at(13, 15, 20), true));
         // Wednesday: the late call at midnight opens it as early as the night allows.
-        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0, Night::DEFAULT);
+        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         assert_eq!((tomorrow.window.start, tomorrow.looking), (at(14, 6, 0), true));
         // An event begun the evening before does not count: 08:00.
         let overnight = [event("work", "Release", local(14, 22, 0), local(15, 1, 0))];
@@ -1652,7 +1677,7 @@ mod tests {
         );
         let none = Night::none_at(Night::DEFAULT.from);
         let events = events();
-        let without = Radar { plan: Plan::new(&data(&events), &calendars(), 0, none), ..radar };
+        let without = Radar { plan: Plan::new(&data(&events), &calendars(), 0, none, WorkingHours::DEFAULT), ..radar };
         assert_eq!(without.moon(bounds.size()), None, "no night, no moon");
     }
 
@@ -1665,7 +1690,7 @@ mod tests {
         let micro = arc_title("Daily Standup", 30.0, typo::micro()).expect("smaller letters, more of them");
         assert!(micro.starts_with("Dai") && micro.ends_with(typo::ELLIPSIS), "{micro}");
         let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         let run = plan.entries.iter().find(|e| e.event.title == "Run").expect("run");
         assert_eq!(arc_time(run, 200.0).as_deref(), Some("18:30–19:30"));
         assert_eq!(arc_time(run, 40.0).as_deref(), Some("18:30"), "the start alone");
@@ -1676,16 +1701,25 @@ mod tests {
     fn the_view_builds_in_every_place_of_the_list() {
         let events = events();
         for place in [ListAt::Props, ListAt::Beside, ListAt::Below] {
-            let _ = view(data(&events), &calendars(), 90, at(14, 0, 0).date(), place, Night::DEFAULT, &Anchor::new());
+            let _ = view(
+                data(&events),
+                &calendars(),
+                90,
+                at(14, 0, 0).date(),
+                place,
+                Night::DEFAULT,
+                WorkingHours::DEFAULT,
+                &Anchor::new(),
+            );
         }
         let _ = list(&data(&events), at(14, 0, 0).date(), Night::DEFAULT);
         let _ = narrow(
-            Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT),
+            Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT),
             &mini::Coming::new(&data(&events), at(14, 0, 0).date(), Night::DEFAULT),
             Size::new(480.0, 800.0),
             &Anchor::new(),
         );
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         let _ = middle(&plan, &Dial::fit(Size::new(800.0, 600.0), stage_margin(), plan.rings.len()));
     }
 
@@ -1727,7 +1761,7 @@ mod tests {
     fn a_past_event_stays_faded_and_its_track_stays_quiet() {
         let p = Palette::dark();
         let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT, WorkingHours::DEFAULT);
         let breakfast = plan.entries.iter().find(|e| e.event.title == "Breakfast").expect("breakfast");
         let past = tone(&p, breakfast, plan.now, p.panel);
         let fill = event_fill(&p, breakfast.event.color, p.panel);
@@ -1857,7 +1891,7 @@ mod tests {
             location: Some("Room Rhine, second floor, at the far end of the corridor".into()),
             ..event("work", "API design workshop with the whole platform team", local(13, 14, 0), local(13, 15, 0))
         }];
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT, WorkingHours::DEFAULT);
         let card = event_tip(&plan.entries[0]);
         assert_eq!(card.time.as_deref(), Some("14:00–15:00"));
         let (lines, extent) = card_layout(&card);

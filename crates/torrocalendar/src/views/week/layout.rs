@@ -1,6 +1,6 @@
 //! Geometry of the day and week view, free of Iced widgets so that it can be tested: time to
 //! y and back, splitting entries at midnight, lanes for overlapping entries, the all-day
-//! rows, and hit-testing. `week.rs` draws the result.
+//! rows, the line of the working hours, and hit-testing. `week.rs` draws the result.
 //!
 //! Coordinates are relative to the top left corner of the canvas they are drawn on. Columns
 //! are `[axis][day 0][day 1]…`; the time axis is [`axis_width`] wide, the day columns share
@@ -8,6 +8,7 @@
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::{Point, Rectangle, Size};
+use torro_core::settings::WorkingHours;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{size, space};
 
@@ -42,6 +43,10 @@ pub const SLOT_MINUTES: u32 = 30;
 
 /// Gap between blocks and around them, in pixels (`.ev{left:2px;right:4px}`).
 const GAP: f32 = 2.0;
+/// Timed blocks start this far from their column's left edge: the line of the working hours
+/// ([`working_line`], [`GAP`] wide) and [`GAP`] of panel beside it, so the line never touches an
+/// event's colour bar and reads as one bar with it (task K.33).
+const EVENT_LEFT: f32 = 2.0 * GAP;
 const MINUTES_PER_DAY: f32 = 24.0 * 60.0;
 
 /// Position of an interval among the intervals it overlaps.
@@ -247,8 +252,8 @@ pub fn timed_blocks(segments: &[TimedSegment], count: usize, total_width: f32, h
         let members: Vec<&TimedSegment> = segments.iter().filter(|s| s.column == column).collect();
         let intervals: Vec<(f32, f32)> = members.iter().map(|s| (s.start, s.end)).collect();
         for (segment, lane) in members.iter().zip(assign_lanes(&intervals)) {
-            let lane_width = (col_w - 2.0 * GAP) / lane.lanes as f32;
-            let x = x0 + column as f32 * col_w + GAP + lane.lane as f32 * lane_width;
+            let lane_width = (col_w - EVENT_LEFT - GAP) / lane.lanes as f32;
+            let x = x0 + column as f32 * col_w + EVENT_LEFT + lane.lane as f32 * lane_width;
             let y = minutes_to_y(segment.start, hour);
             let height = (minutes_to_y(segment.end, hour) - y - GAP).max(MIN_EVENT_HEIGHT);
             blocks.push(TimedBlock {
@@ -324,6 +329,25 @@ pub fn free_gaps(segments: &[TimedSegment], column: usize, from: f32, min_minute
         busy_until = Some(busy_until.map_or(end, |until| until.max(end)));
     }
     gaps
+}
+
+/// The line of the working hours in day column `column` of `count` (task K.33): [`GAP`] wide in
+/// the strip at the column's left edge, which no event reaches, from `from` down to `to`. Hours
+/// are `hour` high. `None` without working hours.
+pub fn working_line(
+    working: WorkingHours,
+    column: usize,
+    count: usize,
+    total_width: f32,
+    hour: f32,
+) -> Option<Rectangle> {
+    if working.is_none() || column >= count {
+        return None;
+    }
+    let (x0, col_w) = columns(total_width, count);
+    let top = minutes_to_y(working.from.minutes() as f32, hour);
+    let bottom = minutes_to_y(working.to.minutes() as f32, hour);
+    Some(Rectangle::new(Point::new(x0 + column as f32 * col_w, top), Size::new(GAP, bottom - top)))
 }
 
 /// The y range of a span in minutes, for drawing something in a gap. Hours are `hour` high.
@@ -618,5 +642,33 @@ mod tests {
         assert_eq!(strip_rows(&spans), 2);
         let (bars, _) = bar_blocks(&spans, 7, 500.0);
         assert!(bars[1].rect.y > bars[0].rect.y);
+    }
+
+    fn hours(from: (u32, u32), to: (u32, u32)) -> WorkingHours {
+        let q = |(hour, minute): (u32, u32)| torro_core::settings::Quarter::new(hour, minute).expect("quarter");
+        WorkingHours { from: q(from), to: q(to) }
+    }
+
+    /// Task K.33: the line runs from the start to the end of the working hours at the left edge of
+    /// each day column, in the gap no event reaches.
+    #[test]
+    fn the_working_line_runs_from_start_to_end_at_each_column_edge() {
+        let width = 1000.0;
+        let (x0, col_w) = columns(width, 7);
+        let hour = 48.0;
+        let working = hours((7, 30), (16, 0));
+        let first = working_line(working, 0, 7, width, hour).expect("a line");
+        assert_eq!(first, Rectangle::new(Point::new(x0, 7.5 * hour), Size::new(GAP, 8.5 * hour)));
+        let fourth = working_line(working, 3, 7, width, hour).expect("a line");
+        assert_eq!((fourth.x, fourth.y, fourth.y + fourth.height), (x0 + 3.0 * col_w, 7.5 * hour, 16.0 * hour));
+        let blocks = timed_blocks(&[TimedSegment { id: 0, column: 3, start: 0.0, end: 60.0 }], 7, width, hour);
+        let clear = blocks[0].rect.x - (fourth.x + fourth.width);
+        assert_eq!(clear, GAP, "panel between the line and the event's colour bar");
+        assert_eq!(working_line(working, 7, 7, width, hour), None, "no column, no line");
+    }
+
+    #[test]
+    fn no_working_hours_draw_no_line() {
+        assert_eq!(working_line(hours((9, 0), (9, 0)), 0, 1, 600.0, 48.0), None);
     }
 }

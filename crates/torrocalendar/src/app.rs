@@ -25,9 +25,13 @@
 //! card "Night" with "From" and "Until" on the quarter hour, "Save" and "No night"; saving sends
 //! `Request::SetSetting` with the key `night` (the demo keeps it in the process).
 //!
-//! Settings (task S.19, `docs/settings.md`): the gear turns the content area into three sections
-//! – Calendars ([`torro_settings_ui::collections`], `Role::Calendar`), Reminders and Night
-//! ([`torro_settings_ui::calendar`]) – and back ([`App::toggle_settings`]). They are shown by the
+//! The working hours (`Settings::working_hours`, task K.33) come with the night, from the same
+//! answer of the core, so a change elsewhere arrives on the next tick; day, week, timeline and radar
+//! draw them as a thin line. They are set only behind the gear.
+//!
+//! Settings (task S.19, `docs/settings.md`): the gear turns the content area into four sections
+//! – Calendars ([`torro_settings_ui::collections`], `Role::Calendar`), Reminders, Night and Working
+//! hours ([`torro_settings_ui::calendar`]) – and back ([`App::toggle_settings`]). They are shown by the
 //! library's [`Host`], which talks to the core through [`App::settings_backend`]; the sidebar
 //! stays, and a click there that shows the calendar again closes the settings
 //! ([`App::leave_settings`]). `--settings <section>` opens the window with them open; the hint
@@ -46,7 +50,7 @@ use iced::widget::{column, container, pick_list, responsive, row, svg};
 use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Night, Quarter};
+use torro_core::settings::{Night, Quarter, WorkingHours};
 use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
@@ -169,31 +173,33 @@ pub enum Menu {
 }
 
 /// The settings of this window (task S.19): Calendars (which the suite shows, grouped by
-/// account, and each shown one's reminder kind), Reminders and Night. [`Section::id`] is what
-/// `--settings <id>` takes.
-const SETTINGS_SECTIONS: [Section; 3] = [
+/// account, and each shown one's reminder kind), Reminders, Night and Working hours.
+/// [`Section::id`] is what `--settings <id>` takes.
+const SETTINGS_SECTIONS: [Section; 4] = [
     Section { id: "calendars", icon: Icon::Calendar, label: "Calendars" },
     Section { id: "reminders", icon: Icon::Bell, label: "Reminders" },
     Section { id: "night", icon: Icon::Moon, label: "Night" },
+    Section { id: "working-hours", icon: Icon::Clock, label: "Working hours" },
 ];
 
 /// What one load of the settings needs: Calendars reads every account
-/// ([`collections::wanted`]); Reminders and Night need only the suite-wide settings, already
+/// ([`collections::wanted`]); the other sections need only the suite-wide settings, already
 /// part of it.
 fn settings_wanted() -> Vec<torro_ipc::Request> {
     collections::wanted()
 }
 
-/// What a section of the settings reported, combined over the three of them.
+/// What a section of the settings reported, combined over all of them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingsMessage {
     Calendars(collections::Message),
     Reminders(calendar::reminders::Message),
     Night(calendar::night::Message),
+    WorkingHours(calendar::working_hours::Message),
 }
 
 /// The settings in the content area while they are open: the library's [`Host`] with
-/// [`SETTINGS_SECTIONS`]. None of the three sections keeps state of its own (unlike the
+/// [`SETTINGS_SECTIONS`]. None of the sections keeps state of its own (unlike the
 /// assistant's, task S.18): everything they show comes straight from [`Host::data`].
 struct SettingsPane {
     host: Host,
@@ -225,6 +231,7 @@ fn settings_update(message: SettingsMessage, data: &torro_settings_ui::Data) -> 
         SettingsMessage::Calendars(message) => collections::update(message),
         SettingsMessage::Reminders(message) => calendar::reminders::update(message),
         SettingsMessage::Night(message) => calendar::night::update(message, data),
+        SettingsMessage::WorkingHours(message) => calendar::working_hours::update(message, data),
     }
 }
 
@@ -235,6 +242,7 @@ fn settings_page<'a>(data: &'a torro_settings_ui::Data, section: &str) -> Page<'
     match section {
         "reminders" => wrap(Page::new(calendar::reminders::view(data)), SettingsMessage::Reminders),
         "night" => wrap(Page::new(calendar::night::view(data)), SettingsMessage::Night),
+        "working-hours" => wrap(Page::new(calendar::working_hours::view(data)), SettingsMessage::WorkingHours),
         _ => wrap(Page::new(collections::page(data, collections::Role::Calendar)), SettingsMessage::Calendars),
     }
 }
@@ -547,6 +555,9 @@ pub struct App {
     night_saving: bool,
     /// The card "Night", while it is open.
     night_card: Option<NightCard>,
+    /// The suite's working hours, a line in day, week, timeline and radar
+    /// (`Settings::working_hours`).
+    working_hours: WorkingHours,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
 }
@@ -658,8 +669,9 @@ pub enum Message {
     NoNight,
     /// ✕, Escape or a click beside the card.
     CloseNight,
-    /// The night stored in the suite settings; an error keeps the one we have.
-    Night(Result<Night, String>),
+    /// The night and the working hours stored in the suite settings; an error keeps the ones we
+    /// have.
+    Night(Result<(Night, WorkingHours), String>),
     /// The core answered a save of the night.
     NightSaved(Result<(), String>),
 }
@@ -763,6 +775,7 @@ impl App {
             night: Night::DEFAULT,
             night_saving: false,
             night_card: None,
+            working_hours: WorkingHours::DEFAULT,
             settings: None,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -857,15 +870,15 @@ impl App {
         Task::perform(async move { theme::stored_appearance(&source).await }, Message::Appearance)
     }
 
-    /// Asks the core for the stored night, like [`App::fetch_appearance`]. The demo has no core and
-    /// keeps the night it has.
+    /// Asks the core for the stored night and working hours, like [`App::fetch_appearance`]: one
+    /// answer holds both. The demo has no core and keeps the ones it has.
     fn fetch_night(&self) -> Task<Message> {
         let Source::Core(client) = &self.source else { return Task::none() };
         let socket = client.socket.clone();
         Task::perform(
             async move {
                 match torro_ipc::client::call(&socket, &torro_ipc::Request::Settings).await {
-                    Ok(torro_ipc::Response::Settings { settings }) => Ok(settings.night),
+                    Ok(torro_ipc::Response::Settings { settings }) => Ok((settings.night, settings.working_hours)),
                     Ok(other) => Err(format!("unexpected answer: {other:?}")),
                     Err(err) => Err(err.to_string()),
                 }
@@ -1192,8 +1205,14 @@ impl App {
                 return self.set_night(Night::none_at(card.from));
             }
             Message::CloseNight => self.night_card = None,
-            // While this window's own change is on its way, the stored night is the old one.
-            Message::Night(Ok(night)) if !self.night_saving => self.night = night,
+            // While this window's own change is on its way, the stored night is the old one. The
+            // working hours are only set behind the gear, never on their way from here.
+            Message::Night(Ok((night, working))) => {
+                self.working_hours = working;
+                if !self.night_saving {
+                    self.night = night;
+                }
+            }
             // Stale, or the core is starting up: keep the night we have.
             Message::Night(_) => {}
             Message::NightSaved(result) => {
@@ -1669,24 +1688,25 @@ impl App {
         let data = self.view_data();
         match self.shown() {
             CalView::Day if self.class() == SizeClass::Narrow => {
-                column![week_strip::view(&data), views::week::day_under_strip(data)].into()
+                column![week_strip::view(&data), views::week::day_under_strip(data, self.working_hours)].into()
             }
             // One day is not stretched over a wide window: it keeps a list's reading width at the
             // sidebar (design skill, section 6), and the properties column says what comes next.
             CalView::Day if shell::has_props(self.class()) => {
-                container(views::week::view(data)).max_width(size::content_max()).into()
+                container(views::week::view(data, self.working_hours)).max_width(size::content_max()).into()
             }
-            CalView::Day | CalView::Week => views::week::view(data),
+            CalView::Day | CalView::Week => views::week::view(data, self.working_hours),
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data, self.class()),
-            CalView::Timeline => views::timeline::view(data, &self.timeline, self.night, night),
+            CalView::Timeline => views::timeline::view(data, &self.timeline, self.night, self.working_hours, night),
             // Narrow: under the week strip, whose days page the radar like the small month does –
             // unless the tile is so low that the strip would cut into the dial.
             CalView::Radar if self.class() == SizeClass::Narrow => {
                 let (order, turn, coming, anchor) = (self.calendar_order(), self.turn, self.coming, night.clone());
                 responsive(move |bounds| {
                     let below = views::radar::ListAt::Below;
-                    let radar = views::radar::view(data.clone(), &order, turn, coming, below, self.night, &anchor);
+                    let (night, working) = (self.night, self.working_hours);
+                    let radar = views::radar::view(data.clone(), &order, turn, coming, below, night, working, &anchor);
                     if views::radar::strip_fits(bounds) {
                         column![week_strip::view(&data), radar].into()
                     } else {
@@ -1700,7 +1720,8 @@ impl App {
                     SizeClass::Wide => views::radar::ListAt::Props,
                     _ => views::radar::ListAt::Beside,
                 };
-                views::radar::view(data, &self.calendar_order(), self.turn, self.coming, list, self.night, night)
+                let (order, working) = (self.calendar_order(), self.working_hours);
+                views::radar::view(data, &order, self.turn, self.coming, list, self.night, working, night)
             }
         }
     }
@@ -1927,7 +1948,7 @@ impl App {
     }
 
     /// What the window loads again after a change behind the gear ([`Outcome::Changed`]): the
-    /// appearance and the night always, the events only where a tick would load them too – with an
+    /// appearance, the night and the working hours always, the events only where a tick would load them too – with an
     /// account connected and with nothing open in the editor, which keeps what it holds while the
     /// settings cover it. An editor that is open gets the fresh events when it closes.
     fn settings_loads(&mut self) -> Task<Message> {
@@ -2981,13 +3002,16 @@ mod tests {
         let mut app = launched(&["--demo"]);
         assert_eq!(app.night, Night::DEFAULT);
         let late = Night { from: quarter(23, 30), to: quarter(7, 0) };
-        let _ = app.update(Message::Night(Ok(late)));
+        let early = WorkingHours { from: quarter(7, 30), to: quarter(16, 0) };
+        let _ = app.update(Message::Night(Ok((late, early))));
         assert_eq!(app.night, late, "a change made elsewhere arrives");
+        assert_eq!(app.working_hours, early, "and the working hours with it");
         let _ = app.update(Message::Night(Err("starting".into())));
         assert_eq!(app.night, late, "a core that does not answer keeps the night");
         app.night_saving = true;
-        let _ = app.update(Message::Night(Ok(Night::DEFAULT)));
+        let _ = app.update(Message::Night(Ok((Night::DEFAULT, WorkingHours::DEFAULT))));
         assert_eq!(app.night, late, "the stored night is the old one while ours is on its way");
+        assert_eq!(app.working_hours, WorkingHours::DEFAULT, "the working hours are not on their way from here");
         let _ = app.update(Message::NightSaved(Ok(())));
         assert!(!app.night_saving);
     }
@@ -3201,6 +3225,13 @@ mod tests {
         assert!(matches!(
             requests.as_slice(),
             [torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::Night, .. }]
+        ));
+        let working = calendar::working_hours::Message::To(quarter(16, 0));
+        let working = settings_update(SettingsMessage::WorkingHours(working), &data);
+        let torro_settings_ui::Action::Send(requests) = working else { panic!("expected Send") };
+        assert!(matches!(
+            requests.as_slice(),
+            [torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::WorkingHours, .. }]
         ));
     }
 

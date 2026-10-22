@@ -121,6 +121,8 @@ pub const DARK: Palette = Palette {
     shadow: shadow(0.5),
     scrim: black(0.62),
     night: hex(0x121626),
+    // New with K.33, nothing drew working hours before: the standard's grey.
+    working_hours: white(0.28),
     // Before L.6 the sidebar drew with `bg`, `hover`, `selected`, the text colours and `line`.
     sidebar: hex(0x08090A),
     sidebar_hover: hex(0x16171A),
@@ -164,6 +166,8 @@ pub const LIGHT: Palette = Palette {
     shadow: shadow(0.12),
     scrim: black(0.3),
     night: hex(0xE3E7F1),
+    // New with K.33, as in the dark palette.
+    working_hours: black(0.32),
     sidebar: hex(0xF4F5F6),
     sidebar_hover: hex(0xF0F1F3),
     sidebar_selected: hex(0xE9EAED),

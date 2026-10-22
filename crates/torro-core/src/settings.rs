@@ -53,6 +53,11 @@ pub struct Settings {
     /// neither counts it as free time. Stored as `{"from": "22:00", "to": "06:00"}`.
     #[serde(default)]
     pub night: Night,
+    /// When the working day is (task K.33): the calendar draws it as a thin, muted line in day,
+    /// week, timeline and radar. The same every day, never over midnight. Stored as
+    /// `{"from": "08:00", "to": "17:00"}`.
+    #[serde(default)]
+    pub working_hours: WorkingHours,
     /// How each task list is ordered, by list id (`<account-id>/<list URL>`, task P.3a). A list
     /// that is not named here is grouped by due date ([`ListOrder::DueDate`]), so only lists in
     /// [`ListOrder::Manual`] are stored.
@@ -515,6 +520,7 @@ impl Default for Settings {
             hidden_collections: Vec::new(),
             zoom: Zoom::default(),
             night: Night::default(),
+            working_hours: WorkingHours::default(),
             list_orders: BTreeMap::new(),
             quiet_when_busy: on(),
             design: standard_design(),
@@ -769,6 +775,100 @@ impl JsonSchema for Night {
             "additionalProperties": false,
             "description": "The night as two times of day on the quarter hour, usually over midnight \
                             ({\"from\": \"22:00\", \"to\": \"06:00\"}). The same time twice means no night."
+        })
+    }
+}
+
+/// The working hours of the suite (task K.33): from `from` to `to`, the same every day. Unlike
+/// [`Night`] never over midnight, so `from` lies before `to`; `from == to` means no working hours
+/// at all, and the calendar draws no line.
+///
+/// Reading a settings file is lenient, like [`Night`]: anything else gives
+/// [`WorkingHours::DEFAULT`]. A value sent to the core is checked with
+/// [`WorkingHours::from_value`], which refuses it with a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WorkingHours {
+    pub from: Quarter,
+    pub to: Quarter,
+}
+
+impl WorkingHours {
+    /// 08:00 to 17:00.
+    pub const DEFAULT: WorkingHours = WorkingHours { from: Quarter(8 * 60), to: Quarter(17 * 60) };
+
+    /// There are no working hours: `from == to`.
+    pub fn is_none(self) -> bool {
+        self.from == self.to
+    }
+
+    /// The working hours in `value`, which must be `{"from": "HH:MM", "to": "HH:MM"}` on the
+    /// quarter hour with `from` not after `to`; otherwise why not. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<WorkingHours, String> {
+        let shape = || format!("{value} are not working hours: send {{\"from\": \"08:00\", \"to\": \"17:00\"}}");
+        let object = value.as_object().ok_or_else(shape)?;
+        if object.keys().any(|key| key != "from" && key != "to") {
+            return Err(shape());
+        }
+        let end = |name: &str| {
+            let text = object.get(name).and_then(|v| v.as_str()).ok_or_else(shape)?;
+            Quarter::parse(text).ok_or_else(|| {
+                format!("{text:?} is not a time for {name}: use HH:MM on the quarter hour (00, 15, 30, 45)")
+            })
+        };
+        let hours = WorkingHours { from: end("from")?, to: end("to")? };
+        if hours.from > hours.to {
+            return Err(format!(
+                "working hours from {} to {} would run over midnight: from must not be after to",
+                hours.from, hours.to
+            ));
+        }
+        Ok(hours)
+    }
+
+    /// The working hours as `settings.set_setting` takes them: `{"from": "08:00", "to": "17:00"}`.
+    pub fn to_value(self) -> serde_json::Value {
+        serde_json::json!({ "from": self.from.to_string(), "to": self.to.to_string() })
+    }
+}
+
+impl Default for WorkingHours {
+    fn default() -> WorkingHours {
+        WorkingHours::DEFAULT
+    }
+}
+
+impl Serialize for WorkingHours {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkingHours {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<WorkingHours, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(WorkingHours::from_value(&value).unwrap_or_default())
+    }
+}
+
+impl JsonSchema for WorkingHours {
+    fn schema_name() -> Cow<'static, str> {
+        "WorkingHours".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        let time = json_schema!({ "type": "string", "pattern": "^([01][0-9]|2[0-3]):(00|15|30|45)$" });
+        json_schema!({
+            "type": "object",
+            "properties": { "from": time, "to": time },
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "description": "The working hours as two times of day on the quarter hour, the same every day and \
+                            never over midnight, from before to ({\"from\": \"08:00\", \"to\": \"17:00\"}). \
+                            The same time twice means no working hours."
         })
     }
 }
@@ -1828,6 +1928,7 @@ mod tests {
             hidden_collections: vec!["work".into()],
             zoom: Zoom::DEFAULT,
             night: Night::DEFAULT,
+            working_hours: WorkingHours::DEFAULT,
             list_orders: BTreeMap::new(),
             quiet_when_busy: true,
             design: "torro".into(),
@@ -2015,6 +2116,7 @@ mod tests {
             hidden_collections: vec!["a".into(), "b".into()],
             zoom: Zoom::nearest(1.25),
             night: Night { from: q(23, 30), to: q(7, 0) },
+            working_hours: WorkingHours { from: q(7, 30), to: q(16, 0) },
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             quiet_when_busy: false,
             design: "plex".into(),
@@ -2227,6 +2329,68 @@ mod tests {
         fs::write(&path, r#"{"night":{"from":"25:00","to":"x"},"startAtLogin":true}"#).expect("write");
         let loaded = load_from(&path);
         assert_eq!(loaded.night, Night::DEFAULT);
+        assert!(loaded.start_at_login, "not a broken file");
+    }
+
+    #[test]
+    fn working_hours_are_eight_to_five_by_default_and_from_before_k33() {
+        assert_eq!(WorkingHours::default(), WorkingHours { from: q(8, 0), to: q(17, 0) });
+        assert!(!WorkingHours::DEFAULT.is_none());
+        let dir = TempDir::new("no-working-hours");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"night":{"from":"23:00","to":"07:00"}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.working_hours, WorkingHours::DEFAULT);
+        assert_eq!(loaded.night, Night { from: q(23, 0), to: q(7, 0) }, "the other fields still load");
+    }
+
+    #[test]
+    fn working_hours_are_stored_as_two_times() {
+        let hours = WorkingHours { from: q(7, 30), to: q(16, 0) };
+        assert_eq!(
+            serde_json::to_value(hours).expect("serialize"),
+            serde_json::json!({"from": "07:30", "to": "16:00"})
+        );
+        assert_eq!(serde_json::from_str::<WorkingHours>(r#"{"from":"07:30","to":"16:00"}"#).expect("parse"), hours);
+    }
+
+    #[test]
+    fn the_same_time_twice_is_no_working_hours() {
+        let none = WorkingHours::from_value(&serde_json::json!({"from": "09:00", "to": "09:00"}));
+        assert_eq!(none.map(WorkingHours::is_none), Ok(true));
+    }
+
+    #[test]
+    fn working_hours_from_outside_are_two_quarter_hours_in_order() {
+        let hours = |value: serde_json::Value| WorkingHours::from_value(&value);
+        assert_eq!(hours(serde_json::json!({"from": "08:00", "to": "17:00"})), Ok(WorkingHours::DEFAULT));
+        for bad in [
+            serde_json::json!({"from": "08:10", "to": "17:00"}),
+            serde_json::json!({"from": "24:00", "to": "17:00"}),
+            serde_json::json!({"from": "8:00", "to": "17:00"}),
+            serde_json::json!({"from": "08:00"}),
+            serde_json::json!({"from": "08:00", "to": "17:00", "extra": 1}),
+            serde_json::json!({"from": 8, "to": 17}),
+            serde_json::json!("08:00-17:00"),
+            serde_json::json!(null),
+            serde_json::json!({"from": "17:00", "to": "08:00"}),
+        ] {
+            let refused = hours(bad.clone());
+            assert!(refused.as_ref().is_err_and(|reason| !reason.is_empty()), "{bad}: {refused:?}");
+        }
+        let reason = hours(serde_json::json!({"from": "22:00", "to": "06:00"})).expect_err("refused");
+        assert!(reason.contains("midnight"), "the reason says what is wrong: {reason}");
+        let reason = hours(serde_json::json!({"from": "08:10", "to": "17:00"})).expect_err("refused");
+        assert!(reason.contains("quarter hour"), "the reason says what is wrong: {reason}");
+    }
+
+    #[test]
+    fn broken_working_hours_in_a_file_are_the_default() {
+        let dir = TempDir::new("working-hours-broken");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"workingHours":{"from":"17:00","to":"08:00"},"startAtLogin":true}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.working_hours, WorkingHours::DEFAULT);
         assert!(loaded.start_at_login, "not a broken file");
     }
 

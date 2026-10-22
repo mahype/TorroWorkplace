@@ -2800,6 +2800,11 @@ pub enum SettingKey {
     /// "06:00"}`, two times on the quarter hour (`torro_core::settings::Night`), usually over
     /// midnight; the same time twice means no night. Open calendar windows follow.
     Night,
+    /// When the working day is, for the calendar's day, week, timeline and radar: `{"from":
+    /// "08:00", "to": "17:00"}`, two times on the quarter hour (`torro_core::settings::WorkingHours`),
+    /// the same every day and never over midnight, so `from` is not after `to`; the same time twice
+    /// means no working hours. Open calendar windows follow.
+    WorkingHours,
     /// How one task list is ordered: `{"list": "<list id>", "order": "manual"}` (by hand, see
     /// `tasks.move_todo`) or `"order": "due_date"` (grouped by due date, the default). The list id
     /// comes from `tasks.list_lists`; one the core does not know is `not-found`

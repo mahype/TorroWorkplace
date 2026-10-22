@@ -601,6 +601,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The timeline folds the night away and the radar shades it; neither counts it as free time. The same time twice means no night.",
         "Der Zeitstrahl klappt die Nacht ein, das Radar hinterlegt sie; keiner zählt sie als freie Zeit. Zweimal dieselbe Uhrzeit heißt: keine Nacht.",
     ),
+    // Working hours in the calendar (K.33, issue #66)
+    ("Working hours", "Arbeitszeit"),
+    (
+        "The calendar draws your working hours as a thin line in day, week, timeline and radar. The same time twice means no working hours.",
+        "Der Kalender zeigt deine Arbeitszeit als dünne Linie in Tag, Woche, Zeitstrahl und Radar. Zweimal dieselbe Uhrzeit heißt: keine Arbeitszeit.",
+    ),
     ("day {n} of {total}", "Tag {n} von {total}"),
     ("No events", "Keine Termine"),
     ("Nothing planned in the next 30 days", "In den nächsten 30 Tagen ist nichts geplant"),

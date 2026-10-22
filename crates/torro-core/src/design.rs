@@ -680,6 +680,10 @@ pub struct Palette {
     pub shadow: Rgba,
     pub scrim: Rgba,
     pub night: Rgba,
+    /// The thin line of the working hours in the calendar (task K.33): a mark beside the events,
+    /// never text. Muted, so it is not mistaken for the now line or an event's colour bar. A pack
+    /// that leaves it out gets its own `line_selected`.
+    pub working_hours: Rgba,
     /// The frame of the window: the sidebar, the rail, the drawer, the margin around the content
     /// panel and the title band over them. A pack that leaves it out gets its own `bg`.
     pub sidebar: Rgba,
@@ -707,6 +711,11 @@ pub(crate) const SIDEBAR_FALLBACK: [(&str, &str); 7] = [
     ("sidebar_text_3", "text_3"),
     ("sidebar_line", "line"),
 ];
+
+/// The working-hours key of a palette with the key it falls back to when a pack leaves it out: the
+/// neutral grey of the pack's selection edges, so a pack made before task K.33 still draws it in
+/// its own colours.
+pub(crate) const WORKING_HOURS_FALLBACK: (&str, &str) = ("working_hours", "line_selected");
 
 impl Palette {
     /// Whether the sidebar has a surface of its own (`sidebar` is not `bg`), as Slack's aubergine
@@ -798,6 +807,7 @@ impl Palette {
             "shadow" => &mut self.shadow,
             "scrim" => &mut self.scrim,
             "night" => &mut self.night,
+            "working_hours" => &mut self.working_hours,
             "sidebar" => &mut self.sidebar,
             "sidebar_hover" => &mut self.sidebar_hover,
             "sidebar_selected" => &mut self.sidebar_selected,
@@ -1170,6 +1180,7 @@ const STANDARD_DARK: Palette = Palette {
     shadow: Rgba::black(0.5),
     scrim: Rgba::black(0.62),
     night: Rgba::hex(0x121626),
+    working_hours: Rgba::white(0.28),
     sidebar: Rgba::hex(0x08090A),
     sidebar_hover: Rgba::hex(0x16171A),
     sidebar_selected: Rgba::hex(0x1C1E22),
@@ -1210,6 +1221,7 @@ const STANDARD_LIGHT: Palette = Palette {
     shadow: Rgba::black(0.12),
     scrim: Rgba::black(0.3),
     night: Rgba::hex(0xE3E7F1),
+    working_hours: Rgba::black(0.32),
     sidebar: Rgba::hex(0xF4F5F6),
     sidebar_hover: Rgba::hex(0xF0F1F3),
     sidebar_selected: Rgba::hex(0xE9EAED),
