@@ -198,6 +198,15 @@ pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], col
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
         transparency: transparency(get("TRANSP")),
         alarms: alarms.iter().filter_map(|props| alarm(props)).collect(),
+        // Read from the server from task TE.2 (fields) and TE.3 (series) on.
+        recurrence_id: None,
+        repeat: None,
+        time_zone: None,
+        url: None,
+        status: None,
+        geo: None,
+        organizer: None,
+        attendees: Vec::new(),
     })
 }
 

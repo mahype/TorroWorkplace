@@ -1116,7 +1116,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         }
         // Which models the suite may use (task S.24): account, model and place from the core's list.
         Request::SetModelEnabled { account, enabled, .. } => model_switch_summary(&named(account), *enabled, facts),
-        Request::DeleteEvent { event } => match &facts.item {
+        Request::DeleteEvent { event, .. } => match &facts.item {
             Some(item) => trf(
                 "Delete event \"{title}\" on {when} from \"{calendar}\"",
                 &[
@@ -1127,7 +1127,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             ),
             None => trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &named(&event.collection))]),
         },
-        Request::SaveEvent { event } => event_saved(event, facts, today),
+        Request::SaveEvent { event, .. } => event_saved(event, facts, today),
         Request::DeleteTodo { todo } => match &facts.item {
             Some(item) => trf(
                 "Delete task \"{title}\" from \"{list}\"",
@@ -1273,6 +1273,12 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         },
         Request::SetSetting { key: torro_ipc::SettingKey::Reminders, value } => {
             trf("Change how reminders come: {changes}", &[("changes", &reminders_changed(value, facts))])
+        }
+        // Task TE.1: what a client may do with maps alone, said plainly; anything else as sent.
+        Request::SetSetting { key: torro_ipc::SettingKey::Maps, value }
+            if *value == serde_json::json!({"enabled": false}) =>
+        {
+            tr("Turn off maps and place search").to_string()
         }
         Request::SetSetting { key, value } => trf(
             "Change the setting {key} to {value}",
@@ -3398,6 +3404,14 @@ pub(crate) mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
         }
     }
 
@@ -3481,13 +3495,13 @@ pub(crate) mod tests {
         let claimed = event("c", Some("/cal/board.ics"), "Lunch", day(20));
         let real = facts(cached("Board meeting", Some(day(14))), "Work");
         assert_eq!(
-            summary(&Request::DeleteEvent { event: claimed.clone() }, &real),
+            summary(&Request::DeleteEvent { event: claimed.clone(), scope: None }, &real),
             trf(
                 "Delete event \"{title}\" on {when} from \"{calendar}\"",
                 &[("title", &"Board meeting"), ("when", &when(&day(14), today)), ("calendar", &"Work")]
             )
         );
-        let unknown = summary(&Request::DeleteEvent { event: claimed }, &facts(None, "Work"));
+        let unknown = summary(&Request::DeleteEvent { event: claimed, scope: None }, &facts(None, "Work"));
         assert_eq!(unknown, trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &"Work")]));
         assert!(!unknown.contains("Lunch"));
 
@@ -3617,7 +3631,7 @@ pub(crate) mod tests {
         let real = facts(cached("Board meeting", Some(day(14))), "Work");
         let moved_day = format!("{} → {}", when(&day(14), today), when(&day(15), today));
         assert_eq!(
-            summary(&Request::SaveEvent { event: changed.clone() }, &real),
+            summary(&Request::SaveEvent { event: changed.clone(), scope: None }, &real),
             trf(
                 "Change event \"{title}\" → \"{new}\" on {when} in \"{calendar}\"",
                 &[
@@ -3630,7 +3644,7 @@ pub(crate) mod tests {
         );
         let same = event("c", Some("/cal/board.ics"), "Board meeting", day(14));
         assert_eq!(
-            summary(&Request::SaveEvent { event: same.clone() }, &real),
+            summary(&Request::SaveEvent { event: same.clone(), scope: None }, &real),
             trf(
                 "Change event \"{title}\" on {when} in \"{calendar}\"",
                 &[("title", &"Board meeting"), ("when", &when(&day(14), today)), ("calendar", &"Work")]
@@ -3638,7 +3652,7 @@ pub(crate) mod tests {
         );
         let moving = Facts { moved_from: Some("Home".into()), ..real.clone() };
         assert_eq!(
-            summary(&Request::SaveEvent { event: same.clone() }, &moving),
+            summary(&Request::SaveEvent { event: same.clone(), scope: None }, &moving),
             trf(
                 "Move event \"{title}\" on {when} from \"{from}\" to \"{calendar}\"",
                 &[
@@ -3650,7 +3664,7 @@ pub(crate) mod tests {
             )
         );
         assert_eq!(
-            summary(&Request::SaveEvent { event: same }, &facts(None, "Work")),
+            summary(&Request::SaveEvent { event: same, scope: None }, &facts(None, "Work")),
             trf(
                 "Change an unknown event in \"{calendar}\" to \"{new}\" on {when}",
                 &[("calendar", &"Work"), ("new", &"Board meeting"), ("when", &when(&day(14), today))]
@@ -3658,7 +3672,7 @@ pub(crate) mod tests {
         );
         let new = event("c", None, "Lunch", day(14));
         assert_eq!(
-            summary(&Request::SaveEvent { event: new }, &facts(None, "Work")),
+            summary(&Request::SaveEvent { event: new, scope: None }, &facts(None, "Work")),
             trf(
                 "Create event \"{title}\" on {when} in \"{calendar}\"",
                 &[("title", &"Lunch"), ("when", &when(&day(14), today)), ("calendar", &"Work")]
@@ -4215,7 +4229,8 @@ pub(crate) mod tests {
     #[test]
     fn cached_text_is_made_harmless_too() {
         let real = facts(cached("Board\u{202E}gniteem \"x\"", Some(day(14))), "Wo{rk}");
-        let text = summary(&Request::DeleteEvent { event: event("c", Some("/a.ics"), "Lunch", day(14)) }, &real);
+        let text =
+            summary(&Request::DeleteEvent { event: event("c", Some("/a.ics"), "Lunch", day(14)), scope: None }, &real);
         assert!(text.contains("Boardgniteem 'x'") && text.contains("Wo(rk)"), "{text}");
     }
 

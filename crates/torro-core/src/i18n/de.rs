@@ -3900,6 +3900,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Shows a notification instead while an event with a call link runs",
         "Zeigt stattdessen eine Benachrichtigung, solange ein Termin mit Anruf-Link läuft",
     ),
+    // Event editor (#278)
+    ("Turn off maps and place search", "Karten und Ortssuche ausschalten"),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),

@@ -1012,7 +1012,7 @@ fn save_event<Tz: TimeZone>(input: EventInput, zone: &Tz) -> Result<Request, Too
         || reminder_minutes.is_some();
     match (event, short) {
         (Some(_), true) => Err(ToolError::Input("pass either `event` or the short form, not both".into())),
-        (Some(event), false) => Ok(Request::SaveEvent { event }),
+        (Some(event), false) => Ok(Request::SaveEvent { event, scope: None }),
         (None, _) => {
             let start = time(&required(start, "start")?, "start", zone)?;
             let all_day = all_day.unwrap_or(matches!(start, EventTime::Date(_)));
@@ -1042,7 +1042,16 @@ fn save_event<Tz: TimeZone>(input: EventInput, zone: &Tz) -> Result<Request, Too
                     recurring: false,
                     transparency: torro_pim::Transparency::Opaque,
                     alarms: reminder_alarm(reminder_minutes)?,
+                    recurrence_id: None,
+                    repeat: None,
+                    time_zone: None,
+                    url: None,
+                    status: None,
+                    geo: None,
+                    organizer: None,
+                    attendees: Vec::new(),
                 },
+                scope: None,
             })
         }
     }
@@ -1775,6 +1784,14 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
         }
     }
 
@@ -1792,7 +1809,7 @@ mod tests {
             Some(EventTime::DateTime(utc("2026-10-14T08:00:00Z"))),
         );
         wanted.location = Some("Room 2".into());
-        assert_eq!(request, Ok(Request::SaveEvent { event: wanted }));
+        assert_eq!(request, Ok(Request::SaveEvent { event: wanted, scope: None }));
     }
 
     #[test]
@@ -1803,13 +1820,13 @@ mod tests {
             args(json!({"collection": "cal", "summary": "Team meeting", "start": "2026-10-14", "end": "2026-10-15"})),
             &cest(),
         );
-        assert_eq!(request, Ok(Request::SaveEvent { event: event(day(14), Some(day(15))) }));
+        assert_eq!(request, Ok(Request::SaveEvent { event: event(day(14), Some(day(15))), scope: None }));
         let explicit = request_for(
             "calendar_save_event",
             args(json!({"collection": "cal", "summary": "Team meeting", "start": "2026-10-14", "all_day": true})),
             &cest(),
         );
-        assert_eq!(explicit, Ok(Request::SaveEvent { event: event(day(14), None) }));
+        assert_eq!(explicit, Ok(Request::SaveEvent { event: event(day(14), None), scope: None }));
         let mixed = request_for(
             "calendar_save_event",
             args(json!({"collection": "cal", "summary": "x", "start": "2026-10-14", "all_day": false})),
@@ -1841,13 +1858,48 @@ mod tests {
         full.recurring = true;
         let value = serde_json::to_value(&full).expect("json");
         let request = request_for("calendar_save_event", args(json!({"event": value.clone()})), &Utc);
-        assert_eq!(request, Ok(Request::SaveEvent { event: full }));
+        assert_eq!(request, Ok(Request::SaveEvent { event: full, scope: None }));
         let both = request_for("calendar_save_event", args(json!({"event": value, "summary": "x"})), &Utc);
         assert!(matches!(both, Err(ToolError::Input(_))));
         let missing = request_for("calendar_save_event", args(json!({"summary": "x", "start": "2026-10-14"})), &Utc);
         assert!(matches!(missing, Err(ToolError::Input(message)) if message.contains("collection")));
         let unknown = request_for("calendar_save_event", args(json!({"title": "x"})), &Utc);
         assert!(matches!(unknown, Err(ToolError::Input(_))));
+    }
+
+    /// Task TE.1: the place search and the map are tools, each on exactly its request; the map comes
+    /// back as Base64 text for now (an image in task TE.6), and deleting takes the scope.
+    #[test]
+    fn places_and_maps_are_tools_of_their_requests() {
+        use torro_pim::model::{Geo, SeriesScope};
+        let search = request_for(
+            "calendar_search_places",
+            args(json!({"query": "Elbe", "near": {"lat": 53.5, "lon": 10.0}})),
+            &Utc,
+        );
+        assert_eq!(
+            search,
+            Ok(Request::SearchPlaces { query: "Elbe".into(), near: Some(Geo { lat: 53.5, lon: 10.0 }) })
+        );
+        let map = request_for(
+            "calendar_map_preview",
+            args(json!({"geo": {"lat": 53.5, "lon": 10.0}, "width": 336, "height": 104})),
+            &Utc,
+        );
+        assert_eq!(
+            map,
+            Ok(Request::MapPreview { geo: Geo { lat: 53.5, lon: 10.0 }, width: 336, height: 104, dark: false })
+        );
+        let unknown = request_for("calendar_search_places", args(json!({"query": "Elbe", "limit": 3})), &Utc);
+        assert!(matches!(unknown, Err(ToolError::Input(_))), "{unknown:?}");
+        let mut occurrence = event(EventTime::DateTime(utc("2026-10-14T07:30:00Z")), None);
+        occurrence.recurring = true;
+        let value = serde_json::to_value(&occurrence).expect("json");
+        let delete = request_for("calendar_delete_event", args(json!({"event": value, "scope": "occurrence"})), &Utc);
+        assert_eq!(delete, Ok(Request::DeleteEvent { event: occurrence, scope: Some(SeriesScope::Occurrence) }));
+        let image = result_of(Response::Image { png: "iVBORw0KGgo=".into() });
+        let text = serde_json::to_string(&image.content).expect("json");
+        assert!(text.contains("iVBORw0KGgo="), "{text}");
     }
 
     #[test]
@@ -3268,7 +3320,7 @@ mod tests {
         }) else {
             panic!("an object")
         };
-        let Ok(Request::SaveEvent { event }) = request_for("calendar_save_event", arguments, &Utc) else {
+        let Ok(Request::SaveEvent { event, .. }) = request_for("calendar_save_event", arguments, &Utc) else {
             panic!("a save")
         };
         assert_eq!(

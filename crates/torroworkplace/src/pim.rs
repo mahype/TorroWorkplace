@@ -106,7 +106,7 @@ use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response, ServerService};
 use torro_pim::account::{collection_id, local_id};
-use torro_pim::model::{GitHubKind, GitHubState, Link};
+use torro_pim::model::{GitHubKind, GitHubState, Link, SeriesScope};
 use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
 use torro_pim::{
     AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo, combined_state,
@@ -967,11 +967,11 @@ impl PimService {
             Request::DeleteTodo { todo } if self.is_filter_list(&todo.collection).await => {
                 error("unsupported", "the items of a GitHub filter list cannot be deleted; they live on GitHub".into())
             }
-            Request::SaveEvent { event } => match self.save_event(event).await {
-                Ok(event) => Response::Event { event },
+            Request::SaveEvent { event, scope } => match self.save_event(event, scope).await {
+                Ok(event) => Response::Event { event, reset: 0 },
                 Err(err) => self.write_failed(err).await,
             },
-            Request::DeleteEvent { event } => match self.delete_event(event).await {
+            Request::DeleteEvent { event, scope } => match self.delete_event(event, scope).await {
                 Ok(()) => Response::Ok,
                 Err(err) => self.write_failed(err).await,
             },
@@ -1066,7 +1066,10 @@ impl PimService {
             | Request::UpdateSortRule { .. }
             | Request::RemoveSortRule { .. }
             | Request::MoveSortRule { .. } => return None,
-            Request::SaveEvent { event } | Request::DeleteEvent { event } => {
+            // A place search or a map reads no calendar (task TE.1); recent places are filtered
+            // by the reach where they are read (task TE.5).
+            Request::SearchPlaces { .. } | Request::MapPreview { .. } => return None,
+            Request::SaveEvent { event, .. } | Request::DeleteEvent { event, .. } => {
                 (Role::Calendar, &event.collection, event.href.as_deref())
             }
             Request::SaveTodo { todo } | Request::DeleteTodo { todo }
@@ -2100,11 +2103,21 @@ impl PimService {
         Ok(events)
     }
 
-    async fn save_event(&self, event: Event) -> Result<Event, WriteError> {
+    /// `calendar.save_event`. `scope` is checked here (task TE.1): only with an `href`, and only
+    /// `series` together with a move to another calendar. Every occurrence stays `unsupported`
+    /// until series are written (task TE.4), with `scope` or without.
+    async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<Event, WriteError> {
+        scope_needs_href(&event, scope)?;
         if event.recurring {
             return Err(series(Role::Calendar));
         }
         let place = self.place(&event.collection).await?;
+        if matches!(scope, Some(SeriesScope::Occurrence | SeriesScope::Following))
+            && moved(event.href.as_deref(), &place.url).is_some()
+        {
+            let message = "only a whole series moves to another calendar: send scope `series`";
+            return Err(refused("unsupported", message.into()));
+        }
         let (uid, etag) = (event.uid.clone(), event.etag.clone());
         let saved = match moved(event.href.as_deref(), &place.url) {
             // Moving to another calendar of the same account: create there on top of the stored
@@ -2139,7 +2152,9 @@ impl PimService {
         Ok(saved)
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), WriteError> {
+    /// `calendar.delete_event`; `scope` as for [`PimService::save_event`].
+    async fn delete_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(), WriteError> {
+        scope_needs_href(&event, scope)?;
         if event.recurring {
             return Err(series(Role::Calendar));
         }
@@ -2451,10 +2466,10 @@ impl PimService {
                     .collect();
                 Facts { calendars, ..Facts::default() }
             }
-            Request::DeleteEvent { event } => {
+            Request::DeleteEvent { event, .. } => {
                 written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, false)
             }
-            Request::SaveEvent { event } => {
+            Request::SaveEvent { event, .. } => {
                 written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, true)
             }
             Request::DeleteTodo { todo } => {
@@ -3845,6 +3860,17 @@ fn refused(code: &'static str, message: String) -> WriteError {
     WriteError::Refused { code, message }
 }
 
+/// `error` for a `scope` on an event that is not saved yet (task TE.1): a scope names events of a
+/// series on the server.
+fn scope_needs_href(event: &Event, scope: Option<SeriesScope>) -> Result<(), WriteError> {
+    match (scope, &event.href) {
+        (Some(_), None) => {
+            Err(refused("error", "a scope names events of a series on the server: leave it out for a new event".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The refusal for a series: `unsupported` until series editing exists.
 fn series(role: Role) -> WriteError {
     let message = match role {
@@ -3949,6 +3975,14 @@ pub(crate) mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
         }
     }
 
@@ -4073,7 +4107,8 @@ pub(crate) mod tests {
             service.handle_within(Request::Events { start: now, end: now + Span::days(1) }, Reach::Suite).await,
             Response::Events { events: vec![] }
         );
-        let response = service.handle_within(Request::SaveEvent { event: event(now, 1) }, Reach::Suite).await;
+        let response =
+            service.handle_within(Request::SaveEvent { event: event(now, 1), scope: None }, Reach::Suite).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-connected"), "{response:?}");
         assert_eq!(service.sync().await, Err(not_connected()));
     }
@@ -4083,7 +4118,7 @@ pub(crate) mod tests {
         let service = service();
         let response = service
             .handle_within(
-                Request::DeleteEvent { event: Event { recurring: true, ..event(Utc::now(), 1) } },
+                Request::DeleteEvent { event: Event { recurring: true, ..event(Utc::now(), 1) }, scope: None },
                 Reach::Suite,
             )
             .await;
@@ -4091,6 +4126,39 @@ pub(crate) mod tests {
             matches!(response, Response::Error { ref code, ref message } if code == "unsupported" && message.contains("recurring")),
             "{response:?}"
         );
+    }
+
+    /// Task TE.1: an occurrence stays `unsupported` with a scope as well until series are written
+    /// (TE.4); a scope on an event not saved yet is an `error`, before anything is looked up.
+    #[tokio::test]
+    async fn scopes_are_checked_and_occurrences_stay_refused() {
+        let service = service();
+        let occurrence = Event {
+            recurring: true,
+            href: Some("/cal/work/e.ics".into()),
+            etag: Some("\"1\"".into()),
+            ..event(Utc::now(), 1)
+        };
+        for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+            for request in [
+                Request::SaveEvent { event: occurrence.clone(), scope: Some(scope) },
+                Request::DeleteEvent { event: occurrence.clone(), scope: Some(scope) },
+            ] {
+                let response = service.handle_within(request, Reach::Suite).await;
+                assert!(
+                    matches!(response, Response::Error { ref code, .. } if code == "unsupported"),
+                    "{scope:?}: {response:?}"
+                );
+            }
+            let new = Event { href: None, etag: None, ..event(Utc::now(), 1) };
+            for request in [
+                Request::SaveEvent { event: new.clone(), scope: Some(scope) },
+                Request::DeleteEvent { event: new, scope: Some(scope) },
+            ] {
+                let response = service.handle_within(request, Reach::Suite).await;
+                assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
+            }
+        }
     }
 
     #[test]
@@ -4318,6 +4386,7 @@ pub(crate) mod tests {
         let now = Utc::now();
         let save = |collection: &str, href: Option<&str>| Request::SaveEvent {
             event: Event { collection: collection.into(), href: href.map(str::to_string), ..event(now, 1) },
+            scope: None,
         };
         let (work, home) = (cal("work"), cal("home"));
         let (work_url, home_url) = (url("work"), url("home"));
@@ -4366,7 +4435,7 @@ pub(crate) mod tests {
         let outside = format!("{}../../files/anna/notes.txt", url("home"));
         assert!(service.holder_of(&outside, &place).await.is_err(), "no collection holds it, so nothing is written");
         let moved_out = Event { href: Some(outside), ..event(Utc::now(), 1) };
-        let response = service.handle_within(Request::SaveEvent { event: moved_out }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved_out, scope: None }, Reach::Suite).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
     }
 
@@ -4394,7 +4463,7 @@ pub(crate) mod tests {
         let known = |title: &str, start| Some(Known { title: title.into(), start });
 
         // Deleting: the item at the href, whatever the client calls it.
-        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&board)) }).await;
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&board)), scope: None }).await;
         assert_eq!(
             facts,
             Facts {
@@ -4406,20 +4475,23 @@ pub(crate) mod tests {
         );
         // Written another way, the same address: the same item.
         let same = "/remote.php/dav/calendars/anna/work/e.ics";
-        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(same)) }).await;
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(same)), scope: None }).await;
         assert_eq!(facts.item, known("Board meeting", Some(start)));
         // A version the cache does not hold (the server may have a newer one): unknown.
         let newer = Event { etag: Some("\"2\"".into()), ..lunch(&work, Some(&board)) };
-        assert_eq!(service.facts(&Request::DeleteEvent { event: newer }).await.item, None);
+        assert_eq!(service.facts(&Request::DeleteEvent { event: newer, scope: None }).await.item, None);
         // Nothing cached there, or not an item of the calendar: unknown.
         let missing = format!("{}gone.ics", url("work"));
-        assert_eq!(service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&missing)) }).await.item, None);
+        assert_eq!(
+            service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&missing)), scope: None }).await.item,
+            None
+        );
         let outside = format!("{}../home/e.ics", url("work"));
-        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&outside)) }).await;
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&outside)), scope: None }).await;
         assert_eq!((facts.item, facts.moved_from), (None, None), "a delete never follows an href elsewhere");
 
         // Saving into `home` with work's href moves it: the item comes from work, which loses it.
-        let facts = service.facts(&Request::SaveEvent { event: lunch(&home, Some(&board)) }).await;
+        let facts = service.facts(&Request::SaveEvent { event: lunch(&home, Some(&board)), scope: None }).await;
         assert_eq!(
             facts,
             Facts {
@@ -4429,7 +4501,7 @@ pub(crate) mod tests {
                 ..Facts::default()
             }
         );
-        let created = service.facts(&Request::SaveEvent { event: lunch(&home, None) }).await;
+        let created = service.facts(&Request::SaveEvent { event: lunch(&home, None), scope: None }).await;
         assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None, ..Facts::default() });
 
         // Tasks, and reordering by the exact href.
@@ -4466,7 +4538,7 @@ pub(crate) mod tests {
             format!("{ANNA}/https://evil.example.org/remote.php/dav/calendars/anna/work/"),
         ] {
             let event = Event { collection, href: None, etag: None, ..event(Utc::now(), 1) };
-            let response = service.handle_within(Request::SaveEvent { event }, Reach::Suite).await;
+            let response = service.handle_within(Request::SaveEvent { event, scope: None }, Reach::Suite).await;
             assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
         }
     }
@@ -5335,14 +5407,14 @@ pub(crate) mod tests {
         }
         let (home, _) = on_server(&second, HOME, "");
         let new = Event { collection: home.clone(), href: None, etag: None, uid: "new".into(), ..event(Utc::now(), 1) };
-        let response = service.handle_within(Request::SaveEvent { event: new }, Reach::Suite).await;
-        let Response::Event { event: saved } = response else { panic!("saved, got {response:?}") };
+        let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
+        let Response::Event { event: saved, .. } = response else { panic!("saved, got {response:?}") };
         assert_eq!(saved.collection, home, "answered with the id, not the URL");
         assert!(lines(&first_record).is_empty(), "nothing reached the other account: {:?}", lines(&first_record));
         assert_eq!(lines(&second_record), [format!("PUT {HOME}new.ics If-None-Match *")]);
         assert_eq!(service.state.read().await.accounts[1].events, vec![saved.clone()], "cached at its account");
 
-        let deleted = service.handle_within(Request::DeleteEvent { event: saved }, Reach::Suite).await;
+        let deleted = service.handle_within(Request::DeleteEvent { event: saved, scope: None }, Reach::Suite).await;
         assert_eq!(deleted, Response::Ok);
         // The saved version is cached as a single event of that account, so no read first.
         assert_eq!(lines(&second_record)[1..], [format!("DELETE {HOME}new.ics If-Match \"2\"")]);
@@ -5351,7 +5423,7 @@ pub(crate) mod tests {
         // Moving between accounts would read the old item with the new account's password.
         let listed = listed_event(&first, Some("\"1\""));
         let moved = Event { collection: home, ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&first_record).is_empty(), "nothing sent: {:?}", lines(&first_record));
     }
@@ -5377,7 +5449,8 @@ pub(crate) mod tests {
         };
         assert_eq!(collections.into_iter().map(|c| c.id).collect::<Vec<_>>(), [second_work]);
         let (first_work, _) = on_server(&first, WORK, "");
-        let save = Request::SaveEvent { event: Event { collection: first_work.clone(), ..event(Utc::now(), 1) } };
+        let save =
+            Request::SaveEvent { event: Event { collection: first_work.clone(), ..event(Utc::now(), 1) }, scope: None };
         assert_eq!(
             service.out_of_reach(client, &save).await,
             Some(first_work),
@@ -5409,16 +5482,16 @@ pub(crate) mod tests {
         // Moving "within anna" from bob's server: the href is in no collection of hers.
         let moved = Event { collection: anna_work, href: Some(bob_href), ..event(Utc::now(), 1) };
         for request in [
-            Request::SaveEvent { event: new },
-            Request::SaveEvent { event: changed.clone() },
-            Request::DeleteEvent { event: changed },
+            Request::SaveEvent { event: new, scope: None },
+            Request::SaveEvent { event: changed.clone(), scope: None },
+            Request::DeleteEvent { event: changed, scope: None },
             Request::SaveTodo { todo: task.clone() },
             Request::DeleteTodo { todo: task },
         ] {
             let response = service.handle_within(request.clone(), Reach::Suite).await;
             assert_eq!(code_of(&response), "not-found", "{request:?}: {response:?}");
         }
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
         assert_ne!(code_of(&response), "ok", "{response:?}");
         assert!(lines(&anna_record).is_empty(), "nothing reached anna's server: {:?}", lines(&anna_record));
         assert!(lines(&bob_record).is_empty(), "nothing reached bob's server: {:?}", lines(&bob_record));
@@ -5468,19 +5541,22 @@ pub(crate) mod tests {
         let single = Event { recurring: false, summary: "Replaced".into(), ..listed.clone() };
 
         // The cache knows this version is a series: refused without asking the server.
-        for request in [Request::SaveEvent { event: single.clone() }, Request::DeleteEvent { event: single.clone() }] {
+        for request in [
+            Request::SaveEvent { event: single.clone(), scope: None },
+            Request::DeleteEvent { event: single.clone(), scope: None },
+        ] {
             let response = service.handle_within(request, Reach::Suite).await;
             assert_eq!(code_of(&response), "unsupported", "{response:?}");
         }
         // The same with a relative href, which resolves to the same item.
         let relative = Event { href: Some(format!("{WORK}e.ics")), ..single.clone() };
-        let response = service.handle_within(Request::SaveEvent { event: relative }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: relative, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
 
         // A version the cache does not hold: the server is asked, and nothing is written.
         let newer = Event { etag: Some("\"1b\"".into()), ..single };
-        let response = service.handle_within(Request::SaveEvent { event: newer }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: newer, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics")]);
     }
@@ -5490,7 +5566,9 @@ pub(crate) mod tests {
         let (base, record) = fake_server(server_holding(SERIES)).await;
         let service = service_on(&base).await;
         let event = listed_event(&base, Some("\"1\""));
-        for request in [Request::SaveEvent { event: event.clone() }, Request::DeleteEvent { event }] {
+        for request in
+            [Request::SaveEvent { event: event.clone(), scope: None }, Request::DeleteEvent { event, scope: None }]
+        {
             let response = service.handle_within(request, Reach::Suite).await;
             assert_eq!(code_of(&response), "unsupported", "{response:?}");
         }
@@ -5524,10 +5602,10 @@ pub(crate) mod tests {
         let moved_todo = Todo { collection: home, ..todo.clone() };
         let blank_etag = Event { etag: Some(String::new()), ..event.clone() };
         for request in [
-            Request::SaveEvent { event: event.clone() },
-            Request::DeleteEvent { event },
-            Request::SaveEvent { event: moved_event },
-            Request::SaveEvent { event: blank_etag },
+            Request::SaveEvent { event: event.clone(), scope: None },
+            Request::DeleteEvent { event, scope: None },
+            Request::SaveEvent { event: moved_event, scope: None },
+            Request::SaveEvent { event: blank_etag, scope: None },
             Request::SaveTodo { todo: todo.clone() },
             Request::DeleteTodo { todo },
             Request::SaveTodo { todo: moved_todo },
@@ -5552,8 +5630,10 @@ pub(crate) mod tests {
         // The cache holds this version as a single event: no check; the stored object is read
         // only to write the change onto it (task P.1).
         let renamed = Event { summary: "Renamed".into(), ..listed.clone() };
-        let response = service.handle_within(Request::SaveEvent { event: renamed }, Reach::Suite).await;
-        let Response::Event { event: saved } = response else { panic!("expected the saved event, got {response:?}") };
+        let response = service.handle_within(Request::SaveEvent { event: renamed, scope: None }, Reach::Suite).await;
+        let Response::Event { event: saved, .. } = response else {
+            panic!("expected the saved event, got {response:?}")
+        };
         assert_eq!(saved.etag.as_deref(), Some("\"2\""));
         assert_eq!(saved.collection, listed.collection, "answered with the collection id");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("PUT {WORK}e.ics If-Match \"1\"")]);
@@ -5564,10 +5644,10 @@ pub(crate) mod tests {
         let response = service.handle_within(Request::SaveTodo { todo: done }, Reach::Suite).await;
         assert!(matches!(response, Response::Todo { .. }), "{response:?}");
         // Deleting with the new etag, and creating, which must not overwrite anything.
-        let response = service.handle_within(Request::DeleteEvent { event: saved }, Reach::Suite).await;
+        let response = service.handle_within(Request::DeleteEvent { event: saved, scope: None }, Reach::Suite).await;
         assert_eq!(response, Response::Ok);
         let new = Event { href: None, etag: None, uid: "new".into(), ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: new }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
         assert!(matches!(response, Response::Event { .. }), "{response:?}");
         assert_eq!(
             lines(&record)[2..],
@@ -5589,8 +5669,8 @@ pub(crate) mod tests {
         let listed = listed_event(&base, Some("\"1\""));
         let (home, _) = on_server(&base, HOME, "");
         let moved = Event { collection: home.clone(), ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
-        let Response::Event { event: saved } = response else { panic!("moved, got {response:?}") };
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
+        let Response::Event { event: saved, .. } = response else { panic!("moved, got {response:?}") };
         assert_eq!(saved.collection, home);
         assert_eq!(
             lines(&record),
@@ -5612,7 +5692,7 @@ pub(crate) mod tests {
         cache_occurrences(&service, &listed, true).await;
         let (home, _) = on_server(&base, HOME, "");
         let moved = Event { collection: home, recurring: false, ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&record).is_empty(), "nothing created, nothing deleted: {:?}", lines(&record));
     }
@@ -5802,10 +5882,11 @@ pub(crate) mod tests {
         .await;
         let service = service_on(&base).await;
         let stale = listed_event(&base, Some("\"1\""));
-        let response = service.handle_within(Request::SaveEvent { event: stale.clone() }, Reach::Suite).await;
+        let response =
+            service.handle_within(Request::SaveEvent { event: stale.clone(), scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "conflict", "{response:?}");
         let gone = Event { href: stale.href.map(|href| href.replace("e.ics", "gone.ics")), ..stale };
-        let response = service.handle_within(Request::DeleteEvent { event: gone }, Reach::Suite).await;
+        let response = service.handle_within(Request::DeleteEvent { event: gone, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "not-found", "{response:?}");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("GET {WORK}gone.ics")], "only reads");
     }

@@ -637,8 +637,9 @@ pub enum Message {
     Editor(editor::Message),
     /// Keyboard: a new event on the shown day at 09:00.
     NewEventHere,
-    /// The answer to a save of the editor with this count ([`App::edits`]).
-    Saved(u64, Result<Event, String>),
+    /// The answer to a save of the editor with this count ([`App::edits`]). Boxed: an event with
+    /// its series and people is far larger than every other message.
+    Saved(u64, Result<Box<Event>, String>),
     Deleted(Result<(), String>),
     /// A link of the editor was handed to the browser (issue #126).
     LinkOpened(Result<(), String>),
@@ -1668,7 +1669,7 @@ impl App {
                 self.editor = None;
                 let source = self.source.clone();
                 Task::perform(
-                    async move { source.delete_event(event).await.map_err(|e| e.to_string()) },
+                    async move { source.delete_event(event, None).await.map_err(|e| e.to_string()) },
                     Message::Deleted,
                 )
             }
@@ -1679,9 +1680,10 @@ impl App {
     fn save(&self, event: Event) -> Task<Message> {
         let source = self.source.clone();
         let edit = self.edits;
-        Task::perform(async move { source.save_event(event).await.map_err(|e| e.to_string()) }, move |result| {
-            Message::Saved(edit, result)
-        })
+        Task::perform(
+            async move { source.save_event(event, None).await.map(Box::new).map_err(|e| e.to_string()) },
+            move |result| Message::Saved(edit, result),
+        )
     }
 
     fn current_view(&self, night: &Anchor) -> Element<'_, Message> {
@@ -2540,7 +2542,7 @@ mod tests {
             iced::widget::text_editor::Edit::Insert('X'),
         ))));
         let _ = app.update(Message::Editor(editor::Message::Flush));
-        let _ = app.update(Message::Saved(earlier, Ok(event)));
+        let _ = app.update(Message::Saved(earlier, Ok(Box::new(event))));
         assert!(app.editor.as_ref().is_some_and(|editor| editor.event().is_none()), "the draft stays a draft");
     }
 

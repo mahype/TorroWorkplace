@@ -31,7 +31,9 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{GITHUB_KIND, account_of, local_id};
-use crate::model::{ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
+use crate::model::{
+    ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState, SeriesScope,
+};
 use crate::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, move_plan};
 use crate::{
     AccountState, Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime,
@@ -356,6 +358,14 @@ fn event(collection: &str, uid: &str, summary: &str, start: EventTime, end: Even
         recurring: false,
         transparency: crate::Transparency::Opaque,
         alarms: Vec::new(),
+        recurrence_id: None,
+        repeat: None,
+        time_zone: None,
+        url: None,
+        status: None,
+        geo: None,
+        organizer: None,
+        attendees: Vec::new(),
     }
 }
 
@@ -944,7 +954,8 @@ impl PimSource for DemoSource {
         Ok(self.lock().todos.clone())
     }
 
-    async fn save_event(&self, mut event: Event) -> Result<Event, ProviderError> {
+    /// The scope of a series is ignored for now (task TE.1): every occurrence is its own event here.
+    async fn save_event(&self, mut event: Event, _scope: Option<SeriesScope>) -> Result<Event, ProviderError> {
         let mut data = self.lock();
         data.next_id += 1;
         let version = format!("\"demo-{}\"", data.next_id);
@@ -971,7 +982,7 @@ impl PimSource for DemoSource {
         Ok(event)
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), ProviderError> {
+    async fn delete_event(&self, event: Event, _scope: Option<SeriesScope>) -> Result<(), ProviderError> {
         let mut data = self.lock();
         let before = data.events.len();
         data.events.retain(|e| e.href != event.href || e.uid != event.uid);
@@ -1770,16 +1781,24 @@ mod tests {
             recurring: false,
             transparency: crate::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
         };
-        let mut saved = source.save_event(new).await.unwrap();
+        let mut saved = source.save_event(new, None).await.unwrap();
         assert!(saved.href.is_some() && saved.etag.is_some());
         let stale = saved.clone();
         saved.summary = "Workshop Teil 1".into();
-        let updated = source.save_event(saved).await.unwrap();
-        assert!(matches!(source.save_event(stale).await, Err(ProviderError::Conflict { .. })));
+        let updated = source.save_event(saved, None).await.unwrap();
+        assert!(matches!(source.save_event(stale, None).await, Err(ProviderError::Conflict { .. })));
         let range = source.events(start - chrono::Duration::days(1), start + chrono::Duration::days(1)).await.unwrap();
         assert_eq!(range, vec![updated.clone()]);
-        source.delete_event(updated).await.unwrap();
+        source.delete_event(updated, None).await.unwrap();
         assert!(
             source
                 .events(start - chrono::Duration::days(1), start + chrono::Duration::days(1))

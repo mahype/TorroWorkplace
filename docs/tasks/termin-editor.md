@@ -26,7 +26,7 @@ TE.1 ─┬─ TE.2 ─┬─ TE.3 ── TE.4 ─┬─ TE.7 ── TE.8
 ```
 
 ## TE.1 Gerüst: Modell, Requests, Katalog, Einstellung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-pim/src/{model,source,demo}.rs`,
   `crates/torro-ipc/src/{lib,api,pim}.rs`, `crates/torro-core/src/settings.rs`, `crates/torro-gui/src/source.rs`,
   `crates/torroworkplace/src/{pim,core,settings_service,mcp}.rs`, alle Stellen mit `Event { … }`-Literalen (der
