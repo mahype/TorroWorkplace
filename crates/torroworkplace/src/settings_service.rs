@@ -29,8 +29,8 @@ use std::sync::{Mutex, PoisonError};
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
     self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Maps, Night,
-    PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice, WorkingHours,
-    Zoom,
+    PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice,
+    WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
