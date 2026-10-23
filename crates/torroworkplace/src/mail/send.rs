@@ -138,6 +138,13 @@ fn smtp_refusal(error: SmtpError) -> Response {
             "offline",
             tr("The outgoing mail server cannot be reached. Nothing was sent; try again later.").to_string(),
         ),
+        // A certificate neither the system nor the person trusts (issue #284) ends the connection
+        // before the login: nothing was sent, and a person has to look at it, as for a refusal.
+        SmtpError::Untrusted(_) => (
+            "auth",
+            tr("The certificate of the outgoing mail server changed. Nothing was sent. Check it in Server settings.")
+                .to_string(),
+        ),
         SmtpError::Unsupported => (
             "unsupported",
             tr("The outgoing mail server does not support what sending needs. Nothing was sent.").to_string(),

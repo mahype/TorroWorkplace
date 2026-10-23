@@ -476,7 +476,8 @@ pub enum Request {
     /// Signs in to a mail account with a password (tasks M2.1, M2.7): IMAP and SMTP, and with
     /// `calendars` or `tasks` the CalDAV address `caldav` of the same sign-in.
     ///
-    /// The core checks that every server's host is on the public internet, then the IMAP sign-in
+    /// Every host goes, as a person typed it: on the public internet, on the local network or this
+    /// computer (issue #284; only a person sends this command). The core checks the IMAP sign-in
     /// (listing the folders), the SMTP sign-in (without sending anything) and the CalDAV sign-in
     /// for calendars or tasks, or for a `caldav` address that is new; a refusal stops there. Then
     /// it keeps the password in the system keychain only, under the account id `mail:<address>`
@@ -496,12 +497,21 @@ pub enum Request {
     /// account list, its hidden collections and the clients' selections of its calendars and task
     /// lists name them by their new ids, and the same collections are never synced twice.
     ///
+    /// A server whose certificate the system does not trust is answered with
+    /// [`Response::UntrustedCertificate`] (which service, host and fingerprint): the password did
+    /// not go to that server and nothing was stored (when CalDAV is the one asked about, the IMAP
+    /// and SMTP servers before it already signed in with their trusted certificates). Once the person trusted the certificate, the same
+    /// request again with its fingerprint in `trusted_certificates` signs in; the account keeps the
+    /// certificates its servers showed (`accounts.list_accounts`, `trusted_certificates` of the
+    /// mail part).
+    ///
     /// Answered with [`Response::MailConnected`], never with the password. Error codes: `error`
     /// for an address `torro_mail::account_id` refuses (empty, without one `@`, with `/`, white
     /// space or control characters), an empty login name or password, a login name with `/`, a
     /// server without host or port, a sender name with a line break, a CalDAV address that is no
-    /// https address (plain `http` only for `localhost`), a host that is not on the public
-    /// internet (`localhost` included) or a server that answers unexpectedly; `auth` when a server refuses the password (the message says which: IMAP,
+    /// https address (plain `http` only for `localhost`), an entry of `trusted_certificates` that
+    /// is no SHA-256 fingerprint (checked before any server is asked) or a server that answers
+    /// unexpectedly; `auth` when a server refuses the password (the message says which: IMAP,
     /// SMTP or CalDAV); `not-found` when calendars or tasks are asked for without a CalDAV address
     /// or no CalDAV answers there; `offline`; `unsupported` for an SMTP server without a secure
     /// sign-in. Only the app key may send it: every client key gets `forbidden`, whatever its
@@ -534,6 +544,13 @@ pub enum Request {
         /// for a mail-only account, or to keep the address an account has.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caldav: Option<String>,
+        /// Fingerprints of server certificates the person just trusted, as the answer
+        /// `untrusted-certificate` named them (`sha256`): SHA-256 in capital hex digits joined by
+        /// `:` (`AB:CD:…`; small letters and the 64 digits without `:` are taken too). The core
+        /// adds one to the account's trusted certificates only when a server of the account
+        /// showed it during this sign-in. Leave out when the person trusted nothing new.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        trusted_certificates: Vec<String>,
     },
     /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
     /// others stay. Never servers or password: those change only with `accounts.connect_mail`, so
@@ -596,7 +613,9 @@ pub enum Request {
     /// same sign-in are added on the account's page afterwards. TorroMail keeps its account and its
     /// keychain entry; nothing there is changed or deleted.
     ///
-    /// Answered with [`Response::MailConnected`], never with the password. Error codes:
+    /// Answered with [`Response::MailConnected`], or [`Response::UntrustedCertificate`] as
+    /// `accounts.connect_mail` answers (then enter the password on the mail way, where the person
+    /// can trust the certificate); never with the password. Error codes:
     /// `not-found` when TorroMail has no account `id` or no password for it; `unsupported` for an
     /// account that signs in with OAuth (Google, Microsoft) or uses JMAP (the message says why);
     /// `conflict` when the suite has a mail account with the address already; `error` when the
@@ -3411,6 +3430,22 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_roles: Vec<Role>,
     },
+    /// A server of a mail account showed a certificate the system does not trust (issue #284),
+    /// for [`Request::ConnectMail`] and [`Request::ImportTorroMailAccount`]. The password did not
+    /// go to that server and nothing was stored; when `service` is `CalDAV`, the IMAP and SMTP
+    /// servers checked before it already had it. Show the person `host` and `sha256`; if they trust it, send
+    /// the request again with `sha256` in `trusted_certificates`.
+    UntrustedCertificate {
+        /// Which server: `IMAP`, `SMTP` or `CalDAV`.
+        service: String,
+        /// The server's host as the request named it.
+        host: String,
+        /// SHA-256 of the server's certificate, in capital hex digits joined by `:` (`AB:CD:…`).
+        sha256: String,
+        /// An address of the host is on the public internet: an untrusted certificate there more
+        /// likely means someone is in the middle, and the person is warned clearly.
+        public: bool,
+    },
     /// The accounts of the separate TorroMail app ([`Request::TorroMailAccounts`]), never with a
     /// password. On the wire `torromail-accounts`, the app's name in one word.
     #[serde(rename = "torromail-accounts")]
@@ -4122,6 +4157,11 @@ pub struct MailView {
     /// syncs neither.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendars: Option<ServiceState>,
+    /// The fingerprints of the server certificates a person trusted for this account
+    /// (`torro_mail::MailAccountConfig::trusted_certificates`, oldest first): no secret, to show
+    /// on the account's page. Empty while the system trusts every server of the account.
+    #[serde(default)]
+    pub trusted_certificates: Vec<String>,
 }
 
 /// A folder role the server leaves open (more than one folder with mail could hold it), with the
@@ -4604,6 +4644,7 @@ mod tests {
             calendars: false,
             tasks: false,
             caldav: None,
+            trusted_certificates: Vec::new(),
         };
         let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), via: None, request: request.clone() };
         assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
@@ -4612,7 +4653,59 @@ mod tests {
             (json["method"].as_str(), json["imap"]["security"].as_str()),
             (Some("accounts.connect_mail"), Some("tls"))
         );
+        assert!(json.get("trusted_certificates").is_none(), "an empty list is left out");
         assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), request);
+    }
+
+    /// Issue #284: `connect_mail` from a client before the field still reads; trusted
+    /// fingerprints travel as a list.
+    #[test]
+    fn a_mail_sign_in_names_the_certificates_a_person_trusted() {
+        let old = serde_json::json!({
+            "method": "accounts.connect_mail",
+            "address": "anna@home.lan",
+            "imap": {"host": "mail.home.lan", "port": 993, "security": "tls"},
+            "smtp": {"host": "mail.home.lan", "port": 465, "security": "tls"},
+            "login_name": "anna",
+            "password": "hunter2",
+            "calendars": false,
+            "tasks": false
+        });
+        let Request::ConnectMail { trusted_certificates, .. } = serde_json::from_value(old.clone()).expect("parses")
+        else {
+            panic!("connect_mail");
+        };
+        assert!(trusted_certificates.is_empty());
+        let pin = format!("AB{}", ":CD".repeat(31));
+        let mut new = old;
+        new["trusted_certificates"] = serde_json::json!([pin]);
+        let Request::ConnectMail { trusted_certificates, .. } = serde_json::from_value(new).expect("parses") else {
+            panic!("connect_mail");
+        };
+        assert_eq!(trusted_certificates, [pin]);
+    }
+
+    #[test]
+    fn an_untrusted_certificate_is_its_own_answer() {
+        let sha256 = format!("AB{}", ":CD".repeat(31));
+        let answer = Response::UntrustedCertificate {
+            service: "IMAP".into(),
+            host: "mail.home.lan".into(),
+            sha256: sha256.clone(),
+            public: false,
+        };
+        let json = serde_json::to_value(&answer).expect("json");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "result": "untrusted-certificate",
+                "service": "IMAP",
+                "host": "mail.home.lan",
+                "sha256": sha256,
+                "public": false
+            })
+        );
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), answer);
     }
 
     /// Task M7.4: the import names TorroMail's account only; the list carries no password field
@@ -4777,6 +4870,7 @@ mod tests {
             }],
             mail: ServiceState { last_sync: None, problem: Some("Password was refused".into()) },
             calendars: None,
+            trusted_certificates: vec![format!("AB{}", ":CD".repeat(31))],
         };
         let json = serde_json::to_value(&view).expect("json");
         assert_eq!(json["sender_name"], "Anna");
@@ -4784,7 +4878,13 @@ mod tests {
         assert_eq!(json["open_roles"][0]["candidates"][0]["path"], "INBOX.Sent");
         assert_eq!(json["mail"]["problem"], "Password was refused");
         assert!(json.get("calendars").is_none() && json.get("caldav").is_none());
-        assert_eq!(serde_json::from_value::<MailView>(json).expect("parses"), view);
+        assert_eq!(json["trusted_certificates"][0].as_str().map(str::len), Some(95));
+        assert_eq!(serde_json::from_value::<MailView>(json.clone()).expect("parses"), view);
+        // A core before issue #284 names no trusted certificates.
+        let mut older = json;
+        older.as_object_mut().map(|view| view.remove("trusted_certificates"));
+        let read = serde_json::from_value::<MailView>(older).expect("an older core's view");
+        assert!(read.trusted_certificates.is_empty());
     }
 
     #[test]

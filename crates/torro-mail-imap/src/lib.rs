@@ -9,7 +9,8 @@
 //!
 //! - [`discover`]: M2.2, finding IMAP and SMTP of an address (table, MX, autoconfig, ISPDB, SRV),
 //! - [`imap`] and [`folders`]: M2.3, connecting, listing folders and their roles, fetching, IDLE,
-//! - [`smtp`] and [`mime`]: M2.4, sending with the journal rule, reading and building messages.
+//! - [`smtp`] and [`mime`]: M2.4, sending with the journal rule, reading and building messages,
+//! - [`tls`]: M11.2, which certificates IMAP, SMTP and CalDAV trust, and the ones a person confirmed.
 //!
 //! Rules for every module (security rules of M2.1): a password travels as
 //! `torro_core::account::Secret` and is never part of an error, a log or a `Debug` output; the
@@ -21,3 +22,4 @@ pub mod folders;
 pub mod imap;
 pub mod mime;
 pub mod smtp;
+pub mod tls;

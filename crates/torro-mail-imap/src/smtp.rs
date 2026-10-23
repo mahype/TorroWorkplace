@@ -25,6 +25,14 @@
 //! error, `Debug` output or journal entry carries it or a server's answer text. `lettre`'s
 //! protocol trace (`tracing` feature) is never switched on. There is no plain connection: port 465
 //! speaks TLS from the first byte, 587 must offer STARTTLS or nothing is sent (not even the login).
+//!
+//! **Certificates** (task M11.2). `lettre` takes no certificate check of its own, so a certificate
+//! a person confirmed ([`SmtpSubmitter::trusting`]) is checked in two steps: first the connection
+//! is secured as always, against the system's trust store; only when that handshake fails, a new
+//! connection takes any certificate (its handshake signatures still checked by rustls with the
+//! aws-lc-rs provider) and hashes the one the server showed. A pin goes on, anything else ends the
+//! connection with [`SmtpError::Untrusted`]. Neither `AUTH` nor `MAIL FROM` is sent before that
+//! comparison, with STARTTLS neither.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -38,13 +46,17 @@ use std::time::Duration;
 
 use lettre::Address;
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
-use lettre::transport::smtp::client::{AsyncSmtpConnection, TlsParameters};
+#[cfg(test)]
+use lettre::transport::smtp::client::Certificate;
+use lettre::transport::smtp::client::{AsyncSmtpConnection, CertificateStore, TlsParameters};
 use lettre::transport::smtp::commands::{Data, Mail, Rcpt};
 use lettre::transport::smtp::extension::{ClientId, Extension, MailBodyParameter, MailParameter};
 use lettre::transport::smtp::response::Severity;
 use serde::{Deserialize, Serialize};
 use torro_core::account::Secret;
 use torro_mail::{Endpoint, Security};
+
+use crate::tls::Fingerprint;
 
 /// Opening the TCP connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -102,6 +114,10 @@ pub enum SmtpError {
     InvalidEnvelope,
     /// The server answered something that does not fit the protocol.
     Protocol,
+    /// The server showed a certificate that is neither trusted by the system nor one of the pins
+    /// of [`SmtpSubmitter::trusting`] (task M11.2): this fingerprint, for the person to compare and
+    /// confirm. The connection ended before `AUTH`; nothing was sent.
+    Untrusted(Fingerprint),
 }
 
 impl fmt::Display for SmtpError {
@@ -114,6 +130,9 @@ impl fmt::Display for SmtpError {
             SmtpError::Rejected { code } => write!(f, "the mail server refused the message ({code})"),
             SmtpError::InvalidEnvelope => f.write_str("the sender or a recipient is not a valid address"),
             SmtpError::Protocol => f.write_str("the mail server gave an unexpected answer"),
+            SmtpError::Untrusted(fingerprint) => {
+                write!(f, "the certificate of the mail server is not trusted (SHA-256 {fingerprint})")
+            }
         }
     }
 }
@@ -169,6 +188,22 @@ pub struct SmtpSubmitter {
     target: Target,
     login: String,
     password: Secret,
+    /// Certificates a person confirmed ([`SmtpSubmitter::trusting`]).
+    pins: Vec<Fingerprint>,
+    /// The root certificate (DER) that replaces the system's trust store in this crate's tests,
+    /// so they reach no system service and no network.
+    #[cfg(test)]
+    test_ca: Option<Vec<u8>>,
+}
+
+/// How the certificate of a connection is checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Check {
+    /// As always: the system's trust store and the server's host name.
+    System,
+    /// Any certificate goes through the handshake (its signatures are still checked); the caller
+    /// compares the certificate with the pins before anything else is sent.
+    Fingerprint,
 }
 
 /// Where [`SmtpSubmitter`] connects to.
@@ -188,7 +223,23 @@ enum Target {
 impl SmtpSubmitter {
     /// A submitter for `server`, signing in as `login` (often the address) with `password`.
     pub fn new(server: Endpoint, login: impl Into<String>, password: Secret) -> SmtpSubmitter {
-        SmtpSubmitter { target: Target::Server(server), login: login.into(), password }
+        SmtpSubmitter {
+            target: Target::Server(server),
+            login: login.into(),
+            password,
+            pins: Vec::new(),
+            #[cfg(test)]
+            test_ca: None,
+        }
+    }
+
+    /// This submitter also trusting the certificates `pins` (task M11.2): a server whose
+    /// certificate the system does not trust is still used when the SHA-256 of its certificate is
+    /// one of them, whatever host it names. Any other untrusted certificate ends the connection
+    /// with [`SmtpError::Untrusted`] before the login. Replaces earlier pins; an empty list trusts
+    /// the system only (an untrusted certificate is still reported as [`SmtpError::Untrusted`]).
+    pub fn trusting(self, pins: Vec<Fingerprint>) -> SmtpSubmitter {
+        SmtpSubmitter { pins, ..self }
     }
 
     /// This submitter connecting to `addresses` only, never to what its server's host name
@@ -211,35 +262,43 @@ impl SmtpSubmitter {
     /// Connects and signs in without sending anything, then says `QUIT`: for checking a new
     /// account's SMTP login (task M2.7). [`SmtpError::Auth`] means the password was refused.
     pub async fn check_login(&self) -> Result<(), SmtpError> {
-        let mut connection = self.open().await?;
-        quit(&mut connection).await;
-        Ok(())
+        self.check_login_pinned().await.map(drop)
     }
 
-    /// Connects, secures the connection and signs in.
-    async fn open(&self) -> Result<AsyncSmtpConnection, SmtpError> {
+    /// [`SmtpSubmitter::check_login`], answering which pin of [`SmtpSubmitter::trusting`] the
+    /// server's certificate matched: `None` when the system trusted it (task M11.2; the core keeps
+    /// only pins that were used). [`SmtpError::Untrusted`] when the certificate is neither.
+    pub async fn check_login_pinned(&self) -> Result<Option<Fingerprint>, SmtpError> {
+        let (mut connection, pinned) = self.open().await?;
+        quit(&mut connection).await;
+        Ok(pinned)
+    }
+
+    /// Connects, secures the connection and signs in; with the pin the certificate matched.
+    async fn open(&self) -> Result<(AsyncSmtpConnection, Option<Fingerprint>), SmtpError> {
         let attempt = async {
-            let mut connection = self.connect().await?;
+            let (mut connection, pinned) = self.connect().await?;
             let credentials = Credentials::new(self.login.clone(), self.password.expose().to_owned());
             if let Err(error) = connection.auth(&[Mechanism::Plain, Mechanism::Login], &credentials).await {
                 connection.abort().await;
                 return Err(login_error(&error));
             }
-            Ok(connection)
+            Ok((connection, pinned))
         };
         tokio::time::timeout(LOGIN_TIMEOUT, attempt).await.unwrap_or(Err(SmtpError::Offline))
     }
 
-    /// The connection up to the point where the login may be sent: encrypted, `EHLO` answered.
-    async fn connect(&self) -> Result<AsyncSmtpConnection, SmtpError> {
+    /// The connection up to the point where the login may be sent: encrypted with a certificate
+    /// that is trusted or pinned, `EHLO` answered.
+    async fn connect(&self) -> Result<(AsyncSmtpConnection, Option<Fingerprint>), SmtpError> {
         // `[127.0.0.1]` instead of the computer's name, as Thunderbird does: the name would tell
         // every mail server (and every reader of the `Received:` headers) what the computer is
         // called.
         let hello = ClientId::Ipv4(Ipv4Addr::LOCALHOST);
         match &self.target {
-            Target::Server(server) => secured(server, (server.host.as_str(), server.port), &hello).await,
+            Target::Server(server) => self.trusted(server, (server.host.as_str(), server.port), &hello).await,
             Target::Pinned { addresses, .. } if addresses.is_empty() => Err(SmtpError::Offline),
-            Target::Pinned { server, addresses } => secured(server, addresses.as_slice(), &hello).await,
+            Target::Pinned { server, addresses } => self.trusted(server, addresses.as_slice(), &hello).await,
             #[cfg(test)]
             Target::PlainLoopback(port) => AsyncSmtpConnection::connect_tokio1(
                 (Ipv4Addr::LOCALHOST, *port),
@@ -249,37 +308,117 @@ impl SmtpSubmitter {
                 None,
             )
             .await
+            .map(|connection| (connection, None))
             .map_err(|error| connect_error(&error)),
         }
     }
-}
 
-/// Connects to `address` and secures the connection to `server` as its security asks: TLS from
-/// the first byte, or STARTTLS, which a server must offer or nothing is sent. The certificate is
-/// checked against the server's host name, wherever `address` points.
-async fn secured<A>(server: &Endpoint, address: A, hello: &ClientId) -> Result<AsyncSmtpConnection, SmtpError>
-where
-    A: tokio::net::ToSocketAddrs,
-{
-    match server.security {
-        Security::Tls => {
-            let tls = tls_parameters(&server.host)?;
-            AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), hello, Some(tls), None)
-                .await
-                .map_err(|error| connect_error(&error))
+    /// A secured connection to `server` at `address` whose certificate the system trusts, or, when
+    /// that handshake fails, a new one whose certificate is a pin (see the module documentation).
+    /// The pin is answered; a certificate that is not one ends the connection with
+    /// [`SmtpError::Untrusted`] before anything but `EHLO` (and `STARTTLS`) was sent.
+    async fn trusted<A>(
+        &self,
+        server: &Endpoint,
+        address: A,
+        hello: &ClientId,
+    ) -> Result<(AsyncSmtpConnection, Option<Fingerprint>), SmtpError>
+    where
+        A: tokio::net::ToSocketAddrs + Copy,
+    {
+        match self.secured(server, address, hello, Check::System).await {
+            Err(SmtpError::Tls) => {}
+            other => return other.map(|connection| (connection, None)),
         }
-        Security::StartTls => {
-            let mut connection = AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), hello, None, None)
-                .await
-                .map_err(|error| connect_error(&error))?;
-            // Without STARTTLS the login would go out in plain text: refuse.
-            if !connection.can_starttls() {
+        let mut connection = self.secured(server, address, hello, Check::Fingerprint).await?;
+        let shown = match connection.peer_certificate() {
+            Ok(der) => Fingerprint::of(&der),
+            Err(_) => {
                 connection.abort().await;
-                return Err(SmtpError::Unsupported);
+                return Err(SmtpError::Tls);
             }
-            let tls = tls_parameters(&server.host)?;
-            connection.starttls(tls, hello).await.map_err(|error| connect_error(&error))?;
-            Ok(connection)
+        };
+        if self.pins.contains(&shown) {
+            return Ok((connection, Some(shown)));
+        }
+        connection.abort().await;
+        Err(SmtpError::Untrusted(shown))
+    }
+
+    /// Connects to `address` and secures the connection to `server` as its security asks: TLS
+    /// from the first byte, or STARTTLS, which a server must offer or nothing is sent. With
+    /// [`Check::System`] the certificate is checked against the server's host name, wherever
+    /// `address` points.
+    async fn secured<A>(
+        &self,
+        server: &Endpoint,
+        address: A,
+        hello: &ClientId,
+        check: Check,
+    ) -> Result<AsyncSmtpConnection, SmtpError>
+    where
+        A: tokio::net::ToSocketAddrs,
+    {
+        match server.security {
+            Security::Tls => {
+                let tls = self.tls_parameters(&server.host, check)?;
+                AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), hello, Some(tls), None)
+                    .await
+                    .map_err(|error| connect_error(&error))
+            }
+            Security::StartTls => {
+                let mut connection =
+                    AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), hello, None, None)
+                        .await
+                        .map_err(|error| connect_error(&error))?;
+                // Without STARTTLS the login would go out in plain text: refuse.
+                if !connection.can_starttls() {
+                    connection.abort().await;
+                    return Err(SmtpError::Unsupported);
+                }
+                let tls = self.tls_parameters(&server.host, check)?;
+                connection.starttls(tls, hello).await.map_err(|error| connect_error(&error))?;
+                Ok(connection)
+            }
+        }
+    }
+
+    /// The TLS settings for a connection to `host`. [`Check::Fingerprint`] takes any certificate
+    /// for any name; `lettre` still checks the handshake's signatures with rustls' provider
+    /// (aws-lc-rs, the one this workspace builds).
+    fn tls_parameters(&self, host: &str, check: Check) -> Result<TlsParameters, SmtpError> {
+        let builder = TlsParameters::builder(host.to_owned());
+        let builder = match check {
+            Check::System => self.system_roots(builder)?,
+            Check::Fingerprint => builder
+                .certificate_store(CertificateStore::None)
+                .dangerous_accept_invalid_certs(true)
+                .dangerous_accept_invalid_hostnames(true),
+        };
+        builder.build().map_err(|_| SmtpError::Tls)
+    }
+
+    /// The system's trust store (what `TlsParameters::new` uses).
+    #[cfg(not(test))]
+    fn system_roots(
+        &self,
+        builder: lettre::transport::smtp::client::TlsParametersBuilder,
+    ) -> Result<lettre::transport::smtp::client::TlsParametersBuilder, SmtpError> {
+        Ok(builder)
+    }
+
+    /// In tests, the test CA instead of the system's trust store, when one is set.
+    #[cfg(test)]
+    fn system_roots(
+        &self,
+        builder: lettre::transport::smtp::client::TlsParametersBuilder,
+    ) -> Result<lettre::transport::smtp::client::TlsParametersBuilder, SmtpError> {
+        match &self.test_ca {
+            Some(ca) => {
+                let ca = Certificate::from_der(ca.clone()).map_err(|_| SmtpError::Tls)?;
+                Ok(builder.certificate_store(CertificateStore::None).add_root_certificate(ca))
+            }
+            None => Ok(builder),
         }
     }
 }
@@ -291,7 +430,7 @@ impl Submit for SmtpSubmitter {
             Err(error) => return Submitted::NotAccepted(error),
         };
         let mut connection = match self.open().await {
-            Ok(connection) => connection,
+            Ok((connection, _)) => connection,
             Err(error) => return Submitted::NotAccepted(error),
         };
         let outcome = transfer(&mut connection, from, recipients, message).await;
@@ -373,10 +512,6 @@ fn envelope_addresses(envelope: &Envelope) -> Result<(Address, Vec<Address>), Sm
     Ok((from, recipients))
 }
 
-fn tls_parameters(host: &str) -> Result<TlsParameters, SmtpError> {
-    TlsParameters::new(host.to_owned()).map_err(|_| SmtpError::Tls)
-}
-
 /// The SMTP reply code of an error, if the server sent one.
 fn reply_code(error: &lettre::transport::smtp::Error) -> Option<u16> {
     error.status().map(u16::from)
@@ -384,7 +519,7 @@ fn reply_code(error: &lettre::transport::smtp::Error) -> Option<u16> {
 
 /// Errors while connecting, greeting and securing the connection.
 fn connect_error(error: &lettre::transport::smtp::Error) -> SmtpError {
-    if error.is_tls() {
+    if error.is_tls() || failed_handshake(error) {
         SmtpError::Tls
     } else if let Some(code) = reply_code(error) {
         SmtpError::Rejected { code }
@@ -395,6 +530,21 @@ fn connect_error(error: &lettre::transport::smtp::Error) -> SmtpError {
     } else {
         SmtpError::Offline
     }
+}
+
+/// `lettre` reports a failed TLS handshake as a connection error (like an unreachable host);
+/// rustls' error inside tells it apart, so a refused certificate is [`SmtpError::Tls`] and gets
+/// its second look ([`SmtpSubmitter::trusting`]) while a host that is down does not.
+fn failed_handshake(error: &lettre::transport::smtp::Error) -> bool {
+    let mut source = std::error::Error::source(error);
+    while let Some(cause) = source {
+        let inner = cause.downcast_ref::<io::Error>().and_then(io::Error::get_ref);
+        if cause.is::<rustls::Error>() || inner.is_some_and(|inner| inner.is::<rustls::Error>()) {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
 }
 
 /// Errors of `AUTH`: a permanent refusal (535 and friends) means the login was wrong; a
@@ -825,17 +975,36 @@ mod smtp_server;
 
 #[cfg(test)]
 mod tests {
-    use super::smtp_server::{Mode, Server};
+    use super::smtp_server::{Mode, Server, Shows, test_ca};
     use super::*;
 
     const PASSWORD: &str = "correct horse battery staple";
+
+    /// `openssl x509 -fingerprint -sha256` of `tests/fixtures/imap-tls/self-signed.der`.
+    const SELF_SIGNED: &str =
+        "E4:A8:B0:8A:89:6F:2B:06:7C:E1:92:8D:34:0D:16:14:5A:56:57:E7:9E:7E:4A:62:E1:30:3D:36:3C:21:76:28";
 
     fn submitter(server: &Server) -> SmtpSubmitter {
         SmtpSubmitter {
             target: Target::PlainLoopback(server.port),
             login: "anna".into(),
             password: Secret::new(PASSWORD),
+            pins: Vec::new(),
+            test_ca: None,
         }
+    }
+
+    /// A submitter for the TLS test server at `127.0.0.1` that trusts the test CA (in place of the
+    /// system's store) and `pins`.
+    fn tls_submitter(server: &Server, security: Security, pins: Vec<Fingerprint>) -> SmtpSubmitter {
+        let endpoint = Endpoint { host: "127.0.0.1".into(), port: server.port, security };
+        let mut submitter = SmtpSubmitter::new(endpoint, "anna", Secret::new(PASSWORD)).trusting(pins);
+        submitter.test_ca = Some(test_ca());
+        submitter
+    }
+
+    fn self_signed() -> Fingerprint {
+        SELF_SIGNED.parse().expect("fingerprint")
     }
 
     fn envelope() -> Envelope {
@@ -972,6 +1141,8 @@ mod tests {
             target: Target::PlainLoopback(port),
             login: "anna".into(),
             password: Secret::new(PASSWORD),
+            pins: Vec::new(),
+            test_ca: None,
         };
         assert_eq!(submitter.submit(&envelope(), MESSAGE).await, Submitted::NotAccepted(SmtpError::Offline));
     }
@@ -991,6 +1162,71 @@ mod tests {
         let nowhere = SmtpSubmitter::new(configured, "anna", Secret::new(PASSWORD)).pinned_to(Vec::new());
         assert_eq!(nowhere.check_login().await, Err(SmtpError::Offline));
         assert!(!format!("{nowhere:?}").contains(PASSWORD));
+    }
+
+    /// Task M11.2: a certificate the system trusts needs no pin, over TLS and STARTTLS.
+    #[tokio::test]
+    async fn a_trusted_certificate_signs_in_without_a_pin() {
+        for security in [Security::Tls, Security::StartTls] {
+            let server = Server::start_tls(Mode::Accept, security, Shows::TestCa).await;
+            let submitter = tls_submitter(&server, security, vec![self_signed()]);
+            assert_eq!(submitter.check_login_pinned().await, Ok(None), "{security:?}");
+            let seen = server.received();
+            assert!(seen.auth_sent && seen.starttls == (security == Security::StartTls), "{security:?}: {seen:?}");
+            assert_eq!(server.connections(), 1, "{security:?}: one connection, no second look");
+        }
+    }
+
+    /// Task M11.2: an untrusted certificate is reported with its fingerprint; the server never
+    /// sees the login or an envelope, with no pin and with a wrong one.
+    #[tokio::test]
+    async fn an_untrusted_certificate_is_reported_and_the_server_sees_no_login() {
+        for security in [Security::Tls, Security::StartTls] {
+            for pins in [Vec::new(), vec![Fingerprint([0; 32])]] {
+                let server = Server::start_tls(Mode::Accept, security, Shows::SelfSigned).await;
+                let submitter = tls_submitter(&server, security, pins.clone());
+
+                let untrusted = SmtpError::Untrusted(self_signed());
+                assert_eq!(submitter.check_login().await, Err(untrusted), "{security:?} {pins:?}");
+                assert_eq!(submitter.submit(&envelope(), MESSAGE).await, Submitted::NotAccepted(untrusted));
+                let seen = server.received();
+                assert!(!seen.auth_sent && seen.mail_from.is_empty() && seen.rcpt_to.is_empty(), "{seen:?}");
+                assert!(seen.data.is_empty(), "{security:?}: nothing was sent");
+                assert!(!untrusted.to_string().contains(PASSWORD));
+            }
+        }
+    }
+
+    /// Task M11.2: the pinned certificate (for another host name) signs in and sends, and the pin
+    /// that was used is answered.
+    #[tokio::test]
+    async fn a_pinned_certificate_signs_in_and_sends() {
+        for security in [Security::Tls, Security::StartTls] {
+            let server = Server::start_tls(Mode::Accept, security, Shows::SelfSigned).await;
+            let submitter = tls_submitter(&server, security, vec![Fingerprint([0; 32]), self_signed()]);
+
+            assert_eq!(submitter.check_login_pinned().await, Ok(Some(self_signed())), "{security:?}");
+            assert_eq!(submitter.submit(&envelope(), MESSAGE).await, Submitted::Accepted, "{security:?}");
+            let seen = server.received();
+            assert!(seen.auth_sent, "{security:?}");
+            assert_eq!(seen.mail_from, ["MAIL FROM:<anna@example.org>"]);
+            assert_eq!(seen.data, MESSAGE);
+        }
+    }
+
+    /// Task M11.2: a TLS server that is not there stays offline; only a failed handshake gets the
+    /// second look at the certificate.
+    #[tokio::test]
+    async fn an_unreachable_tls_server_is_offline_not_untrusted() {
+        let port = {
+            let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+            listener.local_addr().expect("address").port()
+        };
+        for security in [Security::Tls, Security::StartTls] {
+            let endpoint = Endpoint { host: "127.0.0.1".into(), port, security };
+            let submitter = SmtpSubmitter::new(endpoint, "anna", Secret::new(PASSWORD)).trusting(vec![self_signed()]);
+            assert_eq!(submitter.check_login_pinned().await, Err(SmtpError::Offline), "{security:?}");
+        }
     }
 
     #[test]

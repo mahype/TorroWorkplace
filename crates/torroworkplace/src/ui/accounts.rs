@@ -48,6 +48,18 @@
 //! way to change servers or password; the password lives in the dialog as a [`Secret`] until it is
 //! sent). The services go through `UpdateMailAccount`, which changes settings only.
 //!
+//! Task M11.4: when a server shows a certificate the system does not trust
+//! (`Response::UntrustedCertificate`), both dialogs ask the question of the add-account dialog
+//! ([`wizard::certificate_question`]) in place of their form, under the title the account's name,
+//! the fingerprint above the foot, and their last button becomes "Trust certificate"
+//! ([`wizard::trust_button`]: not the red primary button for a host on the public internet), which
+//! sends `ConnectMail` again with every certificate trusted in the dialog. The question stays while
+//! that request is out, with "Signing in…" in place of the button. Only for this question a dialog
+//! keeps the password; any other answer, "Back" or closing clears it. A group "Trusted
+//! certificates" below the connection lists the certificates the account trusts, each fingerprint
+//! in the two lines of the question (`MailView::trusted_certificates`); it is left out while there
+//! are none.
+//!
 //! Task M3.5: "Server settings" always has the calendar address (CalDAV), so an account connected
 //! for mail only (a TorroMail import, for one) gets calendars and tasks later: their switches open
 //! that dialog while the account has no address, and saving it switches the service on with the
@@ -250,6 +262,8 @@ pub struct PasswordChange {
     password: Secret,
     error: Option<String>,
     sending: bool,
+    /// The certificates trusted in this dialog and the one it asks about (task M11.4).
+    certificates: wizard::Certificates,
 }
 
 /// The fields of `UpdateMailAccount` that a click changes; the others stay as they are.
@@ -297,6 +311,8 @@ pub struct ServerSettings {
     password: Secret,
     error: Option<String>,
     sending: bool,
+    /// The certificates trusted in this dialog and the one it asks about (task M11.4).
+    certificates: wizard::Certificates,
 }
 
 impl ServerSettings {
@@ -309,6 +325,7 @@ impl ServerSettings {
             password: Secret::default(),
             error: None,
             sending: false,
+            certificates: wizard::Certificates::default(),
         }
     }
 
@@ -385,6 +402,9 @@ pub enum Message {
     ServersPasswordEdited(Secret),
     SubmitServers,
     CloseServers,
+    /// "Back" from the question about a certificate in "Server settings" or "Change password"
+    /// (task M11.4): the form again, the password to be typed again.
+    CertificateBack,
     /// "Add topic…" on an ntfy account's page.
     AddTopic,
     /// A topic's row, by its place in the account's list.
@@ -606,6 +626,17 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::SubmitServers => submit_servers(state, data),
         Message::CloseServers => {
             state.servers = None;
+            Action::None
+        }
+        Message::CertificateBack => {
+            if let Some(change) = state.password.as_mut().filter(|change| !change.sending) {
+                change.certificates.dismiss();
+                change.password = Secret::default();
+            }
+            if let Some(dialog) = state.servers.as_mut().filter(|dialog| !dialog.sending) {
+                dialog.certificates.dismiss();
+                dialog.password = Secret::default();
+            }
             Action::None
         }
         Message::AddTopic => {
@@ -855,12 +886,15 @@ fn login_name(account: &AccountInfo, mail: &MailView) -> String {
 /// Sends the servers as typed with the password, which checks them (`ConnectMail` for an account
 /// that exists keeps its settings and, with an empty sender name, its sender name). The calendar
 /// address goes along when one is typed (an empty field keeps the stored one); the service the
-/// dialog was opened for is switched on with it (task M3.5). The dialog keeps no copy of the
-/// password.
+/// dialog was opened for is switched on with it (task M3.5). On the question about a certificate
+/// it trusts that one first, and every certificate trusted in the dialog goes along (task M11.4).
+/// The request gets a copy of the password, which [`answered`] clears with every answer but that
+/// question.
 fn submit_servers(state: &mut State, data: &Data) -> Action {
     let Some((account, mail)) = selected_mail(state, data) else { return Action::None };
     let Some(dialog) = state.servers.as_mut().filter(|dialog| dialog.can_send()) else { return Action::None };
     let (Some(imap), Some(smtp)) = (dialog.imap.endpoint(), dialog.smtp.endpoint()) else { return Action::None };
+    dialog.certificates.trust();
     dialog.sending = true;
     dialog.error = None;
     let services = mail.settings.services;
@@ -870,10 +904,11 @@ fn submit_servers(state: &mut State, data: &Data) -> Action {
         imap,
         smtp,
         login_name: login_name(account, mail),
-        password: std::mem::take(&mut dialog.password),
+        password: dialog.password.clone(),
         calendars: services.calendars || dialog.adding == Some(MailService::Calendars),
         tasks: services.tasks || dialog.adding == Some(MailService::Tasks),
         caldav: dialog.caldav_address(),
+        trusted_certificates: dialog.certificates.trusted(),
     })
 }
 
@@ -897,20 +932,31 @@ fn can_change_password(account: &AccountInfo) -> bool {
 /// Sends the new password: `ConnectCalDav` for a CalDAV account's own server and user, or
 /// `ConnectMail` for a mail account's own servers and user. The core takes both as "replace the
 /// password" (the services chosen then are ignored, hidden calendars stay, and an empty sender
-/// name keeps the stored one). The dialog keeps no copy of the password.
+/// name keeps the stored one). `ConnectCalDav` takes the password, so the dialog keeps no copy;
+/// `ConnectMail` gets a copy, which [`answered`] clears with every answer but the question about a
+/// certificate (task M11.4). On that question it trusts the certificate first, and every
+/// certificate trusted in the dialog goes along.
 fn submit_password(state: &mut State, data: &Data) -> Action {
     let Some(account) = selected(state, data) else { return Action::None };
     let Some(change) = state.password.as_mut().filter(|change| !change.sending && !change.password.is_blank()) else {
         return Action::None;
     };
-    let Some(request) = password_request(account, std::mem::take(&mut change.password)) else { return Action::None };
+    change.certificates.trust();
+    let password = match account.mail {
+        Some(_) => change.password.clone(),
+        None => std::mem::take(&mut change.password),
+    };
+    let Some(request) = password_request(account, password, change.certificates.trusted()) else {
+        return Action::None;
+    };
     change.sending = true;
     change.error = None;
     Action::Send(request)
 }
 
-/// The request that signs `account` in again with `password`.
-fn password_request(account: &AccountInfo, password: Secret) -> Option<Request> {
+/// The request that signs `account` in again with `password`; a mail account's with the
+/// certificates `trusted` in the dialog (a CalDAV account has none).
+fn password_request(account: &AccountInfo, password: Secret, trusted: Vec<String>) -> Option<Request> {
     if let Some(mail) = &account.mail {
         return Some(Request::ConnectMail {
             address: mail.address.clone(),
@@ -922,6 +968,7 @@ fn password_request(account: &AccountInfo, password: Secret) -> Option<Request> 
             calendars: mail.settings.services.calendars,
             tasks: mail.settings.services.tasks,
             caldav: mail.caldav.clone(),
+            trusted_certificates: trusted,
         });
     }
     let (server, login_name) = caldav_connection(account)?;
@@ -964,23 +1011,28 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     if listed || models_answered(state, result) {
         return true;
     }
+    // Both dialogs keep the password only while a certificate is asked about (task M11.4).
     if let Some(change) = state.password.as_mut().filter(|change| change.sending) {
+        change.sending = false;
+        if change.certificates.ask(result) {
+            return true;
+        }
+        change.password = Secret::default();
         match refusal(result) {
             None => state.password = None,
-            Some(message) => {
-                change.sending = false;
-                change.error = Some(message);
-            }
+            Some(message) => change.error = Some(message),
         }
         return true;
     }
     if let Some(dialog) = state.servers.as_mut().filter(|dialog| dialog.sending) {
+        dialog.sending = false;
+        if dialog.certificates.ask(result) {
+            return true;
+        }
+        dialog.password = Secret::default();
         match refusal(result) {
             None => state.servers = None,
-            Some(message) => {
-                dialog.sending = false;
-                dialog.error = Some(message);
-            }
+            Some(message) => dialog.error = Some(message),
         }
         return true;
     }
@@ -1163,6 +1215,9 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 /// "Change password": who it is for, the masked field, a refusal under it, "Cancel" and the primary
 /// button right. A click next to the dialog cancels.
 fn password_dialog<'a>(change: &'a PasswordChange, account: &'a AccountInfo) -> Element<'a, Message> {
+    if let Some(asked) = change.certificates.shown() {
+        return certificate_dialog(asked, account, change.sending, Message::SubmitPassword, Message::ClosePassword);
+    }
     let can_send = !change.sending && !change.password.is_blank();
     let input = wizard::field("", change.password.expose())
         .secure(true)
@@ -1860,6 +1915,7 @@ fn mail_detail<'a>(account: &'a AccountInfo, mail: &'a MailView, now: DateTime<U
         .extend(mail_moved())
         .push(services_group(mail))
         .push(mail_connection_group(account, mail))
+        .push(trusted_certificates_group(mail))
         .push(remove_button())
         .spacing(layout::section_gap())
         .into()
@@ -1948,6 +2004,19 @@ fn mail_connection_group<'a>(account: &'a AccountInfo, mail: &'a MailView) -> El
     widgets::group(tr("Connection"), rows, Some(footer.to_string()))
 }
 
+/// The certificates a person trusted for the account (task M11.4), each fingerprint whole in the
+/// two lines of the question ([`wizard::fingerprint_row`]); `None` while there are none. They
+/// change only by signing in again, which keeps the ones the servers still show, so the footer
+/// says where.
+fn trusted_certificates_group(mail: &MailView) -> Option<Element<'_, Message>> {
+    if mail.trusted_certificates.is_empty() {
+        return None;
+    }
+    let rows = mail.trusted_certificates.iter().map(|sha256| wizard::fingerprint_row(sha256)).collect();
+    let footer = tr("Signing in again under Server settings keeps only the certificates the servers still show.");
+    Some(widgets::group(tr("Trusted certificates"), rows, Some(footer.to_string())))
+}
+
 /// The sentence under the title of "Server settings": what the password is for. Opened by the
 /// switch of calendars or tasks, it says that these are added.
 fn servers_purpose(form: &ServerSettings, account: &AccountInfo) -> String {
@@ -1968,6 +2037,9 @@ fn servers_purpose(form: &ServerSettings, account: &AccountInfo) -> String {
 /// switch of calendars or tasks, the calendar address comes first. A refusal of the servers stands
 /// in the foot.
 fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo, mail: &MailView) -> Element<'a, Message> {
+    if let Some(asked) = form.certificates.shown() {
+        return certificate_dialog(asked, account, form.sending, Message::SubmitServers, Message::CloseServers);
+    }
     let submit = form.can_send().then_some(Message::SubmitServers);
     let head = column![
         typo::text(typo::title(), tr("Server settings")),
@@ -2017,6 +2089,37 @@ fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo, mail: 
     .spacing(space::s())
     .align_y(Alignment::Center);
     dialog(dialog_frame(head, body, foot, space::xl()), size::form_max(), Message::CloseServers)
+}
+
+/// The question about a certificate (task M11.4) in place of the form of "Server settings" or
+/// "Change password": the title with the name of `account` under it (as "Server settings" has its
+/// purpose there), the question of the add-account dialog with the fingerprint above the foot, and
+/// "Back", "Cancel" and "Trust certificate" (`trust`, which sends again,
+/// [`wizard::trust_button`]). While that request is out (`sending`) the question stays, "Back" is
+/// off and the last button says "Signing in…". As wide as a form, also while sending: the warning
+/// and three buttons need the room in any language. `close` also goes with a click next to it.
+fn certificate_dialog<'a>(
+    asked: &wizard::Untrusted,
+    account: &'a AccountInfo,
+    sending: bool,
+    trust: Message,
+    close: Message,
+) -> Element<'a, Message> {
+    let head = column![
+        typo::text(typo::title(), wizard::certificate_title()),
+        typo::text(typo::body(), account.label.as_str()).style(theme::text_2),
+    ]
+    .spacing(space::xs());
+    let back = (!sending).then_some(Message::CertificateBack);
+    let foot = row![
+        blank::horizontal(),
+        widgets::text_button(None, tr("Back"), style::button::secondary, back),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(close.clone())),
+        wizard::trust_button(asked, sending, Some(trust)),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    dialog(dialog_frame(head, wizard::certificate_question(asked), foot, space::xl()), size::form_max(), close)
 }
 
 /// A text button moved left by its own padding, so its label stands on the page's content axis
@@ -3248,7 +3351,9 @@ mod tests {
                 calendars,
                 tasks,
                 caldav,
+                trusted_certificates,
             } => {
+                assert!(trusted_certificates.is_empty());
                 assert_eq!(address, "anna@mailbox.org");
                 assert!(sender_name.is_empty(), "empty keeps the stored name");
                 assert_eq!((imap.host.as_str(), smtp.host.as_str()), ("imap.mailbox.org", "smtp.mailbox.org"));
@@ -3330,6 +3435,127 @@ mod tests {
             matches!(request, Request::ConnectMail { caldav: None, calendars: false, tasks: false, .. }),
             "{request:?}"
         );
+    }
+
+    // ----- A certificate the system does not trust (task M11.4) ---------------------------------
+
+    fn untrusted(service: &str, sha256: &str) -> Response {
+        let host = "mail.home.lan".to_string();
+        Response::UntrustedCertificate { service: service.into(), host, sha256: sha256.into(), public: false }
+    }
+
+    /// The password and trusted certificates of a `ConnectMail`.
+    fn connect_mail(action: Action) -> (String, Vec<String>) {
+        match sent(action) {
+            Request::ConnectMail { password, trusted_certificates, .. } => {
+                (password.expose().to_string(), trusted_certificates)
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_settings_ask_about_a_certificate_and_send_every_one_trusted() {
+        let (mut state, data) = open_mail(MAILBOX);
+        update(&mut state, Message::ChangeServers, &data);
+        update(&mut state, Message::ServersPasswordEdited(Secret::new("pw")), &data);
+        let (_, trusted) = connect_mail(update(&mut state, Message::SubmitServers, &data));
+        assert!(trusted.is_empty());
+        let (imap, caldav) = (vec!["AB"; 32].join(":"), vec!["CD"; 32].join(":"));
+        assert!(answered(&mut state, &Ok(untrusted("IMAP", &imap))));
+        let dialog = state.servers.as_ref().expect("the dialog asks");
+        assert_eq!(dialog.certificates.asking().map(|asked| asked.sha256.as_str()), Some(imap.as_str()));
+        assert!(!dialog.sending && !dialog.password.is_blank(), "the password stays for the question");
+        assert_eq!(dialog.error, None);
+        drop(overlay(&state, &data));
+
+        // "Trust certificate" sends again with the password; the question stays while it is out
+        // (no jump back to the form), and a second question takes its place.
+        let (password, trusted) = connect_mail(update(&mut state, Message::SubmitServers, &data));
+        assert_eq!((password.as_str(), trusted), ("pw", vec![imap.clone()]));
+        let dialog = state.servers.as_ref().expect("the dialog");
+        assert!(dialog.sending);
+        assert_eq!(dialog.certificates.shown().map(|asked| asked.sha256.as_str()), Some(imap.as_str()));
+        drop(overlay(&state, &data));
+        assert!(matches!(update(&mut state, Message::CertificateBack, &data), Action::None));
+        assert!(state.servers.as_ref().is_some_and(|dialog| dialog.certificates.shown().is_some()), "Back is off");
+        answered(&mut state, &Ok(untrusted("CalDAV", &caldav)));
+        let dialog = state.servers.as_ref().expect("the dialog");
+        assert_eq!(dialog.certificates.shown().map(|asked| asked.sha256.as_str()), Some(caldav.as_str()));
+        let (_, trusted) = connect_mail(update(&mut state, Message::SubmitServers, &data));
+        assert_eq!(trusted, [imap, caldav]);
+        // Any other answer clears the password.
+        assert!(answered(&mut state, &Err("The server cannot be reached.".into())));
+        let dialog = state.servers.as_ref().expect("the dialog stays");
+        assert!(dialog.password.is_blank() && dialog.certificates.shown().is_none(), "the form again");
+        assert_eq!(dialog.error.as_deref(), Some("The server cannot be reached."));
+    }
+
+    #[test]
+    fn back_from_the_question_clears_the_password_of_either_dialog() {
+        let (mut state, data) = open_mail(MAILBOX);
+        update(&mut state, Message::ChangeServers, &data);
+        update(&mut state, Message::ServersPasswordEdited(Secret::new("pw")), &data);
+        update(&mut state, Message::SubmitServers, &data);
+        answered(&mut state, &Ok(untrusted("IMAP", &vec!["AB"; 32].join(":"))));
+        update(&mut state, Message::CertificateBack, &data);
+        let dialog = state.servers.as_ref().expect("the form again");
+        assert!(dialog.password.is_blank() && dialog.certificates.asking().is_none());
+        assert!(matches!(update(&mut state, Message::SubmitServers, &data), Action::None), "the password is gone");
+        drop(overlay(&state, &data));
+
+        update(&mut state, Message::ChangePassword, &data);
+        update(&mut state, Message::PasswordEdited(Secret::new("new-secret")), &data);
+        update(&mut state, Message::SubmitPassword, &data);
+        answered(&mut state, &Ok(untrusted("SMTP", &vec!["EF"; 32].join(":"))));
+        assert!(state.password.as_ref().is_some_and(|change| !change.password.is_blank()));
+        update(&mut state, Message::CertificateBack, &data);
+        let change = state.password.as_ref().expect("the form again");
+        assert!(change.password.is_blank() && change.certificates.asking().is_none());
+    }
+
+    #[test]
+    fn change_password_asks_about_a_certificate_like_server_settings() {
+        let (mut state, data) = open_mail(MAILBOX);
+        update(&mut state, Message::ChangePassword, &data);
+        update(&mut state, Message::PasswordEdited(Secret::new("new-secret")), &data);
+        update(&mut state, Message::SubmitPassword, &data);
+        let sha = vec!["AB"; 32].join(":");
+        assert!(answered(&mut state, &Ok(untrusted("IMAP", &sha))));
+        drop(overlay(&state, &data));
+        let (password, trusted) = connect_mail(update(&mut state, Message::SubmitPassword, &data));
+        assert_eq!((password.as_str(), trusted), ("new-secret", vec![sha.clone()]));
+        // The question stays while signing in, so the dialog keeps its width.
+        let change = state.password.as_ref().expect("the dialog");
+        assert!(change.sending);
+        assert_eq!(change.certificates.shown().map(|asked| asked.sha256.as_str()), Some(sha.as_str()));
+        drop(overlay(&state, &data));
+        let done = Response::MailConnected {
+            account: data.accounts[0].clone(),
+            calendars: true,
+            tasks: true,
+            open_roles: Vec::new(),
+        };
+        assert!(answered(&mut state, &Ok(done)));
+        assert!(state.password.is_none(), "connected: the dialog closes");
+        // A refusal clears the password too.
+        update(&mut state, Message::ChangePassword, &data);
+        update(&mut state, Message::PasswordEdited(Secret::new("wrong")), &data);
+        update(&mut state, Message::SubmitPassword, &data);
+        answered(&mut state, &Err(tr("Password was refused").into()));
+        assert!(state.password.as_ref().is_some_and(|change| change.password.is_blank()));
+    }
+
+    #[test]
+    fn the_page_lists_the_trusted_certificates() {
+        let (state, data) = open_mail("mail:anna@work.example.net");
+        let mail =
+            data.accounts.iter().find_map(|account| account.mail.as_ref().filter(|m| m.address.contains("work")));
+        assert_eq!(mail.map(|mail| mail.trusted_certificates.len()), Some(1), "the demo trusts one");
+        assert!(mail.and_then(trusted_certificates_group).is_some(), "their own group");
+        let none = MailView { trusted_certificates: Vec::new(), ..mail.expect("the work account").clone() };
+        assert!(trusted_certificates_group(&none).is_none(), "no group without one");
+        draw(&state, &data);
     }
 
     /// Task M3.5: without a calendar address, switching calendars or tasks on opens "Server

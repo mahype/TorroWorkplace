@@ -292,6 +292,7 @@ impl Demo {
                 }],
                 mail: ServiceState::default(),
                 calendars: None,
+                trusted_certificates: Vec::new(),
             }),
             ntfy: None,
             services: None,

@@ -4,7 +4,16 @@
 //!
 //! The certificates in `tests/fixtures/imap-tls/` (a test CA and a server certificate for
 //! `127.0.0.1`, P-256, valid 2020–2120) were made once with `openssl`; the client trusts only
-//! that CA ([`trust`]).
+//! that CA ([`trust`]). `self-signed.der` (task M11.2, P-256, valid 2020–2120, signed by itself,
+//! for `mail.home.arpa`) is the certificate of a home server that only a pin makes usable:
+//!
+//! ```text
+//! openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -outform DER -out self-signed.key.der
+//! openssl req -x509 -new -key self-signed.key.der -keyform DER -subj "/CN=mail.home.arpa" \
+//!   -addext "subjectAltName=DNS:mail.home.arpa" -addext "basicConstraints=critical,CA:FALSE" \
+//!   -addext "keyUsage=critical,digitalSignature" -addext "extendedKeyUsage=serverAuth" \
+//!   -not_before 20200101000000Z -not_after 21200101000000Z -outform DER -out self-signed.der
+//! ```
 
 use std::sync::{Arc, Mutex};
 
@@ -39,6 +48,15 @@ pub fn expect(text: &str) -> Step {
     Step::Expect(text.to_owned())
 }
 
+/// Which certificate the server shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shows {
+    /// `server.der`, signed by the test CA.
+    TestCa,
+    /// `self-signed.der`, signed by itself, for another host name.
+    SelfSigned,
+}
+
 /// A running scripted server.
 pub struct Server {
     pub endpoint: Endpoint,
@@ -63,19 +81,27 @@ pub fn trust() -> Trust {
     Trust::Only(vec![CertificateDer::from(fixture("ca.der"))])
 }
 
+/// The fingerprint of `self-signed.der`, as `openssl x509 -fingerprint -sha256` names it.
+pub const SELF_SIGNED: &str =
+    "E4:A8:B0:8A:89:6F:2B:06:7C:E1:92:8D:34:0D:16:14:5A:56:57:E7:9E:7E:4A:62:E1:30:3D:36:3C:21:76:28";
+
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/imap-tls/{name}", env!("CARGO_MANIFEST_DIR"));
     std::fs::read(&path).expect("test certificate")
 }
 
-fn acceptor() -> TlsAcceptor {
+fn acceptor(shows: Shows) -> TlsAcceptor {
+    let (certificate, key) = match shows {
+        Shows::TestCa => ("server.der", "server.key.der"),
+        Shows::SelfSigned => ("self-signed.der", "self-signed.key.der"),
+    };
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(fixture("server.key.der")));
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(fixture(key)));
     let config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .expect("protocol versions")
         .with_no_client_auth()
-        .with_single_cert(vec![CertificateDer::from(fixture("server.der"))], key)
+        .with_single_cert(vec![CertificateDer::from(fixture(certificate))], key)
         .expect("server certificate");
     TlsAcceptor::from(Arc::new(config))
 }
@@ -83,13 +109,18 @@ fn acceptor() -> TlsAcceptor {
 /// Starts a server for one connection that plays `steps`. With `Security::Tls` the connection
 /// is TLS from the first byte; with `StartTls` it is plain until a `Step::StartTls`.
 pub async fn serve(security: Security, steps: Vec<Step>) -> Server {
+    serve_showing(Shows::TestCa, security, steps).await
+}
+
+/// [`serve`] with the certificate `shows`.
+pub async fn serve_showing(shows: Shows, security: Security, steps: Vec<Step>) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("a free port");
     let port = listener.local_addr().expect("address").port();
     let log = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&log);
     let task = tokio::spawn(async move {
         let Ok((tcp, _)) = listener.accept().await else { return };
-        let acceptor = acceptor();
+        let acceptor = acceptor(shows);
         let stream: Box<dyn Io> = match security {
             Security::Tls => match acceptor.accept(tcp).await {
                 Ok(tls) => Box::new(tls),

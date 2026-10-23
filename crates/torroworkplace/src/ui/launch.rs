@@ -54,7 +54,9 @@ pub enum Open {
     /// The add-account dialog on the mail account path (tasks M7.2, M5.1), the ntfy path (task
     /// E5.14) or at TorroMail's accounts (task S.30), opened where [`wizard::Demo::start`] says and
     /// at the state the script of [`wizard::demo_messages`] leads to; the demo's search answers for
-    /// a few domains, its ntfy server wants a login ([`demo_answer`]).
+    /// a few domains, its ntfy server wants a login, and its mail servers on `.lan` and `.example`
+    /// show a certificate the system does not trust (task M11.4, `wizard-mail-certificate` and
+    /// `wizard-mail-certificate-public`, [`demo_answer`]).
     WizardMail(wizard::Demo),
     /// The add-account dialog on the AI provider path (task KI.1a), at the state the script of
     /// [`wizard::demo_messages`] leads to; the demo finds Ollama on this computer, not LM Studio.
@@ -162,7 +164,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 85] = [
+    pub const ALL: [(&'static str, Open); 87] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -180,6 +182,8 @@ impl Open {
         ("wizard-mail-services", Open::WizardMail(wizard::Demo::Services)),
         ("wizard-mail-mail-only", Open::WizardMail(wizard::Demo::MailOnly)),
         ("wizard-mail-done", Open::WizardMail(wizard::Demo::Done)),
+        ("wizard-mail-certificate", Open::WizardMail(wizard::Demo::Certificate)),
+        ("wizard-mail-certificate-public", Open::WizardMail(wizard::Demo::CertificatePublic)),
         ("wizard-torromail", Open::WizardMail(wizard::Demo::TorroMail)),
         ("wizard-torromail-failed", Open::WizardMail(wizard::Demo::TorroMailFailed)),
         ("wizard-torromail-password", Open::WizardMail(wizard::Demo::TorroMailPassword)),
@@ -1051,6 +1055,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         open_roles: Vec::new(),
         mail: ServiceState { last_sync: Some(last_sync), problem: None },
         calendars: None,
+        trusted_certificates: Vec::new(),
     };
     AccountInfo {
         id: format!("mail:{address}"),
@@ -1096,7 +1101,8 @@ fn mailbox_account(now: DateTime<Utc>) -> AccountInfo {
     account
 }
 
-/// The second demo mail account: mail only, and the server has not answered for two days.
+/// The second demo mail account: mail only, and the server has not answered for two days. It is
+/// the firm's own server, whose certificate a person trusted (task M11.4), so its page shows the row.
 fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
     let mut account = mail_account("anna@work.example.net", "imap.work.example.net", now - Duration::days(2));
     let problem = "The server did not answer".to_string();
@@ -1105,6 +1111,7 @@ fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
     }
     if let Some(mail) = account.mail.as_mut() {
         mail.mail.problem = Some(problem);
+        mail.trusted_certificates = vec![DEMO_FINGERPRINT.into()];
     }
     account
 }
@@ -1284,6 +1291,19 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         | Request::SetTemplateShortcut { .. }
         | Request::SetTemplateStartup { .. }
         | Request::DeleteTemplate { .. } => Some(Response::Ok),
+        // Task M11.4: an IMAP server at home (`.lan`) or on the public internet (`.example`) shows a
+        // certificate the system does not trust, as long as none is trusted; the check of a
+        // certificate comes before the password, as in the core.
+        Request::ConnectMail { imap, trusted_certificates, .. }
+            if trusted_certificates.is_empty() && (is_home(&imap.host) || is_public_demo(&imap.host)) =>
+        {
+            Some(Response::UntrustedCertificate {
+                service: "IMAP".into(),
+                host: imap.host.clone(),
+                sha256: DEMO_FINGERPRINT.into(),
+                public: is_public_demo(&imap.host),
+            })
+        }
         Request::ConnectMail { password, .. } if password.expose() == "wrong" => Some(refused("IMAP")),
         Request::ConnectMail { password, .. } if password.expose() == "wrong-smtp" => Some(refused("SMTP")),
         // What the CalDAV address offers is what was asked for, as long as an address was given.
@@ -1445,6 +1465,20 @@ fn demo_torromail(data: &Data) -> Vec<TorroMailAccount> {
         gmail,
         account("tm-mailbox", "anna@mailbox.org", "mailbox.org", "imap.mailbox.org", "smtp.mailbox.org"),
     ]
+}
+
+/// The fingerprint of the certificate the demo's own mail servers show (task M11.4), made up.
+pub const DEMO_FINGERPRINT: &str =
+    "3F:9A:61:C2:0B:7E:D4:58:A3:19:E6:42:BC:70:5D:8F:21:C9:04:7A:E3:B6:58:1D:9F:62:A0:C7:35:E8:4B:D1";
+
+/// A host of the demo's server at home: on the local network.
+fn is_home(host: &str) -> bool {
+    host.ends_with(".lan")
+}
+
+/// A host of the demo's own server on the public internet.
+fn is_public_demo(host: &str) -> bool {
+    host.ends_with(".example")
 }
 
 /// The answer of a server that refuses the password, naming the server like the core does.
@@ -1926,6 +1960,7 @@ mod tests {
             calendars: true,
             tasks: true,
             caldav: caldav.map(str::to_string),
+            trusted_certificates: Vec::new(),
         };
         for (password, server) in [("wrong", "IMAP"), ("wrong-smtp", "SMTP")] {
             assert!(matches!(
@@ -1946,6 +1981,45 @@ mod tests {
                 assert!(!calendars && !tasks, "no CalDAV, none asked")
             }
             other => panic!("expected MailConnected, got {other:?}"),
+        }
+    }
+
+    /// Task M11.4: the demo's own servers show a certificate the system does not trust until one
+    /// is trusted; a server at home without the warning, one on the public internet with it.
+    #[test]
+    fn the_demo_asks_about_the_certificate_of_its_own_servers() {
+        use torro_core::account::Secret;
+        let data = demo_data();
+        assert_eq!(torro_mail::account::certificate_fingerprint(DEMO_FINGERPRINT).as_deref(), Some(DEMO_FINGERPRINT));
+        let mail = |host: &str, trusted: Vec<String>| Request::ConnectMail {
+            address: "anna@home.lan".into(),
+            sender_name: String::new(),
+            imap: Endpoint { host: host.into(), port: 993, security: Security::Tls },
+            smtp: Endpoint { host: host.into(), port: 587, security: Security::StartTls },
+            login_name: "anna".into(),
+            password: Secret::new("demo-password"),
+            calendars: false,
+            tasks: false,
+            caldav: None,
+            trusted_certificates: trusted,
+        };
+        for (host, public) in [("mail.home.lan", false), ("mail.berg.example", true)] {
+            match demo_answer(&mail(host, Vec::new()), &data) {
+                Some(Response::UntrustedCertificate { service, host: asked, sha256, public: on_internet }) => {
+                    assert_eq!((service.as_str(), asked.as_str(), sha256.as_str()), ("IMAP", host, DEMO_FINGERPRINT));
+                    assert_eq!(on_internet, public, "{host}");
+                }
+                other => panic!("expected UntrustedCertificate, got {other:?}"),
+            }
+            let trusted = mail(host, vec![DEMO_FINGERPRINT.into()]);
+            assert!(matches!(demo_answer(&trusted, &data), Some(Response::MailConnected { .. })), "{host}");
+        }
+        assert!(matches!(
+            demo_answer(&mail("imap.mailbox.org", Vec::new()), &data),
+            Some(Response::MailConnected { .. })
+        ));
+        for name in ["wizard-mail-certificate", "wizard-mail-certificate-public"] {
+            assert!(Open::ALL.iter().any(|(state, _)| *state == name), "{name}");
         }
     }
 
