@@ -2387,8 +2387,10 @@ static CONNECT_MAIL: Command = Command {
                   sign-in over CalDAV) with the password a person typed in the control centre: checks it with the \
                   servers without sending anything, keeps it in the system keychain and adds the account. \
                   Connecting an account again replaces servers and password, and can switch on its calendars and \
-                  tasks. A CalDAV account of the same sign-in is taken over and leaves the account list. Returns \
-                  the account, never the password. Only the app key may use it.",
+                  tasks. A CalDAV account of the same sign-in is taken over and leaves the account list. Takes any \
+                  server a person typed, also on the local network; a certificate the system does not trust is \
+                  answered with untrusted-certificate and works once the person trusts it (its fingerprint in \
+                  trusted_certificates). Returns the account, never the password. Only the app key may use it.",
 };
 
 static UPDATE_MAIL_ACCOUNT: Command = Command {
@@ -2429,7 +2431,9 @@ static IMPORT_TORROMAIL_ACCOUNT: Command = Command {
     description: "Copies an account of the separate TorroMail app into the suite as a mail account, for mail \
                   only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. \
                   Checks both servers, keeps the password in the system keychain and returns the account, never \
-                  the password. TorroMail keeps its account. Only the app key may use it.",
+                  the password; a certificate the system does not trust is answered with untrusted-certificate \
+                  (then connect the account with accounts.connect_mail to trust it). TorroMail keeps its \
+                  account. Only the app key may use it.",
 };
 
 // Never an MCP tool, and for the app key only: it hands the core an API key (`docs/api.md`, "Was
@@ -4596,6 +4600,7 @@ mod tests {
             calendars: true,
             tasks: false,
             caldav: Some("https://dav.mailbox.org/".into()),
+            trusted_certificates: Vec::new(),
         }
     }
 

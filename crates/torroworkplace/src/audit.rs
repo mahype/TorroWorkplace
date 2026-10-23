@@ -142,12 +142,15 @@ pub fn entry(
 }
 
 /// The result word of `answer` and the approval it names: `pending` with the approval it waits
-/// for, the error code of an error, otherwise `ok`. Only the code of an error, never its message,
-/// which can quote what the client sent.
+/// for, the error code of an error, `untrusted-certificate` for a sign-in that stopped at a
+/// certificate (issue #284: nothing ran, so it is no `ok`), otherwise `ok`. Only the code of an
+/// error, never its message, which can quote what the client sent; never the host or fingerprint
+/// of a certificate either.
 pub fn outcome(answer: &Response) -> (String, Option<String>) {
     match answer {
         Response::Pending { approval } => ("pending".into(), Some(approval.id.clone())),
         Response::Error { code, .. } => (code.clone(), None),
+        Response::UntrustedCertificate { .. } => ("untrusted-certificate".into(), None),
         _ => ("ok".into(), None),
     }
 }
@@ -675,6 +678,21 @@ pub(crate) mod tests {
         let recent = audit.recent("a1").expect("read");
         assert_eq!(recent.len(), ACTIVITY_MAX);
         assert_eq!(recent[0], line("a1", "system.ping", 59));
+    }
+
+    #[test]
+    fn a_sign_in_stopped_at_a_certificate_is_no_ok() {
+        let answer = Response::UntrustedCertificate {
+            service: "IMAP".into(),
+            host: "mail.home.lan".into(),
+            sha256: format!("AB{}", ":CD".repeat(31)),
+            public: false,
+        };
+        assert_eq!(outcome(&answer), ("untrusted-certificate".into(), None));
+        assert_eq!(outcome(&Response::Ok), ("ok".into(), None));
+        let line = entry(None, "accounts.connect_mail", Vec::new(), &answer, DateTime::UNIX_EPOCH);
+        let text = serde_json::to_string(&line).expect("json");
+        assert!(!text.contains("home.lan") && !text.contains("AB:CD"), "{text}");
     }
 
     #[test]

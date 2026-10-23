@@ -13,8 +13,10 @@
 //! that is less code than working around those gaps.
 //!
 //! **Security.** TLS only through rustls (aws-lc-rs) with the system's trust store
-//! ([`Trust::System`]) or, where that cannot be built, the webpki roots; there is no plain
-//! connection. STARTTLS refuses a server that sends anything after its `OK` before the handshake
+//! ([`Trust::System`]) or, where that cannot be built, the webpki roots, plus the certificates a
+//! person confirmed ([`Trust::Pinned`], see [`crate::tls`]); there is no plain connection. A
+//! certificate that is not trusted ends the connection before the login is sent
+//! ([`ImapError::Untrusted`]). STARTTLS refuses a server that sends anything after its `OK` before the handshake
 //! (command injection). The password is a [`Secret`]: it goes to the server and nowhere else,
 //! every server text from the sign-in is stripped of it, and nothing here logs.
 
@@ -27,8 +29,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use rustls::pki_types::{CertificateDer, ServerName};
-use rustls::{ClientConfig, RootCertStore};
+use rustls::ClientConfig;
+use rustls::pki_types::ServerName;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
@@ -36,6 +38,11 @@ use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use torro_core::account::Secret;
 use torro_mail::{Endpoint, Flag, Role, Security};
+
+/// Which certificates a connection trusts; lives in [`crate::tls`] since task M11.2, because
+/// SMTP and CalDAV use it too.
+pub use crate::tls::Trust;
+use crate::tls::{Fingerprint, Seen, client_config};
 
 /// How long connecting and the TLS handshake may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -61,10 +68,15 @@ pub enum ImapError {
     /// dropped, the server said `BYE` or is temporarily unavailable. Worth trying again later.
     Offline(String),
     /// The server answered something unexpected or refused a command: a broken response, no
-    /// STARTTLS, a certificate that is not trusted, `BAD`, a `NO` without a known reason.
+    /// STARTTLS, a TLS handshake that failed for another reason than the certificate, `BAD`, a
+    /// `NO` without a known reason.
     Protocol(String),
     /// A folder or message named in the command does not exist (`[NONEXISTENT]`, `[TRYCREATE]`).
     NotFound(String),
+    /// The server showed a certificate that is neither trusted by the system nor pinned (task
+    /// M11.2): this fingerprint, for the person to compare and confirm. The connection ended in
+    /// the handshake, before the login was sent.
+    Untrusted(Fingerprint),
 }
 
 impl ImapError {
@@ -77,6 +89,7 @@ impl ImapError {
             ImapError::Offline(text) => ImapError::Offline(clean(text)),
             ImapError::Protocol(text) => ImapError::Protocol(clean(text)),
             ImapError::NotFound(text) => ImapError::NotFound(clean(text)),
+            ImapError::Untrusted(fingerprint) => ImapError::Untrusted(fingerprint),
         }
     }
 }
@@ -88,23 +101,14 @@ impl fmt::Display for ImapError {
             ImapError::Offline(text) => write!(f, "mail server not reachable: {text}"),
             ImapError::Protocol(text) => write!(f, "unexpected answer from the mail server: {text}"),
             ImapError::NotFound(text) => write!(f, "not found on the mail server: {text}"),
+            ImapError::Untrusted(fingerprint) => {
+                write!(f, "the certificate of the mail server is not trusted (SHA-256 {fingerprint})")
+            }
         }
     }
 }
 
 impl std::error::Error for ImapError {}
-
-/// Which certificates a connection trusts.
-#[derive(Debug, Clone, Default)]
-pub enum Trust {
-    /// The operating system's trust store (`rustls-platform-verifier`); the webpki roots where
-    /// that cannot be set up. What the core always uses.
-    #[default]
-    System,
-    /// Only these root certificates (DER). For tests against a local server with a certificate
-    /// of their own; the core never passes this.
-    Only(Vec<CertificateDer<'static>>),
-}
 
 /// The capabilities the server announced, in capital letters (`IMAP4REV1`, `AUTH=PLAIN`, `MOVE`).
 /// Read again after signing in, because servers announce more then.
@@ -485,6 +489,8 @@ pub struct Session {
     wire: Wire<TlsStream<TcpStream>>,
     capabilities: Capabilities,
     selected: Option<Selected>,
+    /// The pin the server's certificate matched ([`Session::pinned_certificate`]).
+    pinned: Option<Fingerprint>,
 }
 
 impl fmt::Debug for Session {
@@ -492,6 +498,7 @@ impl fmt::Debug for Session {
         f.debug_struct("Session")
             .field("capabilities", &self.capabilities)
             .field("selected", &self.selected)
+            .field("pinned", &self.pinned)
             .finish_non_exhaustive()
     }
 }
@@ -502,7 +509,8 @@ impl Session {
     /// carries any character), else `LOGIN`.
     ///
     /// Errors: [`ImapError::Offline`] when the host cannot be reached or does not answer in
-    /// time; [`ImapError::Protocol`] for an untrusted certificate, a missing STARTTLS, a server
+    /// time; [`ImapError::Untrusted`] for a certificate `trust` does not take (nothing of the
+    /// login was sent); [`ImapError::Protocol`] for a failed handshake, a missing STARTTLS, a server
     /// that sends data before the handshake or offers no way to sign in; [`ImapError::Auth`]
     /// when the server refuses the sign-in (`NO` without a reason or with
     /// `AUTHENTICATIONFAILED`, `AUTHORIZATIONFAILED`, `EXPIRED`, `ALERT`). `NO [UNAVAILABLE]` is
@@ -513,11 +521,11 @@ impl Session {
         password: &Secret,
         trust: &Trust,
     ) -> Result<Session, ImapError> {
-        let config = tls_config(trust)?;
+        let tls = tls_config(trust)?;
         let server_name = server_name(endpoint)?;
         let address = (endpoint.host.as_str(), endpoint.port);
         let tcp = timed(CONNECT_TIMEOUT, TcpStream::connect(address)).await?;
-        Session::secure(tcp, config, server_name, endpoint.security, login, password).await
+        Session::secure(tcp, tls, server_name, endpoint.security, login, password).await
     }
 
     /// [`Session::connect`] to one of `addresses` instead of whatever `endpoint`'s host resolves to
@@ -535,28 +543,29 @@ impl Session {
         password: &Secret,
         trust: &Trust,
     ) -> Result<Session, ImapError> {
-        let config = tls_config(trust)?;
+        let tls = tls_config(trust)?;
         let server_name = server_name(endpoint)?;
         if addresses.is_empty() {
             return Err(ImapError::Offline("no address to connect to".into()));
         }
         let tcp = timed(CONNECT_TIMEOUT, TcpStream::connect(addresses)).await?;
-        Session::secure(tcp, config, server_name, endpoint.security, login, password).await
+        Session::secure(tcp, tls, server_name, endpoint.security, login, password).await
     }
 
     /// Secures the connection `tcp` as `security` asks (TLS from the first byte or STARTTLS, the
     /// certificate checked for `server_name`) and signs in.
     async fn secure(
         tcp: TcpStream,
-        config: Arc<ClientConfig>,
+        tls: (Arc<ClientConfig>, Seen),
         server_name: ServerName<'static>,
         security: Security,
         login: &str,
         password: &Secret,
     ) -> Result<Session, ImapError> {
+        let (config, seen) = tls;
         let (wire, greeting) = match security {
             Security::Tls => {
-                let mut wire = Wire::new(handshake(config, server_name, tcp).await?, 1);
+                let mut wire = Wire::new(handshake(config, server_name, tcp, &seen).await?, 1);
                 let greeting = wire.greeting().await?;
                 (wire, greeting)
             }
@@ -567,12 +576,14 @@ impl Session {
                 }
                 plain.starttls().await?;
                 let (tcp, next_tag) = plain.into_stream()?;
-                let wire = Wire::new(handshake(config, server_name, tcp).await?, next_tag);
+                let wire = Wire::new(handshake(config, server_name, tcp, &seen).await?, next_tag);
                 // Anything learned before the handshake could have been forged: ask again.
                 (wire, Greeting { preauth: false, capabilities: None })
             }
         };
-        let mut session = Session { wire, capabilities: Capabilities::default(), selected: None };
+        // The handshake is done: a pinned certificate passed it with a valid signature.
+        let pinned = seen.accepted();
+        let mut session = Session { wire, capabilities: Capabilities::default(), selected: None, pinned };
         match greeting.capabilities {
             Some(capabilities) => session.capabilities = capabilities,
             None => session.refresh_capabilities().await?,
@@ -581,6 +592,12 @@ impl Session {
             session.sign_in(login, password).await?;
         }
         Ok(session)
+    }
+
+    /// The pin of the [`Trust`] the server's certificate matched (task M11.2); `None` when the
+    /// system (the trust's base) took the certificate. The core keeps only pins that were used.
+    pub fn pinned_certificate(&self) -> Option<Fingerprint> {
+        self.pinned
     }
 
     /// The server's capabilities, as announced after signing in.
@@ -1135,42 +1152,29 @@ fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, ImapError> {
         .map_err(|_| ImapError::Protocol(format!("{:?} is not a host name", endpoint.host)))
 }
 
-/// The TLS settings for `trust`, always with the aws-lc-rs provider and rustls' safe defaults.
-fn tls_config(trust: &Trust) -> Result<Arc<ClientConfig>, ImapError> {
-    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let tls_error = |error: rustls::Error| ImapError::Protocol(format!("TLS could not be set up: {error}"));
-    let builder = ClientConfig::builder_with_provider(provider.clone())
-        .with_safe_default_protocol_versions()
-        .map_err(tls_error)?;
-    let config = match trust {
-        Trust::System => match rustls_platform_verifier::Verifier::new(provider) {
-            Ok(verifier) => {
-                builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()
-            }
-            Err(_) => {
-                let roots = RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-                builder.with_root_certificates(roots).with_no_client_auth()
-            }
-        },
-        Trust::Only(certificates) => {
-            let mut roots = RootCertStore::empty();
-            for certificate in certificates {
-                roots.add(certificate.clone()).map_err(tls_error)?;
-            }
-            builder.with_root_certificates(roots).with_no_client_auth()
-        }
-    };
-    Ok(Arc::new(config))
+/// The TLS settings for `trust` ([`client_config`]) and what their certificate check sees.
+fn tls_config(trust: &Trust) -> Result<(Arc<ClientConfig>, Seen), ImapError> {
+    let (config, seen) =
+        client_config(trust).map_err(|error| ImapError::Protocol(format!("TLS could not be set up: {error}")))?;
+    Ok((Arc::new(config), seen))
 }
 
-/// The TLS handshake; a certificate problem is a [`ImapError::Protocol`] (trying again will not
-/// help), everything else [`ImapError::Offline`].
+/// The TLS handshake. A certificate the check refused is [`ImapError::Untrusted`] with its
+/// fingerprint (`seen`); any other certificate or protocol problem [`ImapError::Protocol`]
+/// (trying again will not help), everything else [`ImapError::Offline`].
 async fn handshake(
     config: Arc<ClientConfig>,
     server_name: ServerName<'static>,
     tcp: TcpStream,
+    seen: &Seen,
 ) -> Result<TlsStream<TcpStream>, ImapError> {
-    match tokio::time::timeout(CONNECT_TIMEOUT, TlsConnector::from(config).connect(server_name, tcp)).await {
+    let outcome = tokio::time::timeout(CONNECT_TIMEOUT, TlsConnector::from(config).connect(server_name, tcp)).await;
+    if outcome.as_ref().is_ok_and(Result::is_err)
+        && let Some(fingerprint) = seen.rejected()
+    {
+        return Err(ImapError::Untrusted(fingerprint));
+    }
+    match outcome {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(error)) if error.kind() == io::ErrorKind::InvalidData => {
             Err(ImapError::Protocol(format!("the secure connection failed: {error}")))

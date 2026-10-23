@@ -283,13 +283,33 @@ password…“ ihn); entfernen geht mit `update_mail_account`.
 **Kalender später hinzufügen** (M3.5): `connect_mail` an einem vorhandenen Konto behält die gespeicherte
 CalDAV-Adresse, auch wenn Kalender und Aufgaben aus sind. `calendars`/`tasks` schalten diese Dienste dort ein (nie
 aus, das bleibt `update_mail_account`); sie brauchen eine CalDAV-Adresse, mitgeschickt oder gespeichert, sonst
-`not-found`. Eine neue Adresse und jede, deren Dienste an sind, prüft der Dienst wie bei M2.7b (öffentlicher Host,
-Verbindung nur zur geprüften Adresse), unter derselben Sperre wie `connect_caldav` und `update_mail_account`. Erst
+`not-found`. Eine neue Adresse und jede, deren Dienste an sind, prüft der Dienst mit dem Passwort, wie IMAP und SMTP
+(jeder Host, den ein Mensch eingetragen hat, und dieselben Zertifikate, siehe „Eigene Server und Zertifikate“), unter
+derselben Sperre wie `connect_caldav` und `update_mail_account`. Erst
 wenn das Konto Kalender abgleicht, übernimmt es ein CalDAV-Konto derselben Anmeldung. So bekommt ein nur für Mail
 verbundenes Konto (etwa aus TorroMail übernommen, M7.4) seine Kalender über „Server settings…“ der Kontoseite.
 Bekannte Grenzen: Schaltet `update_mail_account` Kalender über eine behaltene Adresse wieder ein, prüft sie erst
 der nächste Abgleich mit dem gespeicherten Passwort (Probleme zeigt das Konto dann wie jeden Abgleichsfehler); und
 eine gespeicherte CalDAV-Adresse lässt sich nicht entfernen, nur durch eine andere ersetzen.
+
+**Eigene Server und Zertifikate** (#284, M11): `connect_mail` nimmt jeden Server, den ein Mensch einträgt, wie er
+ist: im öffentlichen Internet, im lokalen Netz oder auf diesem Rechner (das ersetzt die Regel „nur öffentliche
+Hosts“ aus M2.7b für Mail-Konten; die Dienstsuche `discover_services` und die Anmeldung von `connect_caldav` an einer
+von ihr gefundenen Adresse bleiben streng). Bekannte Grenze: Streng ist die Dienstsuche nur im Moment der Suche. Übernimmt
+die Oberfläche einen gefundenen Server (oder einen aus TorroMail) in `connect_mail`, löst der Dienst ihn dort neu auf
+und prüft nicht mehr, ob er öffentlich ist; dann gilt er wie ein eingetippter. Der Host
+wird je Verbindung einmal aufgelöst, verbunden wird genau mit diesen Adressen. Ein Zertifikat, dem das System nicht
+vertraut, beantwortet der Dienst mit `untrusted-certificate` (Dienst, Host, SHA-256, `public`, wenn eine Adresse
+des Hosts öffentlich ist), bevor das Passwort hinausgeht; nichts wird gespeichert. Bestätigt der Mensch den
+Fingerabdruck, schickt die Oberfläche dieselbe Anmeldung mit ihm in `trusted_certificates` erneut. Das Konto merkt
+sich nur Zertifikate, die ein Server bei dieser Anmeldung gezeigt hat (lief CalDAV nicht mit, bleiben die übrigen
+gespeicherten), höchstens acht, das älteste fällt heraus; sie gelten für IMAP, SMTP und CalDAV des Kontos und stehen
+in `MailView.trusted_certificates`. Zeigt der IMAP- oder SMTP-Server später ein anderes Zertifikat, endet die
+Verbindung vor der Anmeldung: Der Abgleich meldet `auth` („The certificate of the mail server changed. Check it in
+Server settings.“), das Konto zeigt „Anmelden nötig“ und versucht es weiter, ein Versand ist `auth` mit „Nothing was
+sent“. Beim Kalenderteil scheitert der Abgleich vor der Anmeldung wie bei einem nicht erreichbaren Server (bekannte
+Grenze: noch ohne eigenen Hinweis auf das Zertifikat). Weiterleitungen folgt die CalDAV-Prüfung nur innerhalb
+derselben Herkunft, damit der gezeigte Fingerabdruck zum gezeigten Host gehört.
 
 ⁸ **Mail im Eingang** (E4.1): Neue, ungelesene Mail im Posteingang eines Mail-Kontos legt der Dienst selbst als
 Eintrag an (Art `message`, Quelle `mail:<adresse>`, gleich der Konto-Kennung, ein Eintrag je Unterhaltung,
@@ -766,7 +786,10 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Import aus einem fremden
    Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
-   reicht es weiter. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten
+   reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch
+   (`connect_mail`, `trusted_certificates`, #284): Der Kern verbindet sich mit jedem dort eingetragenen Host,
+   auch im lokalen Netz, und vertraut einem Zertifikat nur, wenn ein Mensch seinen Fingerabdruck bestätigt hat;
+   `update_mail_account` ändert beides nie. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten
    bekommt `forbidden`) und im Test `names_follow_the_rules` (`kept_back`). Solche Requests landen nie
    in einer Freigabe (`approvals.json`), und das Passwort erscheint in keiner Antwort, keiner
    Fehlermeldung, keinem `Debug` und keinem Protokoll (Typ `Secret`, im Schema `writeOnly`).

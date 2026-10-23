@@ -2005,6 +2005,45 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Added to {list}", "Zu „{list}“ hinzugefügt"),
     ("Drag to a list", "Auf eine Liste ziehen"),
     ("Moved to {list}", "Nach „{list}“ verschoben"),
+    // Own mail servers and certificates (M11, issue #284)
+    (
+        "A trusted certificate is not a SHA-256 fingerprint.",
+        "Ein vertrautes Zertifikat ist kein SHA-256-Fingerabdruck.",
+    ),
+    ("The mail server cannot be used.", "Der Mail-Server kann nicht verwendet werden."),
+    ("The {service} server cannot be used.", "Der {service}-Server kann nicht verwendet werden."),
+    (
+        "The certificate of the {service} server is not trusted.",
+        "Dem Zertifikat des {service}-Servers wird nicht vertraut.",
+    ),
+    (
+        "The certificate of the mail server changed. Check it in Server settings.",
+        "Das Zertifikat des Mail-Servers hat sich geändert. Prüfe es in den Servereinstellungen.",
+    ),
+    (
+        "The certificate of the outgoing mail server changed. Nothing was sent. Check it in Server settings.",
+        "Das Zertifikat des Postausgangsservers hat sich geändert. Nichts wurde gesendet. Prüfe es in den Servereinstellungen.",
+    ),
+    ("Trust this certificate?", "Diesem Zertifikat vertrauen?"),
+    (
+        "The certificate of {host} ({service}) is not trusted by this computer. Trust it only if this is your own server.",
+        "Dieser Computer vertraut dem Zertifikat von {host} ({service}) nicht. Vertraue ihm nur, wenn es dein eigener Server ist.",
+    ),
+    (
+        "This server is on the public internet. An untrusted certificate there can mean that someone is intercepting the connection. Never trust it for a mail provider.",
+        "Dieser Server ist im öffentlichen Internet. Ein nicht vertrautes Zertifikat kann dort bedeuten, dass jemand die Verbindung abfängt. Vertraue ihm bei einem Mail-Anbieter nie.",
+    ),
+    ("Fingerprint (SHA-256)", "Fingerabdruck (SHA-256)"),
+    ("Trust certificate", "Zertifikat vertrauen"),
+    ("Trusted certificates", "Vertraute Zertifikate"),
+    (
+        "Signing in again under Server settings keeps only the certificates the servers still show.",
+        "Eine neue Anmeldung unter Servereinstellungen behält nur die Zertifikate, die die Server noch zeigen.",
+    ),
+    (
+        "The certificate is not trusted. Enter the password to check it.",
+        "Dem Zertifikat wird nicht vertraut. Gib das Passwort ein, um es zu prüfen.",
+    ),
     // CalDAV accounts with service discovery (M7.1)
     ("Enter an e-mail address or a domain name.", "Gib eine E-Mail-Adresse oder einen Domainnamen ein."),
     ("Enter the password.", "Gib das Passwort ein."),
@@ -2324,7 +2363,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The mail server does not have this folder or message.",
         "Diesen Ordner oder diese Nachricht gibt es auf dem Mail-Server nicht.",
     ),
-    ("The mail server is not on the public internet.", "Der Mail-Server ist nicht im öffentlichen Internet."),
     // Connect mail accounts (M2.7)
     (
         "A calendar account of the same sign-in syncs these calendars already. Connect the mail account again to take it over.",
@@ -2346,7 +2384,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("The {service} server answered unexpectedly.", "Der {service}-Server hat unerwartet geantwortet."),
     ("The {service} server cannot be reached.", "Der {service}-Server ist nicht erreichbar."),
-    ("The {service} server is not on the public internet.", "Der {service}-Server ist nicht im öffentlichen Internet."),
     ("The {service} server offers no secure sign-in.", "Der {service}-Server bietet keine sichere Anmeldung."),
     ("The {service} server refused the password.", "Der {service}-Server hat das Passwort abgelehnt."),
     (

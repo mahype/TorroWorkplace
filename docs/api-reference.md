@@ -1475,7 +1475,7 @@ Signs in to the CalDAV account of a mail provider or another CalDAV server with 
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Signs in to a mail account (IMAP and SMTP, and on request the calendars and tasks of the same sign-in over CalDAV) with the password a person typed in the control centre: checks it with the servers without sending anything, keeps it in the system keychain and adds the account. Connecting an account again replaces servers and password, and can switch on its calendars and tasks. A CalDAV account of the same sign-in is taken over and leaves the account list. Returns the account, never the password. Only the app key may use it.
+Signs in to a mail account (IMAP and SMTP, and on request the calendars and tasks of the same sign-in over CalDAV) with the password a person typed in the control centre: checks it with the servers without sending anything, keeps it in the system keychain and adds the account. Connecting an account again replaces servers and password, and can switch on its calendars and tasks. A CalDAV account of the same sign-in is taken over and leaves the account list. Takes any server a person typed, also on the local network; a certificate the system does not trust is answered with untrusted-certificate and works once the person trusts it (its fingerprint in trusted_certificates). Returns the account, never the password. Only the app key may use it.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
@@ -1494,6 +1494,7 @@ Signs in to a mail account (IMAP and SMTP, and on request the calendars and task
 | `smtp.port` | integer | ja | The port, e.g. 993 for IMAP over TLS or 587 for SMTP with STARTTLS. |
 | `smtp.security` | `"tls"` \| `"starttls"` | ja | `tls` or `starttls`. |
 | `tasks` | boolean | ja | Show the task lists of `caldav` in the suite; at an account that exists as `calendars`. |
+| `trusted_certificates` | array<string> | nein | Fingerprints of server certificates the person just trusted, as the answer `untrusted-certificate` named them (`sha256`): SHA-256 in capital hex digits joined by `:` (`AB:CD:…`; small letters and the 64 digits without `:` are taken too). The core adds one to the account's trusted certificates only when a server of the account showed it during this sign-in. Leave out when the person trusted nothing new. |
 
 ### `accounts.update_mail_account`
 
@@ -1526,7 +1527,7 @@ Keine Felder.
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Copies an account of the separate TorroMail app into the suite as a mail account, for mail only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. Checks both servers, keeps the password in the system keychain and returns the account, never the password. TorroMail keeps its account. Only the app key may use it.
+Copies an account of the separate TorroMail app into the suite as a mail account, for mail only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. Checks both servers, keeps the password in the system keychain and returns the account, never the password; a certificate the system does not trust is answered with untrusted-certificate (then connect the account with accounts.connect_mail to trust it). TorroMail keeps its account. Only the app key may use it.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

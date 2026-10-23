@@ -544,6 +544,7 @@ mod tests {
             imap: Endpoint { host: "imap.mailbox.org".into(), port: 993, security: Security::Tls },
             smtp: Endpoint { host: "smtp.mailbox.org".into(), port: 587, security: Security::StartTls },
             caldav: Some("https://dav.mailbox.org/".into()),
+            trusted_certificates: Vec::new(),
         }
     }
 

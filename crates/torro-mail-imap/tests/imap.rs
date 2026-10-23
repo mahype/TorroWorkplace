@@ -1,21 +1,24 @@
 //! IMAP sessions and folder roles against a scripted server on 127.0.0.1 (task M2.3): signing
 //! in (right and wrong password, STARTTLS), LIST with SPECIAL-USE, XLIST, names only, creating a
 //! missing sent folder, two candidates left open, MOVE without the MOVE capability, a changed
-//! UIDVALIDITY, and the fetch, store, append and IDLE commands of the sync.
+//! UIDVALIDITY, and the fetch, store, append and IDLE commands of the sync. Since task M11.2 also
+//! certificates: an untrusted one ends the connection before the login, a pinned one signs in.
 
 mod imap_support;
 
 use std::collections::BTreeMap;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
-use imap_support::{Server, Step, expect, send, serve, trust};
+use imap_support::{SELF_SIGNED, Server, Shows, Step, expect, send, serve, serve_showing, trust};
 use torro_core::account::Secret;
 use torro_mail::{Flag, Role, Security};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
 use torro_mail_imap::imap::{
-    AppendError, AppendUid, BodyChunks, BodyError, IdleEvent, ImapError, Search, Session, backup_flag_transferable,
-    encode_mailbox,
+    AppendError, AppendUid, BodyChunks, BodyError, IdleEvent, ImapError, Search, Session, Trust,
+    backup_flag_transferable, encode_mailbox,
 };
+use torro_mail_imap::tls::Fingerprint;
 
 const LOGIN: &str = "anna@example.org";
 const PASSWORD: &str = "hunter2";
@@ -390,14 +393,107 @@ async fn starttls_refuses_a_server_that_sends_data_before_the_handshake() {
     server.received().await;
 }
 
+/// `openssl x509 -fingerprint -sha256` of `tests/fixtures/imap-tls/server.der`.
+const TEST_CA_SIGNED: &str =
+    "1A:D8:6C:DA:A4:E5:3F:B1:BF:6E:DE:F1:00:61:1F:99:26:54:5E:9B:B1:E4:49:9F:98:81:35:25:36:C0:59:C0";
+
+fn self_signed() -> Fingerprint {
+    SELF_SIGNED.parse().expect("fingerprint")
+}
+
 #[tokio::test]
 async fn a_certificate_the_client_does_not_trust_is_refused() {
     let server = serve(Security::Tls, vec![send("* OK ready")]).await;
-    let error =
-        Session::connect(&server.endpoint, LOGIN, &Secret::new(PASSWORD), &torro_mail_imap::imap::Trust::Only(vec![]))
+    let error = Session::connect(&server.endpoint, LOGIN, &Secret::new(PASSWORD), &Trust::Only(vec![]))
+        .await
+        .expect_err("not trusted");
+    let expected: Fingerprint = TEST_CA_SIGNED.parse().expect("fingerprint");
+    assert_eq!(error, ImapError::Untrusted(expected));
+    assert!(server.received().await.is_empty(), "the server saw nothing");
+}
+
+/// Task M11.2: a self-signed certificate without a pin, or with a wrong one, is reported with its
+/// fingerprint, over TLS and STARTTLS, and the server never sees the login.
+#[tokio::test]
+async fn an_untrusted_certificate_names_its_fingerprint_and_the_server_sees_no_login() {
+    for pins in [Vec::new(), vec![Fingerprint([0; 32])]] {
+        let tls = serve_showing(Shows::SelfSigned, Security::Tls, signed_in("IDLE")).await;
+        let error = Session::connect(&tls.endpoint, LOGIN, &Secret::new(PASSWORD), &trust().with_pins(pins.clone()))
             .await
             .expect_err("not trusted");
-    assert!(matches!(error, ImapError::Protocol(_)), "{error:?}");
+        assert_eq!(error, ImapError::Untrusted(self_signed()), "{pins:?}");
+        assert!(tls.received().await.is_empty(), "{pins:?}: no line reached the server");
+
+        let starttls = serve_showing(
+            Shows::SelfSigned,
+            Security::StartTls,
+            vec![
+                send("* OK [CAPABILITY IMAP4rev1 STARTTLS AUTH=PLAIN] ready"),
+                expect("a1 STARTTLS"),
+                send("a1 OK Begin TLS negotiation now"),
+                Step::StartTls,
+                expect("a2 AUTHENTICATE PLAIN"),
+            ],
+        )
+        .await;
+        let addresses = [SocketAddr::from((Ipv4Addr::LOCALHOST, starttls.endpoint.port))];
+        let error = Session::connect_to(
+            &addresses,
+            &starttls.endpoint,
+            LOGIN,
+            &Secret::new(PASSWORD),
+            &trust().with_pins(pins.clone()),
+        )
+        .await
+        .expect_err("not trusted");
+        assert_eq!(error, ImapError::Untrusted(self_signed()), "{pins:?}");
+        assert!(error.to_string().contains(SELF_SIGNED) && !error.to_string().contains(PASSWORD));
+        let lines = starttls.received().await;
+        assert_eq!(lines, ["a1 STARTTLS", "UNEXPECTED no TLS handshake"], "{pins:?}: no login");
+        assert!(!lines.iter().any(|line| line.contains(BLOB) || line.contains("LOGIN")));
+    }
+}
+
+/// Task M11.2: the pinned certificate signs in although it names another host, and the session
+/// names the pin it used; a certificate the base trusts needs none.
+#[tokio::test]
+async fn a_pinned_certificate_signs_in_and_names_the_pin() {
+    let pinned = trust().with_pins(vec![Fingerprint([0; 32]), self_signed()]);
+    let tls = serve_showing(Shows::SelfSigned, Security::Tls, signed_in("IDLE")).await;
+    let session = Session::connect(&tls.endpoint, LOGIN, &Secret::new(PASSWORD), &pinned).await.expect("signed in");
+    assert_eq!(session.pinned_certificate(), Some(self_signed()));
+    assert_eq!(tls.received().await, signed_in_lines());
+
+    let starttls = serve_showing(
+        Shows::SelfSigned,
+        Security::StartTls,
+        vec![
+            send("* OK [CAPABILITY IMAP4rev1 STARTTLS] ready"),
+            expect("a1 STARTTLS"),
+            send("a1 OK Begin TLS negotiation now"),
+            Step::StartTls,
+            expect("a2 CAPABILITY"),
+            send("* CAPABILITY IMAP4rev1 AUTH=PLAIN"),
+            send("a2 OK done"),
+            expect("a3 AUTHENTICATE PLAIN"),
+            send("+"),
+            expect(BLOB),
+            send("a3 OK Logged in"),
+            expect("a4 CAPABILITY"),
+            send("* CAPABILITY IMAP4rev1"),
+            send("a4 OK done"),
+        ],
+    )
+    .await;
+    let session =
+        Session::connect(&starttls.endpoint, LOGIN, &Secret::new(PASSWORD), &pinned).await.expect("signed in");
+    assert_eq!(session.pinned_certificate(), Some(self_signed()));
+    assert!(!starttls.received().await.iter().any(|line| line.starts_with("UNEXPECTED")));
+
+    let trusted = serve(Security::Tls, signed_in("IDLE")).await;
+    let session = Session::connect(&trusted.endpoint, LOGIN, &Secret::new(PASSWORD), &pinned).await.expect("signed in");
+    assert_eq!(session.pinned_certificate(), None, "the test CA took it, no pin was used");
+    trusted.received().await;
 }
 
 #[tokio::test]
