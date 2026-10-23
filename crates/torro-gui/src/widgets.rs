@@ -2083,26 +2083,74 @@ pub fn action_rail<'a, M: Clone + 'a>(
     on_event: fn(RailEvent) -> M,
     on_toggle: Option<M>,
 ) -> Element<'a, M> {
+    action_rail_toggle(groups, mode, active, on_event, on_toggle.into())
+}
+
+/// The toggle at the top of the action rail ([`action_rail_toggle`], issue #291): none, off or working.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RailToggle<M> {
+    /// No head – no toggle and no line below it: medium and narrow windows, which always show the
+    /// collapsed rail (task E14 decision 5).
+    Hidden,
+    /// The head with the toggle off (as any button that is off: faded, no hover, no key in its
+    /// tooltip), the tooltip saying why – `tr("Widen the window to expand actions")` where the rail
+    /// cannot expand. The head stays, so the icons below it do not move.
+    Off(&'static str),
+    /// The head with the working toggle, which sends this message.
+    On(M),
+}
+
+impl<M> From<Option<M>> for RailToggle<M> {
+    /// The toggle of [`action_rail`]'s `on_toggle`: none without a message, else a working one.
+    fn from(on_toggle: Option<M>) -> RailToggle<M> {
+        on_toggle.map_or(RailToggle::Hidden, RailToggle::On)
+    }
+}
+
+impl<M> RailToggle<M> {
+    /// Whether the rail draws its head (the toggle and the line below it): off or on, not hidden.
+    pub fn has_head(&self) -> bool {
+        !matches!(self, RailToggle::Hidden)
+    }
+}
+
+/// [`action_rail`] with the toggle as a [`RailToggle`] (issue #291): [`RailToggle::Off`] draws the head
+/// with the toggle off and its reason as the tooltip – where an expanded rail would squeeze the reader –,
+/// so the groups stand where they stand with a working toggle, in every design.
+pub fn action_rail_toggle<'a, M: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    mode: RailMode,
+    active: Option<usize>,
+    on_event: fn(RailEvent) -> M,
+    toggle: RailToggle<M>,
+) -> Element<'a, M> {
     let (foot, top): (Vec<_>, Vec<_>) = groups.into_iter().enumerate().partition(|(_, group)| group.foot);
     let mut rail = column![].width(Fill).height(Fill);
-    if let Some(on_toggle) = on_toggle {
-        let word = match mode {
-            RailMode::Collapsed => tr("Expand actions"),
-            RailMode::Expanded => tr("Collapse actions"),
+    if toggle.has_head() {
+        let (press, hint): (Option<M>, Element<'a, M>) = match toggle {
+            RailToggle::On(message) => {
+                let word = match mode {
+                    RailMode::Collapsed => tr("Expand actions"),
+                    RailMode::Expanded => tr("Collapse actions"),
+                };
+                let hint = row![typo::text(typo::caption(), word).style(theme::text_2), kbd("]")]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+                (Some(message), hint.into())
+            }
+            RailToggle::Off(why) => (None, typo::text(typo::caption(), why).style(theme::text_2).into()),
+            RailToggle::Hidden => (None, blank().into()),
         };
-        let mark = button_icon(Icon::PanelRight, icon::SIZE, style::button::icon, true);
-        let toggle = button(center(mark))
+        let mark = button_icon(Icon::PanelRight, icon::SIZE, style::button::icon, press.is_some());
+        let button = button(center(mark))
             .width(size::control_lg())
             .height(size::control_lg())
             .padding(0)
             .style(style::button::icon)
-            .on_press(on_toggle);
-        let hint = row![typo::text(typo::caption(), word).style(theme::text_2), kbd("]")]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-        let toggle = container(tip(toggle, hint, tooltip::Position::Left)).width(Fill).align_right(Fill);
+            .on_press_maybe(press);
+        let button = container(tip(button, hint, tooltip::Position::Left)).width(Fill).align_right(Fill);
         let inset = Padding::new(space::s()).left(0.0).right(rail_toggle_inset());
-        rail = rail.push(container(toggle).padding(inset)).push(rule::horizontal(LINE).style(style::rule));
+        rail = rail.push(container(button).padding(inset)).push(rule::horizontal(LINE).style(style::rule));
     }
     let edge = Padding::new(0.0).horizontal(space::s());
     let (top, foot): (Element<'a, M>, Element<'a, M>) = match mode {
@@ -4675,6 +4723,26 @@ mod tests {
         assert_eq!(flyout_origin(icon, tall, true, short).y, beside_gap(), "too tall: from the top");
         // Task E14.3 (finding 6): the card ends `space::xs()` before the rail's line.
         assert_eq!(flyout_gap(), space::s() + LINE + space::xs());
+    }
+
+    /// Issue #291 (review of the three designs): where the rail cannot expand the head stays with the
+    /// toggle off – drawn the same way as a working one –, so the icons below it do not move; only
+    /// medium and narrow windows draw none.
+    #[test]
+    fn the_rails_head_stays_with_its_toggle_off() {
+        assert!(RailToggle::On(Msg::Go).has_head() && RailToggle::<Msg>::Off("why").has_head());
+        assert!(!RailToggle::<Msg>::Hidden.has_head());
+        assert_eq!(RailToggle::from(Some(Msg::Go)), RailToggle::On(Msg::Go), "action_rail's on_toggle");
+        assert_eq!(RailToggle::<Msg>::from(None), RailToggle::Hidden);
+        for id in ["torro", "compact", "console"] {
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            assert!(d.size.control_lg <= d.size.rail, "{id}: the toggle fits the collapsed rail, on or off");
+        }
+        for mode in [RailMode::Collapsed, RailMode::Expanded] {
+            for toggle in [RailToggle::On(Msg::Go), RailToggle::Off("why"), RailToggle::Hidden] {
+                let _: Element<'_, Msg> = action_rail_toggle(rail_groups(), mode, None, |_| Msg::Close, toggle);
+            }
+        }
     }
 
     /// Task E14.1: the rail builds collapsed and expanded, with and without its button and an open

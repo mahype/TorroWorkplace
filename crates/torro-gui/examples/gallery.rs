@@ -2547,27 +2547,24 @@ fn action_rails() -> Element<'static, Msg> {
     // The open groups are layers over the whole section, as an app lays them over the whole window:
     // laid out in a frame, a layer wider than the frame would be squeezed.
     let mut layers = Vec::new();
-    let mut collapsed = |open: Option<usize>, toggle: bool, height: f32| {
+    let mut collapsed = |open: Option<usize>, toggle: widgets::RailToggle<Msg>, height: f32| {
         let anchors: Vec<Anchor> = (0..6).map(|_| Anchor::new()).collect();
         let groups = rail_groups(&anchors);
         if let Some((at, group)) = open.and_then(|at| groups.get(at).cloned().map(|group| (at, group))) {
             layers.push(widgets::rail_flyout(group, &anchors[at], Msg::Noop));
         }
-        let rail = widgets::action_rail(
-            groups,
-            widgets::RailMode::Collapsed,
-            open,
-            |_| Msg::Noop,
-            toggle.then_some(Msg::Noop),
-        );
+        let rail = widgets::action_rail_toggle(groups, widgets::RailMode::Collapsed, open, |_| Msg::Noop, toggle);
         frame(rail, false, height)
     };
     let tall = 760.0;
     let low = 420.0;
-    let rest = collapsed(None, true, tall);
-    let file = collapsed(Some(1), true, tall);
-    let more = collapsed(Some(5), true, tall);
-    let panel = collapsed(None, false, low);
+    let on = || widgets::RailToggle::On(Msg::Noop);
+    let rest = collapsed(None, on(), tall);
+    let file = collapsed(Some(1), on(), tall);
+    let more = collapsed(Some(5), on(), tall);
+    let panel = collapsed(None, widgets::RailToggle::Hidden, low);
+    // Issue #291: no room to expand – the toggle is off, the head and the icons stay.
+    let off = collapsed(None, widgets::RailToggle::Off("Widen the window to expand actions"), low);
     let expanded = |height: f32| {
         let anchors: Vec<Anchor> = (0..6).map(|_| Anchor::new()).collect();
         let rail = widgets::action_rail(
@@ -2591,6 +2588,7 @@ fn action_rails() -> Element<'static, Msg> {
     .vertical_spacing(space::l());
     let second = row![
         labelled("In the panel · no button", panel),
+        labelled("No room to expand · toggle off", off),
         labelled("Expanded in a low window · the top scrolls, the foot stays", expanded(low)),
     ]
     .spacing(space::l())

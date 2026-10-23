@@ -5433,4 +5433,5 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{key}” is {value}; allowed are 0 (off) or {min} to {max}.",
         "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",
     ),
+    ("Widen the window to expand actions", "Fenster verbreitern, um die Aktionen auszuklappen"),
 ];
