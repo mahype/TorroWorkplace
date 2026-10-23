@@ -4267,7 +4267,10 @@ impl Core {
             }
             Request::ListApprovals => self.list_approvals(None).await,
             Request::ApprovalStatus { id } => self.approval_status(None, &id).await,
-            Request::DecideApproval { id, allow } => self.decide_approval(&id, allow).await,
+            // Boxed: deciding runs the approved request through this function a second time (see
+            // `decide_approval`); with both frames on the stack a debug build overran the 2 MiB of
+            // a test thread (an approved move into the trash).
+            Request::DecideApproval { id, allow } => Box::pin(self.decide_approval(&id, allow)).await,
             // A client's question always becomes an approval (`handle_client`) and is answered by
             // its state once a person decides (`run_approved`); the app key has nobody to ask.
             Request::AskPermission { .. } => Response::Error {
@@ -4447,7 +4450,9 @@ impl Core {
             request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
-            | Request::SaveDraft { .. }) => self.change_mail(request, reach).await,
+            // Boxed: `change_mail` is a large future (about 10 KB in a debug build), and an approved
+            // move into the trash reaches it in the second pass through this function.
+            | Request::SaveDraft { .. }) => Box::pin(self.change_mail(request, reach)).await,
             // Answering an invitation (task E8.3b): for a client after `Core::handle_client` checked
             // its sending; the handler checks mail and calendar itself.
             Request::RespondToInvitation { account, id, answer, collection } => {
