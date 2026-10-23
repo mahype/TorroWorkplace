@@ -93,7 +93,7 @@ Gruvbox bleibt, wie es ist: Der im Issue vorgeschlagene helle Akzent `#B57614` t
 Schrift (3,9:1); der heutige Akzent `#AF3A03` (6,1:1) bleibt, sein Kopfkommentar nennt die Wahl schon.
 
 ### FS.1 Lizenzen der vorhandenen Schemata, Liste in der Doku
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** #291 in `main` · **Dateien:** `color-schemes/{nord,solarized,gruvbox,dracula,catppuccin,everforest}/LICENSE.txt` (neu), `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md`
 - `LICENSE.txt` für die sechs nach den gemeinsamen Regeln (Quellen: arcticicestudio/nord, altercation/solarized,
   morhetz/gruvbox, dracula/dracula-theme, catppuccin/catppuccin, sainnhe/everforest). Die eigenen Schemata Torro,

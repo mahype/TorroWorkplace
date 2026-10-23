@@ -347,7 +347,7 @@ dazu beginnt mit einer Kopie von `designs/compact/design.toml`.
 |---|---|---|---|
 | `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `mail_view`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | `preview.png` |
 | `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
-| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg` |
+| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird für sich geprüft. Wer nur einen Teil
 ändern will, legt nur dessen Ordner an: ein eigenes Farbschema braucht kein Design und keine Schrift.
@@ -396,7 +396,9 @@ jede App die Schriften mitschleppt.
    Textstufen, Linien, Akzent mit `on_accent`. Plex dunkel: `bg #0C1013`, `panel #12171B`, `selected #1B2226`, Text
    `#E3E8EB` / `#A9B4BB` / `#86929A`, Akzent `#3AA6A0` mit dunkler Schrift `#03201E` (5,8:1). Hell: `bg #ECF0F1`,
    `panel #FFFFFF`, `selected #DEE5E8`, Text `#141B1F` / `#475359` / `#59656C`, Akzent `#0C6B66` mit Weiß (6,3:1).
-   Status- und Kalenderfarben bleiben die des Standards.
+   Status- und Kalenderfarben bleiben die des Standards. Ein Schema nach einer fremden Palette bringt deren Lizenz
+   als `LICENSE.txt` neben `color-scheme.toml` mit (nur MIT, Apache-2.0 oder gemeinfrei,
+   [Mitgelieferte Farbschemata](#mitgelieferte-farbschemata)).
 6. **Logo:** `color-schemes/<id>/logo.svg` und `[logo] mark = "logo.svg"`, quadratisch mit `viewBox`, nur Formen,
    keine Verweise; es steht auf hellem und dunklem Grund, also eine eigene Fläche mitbringen (Plex: Petrol-Quadrat
    mit drei weißen Balken). Das Logo gehört zum Farbschema, weil es in dessen Farben gezeichnet ist. Ein Tray-Symbol
@@ -505,7 +507,7 @@ Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Untero
 |---|---|---|---|
 | `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | ein **Design** | `preview.png` |
 | `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
-| `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg` |
+| `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 - Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
   stehen (Commitr in allen dreien). `torro` ist alle drei, eingebaut, ohne Ordner.
@@ -586,6 +588,57 @@ Fehler, der ihn zu `font` oder `color_scheme` schickt, je nachdem, was das Paket
 > Ersetzt durch die drei eingebauten Designs ([Drei eingebaute Designs](#drei-eingebaute-designs-standard-compact-console),
 > Issue #291). Die Vorschläge Airy, Clear, Folio, Pebble und Square (L.25–L.30) entfallen; die sechs Beispiel-Designs
 > Plex, Commitr, Channelr, Guildr, Quattro und Ribbon auch, ihre Schriften und Farbschemata bleiben.
+
+### Mitgelieferte Farbschemata
+
+Issue #292. Ein Schema nach fremder Palette steht unter MIT, Apache-2.0 oder ist gemeinfrei und bringt den Lizenztext
+seiner Quelle als `LICENSE.txt` mit (oben die Quelle mit Abrufdatum, darunter der Text wörtlich, mit der
+Copyright-Zeile). Name, Autor und Beschreibung sind neutral, wo die Quelle eine Marke ist: „Primer“ statt GitHub,
+„Slate“ statt Radix, „One“ ohne Atom; VS Code, IBM Carbon, GNOME, KDE und Ubuntu kommen nicht vor. Nicht
+mitgeliefert werden Schemata unter Copyleft (Adwaita und Breeze LGPL, Yaru GPL bzw. CC-BY-SA, Modus und Zenburn GPL)
+und solche ohne klare oder mit kommerzieller Lizenz (Monokai, Material Theme, Dracula PRO).
+
+Die neuen Schemata bringen kein Logo mit, die Suite zeichnet das „T“ auf ihrem Akzent. Je Variante kommen fünf
+Farben aus der Palette der Quelle (Grund, Fläche, Text, gedämpfter Text, Akzent); alle übrigen Farbrollen sind daraus
+abgeleitet. Wo eine Farbe der Quelle eine Regel verfehlt, ist sie verschoben und im Schema mit altem und neuem Wert
+kommentiert (meist der gedämpfte Text, der 4,5:1 auf allen Flächen braucht).
+
+| Name | id | Gruppe | Quelle | Lizenz | Anmerkung |
+|---|---|---|---|---|---|
+| Torro | `torro` | Torro | eigen, eingebaut | – | Standard, Torro-Rot |
+| Plex | `plex` | Light and dark | eigen | – | kühle Flächen, Petrol-Akzent; mit Logo |
+| Commitr | `commitr` | Light and dark | eigen, angelehnt an GitHub | – | neutrale Graus, grüner Primärknopf, dunkle Seitenleiste im Hellen; mit Logo |
+| Ribbon | `ribbon` | Light and dark | eigen, angelehnt an Microsoft Office | – | Fluent-Graus, Office-Blau; mit Logo |
+| Channelr | `channelr` | Light and dark | eigen, angelehnt an Slack | – | Seitenleiste in Aubergine; mit Logo |
+| Guildr | `guildr` | Light and dark | eigen, angelehnt an Discord | – | Blurple auf dunklem Grau; mit Logo |
+| Quattro | `quattro` | Light and dark | eigen, angelehnt an Google Workspace | – | Material-3-Flächen, blaue Pillen; mit Logo |
+| Nord | `nord` | Light and dark | github.com/nordtheme/nord | MIT | dunkel Polar Night; hell aus Snow Storm abgeleitet (die Quelle hat nur dunkel); Akzent Frost; mit Logo |
+| Solarized | `solarized` | Light and dark | github.com/altercation/solarized | MIT | beide Modi der Quelle, blauer Akzent mit dunkler Schrift; mit Logo |
+| Gruvbox | `gruvbox` | Light and dark | github.com/morhetz/gruvbox | MIT (README und `package.json`, keine Lizenzdatei) | Akzent ohne Vorbild: dunkel Gelb `#FABD2F`, hell Orange `#AF3A03`; mit Logo |
+| Dracula | `dracula` | Light and dark | github.com/dracula/dracula-theme | MIT | Akzent Lila, Fokus Pink; hell ist Alucard; mit Logo |
+| Catppuccin | `catppuccin` | Light and dark | github.com/catppuccin/catppuccin | MIT | dunkel Mocha, hell Latte, Akzent Mauve; mit Logo |
+| Everforest | `everforest` | Light and dark | github.com/sainnhe/everforest | MIT | Waldgrün auf warmen Flächen; mit Logo |
+| Ayu | `ayu` | Light and dark | github.com/ayu-theme/ayu-colors | MIT | FS.2 |
+| Base16 | `base16` | Light and dark | github.com/tinted-theming/schemes (Default von Chris Kempson) | MIT | FS.2 |
+| Edge | `edge` | Light and dark | github.com/sainnhe/edge | MIT | FS.2 |
+| Flexoki | `flexoki` | Light and dark | github.com/kepano/flexoki | MIT | FS.2 |
+| Iceberg | `iceberg` | Light and dark | github.com/cocopon/iceberg.vim | MIT | FS.2 |
+| Kanagawa | `kanagawa` | Light and dark | github.com/rebelot/kanagawa.nvim | MIT | FS.2 |
+| Nightfox | `nightfox` | Light and dark | github.com/EdenEast/nightfox.nvim | MIT | FS.2 |
+| Night Owl | `night-owl` | Light and dark | github.com/sdras/night-owl-vscode-theme | MIT | FS.2 |
+| One | `one` | Light and dark | github.com/atom/atom (`one-dark-syntax`, `one-light-syntax`) | MIT | FS.3 |
+| Primer | `primer` | Light and dark | github.com/primer/primitives | MIT | FS.3 |
+| Rosé Pine | `rose-pine` | Light and dark | github.com/rose-pine/palette | MIT | FS.3 |
+| Selenized | `selenized` | Light and dark | github.com/jan-warchol/selenized | MIT | FS.3 |
+| Slate | `slate` | Light and dark | github.com/radix-ui/colors | MIT | FS.3 |
+| Tango | `tango` | Light and dark | Tango Desktop Project | gemeinfrei | FS.3 |
+| Tokyo Night | `tokyo-night` | Light and dark | github.com/enkia/tokyo-night-vscode-theme | MIT | FS.3 |
+| Tomorrow | `tomorrow` | Light and dark | github.com/chriskempson/tomorrow-theme | MIT | FS.3 |
+| Cobalt2 | `cobalt2` | Dark only | github.com/wesbos/cobalt2-vscode | MIT | FS.4 |
+| Palenight | `palenight` | Dark only | github.com/whizkydee/vscode-palenight-theme | MIT | FS.4 |
+| Poimandres | `poimandres` | Dark only | github.com/drcmda/poimandres-theme | MIT | FS.4 |
+| Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | FS.4 |
+| Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | FS.4 |
 
 ### Mitgelieferte Schriften (Vorschlag)
 

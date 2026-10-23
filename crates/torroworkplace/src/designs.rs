@@ -171,6 +171,7 @@ const COLOR_SCHEMES: &[Example] = &[
         id: "nord",
         files: &[
             example_file!("color-schemes", "nord", "color-scheme.toml"),
+            example_file!("color-schemes", "nord", "LICENSE.txt"),
             example_file!("color-schemes", "nord", "logo.svg"),
         ],
     },
@@ -178,6 +179,7 @@ const COLOR_SCHEMES: &[Example] = &[
         id: "solarized",
         files: &[
             example_file!("color-schemes", "solarized", "color-scheme.toml"),
+            example_file!("color-schemes", "solarized", "LICENSE.txt"),
             example_file!("color-schemes", "solarized", "logo.svg"),
         ],
     },
@@ -185,6 +187,7 @@ const COLOR_SCHEMES: &[Example] = &[
         id: "catppuccin",
         files: &[
             example_file!("color-schemes", "catppuccin", "color-scheme.toml"),
+            example_file!("color-schemes", "catppuccin", "LICENSE.txt"),
             example_file!("color-schemes", "catppuccin", "logo.svg"),
         ],
     },
@@ -192,6 +195,7 @@ const COLOR_SCHEMES: &[Example] = &[
         id: "gruvbox",
         files: &[
             example_file!("color-schemes", "gruvbox", "color-scheme.toml"),
+            example_file!("color-schemes", "gruvbox", "LICENSE.txt"),
             example_file!("color-schemes", "gruvbox", "logo.svg"),
         ],
     },
@@ -199,6 +203,7 @@ const COLOR_SCHEMES: &[Example] = &[
         id: "dracula",
         files: &[
             example_file!("color-schemes", "dracula", "color-scheme.toml"),
+            example_file!("color-schemes", "dracula", "LICENSE.txt"),
             example_file!("color-schemes", "dracula", "logo.svg"),
         ],
     },
@@ -206,6 +211,7 @@ const COLOR_SCHEMES: &[Example] = &[
         id: "everforest",
         files: &[
             example_file!("color-schemes", "everforest", "color-scheme.toml"),
+            example_file!("color-schemes", "everforest", "LICENSE.txt"),
             example_file!("color-schemes", "everforest", "logo.svg"),
         ],
     },
