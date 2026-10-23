@@ -4113,7 +4113,7 @@ impl Core {
             // Decided under the lock a mail account's calendars take too (task M2.7b).
             request @ Request::ConnectCalDav { .. } => {
                 let _deciding = self.calendar_sign_ins.lock().await;
-                self.pim.handle_within(request, reach).await
+                Box::pin(self.pim.handle_within(request, reach)).await
             }
             // Mail links come with what the mail store holds, for whom may read it (task E8.7a).
             Request::Todos => self.todos_with_mail(reach).await,
@@ -4125,6 +4125,8 @@ impl Core {
             request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. }) => {
                 Box::pin(self.places(request, reach)).await
             }
+            // Boxed: inlined, the calendar's series rules make every answer's future large enough to
+            // overflow a test thread's stack.
             pim @ (Request::ConnectNextcloud { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
@@ -4132,7 +4134,7 @@ impl Core {
             | Request::SaveEvent { .. }
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
-            | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
+            | Request::MoveTodo { .. }) => Box::pin(self.pim.handle_within(pim, reach)).await,
             // Reminders (task ER1.3); a client's preview comes through `handle_client` with its name.
             request @ (Request::ListReminders { .. }
             | Request::SnoozeReminder { .. }

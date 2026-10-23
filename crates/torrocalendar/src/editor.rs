@@ -144,8 +144,12 @@ pub struct Editor {
     /// opening an event never writes it back.
     base: Form,
     /// The form handed out with the save under way, or with the last one that failed: it is not
-    /// sent again until something changes.
+    /// sent again until something changes, or another scope sends it ([`Editor::choose_scope`]).
     sent: Option<Form>,
+    /// The band's scope when the last save went out: a save that fails takes the band back to it, so
+    /// a change typed for "This event" is not sent again for "All" chosen meanwhile (the second
+    /// review of PR #294).
+    sent_scope: SeriesScope,
     /// A save is under way; the next one waits for its answer (new etag).
     saving: bool,
     /// The title as an editor widget; `form.title` mirrors its text on one line.
@@ -633,6 +637,15 @@ fn wall_of(time: EventTime, zone: Option<&str>) -> NaiveDateTime {
     }
 }
 
+/// How many events of a series `scope` reaches, in order: one, this and the following, all.
+fn width(scope: SeriesScope) -> u8 {
+    match scope {
+        SeriesScope::Occurrence => 0,
+        SeriesScope::Following => 1,
+        SeriesScope::Series => 2,
+    }
+}
+
 /// The instant of an event time, a day at its midnight in UTC: for comparing keys of occurrences
 /// as the core does.
 fn instant_of(time: EventTime) -> DateTime<Utc> {
@@ -713,6 +726,7 @@ impl Editor {
             base: form.clone(),
             form,
             sent: None,
+            sent_scope: SeriesScope::Occurrence,
             saving: false,
             menu: false,
             confirm_delete: false,
@@ -916,6 +930,16 @@ impl Editor {
     /// way the scope stays: the answer decides whether there is a series left. Following or all events
     /// take a new start date's days ([`Editor::follow_start`]). An occurrence whose rule could not be
     /// read stays with "This event" ([`Editor::rule_unknown`]).
+    ///
+    /// What was typed under the old scope and not saved yet is saved with the old scope first, so a
+    /// title typed for "This event" does not land on the whole series because "All" was clicked
+    /// before the save (the review of PR #294). While a save is under way such a change cannot go out
+    /// yet, so the scope stays until the answer; a form that cannot be saved yet (a date half typed)
+    /// keeps the scope too and shows its problem, as Enter does. A form whose save failed
+    /// ([`Editor::save_failed`]) never goes out with a wider scope than it was typed for: a wider one
+    /// sends it again with the old scope first; a narrower one takes it along, as the app's
+    /// "Choose This event and try again" asks, and the rule settles as for any switch (the review of
+    /// PR #296).
     fn choose_scope(&mut self, scope: SeriesScope) -> Action {
         if scope != SeriesScope::Occurrence && self.rule_unknown() {
             return Action::None;
@@ -923,15 +947,56 @@ impl Editor {
         if scope != self.scope && self.ending_series() {
             return Action::None;
         }
+        let switching = scope != self.scope;
+        let mut pending = Action::None;
+        // A failed save taken along to a narrower scope goes out again with it at once.
+        let narrowing_failed =
+            switching && !self.saving && self.form != self.base && !self.changed() && width(scope) < width(self.scope);
+        if switching && self.form != self.base {
+            if self.saving {
+                // Only what was typed after the save under way waits; the sent form is decided by
+                // the answer, and a failure takes the band back ([`Editor::save_failed`]).
+                if self.changed() {
+                    return Action::None;
+                }
+            } else if self.changed() || width(scope) > width(self.scope) {
+                if let Err(problem) = self.check() {
+                    self.attempted = true;
+                    return problem.input().map_or(Action::None, Action::Focus);
+                }
+                // Not saving, a `sent` equal to the form is a failed save: it was never stored.
+                self.sent = None;
+                pending = self.request_save(false);
+            }
+        }
         self.scope = scope;
         self.reset = 0;
+        // The form is out with the old scope (now or before): `original` and `base` are the state
+        // before that save, so adjusting the rule to them now would undo what was sent, and the next
+        // save would carry it with the new scope (the second review of PR #294). The answer
+        // ([`Editor::stored`]) brings the rule as stored.
+        if self.saving {
+            return pending;
+        }
+        self.settle_scope();
+        if narrowing_failed {
+            self.sent = None;
+            return self.request_save(false);
+        }
+        Action::None
+    }
+
+    /// The rule of the form after a switch to the band's scope: "This event" cannot carry a new rule,
+    /// and "Never" belongs to "All" only, so the stored rule comes back; with "Following" or "All" a
+    /// new start date moves the rule ([`Editor::follow_start`]).
+    fn settle_scope(&mut self) {
+        let scope = self.scope;
         if let Some(original) = &self.original
             && (scope == SeriesScope::Occurrence || (scope != SeriesScope::Series && self.form.repeat.is_none()))
         {
             self.form.repeat = original.repeat.as_deref().cloned();
         }
         self.follow_start();
-        Action::None
     }
 
     /// A save is under way that ends the series ("Never" with "All").
@@ -1246,8 +1311,23 @@ impl Editor {
     }
 
     /// The app's answer to a failed [`Action::Save`]: the form stays, the next change tries again.
+    /// When [`Editor::choose_scope`] switched the band while the save was under way, the form goes
+    /// out next with the narrower of the two scopes, so nothing typed lands on more events than it
+    /// was typed for (the review of PR #296): a wider band goes back to the scope sent, a narrower
+    /// one stays and the form goes out with it at the next autosave. Either way the rule settles
+    /// to the scope, so the band never shows a rule its scope cannot save.
     pub fn save_failed(&mut self) {
         self.saving = false;
+        if self.scope == self.sent_scope {
+            return;
+        }
+        self.reset = 0;
+        if width(self.scope) > width(self.sent_scope) {
+            self.scope = self.sent_scope;
+        } else {
+            self.sent = None;
+        }
+        self.settle_scope();
     }
 
     /// Whether `saved`, the answer to a save, belongs to this editor's save under way. A series
@@ -1368,6 +1448,7 @@ impl Editor {
         }
         self.saving = true;
         self.sent = Some(self.form.clone());
+        self.sent_scope = self.scope;
         Action::Save(event, self.save_scope())
     }
 
@@ -1948,9 +2029,9 @@ impl Editor {
         for (index, alarm) in self.form.alarms.iter().enumerate() {
             let words = remind::day_before_words(alarm.trigger, start, |at| zone::wall(at, self.shown_zone()))
                 .unwrap_or_else(|| alarm_when(alarm.trigger));
-            let label = typo::text(typo::body(), words).style(theme::text).wrapping(Wrapping::None);
-            let mut value =
-                row![container(label).width(Length::Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
+            // Cut with "…" and the whole time as tooltip, never silently (the design review of PR #294).
+            let label = widgets::ellipsized(typo::body(), words, theme::text);
+            let mut value = row![container(label).width(Length::Fill)].spacing(space::s()).align_y(Alignment::Center);
             if let Some(style) = alarm.style {
                 value = value
                     .push(typo::text(typo::body(), style_word(style)).style(theme::text_3).wrapping(Wrapping::None));
@@ -1966,13 +2047,8 @@ impl Editor {
             rows.push((Mark::Icon(mark), value.into(), None));
         }
         if self.form.alarms.is_empty() {
-            let quiet = row![
-                typo::text(typo::body(), tr("Default reminder")).style(theme::text_2).wrapping(Wrapping::None),
-                typo::text(typo::body(), tr("from Settings")).style(theme::text_3).wrapping(Wrapping::None),
-            ]
-            .spacing(space::s());
-            let quiet = container(quiet).width(Length::Fill).clip(true);
-            rows.push((Mark::Icon(Icon::Bell), quiet.into(), None));
+            let quiet = two_part(tr("Default reminder").to_string(), tr("from Settings").to_string(), theme::text_2);
+            rows.push((Mark::Icon(Icon::Bell), quiet, None));
         }
         if editable {
             let add = typo::text(typo::body(), tr("Add reminder")).style(theme::text_2);
@@ -2019,7 +2095,13 @@ impl Editor {
         if !faces.is_empty() || more > 0 {
             value = value.push(widgets::avatar_stack(&faces, more));
         }
-        value = value.push(typo::text(typo::body(), who).style(theme::text_3).wrapping(Wrapping::None));
+        // Cut with "…"; the tooltip around the line names everyone (the design review of PR #294).
+        let who = iced::widget::responsive(move |room| {
+            let shown = typo::ellipsize(&who, typo::body(), room.width);
+            typo::text(typo::body(), shown).style(theme::text_3).wrapping(Wrapping::None).into()
+        })
+        .height(Length::Shrink);
+        value = value.push(who);
         let value = widgets::with_tooltip(container(value).width(Length::Fill).clip(true), everyone_once.join(", "));
         let line = widgets::prop_line(tr("People"), None, value, None);
         let note =
@@ -2225,13 +2307,22 @@ fn status_words(status: EventStatus) -> (Icon, &'static str) {
 /// in `text_3`. Where they do not fit, the quiet part goes and the city is cut with "…"
 /// ([`typo::ellipsize`]); then the whole value shows as tooltip, never cut silently.
 fn zone_value<'a>(city: String, quiet: String) -> Element<'a, Message> {
+    two_part(city, quiet, theme::text)
+}
+
+/// `city` (the first part) in `colour`, then `quiet` in `text_3`, cut as [`zone_value`] cuts them.
+fn two_part<'a>(
+    city: String,
+    quiet: String,
+    colour: fn(&iced::Theme) -> iced::widget::text::Style,
+) -> Element<'a, Message> {
     let level = typo::body();
     let whole = if quiet.is_empty() { city.clone() } else { format!("{city} · {quiet}") };
     iced::widget::responsive(move |room| {
         let quiet_width = if quiet.is_empty() { 0.0 } else { text_width(&quiet, level) + space::s() };
         let both = text_width(&city, level) + quiet_width <= room.width;
         let shown = if both { city.clone() } else { typo::ellipsize(&city, level, room.width) };
-        let mut line = row![typo::text(level, shown.clone()).style(theme::text).wrapping(Wrapping::None)]
+        let mut line = row![typo::text(level, shown.clone()).style(colour).wrapping(Wrapping::None)]
             .spacing(space::s())
             .align_y(Alignment::Center);
         if both && !quiet.is_empty() {
@@ -2271,9 +2362,10 @@ fn zone_list_height() -> f32 {
     style::MENU_ITEM_HEIGHT * 8.0
 }
 
-/// A line between the groups of rows.
+/// A line between the groups of rows: with the column's spacing 16 above and below it, the gap
+/// between groups the design rules ask for (the design review of PR #294).
 fn divider<'a>() -> Element<'a, Message> {
-    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
+    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::s(), 0.0]).into()
 }
 
 /// The name of someone invited, else their address.
@@ -3311,6 +3403,108 @@ mod tests {
     }
 
     #[test]
+    fn a_change_typed_before_another_scope_is_chosen_keeps_its_scope() {
+        // Typed for "This event", "All" clicked before the save: the title goes to this event only.
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Location("Room 5".into()));
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Series));
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 5"), Some(SeriesScope::Occurrence)));
+        assert_eq!(editor.scope, SeriesScope::Series, "the band shows the new scope");
+        let _ = store(&mut editor, event, "\"8\"");
+        editor.update(Message::Location("Room 6".into()));
+        assert_eq!(saves_with(&mut editor, Message::Flush).1, Some(SeriesScope::Series), "what follows goes to all");
+
+        // And back: typed for "All", "This event" clicked before the save.
+        let mut back = Editor::edit(&occurrence(), &calendars());
+        back.update(Message::Scope(SeriesScope::Series));
+        back.update(Message::Location("Room 7".into()));
+        assert_eq!(saves_with(&mut back, Message::Scope(SeriesScope::Occurrence)).1, Some(SeriesScope::Series));
+
+        // While a save is under way, a change typed since keeps the scope until the answer.
+        let mut busy = Editor::edit(&occurrence(), &calendars());
+        busy.update(Message::Location("Room 8".into()));
+        let (event, _) = saves_with(&mut busy, Message::Flush);
+        busy.update(Message::Location("Room 9".into()));
+        assert!(matches!(busy.update(Message::Scope(SeriesScope::Series)), Action::None));
+        assert_eq!(busy.scope, SeriesScope::Occurrence, "the scope waits for the answer");
+        let (event, scope) = match store(&mut busy, event, "\"9\"") {
+            Action::Save(event, scope) => (event, scope),
+            other => panic!("expected the pending change to be saved, got {other:?}"),
+        };
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 9"), Some(SeriesScope::Occurrence)));
+        let _ = store(&mut busy, event, "\"10\"");
+        assert!(matches!(busy.update(Message::Scope(SeriesScope::Series)), Action::None), "nothing left to save");
+        assert_eq!(busy.scope, SeriesScope::Series);
+
+        // The second review of PR #294: a date moved for this event alone does not move the rule of
+        // the series once "All" is chosen; after the answer nothing more goes out.
+        let mut moved = Editor::edit(&occurrence(), &calendars());
+        moved.update(Message::StartDate("14.10.2026".into()));
+        moved.update(Message::EndDate("14.10.2026".into()));
+        let (event, scope) = saves_with(&mut moved, Message::Scope(SeriesScope::Series));
+        assert_eq!(scope, Some(SeriesScope::Occurrence));
+        assert_eq!(moved.form.repeat.as_ref(), occurrence().repeat.as_deref(), "the rule stays on Tuesdays");
+        let answer = Event { recurrence_id: occurrence().recurrence_id, ..event };
+        assert!(matches!(store(&mut moved, answer, "\"11\""), Action::None), "no save for all events follows");
+
+        // A save that fails takes the band back: the next change goes to this event, not to all.
+        let mut failing = Editor::edit(&occurrence(), &calendars());
+        failing.update(Message::Location("Room 12".into()));
+        let _ = saves_with(&mut failing, Message::Scope(SeriesScope::Series));
+        failing.save_failed();
+        assert_eq!(failing.scope, SeriesScope::Occurrence);
+        // "All" clicked after the failure sends the failed change again with "This event" first, so
+        // the next change does not carry it to the whole series (the review of PR #296).
+        let (retried, scope) = saves_with(&mut failing, Message::Scope(SeriesScope::Series));
+        assert_eq!((retried.location.as_deref(), scope), (Some("Room 12"), Some(SeriesScope::Occurrence)));
+        failing.save_failed();
+        assert_eq!(failing.scope, SeriesScope::Occurrence);
+        failing.update(Message::Location("Room 13".into()));
+        assert_eq!(saves_with(&mut failing, Message::Flush).1, Some(SeriesScope::Occurrence));
+    }
+
+    /// The review of PR #296: after a failed save a narrower scope takes the change along, as the
+    /// app's "Choose This event and try again" asks; it is not sent again with the old scope.
+    #[test]
+    fn a_narrower_scope_after_a_failed_save_takes_the_change_along() {
+        let mut editor = Editor::edit(&occurrence(), &calendars());
+        editor.update(Message::Scope(SeriesScope::Following));
+        editor.update(Message::Location("Room 20".into()));
+        assert_eq!(saves_with(&mut editor, Message::Flush).1, Some(SeriesScope::Following));
+        editor.save_failed();
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Occurrence));
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 20"), Some(SeriesScope::Occurrence)));
+        assert_eq!(editor.scope, SeriesScope::Occurrence);
+    }
+
+    /// The review of PR #296: the band switched while a save is under way, then more typed; when the
+    /// save fails, everything goes out with the narrower of the two scopes.
+    #[test]
+    fn a_failed_save_goes_out_again_with_the_narrower_scope() {
+        // Sent with "All", "This event" chosen meanwhile: the band stays on "This event".
+        let mut narrowed = Editor::edit(&occurrence(), &calendars());
+        narrowed.update(Message::Scope(SeriesScope::Series));
+        narrowed.update(Message::Location("Room 30".into()));
+        assert_eq!(saves_with(&mut narrowed, Message::Flush).1, Some(SeriesScope::Series));
+        assert!(matches!(narrowed.update(Message::Scope(SeriesScope::Occurrence)), Action::None));
+        narrowed.save_failed();
+        assert_eq!(narrowed.scope, SeriesScope::Occurrence);
+        assert!(narrowed.wants_autosave(), "nothing typed since, and still it goes out with the narrower scope");
+        let (event, scope) = saves_with(&mut narrowed, Message::Flush);
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 30"), Some(SeriesScope::Occurrence)));
+
+        // Sent with "This event", "All" chosen meanwhile: the band goes back to "This event".
+        let mut widened = Editor::edit(&occurrence(), &calendars());
+        widened.update(Message::Location("Room 32".into()));
+        assert_eq!(saves_with(&mut widened, Message::Flush).1, Some(SeriesScope::Occurrence));
+        assert!(matches!(widened.update(Message::Scope(SeriesScope::Series)), Action::None));
+        widened.update(Message::Location("Room 33".into()));
+        widened.save_failed();
+        assert_eq!(widened.scope, SeriesScope::Occurrence);
+        assert_eq!(saves_with(&mut widened, Message::Flush).1, Some(SeriesScope::Occurrence));
+    }
+
+    #[test]
     fn the_repeat_of_an_occurrence_changes_only_for_following_or_all_events() {
         let start = day(2026, 10, 13);
         let mut editor = Editor::edit(&occurrence(), &calendars());
@@ -3367,9 +3561,10 @@ mod tests {
         assert_eq!((ending.repeat.is_none(), ending.recurring, scope), (true, false, Some(SeriesScope::Series)));
         assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
         assert_eq!(editor.scope, SeriesScope::Series, "the scope stays while the series is being ended");
-        // The save failed: now the scope may change, and "Never" goes with it.
+        // The save failed: a narrower scope takes the form along (the review of PR #296), but "Never"
+        // does not go with it; the stored rule is back and nothing is left to send.
         editor.save_failed();
-        editor.update(Message::Scope(SeriesScope::Following));
+        assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
         assert_eq!(editor.scope, SeriesScope::Following);
         assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "the stored rule is back");
         editor.update(Message::Location("Room 8".into()));
@@ -3410,12 +3605,23 @@ mod tests {
     }
 
     #[test]
-    fn going_back_to_this_event_drops_a_rule_not_saved_yet() {
+    fn going_back_to_this_event_saves_a_rule_with_the_scope_it_was_chosen_for() {
+        // A rule chosen for "Following" goes out with "Following" before "This event" takes over
+        // (the second review of PR #294); the answer brings the rule as stored.
         let mut editor = Editor::edit(&occurrence(), &calendars());
         editor.update(Message::Scope(SeriesScope::Following));
-        editor.form.repeat = None;
-        editor.update(Message::Scope(SeriesScope::Occurrence));
-        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref());
+        let daily = repeat::shortlist(day(2026, 10, 13))[0].clone();
+        editor.form.repeat = Some(daily.clone());
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Occurrence));
+        assert_eq!((event.repeat.as_deref(), scope), (Some(&daily), Some(SeriesScope::Following)));
+        assert_eq!(editor.form.repeat.as_ref(), Some(&daily), "not taken back while the save is under way");
+        assert!(matches!(store(&mut editor, event, "\"8\""), Action::None), "nothing more goes out");
+        assert_eq!(editor.scope, SeriesScope::Occurrence);
+        // Without a save under way, "This event" still shows the stored rule.
+        let mut idle = Editor::edit(&occurrence(), &calendars());
+        idle.update(Message::Scope(SeriesScope::Following));
+        idle.update(Message::Scope(SeriesScope::Occurrence));
+        assert_eq!(idle.form.repeat.as_ref(), occurrence().repeat.as_deref());
     }
 
     #[test]
@@ -3547,10 +3753,17 @@ mod tests {
     #[test]
     fn a_new_date_moves_a_rule_taken_from_the_old_one() {
         let wednesday = vec![RepeatDay { day: Weekday::Wednesday, nth: None }];
+        let mut alone = Editor::edit(&occurrence(), &calendars());
+        alone.update(Message::StartDate("14.10.2026".into()));
+        assert_eq!(alone.form.repeat.as_ref(), occurrence().repeat.as_deref(), "This event keeps the rule");
+        // A date typed for this event alone is no change of the series: choosing "Following" first
+        // asks for the end date, which is before the start now (the second review of PR #294).
+        assert!(matches!(alone.update(Message::Scope(SeriesScope::Following)), Action::Focus(_)));
+        assert_eq!(alone.scope, SeriesScope::Occurrence);
+
         let mut editor = Editor::edit(&occurrence(), &calendars());
-        editor.update(Message::StartDate("14.10.2026".into()));
-        assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "This event keeps the rule");
         editor.update(Message::Scope(SeriesScope::Following));
+        editor.update(Message::StartDate("14.10.2026".into()));
         assert_eq!(editor.form.repeat.as_ref().map(|r| r.weekdays.clone()), Some(wednesday.clone()), "taken over");
         // Half-typed dates on the way do not stick: the rule is always moved from the stored one.
         for typed in ["1", "15.10.", "14.10.2026"] {
@@ -3664,14 +3877,13 @@ mod tests {
         editor.update(Message::Scope(SeriesScope::Series));
         assert!(matches!(editor.update(Message::AllDay(true)), Action::None));
         assert!(!editor.form.all_day, "the switch is off");
-        // A switch made for this event alone is not sent for all of them.
+        // A switch made for this event alone is not sent for all of them: choosing "All" saves it for
+        // this event first.
         editor.update(Message::Scope(SeriesScope::Occurrence));
         editor.form.all_day = true;
-        editor.update(Message::Scope(SeriesScope::Series));
-        assert_eq!(problem(&editor), Problem::AllDaySeries);
-        editor.update(Message::Scope(SeriesScope::Occurrence));
-        let (event, scope) = saves_with(&mut editor, Message::Flush);
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Series));
         assert!(event.all_day() && scope == Some(SeriesScope::Occurrence));
+        assert_eq!(problem(&editor), Problem::AllDaySeries, "until the answer, the form is no change for all");
     }
 
     #[test]

@@ -630,7 +630,7 @@ impl Custom {
     ) -> Element<'a, Message> {
         let built = self.build(start, today, until);
         let problem = built.as_ref().err().copied().filter(|_| self.attempted);
-        let labels = [tr("Every"), tr("On"), tr("Ends")];
+        let labels = [tr("Every"), trc("date", "On"), tr("Ends")];
         let width = labels.iter().map(|l| text_width(l, typo::meta())).fold(0.0, f32::max).ceil();
         let label = move |text: &'static str| -> Element<'a, Message> {
             container(typo::text(typo::meta(), text).style(theme::text_3)).width(width).into()
@@ -652,8 +652,12 @@ impl Custom {
             RepeatFreq::Yearly => 3,
         };
         let every_field = field(&self.every, "1", "000", problem == Some(Problem::Every), |v| edit(Edit::Every(v)));
-        let every_row =
-            row![every_field, widgets::segmented(units, unit)].spacing(space::s()).align_y(Alignment::Center);
+        // A longer translation puts the units under the number rather than past the card's edge.
+        let every_row = row![every_field, widgets::segmented(units, unit)]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(space::s());
         let mut what = column![line(tr("Every"), every_row.into())].spacing(space::s());
 
         match self.freq {
@@ -667,7 +671,7 @@ impl Custom {
                         widgets::with_tooltip(chip, full(*day))
                     })
                     .collect();
-                what = what.push(line(tr("On"), widgets::chip_row(chips)));
+                what = what.push(line(trc("date", "On"), widgets::chip_row(chips)));
             }
             RepeatFreq::Monthly => {
                 let by_day = on_month_days(&[if last_of_month(start) { -1 } else { start.day() as i8 }]);
@@ -676,7 +680,7 @@ impl Custom {
                     widgets::choice_chip(by_day, None::<Mark>, !self.by_weekday, Some(edit(Edit::ByWeekday(false)))),
                     widgets::choice_chip(by_weekday, None::<Mark>, self.by_weekday, Some(edit(Edit::ByWeekday(true)))),
                 ];
-                what = what.push(line(tr("On"), widgets::chip_row(chips)));
+                what = what.push(line(trc("date", "On"), widgets::chip_row(chips)));
             }
             RepeatFreq::Daily | RepeatFreq::Yearly => {}
         }
@@ -777,6 +781,23 @@ pub(super) fn until_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The design review of PR #294: the line "Every" holds the number and the units, wrapped under
+    /// each other where they do not fit beside the label in the card.
+    #[test]
+    fn the_every_line_fits_the_card() {
+        let padding = layout::panel_padding();
+        let inner = widgets::POPOVER_WIDTH - padding.left - padding.right;
+        let labels = [tr("Every"), trc("date", "On"), tr("Ends")];
+        let label = labels.iter().map(|l| text_width(l, typo::meta())).fold(0.0, f32::max).ceil();
+        let level = typo::body().tabular();
+        let number = text_width("000", level) + style::INPUT_PADDING.left + style::INPUT_PADDING.right + space::s();
+        let units = widgets::segmented_width(&[tr("Day"), tr("Week"), tr("Month"), tr("Year")]);
+        let room = inner - label - space::s();
+        assert!(number.max(units) <= room, "{} > {room}", number.max(units));
+        let ends = widgets::segmented_width(&[tr("Never"), trc("date", "On"), tr("After")]);
+        assert!(ends <= room, "{ends} > {room}");
+    }
 
     fn day(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).expect("a date")

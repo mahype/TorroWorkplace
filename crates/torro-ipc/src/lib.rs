@@ -862,12 +862,20 @@ pub enum Request {
     /// stays alone); with `recurring: true` the stored rule stays as it is, so an occurrence a client
     /// got without its rule never ends its series by being sent back.
     ///
-    /// A save that removes events of the series (a shorter or removed rule, reset exceptions) needs
-    /// the right to delete and waits for approval like `calendar.delete_event`. Errors: `not-found`
+    /// A save that removes events of the series needs the right to delete and waits for approval
+    /// like `calendar.delete_event`: a shorter or removed rule, another rule that leaves events out,
+    /// any change of the series' time zone, a later start under a fixed `UNTIL`, reset exceptions, and
+    /// any `following` or `series` save of a series the core has not cached in the version of the
+    /// `etag` sent (it cannot count then, so a stale `etag` is `forbidden` before `conflict`). That
+    /// check comes first, so without the right such a save is `forbidden` (or pending) before
+    /// `unsupported`, `error` or `not-found` for a missing occurrence; a calendar the client may not
+    /// see stays `not-found`. Errors: `not-found`
     /// (no such occurrence: reload), `conflict` (the series changed meanwhile, or no `etag`),
     /// `unsupported` (switching between all-day and timed for `following`/`series`, a rule that
-    /// cannot be counted for `following`, moving with `occurrence`/`following`), `error` (`scope`
-    /// without `href`, a `repeat.rule` that is no valid RRULE value).
+    /// cannot be counted for `following`, `following` at a date added apart from the rule (`RDATE`),
+    /// moving with `occurrence`/`following`), `error` (`scope` without `href`, a `repeat.rule` that
+    /// is no valid RRULE value, `repeat` fields outside their ranges or `nth` on a daily or weekly
+    /// rule, a date outside the years 1 to 9999).
     #[serde(rename = "calendar.save_event")]
     SaveEvent {
         event: Event,
@@ -891,8 +899,9 @@ pub enum Request {
     },
     /// Looks up places for the event editor's location (task TE.5, `docs/termin-editor.md` "Ort und
     /// Karte"): first matching locations of events in calendars the client may read (no network),
-    /// then what the place search service set in the settings (`maps`, Photon unless changed) finds. Sends `query` and
-    /// the computer's IP address to that service; only on Enter or "Search", never while typing.
+    /// then what the place search service set in the settings (`maps`, Photon unless changed) finds. Sends `query`, the
+    /// suite's language, the coordinates of `near` (Photon only) and the computer's IP address to that
+    /// service; only on Enter or "Search", never while typing.
     /// Answered with [`Response::Places`], at most a handful, best first.
     ///
     /// Limits, checked before anything is asked: `query` 1 to [`pim::MAX_PLACE_QUERY_CHARS`]

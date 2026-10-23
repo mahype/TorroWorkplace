@@ -96,7 +96,8 @@ pub fn read(rule: &str, zone: Option<Tz>) -> Repeat {
 ///   an all-day series and an instant for a timed one.
 ///
 /// A [`Repeat::rule`] that fails [`check`] is never given back: a custom rule then writes nothing
-/// (empty), any other is written from the fields. Which text counts as stored is the caller's
+/// (empty), any other is written from the fields. Fields that fail [`check_fields`] write nothing
+/// either. Which text counts as stored is the caller's
 /// choice: [`crate::write`] passes the rule the server holds, never a client's text.
 pub fn write(repeat: &Repeat) -> String {
     let stored = repeat.rule.trim();
@@ -106,6 +107,9 @@ pub fn write(repeat: &Repeat) -> String {
     }
     if writable && !stored.is_empty() && same_fields(&read(stored, None), repeat) {
         return stored.to_string();
+    }
+    if check_fields(repeat).is_err() {
+        return String::new();
     }
     let mut parts = vec![format!("FREQ={}", freq_code(repeat.freq))];
     if repeat.interval > 1 {
@@ -226,6 +230,35 @@ fn check_part(name: &str, value: &str) -> Result<(), &'static str> {
     if fine { Ok(()) } else { Err(BAD) }
 }
 
+/// Whether the fields of `repeat`, a rule that is not custom, make a rule RFC 5545 allows, in the
+/// ranges the model names ([`Repeat`]): `months` 1 to 12, `month_days` 1 to 31 or -1 to -31, an `nth` 1 to 53 or -1 to -53 and only for a monthly or yearly rule, no
+/// `month_days` for a weekly rule, a `COUNT` of 1 or more. [`write`] would otherwise write
+/// `BYMONTH=13`, `BYDAY=0MO`, `COUNT=0` or `FREQ=WEEKLY;BYDAY=2MO`, which servers and other programs
+/// refuse or read differently (the review of PR #294). The core refuses such fields with `error`
+/// unless they are those of the rule the server stores; the error is a reason for people.
+pub fn check_fields(repeat: &Repeat) -> Result<(), &'static str> {
+    if repeat.months.iter().any(|month| !(1..=12).contains(month)) {
+        return Err("repeat.months are 1 to 12");
+    }
+    if repeat.month_days.iter().any(|day| *day == 0 || !(-31..=31).contains(day)) {
+        return Err("repeat.month_days are 1 to 31 or -1 to -31");
+    }
+    let positioned = repeat.weekdays.iter().filter_map(|day| day.nth).collect::<Vec<_>>();
+    if positioned.iter().any(|nth| *nth == 0 || !(-53..=53).contains(nth)) {
+        return Err("repeat.weekdays[].nth is 1 to 53 or -1 to -53");
+    }
+    if !positioned.is_empty() && matches!(repeat.freq, RepeatFreq::Daily | RepeatFreq::Weekly) {
+        return Err("repeat.weekdays[].nth is for a monthly or yearly rule only");
+    }
+    if repeat.freq == RepeatFreq::Weekly && !repeat.month_days.is_empty() {
+        return Err("repeat.month_days is not for a weekly rule");
+    }
+    if repeat.end == RepeatEnd::Count(0) {
+        return Err("repeat.end count is 1 or more");
+    }
+    Ok(())
+}
+
 /// `X-` and at least one letter, digit or `-`.
 fn is_extension(name: &str) -> bool {
     name.strip_prefix("X-")
@@ -252,7 +285,7 @@ fn until_value(value: &str) -> bool {
 /// Whether `repeat` holds the fields of `stored`, a rule text the server stores ([`read`]): then the
 /// stored text is written back as it is, whether or not it passes [`check`] – it is in the object
 /// already, and rewriting it would look like a new rule (the review of #278, finding 1).
-pub(crate) fn keeps_stored(stored: &str, repeat: &Repeat) -> bool {
+pub fn keeps_stored(stored: &str, repeat: &Repeat) -> bool {
     same_fields(&read(stored, None), repeat)
 }
 
@@ -375,6 +408,31 @@ mod tests {
         assert_eq!(write(&Repeat { rule: String::new(), ..repeat.clone() }), rule, "from the fields");
         assert_eq!(write(&repeat), rule, "the stored text");
         repeat
+    }
+
+    #[test]
+    fn fields_out_of_their_ranges_write_nothing() {
+        let monthly = read("FREQ=MONTHLY;BYMONTHDAY=3", None);
+        let weekly = read("FREQ=WEEKLY", None);
+        let second_monday = vec![RepeatDay { day: Weekday::Monday, nth: Some(2) }];
+        let wrong = [
+            Repeat { month_days: vec![0], ..monthly.clone() },
+            Repeat { month_days: vec![32], ..monthly.clone() },
+            Repeat { months: vec![13], ..monthly.clone() },
+            Repeat { months: vec![0], ..monthly.clone() },
+            Repeat { weekdays: vec![RepeatDay { day: Weekday::Monday, nth: Some(0) }], ..monthly.clone() },
+            Repeat { weekdays: vec![RepeatDay { day: Weekday::Monday, nth: Some(54) }], ..monthly.clone() },
+            Repeat { end: RepeatEnd::Count(0), ..monthly.clone() },
+            Repeat { weekdays: second_monday.clone(), ..weekly.clone() },
+            Repeat { month_days: vec![3], ..weekly.clone() },
+        ];
+        for repeat in wrong {
+            assert!(check_fields(&repeat).is_err(), "{repeat:?}");
+            assert_eq!(write(&Repeat { rule: String::new(), ..repeat.clone() }), "", "{repeat:?}");
+        }
+        let fine = Repeat { weekdays: second_monday, month_days: Vec::new(), ..monthly };
+        assert_eq!(check_fields(&fine), Ok(()));
+        assert_eq!(write(&Repeat { rule: String::new(), ..fine }), "FREQ=MONTHLY;BYDAY=2MO");
     }
 
     #[test]

@@ -1169,7 +1169,8 @@ fn clock_changes(tz: Tz, year: i32) -> Vec<ClockChange> {
     let mut changes = Vec::new();
     // Day by day, then halving the day the offset changed in down to the second.
     while day.year() == year {
-        let next = day + TimeDelta::days(1);
+        // The last day chrono knows has no next one.
+        let Some(next) = day.checked_add_signed(TimeDelta::days(1)) else { break };
         let (from, to) = (offset(day), offset(next));
         if from != to {
             let (mut low, mut high) = (day, next);
@@ -2934,6 +2935,14 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         let ics = event_ics(&change, now(), None);
         assert!(unfolded_lines(&ics).contains(&"DTSTART;TZID=Europe/Berlin:20260329T033000".to_string()));
         assert_eq!(read_event(&ics), change);
+    }
+
+    #[test]
+    fn the_last_year_chrono_knows_has_no_panic_in_its_zone() {
+        // The review of PR #294: the day after chrono's last day does not exist.
+        let last = chrono::NaiveDate::MAX.year();
+        let _ = clock_changes(Tz::Europe__Berlin, last);
+        let _ = clock_changes(Tz::Australia__Sydney, last);
     }
 
     #[test]

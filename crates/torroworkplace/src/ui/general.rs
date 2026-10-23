@@ -69,7 +69,9 @@ use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Leng
 use torro_core::AppId;
 use torro_core::design::{ColorScheme, Design, FontRole, FontSet, Mode, Part, STANDARD_ID, Weight};
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Component, ComponentSwitch, GeocoderKind, Language, Maps, MapsApp, Settings, Zoom};
+use torro_core::settings::{
+    Component, ComponentSwitch, GeocoderKind, Language, Maps, MapsApp, Settings, Zoom, address_problem,
+};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
@@ -141,8 +143,9 @@ struct MapsDraft {
     /// The map tile address as typed; `None` alike.
     tiles: Option<Draft>,
     /// The address whose last save was refused, and why: the service's own check
-    /// (`Maps::merged`, which `settings.set_setting maps` runs), shown quietly under the group.
-    problem: Option<(Address, String)>,
+    /// (`Maps::merged`, which `settings.set_setting maps` runs), its reason as a sentence for people
+    /// (`address_problem`), translated and shown quietly under the group.
+    problem: Option<(Address, &'static str)>,
 }
 
 /// One address as typed.
@@ -456,8 +459,10 @@ fn save_address(state: &mut State, maps: &Maps, which: Address) -> Option<Reques
         return None;
     }
     let value = serde_json::Value::String(typed.clone());
-    *state.maps.draft_mut(which) = Some(Draft { text: typed, handed_in: true });
-    if let Err(why) = maps.merged(&maps_field(which.field(), value.clone())) {
+    *state.maps.draft_mut(which) = Some(Draft { text: typed.clone(), handed_in: true });
+    if maps.merged(&maps_field(which.field(), value.clone())).is_err() {
+        // The reason as a sentence `tr` translates; the core's own text is English, for agents.
+        let why = address_problem(&typed, which == Address::Tiles).unwrap_or("The address cannot be used.");
         state.maps.problem = Some((which, why));
         return None;
     }
@@ -575,7 +580,7 @@ fn maps<'a>(state: &'a State, maps: &'a Maps) -> Element<'a, Message> {
     });
     let mut block = column![widgets::group(tr("Maps"), rows, Some(footer.to_string()))].spacing(layout::item_gap());
     if let Some((_, why)) = &draft.problem {
-        block = block.push(notice(trf("Not saved: {reason}", &[("reason", why)])));
+        block = block.push(notice(trf("Not saved: {reason}", &[("reason", &tr(why))])));
     }
     block.push(row(links).spacing(space::xs()).wrap().vertical_spacing(space::xs())).into()
 }
@@ -1687,7 +1692,8 @@ mod tests {
         let _ = update(&mut state, Message::AddressInput(Address::Tiles, keyed.into()), &data);
         let enter = update(&mut state, Message::SaveAddress(Address::Tiles), &data);
         assert!(matches!(enter, Action::None), "{enter:?}");
-        let why = Maps::default().merged(&serde_json::json!({"tiles": keyed})).expect_err("refused by the core");
+        assert!(Maps::default().merged(&serde_json::json!({"tiles": keyed})).is_err(), "refused by the core");
+        let why = address_problem(keyed, true).expect("a reason for people");
         assert_eq!(state.maps.problem, Some((Address::Tiles, why)));
         assert_eq!(state.maps.draft(Address::Tiles).map(|d| d.text.as_str()), Some(keyed), "kept to be fixed");
         // Over to the other field (typing what is stored there, so it has nothing to save).
