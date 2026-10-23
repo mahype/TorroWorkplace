@@ -203,7 +203,10 @@ Kacheln, zu Photon, zu den Regeln von Nominatim und „© OpenStreetMap contribu
   (mindestens 1). Daten außerhalb der Jahre 1 bis 9999 sind `error`.
 - **Umfang wechseln im Editor:** Was unter dem bisherigen Umfang getippt und noch nicht gespeichert ist,
   speichert der Editor vor dem Wechsel mit diesem Umfang; ist es noch nicht speicherbar oder läuft ein
-  Speichern, bleibt der Umfang, bis es gespeichert ist.
+  Speichern, bleibt der Umfang, bis es gespeichert ist. Ist das Speichern gescheitert, geht eine Änderung nie mit
+  einem weiteren Umfang hinaus, als unter dem sie getippt wurde: Ein weiterer Umfang schickt sie erst noch einmal
+  mit dem alten, ein engerer nimmt sie mit („Choose This event and try again“). Wurde der Umfang während des
+  Speicherns gewechselt, gilt nach dem Fehlschlag der engere der beiden.
 - **Um Tage verschieben:** Bleibt `BYDAY`/`BYMONTHDAY` stehen, ist das zulässig (RFC 5545: `DTSTART` zählt
   dann als zusätzliches Vorkommen); was wegfällt, zählt als gelöscht (Löschrecht, Freigabe). Der Editor
   schickt die Regel mit dem neuen Wochentag mit.
