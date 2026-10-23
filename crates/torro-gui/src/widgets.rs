@@ -67,6 +67,7 @@ use iced::{
 };
 use iced::{border, keyboard, mouse};
 
+use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::tr;
 use torro_core::shortcuts::{Held, System};
 use torro_ipc::api::{Confirm, Level};
@@ -76,6 +77,7 @@ use crate::layout;
 use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
 use crate::theme::{self, ChartColor, Palette, palette, radius, size, space};
+use crate::themed;
 use crate::typo;
 
 /// A button style from [`crate::style::button`] (`style::button::primary`, `ghost` …).
@@ -864,34 +866,94 @@ pub fn sidebar_group_in<'a, M: Clone + 'a>(
 // Lists
 // ---------------------------------------------------------------------------------------------
 
-/// A list row (a task, an agenda entry): 40 high, `cells` side by side with 10 between them,
-/// 16 at the sides ([`layout::row_padding`]), a line below. Give the title cell `.width(Fill)` so the cells after it sit at
-/// the right. The `selected` row (the one in the detail) is `selected` with a 2-px bar on the left.
+/// A list row (a task, an agenda entry): [`size::row()`] high, `cells` side by side with 10 between
+/// them, the sides of [`layout::row_padding`] (the content is centred in the height). Give the title
+/// cell `.width(Fill)` so the cells after it sit at the right. How the row is drawn follows the
+/// design's [`layout::list`] (issue #291); the cells stay where they are in every design:
+///
+/// - `separators`: a line below the row (inside its height, as the CSS's `border-box`), or none.
+/// - the `selected` row (the one in the detail) with `selection = "bar"` (Standard, Compact): the
+///   neutral `selected` surface with a 2-px bar of the accent colour at its left ([`selection_bar`]);
+///   with `selection = "fill"` (Console): the whole row in `accent`, its cells drawn in `on_accent`
+///   ([`row_content`]) – the one place besides the primary button where the accent is a surface.
 ///
 /// ```ignore
 /// widgets::list_row(vec![check.into(), priority, typo::text(typo::body(), &task.title).width(Fill).into(), due], task.id == selected, Some(Message::Select(task.id)))
 /// ```
 pub fn list_row<'a, M: Clone + 'a>(cells: Vec<Element<'a, M>>, selected: bool, on_press: Option<M>) -> Element<'a, M> {
+    list_row_in(layout::list(), cells, selected, on_press)
+}
+
+/// What [`list_row`] draws around its cells in a design with the list look `look`: worked out apart
+/// from the widgets, so the tests can check every look without switching the process's design.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowParts {
+    /// The accent bar at the left ([`selection_bar`]).
+    bar: bool,
+    /// The cells in `on_accent` ([`row_content`]).
+    on_accent: bool,
+    /// The line below the row.
+    line: bool,
+}
+
+impl RowParts {
+    fn of(look: ListLook, selected: bool) -> RowParts {
+        let (bar, on_accent) = match (selected, look.selection) {
+            (false, _) => (false, false),
+            (true, ListSelection::Bar) => (true, false),
+            (true, ListSelection::Fill) => (false, true),
+        };
+        RowParts { bar, on_accent, line: look.separators }
+    }
+}
+
+/// [`list_row`] in the list look `look`.
+fn list_row_in<'a, M: Clone + 'a>(
+    look: ListLook,
+    cells: Vec<Element<'a, M>>,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let parts = RowParts::of(look, selected);
     let content = row(cells).spacing(ROW_GAP).align_y(Alignment::Center);
+    let content = if parts.on_accent { themed::on_accent(content) } else { content.into() };
     let pad = layout::row_padding();
-    let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
+    // The bar takes its width from the padding, so the cells do not move when the row is chosen.
+    let left = if parts.bar { pad.left - SELECTED_BAR } else { pad.left };
+    let height = size::row() - if parts.line { LINE } else { 0.0 };
     let body = button(container(content).center_y(Fill))
         .width(Fill)
-        // 40 including the line below, as the CSS's `border-box`.
-        .height(size::row() - LINE)
-        .padding(Padding { left, ..pad })
-        .style(style::button::list_row(selected))
+        .height(height)
+        // Only the sides: the height is the row's, the content centred in it.
+        .padding(Padding::new(0.0).left(left).right(pad.right))
+        .style(style::button::list_row_in(look.selection, selected))
         .on_press_maybe(on_press);
-    let line: Element<'a, M> = if selected {
-        let bar = container(blank()).width(SELECTED_BAR).height(size::row() - LINE).style(|t| container::Style {
-            background: Some(Background::Color(palette(t).text_3)),
+    let body: Element<'a, M> = if parts.bar { row![selection_bar(height), body].into() } else { body.into() };
+    if parts.line { column![body, rule::horizontal(LINE).style(style::rule)].into() } else { body }
+}
+
+/// The bar that marks the chosen row of a list in a design with `[list] selection = "bar"` (issue
+/// #291): 2 wide, `height` high, in the accent colour. [`list_row`] puts it at the row's left edge and
+/// takes its width from the row's left padding; a view that draws its rows itself does the same.
+pub fn selection_bar<'a, M: 'a>(height: f32) -> Element<'a, M> {
+    container(blank())
+        .width(SELECTED_BAR)
+        .height(height)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).accent)),
             ..container::Style::default()
-        });
-        row![bar, body].into()
-    } else {
-        body.into()
-    };
-    column![line, rule::horizontal(LINE).style(style::rule)].into()
+        })
+        .into()
+}
+
+/// The cells of a list row as the design draws them (issue #291): on the `selected` row of a design
+/// with `[list] selection = "fill"` in a theme where every text colour – `text`, `text_2`, `text_3`,
+/// and icons toned with them – is `on_accent`, so they stay readable on the accent surface of
+/// `style::button::list_row`; otherwise `content` unchanged. Colours of their own (a status icon, a
+/// list's colour) stay. [`list_row`] does this itself; a view that draws its rows with
+/// `style::button::list_row` wraps its content in it.
+pub fn row_content<'a, M: 'a>(content: impl Into<Element<'a, M>>, selected: bool) -> Element<'a, M> {
+    if RowParts::of(layout::list(), selected).on_accent { themed::on_accent(content) } else { content.into() }
 }
 
 /// The head of a group in a list ("Overdue 2", "Today 3"): 32 high on `raised` with lines above
@@ -1759,8 +1821,9 @@ pub enum RailMode {
     /// ([`rail_flyout`]), a click does the group's first action that goes.
     #[default]
     Collapsed,
-    /// [`size::sidebar()`] wide: every group open with its title, every action with icon, word and
-    /// key – a column of the layout that moves the mail inwards, nothing lies over it.
+    /// [`size::rail_wide()`] wide (issue #291; 248 in the standard design): every group open with its
+    /// title, every action with icon, word and key – a column of the layout that moves the mail
+    /// inwards, nothing lies over it.
     Expanded,
 }
 
@@ -1775,19 +1838,19 @@ impl RailMode {
     }
 
     /// How wide the rail is in this mode: its column – [`crate::shell::rail()`] collapsed,
-    /// [`size::sidebar()`] expanded – and the line on its left. For apps that work out the room
+    /// [`size::rail_wide()`] expanded – and the line on its left. For apps that work out the room
     /// left for the mail.
     pub fn width(self) -> f32 {
         self.column() + LINE
     }
 
     /// The rail's column without its line. Collapsed it holds an icon of [`size::control_lg()`]
-    /// with [`space::s()`] at both sides, as the collapsed sidebar does: the line stands outside,
+    /// centred in [`crate::shell::rail()`], as the collapsed sidebar does: the line stands outside,
     /// so the icons sit on whole pixels.
     fn column(self) -> f32 {
         match self {
             RailMode::Collapsed => crate::shell::rail(),
-            RailMode::Expanded => size::sidebar(),
+            RailMode::Expanded => size::rail_wide(),
         }
     }
 }
@@ -1980,12 +2043,13 @@ const RAIL_GAP: f32 = 2.0;
 
 /// The action rail at the right edge of a mail (task E14.1, `docs/prototypes/inbox/mail-aktionsleiste.html#d`):
 /// a column over the mail's whole height on the `panel` surface, a `line` on its left, as wide as
-/// [`RailMode::width`] (the collapsed or expanded sidebar and the line).
+/// [`RailMode::width`] ([`size::rail()`] collapsed, [`size::rail_wide()`] expanded, and the line).
 ///
 /// - **Top, in both modes alike** (no jump on switching): the icon button `panel-right`
 ///   ([`size::control_lg()`], `style::button::icon`, tooltip "Expand actions" or "Collapse actions"
-///   with the key `]`) [`space::s()`] in from the top and the right – where the collapsed rail has it
-///   –, [`space::s()`] below it a `line` from edge to edge. Without `on_toggle` neither (medium and
+///   with the key `]`) [`space::s()`] in from the top and centred in the collapsed rail's width from
+///   the right ([`rail_toggle_inset`]) – where the collapsed rail has its icons –, [`space::s()`]
+///   below it a `line` from edge to edge. Without `on_toggle` neither (medium and
 ///   narrow windows, which always show the collapsed rail, task E14 decision 5).
 /// - **Collapsed:** one icon per group ([`size::control_lg()`] square, [`space::xs()`] apart), the
 ///   groups marked [`RailGroup::foot`] at the bottom; the Reply group ([`RailGroup::accent`]) as a
@@ -2019,25 +2083,74 @@ pub fn action_rail<'a, M: Clone + 'a>(
     on_event: fn(RailEvent) -> M,
     on_toggle: Option<M>,
 ) -> Element<'a, M> {
+    action_rail_toggle(groups, mode, active, on_event, on_toggle.into())
+}
+
+/// The toggle at the top of the action rail ([`action_rail_toggle`], issue #291): none, off or working.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RailToggle<M> {
+    /// No head – no toggle and no line below it: medium and narrow windows, which always show the
+    /// collapsed rail (task E14 decision 5).
+    Hidden,
+    /// The head with the toggle off (as any button that is off: faded, no hover, no key in its
+    /// tooltip), the tooltip saying why – `tr("Widen the window to expand actions")` where the rail
+    /// cannot expand. The head stays, so the icons below it do not move.
+    Off(&'static str),
+    /// The head with the working toggle, which sends this message.
+    On(M),
+}
+
+impl<M> From<Option<M>> for RailToggle<M> {
+    /// The toggle of [`action_rail`]'s `on_toggle`: none without a message, else a working one.
+    fn from(on_toggle: Option<M>) -> RailToggle<M> {
+        on_toggle.map_or(RailToggle::Hidden, RailToggle::On)
+    }
+}
+
+impl<M> RailToggle<M> {
+    /// Whether the rail draws its head (the toggle and the line below it): off or on, not hidden.
+    pub fn has_head(&self) -> bool {
+        !matches!(self, RailToggle::Hidden)
+    }
+}
+
+/// [`action_rail`] with the toggle as a [`RailToggle`] (issue #291): [`RailToggle::Off`] draws the head
+/// with the toggle off and its reason as the tooltip – where an expanded rail would squeeze the reader –,
+/// so the groups stand where they stand with a working toggle, in every design.
+pub fn action_rail_toggle<'a, M: Clone + 'a>(
+    groups: Vec<RailGroup<'a, M>>,
+    mode: RailMode,
+    active: Option<usize>,
+    on_event: fn(RailEvent) -> M,
+    toggle: RailToggle<M>,
+) -> Element<'a, M> {
     let (foot, top): (Vec<_>, Vec<_>) = groups.into_iter().enumerate().partition(|(_, group)| group.foot);
     let mut rail = column![].width(Fill).height(Fill);
-    if let Some(on_toggle) = on_toggle {
-        let word = match mode {
-            RailMode::Collapsed => tr("Expand actions"),
-            RailMode::Expanded => tr("Collapse actions"),
+    if toggle.has_head() {
+        let (press, hint): (Option<M>, Element<'a, M>) = match toggle {
+            RailToggle::On(message) => {
+                let word = match mode {
+                    RailMode::Collapsed => tr("Expand actions"),
+                    RailMode::Expanded => tr("Collapse actions"),
+                };
+                let hint = row![typo::text(typo::caption(), word).style(theme::text_2), kbd("]")]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+                (Some(message), hint.into())
+            }
+            RailToggle::Off(why) => (None, typo::text(typo::caption(), why).style(theme::text_2).into()),
+            RailToggle::Hidden => (None, blank().into()),
         };
-        let mark = button_icon(Icon::PanelRight, icon::SIZE, style::button::icon, true);
-        let toggle = button(center(mark))
+        let mark = button_icon(Icon::PanelRight, icon::SIZE, style::button::icon, press.is_some());
+        let button = button(center(mark))
             .width(size::control_lg())
             .height(size::control_lg())
             .padding(0)
             .style(style::button::icon)
-            .on_press(on_toggle);
-        let hint = row![typo::text(typo::caption(), word).style(theme::text_2), kbd("]")]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
-        let toggle = container(tip(toggle, hint, tooltip::Position::Left)).width(Fill).align_right(Fill);
-        rail = rail.push(container(toggle).padding(space::s())).push(rule::horizontal(LINE).style(style::rule));
+            .on_press_maybe(press);
+        let button = container(tip(button, hint, tooltip::Position::Left)).width(Fill).align_right(Fill);
+        let inset = Padding::new(space::s()).left(0.0).right(rail_toggle_inset());
+        rail = rail.push(container(button).padding(inset)).push(rule::horizontal(LINE).style(style::rule));
     }
     let edge = Padding::new(0.0).horizontal(space::s());
     let (top, foot): (Element<'a, M>, Element<'a, M>) = match mode {
@@ -2078,6 +2191,13 @@ pub fn action_rail<'a, M: Clone + 'a>(
         .height(Fill)
         .style(style::container::panel_flush)
         .into()
+}
+
+/// How far the toggle of the action rail stands from the rail's right edge: centred in the collapsed
+/// rail's width, like the icons below it – [`space::s()`] when the rail is the button and 8 at either
+/// side (as the suite had it), 10 in the standard design (60 and 40).
+fn rail_toggle_inset() -> f32 {
+    (crate::shell::rail() - size::control_lg()) / 2.0
 }
 
 /// The rows of a group of the expanded rail ([`action_rail`]): its title as in the sidebar
@@ -3416,7 +3536,8 @@ pub fn group<'a, M: 'a>(
 
 /// A row of a settings [`group`]: `label` in `BODY`, an optional `detail` below it in `META`
 /// `text_2`, and one `control` at the right (toggler, pick list, button; the rest goes into a "…"
-/// menu). 44 high, 56 with a detail; 16 at the sides ([`layout::row_padding`]).
+/// menu). [`size::header()`] high, 12 more with a detail; the sides of [`layout::row_padding`], the
+/// content centred in the height.
 pub fn group_row<'a, M: 'a>(
     label: impl IntoFragment<'a>,
     detail: Option<String>,
@@ -3429,8 +3550,15 @@ pub fn group_row<'a, M: 'a>(
     }
     container(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center))
         .center_y(height)
-        .padding(layout::row_padding())
+        .padding(group_row_padding(layout::row_padding()))
         .into()
+}
+
+/// The padding of a [`group_row`] from the row padding `pad`: only its sides. The row has a fixed
+/// height and centres its content, so padding above and below would only squeeze the control (18
+/// above and below a row of 64 left a button of 36 only 28).
+fn group_row_padding(pad: Padding) -> Padding {
+    Padding::new(0.0).left(pad.left).right(pad.right)
 }
 
 /// A heading over a block of a settings page with quiet actions at its right (task L.18: "Design"
@@ -4493,6 +4621,29 @@ mod tests {
         let _ = choice_chip("Nextcloud", Some(mark), false, Some(Msg::Go));
     }
 
+    /// Issue #291 (task L.34): a list row follows the list look – a bar of the accent colour at the
+    /// chosen row (Standard, Compact) or the whole row in the accent with its cells in `on_accent`
+    /// (Console), a line below or none – and builds in every look, chosen or not.
+    #[test]
+    fn a_list_row_follows_the_list_look() {
+        let standard = layout::list();
+        assert_eq!(standard.selection, ListSelection::Bar, "the standard marks the chosen row with a bar");
+        let fill = ListLook { selection: ListSelection::Fill, separators: false, ..standard };
+        assert_eq!(RowParts::of(standard, true), RowParts { bar: true, on_accent: false, line: true });
+        assert_eq!(RowParts::of(standard, false), RowParts { bar: false, on_accent: false, line: true });
+        assert_eq!(RowParts::of(fill, true), RowParts { bar: false, on_accent: true, line: false });
+        assert_eq!(RowParts::of(fill, false), RowParts { bar: false, on_accent: false, line: false });
+        for look in [standard, fill] {
+            for selected in [true, false] {
+                let cells = || vec![typo::text(typo::body(), "Review API concept").width(Fill).into()];
+                let _: Element<'_, Msg> = list_row_in(look, cells(), selected, Some(Msg::Go));
+                let _: Element<'_, Msg> = list_row_in(look, cells(), selected, None);
+            }
+        }
+        let _: Element<'_, Msg> = row_content(typo::text(typo::body(), "x"), true);
+        let _: Element<'_, Msg> = selection_bar(size::row());
+    }
+
     /// Task E14.1: the rail's mode goes back and forth, starts collapsed and is as wide as the
     /// collapsed sidebar or the expanded one.
     #[test]
@@ -4502,8 +4653,11 @@ mod tests {
         assert_eq!(RailMode::Expanded.toggled(), RailMode::Collapsed);
         assert_eq!(RailMode::Collapsed.toggled().toggled(), RailMode::Collapsed);
         assert_eq!(RailMode::Collapsed.width(), crate::shell::rail() + LINE);
-        assert_eq!(RailMode::Expanded.width(), size::sidebar() + LINE);
-        assert_eq!(crate::shell::rail(), size::control_lg() + 2.0 * space::s(), "the icons fill the column");
+        assert_eq!(RailMode::Expanded.width(), size::rail_wide() + LINE);
+        // Issue #291: the rails are the design's, the toggle centred over the collapsed icons.
+        assert_eq!((crate::shell::rail(), size::rail_wide()), (60.0, 248.0), "the standard's");
+        assert_eq!(rail_toggle_inset(), 10.0, "(60 - 40) / 2");
+        assert_eq!(size::control_lg(), 40.0, "the rail's button");
     }
 
     /// Task E14.1: a group's icon sends its first item that goes – past an item that is off – and
@@ -4577,6 +4731,45 @@ mod tests {
         assert_eq!(flyout_origin(icon, tall, true, short).y, beside_gap(), "too tall: from the top");
         // Task E14.3 (finding 6): the card ends `space::xs()` before the rail's line.
         assert_eq!(flyout_gap(), space::s() + LINE + space::xs());
+    }
+
+    /// Issue #291 (review of the three designs): a settings row of a fixed height takes only the sides
+    /// of the row padding, so its control – a button, a pick list – keeps its height in every design
+    /// (with 18 above and below a row of 64 squeezed a button of 36 to 28).
+    #[test]
+    fn a_group_row_holds_its_control_in_every_design() {
+        for id in torro_core::design::BUILT_IN_IDS {
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let pad = d.layout.row_padding;
+            let full = Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal };
+            let sides = group_row_padding(full);
+            assert_eq!((sides.left, sides.right), (pad.horizontal, pad.horizontal), "{id}: the sides stay");
+            let control = d.size.control_sm.max(d.size.control);
+            for height in [d.size.header, d.size.header + d.space.m] {
+                let inner = height - sides.top - sides.bottom;
+                assert!(inner >= control, "{id}: {inner} inside a row of {height} holds a control of {control}");
+            }
+        }
+    }
+
+    /// Issue #291 (review of the three designs): where the rail cannot expand the head stays with the
+    /// toggle off – drawn the same way as a working one –, so the icons below it do not move; only
+    /// medium and narrow windows draw none.
+    #[test]
+    fn the_rails_head_stays_with_its_toggle_off() {
+        assert!(RailToggle::On(Msg::Go).has_head() && RailToggle::<Msg>::Off("why").has_head());
+        assert!(!RailToggle::<Msg>::Hidden.has_head());
+        assert_eq!(RailToggle::from(Some(Msg::Go)), RailToggle::On(Msg::Go), "action_rail's on_toggle");
+        assert_eq!(RailToggle::<Msg>::from(None), RailToggle::Hidden);
+        for id in ["torro", "compact", "console"] {
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            assert!(d.size.control_lg <= d.size.rail, "{id}: the toggle fits the collapsed rail, on or off");
+        }
+        for mode in [RailMode::Collapsed, RailMode::Expanded] {
+            for toggle in [RailToggle::On(Msg::Go), RailToggle::Off("why"), RailToggle::Hidden] {
+                let _: Element<'_, Msg> = action_rail_toggle(rail_groups(), mode, None, |_| Msg::Close, toggle);
+            }
+        }
     }
 
     /// Task E14.1: the rail builds collapsed and expanded, with and without its button and an open
@@ -5201,16 +5394,17 @@ mod tests {
         }
     }
 
-    /// Task L.18: tiles are made from the tokens – seven fit a page of `content_max`, four a narrow
-    /// window –, every state builds, and a name cut to the tile is never cut silently.
+    /// Task L.18: tiles are made from the tokens – six fit a page of `content_max` in the standard of
+    /// issue #291 (seven before, with buttons of 28), three a narrow window –, every state builds, and
+    /// a name cut to the tile is never cut silently.
     #[test]
     fn preview_tiles_take_their_size_from_the_tokens_and_build_in_every_state() {
         assert_eq!(preview_tile_width(), 3.0 * size::control());
         assert_eq!(preview_size(), Size::new(preview_tile_width() - 2.0 * (space::xs() + LINE), size::control_sm()));
-        assert_eq!((preview_tile_width(), preview_size().height), (96.0, 28.0), "the standard's tile");
+        assert_eq!((preview_tile_width(), preview_size().height), (114.0, 36.0), "the standard's tile");
         let fit = |room: f32| ((room + ICON_GAP) / (preview_tile_width() + ICON_GAP)).floor();
-        assert_eq!(fit(size::content_max()), 7.0);
-        assert!(fit(size::form_max() - size::sidebar()) >= 4.0);
+        assert_eq!(fit(size::content_max()), 6.0);
+        assert!(fit(size::form_max() - size::sidebar()) >= 3.0);
         let states = [PreviewState::Plain, PreviewState::Chosen, PreviewState::Unusable { open: false }];
         let tiles: Vec<Element<'_, Msg>> = states
             .into_iter()

@@ -516,7 +516,7 @@ eine neue Schrift vorschlagen, warten auf L.24.
   und dunkel.
 
 ### L.25 Design Compact
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Compact ist eines der drei eingebauten Designs (L.31).
 - **Modell:** Opus · **Braucht:** L.23 · **Dateien:** `designs/compact/` (`design.toml`, `preview.png`),
   `crates/torroworkplace/src/designs.rs`
 - Viel auf einen Blick. Richtwerte aus der Tabelle im Konzept (Text 12/16, Zeile 32, Seitenleiste 24, Knöpfe 24/28/32,
@@ -528,21 +528,21 @@ eine neue Schrift vorschlagen, warten auf L.24.
   Größenklassen, mit Inter und mit der breitesten Beispielschrift, mit Torro und Nord, hell und dunkel.
 
 ### L.26 Design Airy
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): kein Comfort-Design; ein luftigeres Design kann später als eigenes Issue kommen.
 - **Modell:** Opus · **Braucht:** L.23 · **Dateien:** `designs/airy/`, `crates/torroworkplace/src/designs.rs`
 - Viel Luft. Richtwerte aus dem Konzept (Text 14/22, Lesetext 16/26, Zeile 48, Seitenleiste 32 und 260 breit,
   Seitenrand 32 × 40). Seitenleiste des Kalenders in niedrigen Fenstern prüfen (siehe Plex).
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design airy`.
 
 ### L.27 Design Clear
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Standard, Compact und Console sind die einzigen mitgelieferten Designs.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/clear/`, `crates/torroworkplace/src/designs.rs`
 - Gut lesbar: Text 16/24, Klickziele bis 44, schlägt `font = "hyperlegible"` vor. Passt die Seitenleiste des Kalenders
   in 760 Höhe nicht mehr, anhalten und fragen (rollende Seitenleiste wäre eine eigene Aufgabe in `torro-gui`).
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design clear --font hyperlegible`.
 
 ### L.28 Design Folio
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Standard, Compact und Console sind die einzigen mitgelieferten Designs.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/folio/`, `crates/torroworkplace/src/designs.rs`
 - Zum Lesen: Lesetext 16/26, `content_max` 680, `title` und `headline` in der Rolle `heading`, schlägt
   `font = "source"` vor.
@@ -550,14 +550,265 @@ eine neue Schrift vorschlagen, warten auf L.24.
   langen Mail ansehen.
 
 ### L.29 Design Pebble
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Standard, Compact und Console sind die einzigen mitgelieferten Designs.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/pebble/`, `crates/torroworkplace/src/designs.rs`
 - Weich: Radien 8/12/16/16, Knöpfe als Pillen, Zeile 44, schlägt `font = "nunito"` vor.
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design pebble --font nunito`.
 
 ### L.30 Design Square
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): aufgegangen in Console (L.31), das JetBrains Mono vorschlägt.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/square/`, `crates/torroworkplace/src/designs.rs`
 - Eckig und dicht wie ein Terminal: Radien 0/0/2/2, Zeile 36, Seitenleiste 26, schlägt `font = "jetbrains-mono"` vor.
   `axis` gegen die Höchstbreite der Ziffern (L.19).
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design square --font jetbrains-mono`, dazu mit Gruvbox.
+
+## Drei Designs: Standard, Compact, Console (Issue #291, L.31–L.38)
+
+Issue #291, Entwürfe: claude.ai-Artefakt „Torro Designs“ (privat, Link im Issue), Boards „Standard, Compact, Console
+side by side“, „The three designs side by side“ (Vergleichstabelle), „Building block: mail window“ (Werte je Design im
+Skript `DESIGNS`) und „Appearance · Variant B (chosen)“. Ein Design bestimmt nur Maße und *wie* Listen gezeichnet
+werden, nie *wo* etwas steht; Farben gehören nie zu einem Design. Die sechs bisherigen Designs entfallen, ihre Schriften
+und Farbschemata bleiben. L.25–L.30 entfallen (L.38).
+
+> **In der Planung entschieden (2026-10-22):** Vorschläge greifen bei jedem Wechsel des Designs (Variante a); gewählte
+> Zeile wie im Entwurf (Standard/Compact Akzentstrich, Console Zeile in `accent` mit Text in `on_accent`);
+> Aufgabenliste und Agenda erst als Entwurf, gebaut erst nach Bestätigung; `[about] color_scheme` entfällt; kein Design
+> „Classic“.
+
+```
+L.31 Kern ── L.32 Entwurf (Bestätigung) ── L.33 Dienst/API/MCP ── L.34 torro-gui ─┬─ L.35 Mail und Eingang
+                                                                                  ├─ L.36 Aufgaben und Kalender
+                                                                                  └─ L.37 Appearance ── L.38 Abschluss
+```
+
+Nacheinander in dieser Reihenfolge. Kein neuer Request: L.33 ändert nur Felder von `DesignInfo` und
+`ColorSchemeInfo` und Katalogbeschreibungen; es kommt direkt nach dem Kern, weil es dessen Modell braucht.
+
+**Werte** (aus den Entwürfen; Größen für Inter; was hier fehlt, leitet die Aufgabe aus den Entwürfen ab und begründet
+es im Kommentar der `design.toml`):
+
+| Schlüssel | Standard | Compact | Console |
+|---|---|---|---|
+| `type.body` / `body_strong` | 14/22 | 13/20 | 12/18 (`body_strong` bold) |
+| `type.meta` · `caption` | 13/18 · 12/16 | 12/16 · 11/16 | 11/16 · 11/16 |
+| `type.read` | 16/26 | 14/22 | 12/18 |
+| `type.title` · `headline` | 22/28 · 28/36 | 17/24 · 22/28 | 12/18 bold · 12/18 bold |
+| `size.row_message` · `row_notice` | 100 · abgeleitet | 76 · abgeleitet | 24 · 24 |
+| `size.row_sidebar` · `header` | 32 · 64 | 28 · 48 | 24 · 32 |
+| `size.control_sm` (Knöpfe) · `control_lg` (Knopf der Aktionsleiste) | 36 · 40 | 30 · 36 | 24 · 28 |
+| `size.sidebar` · `list` | 240 · 440 | 216 · 400 | 196 · 600 |
+| `size.rail` · `rail_wide` | 60 · 248 | 52 · 232 | 40 · 200 |
+| `size.reading_max` · `layout.reading_padding` | 600 · [52, 64] | 640 · [32, 40] | 1200 · [14, 18] |
+| `layout.inset` | 0 | 0 | 0 |
+| `layout.row_padding` · `item_gap` | [18, 24] · 10 | [10, 16] · 8 | [0, 8] · 4 |
+| `radius` | Ecken 4 | Ecken 4 | alle 0 |
+| `[list] style` · `separators` · `selection` | rows · true · bar | rows · true · bar | line · false · fill |
+| `[list] avatar` · `preview_lines` | 40 · 1 | 28 · 1 | 0 · 1 |
+| `[about] font` · `mail_view` | – · – | – · – | `jetbrains-mono` · `text` |
+
+### L.31 Kern: neue Schlüssel, eingebaute Designs, Regeln
+- [x] erledigt (2026-10-22: `designs/torro/design.toml` mit den Werten von vorher und dem Namen „Standard“; Compact und
+  Console setzen jeden Schlüssel, damit sie sich mit L.34 nicht verschieben; die Beschreibungen der eingebauten Designs
+  laufen über `tr()`; neue Fehler `OffOrRange` und `DarkOnlyLight`; freigegeben angepasst: Testerwartungen in
+  `torro-gui/src/design.rs`, `torroworkplace/src/core.rs`, `torroworkplace/src/ui/general.rs`)
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`,
+  `crates/torro-core/src/design/{pack,rules,error,scheme,testdata}.rs`, `crates/torro-core/tests/fixtures/**`, neu
+  `designs/{torro,compact,console}/design.toml`, entfernt `designs/{plex,commitr,channelr,guildr,quattro,ribbon}/`,
+  `crates/torroworkplace/src/designs.rs`, `crates/torro-gui/src/layout.rs` (nur `density`), Tests in
+  `crates/torroinbox/src/app.rs`, `docs/design-pakete.md`
+- **Eingebaute Designs:** `torro` (Name „Standard“, bleibt `STANDARD_ID`), `compact`, `console`, je
+  `designs/<id>/design.toml` im Repository, mit `include_str!` in `torro-core` eingebettet. `load`/`list` beantworten
+  alle drei ohne Platte (Reihenfolge Standard, Compact, Console, dann die Ordner); ein Ordner `compact` oder `console`
+  im Datenordner wird wie `torro` mit `BadId` abgelehnt. `Design::standard()` liest die eingebettete Datei einmal
+  (`LazyLock`); sie ist vollständig (jeder Schlüssel). Liest sie nicht, ist das ein kaputter Build: ein Test verhindert
+  es, im Programm hält ein `panic!` mit Grund an (kein `unwrap`/`expect`, keine Notwerte im Code). Compact und
+  Console füllen Fehlendes aus dem Standard. **In dieser Aufgabe trägt `designs/torro/design.toml` noch die Werte von
+  heute** (gleiches Bild, keine App ändert sich); die Werte des neuen Standards setzt L.34. Compact und Console nach der
+  Tabelle oben.
+- **Neue Schlüssel:** `[list]` → neu `Design::list: ListLook { style: ListStyle (Rows | Line | Cards), separators,
+  selection: ListSelection (Bar | Fill), avatar: f32, preview_lines: u8 }`; `[size] rail`, `rail_wide`, `reading_max`
+  (in `Size::entries`/`slot_mut`); `[layout] reading_padding` (`Pad`); `[about] mail_view` → `About::mail_view:
+  Option<MailFormat>`. `layout.density` entfällt (unbekannter Schlüssel), `Layout::density` auch; `Density` bleibt und
+  kommt aus `ListLook::density()` (`Cards` → `Comfortable`, sonst `Compact`), `torro_gui::layout::density()` liest es
+  dort. Neu `Design::density_level() -> DensityLevel` (Airy, Balanced, Dense, VeryDense) aus `size.row_message`: ab 110
+  Airy, ab 88 Balanced, ab 56 Dense, sonst VeryDense.
+- **Farbschema nur dunkel:** optional `dark_only = true` oben in `color-scheme.toml`; dann ist `[colors.light]` ein
+  Fehler, und `Colors::light` ist eine Kopie von `dark` (jede App zeichnet es in jedem Modus dunkel). Neu
+  `ColorScheme::dark_only`.
+- **Regeln** (`rules.rs`, Tabelle „Regeln“ im Konzept nachziehen): `row` 24–64, `row_two` 24–96, `row_message`
+  24–120, `row_notice` 24–96, `header` 32–64, `list`/`list_medium` 280–640, `rail` 40–80 und ≥ `control_lg`,
+  `rail_wide` 180–320, `reading_max` 480–1200, `reading_padding` je 0–80, `list.avatar` 0 oder 20–48,
+  `preview_lines` 1–2; `radius` nicht fallend statt steigend (Console 0/0/0/0); Klickziele `control_*` und
+  `row_group` bleiben ≥ 24, `space` bleibt steigend.
+- **Beispiele:** die sechs Designs aus `designs/` und aus `DESIGNS` in `designs.rs` entfernen (Schriften und
+  Farbschemata bleiben); `the_embedded_files_are_the_whole_example` lässt die drei eingebauten Ordner aus.
+- **Doku:** `docs/design-pakete.md`: Format mit den neuen Schlüsseln, `dark_only`, entfallene `layout.density` und
+  `[about] color_scheme` (letzteres entfernt L.33 im Code), Regeltabelle, „Mitgelieferte Designs“ ersetzt durch die drei
+  mit der Tabelle oben, ein vollständig kommentiertes `design.toml` zum Kopieren (eigene Designs: Datei in den Ordner
+  `designs/` kopieren, id ≠ `torro`, `compact`, `console`).
+- **Oberfläche/API/MCP:** keine Änderung in dieser Aufgabe (L.33, L.37).
+- **Abnahme:** Tests: die drei eingebetteten Dateien laden ohne Gründe, `torro` ist vollständig und ergibt die Werte von
+  heute; Compact und Console haben die Werte der Tabelle; `list` nennt die drei vor den Ordnern; Ordner `console` im
+  Datenordner → `BadId`; jede neue Regel mit einem kaputten Beispiel; `layout.density` ist unbekannt; `cards` ergibt
+  `Density::Comfortable`; `dark_only` mit `[colors.light]` ist ein Fehler, ohne ist hell gleich dunkel;
+  `density_level` für die drei Balanced/Dense/VeryDense. fmt/clippy/test, auch `TORRO_LANG=de`.
+
+### L.32 Entwurf: Aufgabenliste und Agenda in den drei Designs
+- [x] erledigt (bestätigt 2026-10-23, Issue-Kommentar 6352347065: in der gewählten Console-Zeile auch Punkt und Farbbalken `on_accent`; Kreise, Pille und Punkt bleiben rund; Chevron 8 in Console; gewählter Termin wie gewählte Aufgabenzeile)
+- **Modell:** Opus · **Braucht:** L.31 · **Dateien:** neu `docs/prototypes/designs/listen.html`
+- Ein Entwurf in HTML nach dem Muster von `docs/prototypes/linear/` (gleiches CSS-Vokabular, Werte aus L.31): die
+  Aufgabenliste (`torrotasks`, Zeile, Gruppenkopf, gewählte Zeile) und die Agenda des Kalenders (Tag, Termin, freie Zeit)
+  je in Standard, Compact und Console nebeneinander, dunkel und hell. Zu zeigen: Haarlinien, Akzentstrich bzw. Zeile in
+  `accent` (Console), „eine Zeile“ in Console. Gleiche Elemente an gleicher Stelle in allen drei; nichts kommt hinzu
+  oder fällt weg (kein Spaltenkopf, keine Großbuchstaben).
+- **Halt:** Nach dem Commit hält die Umsetzung an und bittet den Menschen, den Entwurf zu bestätigen oder zu ändern.
+  L.36 beginnt erst nach Bestätigung; Änderungswünsche fließen in den Entwurf.
+- **Oberfläche/API/MCP:** keine.
+- **Abnahme:** Entwurf vom Menschen bestätigt (Kommentar im Issue mit Datum).
+
+### L.33 Dienst, API, MCP: Vorschläge greifen, Dichte, nur dunkel
+- [x] erledigt (2026-10-22: Regel in `SettingsStore` (`DesignSuggestions`, `design_suggestions`), dieselbe für die
+  Freigabe über `Facts::design`; `DensityLevel` trägt die Wire-Form selbst; freigegeben zusätzlich angepasst: die
+  Demo-Daten in `crates/torroworkplace/src/ui/launch.rs` (nur Felder und zwei Doc-Zeilen) und als Testdaten
+  `color_scheme` aus den Fixtures `form` und `bad-suggestion` in `crates/torro-core/tests/fixtures/designs/`)
+- **Modell:** Opus · **Braucht:** L.31 · **Dateien:** `crates/torro-core/src/design.rs`,
+  `crates/torro-core/src/design/pack.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{settings_service,core,approvals,mcp}.rs`, `crates/torroworkplace/src/ui/general.rs` (nur
+  die Marke „Suggested“ am Farbschema entfällt), `docs/{api,settings}.md`, `docs/api-reference.md` (neu erzeugt)
+- **Vorschläge:** `SettingsStore::set` und `set_by_client` für `SettingKey::Design`: wechselt das Design wirklich, setzt
+  dieselbe Änderung (ein `change`, eine Sperre) `font` auf `About::font`, wenn diese Schrift gültig lädt
+  (`load_font`), und `mail_view` auf `About::mail_view`, wenn gesetzt; sonst bleiben sie. `update_settings` setzt genau,
+  was geschickt wird, ohne Vorschläge. Danach ändert jeder Weg Schrift und Mail-Darstellung frei.
+- **`[about] color_scheme` entfällt:** `About::color_scheme`, der Schlüssel in `pack.rs` (wird unbekannt),
+  `DesignInfo::color_scheme`, die Marke „Suggested“ am Farbschema in `general.rs`. Der Wegfall des API-Felds ist mit
+  der Planung vom Menschen bestätigt (2026-10-22): kein `v: 2`, weil das Feld optional war und bei jedem Design ohne
+  Vorschlag fehlte; `docs/api.md` Fußnote ⁹ sagt das nach dem Muster der Zeilen zu `snoozed` und `shortcut`.
+- **API:** `DesignInfo` neu `density` (`"airy"`, `"balanced"`, `"dense"`, `"very_dense"`, aus `density_level`,
+  `#[serde(default)]` mit `balanced`, damit ein neuer Client einen älteren Dienst liest) und `mail_view` (`mailView`,
+  `Option`, `"html"`/`"text"`); `ColorSchemeInfo` neu `dark_only` (`darkOnly`, `#[serde(default)]` = `false`).
+- **Katalog** (`api.rs`): `SET_SETTING` („and with it the inbox's density … font and colour scheme stay“ ersetzen:
+  `design` stellt auch die Schrift, wenn es sie gibt, und die Mail-Darstellung auf die Vorschläge, das Farbschema nie;
+  die Antwort bleibt `Ok`, die Folge zeigt `get_settings`), `LIST_DESIGNS` (die Werte von `density`; `font`/`mailView`
+  werden beim Wählen übernommen, eine Schrift nur, wenn es sie gibt; kein `colorScheme`), `settings.list_color_schemes`
+  (`darkOnly`), `settings.update_settings` (ohne Vorschläge). Kein neuer Befehl. `docs/api.md` Fußnote ⁹: Felder
+  (`font`, `mailView`, `density`, `darkOnly`), der Satz „ein Design zu wählen ändert Schrift und Farbschema nicht“ wird
+  zur neuen Regel, dazu die Regel der Freigabe.
+- **Freigaben:** Die Zusammenfassung für `set_setting design` (`approvals.rs`, heute der allgemeine Fall von
+  `SetSetting`) nennt, was der Kern zusätzlich umstellt, nachgeschlagen im Design über neue Angaben in
+  `approvals::Facts`, nie aus dem Text des Clients: die Schrift nur, wenn `load_font` beim Anlegen gültig lädt (dieselbe
+  Regel wie in `SettingsStore::set`), und nur als geprüfte id; die Mail-Darstellung als `html`/`text`; nie Name oder
+  Beschreibung aus dem Ordner. Die Ausführung prüft die Regel neu und kann nichts außer `font` und `mail_view`
+  umstellen.
+- **MCP:** kein neues Tool; `settings_set_setting`, `settings_list_designs`, `settings_list_color_schemes` folgen dem
+  Katalog (nachgesehen: `mcp.rs` hat keine eigene Abbildung; der Test
+  `designs_are_listed_read_only_and_chosen_with_set_setting` prüft den Text von `set_setting` und wird angepasst).
+- **Abnahme:** Tests: `set design console` setzt `mail_view = text` und lässt `font`, solange `jetbrains-mono` fehlt;
+  mit einer gültigen Schrift dieser id auch `font`; erneutes Setzen desselben Designs ändert nichts; `update_settings`
+  wendet nichts an; Felder in `list_designs`/`list_color_schemes`, alte Antwort ohne `density`/`darkOnly` liest;
+  Zusammenfassung der Freigabe nennt die Umstellung, bei fehlender Schrift nur `mail_view`.
+  `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` committen. `torro-api-review`.
+
+### L.34 torro-gui: neuer Standard, Listendarstellung, bündige Fläche, Aktionsleiste
+- [x] erledigt (2026-10-23: abgeleitete Werte des Standards mit Grund in `designs/torro/design.toml`; gewählte
+  Zeile `fill` über ein eigenes Theme `theme::on_accent_theme` (`widgets::row_content`, `widgets::selection_bar` für
+  Ansichten mit eigenen Zeilen); `Folders::choices` bietet Compact und Console ohne Ordner an; `Palette::of` zeichnet
+  `dark_only` in beiden Modi dunkel; Galerie mit `--shot`; zusätzlich nur Tests angepasst: `torro-core`
+  (`standard_of_before` → `standard_of_the_table`, Regeltests), `torro-gui/src/design/legacy.rs` ohne die alten Maße)
+- **Modell:** Opus · **Braucht:** L.33 · **Dateien:** `designs/torro/design.toml` (Werte des neuen Standards nach der
+  Tabelle), `crates/torro-gui/src/**` (vor allem `theme.rs`, `layout.rs`, `shell.rs`, `style.rs`, `widgets.rs`),
+  `crates/torro-gui/examples/gallery.rs`, Tests in `crates/{torrocalendar,torrotasks,torroinbox,torroassistant}/src/**`,
+  `crates/torro-settings-ui/src/**` und `crates/torroworkplace/src/**`, die Werte des alten Standards prüfen,
+  `scripts/design-check.sh` (falls betroffen), `.claude/skills/torro-design/SKILL.md`
+- **Tokens:** `size::rail()`, `rail_wide()`, `reading_max()`, `layout::reading_padding()`, `layout::list() -> ListLook`.
+  `shell::rail()` ist `size::rail()` (linke Leiste und Aktionsleiste eingeklappt), `RailMode::Expanded` ist
+  `size::rail_wide()` breit; der Knopf der Aktionsleiste ist `size::control_lg()`, Icons bleiben 16.
+- **Bündige Fläche:** bei `layout::inset() == 0` zeichnet `shell` den Inhalt wie `style::container::panel_flush` mit
+  einer `LINE` zur Seitenleiste bzw. Leiste statt Rand und Radius; das macOS-Titelband bleibt, die Ampel bleibt bei
+  `LIGHTS` (Test an der Beziehung zu `inset` neu fassen).
+- **Listen:** `widgets::list_row` folgt `ListLook`: `separators` (Linie unten ja/nein), `selection` `Bar` = Strich
+  links in `accent`, `Fill` = Fläche `accent`, Text und Symbole der Zeile in `on_accent` (neuer Stil in
+  `style::button::list_row`). Die Position der Zellen ändert sich nie.
+- **Skill:** `torro-design` mit den Zahlen des neuen Standards, Abschnitt Listen (`[list]`), Ausnahme „Akzent für die
+  gewählte Zeile“, bündige Fläche, `--design console` statt `plex` in den Beispielen.
+- **Oberfläche/API/MCP:** nichts Neues; alle Apps zeichnen mit dem neuen Standard.
+- **Abnahme:** Tests der Tokens und von `list_row` in beiden Auswahlarten; Galerie läuft mit `--design compact` und
+  `--design console`; alle Workspace-Tests mit den neuen Werten; `scripts/design-check.sh` sauber.
+
+### L.35 Mail und Eingang: Listendarstellung und Lesespalte
+- [x] erledigt (2026-10-23: `list::RowLook` aus `ListLook`, Zeilen in `rows` mit Avatar `[list] avatar` (0: kein Avatar,
+  auch nicht im Kopf des Lesers) und `preview_lines`, in `line` eine Zeile `mail_line`/`notice_line` (nach der
+  Sichtprüfung geändert: Reihenfolge wie die Zeilen in Standard – Markierungen bzw. Kachel · Absender mit Domain bzw.
+  Quelle als Name · Betreff bzw. Titel mit Vorschau bzw. Text in `TEXT_3` · Konto · Zeit rechts –, Mail und Hinweise
+  mit gemeinsamer Titelspalte, kürzen statt weglassen, schmal die Zeit in eigener Breite; `list::LineColumns`); gewählte Zeile
+  `fill` mit Text und farbigen Marken in `on_accent` (`list::mark_colour`); die Kachel der Hinweise ist `size::tile()`;
+  der Kopf des Lesers steht auf der Achse der Lesespalte. Abweichung: im Paneel gelten Lesebreite und Rand oben/unten,
+  seitlich bleibt der Rand des Paneels, damit der Text mit Titel und Kopf auf einer Linie steht)
+- **Modell:** Opus · **Braucht:** L.34 · **Dateien:** `crates/torroinbox/src/{list,mail,hub,notifications,overview,app}.rs`
+- `list::sized_row`, `list::mail_content` und die Zeilen der Hinweise folgen `layout::list()`: `Rows` wie heute mit
+  Avatar `list.avatar` (0 = ohne, der Platz entfällt, der Text beginnt am Rand der Zeile; auch im Kopf des Lesers),
+  `preview_lines`, `separators`, `selection`; `Line` eine Zeile `size::row_message()` hoch in festen Spalten
+  Markierungen · Datum · Absender · Betreff, ohne Spaltenkopf; die Hinweis-Zeilen des Eingangs in `Line` ebenso eine
+  Zeile (Quelle · Zeit · Titel, `size::row_notice()`, in Console 24) – die Spaltenreihenfolge ist nach der Sichtprüfung
+  durch die Reihenfolge der Standard-Zeile ersetzt (Notiz oben); `Cards` wie heute die Karten. Die Aktionsleiste bleibt
+  rechts, nur Breite und Knöpfe folgen dem Design (L.34).
+- **Leser:** Text und HTML der Mail höchstens `size::reading_max()` breit, Innenrand `layout::reading_padding()`
+  (`mail::body`), auch im Paneel.
+- **Abnahme:** Tests: Zeilenhöhen und Cursor-Spannen (`row_span`) je Stil, Avatar aus, Auswahl `Fill` mit Text in
+  `on_accent`, Lesebreite; Demo `torroinbox --demo` in allen drei Designs startet.
+
+### L.36 Aufgaben und Kalender nach dem Entwurf
+- [x] erledigt (2026-10-23: Aufgabenliste mit Chevron in der Seitenbreite der Zeilen (12/12/8), Gruppen-Icon auf der
+  Achse der Kreise, „+“ höchstens so hoch wie der Kopf, Fälligkeit mindestens `size::axis_narrow()`; gewählte Zeile in
+  Console mit Punkt, Datum und Prioritätsbalken in `on_accent`. Agenda mit `Metrics` aus den Tokens des Designs
+  (Seiten wie die Zeilen, Datumsspalte, Heute-Kreis, Termin-, Kopf-, Frei- und Leerzeilen), Console in einer Zeile
+  ohne Linien zwischen Tagen, gewählter Termin wie eine gewählte Aufgabenzeile. Abweichungen vom Entwurf: Zeilen- und
+  Kopfhöhen aus `size::row()`/`row_group()` (44/36/24, 40/28/24 statt 48/40/24, 40/32/24) – erledigt 2026-10-23: die
+  Designs setzen die Werte des Entwurfs, Termine bleiben 52/44/24 (Zeile + `xs`); Pille 20 (Baustein),
+  Abstände `space::m()`/`space::s()` (Console 6/4 statt 8/4), Zeitspalte `size::axis()` (52, Console zwei Achsen 96),
+  Heute-Kreis in Console 20, Fälligkeit 44 auch im Standard)
+- **Modell:** Opus · **Braucht:** L.32 (bestätigt), L.34 · **Dateien:** `crates/torrotasks/src/list.rs`,
+  `crates/torrocalendar/src/views/agenda.rs`, und was der bestätigte Entwurf darüber hinaus nennt (dann vorher fragen)
+- Die Aufgabenliste (`widgets::list_row` aus L.34 plus `torrotasks::list::row_view`) und die Agenda
+  (`agenda::row_view`, `chip_view`, Tagesköpfe) zeichnen so, wie der bestätigte Entwurf aus L.32 es zeigt.
+- **Abnahme:** wie im Entwurf, Tests der Zeilenhöhen und Spannen, Demos in allen drei Designs.
+
+### L.37 Steuerzentrale: Appearance in Variante B
+- [x] erledigt (2026-10-23: Vorschau als Canvas `MailPreview` aus den Werten des Designs, 4 × `size::control_sm()`
+  breit; Schriften als Knöpfe im Stil `choice_chip` in ihrer eigenen Schrift, vorgeschlagene mit Punkt; Dropdown als
+  eigene Karte im Menü-Stil (`general::overlay`); Hinweis „Also switched“ nach dem Neuladen, das das Design trägt
+  (`general::loaded`), die Demo wendet die Vorschläge selbst an. Demo: die drei Designs, „Neon“ ungültig, Schema
+  „Midnight“ nur dunkel, neu `--open design-schemes` und `design-switched`. Abweichungen vom Board: Haken statt
+  Radio in Akzent (Auswahl neutral), keine eigene Seitenüberschrift mit Satz (die Kopfleiste trägt den Titel), Zoom
+  ohne eigene Zeile Text (Satz unter der Gruppe). Kein Baustein in `torro-gui` nötig)
+- **Modell:** Opus · **Braucht:** L.33, L.34 · **Dateien:** `crates/torroworkplace/src/ui/{general,mod,launch}.rs`,
+  `crates/torro-gui/src/widgets.rs` (nur, falls ein Baustein fehlt)
+- Nach dem Board „Appearance · Variant B (chosen)“: Gruppe **Design** als kompakte Liste (Zeile je Design: Vorschau, Name,
+  Beschreibung, drei Punkte und Wort der Dichte aus `DesignInfo::density`); die Vorschau zeichnet ein kleines
+  Mail-Fenster aus den Werten des Designs im aktiven Farbschema, `preview.png` nur für eigene Designs, die eines haben.
+  Die Seite liest das Design für die Vorschau selbst wie heute (`torro_core::design::load`, nur ids aus der Liste des
+  Kerns); die Dichte kommt aus `DesignInfo::density`, nicht aus eigener Rechnung. Gruppe **Font and colors**: Font als Reihe wählbarer Knöpfe mit dem Satz zum Vorschlag (Entwurf), Color scheme als
+  Dropdown mit vier Streifen (`bg`, `panel`, `text`, `accent`) vor jedem Namen, Abschnitte „Torro“, „Light and dark“,
+  „Dark only“ (`ColorSchemeInfo::dark_only`, leere Abschnitte entfallen). Gruppe **Display**: Color mode und Zoom.
+  Ungültige Einträge mit Gründen, „Reload“ und „Open … folder“ bleiben.
+- **Hinweis:** Nach dem Wählen eines Designs vergleicht die Seite Schrift und Mail-Darstellung vor und nach dem
+  Neuladen und zeigt unter der Gruppe „Also switched: {list}“ (z. B. „plain-text mail“); ändert sich nichts, kein
+  Hinweis.
+- **Demo:** `--open design` mit den drei Designs, einem ungültigen eigenen, einem Schema „Dark only“.
+- **API/MCP:** nutzt `list_designs`, `list_fonts`, `list_color_schemes`, `set_setting` (L.33); Ordner öffnen bleibt
+  lokal.
+- **Abnahme:** Tests der Nachrichten (Wahl sendet `SetSetting`, Hinweis aus dem Vergleich, Gruppen des Dropdowns);
+  Sichtprüfung breit und schmal, hell und dunkel, in allen drei Designs.
+
+### L.38 Abschluss: Übersetzungen, #256, Sichtprüfung
+- [x] erledigt (2026-10-23: Übersetzungen in `de.rs`; L.25–L.30 entfallen; `torro-api-review` ohne Fehler; Sichtprüfung
+  ohne Hyprland nur mit Bildern, die die Apps selbst speichern (`text_editor` fehlt darauf), Funde behoben
+  (Dringend-Quadrat, Mini-Monat, Console-Zeile in Reihenfolge der Zeilen, Umschalter der Aktionsleiste bleibt, Zoom,
+  Schriftname); `shoot.sh` in allen Größenklassen nicht möglich. #256 kürzen: Text liegt bereit, das Bearbeiten des
+  Issues übernimmt der Mensch)
+- **Modell:** Opus · **Braucht:** L.35, L.36, L.37 · **Dateien:** `crates/torro-core/src/i18n/de.rs`,
+  `docs/tasks/design-pakete.md`
+- Deutsche Übersetzungen aller neuen Texte aus L.31–L.37 in `de.rs`. L.25–L.30 als entfallen markieren (Verweis auf
+  #291); die Beschreibung von #256 auf die Schriften (L.24) kürzen.
+- **Sichtprüfung** (`torro-design-review`): alle Apps in allen Größenklassen, in Standard, Compact und Console, hell
+  und dunkel, Mail mit eingeklappter und ausgeklappter Aktionsleiste. Ohne Hyprland als „nicht möglich“ melden.
+- **Abnahme:** `torro-api-review` ohne Befund; fmt/clippy/test, `TORRO_LANG=de`; `scripts/ci-local.sh`.

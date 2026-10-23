@@ -6,6 +6,10 @@ Stufe 3 (freie Anordnung über eine Layout-Sprache) nicht. Aufgaben: [tasks/desi
 Pakete wie Commitr und Ribbon (Issue #80) eine farbige Leiste neben hellem Inhalt haben können.
 **Geplant 2026-10-20 (Issue #189):** Design, Schrift und Farbschema getrennt wählbar, jedes aus einem eigenen Ordner
 ([unten](#design-schrift-und-farbschema-getrennt), L.18–L.30).
+**Geändert 2026-10-22 (Issue #291):** drei eingebaute Designs **Standard, Compact, Console**, je eine Datei
+`designs/<id>/design.toml` im Repository; die sechs Beispiel-Designs entfallen, ihre Schriften und Farbschemata
+bleiben. Neue Schlüssel `[list]`, `rail`, `rail_wide`, `reading_max`, `reading_padding`, `[about] mail_view`, im
+Farbschema `dark_only`; `layout.density` entfällt ([unten](#drei-eingebaute-designs-standard-compact-console), L.31–L.38).
 
 ## Worum es geht
 
@@ -19,7 +23,7 @@ Pakete legt man in einen Ordner, später auch zum Herunterladen.
 
 | Stufe | Was ein Paket bestimmt | Stand |
 |---|---|---|
-| **1 Tokens** | Farben (hell und dunkel, auch Akzent und Status), Schriften, Schriftstufen, Abstände, Radien, Maße, Logo, Dichte des Eingangs (`layout.density`: Zeilen oder Karten) | **jetzt** |
+| **1 Tokens** | Farben (hell und dunkel, auch Akzent und Status), Schriften, Schriftstufen, Abstände, Radien, Maße, Logo, Darstellung der Listen an derselben Stelle (`[list]`: mehrzeilig, eine Zeile oder Karten; Haarlinien; Auswahl; Avatar) | **jetzt** |
 | **2 Layout-Schalter** | feste Schalter, die jede App kennt, z. B. Seitenleiste links/rechts/oben, Detail daneben/darüber | später, Auswahl offen |
 | 3 Freie Anordnung | eine Layout-Sprache beschreibt beliebige Anordnungen | **nein**: jede Ansicht würde zum Interpreter, nicht prüfbar, kaputte Pakete machten die Apps unbedienbar |
 
@@ -30,7 +34,12 @@ ihre Schwellen bleiben in Stufe 1 fest.
 ## Ein Paket
 
 Ein Ordner unter `<data>/designs/<id>/` (Datenverzeichnis der Suite, `TORRO_DATA_HOME`). `<id>` ist der Ordnername:
-klein, `a-z`, `0-9`, `-`, höchstens 32 Zeichen.
+klein, `a-z`, `0-9`, `-`, höchstens 32 Zeichen. Seit Issue #291 sind `torro`, `compact` und `console` vergeben (die
+eingebauten Designs); ein Ordner dieses Namens wird abgelehnt.
+
+> Der Baum unten und das Beispiel mit Schriften und Farben in einem `design.toml` zeigen das Format vor Aufgabe L.19.
+> Heute stehen Schrift und Farben in eigenen Ordnern ([Drei Ordner](#drei-ordner)); das gültige `design.toml` steht
+> im nächsten Abschnitt.
 
 ```
 designs/plex/
@@ -44,125 +53,148 @@ designs/plex/
 
 ### `design.toml`
 
-Alle Schlüssel des Formats auf einmal (ein ausgedachtes Paket mit drei Schriften); das echte Beispielpaket steht unter
-[Ein Paket bauen](#ein-paket-bauen).
+Ein Design ist **eine Datei**: `designs/<id>/design.toml`, dazu optional `preview.png`. Am schnellsten kopiert man ein
+eingebautes Design aus dem Repository (`designs/compact/design.toml`) oder die Vorlage unten in den Ordner `designs/`
+des Datenordners, gibt dem Ordner eine eigene id (nicht `torro`, `compact`, `console`) und ändert die Werte. Jeder
+Schlüssel ist optional außer `format`, `about.name` und `about.version`; was fehlt, kommt vom Standard. Die Vorlage nennt
+alle Schlüssel mit den Werten von Compact.
 
 ```toml
-format = 1                     # Version des Formats; unbekannte Version → Paket abgelehnt
+format = 1                     # Version des Formats; unbekannte Version → Design abgelehnt
 
 [about]
-name = "Plex"                  # Pflicht
+name = "My compact"            # Pflicht; Name in der Liste, nicht übersetzt
 version = "1.0.0"              # Pflicht
 author = "Sven Wagener"        # optional
-description = "IBM Plex, more room, teal accent"   # optional
-font_license = "OFL-1.1"       # Pflicht, sobald Schriften dabei sind
+description = "Compact with more air"   # optional
+font = "jetbrains-mono"        # optional: vorgeschlagene Schrift (id aus fonts/); wird beim Wählen mitgesetzt
+mail_view = "text"             # optional: Mails als "text" oder "html" zeigen; wird beim Wählen mitgesetzt
+# color_scheme = "nord"        # entfallen (L.33): unbekannter Schlüssel, Farben gehören nie zu einem Design
 
-[fonts.text]                   # Schrift für Fließtext, Listen, Knöpfe; fehlt: Inter
-family = "IBM Plex Sans"       # Name der Familie, wie er in den Dateien steht
-regular = "fonts/IBMPlexSans-Regular.ttf"      # 400, Pflicht
-medium = "fonts/IBMPlexSans-Medium.ttf"        # 500, optional
-semibold = "fonts/IBMPlexSans-SemiBold.ttf"    # 600, optional
-bold = "fonts/IBMPlexSans-Bold.ttf"            # 700, optional
-
-[fonts.heading]                # optional: eigene Schrift für Überschriften; fehlt: wie text
-family = "IBM Plex Serif"
-semibold = "fonts/IBMPlexSerif-SemiBold.ttf"
-
-[fonts.numbers]                # optional: Familie mit festen Ziffern (Uhrzeiten, Zähler); fehlt: wie text
-family = "IBM Plex Sans Tabular"
-regular = "fonts/IBMPlexSansTabular-Regular.ttf"
-medium = "fonts/IBMPlexSansTabular-Medium.ttf"
-
-# Jede Schriftstufe vollständig einstellbar: Schrift (text | heading | numbers), Größe,
-# Zeilenhöhe, Gewicht (regular | medium | semibold | bold). Nur, was abweicht.
-[type.micro]       # Zeitachse, Uhrzeit in Terminen
+# Schriftstufen: Rolle (text | heading | numbers), Größe und Zeilenhöhe für Inter, Gewicht
+# (regular | medium | semibold | bold). Eine Stufe, die fehlt, ist die des Standards.
+[type.micro]                   # Zeitachse, Uhrzeit in Terminen (tabellarisch)
 font = "numbers"
 size = 11
 line = 14
 weight = "regular"
-[type.caption]     # Gruppentitel, Knöpfe, Chips
-size = 12
+[type.caption]                 # Gruppentitel, Knöpfe, Chips
+font = "text"
+size = 11
 line = 16
 weight = "medium"
-[type.meta]        # Metadaten, Zähler, Fälligkeit
+[type.meta]                    # Metadaten, Zähler, Fälligkeit
+font = "text"
 size = 12
 line = 16
-[type.body]        # Standard: Listen, Seitenleiste, Eingaben, Fließtext
-size = 14
-line = 22
-[type.body_strong] # Zeilen- und Kopfleisten-Titel
-size = 14
-line = 22
+weight = "regular"
+[type.body]                    # Listen, Seitenleiste, Eingaben, Fließtext
+font = "text"
+size = 13
+line = 20
+weight = "regular"
+[type.body_strong]             # Zeilen- und Kopfleisten-Titel
+font = "text"
+size = 13
+line = 20
 weight = "medium"
-[type.read]        # Lesetext: ganze Mail im Leser des Eingangs (E8.2); nie kleiner als body
-size = 15
-line = 24
-[type.title]       # Karten- und Dialogtitel
+[type.read]                    # Lesetext: die ganze Mail im Leser; nie kleiner als body
+font = "text"
+size = 14
+line = 22
+weight = "regular"
+[type.title]                   # Karten- und Dialogtitel, Seitentitel
 font = "heading"
 size = 17
 line = 24
 weight = "semibold"
-[type.headline]    # Detailtitel
+[type.headline]                # Detailtitel
 font = "heading"
-size = 24
-line = 30
+size = 22
+line = 28
 weight = "semibold"
-[type.display]     # Kopfzahl in Mini
-size = 30
-line = 36
-weight = "semibold"
-[type.hero]        # Titel einer Erinnerung im Vollbild (ER1.5); fehlt er, wie headline, 48/56
-size = 48
-line = 56
-[type.countdown]   # Countdown im Vollbild, Ziffernschrift; fehlt er, Medium (sonst wie micro), 28/32
+[type.display]                 # Kopfzahl in Mini
+font = "text"
 size = 28
 line = 32
+weight = "semibold"
+[type.hero]                    # Titel einer Erinnerung im Vollbild; fehlt er: Rolle und Gewicht von headline
+font = "heading"
+size = 48
+line = 56
+weight = "semibold"
+[type.countdown]               # Countdown im Vollbild, Ziffernschrift
+font = "numbers"
+size = 28
+line = 32
+weight = "medium"
 
-[space]                        # xs s m l xl xxl
+[space]                        # xs s m l xl xxl, wachsend
 scale = [4, 8, 12, 16, 24, 32]
 
-[radius]                       # xs sm md lg
-scale = [3, 5, 7, 9]
+[radius]                       # xs sm md lg, nie fallend (gleich ist erlaubt: Console 0/0/0/0)
+scale = [4, 4, 4, 4]
 
-# Abstände des Layouts, allgemein (nicht je Element): Rand und Innenrand
-[layout]
-inset = 8                      # Rand um die Inhaltsfläche neben der Seitenleiste (margin)
-page_padding = [24, 32]        # Innenrand von Inhalt und Seiten: senkrecht, waagerecht (padding)
-panel_padding = [16, 16]       # Innenrand von Paneelen, Karten, Dialogen
-row_padding = [8, 16]          # Innenrand von Listenzeilen
-control_padding = [0, 10]      # Innenrand von Knöpfen, Chips, Eingaben
-section_gap = 24               # Abstand zwischen Gruppen und Abschnitten
-item_gap = 8                   # Abstand zwischen Elementen innerhalb einer Gruppe
-density = "compact"            # Zeilen oder Karten im Eingang (E8.2/#226), fehlt er: compact
+[layout]                       # Ränder [senkrecht, waagerecht] und Lücken nach Rolle
+inset = 0                      # Rand um die Inhaltsfläche neben der Seitenleiste; 0 = bündig mit Linie
+page_padding = [16, 16]        # Innenrand von Inhalt und Seiten
+panel_padding = [12, 12]       # Paneele, Karten, Dialoge
+row_padding = [10, 16]         # Listenzeilen (die Höhe kommt aus [size])
+control_padding = [0, 8]       # Knöpfe, Chips, Eingaben
+section_gap = 16               # zwischen Gruppen und Abschnitten
+item_gap = 8                   # zwischen Elementen einer Gruppe
+reading_padding = [32, 40]     # Rand der Mail im Leser, innerhalb der Lesespalte
 
-[size]                         # nur, was abweicht; Namen wie torro_gui::theme::size
-row = 44
-row_sidebar = 30
-sidebar = 248
-card_gap = 12                  # Abstand zwischen Karten und innerhalb einer Karte (E8.2)
-avatar = 36                    # Avatar einer Karte; avatar_lg 40 im Kopf des Lesers
-tile = 28                      # Quellen-Kachel; tile_sm 20 neben Wörtern, tile_lg 36 für Anhänge
-command = 46                   # Befehlsleiste des Lesers im Mail-Fenster (E11.1); pill 42 für Torro-Pillen
+[size]                         # Namen wie torro_gui::theme::size
+control_sm = 30                # Knöpfe, Icon-Knöpfe, Segmente
+control = 32                   # Eingaben, Eigenschaftszeilen
+control_lg = 36                # Schnelleingabe, Primärknopf im Dialog, Knopf der Aktionsleiste
+control_xl = 44                # Knöpfe einer Erinnerung im Vollbild
+row = 40                       # Listenzeile (Aufgaben)
+row_two = 48                   # zweizeilige Zeile
+row_message = 76               # Mail-Zeile im Eingang; bestimmt auch die Dichte in der Liste der Designs
+row_notice = 56                # andere Zeile im Eingang
+row_sidebar = 28               # Seitenleisten- und Menüzeile
+row_group = 32                 # Gruppenkopf in Listen
+header = 48                    # Kopfleiste
+sidebar = 216                  # Seitenleiste
+props = 280                    # Eigenschaften-Spalte
+panel = 360                    # Seitenpaneel für Details
+list = 400                     # Liste neben dem Detail (breit)
+list_medium = 340              # dasselbe in Mittel
+hour = 40                      # Stunde im Kalender
+axis = 52                      # Zeitachse
+axis_narrow = 44               # Zeitachse in Schmal
+content_max = 720              # Lesebreite von Listen und Seiten
+form_max = 640                 # Lesebreite von Formularen
+card_gap = 8                   # zwischen Karten und Teilen einer Karte
+avatar = 28                    # Avatar einer Karte
+avatar_lg = 32                 # großer Avatar
+tile_sm = 20                   # Quellen-Kachel klein, mittel, groß
+tile = 24
+tile_lg = 32
+command = 40                   # bleibt im Format, kein Baustein nutzt es
+pill = 36                      # Avatar im Kopf des Lesers
+rail = 52                      # eingeklappte Seitenleiste und Aktionsleiste; mindestens control_lg
+rail_wide = 232                # ausgeklappte Aktionsleiste
+reading_max = 640              # breiteste Lesespalte einer Mail
 
-[colors.dark]                  # nur, was abweicht; Namen wie torro_gui::theme::Palette
-accent = "#0EA5A4"
-on_accent = "#04201F"
-bg = "#0B0D10"
-chart = ["#3B78D8", "#C9701E", "#2E9E6B", "#B5509A"]  # optional: Diagrammfarben in fester Reihenfolge (E8.8b)
-chart_other = "#5C6068"        # optional: Grau für „Other“ im Diagramm
-category = ["#4C8DF0", "#CF8A2C", "#2BA39A", "#A99BD0"]  # optional: je eine Farbe pro Kategoriegruppe (E12.7)
-
-[colors.light]
-accent = "#0B7A79"
-sidebar = "#24292F"            # optional: Seitenleiste mit eigener Farbe (siehe unten); fehlt: bg
-sidebar_text = "#F6F8FA"
-
-[logo]
-mark = "logo.svg"              # fehlt: das „T“ des Standardpakets auf der Akzentfarbe
-tray = "tray.svg"              # veraltet (Issue #114): das Tray zeigt immer die vier roten Quadrate
+[list]                         # wie Listen gezeichnet werden – dieselben Zellen an derselben Stelle
+style = "rows"                 # rows (mehrzeilig) | line (eine Zeile, feste Spalten) | cards (Karten)
+separators = true              # Haarlinie unter jeder Zeile
+selection = "bar"              # bar (Strich links) | fill (ganze Zeile in accent, Text in on_accent)
+avatar = 28                    # Avatar in der Mail-Zeile und im Kopf des Lesers; 0 = keiner
+preview_lines = 1              # Zeilen Vorschau unter dem Betreff, 1 oder 2
 ```
 
-**Fehlt etwas, gilt der Wert des Standardpakets.** Ein Paket, das nur `colors.dark.accent` setzt, ist gültig. Fehlt
+**Entfallen:** `layout.density` (seit Issue #291 ein unbekannter Schlüssel; Karten sind `[list] style = "cards"`,
+`rows` und `line` sind die kompakte Dichte) und `[about] color_scheme` (seit L.33 ein unbekannter Schlüssel: Das Design wird
+mit Grund abgelehnt). Schriften stehen in `fonts/<id>/font.toml`, Farben und Logo in `color-schemes/<id>/color-scheme.toml`.
+
+Die Schlüssel für Farben unten (`[colors.dark]`, `[colors.light]`, Seitenleiste, Diagramm, Lesestatus, Arbeitszeit)
+gehören heute ins Farbschema, nicht ins Design.
+
+**Fehlt etwas, gilt der Wert des Standards.** Ein Farbschema, das nur `colors.dark.accent` setzt, ist gültig. Fehlt
 ein eigenes Logo, zeichnet die Suite ihr Logo in der Akzentfarbe des Pakets: Ein neuer Akzent färbt also das Logo
 mit. Nur das Tray-Symbol ist fest (Issue #114): immer vier rote Quadrate, damit man es in der Menüleiste unter jedem
 Design wiederfindet.
@@ -177,9 +209,9 @@ Gewichte 400/500/600). Laufweite und Großschreibung gehen mit Iced 0.14 nicht u
 **Layout-Abstände sind zuerst allgemein:** ein Rand (`inset`) und wenige Innenränder und Lücken nach Rolle (Seite,
 Paneel, Zeile, Bedienelement, Gruppe, Element). Die Apps nutzen dafür benannte Tokens statt der Skala, damit ein Paket
 sie gezielt ändern kann. Abstände je einzelnem Element gibt es bewusst nicht, damit es am Anfang nicht zu bunt wird.
-Im selben Abschnitt steht die **Dichte** des Eingangs (`density`, Issue #226): `compact` zeigt eine Zeile je Eintrag,
-`comfortable` Karten mit Vorschau, Chips und Knöpfen. Sie gehört zum Paket und nicht ins Fenster, damit alle Fenster
-der Suite gleich dicht stehen. Kein mitgeliefertes Paket setzt `comfortable`; alle zeigen Zeilen.
+Die **Dichte** des Eingangs (Issue #226) folgt seit Issue #291 der Darstellung der Listen: `[list] style = "cards"`
+zeigt Karten mit Vorschau, Chips und Knöpfen, `rows` und `line` eine Zeile je Eintrag. Sie gehört zum Design und nicht
+ins Fenster, damit alle Fenster der Suite gleich dicht stehen. Kein eingebautes Design zeigt Karten.
 
 ### Seitenleiste mit eigenen Farben
 
@@ -212,6 +244,25 @@ hat jeder Modus optional einen eigenen Satz für die **Rahmenfläche**:
   trägt, gibt es kaum.
 - Zustände, die auf dem Fenster selbst liegen (Anmelden, Laden, Fehler vor dem Layout), bleiben auf `bg`
   (`shell::Surface::Window`); Seitenleiste und Rail laufen als `shell::Surface::Sidebar` bis ins Titelband.
+
+### Farbschema nur dunkel
+
+Ein Farbschema kann nur dunkle Farben haben (Issue #291): `dark_only = true` oben in `color-scheme.toml`, neben
+`format`. Dann ist `[colors.light]` ein Fehler (auch leer), die helle Palette ist eine Kopie der dunklen, und jede App
+zeichnet das Schema in jedem Modus dunkel. Geprüft wird nur die dunkle Palette. Fehlt der Schlüssel, hat das Schema
+beide Modi wie bisher. Die Steuerzentrale ordnet solche Schemata unter „Dark only“ ein (L.37).
+
+```toml
+format = 1
+dark_only = true
+
+[about]
+name = "Night"
+version = "1.0.0"
+
+[colors.dark]
+bg = "#050607"
+```
 
 ### Diagrammfarben
 
@@ -272,9 +323,11 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
 | Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected` (auch mit zurückgefallenen Werten). Hat die Leiste eine eigene Fläche (`sidebar` ≠ `bg`): `focus_ring`, `accent`, `merged` und Kalenderfarben ≥ 3:1 auf `sidebar`, Statusfarben im dunklen Modus ebenso. Ohne eigene Fläche gilt für Grafik nichts Neues, ältere Pakete bleiben gültig |
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; `hero` 32–72 und `countdown` 20–48 (Erinnerung im Vollbild, ER1.5); jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
-| Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24; `density` nur `compact` oder `comfortable` (ein Wort, kein Bereich: ein anderes lehnt schon das Lesen mit Zeilennummer ab) |
-| Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
-| Maße | Bedienelemente (`control_sm` … `control_xl`) ≥ 24 (Klickziel); `row` 32–64; `row_two` 32–96; `row_message` 72–120 und `row_notice` 48–96 (Zeilen des Eingangs); `row_sidebar` 24–40; `header` 36–64; `sidebar` 180–320; `props`, `panel`, `list` 280–520; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64 (Befehlsleiste des Lesers), `pill` 28–64 (Torro-Pillen) |
+| Layout-Abstände | `inset` 0–24; Innenränder 0–48; `reading_padding` je 0–80; `section_gap` 8–64; `item_gap` 2–24 |
+| Abstände | `space` aufsteigend, 2–64; `radius` nicht fallend (gleiche Stufen erlaubt, Console 0/0/0/0), 0–16 |
+| Maße | Bedienelemente (`control_sm` … `control_xl`) und `row_group` ≥ 24 (Klickziel); `row` 24–64; `row_two` 24–96; `row_message` 24–120 und `row_notice` 24–96 (Zeilen des Eingangs, Console zeigt eine Zeile von 24); `row_sidebar` 24–40; `header` 32–64; `sidebar` 180–320; `props`, `panel` 280–520; `list`, `list_medium` 280–640; `rail` 40–80 und mindestens `control_lg` (der Knopf der Leiste passt hinein); `rail_wide` 180–320; `reading_max` 480–1200; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64, `pill` 28–64 |
+| Listen | `[list] style` nur `rows`, `line`, `cards` und `selection` nur `bar`, `fill` (ein anderes Wort lehnt schon das Lesen mit Zeilennummer ab); `avatar` 0 (aus) oder 20–48; `preview_lines` 1–2; `about.mail_view` nur `html` oder `text` |
+| Farbschema nur dunkel | mit `dark_only = true` kein `[colors.light]`; geprüft wird nur die dunkle Palette |
 | Dateien | Pfade nur innerhalb des Paketordners, keine Links nach außen; `design.toml` ≤ 64 KB, SVG ≤ 256 KB, PNG ≤ 2 MB, Schrift ≤ 5 MB, Paket ≤ 20 MB |
 | SVG | ohne Verweise auf andere Dateien oder Adressen (`href` nur `#…` und `data:`), ohne Skripte |
 | Schriften | lesbar als TrueType/OpenType; Familie aus `family` steht in der Datei; Lizenzdatei vorhanden |
@@ -287,20 +340,23 @@ Tastenbelegung, Anordnung (Stufe 2).
 
 Seit Aufgabe L.20 besteht ein Aussehen aus drei Teilen in drei Ordnern ([Drei Ordner](#drei-ordner)): einem
 **Design** (die Form), einer **Schrift** und einem **Farbschema**. Am Beispiel **Plex** (Aufgabe L.5): IBM Plex Sans,
-mehr Luft, ein ruhiger Petrol-Akzent, im Repository `designs/plex/`, `fonts/plex/` und `color-schemes/plex/`.
+mehr Luft, ein ruhiger Petrol-Akzent, im Repository `fonts/plex/` und `color-schemes/plex/`; ein eigenes Design
+dazu beginnt mit einer Kopie von `designs/compact/design.toml`.
 
 | Ordner | Datei | trägt | dazu |
 |---|---|---|---|
-| `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `color_scheme`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | `preview.png` |
+| `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `mail_view`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | `preview.png` |
 | `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
-| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg` |
+| `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg` |
 
 Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird für sich geprüft. Wer nur einen Teil
 ändern will, legt nur dessen Ordner an: ein eigenes Farbschema braucht kein Design und keine Schrift.
 
-Die Suite legt ihre Beispiele in dieselben drei Ordner im Datenordner, der Dienst beim Start, die Steuerzentrale bei
-„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Design, Schrift und Farbschema, Nord,
-Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema. Jedes Beispiel wird **einmal angeboten**
+Die Suite legt ihre Beispiele in die Ordner im Datenordner, der Dienst beim Start, die Steuerzentrale bei
+„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, Nord,
+Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema. Beispiel-Designs gibt es seit Issue #291
+nicht mehr: Die drei Designs der Suite sind eingebaut ([unten](#drei-eingebaute-designs-standard-compact-console)), und
+eine Kopie der sechs alten Beispiel-Designs in einem Datenordner bleibt ein eigenes Design ihres Besitzers. Jedes Beispiel wird **einmal angeboten**
 (L.10): Die versteckte Datei `.torro-examples` in jedem der drei Ordner hält fest, welche schon da waren, und eine neue
 Fassung der Suite legt nur Beispiele nach, die dort noch nicht stehen und für die es keinen Ordner gleichen Namens gibt.
 Jeder Ordner führt seine Liste für sich. Ein gelöschtes oder geändertes Beispiel bleibt gelöscht oder geändert;
@@ -311,10 +367,13 @@ jede App die Schriften mitschleppt.
 
 1. **Ordner anlegen:** `<data>/designs/<id>/`, `<data>/fonts/<id>/`, `<data>/color-schemes/<id>/`, `<id>` klein
    (`a-z`, `0-9`, `-`), in allen dreien gleich, wenn sie zusammengehören. Am schnellsten: Steuerzentrale › Appearance ›
-   Design › „Open designs folder“, dort `plex` in allen drei Ordnern kopieren und umbenennen.
+   Design › „Open designs folder“, dort die [Vorlage](#designtoml) oder `designs/compact/design.toml` aus dem
+   Repository als `<id>/design.toml` ablegen; Schrift und Farbschema aus `fonts/plex` bzw. `color-schemes/plex`
+   kopieren und umbenennen.
 2. **`design.toml` beginnen:** `format = 1`, `[about]` mit `name` und `version`. Damit ist das Design schon gültig –
-   es hat die Form von Torro. Mit `font = "<id>"` und `color_scheme = "<id>"` in `[about]` schlägt es Schrift und
-   Farbschema vor, gewählt wird getrennt. Ab hier nur eintragen, was abweicht.
+   es hat die Form des Standards. Mit `font = "<id>"` und `mail_view = "text"` in `[about]` schlägt es eine Schrift
+   und die Mail-Darstellung vor; das Farbschema wählt man immer getrennt (`color_scheme` ist seit L.33 ein unbekannter
+   Schlüssel). Ab hier nur eintragen, was abweicht.
 3. **Schrift:** `font.toml` mit `format = 1`, `license` (SPDX, Plex: `"OFL-1.1"`) und `[about]`; die TTF/OTF-Dateien
    direkt in `fonts/<id>/`, die Lizenz als `LICENSE.txt` daneben. `family` ist der Familienname in der Datei (Plex:
    „IBM Plex Sans“; die Schnitte Medium und SemiBold tragen ihn als typografische Familie, das reicht). Pflicht ist
@@ -444,14 +503,16 @@ Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Untero
 
 | Ordner | Datei | bringt | dazu |
 |---|---|---|---|
-| `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | ein **Design** | `preview.png` |
+| `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | ein **Design** | `preview.png` |
 | `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
-| `color-schemes/<id>/` | `color-scheme.toml`: `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg` |
+| `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg` |
 
 - Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
   stehen (Commitr in allen dreien). `torro` ist alle drei, eingebaut, ohne Ordner.
 - Neu und optional im `[about]` eines Designs: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das
-  Farbschema, die zum Design gedacht sind. Nur Vorschläge, gewählt wird getrennt.
+  Farbschema, die zum Design gedacht sind. Nur Vorschläge, gewählt wird getrennt. Seit Issue #291 kommt `mail_view`
+  (`"html"`, `"text"`) dazu, und `color_scheme` ist seit L.33 entfallen: Farben gehören nie zu einem Design. Wer ein
+  Design wählt, bekommt die vorgeschlagene Schrift (wenn sie gültig lädt) und die Ansicht der Mails mitgesetzt.
 - Jeder Teil wird für sich geprüft und für sich abgelehnt.
 - Ein Tray-Symbol gibt es im neuen Format nicht mehr: Der Tray zeichnet immer das rote Raster (Issue #114).
 - In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), im Tooltip der Name aus
@@ -480,7 +541,9 @@ benennt ihn einmal um oder löscht ihn; beim nächsten Start legt die Suite die 
   die gewählte umrandet mit Häkchen. Unbrauchbare sind ausgegraut mit Warnsymbol; ein Klick zeigt ihre Gründe unter dem
   Raster. Jede Gruppe hat „Open … folder“ rechts in der Überschrift.
 - Ein Design wählen ändert Schrift und Farbschema **nicht**. Schlägt das gewählte Design andere vor als die aktiven,
-  trägt deren Kachel die Marke „Suggested“ (Tooltip „Suggested for Commitr“, ein Klick wählt sie).
+  trägt deren Kachel die Marke „Suggested“ (Tooltip „Suggested for Commitr“, ein Klick wählt sie). **Ab L.33 (Issue
+  #291):** Wer ein Design wählt, bekommt dessen Vorschläge für Schrift (wenn es sie gibt) und Mail-Darstellung gleich
+  mit; das Farbschema bleibt immer.
 - Ungültige Teile, Wechsel ohne Wartezeit und Rückfall auf Torro gelten für alle drei wie unten beschrieben. Ein
   Wechsel der Schrift lädt Schriften (`iced::font::load`), ein Wechsel von Design oder Farbschema nicht.
 
@@ -515,24 +578,14 @@ Fehler, der ihn zu `font` oder `color_scheme` schickt, je nachdem, was das Paket
   `--color-scheme <id>` neben `--design`.
 - **Gleiches Bild:** Mit Torro/Torro/Torro sieht jede App aus wie vorher (exakt). Mit jedem Beispielpaket als alle drei
   Teile weichen die wirksamen Größen höchstens um 0,5 px von heute ab (Rundung des Ausgleichs).
-- **Stufe 2:** Der Kandidat „Dichte“ fällt weg: Sie steht seit Issue #226 als `layout.density` in Stufe 1.
+- **Stufe 2:** Der Kandidat „Dichte“ fällt weg: Sie steht seit Issue #226 in Stufe 1, seit Issue #291 als
+  `[list] style`.
 
-### Mitgelieferte Designs (Vorschlag)
+### Mitgelieferte Designs
 
-Namen sind Daten des Pakets und werden nicht übersetzt, darum englisch. Designs bringen nur Form, keine Schrift und
-keine Farben, schlagen aber eine Schrift vor. Werte gegen Torro (Text 13/20, Zeile 40, Seitenleistenzeile 28, Knopf
-32, Kopfleiste 44, Radien 4/6/8/10, Seitenrand 24), Größen für Inter:
-
-| Design | Idee, für wen | Werte (Auswahl) | schlägt vor |
-|---|---|---|---|
-| **Torro** | Standard, wie heute | – | Inter |
-| **Compact** (Kompakt) | viel auf einen Blick: volle Kalender, lange Listen, kleine Laptops | Text 12/16, Zeile 32, zweizeilig 44, Seitenleiste 24 und 216 breit, Knöpfe 24/28/32, Kopfleiste 36, Radien 3/4/6/8, Seitenrand 16, Paneele 12, Gruppen 16, Elemente 4, Stunde 40 | Inter |
-| **Airy** (Locker) | ruhiges Arbeiten, große Bildschirme | Text 14/22, Lesetext 16/26, Zeile 48, zweizeilig 60, Seitenleiste 32 und 260 breit, Knöpfe 32/36/40, Kopfleiste 52, Radien 6/8/12/14, Seitenrand 32 × 40, Paneele 20 × 24, Gruppen 32, Elemente 12 | Inter |
-| **Clear** (gut lesbar) | schlechte Augen, Abstand zum Bildschirm, Touch | Text 16/24, Lesetext 18/28, Knopfzeile 14, Zeitachse 13, Zeile 52, Seitenleiste 36 und 280 breit, Knöpfe 36/40/44 (Klickziel 44), Kopfleiste 56 | Hyperlegible (und Farbschema High Contrast, wenn es das gibt) |
-| **Folio** | viel lesen: Mail, Notizen | Lesetext 16/26, `content_max` 680, Titel und Überschrift in der Rolle `heading`, sonst nahe Torro | Source |
-| **Pebble** | weich und freundlich | Radien 8/12/16/16 (Knöpfe als Pillen: 16 bei Höhe 32), Zeile 44, Paneele 20, sonst nahe Torro | Nunito |
-| **Square** | eckig und dicht wie ein Terminal | Radien 0/0/2/2, Zeile 36, Seitenleiste 26, Knöpfe 28, Paneele 12 | JetBrains Mono |
-| Plex, Commitr, Channelr, Guildr, Quattro, Ribbon | gibt es schon | wie bisher, Größen auf Inter zurückgerechnet | die eigene |
+> Ersetzt durch die drei eingebauten Designs ([Drei eingebaute Designs](#drei-eingebaute-designs-standard-compact-console),
+> Issue #291). Die Vorschläge Airy, Clear, Folio, Pebble und Square (L.25–L.30) entfallen; die sechs Beispiel-Designs
+> Plex, Commitr, Channelr, Guildr, Quattro und Ribbon auch, ihre Schriften und Farbschemata bleiben.
 
 ### Mitgelieferte Schriften (Vorschlag)
 
@@ -554,6 +607,60 @@ Aufgabe in `torro-gui`.
 **Ideen für weitere Farbschemata**, nicht als Aufgabe: **High Contrast** (Text 7:1, kräftige Linien, für Clear),
 **Graphite** (ohne bunten Akzent, nur Grau, zum Konzentrieren), **Paper** (warmes Sepia, für Folio), **Torro Blue**
 (Torro mit blauem Akzent für die, denen Rot zu laut ist).
+
+## Drei eingebaute Designs: Standard, Compact, Console
+
+> **Issue #291, Stand 2026-10-23.** Aufgaben L.31–L.38 in [tasks/design-pakete.md](tasks/design-pakete.md). L.31–L.37
+> sind umgesetzt: Kern, Dienst, Bausteine, Mail, Aufgaben, Kalender und Appearance folgen den drei Designs; die
+> Zeilenhöhen sind die des bestätigten Entwurfs L.32.
+
+Ein Design bestimmt nur, wie viel auf den Bildschirm passt: Maße und *wie* Listen gezeichnet werden, nie *wo* etwas
+steht, und nie Farben. Die Suite bringt drei Designs mit, in dieser Reihenfolge:
+
+| Design | id | Idee | schlägt vor |
+|---|---|---|---|
+| **Standard** | `torro` | ruhig und offen: bündiger Inhalt, Haarlinien zwischen den Mails, Akzentstrich an der gewählten, eine Lesespalte mit viel Rand | – |
+| **Compact** | `compact` | Standard, nur enger gebaut | – |
+| **Console** | `console` | sehr dicht und eckig, eine Zeile pro Mail, die gewählte Zeile in der Akzentfarbe | Schrift `jetbrains-mono` (wenn es sie gibt), Mails als Text |
+
+- **Eingebaut, eine Datei je Design:** `designs/<id>/design.toml` im Repository, beim Bauen in `torro-core`
+  eingebettet (`torro_core::design::BUILT_IN_IDS`). `load` und `list` beantworten alle drei ohne Platte, `list` nennt
+  sie vor den Ordnern. Die ids sind vergeben: Ein Ordner `torro`, `compact` oder `console` im Datenordner wird mit
+  Grund abgelehnt.
+- **Der Standard ist vollständig:** Seine Datei setzt jeden Schlüssel; `Design::standard()` liest sie einmal je
+  Prozess. Fehlt ein Schlüssel oder bricht sie eine Regel, ist der Build kaputt: Ein Test hält ihn auf, das Programm
+  bricht mit Grund ab. Werte stehen nicht doppelt im Code. Compact und Console nehmen, was sie weglassen, vom Standard;
+  beide setzen trotzdem jeden Schlüssel, damit sie sich nicht mit dem Standard ändern.
+- **Dichte in der Liste der Designs** rechnet der Kern aus der Höhe der Mail-Zeile (`Design::density_level`):
+  ab 110 Airy, ab 88 Balanced, ab 56 Dense, darunter Very dense.
+- **Namen** sind Daten und werden nicht übersetzt; die Beschreibungen der drei eingebauten übersetzt die Suite.
+
+**Werte** (Größen für Inter; die Begründung abgeleiteter Werte steht als Kommentar in der jeweiligen Datei):
+
+| Schlüssel | Standard | Compact | Console |
+|---|---|---|---|
+| `type.body` / `body_strong` | 14/22 | 13/20 | 12/18 (`body_strong` bold) |
+| `type.meta` · `caption` | 13/18 · 12/16 | 12/16 · 11/16 | 11/16 · 11/16 |
+| `type.read` | 16/26 | 14/22 | 12/18 |
+| `type.title` · `headline` | 22/28 · 28/36 | 17/24 · 22/28 | 12/18 bold · 12/18 bold |
+| `size.row` · `row_group` | 48 · 40 | 40 · 32 | 24 · 24 |
+| `size.row_message` · `row_notice` | 100 · abgeleitet | 76 · 56 | 24 · 24 |
+| `size.row_sidebar` · `header` | 32 · 64 | 28 · 48 | 24 · 32 |
+| `size.control_sm` · `control_lg` | 36 · 40 | 30 · 36 | 24 · 28 |
+| `size.sidebar` · `list` | 240 · 440 | 216 · 400 | 196 · 600 |
+| `size.rail` · `rail_wide` | 60 · 248 | 52 · 232 | 40 · 200 |
+| `size.reading_max` · `layout.reading_padding` | 600 · [52, 64] | 640 · [32, 40] | 1200 · [14, 18] |
+| `layout.inset` | 0 | 0 | 0 |
+| `layout.row_padding` · `item_gap` | [18, 24] · 10 | [10, 16] · 8 | [0, 8] · 4 |
+| `radius` | Ecken 4 | 4/4/4/4 | 0/0/0/0 |
+| `space` | – | 4/8/12/16/24/32 | 2/4/6/8/12/16 |
+| `[list] style` · `separators` · `selection` | rows · true · bar | rows · true · bar | line · false · fill |
+| `[list] avatar` · `preview_lines` | 40 · 1 | 28 · 1 | 0 · 1 |
+| `[about] font` · `mail_view` | – · – | – · – | `jetbrains-mono` · `text` |
+
+Seit L.34 ersetzt diese Form die von vorher (Text 13/20, Zeile 40, Mail-Zeile 92, eingesetzte Fläche 8, Radien
+4/6/8/10, `rail` 52, `rail_wide` 232, keine Lesebreite, `reading_padding` 24 × 24, Avatar der Mail-Zeile 32). Ein
+eigenes Design mit `inset` > 0 bekommt weiterhin die eingesetzte Inhaltsfläche.
 
 ## Wählen und wechseln
 
@@ -586,7 +693,7 @@ Pakete enthalten keine Geheimnisse; Agenten dürfen sie auflisten und (als Admin
 - **Gleiches Bild:** Mit dem Standardpaket sieht jede App aus wie vorher. Das ist die Abnahme der Umstellung.
 - **Später, Stufe 2:** Schalter in `design.toml` (Block `[arrangement]`), die jede App liest. Welche, klären wir, wenn
   Stufe 1 steht. Kandidaten: Seitenleiste links/rechts/als Reiter, Detail daneben/darüber, Kopfleiste mit Text oder
-  nur Icons. Nicht mehr dabei: die Dichte und „Listen als Zeilen oder Karten“ – beides ist `layout.density` in
-  Stufe 1 (Issue #226).
+  nur Icons. Nicht mehr dabei: die Dichte und „Listen als Zeilen oder Karten“ – beides ist `[list] style` in
+  Stufe 1 (Issues #226, #291).
 - **Später, Herunterladen:** Ein Katalog (z. B. ein Git-Repo mit Paketen), „Install“ lädt, prüft und legt ab. Erst
   wenn es Pakete von anderen gibt.

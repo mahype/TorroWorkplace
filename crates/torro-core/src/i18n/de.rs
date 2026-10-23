@@ -2836,7 +2836,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Format {found} isn't supported. This version reads format 1.",
         "Format {found} wird nicht unterstützt. Diese Version liest Format 1.",
     ),
-    ("Inter, quiet surfaces, Torro red", "Inter, ruhige Flächen, Torro-Rot"),
     (
         "The line height of “{key}” is {line}; it must be between {size} and twice that.",
         "Die Zeilenhöhe von „{key}“ ist {line}; sie muss zwischen {size} und dem Doppelten liegen.",
@@ -5395,4 +5394,44 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{screen} · main", "{screen} · Hauptbildschirm"),
     ("{screen} · not connected", "{screen} · nicht angeschlossen"),
     ("{size} · main", "{size} · Hauptbildschirm"),
+    // Three designs: Standard, Compact, Console (issue #291, L.31–L.37)
+    (
+        "A color scheme with dark_only = true has no [colors.light]. Remove one of them.",
+        "Ein Farbschema mit dark_only = true hat kein [colors.light]. Entferne eines von beiden.",
+    ),
+    ("Airy", "Luftig"),
+    ("Also switched: {list}", "Ebenfalls umgestellt: {list}"),
+    ("Balanced", "Ausgewogen"),
+    (
+        "Calm and open: flush content, hairlines, a reading column with wide margins",
+        "Ruhig und offen: bündiger Inhalt, Haarlinien, eine Lesespalte mit viel Rand",
+    ),
+    ("Dark only", "Nur dunkel"),
+    ("Dense", "Dicht"),
+    ("Font and colors", "Schrift und Farben"),
+    ("HTML mail", "Mails als HTML"),
+    ("Light and dark", "Hell und dunkel"),
+    ("Standard, built tighter", "Standard, nur enger gebaut"),
+    ("Very dense", "Sehr dicht"),
+    ("Very dense and square, one line per mail", "Sehr dicht und eckig, eine Zeile pro Mail"),
+    ("also sets the font to \"{font}\"", "stellt auch die Schrift auf „{font}“"),
+    (
+        "also sets the font to \"{font}\" and the mail view to {view}",
+        "stellt auch die Schrift auf „{font}“ und die Mail-Darstellung auf {view}",
+    ),
+    ("also sets the mail view to {view}", "stellt auch die Mail-Darstellung auf {view}"),
+    ("font {font}", "Schrift {font}"),
+    ("plain-text mail", "Mails als reiner Text"),
+    ("{design} suggests {font}, which isn't installed.", "{design} schlägt {font} vor, die nicht installiert ist."),
+    ("{design} suggests {font}.", "{design} schlägt {font} vor."),
+    ("{font} is suggested for {design}.", "{font} wird für {design} vorgeschlagen."),
+    (
+        "“{id}” is the name of a design built into the suite. Give the folder another name.",
+        "„{id}“ ist der Name eines eingebauten Designs. Gib dem Ordner einen anderen Namen.",
+    ),
+    (
+        "“{key}” is {value}; allowed are 0 (off) or {min} to {max}.",
+        "„{key}“ ist {value}; erlaubt sind 0 (aus) oder {min} bis {max}.",
+    ),
+    ("Widen the window to expand actions", "Fenster verbreitern, um die Aktionen auszuklappen"),
 ];

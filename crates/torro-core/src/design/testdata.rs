@@ -6,7 +6,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::Part;
+use super::{
+    About, Design, FontRole, Layout, Level, ListLook, ListSelection, ListStyle, Pad, Part, Radius, STANDARD_ID, Size,
+    Space, TypeScale, Weight,
+};
+use crate::i18n::tr;
 
 /// `tests/fixtures/` of this crate.
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
@@ -129,5 +133,93 @@ fn font_paths(value: &toml::Value, found: &mut Vec<String>) {
         toml::Value::String(text) if text.ends_with(".ttf") || text.ends_with(".otf") => found.push(text.clone()),
         toml::Value::Table(table) => table.values().for_each(|inner| font_paths(inner, found)),
         _ => {}
+    }
+}
+
+/// The standard design of issue #291 as task L.34 set it in `designs/torro/design.toml`: the values of
+/// the table in `docs/tasks/design-pakete.md` (text 14/22, flush content, rows 18 × 24, rails 60 and
+/// 248, a reading column of 600, corners 4, an avatar of 40) and the ones derived from it, each with
+/// its reason in the file. Never edit these values to make a test pass: a change of the standard is a
+/// change of every app's look and belongs in a task of its own.
+pub(super) fn standard_of_the_table() -> Design {
+    let level = |font, weight, size, line| Level { font, weight, size, line };
+    Design {
+        id: STANDARD_ID.to_string(),
+        about: About {
+            name: "Standard".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            author: Some("Torro".to_string()),
+            description: Some(
+                tr("Calm and open: flush content, hairlines, a reading column with wide margins").to_string(),
+            ),
+            ..About::default()
+        },
+        typo: TypeScale {
+            micro: level(FontRole::Numbers, Weight::Regular, 11.0, 14.0),
+            caption: level(FontRole::Text, Weight::Medium, 12.0, 16.0),
+            meta: level(FontRole::Text, Weight::Regular, 13.0, 18.0),
+            body: level(FontRole::Text, Weight::Regular, 14.0, 22.0),
+            body_strong: level(FontRole::Text, Weight::Medium, 14.0, 22.0),
+            read: level(FontRole::Text, Weight::Regular, 16.0, 26.0),
+            title: level(FontRole::Heading, Weight::Semibold, 22.0, 28.0),
+            headline: level(FontRole::Heading, Weight::Semibold, 28.0, 36.0),
+            display: level(FontRole::Text, Weight::Semibold, 28.0, 32.0),
+            hero: level(FontRole::Heading, Weight::Semibold, 48.0, 56.0),
+            countdown: level(FontRole::Numbers, Weight::Medium, 28.0, 32.0),
+        },
+        space: Space { xs: 4.0, s: 8.0, m: 12.0, l: 16.0, xl: 24.0, xxl: 32.0 },
+        radius: Radius { xs: 4.0, sm: 4.0, md: 4.0, lg: 4.0 },
+        layout: Layout {
+            inset: 0.0,
+            page_padding: Pad { vertical: 24.0, horizontal: 24.0 },
+            panel_padding: Pad { vertical: 16.0, horizontal: 16.0 },
+            row_padding: Pad { vertical: 18.0, horizontal: 24.0 },
+            control_padding: Pad { vertical: 0.0, horizontal: 12.0 },
+            section_gap: 24.0,
+            item_gap: 10.0,
+            reading_padding: Pad { vertical: 52.0, horizontal: 64.0 },
+        },
+        size: Size {
+            control_sm: 36.0,
+            control: 38.0,
+            control_lg: 40.0,
+            control_xl: 48.0,
+            row: 48.0,
+            row_two: 56.0,
+            row_message: 100.0,
+            row_notice: 80.0,
+            row_sidebar: 32.0,
+            row_group: 40.0,
+            header: 64.0,
+            sidebar: 240.0,
+            props: 300.0,
+            panel: 400.0,
+            list: 440.0,
+            list_medium: 364.0,
+            hour: 48.0,
+            axis: 52.0,
+            axis_narrow: 44.0,
+            content_max: 720.0,
+            form_max: 640.0,
+            card_gap: 12.0,
+            avatar: 40.0,
+            avatar_lg: 48.0,
+            tile_sm: 20.0,
+            tile: 28.0,
+            tile_lg: 36.0,
+            command: 46.0,
+            pill: 40.0,
+            rail: 60.0,
+            rail_wide: 248.0,
+            reading_max: 600.0,
+        },
+        list: ListLook {
+            style: ListStyle::Rows,
+            separators: true,
+            selection: ListSelection::Bar,
+            avatar: 40.0,
+            preview_lines: 1,
+        },
+        preview: None,
     }
 }

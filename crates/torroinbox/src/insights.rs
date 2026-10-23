@@ -690,7 +690,14 @@ fn cut_row<'a>(cut: Cut) -> Element<'a, Message> {
     ]
     .spacing(space::l())
     .align_y(Alignment::Center);
-    container(line).center_y(size::header()).padding(layout::row_padding()).into()
+    container(line).center_y(size::header()).padding(cut_row_padding(layout::row_padding())).into()
+}
+
+/// The padding of a suggestion's row ([`cut_row`]) from the row padding `pad`: only its sides. The
+/// row is [`size::header()`] high and centres its content, so padding above and below would only
+/// squeeze the "Mute" button (18 above and below a row of 64 left the button of 36 only 28).
+fn cut_row_padding(pad: iced::Padding) -> iced::Padding {
+    iced::Padding::new(0.0).left(pad.left).right(pad.right)
 }
 
 /// A suggestion where it is narrow: what it mutes, its numbers below, the button at the right.
@@ -853,6 +860,23 @@ mod tests {
             SourceRef::script("backup"),
             SourceRef::suite(),
         ]
+    }
+
+    /// Issue #291 (review of the three designs): a suggestion's row of a fixed height takes only the
+    /// sides of the row padding, so its "Mute" button keeps its height in every design (with 18 above
+    /// and below a row of 64 squeezed the button of 36 to 28).
+    #[test]
+    fn a_suggestions_row_holds_its_mute_button_in_every_design() {
+        for id in torro_core::design::BUILT_IN_IDS {
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let pad = d.layout.row_padding;
+            let full =
+                iced::Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal };
+            let sides = cut_row_padding(full);
+            assert_eq!((sides.left, sides.right), (pad.horizontal, pad.horizontal), "{id}: the sides stay");
+            let inner = d.size.header - sides.top - sides.bottom;
+            assert!(inner >= d.size.control_sm, "{id}: {inner} inside the row holds the button");
+        }
     }
 
     #[test]

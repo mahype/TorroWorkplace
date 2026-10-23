@@ -6,12 +6,13 @@
 //! Completed –, list, priority, GitHub repository – what a filter list starts with, task G.3 –,
 //! or none); [`view`] renders them:
 //!
-//! - **Group heads** (32, `raised`, flush, no gap and no double line): a chevron to fold the group
-//!   (`Message::ToggleGroup`), its icon on the axis of the rows' leading symbol, the name in
+//! - **Group heads** (`size::row_group()`, `raised`, flush, no gap and no double line): a chevron to
+//!   fold the group (`Message::ToggleGroup`) in the rows' left padding, its icon on the axis of the
+//!   rows' leading symbol, the name in
 //!   `CAPTION`/`text_2`, the number of open tasks in `META`/`text_3`, and "+" at the right, which
 //!   adds a task to this group (`Message::AddInGroup`). Heads only touch with a line between them
 //!   when a group is folded.
-//! - **Rows** (40, [`widgets::list_row`]): the leading symbol – a task's round check in its list's
+//! - **Rows** (`size::row()`, [`widgets::list_row`]): the leading symbol – a task's round check in its list's
 //!   colour (→ `ToggleDone(index)`), for an issue of a GitHub filter list its check in GitHub's
 //!   colours ([`issue_check`], task G.5: ticking closes the issue; locked with a tooltip when the
 //!   account's token may not write issues), for a pull request of a filter list its type symbol
@@ -25,6 +26,12 @@
 //! - **Narrower lists** drop parts in a fixed order instead of wrapping ([`RowParts`]): labels
 //!   first, then the hints, the pill becomes a dot, `repo#123` becomes `#123`. A row never takes
 //!   two lines.
+//!
+//! **Designs** (issue #291, draft of task L.32 `docs/prototypes/designs/listen.html`): the cells stand
+//! in the same places in every design; `widgets::list_row` draws the hairlines (Standard, Compact) or
+//! none (Console) and the chosen row with the accent bar or as a whole row in the accent ([`fills`]:
+//! then the list's dot, the due date and the urgent square in `on_accent` too). Heights, paddings and gaps are the
+//! design's tokens.
 //!
 //! Empty → an empty state ("Nothing to do"; in a filter list "No matches"). A filter list
 //! ([`ListData::read_only`]) offers no "+" in its group heads.
@@ -54,11 +61,12 @@ use iced::widget::{
     scrollable, span, stack, svg, text,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Length, Padding, Theme, border, mouse};
+use torro_core::design::{ListLook, ListSelection};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, text_width};
-use torro_gui::{datetime, style, widgets};
+use torro_gui::{datetime, layout, style, widgets};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
 use torro_pim::source::{manual_order, same_level};
 use torro_pim::{EventTime, Todo};
@@ -729,14 +737,16 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         .into()
 }
 
-/// A row with its grip (manual order, or a row that can be dragged to a list): in the 16 left of
-/// the leading symbol, shown while the pointer is over the row (and always on the row being
-/// dragged, `held`), `hint` as its tooltip. Pressing it starts a drag ([`Message::DragStart`]); the
-/// press stays with the grip, so the row does not open.
+/// A row with its grip (manual order, or a row that can be dragged to a list): in the rows' left
+/// padding before the leading symbol ([`layout::row_padding`]), shown while the pointer is over the
+/// row (and always on the row being dragged, `held`), `hint` as its tooltip. Pressing it starts a
+/// drag ([`Message::DragStart`]); the press stays with the grip, so the row does not open.
 fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool, hint: &'static str) -> Element<'a, Message> {
+    // The row's height without its hairline, in a design that draws one.
+    let height = size::row() - if layout::list().separators { LINE } else { 0.0 };
     let mark = container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3))
-        .center_x(space::l())
-        .center_y(size::row() - LINE);
+        .center_x(layout::row_padding().left)
+        .center_y(height);
     let grip = mouse_area(widgets::with_tooltip(mark, hint))
         .on_press(Message::DragStart(index))
         .interaction(mouse::Interaction::Grab);
@@ -777,24 +787,37 @@ fn drop_marker<'a>(place: usize, rows: usize, depth: usize) -> Element<'a, Messa
         border: border::rounded(MARKER / 2.0),
         ..container::Style::default()
     });
-    let indent = space::l() + depth as f32 * space::xl();
-    column![Space::new().height(top), container(line).padding(Padding::new(0.0).left(indent).right(space::l()))]
+    let side = layout::row_padding();
+    let indent = side.left + depth as f32 * space::xl();
+    column![Space::new().height(top), container(line).padding(Padding::new(0.0).left(indent).right(side.right))]
         .width(Fill)
         .into()
 }
 
-/// Edge of the chevron that folds a group (`.ghead .chev` 12).
+/// Edge of the chevron that folds a group (`.ghead .chev`, draft L.32 `docs/prototypes/designs/listen.html`):
+/// 12 in Standard and Compact, 8 in Console.
 fn chevron_size() -> f32 {
-    space::m()
+    chevron_in(typo::line_height(typo::caption()), space::xs(), layout::row_padding().left)
 }
 
-/// A group head: 32 high on `raised`, flush with the rows. The chevron sits in the 16 left of the
-/// leading axis, the group's icon on that axis (16 in from the edge, like the rows' checks), the
-/// name 12 after it. A click anywhere folds or unfolds the group; "+" adds a task to it.
+/// [`chevron_size`] from the tokens it is derived from, so the tests can check every design: the
+/// line of the group's name (`caption`) less the smallest gap – a little quieter than the name, 12
+/// where the line is 16 – and never wider than the side padding of the rows it stands in (`side`),
+/// so the group's icon stays on the axis of the checks. In Console that padding is 8, and so is the
+/// chevron (confirmed with the draft of L.32).
+fn chevron_in(caption_line: f32, xs: f32, side: f32) -> f32 {
+    (caption_line - xs).min(side)
+}
+
+/// A group head, [`size::row_group()`] high on `raised`, flush with the rows. The chevron is centred
+/// in the rows' left padding ([`layout::row_padding`]), so the group's icon stands on the axis of the
+/// rows' checks; the name 12 after it. A click anywhere folds or unfolds the group; "+" adds a task to
+/// it, its icon ending where the due dates end.
 fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool) -> Element<'a, Message> {
     let chevron = if folded { Icon::ChevronRight } else { Icon::ChevronDown };
+    let side = layout::row_padding();
     let mut line = row![
-        container(toned(chevron, chevron_size(), Tone::Text3)).center_x(space::l()),
+        container(toned(chevron, chevron_size(), Tone::Text3)).center_x(side.left),
         container(group_mark(group, data)).center_x(icon::SIZE),
         Space::new().width(space::m()),
         typo::text(typo::caption(), group.label(&data.names)).style(theme::text_2).wrapping(text::Wrapping::None),
@@ -805,16 +828,16 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
     .align_y(Alignment::Center);
     if group.can_add() && !data.read_only {
         let add = button(center(toned(Icon::Plus, icon::SIZE_SM, Tone::Text3)))
-            .width(size::control_sm())
-            .height(size::control_sm())
+            .width(add_edge())
+            .height(add_edge())
             .padding(0)
             .style(style::button::icon)
             .on_press(Message::AddInGroup(group.clone()));
         line = line.push(add);
     }
-    // The "+" button is wider than its icon; pull it in so the icon ends 16 from the edge, above
-    // the due dates.
-    let right = space::l() - (size::control_sm() - icon::SIZE_SM) / 2.0;
+    // The "+" button is wider than its icon; pull it in so the icon ends at the rows' right padding,
+    // above the due dates.
+    let right = (side.right - (add_edge() - icon::SIZE_SM) / 2.0).max(0.0);
     let head = container(line).width(Fill).center_y(size::row_group()).padding(Padding::new(0.0).right(right)).style(
         |t: &Theme| container::Style {
             background: Some(Background::Color(palette(t).raised)),
@@ -822,6 +845,18 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
         },
     );
     mouse_area(head).on_press(Message::ToggleGroup(group.clone())).interaction(mouse::Interaction::Pointer).into()
+}
+
+/// Edge of the "+" button of a group head: a button ([`size::control_sm()`]), but never taller than
+/// the head, so it stays inside it where a design makes the head lower than its buttons (Compact: head
+/// 28, buttons 30).
+fn add_edge() -> f32 {
+    add_edge_in(size::control_sm(), size::row_group())
+}
+
+/// [`add_edge`] from the button's and the head's height.
+fn add_edge_in(control_sm: f32, row_group: f32) -> f32 {
+    control_sm.min(row_group)
 }
 
 /// The icon of a group head (14): the attention colour for "Overdue", `text_3` for the other due
@@ -969,8 +1004,20 @@ fn row_view<'a>(
     }
     let hints = if parts.hints { hints_of(todo, subtasks) } else { Vec::new() };
     line = line.push(title_cell(todo.summary.clone(), todo.completed, hints)).push(Space::new().width(space::m()));
-    line = line.push(right_part(data, todo, github, parts, under_today));
-    widgets::list_row(vec![line.width(Fill).into()], data.selected == Some(index), Some(Message::Select(index)))
+    let selected = data.selected == Some(index);
+    let filled = fills(layout::list(), selected);
+    line = line.push(right_part(data, todo, github, parts, under_today, filled));
+    widgets::list_row(vec![line.width(Fill).into()], selected, Some(Message::Select(index)))
+}
+
+/// Whether a row that is `selected` or not is drawn in the accent colour in the list look `look`:
+/// the chosen row of a design with `[list] selection = "fill"` (Console, issue #291). Its text and
+/// icons come out in `on_accent` by themselves (`widgets::list_row`); what has a colour of its own is
+/// drawn in `on_accent` here – the list's dot and the due date, also when overdue, and the urgent
+/// square ([`urgent_colours`]) – so nothing coloured stands on the accent (confirmed with the draft of
+/// L.32). Status icons keep their colour.
+fn fills(look: ListLook, selected: bool) -> bool {
+    selected && look.selection == ListSelection::Fill
 }
 
 /// The title on one line, cut with "…" to the room the row leaves, and the hints right after it.
@@ -1018,6 +1065,7 @@ fn right_part<'a>(
     github: Option<&GitHubDetails>,
     parts: RowParts,
     under_today: bool,
+    filled: bool,
 ) -> Element<'a, Message> {
     let mut right = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(details) = github {
@@ -1033,12 +1081,12 @@ fn right_part<'a>(
         }
     }
     if data.show_list {
-        right = right.push(origin(data, todo, github.is_some(), parts.pill));
+        right = right.push(origin(data, todo, github.is_some(), parts.pill, filled));
     }
     if let Some(due) = todo.due {
         let label = row_due(due, data.today, under_today);
         if !label.is_empty() {
-            let overdue = is_overdue(todo, data.today);
+            let overdue = is_overdue(todo, data.today) && !filled;
             let width = text_width(&label, typo::meta().tabular()).max(due_min());
             let date =
                 typo::text(typo::meta().tabular(), label).wrapping(text::Wrapping::None).style(move |t: &Theme| {
@@ -1051,9 +1099,12 @@ fn right_part<'a>(
     right.into()
 }
 
-/// The least width of the due date, so dates line up at the right (`.due{min-width:44px}`).
+/// The least width of the due date, so dates line up at the right (`.due`, draft L.32: wide enough
+/// for "Oct 30"). The narrow time axis of the calendar: it holds "00:00" in the widest figures at the
+/// smallest size, and a short date in `meta` takes about as much – 44 in all three designs. Not the
+/// header's height, which it once borrowed and which is 64 in the standard since #291.
 fn due_min() -> f32 {
-    size::header()
+    size::axis_narrow()
 }
 /// Edge of the dot that stands for a list or repository in narrow lists (`.pdot` 6).
 // design-check: allow the dot of a pill is 6, as in widgets::pill
@@ -1075,14 +1126,15 @@ fn labels<'a>(details: &GitHubDetails) -> Element<'a, Message> {
 }
 
 /// Where a row comes from: its list (dot in the list's colour and name) or, for a GitHub item,
-/// its repository after the GitHub mark; a dot alone when the list is narrow.
-fn origin<'a>(data: &ListData<'a>, todo: &Todo, github: bool, pill: bool) -> Element<'a, Message> {
+/// its repository after the GitHub mark; a dot alone when the list is narrow. In a row drawn in the
+/// accent colour (`filled`, [`fills`]) the dot is `on_accent`.
+fn origin<'a>(data: &ListData<'a>, todo: &Todo, github: bool, pill: bool, filled: bool) -> Element<'a, Message> {
     if let Some((repo, _)) = todo.link.as_ref().and_then(Link::github_ref).filter(|_| github) {
         let name = repo.rsplit('/').next().unwrap_or(repo).to_string();
-        let colour = data.palette.text_3;
+        let colour = if filled { data.palette.on_accent } else { data.palette.text_3 };
         return if pill { widgets::icon_pill(Icon::Github, name) } else { widgets::color_dot(colour, ORIGIN_DOT) };
     }
-    let colour = colour_of(data, &todo.collection);
+    let colour = if filled { data.palette.on_accent } else { colour_of(data, &todo.collection) };
     let name = data.names.get(&todo.collection).cloned().unwrap_or_default();
     if pill { widgets::pill(Some(colour), name) } else { widgets::color_dot(colour, ORIGIN_DOT) }
 }
@@ -1201,24 +1253,32 @@ fn prio_cell<'a>(priority: Option<u8>) -> Element<'a, Message> {
     }
 }
 
-/// The glyph of a priority, 14 wide: urgent as an orange square with "!", the others as three
-/// bars (none: all dim).
+/// The glyph of a priority, 14 wide: urgent as an orange square with "!" ([`urgent_colours`]), the
+/// others as three bars (none: all dim).
 pub(crate) fn prio_glyph<'a, M: 'a>(prio: Prio) -> Element<'a, M> {
     match prio {
-        Prio::Urgent => container(typo::text(typo::caption(), "!").style(|t: &Theme| text::Style {
-            // The panel colour is dark on the bright orange of dark mode and white on the darker
-            // orange of light mode: readable in both.
-            color: Some(palette(t).panel),
-        }))
+        Prio::Urgent => container(
+            typo::text(typo::caption(), "!").style(|t: &Theme| text::Style { color: Some(urgent_colours(t).1) }),
+        )
         .center(icon::SIZE_SM)
         .style(|t: &Theme| container::Style {
-            background: Some(Background::Color(palette(t).attention_text)),
+            background: Some(Background::Color(urgent_colours(t).0)),
             border: border::rounded(radius::xs()),
             ..container::Style::default()
         })
         .into(),
         other => priority_view(other.level()),
     }
+}
+
+/// The colours of the urgent square drawn in `t`, `(square, "!")`: `attention_text` with the "!" in
+/// `panel` – dark on the bright orange of dark mode, white on the darker orange of light mode. In a row
+/// drawn in the accent colour (Console's chosen row, [`fills`]; its cells are drawn in
+/// `theme::on_accent_theme`, which stays itself) the square is `on_accent` with the "!" in `accent`: a
+/// coloured mark on the accent would not read (issue #291, as the list's dot and the due date).
+fn urgent_colours(t: &Theme) -> (Color, Color) {
+    let p = palette(t);
+    if theme::on_accent_theme(t) == *t { (p.on_accent, p.accent) } else { (p.attention_text, p.panel) }
 }
 
 /// The title on one line; a done task struck through in `text_3`.
@@ -1245,8 +1305,17 @@ const BAR_GAP: f32 = 2.0;
 const BAR_HEIGHTS: [f32; 3] = [5.0, 8.0, 12.0];
 const BAR_RADIUS: f32 = 1.0;
 
+/// The colour of a bar of the priority glyph that is not lit, drawn in `t`: `line_strong`, or in a row
+/// drawn in the accent colour – whose cells are drawn in `theme::on_accent_theme`, which stays itself –
+/// `on_accent` at the disabled opacity.
+fn unlit_bar(t: &Theme, p: &Palette) -> Color {
+    if theme::on_accent_theme(t) == *t { p.on_accent.scale_alpha(style::DISABLED_ALPHA) } else { p.line_strong }
+}
+
 /// Linear's priority glyph: three rising bars in a 14-wide cell, the first `level` in `text_2`,
-/// the rest in `line_strong`. Shape, not colour, carries the level.
+/// the rest in `line_strong`. Shape, not colour, carries the level. In a row drawn in the accent
+/// colour (Console's chosen row, [`fills`]) the lit bars are `on_accent` (its `text_2`) and the others
+/// `on_accent` at the disabled opacity: `line_strong` would not show on the accent.
 pub(crate) fn priority_view<'a, M: 'a>(level: usize) -> Element<'a, M> {
     let bars = BAR_HEIGHTS.into_iter().enumerate().map(|(i, height)| {
         let lit = i < level;
@@ -1254,7 +1323,7 @@ pub(crate) fn priority_view<'a, M: 'a>(level: usize) -> Element<'a, M> {
             .style(move |t: &Theme| {
                 let p = palette(t);
                 container::Style {
-                    background: Some(Background::Color(if lit { p.text_2 } else { p.line_strong })),
+                    background: Some(Background::Color(if lit { p.text_2 } else { unlit_bar(t, &p) })),
                     border: border::rounded(BAR_RADIUS),
                     ..container::Style::default()
                 }
@@ -1626,6 +1695,88 @@ mod tests {
         // Without heads the rows start at the top.
         let d = ListData { group_by: GroupBy::None, ..data(&todos, &filter, false) };
         assert_eq!(span(&d, "o"), Some((0.0, row)));
+    }
+
+    fn built_in(id: &str) -> torro_core::design::Design {
+        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+    }
+
+    /// Issue #291 (task L.36, draft L.32): rows and group heads take their heights from the design –
+    /// one line in Console – and hold what they show: the title's line in a row, the name and the "+"
+    /// button in a head.
+    #[test]
+    fn rows_and_heads_hold_their_content_in_every_design() {
+        let heights = |id: &str| {
+            let d = built_in(id);
+            (d.size.row, d.size.row_group)
+        };
+        assert_eq!(heights("torro"), (48.0, 40.0));
+        assert_eq!(heights("compact"), (40.0, 32.0));
+        assert_eq!(heights("console"), (24.0, 24.0), "one line");
+        for id in ["torro", "compact", "console"] {
+            let d = built_in(id);
+            assert!(d.size.row >= d.typo.body_strong.line, "{id}: the title fits its row");
+            assert!(d.size.row_group >= d.typo.caption.line, "{id}: the name fits its head");
+            let add = add_edge_in(d.size.control_sm, d.size.row_group);
+            assert!(add <= d.size.row_group && add >= icon::SIZE_SM, "{id}: the \"+\" stays inside the head");
+        }
+        assert_eq!(add_edge(), size::control_sm(), "the standard's head holds a whole button");
+        // The rows' spans follow the design's heights (the standard here).
+        let todos = vec![Todo { due: due(9), ..todo("o", "overdue") }, Todo { due: due(9), ..todo("p", "also") }];
+        let filter = Filter::All;
+        let d = data(&todos, &filter, false);
+        assert_eq!(
+            row_span(&d, 0),
+            Some((size::row_group() + size::row(), size::row_group() + 2.0 * size::row())),
+            "\"also\" first"
+        );
+    }
+
+    /// Issue #291 (draft L.32, confirmed: Console's chevron is 8): the chevron of a group head fits the
+    /// rows' side padding, so the group's icon stands on the axis of the checks in every design.
+    #[test]
+    fn the_group_icon_stands_on_the_axis_of_the_checks() {
+        let chevron = |id: &str| {
+            let d = built_in(id);
+            chevron_in(d.typo.caption.line, d.space.xs, d.layout.row_padding.horizontal)
+        };
+        assert_eq!([chevron("torro"), chevron("compact"), chevron("console")], [12.0, 12.0, 8.0]);
+        for id in ["torro", "compact", "console"] {
+            assert!(chevron(id) <= built_in(id).layout.row_padding.horizontal, "{id}");
+        }
+        assert_eq!(chevron_size(), 12.0);
+        assert_eq!(layout::row_padding().left, 24.0, "the column of the chevron is the rows' padding");
+    }
+
+    /// Issue #291 (draft L.32): only the chosen row of a design that fills it (Console) turns its own
+    /// colours to `on_accent`; Standard and Compact mark it with the bar and keep them.
+    #[test]
+    fn only_a_filled_row_draws_its_colours_in_on_accent() {
+        assert!(fills(built_in("console").list, true));
+        assert!(!fills(built_in("console").list, false));
+        for id in ["torro", "compact"] {
+            assert!(!fills(built_in(id).list, true), "{id}");
+        }
+        assert!(!fills(layout::list(), true), "the process draws with the standard");
+        // Every row builds chosen and filled, with a list dot, a GitHub pill and an overdue date.
+        let todos = vec![Todo { due: due(9), priority: Some(5), ..todo("o", "overdue") }];
+        let filter = Filter::All;
+        let _ = view(ListData { selected: Some(0), ..data(&todos, &filter, false) });
+        assert_eq!(due_min(), size::axis_narrow(), "not the header's height");
+    }
+
+    /// Issue #291 (review of the three designs): the urgent square keeps its orange with a "!" in the
+    /// panel's colour, but in the chosen row drawn in the accent (Console) it turns `on_accent` with
+    /// the "!" in `accent` – an orange square on red would not read; in light and dark mode.
+    #[test]
+    fn the_urgent_square_turns_on_accent_in_a_filled_row() {
+        for window in [theme::theme(), theme::light()] {
+            let p = palette(&window);
+            assert_eq!(urgent_colours(&window), (p.attention_text, p.panel), "elsewhere: orange with \"!\"");
+            let on = theme::on_accent_theme(&window);
+            assert_eq!(urgent_colours(&on), (p.on_accent, p.accent), "on the accent: on_accent with \"!\"");
+            assert!(p.accent.relative_contrast(p.on_accent) >= 4.5, "the \"!\" reads on its square");
+        }
     }
 
     #[test]

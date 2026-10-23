@@ -5,6 +5,9 @@
 //!
 //! The rules of a colour scheme: the contrasts (`rules::colors`) and the logo (SVG without references
 //! and scripts, square). A tray symbol is not part of the format any more (issue #114).
+//!
+//! A scheme with `dark_only = true` at the top (issue #291) has dark colours only: `[colors.light]` is
+//! an error there, the light palette is a copy of the dark one, and only the dark one is checked.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -42,6 +45,7 @@ pub fn load_color_scheme(dir: &Path, id: &str) -> Result<ColorScheme, Vec<Design
 #[serde(deny_unknown_fields)]
 struct SchemeFile {
     format: Option<i64>,
+    dark_only: Option<bool>,
     #[serde(default)]
     about: AboutFile,
     #[serde(default)]
@@ -50,14 +54,14 @@ struct SchemeFile {
     logo: LogoFile,
 }
 
-/// `[colors]`. Colours stay loose values here, so each bad one is reported with its key.
+/// `[colors]`. Colours stay loose values here, so each bad one is reported with its key. `light` is an
+/// `Option`, so a dark-only scheme with an empty `[colors.light]` is told about it too.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ColorsFile {
     #[serde(default)]
     dark: BTreeMap<String, toml::Value>,
-    #[serde(default)]
-    light: BTreeMap<String, toml::Value>,
+    light: Option<BTreeMap<String, toml::Value>>,
 }
 
 /// `[logo]`: the mark only. A tray symbol is no part of the format (issue #114), so [`known`]
@@ -113,7 +117,7 @@ fn known(path: &str, key: &str) -> Option<bool> {
     let value = |ok: bool| ok.then_some(false);
     match path {
         "" => match key {
-            "format" => Some(false),
+            "format" | "dark_only" => Some(false),
             "about" | "colors" | "logo" => Some(true),
             _ => None,
         },
@@ -132,25 +136,35 @@ fn read(dir: &Path, id: &str, about: &mut About) -> Result<ColorScheme, Vec<Desi
     *about = file.about.about(id);
     let mut problems = Vec::new();
     header(file.format, &file.about, &mut problems);
-    let scheme = build(id, about.clone(), &root, &file.colors, file.logo, &mut problems);
+    let dark_only = file.dark_only.unwrap_or(false);
+    if dark_only && file.colors.light.is_some() {
+        problems.push(DesignError::DarkOnlyLight);
+    }
+    let scheme = build(id, about.clone(), &root, &file.colors, dark_only, file.logo, &mut problems);
     if problems.is_empty() { Ok(scheme) } else { Err(problems) }
 }
 
 /// A colour scheme from `colors` and `logo` as written in the folder `root`, checked; every broken
-/// rule goes to `problems`.
+/// rule goes to `problems`. A `dark_only` scheme takes its dark palette for light mode too.
 fn build(
     id: &str,
     about: About,
     root: &Root,
     colors: &ColorsFile,
+    dark_only: bool,
     logo: LogoFile,
     problems: &mut Vec<DesignError>,
 ) -> ColorScheme {
-    let mut scheme = ColorScheme { id: id.to_string(), about, ..ColorScheme::standard() };
+    let mut scheme = ColorScheme { id: id.to_string(), about, dark_only, ..ColorScheme::standard() };
     merge_palette(Mode::Dark, &mut scheme.colors.dark, &colors.dark, problems);
-    merge_palette(Mode::Light, &mut scheme.colors.light, &colors.light, problems);
+    if dark_only {
+        scheme.colors.light = scheme.colors.dark;
+    } else {
+        let light = colors.light.clone().unwrap_or_default();
+        merge_palette(Mode::Light, &mut scheme.colors.light, &light, problems);
+    }
     scheme.logo = read_logo(root, logo, problems);
-    problems.extend(rules::colors(&scheme.colors));
+    problems.extend(rules::colors(&scheme.colors, dark_only));
     scheme
 }
 
@@ -490,6 +504,35 @@ mod tests {
             .collect();
         assert_eq!(keys, ["colors.light.accent", "colors.light.bg", "colors.light.calendar", "colors.light.tint"]);
         assert_eq!(palette.ok.a, 128.0 / 255.0, "the good one is applied");
+    }
+
+    /// Issue #291: a dark-only scheme draws its dark colours in light mode too; with `[colors.light]`
+    /// it is refused, even an empty one.
+    #[test]
+    fn a_dark_only_scheme_is_dark_in_both_modes() {
+        let data = Data::new();
+        let dir = data.dir(Part::ColorScheme);
+        let scheme = |light: &str| {
+            format!(
+                "format = 1\ndark_only = true\n[about]\nname = \"Night\"\nversion = \"1\"\n[colors.dark]\nbg = \"#050505\"\n{light}"
+            )
+        };
+        data.write(Part::ColorScheme, "night", &scheme(""));
+        let night = load_color_scheme(&dir, "night").expect("valid");
+        assert!(night.dark_only);
+        assert_eq!(night.colors.light, night.colors.dark, "light is a copy of dark");
+        assert_eq!(night.colors.dark.bg, Rgba::hex(0x050505));
+
+        data.write(Part::ColorScheme, "both", &scheme("[colors.light]\nbg = \"#FFFFFF\"\n"));
+        assert_eq!(problems(&dir, "both"), [DesignError::DarkOnlyLight]);
+        data.write(Part::ColorScheme, "empty-light", &scheme("[colors.light]\n"));
+        assert_eq!(problems(&dir, "empty-light"), [DesignError::DarkOnlyLight]);
+
+        let plain = load_color_scheme(&data.dir(Part::ColorScheme), STANDARD_ID).expect("standard");
+        assert!(!plain.dark_only, "without the key a scheme has both modes");
+        data.write(Part::ColorScheme, "two", "format = 1\ndark_only = false\n[about]\nname = \"Two\"\nversion = \"1\"\n[colors.light]\nbg = \"#FAFAFA\"\n");
+        let two = load_color_scheme(&dir, "two").expect("valid");
+        assert!(!two.dark_only && two.colors.light.bg == Rgba::hex(0xFAFAFA));
     }
 
     /// Task L.19: the repository's colour schemes, once task L.20 has made them, are valid.

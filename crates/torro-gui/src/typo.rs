@@ -4,7 +4,7 @@
 //! sizes, meant for Inter, times the font's size adjustment, and the nearest weight the font has); the
 //! standard gives the values of the design skill (`.claude/skills/torro-design`, section 3). A level
 //! fixes size, absolute line height and font cut together, so text lines up on the same grid everywhere and apps never write
-//! `.size(…)` by hand. The base size is 13 in the standard, as in Linear; a larger interface comes
+//! `.size(…)` by hand. The base size is 14 in the standard (issue #291; 13 before); a larger interface comes
 //! from Iced's `scale_factor` (the zoom), never from other sizes. Hierarchy comes from the
 //! level *and* the colour (`text` → `text_2` → `text_3`); colour stays the caller's choice and
 //! always comes from the theme.
@@ -73,30 +73,30 @@ pub fn micro() -> Level {
 pub fn caption() -> Level {
     level(|t| t.caption)
 }
-/// 12/16, Regular: metadata, counters, due dates.
+/// 13/18 in the standard design, Regular: metadata, counters, due dates.
 pub fn meta() -> Level {
     level(|t| t.meta)
 }
-/// 13/20, Regular: the default – lists, sidebar, inputs, running text. Also the apps' default
+/// 14/22, Regular: the default – lists, sidebar, inputs, running text. Also the apps' default
 /// text size.
 pub fn body() -> Level {
     level(|t| t.body)
 }
-/// 13/20, Medium: header titles, row titles, event titles.
+/// 14/22, Medium: header titles, row titles, event titles.
 pub fn body_strong() -> Level {
     level(|t| t.body_strong)
 }
-/// 14/22, Regular: reading text – the whole of a mail in the inbox's reader (task E8.2). One step
+/// 16/26, Regular: reading text – the whole of a mail in the inbox's reader (task E8.2). One step
 /// above [`body`] with more line height, because it is read for longer than a list; never for
 /// rows, labels or inputs, which stay [`body`]. A design pack keeps it at least as large as `body`.
 pub fn read() -> Level {
     level(|t| t.read)
 }
-/// 16/22, SemiBold: card and dialog titles (the font's heading family).
+/// 22/28, SemiBold: card and dialog titles (the font's heading family).
 pub fn title() -> Level {
     level(|t| t.title)
 }
-/// 22/28, SemiBold: detail titles ("Review API concept"), view titles without a header bar (the
+/// 28/36, SemiBold: detail titles ("Review API concept"), view titles without a header bar (the
 /// font's heading family).
 pub fn headline() -> Level {
     level(|t| t.headline)
@@ -118,9 +118,8 @@ pub fn countdown() -> Level {
 }
 
 /// The eight levels of the Linear scale, smallest first: everything but [`read`], which came with
-/// the inbox's reader (task E8.2). Kept at eight because the test "same picture" of design packs
-/// (`crate::design`) holds them to the constants from before the packs; the tests here check
-/// [`read`] on its own.
+/// the inbox's reader (task E8.2), and the two levels of a reminder over the whole screen. Kept at
+/// eight, the Linear scale; the tests check [`read`], [`hero`] and [`countdown`] on their own.
 pub fn all() -> [Level; 8] {
     [micro(), caption(), meta(), body(), body_strong(), title(), headline(), display()]
 }
@@ -206,16 +205,16 @@ mod tests {
         let expected = [
             (micro(), 11.0, 14.0, theme::font_tabular()),
             (caption(), 12.0, 16.0, theme::font_medium()),
-            (meta(), 12.0, 16.0, theme::font()),
-            (body(), 13.0, 20.0, theme::font()),
-            (body_strong(), 13.0, 20.0, theme::font_medium()),
-            (title(), 16.0, 22.0, theme::font_semibold()),
-            (headline(), 22.0, 28.0, theme::font_semibold()),
+            (meta(), 13.0, 18.0, theme::font()),
+            (body(), 14.0, 22.0, theme::font()),
+            (body_strong(), 14.0, 22.0, theme::font_medium()),
+            (title(), 22.0, 28.0, theme::font_semibold()),
+            (headline(), 28.0, 36.0, theme::font_semibold()),
             (display(), 28.0, 32.0, theme::font_semibold()),
         ];
         assert_eq!(expected.len(), all().len());
         let later = [
-            (read(), 14.0, 22.0, theme::font()),
+            (read(), 16.0, 26.0, theme::font()),
             (hero(), 48.0, 56.0, theme::font_semibold()),
             (countdown(), 28.0, 32.0, theme::font_tabular_medium()),
         ];
@@ -273,8 +272,8 @@ mod tests {
 
     #[test]
     fn line_height_is_the_absolute_one() {
-        assert_eq!(line_height(body()), 20.0);
-        assert_eq!(line_height(read()), 22.0, "reading text has more room between its lines");
+        assert_eq!(line_height(body()), 22.0);
+        assert_eq!(line_height(read()), 26.0, "reading text has more room between its lines");
         assert_eq!(line_height(display()), 32.0);
     }
 }

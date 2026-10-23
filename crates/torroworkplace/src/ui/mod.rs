@@ -878,14 +878,20 @@ impl Ui {
                 }
                 messages
             }
-            // The demo's designs, fonts and colour schemes, one of each broken. "Harbor" is chosen
-            // unless `--design` names one: it has the standard's form, so the window stays as it is,
-            // and it suggests a font and a colour scheme, whose tiles say so.
-            Open::Design => {
-                if self.launch.design.is_none() {
-                    self.data.settings.design = "harbor".into();
+            // The demo's designs, fonts and colour schemes, one of each broken; the check mark at the
+            // design `--design` draws with, else at the standard.
+            Open::Design | Open::DesignSchemes | Open::DesignSwitched => {
+                self.data.settings.design =
+                    self.launch.design.clone().unwrap_or_else(|| torro_core::design::STANDARD_ID.into());
+                let mut messages = vec![Message::Select(Section::Appearance)];
+                match open {
+                    Open::DesignSchemes => messages.push(Message::General(general::Message::ToggleSchemes)),
+                    Open::DesignSwitched => {
+                        messages.push(Message::General(general::Message::Choose(Part::Design, "console".into())));
+                    }
+                    _ => {}
                 }
-                vec![Message::Select(Section::Appearance)]
+                messages
             }
         };
         for message in messages {
@@ -1013,6 +1019,10 @@ impl Ui {
                 self.data.settings.zoom = self.zoom.level();
                 // A choice being saved stays drawn until a reload carries it.
                 settle(&mut self.pending_look, &mut self.data.settings, self.data.error.is_none());
+                // What the core switched with a design chosen here, once a reload carries it (task L.37).
+                if self.data.error.is_none() {
+                    general::loaded(&mut self.general, &self.data.settings, self.pending_look.design.is_some());
+                }
                 // `--design`, `--font` and `--color-scheme` of the demo win over the stored ones, like
                 // `--appearance`; each part is read only when its id changed (task L.23).
                 let design = match self.data.error.is_none() {
@@ -1129,6 +1139,7 @@ impl Ui {
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
                     Section::Api => api::escape(&self.api).map(Message::Api),
                     Section::Mcp => mcp::escape(&self.mcp).map(Message::Mcp),
+                    Section::Appearance => general::escape(&self.general).map(Message::General),
                     _ => None,
                 };
                 return match page {
@@ -1176,6 +1187,7 @@ impl Ui {
         if matches!(self.section, Section::Accounts | Section::Ai) {
             accounts::leave(&mut self.accounts);
         }
+        general::leave(&mut self.general);
         self.section = section;
         self.close_menus();
     }
@@ -1296,10 +1308,30 @@ impl Ui {
         };
         let fonts = fonts.unwrap_or_else(Task::none).map(Message::Design);
         if self.launch.demo {
-            return fonts;
+            let suggested = match part {
+                Part::Design => self.demo_suggestions(&id),
+                _ => Task::none(),
+            };
+            return Task::batch([fonts, suggested]);
         }
-        let save = send(Request::SetSetting { key: setting_key(part), value: serde_json::json!(id) });
-        Task::batch([fonts, save])
+        Task::batch([fonts, send(save_request(part, &id))])
+    }
+
+    /// What the core does when a design is chosen (task L.33), done by the demo, which has none: the
+    /// font the design `id` suggests, when the demo lists it as usable, and its mail view; then the
+    /// page compares, as after a reload (task L.37).
+    fn demo_suggestions(&mut self, id: &str) -> Task<Message> {
+        let (font, mail_view) = general::suggestions_of(&self.general, id);
+        if let Some(view) = mail_view {
+            self.data.settings.mail_view = view;
+        }
+        let task = font.and_then(|font| {
+            let task = self.show_sample(Part::Font, &font);
+            self.data.settings.font = font;
+            task
+        });
+        general::loaded(&mut self.general, &self.data.settings, false);
+        task.map_or_else(Task::none, |task| task.map(Message::Design))
     }
 
     /// The demo's [`Ui::choose`]: draws the sample `id` of `part` as the page listed it, with the
@@ -1515,6 +1547,7 @@ impl Ui {
                 .map(|e| e.map(Message::Workspaces)),
             Section::Api => api::overlay(&self.api, &self.data).map(|e| e.map(Message::Api)),
             Section::Mcp => mcp::overlay(&self.mcp, &self.data).map(|e| e.map(Message::Mcp)),
+            Section::Appearance => general::overlay(&self.general, &self.data).map(|e| e.map(Message::General)),
             _ => None,
         }
     }
@@ -1820,6 +1853,12 @@ fn pending_id(pending: &mut Forced, part: Part) -> &mut Option<String> {
     }
 }
 
+/// The request that saves the choice of `id` for `part` (Appearance): `settings.set_setting` with the
+/// part's key and the id. The core sets what a design suggests with it (task L.33).
+fn save_request(part: Part, id: &str) -> Request {
+    Request::SetSetting { key: setting_key(part), value: serde_json::json!(id) }
+}
+
 /// The setting that chooses `part` (`settings.set_setting`).
 fn setting_key(part: Part) -> torro_ipc::SettingKey {
     match part {
@@ -2080,24 +2119,36 @@ mod tests {
         assert!(design::active().is_standard(), "the parameter beats the stored design");
     }
 
-    /// Appearance (tasks L.4, L.23): opening the page lists the parts; the demo has its samples,
-    /// one of each broken, and "Harbor" chosen, so its suggestions are marked.
+    /// Appearance (tasks L.4, L.23, L.37): opening the page lists the parts; the demo has the three
+    /// built-in designs and its samples, one of each broken and a colour scheme that is only dark, with
+    /// the standard drawn.
     #[test]
     fn the_design_state_lists_the_demo_parts() {
+        // `--design` and `--font` below set what the process draws with.
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let demo = started(&["--demo", "--open", "design"]);
         assert_eq!(demo.section, Section::Appearance);
         let usable =
-            |ids: [&'static str; 4], of: &dyn Fn(&str) -> bool| ids.into_iter().filter(|id| of(id)).collect::<Vec<_>>();
-        let designs =
-            usable(["torro", "harbor", "paper", "neon"], &|id| general::design_of(&demo.general, id).is_some());
-        assert_eq!(designs, ["torro", "harbor", "paper"], "the broken one has nothing to draw with");
-        let fonts = usable(["torro", "tabular", "brush", "gone"], &|id| general::font_of(&demo.general, id).is_some());
+            |ids: [&'static str; 5], of: &dyn Fn(&str) -> bool| ids.into_iter().filter(|id| of(id)).collect::<Vec<_>>();
+        let designs = usable(["torro", "compact", "console", "neon", "harbor"], &|id| {
+            general::design_of(&demo.general, id).is_some()
+        });
+        assert_eq!(designs, ["torro", "compact", "console"], "the broken one has nothing to draw with");
+        let fonts =
+            usable(["torro", "tabular", "brush", "gone", "plex"], &|id| general::font_of(&demo.general, id).is_some());
         assert_eq!(fonts, ["torro", "tabular"]);
-        let schemes =
-            usable(["torro", "harbor", "paper", "neon"], &|id| general::scheme_of(&demo.general, id).is_some());
-        assert_eq!(schemes, ["torro", "harbor", "paper"]);
-        assert_eq!(demo.data.settings.design, "harbor", "chosen, so its suggestions are marked");
+        let schemes = usable(["torro", "harbor", "paper", "midnight", "neon"], &|id| {
+            general::scheme_of(&demo.general, id).is_some()
+        });
+        assert_eq!(schemes, ["torro", "harbor", "paper", "midnight"]);
+        assert!(general::scheme_of(&demo.general, "midnight").is_some_and(|scheme| scheme.dark_only));
+        assert_eq!(demo.data.settings.design, "torro", "the standard is drawn");
+        assert!(demo.page_overlay().is_none(), "the dropdown is closed");
         let _ = demo.view();
+
+        let schemes = started(&["--demo", "--open", "design-schemes"]);
+        assert!(schemes.page_overlay().is_some(), "the colour scheme's dropdown is open");
+        let _ = schemes.view();
 
         let parts = started(&["--demo", "--open", "design", "--design", "torro", "--font", "torro"]);
         assert_eq!((parts.data.settings.design.as_str(), parts.data.settings.font.as_str()), ("torro", "torro"));
@@ -2274,7 +2325,7 @@ mod tests {
     fn the_demo_draws_a_chosen_sample_and_saves_nothing() {
         let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut demo = started(&["--demo", "--open", "design"]);
-        demo.data.settings.design = "paper".into();
+        demo.data.settings.design = "compact".into();
         let _ = demo.update(Message::General(general::Message::Choose(Part::Design, "torro".into())));
         assert_eq!(demo.data.settings.design, "torro");
         assert!(design::active().is_standard());
@@ -2289,6 +2340,59 @@ mod tests {
         assert!(torro_gui::font::active().is_standard());
         let _ = demo.update(Message::General(general::Message::OpenFolder(Part::Font)));
         assert_eq!(demo.notice, None, "the demo opens nothing");
+    }
+
+    /// Task L.37: choosing on the Appearance page saves with `settings.set_setting` and the part's key;
+    /// the core sets what a design suggests with it, and the page names what changed once the reload
+    /// that carries the design came – a reload from before the save does not count.
+    #[test]
+    fn a_chosen_design_is_saved_and_the_page_names_what_the_core_switched() {
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (part, key) in [
+            (Part::Design, torro_ipc::SettingKey::Design),
+            (Part::Font, torro_ipc::SettingKey::Font),
+            (Part::ColorScheme, torro_ipc::SettingKey::ColorScheme),
+        ] {
+            let request = save_request(part, "console");
+            assert!(
+                matches!(&request, Request::SetSetting { key: sent, value } if *sent == key && value == "console"),
+                "{request:?}"
+            );
+        }
+
+        let mut ui = ui(Section::Appearance);
+        let _ = ui.update(Message::Looks(Box::new(launch::demo_looks())));
+        let reloaded = |design: &str, view: torro_core::settings::MailFormat| {
+            let settings = Settings { design: design.into(), mail_view: view, ..Settings::default() };
+            Message::Loaded(Box::new(Data { settings, ..Data::default() }))
+        };
+        let html = torro_core::settings::MailFormat::Html;
+        let text = torro_core::settings::MailFormat::Text;
+        let _ = ui.update(reloaded("torro", html));
+        let task = ui.update(Message::General(general::Message::Choose(Part::Design, "console".into())));
+        assert!(task.units() >= 1, "the request that saves it");
+        let _ = ui.update(reloaded("torro", html));
+        assert_eq!(ui.pending_look.design.as_deref(), Some("console"), "a reload from before the save");
+        let _ = ui.update(reloaded("console", text));
+        assert!(ui.pending_look.is_empty(), "saved");
+        assert!(general::switched(&ui.general).is_some(), "the mail view switched with the design");
+
+        design::show(torro_core::design::Selection::standard());
+    }
+
+    /// Task L.37: `--open design-switched` chooses Console in the demo, which does what the core would –
+    /// plain-text mail; its font is missing, so the font stays – and the page says so.
+    #[test]
+    fn the_demo_switches_what_a_design_suggests() {
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let demo = started(&["--demo", "--open", "design-switched"]);
+        assert_eq!(demo.data.settings.design, "console");
+        assert_eq!(demo.data.settings.mail_view, torro_core::settings::MailFormat::Text);
+        assert_eq!(demo.data.settings.font, Settings::default().font, "JetBrains Mono is missing in the demo");
+        assert!(general::switched(&demo.general).is_some());
+        assert_eq!(design::active().id, "console", "drawn at once");
+        let _ = demo.view();
+        design::show(torro_core::design::Selection::standard());
     }
 
     #[test]
@@ -2733,12 +2837,15 @@ mod tests {
 
     #[test]
     fn every_open_state_builds_in_every_class() {
+        // `design-switched` chooses Console, which the whole process draws with.
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for (name, _) in launch::Open::ALL {
             let ui = started(&["--demo", "--open", name]);
             for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
                 let _ = ui.window(class);
             }
         }
+        design::show(torro_core::design::Selection::standard());
     }
 
     #[test]

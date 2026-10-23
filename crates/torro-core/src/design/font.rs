@@ -308,7 +308,8 @@ mod tests {
         assert!((plex.size_adjust - 1.058).abs() < 0.001);
         assert_eq!(plex.fonts.numbers, plex.fonts.text, "no figures font: the text font's");
         let selection = Selection { font: plex, ..Selection::standard() };
-        assert_eq!((selection.level(LevelName::Body).size, selection.level(LevelName::Body).line), (14.0, 20.0));
+        // The standard's body 14/22 (issue #291): 14 × 1.058 rounds to 15, the line stays 22.
+        assert_eq!((selection.level(LevelName::Body).size, selection.level(LevelName::Body).line), (15.0, 22.0));
         assert_eq!(selection.level(LevelName::Micro).size, 11.5);
 
         let set = load_font(&data.dir(Part::Font), "plex-set").expect("valid");

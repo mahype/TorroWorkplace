@@ -1,22 +1,27 @@
 //! The window frame every app of the suite shares, after Linear (design skill, section 0):
-//! sidebar on the window background, the content as an inset panel with a 44-high header bar,
-//! and the properties column on the right – in the wide layout. Medium windows shrink the sidebar
-//! to a rail of icons (its full form opens as a drawer) and drop the properties (they become
-//! chips); narrow windows drop the sidebar too (its rows move into a menu at the top left, or into
-//! a drawer), and the content runs flush to the window edges.
+//! sidebar on the window background, the content beside it with a header bar ([`size::header()`],
+//! 64 in the standard design), and the properties column on the right – in the wide layout. Medium
+//! windows shrink the sidebar to a rail of icons (its full form opens as a drawer) and drop the
+//! properties (they become chips); narrow windows drop the sidebar too (its rows move into a menu at
+//! the top left, or into a drawer), and the content runs flush to the window edges.
+//!
+//! Beside the sidebar or rail the content is **flush** when the design's [`layout::inset()`] is 0
+//! (every built-in design since issue #291): the `panel` surface runs to the window's edges, parted
+//! from the sidebar by a line. A design with an inset draws it as an inset panel instead (that margin
+//! on top, right and bottom, radius `md`, a line around it), as the suite did before.
 //!
 //! ```text
-//! Wide    ┌ sidebar 232 ┐┌ panel (inset 8, radius 8) ───────────────────────────┐
-//!         │ [T] App ▾ 🔍 ✎││ header 44                                         │
-//!         │ rows …      │├──────────────────────────────────┬─────────────────┤
-//!         │             ││ body                             │ properties 300  │
-//!         └─────────────┘└──────────────────────────────────┴─────────────────┘
-//! Medium  ┌rail┐┌ panel (inset 8, radius 8) ──────────────────────────────────────┐
-//!         │ T  ││ header 44                                                      │
-//!         │ ☀  │├────────────────────────────────────────────────────────────────┤
-//!         │ ○  ││ body                                                           │
-//!         └────┘└────────────────────────────────────────────────────────────────┘
-//! Narrow  ┌ header 44 (flush) ─────────────────────────────────────────────────┐
+//! Wide    ┌ sidebar 240 ┐│ panel (flush) ────────────────────────────────────────┐
+//!         │ [T] App ▾ 🔍 ✎│ header 64                                             │
+//!         │ rows …      │├──────────────────────────────────┬──────────────────┤
+//!         │             ││ body                             │ properties 300   │
+//!         └─────────────┘└──────────────────────────────────┴──────────────────┘
+//! Medium  ┌rail┐│ panel (flush) ──────────────────────────────────────────────────┐
+//!         │ T  ││ header 64                                                       │
+//!         │ ☀  │├─────────────────────────────────────────────────────────────────┤
+//!         │ ○  ││ body                                                            │
+//!         └────┘└─────────────────────────────────────────────────────────────────┘
+//! Narrow  ┌ header 64 (flush) ─────────────────────────────────────────────────┐
 //!         │ body                                                               │
 //!         └────────────────────────────────────────────────────────────────────┘
 //! ```
@@ -58,7 +63,7 @@
 //!
 //! # Collapsed sidebar (rail)
 //!
-//! The sidebar has three states: **expanded** (232, as above), **rail** (only the icons, 52 wide,
+//! The sidebar has three states: **expanded** (240, as above), **rail** (only the icons, [`rail()`] wide,
 //! names in tooltips, group titles as lines) and **drawer** (the expanded sidebar over the content,
 //! [`Shell::drawer`]). In the wide layout the user picks expanded or rail with the panel button –
 //! on macOS in the band right of the traffic lights ([`TitleButtons`]), elsewhere at the top of the
@@ -112,8 +117,7 @@ use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
 use crate::widgets::{self, Anchor, MenuItem, MenuSection, Tone, Trail};
 
-mod in_sidebar;
-use in_sidebar::in_sidebar;
+use crate::themed::in_sidebar;
 
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
@@ -125,10 +129,12 @@ fn switcher_height() -> f32 {
 const LOGO: f32 = 20.0;
 /// Gap between the rows of the sidebar (`torro.css`: `.sidebar{gap:2px}`).
 const SIDEBAR_GAP: f32 = 2.0;
-/// Width of the collapsed sidebar (rail): rows as wide as a large control (36), 8 at both sides –
-/// room for a 16 icon on its hover surface, and the icons sit on the same axis as the logo.
+/// Width of the collapsed sidebar (rail) and of the collapsed action rail of the mail window: the
+/// design's [`size::rail()`] (issue #291), 60 in the standard design – rows as wide as a large control
+/// (40) with 10 at both sides, room for a 16 icon on its hover surface, and the icons sit on the same
+/// axis as the logo. The rules keep it at least as wide as [`size::control_lg()`].
 pub fn rail() -> f32 {
-    size::control_lg() + 2.0 * space::s()
+    size::rail()
 }
 
 /// How a sidebar is drawn. The user's choice for the wide layout, stored per app in
@@ -136,7 +142,7 @@ pub fn rail() -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SidebarMode {
-    /// 232 wide: icons, names, counters, group titles (design skill, section 0).
+    /// [`size::sidebar()`] wide: icons, names, counters, group titles (design skill, section 0).
     #[default]
     Expanded,
     /// [`rail()`] wide: only the icons, names and counters in tooltips, group titles as lines, the app
@@ -224,12 +230,14 @@ pub struct Shell<'a, M> {
 
 /// The window of an app in the layout for `class` ([`crate::layout::of`] of the window size):
 ///
-/// - **Wide:** `sidebar` (232, window background, 8 inside), then the content as an inset panel
-///   (8 margin top/right/bottom, radius 8, 1-px line): `header` in a 44-high bar with a line below,
-///   then `body`, and `props` in a 300-wide column at the right (scrolls on its own).
+/// - **Wide:** `sidebar` ([`size::sidebar()`], window background, 8 inside), then the content – flush
+///   with a line beside the sidebar when [`layout::inset()`] is 0, else as an inset panel (that
+///   margin top/right/bottom, radius `md`, 1-px line): `header` in a [`size::header()`] high bar with
+///   a line below, then `body`, and `props` in a [`size::props()`] wide column at the right (scrolls
+///   on its own).
 /// - **Medium, narrow (and mini, strip):** `header` and `body` flush with the window; `sidebar`
 ///   only appears as a drawer ([`Shell::drawer`]) and `props` is not shown. With a rail
-///   ([`Shell::rail`]; wide and medium) the content is inset beside the rail instead.
+///   ([`Shell::rail`]; wide and medium) the content stands beside the rail as beside the sidebar.
 ///
 /// The header bar adds the padding (16 left, 12 right; 8 and 8 in narrow), so `header` is just the
 /// row from [`header_bar`]. `body` gets the free space and scrolls itself. Build `props` from
@@ -317,10 +325,12 @@ impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
 const TITLEBAR: f32 = 32.0;
 
 /// Where the traffic lights and the band's buttons sit, in points: their centre line, and the centre
-/// of the close button from the left edge (U.11). The line lies halfway between the window's top edge
-/// and the inset panel below the band (32 + 8), so the lights have as much room above as below, and
-/// the close button is as far from the left edge as from the top – as in Claude. macOS itself would
-/// put them at 16 / 16; [`crate::place_traffic_lights`] moves them.
+/// of the close button from the left edge (U.11). Fixed, whatever the design: the line lies halfway
+/// between the window's top edge and 8 below the band (32 + 8, where the inset panel began before issue
+/// #291), and the close button is as far from the left edge as from the top – as in Claude. A design
+/// that draws the content flush ([`layout::inset()`] 0) does not move them: the lights are placed
+/// once at start ([`crate::place_traffic_lights`]), before any design is known, and stay in the band.
+/// macOS itself would put them at 16 / 16.
 #[cfg(target_os = "macos")]
 pub(crate) const LIGHTS: f32 = 20.0;
 
@@ -612,7 +622,7 @@ pub fn below_titlebar(size: Size, zoom: f32) -> Size {
     }
 }
 
-/// The header bar: 44 high, the padding of the size class, a line below.
+/// The header bar: [`size::header()`] high (64 in the standard), the padding of the size class, a line below.
 fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a, M> {
     let (left, right) = match class {
         SizeClass::Wide | SizeClass::Medium => (space::l(), space::m()),
@@ -622,8 +632,9 @@ fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a
     column![bar, rule::horizontal(LINE).style(style::rule)].into()
 }
 
-/// The sidebar (`width` 232) or the rail ([`rail()`]) on the window background, and the content as
-/// an inset panel beside it.
+/// The sidebar (`width` [`size::sidebar()`]) or the rail ([`rail()`]) on the window background, and
+/// the content beside it: flush with a line between them when the design's [`layout::inset()`] is 0,
+/// else as an inset panel with that margin.
 fn inset_window<'a, M: 'a>(
     sidebar: Element<'a, M>,
     width: f32,
@@ -645,19 +656,26 @@ fn inset_window<'a, M: 'a>(
         .height(Fill);
         main = main.push(rule::vertical(LINE).style(style::rule)).push(column);
     }
-    // The 1-px padding keeps the content inside the panel's border, as `border-box` in the CSS.
-    let panel = container(column![header, main.height(Fill)])
-        .width(Fill)
-        .height(Fill)
-        .padding(LINE)
-        .style(style::container::panel);
+    let content = column![header, main.height(Fill)];
     // Only the top and bottom edge: the sidebar sets its side edges itself ([`sidebar`]).
     let side = in_sidebar(container(sidebar).width(width).height(Fill).padding(Padding::new(0.0).vertical(space::s())));
-    container(row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(layout::inset()) })])
-        .width(Fill)
-        .height(Fill)
-        .style(style::container::sidebar)
-        .into()
+    let inset = layout::inset();
+    let window = if is_flush(inset) {
+        // Flush (issue #291): the panel runs to the window's edges, a line parts it from the sidebar.
+        let panel = container(content).width(Fill).height(Fill).style(style::container::panel_flush);
+        row![side, rule::vertical(LINE).style(style::rule), panel]
+    } else {
+        // The 1-px padding keeps the content inside the panel's border, as `border-box` in the CSS.
+        let panel = container(content).width(Fill).height(Fill).padding(LINE).style(style::container::panel);
+        row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(inset) })]
+    };
+    container(window).width(Fill).height(Fill).style(style::container::sidebar).into()
+}
+
+/// Whether a design with the inset `inset` ([`layout::inset()`]) draws the content beside the sidebar
+/// flush, with a line between them, instead of as an inset panel: an inset of 0 (issue #291).
+fn is_flush(inset: f32) -> bool {
+    inset <= 0.0
 }
 
 /// The sidebar as a drawer over the left edge: the rest of the window is dimmed with the scrim (as
@@ -1337,14 +1355,38 @@ mod tests {
         }
     }
 
+    /// Issue #291: the lights stay where U.11 put them – halfway between the top edge and 8 below the
+    /// band, as far from the left – whatever inset the design has; the built-in designs draw the
+    /// content flush (inset 0), and the lights do not move with it.
     #[cfg(target_os = "macos")]
     #[test]
     fn the_lights_have_as_much_room_above_as_below() {
-        // Halfway between the top edge and the inset panel under the band, and as far from the left.
-        assert_eq!(LIGHTS, (TITLEBAR + layout::inset()) / 2.0);
+        const BELOW_BAND: f32 = 8.0;
+        assert_eq!(LIGHTS, (TITLEBAR + BELOW_BAND) / 2.0);
+        assert_eq!(LIGHTS, 20.0, "fixed, not a token of the design");
+        assert!(is_flush(layout::inset()), "the standard is flush, and the lights stay at 20");
         // The band's buttons sit on that line and stay inside the band.
         const { assert!(LIGHTS + BAND_BUTTON / 2.0 <= TITLEBAR) };
         assert_eq!(BAND_TRAILING + BAND_BUTTON / 2.0, LIGHTS, "the settings mirror the close button");
+    }
+
+    /// Issue #291: an inset of 0 draws the content flush beside the sidebar, any other an inset panel;
+    /// both build, with and without the properties column.
+    #[test]
+    fn an_inset_of_zero_draws_the_content_flush() {
+        assert!(is_flush(0.0) && !is_flush(8.0));
+        assert_eq!(layout::inset(), 0.0, "the standard is flush");
+        let part = || -> Element<'static, Msg> { blank().into() };
+        let _ = inset_window(part(), size::sidebar(), part(), part(), Some(part()));
+        let _ = inset_window(part(), rail(), part(), part(), None);
+    }
+
+    /// Issue #291: the rail is the design's `size.rail`, at least as wide as its button.
+    #[test]
+    fn the_rail_is_the_designs() {
+        assert_eq!(rail(), size::rail());
+        assert_eq!(rail(), 60.0, "the standard's");
+        assert!(rail() >= size::control_lg());
     }
 
     #[test]

@@ -1256,7 +1256,9 @@ pub enum Request {
     /// Replaces the settings; the core applies what changed (start at login, hidden
     /// collections; the language applies to processes started afterwards). A hidden collection
     /// named by a bare URL instead of its id is answered with `error` and nothing changes. Settings
-    /// without `font` or `colorScheme` keep the stored ones (task L.22).
+    /// without `font` or `colorScheme` keep the stored ones (task L.22). A changed `design` sets
+    /// exactly what is sent: the design's suggestions are applied only by [`Request::SetSetting`]
+    /// (task L.33).
     #[serde(rename = "settings.update_settings")]
     UpdateSettings { settings: Settings },
     /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
@@ -1273,11 +1275,11 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
-    /// Every design: the standard first, then each folder under `<data>/designs/`, valid
-    /// or with the reasons it can't be used, the font and colour scheme it suggests, and which one
-    /// the settings name ([`Response::Designs`]). One is chosen with [`Request::SetSetting`] and
-    /// [`SettingKey::Design`]. Fonts and colour schemes are listed apart ([`Request::ListFonts`],
-    /// [`Request::ListColorSchemes`]). Reads only; never fails.
+    /// Every design: the built-in ones first (Standard, Compact, Console), then each folder under
+    /// `<data>/designs/`, valid or with the reasons it can't be used, the font and mail view it
+    /// suggests, its density, and which one the settings name ([`Response::Designs`]). One is
+    /// chosen with [`Request::SetSetting`] and [`SettingKey::Design`]. Fonts and colour schemes are
+    /// listed apart ([`Request::ListFonts`], [`Request::ListColorSchemes`]). Reads only; never fails.
     #[serde(rename = "settings.list_designs")]
     ListDesigns,
     /// Every font (task L.22): the standard first, then each folder under `<data>/fonts/`, valid or
@@ -3027,8 +3029,11 @@ pub enum SettingKey {
     /// The design every window draws with (spacing, sizes, radii, type scale): its id from
     /// `settings.list_designs`, `"torro"` for the standard. A design that is not there or breaks a
     /// rule is refused with `error` and its reasons, and nothing changes; an id that is only a font
-    /// or a colour scheme is refused with the key to choose it with. Font and colour scheme stay.
-    /// Open windows follow.
+    /// or a colour scheme is refused with the key to choose it with. When the design really changes,
+    /// the same write sets the font to the one the design suggests if that font exists and is valid,
+    /// and the mail view to the one it suggests if it has one (task L.33, [`DesignInfo::font`],
+    /// [`DesignInfo::mail_view`]); otherwise they stay, and the colour scheme always stays. Choosing
+    /// the design that is already chosen changes nothing. Open windows follow.
     Design,
     /// The font every window draws with (task L.22): its id from `settings.list_fonts`, `"torro"`
     /// for the standard. Refused like [`SettingKey::Design`]. Open windows follow and load its files.
@@ -4408,14 +4413,19 @@ pub struct DesignInfo {
     /// windows draw with the standard.
     pub active: bool,
     /// The font the design is meant for (`[about] font`, task L.22): an id for
-    /// [`SettingKey::Font`], only a suggestion – choosing the design does not choose it, and the
-    /// font need not exist.
+    /// [`SettingKey::Font`]. Choosing the design with [`SettingKey::Design`] sets it too, but only
+    /// when that font exists and is valid then (task L.33); the font need not exist to be named here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub font: Option<String>,
-    /// The colour scheme the design is meant for (`[about] color_scheme`), a suggestion like
-    /// [`DesignInfo::font`].
+    /// How the design shows a mail with HTML (`[about] mail_view`, task L.33): `"html"` or
+    /// `"text"`. Choosing the design sets [`SettingKey::MailView`] to it; `None` leaves it as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_scheme: Option<String>,
+    pub mail_view: Option<torro_core::settings::MailFormat>,
+    /// How much the design shows at once (task L.33), from the height of its mail row:
+    /// `"airy"`, `"balanced"`, `"dense"` or `"very_dense"`. A reply of an older core without it
+    /// reads as `"balanced"`.
+    #[serde(default)]
+    pub density: torro_core::design::DensityLevel,
 }
 
 /// One font as [`Request::ListFonts`] reports it (task L.22). Family, name, version, author,
@@ -4480,6 +4490,10 @@ pub struct ColorSchemeInfo {
     /// The settings name this colour scheme (`Settings::color_scheme`). When the active one is not
     /// valid, the windows draw with the standard.
     pub active: bool,
+    /// The colour scheme has a dark mode only (`dark_only = true`, task L.33): every window draws
+    /// it dark, also in light mode. A reply of an older core without it reads as `false`.
+    #[serde(default)]
+    pub dark_only: bool,
 }
 
 /// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash
@@ -5043,6 +5057,61 @@ mod tests {
         assert_eq!(serde_json::to_string(&pong).unwrap(), r#"{"result":"pong","version":"0.1.0","api":1}"#);
         let old: Response = serde_json::from_str(r#"{"result":"pong","version":"0.0.9"}"#).unwrap();
         assert_eq!(old, Response::Pong { version: "0.0.9".into(), api: 0 });
+    }
+
+    /// Task L.33: a design names its density and mail view, a colour scheme whether it is dark
+    /// only; `colorScheme` is gone from designs. A reply of an older core without the new fields
+    /// still reads (`balanced`, no mail view, not dark only).
+    #[test]
+    fn designs_and_colour_schemes_carry_density_mail_view_and_dark_only() {
+        use serde_json::json;
+        use torro_core::design::DensityLevel;
+        use torro_core::settings::MailFormat;
+        let console = DesignInfo {
+            id: "console".into(),
+            name: "Console".into(),
+            version: "0.1.0".into(),
+            author: Some("Torro".into()),
+            description: None,
+            standard: false,
+            valid: true,
+            problems: Vec::new(),
+            active: false,
+            font: Some("jetbrains-mono".into()),
+            mail_view: Some(MailFormat::Text),
+            density: DensityLevel::VeryDense,
+        };
+        let json = serde_json::to_value(&console).expect("json");
+        assert_eq!((&json["density"], &json["mailView"]), (&json!("very_dense"), &json!("text")));
+        assert!(json.get("colorScheme").is_none(), "colours never belong to a design");
+        assert_eq!(serde_json::from_value::<DesignInfo>(json.clone()).expect("parses"), console);
+        // An older core: no density, no mail view, but a suggested colour scheme.
+        let mut older = json;
+        let fields = older.as_object_mut().expect("an object");
+        fields.remove("density");
+        fields.remove("mailView");
+        fields.insert("colorScheme".into(), json!("torro"));
+        let read = serde_json::from_value::<DesignInfo>(older).expect("an answer of an older core");
+        assert_eq!((read.density, read.mail_view), (DensityLevel::Balanced, None));
+
+        let night = ColorSchemeInfo {
+            id: "night".into(),
+            name: "Night".into(),
+            version: "1.0.0".into(),
+            author: None,
+            description: None,
+            standard: false,
+            valid: true,
+            problems: Vec::new(),
+            active: false,
+            dark_only: true,
+        };
+        let mut json = serde_json::to_value(&night).expect("json");
+        assert_eq!(json["darkOnly"], true);
+        assert_eq!(serde_json::from_value::<ColorSchemeInfo>(json.clone()).expect("parses"), night);
+        json.as_object_mut().expect("an object").remove("darkOnly");
+        let read = serde_json::from_value::<ColorSchemeInfo>(json).expect("an answer of an older core");
+        assert!(!read.dark_only);
     }
 
     #[test]

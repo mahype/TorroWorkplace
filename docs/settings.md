@@ -26,7 +26,8 @@ noch einmal, sie verweist nur hin. Einzige Ausnahme ist die Einrichtung beim ers
 
 Was eine App nur für ein Fenster merkt (Seitenleiste, Breite, Reihenfolge der Anzeige), ist keine
 Einstellung und erscheint nirgends in den Einstellungen (`ui.json`, siehe [Bestand](#bestand-stand-2026-10-16)).
-Die Dichte des Eingangs gehört seit Issue #226 nicht mehr dazu: Sie ist ein Wert des Designs (`layout.density`).
+Die Dichte des Eingangs gehört seit Issue #226 nicht mehr dazu: Sie ist ein Wert des Designs (seit Issue #291
+`[list] style`).
 
 Die Apps haben keine eigenen Kontoeinstellungen. Fehlt ihnen ein Konto, zeigen sie einen Hinweis mit dem
 Knopf „Open Settings“, der die Steuerzentrale an der richtigen Stelle öffnet.
@@ -523,6 +524,10 @@ kacheln, etwa „Arbeit · Woche“ und „Familie · Monat“.
 Die Steuerzentrale liest und schreibt nie selbst Dateien, sondern fragt den Dienst über IPC
 (`Settings`, `SetSetting`, `Accounts`, `AddAccount…`, `RemoveAccount`, `TestAccount`). So sehen
 Tray, Apps und Steuerzentrale immer denselben Stand.
+
+Wer ein anderes Design wählt (`set_setting design`), bekommt in derselben Änderung dessen Vorschläge: die Schrift
+(`[about] font`), wenn sie gültig lädt, und die Mail-Darstellung (`[about] mail_view` → `mail_view`); das Farbschema
+nie. Danach sind beide wieder frei wählbar; `update_settings` setzt nur, was es schickt (L.33, [api.md](api.md) ⁹).
 
 Design, Schrift und Farbschema gelten in allen offenen Fenstern sofort, auf demselben Weg wie hell/dunkel
 und der Zoom: Jede App fragt die Einstellungen beim Start (vor dem ersten Bild) und bei jedem Takt, liest

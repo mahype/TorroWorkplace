@@ -24,9 +24,15 @@
 //! never smaller than `body` (it is the text read longest), and the avatars and source tiles grow
 //! from small to large, so "large" always means larger.
 //!
-//! `layout.density` itself has no rule here (task E13.1): it is a word, not a number, so there is
-//! no range to hold it to. Anything but `compact` or `comfortable` is already refused while
-//! `design.toml` is read, with its line (`pack.rs`), as `type.*.font` and `weight` are.
+//! The words of `[list]` (`style`, `selection`) have no rule here (issue #291): anything the format
+//! does not know is already refused while `design.toml` is read, with its line (`pack.rs`), as
+//! `type.*.font` and `weight` are. Its numbers have: the avatar is off (0) or 20–48, the preview one or
+//! two lines.
+//!
+//! Issue #291 lowered the rows to 24 (Console draws a mail as one line of 24), widened the lists to
+//! 640, let the radii stay equal (Console has no corners, Standard and Compact all 4) and added the
+//! action rail (`rail` at least as wide as its button `control_lg`), the reading column and its
+//! padding. Click targets stay at least 24, and `space` keeps growing.
 //!
 //! Weights have no rule in a design any more (task L.19): a font without a weight draws the nearest
 //! ([`super::Font::nearest`]); only the text font's regular face is required, when the font is read.
@@ -53,14 +59,18 @@ pub(super) fn design(design: &Design) -> Vec<DesignError> {
     scales(design, &mut problems);
     layout(design, &mut problems);
     sizes(design, &mut problems);
+    list(design, &mut problems);
     problems
 }
 
-/// Every value rule the colours of both modes break, in a stable order.
-pub(super) fn colors(colors: &Colors) -> Vec<DesignError> {
+/// Every value rule the colours break, in a stable order: of both modes, or of the dark one only for
+/// a scheme that is `dark_only` (its light colours are a copy of the dark ones and are never drawn in
+/// light mode's rules).
+pub(super) fn colors(colors: &Colors, dark_only: bool) -> Vec<DesignError> {
     let mut problems = Vec::new();
-    for mode in [Mode::Dark, Mode::Light] {
-        colours(mode, colors.get(mode), &mut problems);
+    let modes: &[Mode] = if dark_only { &[Mode::Dark] } else { &[Mode::Dark, Mode::Light] };
+    for mode in modes {
+        colours(*mode, colors.get(*mode), &mut problems);
     }
     problems
 }
@@ -229,17 +239,18 @@ fn typo(design: &Design, problems: &mut Vec<DesignError>) {
     }
 }
 
+/// `space` grows from step to step; `radius` never falls, but may stay (Console: all 0).
 fn scales(design: &Design, problems: &mut Vec<DesignError>) {
     let s = design.space;
     let r = design.radius;
-    for (key, values, min, max) in [
-        ("space.scale", &[s.xs, s.s, s.m, s.l, s.xl, s.xxl][..], 2.0, 64.0),
-        ("radius.scale", &[r.xs, r.sm, r.md, r.lg][..], 0.0, 16.0),
+    for (key, values, min, max, equal) in [
+        ("space.scale", &[s.xs, s.s, s.m, s.l, s.xl, s.xxl][..], 2.0, 64.0, false),
+        ("radius.scale", &[r.xs, r.sm, r.md, r.lg][..], 0.0, 16.0, true),
     ] {
         for (i, value) in values.iter().enumerate() {
             range(&format!("{key}[{}]", i + 1), *value, min, max, problems);
         }
-        if !values.windows(2).all(|pair| pair[0] < pair[1]) {
+        if !values.windows(2).all(|pair| pair[0] < pair[1] || (equal && pair[0] == pair[1])) {
             problems.push(DesignError::NotAscending { key: key.to_string() });
         }
     }
@@ -259,6 +270,19 @@ fn layout(design: &Design, problems: &mut Vec<DesignError>) {
     }
     range("layout.section_gap", l.section_gap, 8.0, 64.0, problems);
     range("layout.item_gap", l.item_gap, 2.0, 24.0, problems);
+    // The margin of a mail in the reader: none up to a wide page margin (issue #291).
+    range("layout.reading_padding[1]", l.reading_padding.vertical, 0.0, 80.0, problems);
+    range("layout.reading_padding[2]", l.reading_padding.horizontal, 0.0, 80.0, problems);
+}
+
+/// The numbers of `[list]` (issue #291): an avatar is off or large enough to read its initials and
+/// small enough for a row; a preview of one or two lines.
+fn list(design: &Design, problems: &mut Vec<DesignError>) {
+    let look = design.list;
+    if look.avatar != 0.0 && !(20.0..=48.0).contains(&look.avatar) {
+        problems.push(DesignError::OffOrRange { key: "list.avatar".into(), value: look.avatar, min: 20.0, max: 48.0 });
+    }
+    range("list.preview_lines", f32::from(look.preview_lines), 1.0, 2.0, problems);
 }
 
 /// The ranges of the concept; sizes it does not name get a range around their role (marked).
@@ -266,15 +290,25 @@ fn size_range(key: &str) -> (f32, f32) {
     match key {
         // Click targets: at least 24 (the concept names no maximum; 96 keeps them controls).
         "control_sm" | "control" | "control_lg" | "control_xl" | "row_group" => (24.0, 96.0),
-        "row" => (32.0, 64.0),
-        "row_two" => (32.0, 96.0),
-        // The inbox's rows (task E3.9): three and two lines of text with room around them.
-        "row_message" => (72.0, 120.0),
-        "row_notice" => (48.0, 96.0),
+        // Rows down to one line of a click target (issue #291: Console draws every row 24 high).
+        "row" => (24.0, 64.0),
+        "row_two" => (24.0, 96.0),
+        // The inbox's rows (task E3.9): three and two lines of text with room around them, or a single
+        // line (Console).
+        "row_message" => (24.0, 120.0),
+        "row_notice" => (24.0, 96.0),
         "row_sidebar" => (24.0, 40.0),
-        "header" => (36.0, 64.0),
+        "header" => (32.0, 64.0),
         "sidebar" => (180.0, 320.0),
-        "props" | "panel" | "list" | "list_medium" => (280.0, 520.0),
+        "props" | "panel" => (280.0, 520.0),
+        // A list of one line per entry shows more columns (Console: 600).
+        "list" | "list_medium" => (280.0, 640.0),
+        // The mail window's action rail (issue #291): collapsed a column of icon buttons, expanded about
+        // as wide as a sidebar.
+        "rail" => (40.0, 80.0),
+        "rail_wide" => (180.0, 320.0),
+        // The reading column: a narrow column of text up to the whole reader.
+        "reading_max" => (480.0, 1200.0),
         "content_max" | "form_max" => (560.0, 1200.0),
         // The comfortable density of the inbox (task E8.2): a gap that still groups, avatars and
         // tiles that fit beside two or three lines of text.
@@ -298,6 +332,10 @@ fn sizes(design: &Design, problems: &mut Vec<DesignError>) {
         // The figures of any valid font fit the time axis (task L.19).
         if name == "axis" || name == "axis_narrow" {
             min = min.max(axis_min(design));
+        }
+        // The collapsed rail holds its button (issue #291).
+        if name == "rail" {
+            min = min.max(design.size.control_lg);
         }
         range(&format!("size.{name}"), value, min, max, problems);
     }
@@ -327,13 +365,13 @@ mod tests {
 
     /// The colour rules of a colour scheme.
     fn check(scheme: &ColorScheme) -> Vec<DesignError> {
-        colors(&scheme.colors)
+        colors(&scheme.colors, scheme.dark_only)
     }
 
     #[test]
     fn the_standard_passes_its_own_rules() {
         assert_eq!(design(&Design::standard()), Vec::new());
-        assert_eq!(colors(&ColorScheme::standard().colors), Vec::new());
+        assert_eq!(colors(&ColorScheme::standard().colors, false), Vec::new());
         assert_eq!(font(None, 1.0, "Inter Tabular", Some(1328.0 / 2048.0)), Vec::new());
     }
 
@@ -520,7 +558,7 @@ mod tests {
             min: 12.0,
             max: 18.0
         }));
-        assert!(problems.contains(&DesignError::LineHeight { key: "type.meta".into(), line: 40.0, size: 12.0 }));
+        assert!(problems.contains(&DesignError::LineHeight { key: "type.meta".into(), line: 40.0, size: 13.0 }));
         assert_eq!(problems.len(), 3, "a weight is no rule of a design any more (task L.19): {problems:?}");
     }
 
@@ -571,7 +609,7 @@ mod tests {
         assert!(problems.contains(&DesignError::OutOfRange {
             key: "type.read.size".into(),
             value: 12.0,
-            min: 13.0,
+            min: 14.0,
             max: 20.0
         }));
         assert!(problems.contains(&DesignError::OutOfRange {
@@ -583,6 +621,74 @@ mod tests {
         assert!(problems.contains(&DesignError::NotAscending { key: "size.avatar, size.avatar_lg".into() }));
         assert!(problems.contains(&DesignError::NotAscending { key: "size.tile_sm, size.tile, size.tile_lg".into() }));
         assert_eq!(problems.len(), 4, "{problems:?}");
+    }
+
+    /// Issue #291: each new rule refuses a broken example with exactly its reason, and the values of
+    /// Console at the edges of the old rules (rows of 24, a header of 32, a list of 600, no corners)
+    /// pass.
+    #[test]
+    fn the_rules_of_the_three_designs_have_broken_examples() {
+        let out =
+            |key: &str, value: f32, min: f32, max: f32| DesignError::OutOfRange { key: key.into(), value, min, max };
+        type Change = fn(&mut Design);
+        let cases: [(Change, DesignError); 17] = [
+            (|d| d.size.row = 23.0, out("size.row", 23.0, 24.0, 64.0)),
+            (|d| d.size.row_two = 97.0, out("size.row_two", 97.0, 24.0, 96.0)),
+            (|d| d.size.row_message = 121.0, out("size.row_message", 121.0, 24.0, 120.0)),
+            (|d| d.size.row_notice = 23.0, out("size.row_notice", 23.0, 24.0, 96.0)),
+            (|d| d.size.header = 31.0, out("size.header", 31.0, 32.0, 64.0)),
+            (|d| d.size.list = 641.0, out("size.list", 641.0, 280.0, 640.0)),
+            (|d| d.size.list_medium = 279.0, out("size.list_medium", 279.0, 280.0, 640.0)),
+            (|d| d.size.rail = 81.0, out("size.rail", 81.0, 40.0, 80.0)),
+            (|d| d.size.rail = 34.0, out("size.rail", 34.0, 40.0, 80.0)),
+            (|d| d.size.rail_wide = 179.0, out("size.rail_wide", 179.0, 180.0, 320.0)),
+            (|d| d.size.reading_max = 1201.0, out("size.reading_max", 1201.0, 480.0, 1200.0)),
+            (|d| d.layout.reading_padding.vertical = 81.0, out("layout.reading_padding[1]", 81.0, 0.0, 80.0)),
+            (|d| d.layout.reading_padding.horizontal = -1.0, out("layout.reading_padding[2]", -1.0, 0.0, 80.0)),
+            (
+                |d| d.list.avatar = 12.0,
+                DesignError::OffOrRange { key: "list.avatar".into(), value: 12.0, min: 20.0, max: 48.0 },
+            ),
+            (|d| d.list.preview_lines = 3, out("list.preview_lines", 3.0, 1.0, 2.0)),
+            (|d| d.list.preview_lines = 0, out("list.preview_lines", 0.0, 1.0, 2.0)),
+            (
+                |d| d.radius = super::super::Radius { xs: 4.0, sm: 4.0, md: 2.0, lg: 4.0 },
+                DesignError::NotAscending { key: "radius.scale".into() },
+            ),
+        ];
+        for (change, expected) in cases {
+            let mut d = Design::standard();
+            change(&mut d);
+            assert_eq!(design(&d), std::slice::from_ref(&expected), "{expected:?}");
+        }
+
+        // The rail holds its button: at least `control_lg`, even above the range's 40.
+        let mut d = Design::standard();
+        (d.size.control_lg, d.size.rail) = (48.0, 44.0);
+        assert_eq!(design(&d), [out("size.rail", 44.0, 48.0, 80.0)]);
+
+        // What the rules let through now.
+        let mut d = Design::standard();
+        (d.size.row, d.size.row_message, d.size.row_notice, d.size.header) = (24.0, 24.0, 24.0, 32.0);
+        (d.size.list, d.size.rail, d.size.control_lg) = (600.0, 40.0, 28.0);
+        d.radius = super::super::Radius { xs: 0.0, sm: 0.0, md: 0.0, lg: 0.0 };
+        d.list.avatar = 0.0;
+        assert_eq!(design(&d), Vec::new(), "Console's edges are valid");
+        d.radius = super::super::Radius { xs: 4.0, sm: 4.0, md: 4.0, lg: 4.0 };
+        (d.list.avatar, d.list.preview_lines) = (48.0, 2);
+        assert_eq!(design(&d), Vec::new(), "equal corners, the largest avatar, two preview lines");
+        d.space.s = d.space.xs;
+        assert_eq!(design(&d), [DesignError::NotAscending { key: "space.scale".into() }], "space still grows");
+    }
+
+    /// Issue #291: a dark-only scheme is checked in dark mode only.
+    #[test]
+    fn a_dark_only_scheme_is_checked_dark() {
+        let mut scheme = ColorScheme::standard();
+        scheme.colors.light.text_3 = Rgba::hex(0xF0F0F0);
+        assert!(!check(&scheme).is_empty(), "both modes are checked");
+        scheme.dark_only = true;
+        assert_eq!(check(&scheme), Vec::new(), "the light colours of a dark-only scheme are never drawn");
     }
 
     /// Task E11.1: the command bar and the pills stay in their ranges.

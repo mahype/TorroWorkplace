@@ -1865,8 +1865,10 @@ mod tests {
     fn to_sort_buttons_stand_in_fixed_columns() {
         let items = entries(StateFilter::Open);
         let sections = Sections::of(&items, None);
-        let slots = SortSlots::of(&sections.to_sort, false, size::content_max());
-        assert!(slots.words, "a reading width has room for the words");
+        // A card in a wide window. Since issue #291 the standard's buttons are larger (36, 12 at the
+        // sides): at the reading width (720) the German words no longer fit, from about 760 they do.
+        let slots = SortSlots::of(&sections.to_sort, false, 960.0);
+        assert!(slots.words, "a wide card has room for the words");
         assert!(slots.widths.iter().all(Option::is_some), "mail and notices: every column");
         let task = slots.widths[sort_slot(&Act::Task)].expect("Task");
         assert_eq!(task, widgets::text_button_width(true, tr("Task")));

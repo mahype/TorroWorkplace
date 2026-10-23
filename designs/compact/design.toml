@@ -1,0 +1,165 @@
+# Compact, built into the suite (issue #291): the standard, built tighter. Same elements in the same
+# places, same list style (avatar, three lines, hairlines, a bar at the chosen row), less room.
+#
+# Embedded at build time. A key left out would follow the standard; this file sets every key anyway, so
+# Compact stays as it is when the standard changes (task L.34). Values from the boards "The three
+# designs side by side" and "Building block: mail window" of issue #291; values the boards do not name
+# are derived below, each with its reason.
+#
+# Sizes of text are meant for Inter. The id `compact` is taken: a folder of that name in the data
+# folder is refused.
+
+format = 1
+
+[about]
+name = "Compact"
+version = "1.0.0"   # a built-in design shows the suite's version instead
+author = "Torro"
+description = "Standard, built tighter"
+
+# ------------------------------------------------------------------------------------------------
+# Text: from the boards body 13/20, meta 12/16, caption 11/16, read 14/22, title 17/24, headline
+# 22/28. The levels the boards do not name stay as the suite had them: the time axis at the smallest
+# size there is (11), and the glance and full-screen levels, which are read from a distance and gain
+# nothing from being tighter.
+# ------------------------------------------------------------------------------------------------
+
+[type.micro]
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+
+[type.caption]
+font = "text"
+size = 11
+line = 16
+weight = "medium"
+
+[type.meta]
+font = "text"
+size = 12
+line = 16
+weight = "regular"
+
+[type.body]
+font = "text"
+size = 13
+line = 20
+weight = "regular"
+
+[type.body_strong]
+font = "text"
+size = 13
+line = 20
+weight = "medium"
+
+[type.read]
+font = "text"
+size = 14
+line = 22
+weight = "regular"
+
+[type.title]
+font = "heading"
+size = 17
+line = 24
+weight = "semibold"
+
+[type.headline]
+font = "heading"
+size = 22
+line = 28
+weight = "semibold"
+
+[type.display]
+font = "text"
+size = 28
+line = 32
+weight = "semibold"
+
+[type.hero]
+font = "heading"
+size = 48
+line = 56
+weight = "semibold"
+
+[type.countdown]
+font = "numbers"
+size = 28
+line = 32
+weight = "medium"
+
+# ------------------------------------------------------------------------------------------------
+# Scales. Spacing: `s` is the gap inside a group (item_gap 8 from the boards), so the scale is the one
+# the suite had, which is built on 8. Corners: 4 everywhere, as the boards draw them.
+# ------------------------------------------------------------------------------------------------
+
+[space]
+scale = [4, 8, 12, 16, 24, 32]
+
+[radius]
+scale = [4, 4, 4, 4]
+
+# ------------------------------------------------------------------------------------------------
+# Gaps. From the boards: inset 0 (flush content), rows 10 × 16, item gap 8, reading 32 × 40. Derived:
+# pages and panels take the row's 16 at the sides (a page lines up with its rows), panels 12 above and
+# below like the plan's first Compact; buttons 8 at the sides for buttons of 30; 16 between groups,
+# twice the gap inside one.
+# ------------------------------------------------------------------------------------------------
+
+[layout]
+inset = 0
+page_padding = [16, 16]
+panel_padding = [12, 12]
+row_padding = [10, 16]
+control_padding = [0, 8]
+section_gap = 16
+item_gap = 8
+reading_padding = [32, 40]
+
+# ------------------------------------------------------------------------------------------------
+# Sizes. From the boards: buttons 30 (control_sm), the action rail's button 36 (control_lg), mail row
+# 76, sidebar row 28, header 48, sidebar 216, list 400, rail 52 and 232, reading column 640.
+# ------------------------------------------------------------------------------------------------
+
+[size]
+control_sm = 30
+control = 32        # inputs: between the buttons (30) and the rail's button (36)
+control_lg = 36
+control_xl = 44     # reminder over the whole screen: read and hit from a distance, as before
+row = 40            # a task row: as in the confirmed draft L.32
+row_two = 48        # two lines of 20 with 4 above and below
+row_message = 76    # a mail row: three lines of 20 centred above its hairline, 7.5 to spare above and below
+row_notice = 56     # two lines of 20 above its hairline, 7.5 to spare like the mail row; rows pad only their sides
+row_sidebar = 28
+row_group = 32      # a group head: as in the confirmed draft L.32
+header = 48
+sidebar = 216
+props = 280         # the narrowest the rules allow: more room for the content
+panel = 360         # a detail panel 40 narrower, like the list (440 → 400)
+list = 400
+list_medium = 340   # list in the medium layout: 0.83 of the wide list, the ratio the suite had (380/460)
+hour = 40           # an hour in the calendar: two lines of 20
+axis = 52           # time axis as before: holds "00:00" in the widest figures at size 11
+axis_narrow = 44
+content_max = 720   # reading widths as before: they are maxima, not room
+form_max = 640
+card_gap = 8        # the gap inside a group
+avatar = 28         # a card's avatar as large as a row's (list.avatar)
+avatar_lg = 32      # one step larger, for the reader's head
+tile_sm = 20
+tile = 24           # a notice's tile: a step smaller with the smaller avatar
+tile_lg = 32
+command = 40        # a step above control_lg, as 46 was above 36
+pill = 36           # the sender's avatar in the reader's head: as large as the rail's button
+rail = 52
+rail_wide = 232
+reading_max = 640
+
+[list]
+style = "rows"
+separators = true
+selection = "bar"
+avatar = 28
+preview_lines = 1

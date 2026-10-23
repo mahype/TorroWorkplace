@@ -1,0 +1,173 @@
+# The standard design, built into the suite (`torro_core::design::Design::standard`, issue #291).
+#
+# This file is embedded at build time and read once per process. It must set every key: there are no
+# stand-in values in the code, and a test stops a build whose standard leaves a key out or breaks a
+# rule. Compact and Console take what they leave out from here.
+#
+# Calm and open (task L.34): flush content, hairlines between rows, a bar of the accent colour at the
+# chosen row, a reading column with wide margins. Values from the boards "The three designs side by
+# side" and "Building block: mail window" of issue #291; values the boards do not name are derived
+# below, each with its reason.
+#
+# Sizes of text are meant for Inter; a font with another x-height scales them (docs/design-pakete.md).
+# Copy this file into the folder `designs/<id>/` of the data folder to make a design of your own; the
+# id must not be `torro`, `compact` or `console`.
+
+format = 1
+
+[about]
+# The id stays `torro` (settings and the API name it); the name the list shows is "Standard".
+name = "Standard"
+# A built-in design shows the suite's version instead of this one.
+version = "1.0.0"
+author = "Torro"
+description = "Calm and open: flush content, hairlines, a reading column with wide margins"
+
+# ------------------------------------------------------------------------------------------------
+# Text levels: font role (text | heading | numbers), size, line height, weight (regular | medium |
+# semibold | bold). From the boards body 14/22, meta 13/18, caption 12/16, read 16/26, title 22/28,
+# headline 28/36. The time axis stays at the smallest size there is (11); the glance number and the
+# reminder over the whole screen keep their sizes, because they are read from a distance.
+# ------------------------------------------------------------------------------------------------
+
+[type.micro]        # time axis, times in events, weekday letters
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+
+[type.caption]      # group titles, buttons, chips, badges
+font = "text"
+size = 12
+line = 16
+weight = "medium"
+
+[type.meta]         # metadata, counters, due dates
+font = "text"
+size = 13
+line = 18
+weight = "regular"
+
+[type.body]         # lists, sidebar, inputs, running text
+font = "text"
+size = 14
+line = 22
+weight = "regular"
+
+[type.body_strong]  # header and row titles
+font = "text"
+size = 14
+line = 22
+weight = "medium"
+
+[type.read]         # the whole of a mail in the reader
+font = "text"
+size = 16
+line = 26
+weight = "regular"
+
+[type.title]        # card and dialog titles
+font = "heading"
+size = 22
+line = 28
+weight = "semibold"
+
+[type.headline]     # detail titles
+font = "heading"
+size = 28
+line = 36
+weight = "semibold"
+
+[type.display]      # the big number of a mini tile
+font = "text"
+size = 28
+line = 32
+weight = "semibold"
+
+[type.hero]         # title of a reminder over the whole screen
+font = "heading"
+size = 48
+line = 56
+weight = "semibold"
+
+[type.countdown]    # countdown of a reminder over the whole screen
+font = "numbers"
+size = 28
+line = 32
+weight = "medium"
+
+# ------------------------------------------------------------------------------------------------
+# Scales. Spacing as the suite had it, built on 8. Corners: 4 everywhere, as the boards draw them.
+# ------------------------------------------------------------------------------------------------
+
+[space]             # xs s m l xl xxl, growing
+scale = [4, 8, 12, 16, 24, 32]
+
+[radius]            # xs sm md lg, never falling
+scale = [4, 4, 4, 4]
+
+# ------------------------------------------------------------------------------------------------
+# Gaps by role: [vertical, horizontal] for paddings. From the boards: inset 0 (flush content), rows
+# 18 × 24, item gap 10, reading 52 × 64. Derived: pages take the row's 24 at the sides (a page lines up
+# with its rows), panels keep 16; buttons 12 at the sides for buttons of 36; 24 between groups.
+# ------------------------------------------------------------------------------------------------
+
+[layout]
+inset = 0                   # margin around the content panel beside the sidebar; 0 draws it flush
+page_padding = [24, 24]     # content and pages
+panel_padding = [16, 16]    # panels, floating cards, dialogs
+row_padding = [18, 24]      # list rows: rows of a fixed height (the inbox's too) take only the sides
+control_padding = [0, 12]   # buttons, chips, inputs
+section_gap = 24            # between groups and sections
+item_gap = 10               # between elements inside a group
+reading_padding = [52, 64]  # a mail in the reader, inside the reading column
+
+# ------------------------------------------------------------------------------------------------
+# Sizes. From the boards: buttons 36 (control_sm), the action rail's button 40 (control_lg), mail row
+# 100, sidebar row 32, header 64, sidebar 240, list 440, rail 60 and 248, reading column 600.
+# ------------------------------------------------------------------------------------------------
+
+[size]
+control_sm = 36     # buttons, icon buttons, segments
+control = 38        # inputs, property rows: between the buttons (36) and the rail's button (40)
+control_lg = 40     # quick entry, primary button in a dialog, the action rail's button
+control_xl = 48     # buttons of a reminder over the whole screen: a step above control_lg, as before
+row = 48            # a task row: as in the confirmed draft L.32 (one step above Compact's 40)
+row_two = 56        # two lines of 22 and 12 around them, as 52 was two lines of 20
+row_message = 100   # a mail row: avatar 40, three lines of 22 centred above its hairline, 16.5 to spare above and below
+row_notice = 80     # any other inbox row: two lines of 22 centred above its hairline, 17.5 to spare above and below
+row_sidebar = 32    # sidebar and menu rows
+row_group = 40      # the head of a group: holds its "+" button (control_sm 36) between its lines
+header = 64         # the header bar
+sidebar = 240       # the sidebar
+props = 300         # the properties column
+panel = 400         # the side panel for details
+list = 440          # a list beside its detail (wide)
+list_medium = 364   # the same in the medium layout: 0.83 of the wide list, the ratio the suite had
+hour = 48           # an hour in the calendar: events are drawn in micro and caption, which did not grow
+axis = 52           # the calendar's time axis
+axis_narrow = 44    # the same in the narrow layout
+content_max = 720   # reading width of lists and pages
+form_max = 640      # reading width of forms
+card_gap = 12       # between cards and the parts of a card
+avatar = 40         # the avatar of a card: as large as a row's (list.avatar)
+avatar_lg = 48      # the large avatar: one step larger, for the reader's head
+tile_sm = 20        # source tiles: small, medium, large
+tile = 28
+tile_lg = 36
+command = 46        # kept in the format, no building block uses it any more
+pill = 40           # the sender's avatar in the reader's head: as large as the rail's button
+rail = 60           # collapsed sidebar and action rail: control_lg and 10 at either side
+rail_wide = 248     # expanded action rail
+reading_max = 600   # widest a mail's text stands: a narrow column
+
+# ------------------------------------------------------------------------------------------------
+# How lists are drawn
+# ------------------------------------------------------------------------------------------------
+
+[list]
+style = "rows"      # rows (several lines) | line (one line, fixed columns) | cards
+separators = true   # a hairline below each row
+selection = "bar"   # bar (a bar at the left) | fill (the whole row in the accent colour)
+avatar = 40         # the sender's avatar in a mail row; 0 = none
+preview_lines = 1   # lines of preview under the subject, 1 or 2

@@ -789,12 +789,13 @@ mod tests {
 
     #[test]
     fn the_height_of_the_tile_decides_how_many_rows_fit() {
-        // 240×160: 12 above and below, the figures (32), 8 gap, rows of 28.
-        assert_eq!(rows_that_fit(160.0, false), 3);
-        assert_eq!((rows_that_fit(150.0, false), rows_that_fit(150.0, true)), (3, 2), "the error line takes room");
+        // 240×160: 12 above and below, the figures (32), 8 gap, rows of 36 (the standard's buttons
+        // since issue #291).
+        assert_eq!(rows_that_fit(160.0, false), 2);
+        assert_eq!((rows_that_fit(150.0, false), rows_that_fit(150.0, true)), (2, 1), "the error line takes room");
         assert_eq!(rows_that_fit(100.0, false), 1);
         assert_eq!(rows_that_fit(40.0, false), 0);
-        assert!(rows_that_fit(480.0, false) >= 12);
+        assert!(rows_that_fit(480.0, false) >= 11);
     }
 
     #[test]

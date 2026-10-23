@@ -8,7 +8,8 @@ description: Design-Regeln für alle Oberflächen von TorroWorkplace (Iced-Views
 Stand 2026-10-11: **Vorbild ist Linear** (entschieden). Aufbau, Anordnung, Abstände, Schrift und
 Symbole folgen Linear; Referenz sind die Entwürfe in `docs/prototypes/linear/` (`calendar.html`,
 `tasks.html`, `torro.css`, Screenshots in drei Größen). Was dort steht, gilt; die Werte unten sind
-daraus übernommen. Das Fundament in Iced entsteht mit `docs/tasks/design.md` (F.2–F.6). Gibt es
+daraus übernommen und seit Issue #291 die des neuen Standards (bündiger Inhalt, Text 14/22, Kopfleiste
+64, Haarlinien, Akzentstrich an der gewählten Zeile, Lesespalte). Das Fundament in Iced entsteht mit `docs/tasks/design.md` (F.2–F.6). Gibt es
 einen Token oder Baustein noch nicht, ist das kein Freibrief für Einzelwerte: Aufgabe nennen oder
 nachfragen.
 
@@ -30,9 +31,9 @@ Jede App ist ein eigenes Fenster (eine Kachel), aber alle sind gleich gebaut, da
 aus einem Guss wirkt:
 
 ```
-┌ Seitenleiste 232 (Grund BG) ┐┌ Inhalt: eingesetzte Fläche PANEL, Rand 8, Radius 8, Linie ────────┐
-│ [T] App ▾      🔍  [✎]      ││ Kopfleiste 44: Pfad/Titel · Navigation …… Ansicht · Filter · [+ Neu] │
-│ Navigation (Zeilen 28)      │├───────────────────────────────────────────┬───────────────────────┤
+┌ Seitenleiste 240 (Grund BG) ┐│ Inhalt: bündige Fläche PANEL, Linie zur Seitenleiste ──────────────┐
+│ [T] App ▾      🔍  [✎]      ││ Kopfleiste 64: Pfad/Titel · Navigation …… Ansicht · Filter · [+ Neu] │
+│ Navigation (Zeilen 32)      │├───────────────────────────────────────────┬───────────────────────┤
 │ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
 │ Listen/Kalender mit Punkt   ││                                           │ (nur Breit)           │
 │ …                           ││                                           │                       │
@@ -42,15 +43,18 @@ aus einem Guss wirkt:
 
 - **Oben links der App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü): öffnet die
   anderen Apps der Suite (Kern-Befehl `OpenApp`), daneben Suche und „Neu“ (Kasten-Knopf).
-- **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt** als eingesetzte Fläche `PANEL` mit 8 Rand
-  oben/rechts/unten, Radius 8, 1-px-Linie. Ein Design-Paket kann der Seitenleiste eigene Farben geben
+- **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt bündig** (#291, `layout::inset()` = 0 in allen
+  eingebauten Designs): die Fläche `PANEL` reicht bis an die Fensterränder, eine 1-px-`LINE` trennt sie von
+  Seitenleiste bzw. Leiste – kein Rand, kein Radius. Ein eigenes Design mit `inset` > 0 bekommt die
+  eingesetzte Fläche von vorher (dieser Rand oben/rechts/unten, Radius `md`, Linie rundum); `shell`
+  entscheidet das, Apps bauen nichts davon selbst. Ein Design-Paket kann der Seitenleiste eigene Farben geben
   (`sidebar…`, L.6): Die Shell zeichnet sie dann in einem eigenen Theme, `palette(theme)` liefert dort
   die Farben der Leiste. In der Seitenleiste also nie Farben am Theme vorbei festlegen, sondern immer
   über `palette(theme)` in der Stilfunktion; Fensterzustände (Anmelden, Laden) liegen auf
   `Surface::Window` (`BG`), Seitenleiste und Rail auf `Surface::Sidebar`. Ohne Seitenleiste (Schmal) ist der Inhalt bündig
-  ohne Rand und Radius; neben der Leiste (Mittel) ist er eingesetzt wie in Breit.
-- **Seitenleiste in drei Zuständen** (U.2, `shell::SidebarMode`): **ausgeklappt** (232), **Leiste**
-  (`shell::rail()` = 52: nur Icons, Name und Zahl als Tooltip rechts, Gruppentitel als Linie,
+  ohne Rand und Radius; neben der Leiste (Mittel) steht er wie in Breit.
+- **Seitenleiste in drei Zuständen** (U.2, `shell::SidebarMode`): **ausgeklappt** (`size::sidebar()`, 240), **Leiste**
+  (`shell::rail()` = `size::rail()`, 60: nur Icons, Name und Zahl als Tooltip rechts, Gruppentitel als Linie,
   App-Umschalter nur als Logo, Mini-Monat und Versionszeile entfallen) und **Schublade** (Overlay).
   Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` („Collapse sidebar“/„Expand
   sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in `ui.json` im State-Verzeichnis
@@ -59,13 +63,14 @@ aus einem Guss wirkt:
 - **Fensterknöpfe im Titelband** (macOS, U.10/U.11, wie Claude/Slack): der Knopf `panel-left` rechts
   neben der Ampel, die Einstellungen (Zahnrad, „Settings“) in der Ecke oben rechts –
   `shell::TitleButtons` an `shell::titlebar`. Alles auf einer Linie: Ampel (verschoben mit
-  `torro_gui::place_traffic_lights()` beim Start), Knöpfe und Zahnrad mit Mitte bei y = 20, mittig
-  zwischen Oberkante und eingesetzter Fläche; Schließen-Knopf und Zahnrad je 20 vom Rand. Dort fehlen sie in Seitenleiste und Kopfleiste
+  `torro_gui::place_traffic_lights()` beim Start), Knöpfe und Zahnrad mit Mitte bei y = 20 (fest, kein
+  Token: mittig zwischen Oberkante und 8 unter dem Band, auch bei bündigem Inhalt); Schließen-Knopf und
+  Zahnrad je 20 vom Rand. Dort fehlen sie in Seitenleiste und Kopfleiste
   (`shell::has_band()`); auf anderen Systemen (kein Band) bleibt der Knopf oben in der Seitenleiste
   bzw. in der schmalen Kopfleiste und „Settings“ unten in der Seitenleiste. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal bauen, mit
   dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_head`,
   `Shell::rail`.
-- **Kopfleiste** 44 hoch im Inhalt: links Pfad bzw. Titel (`typo::body_strong()`) mit leiser Ergänzung in
+- **Kopfleiste** `size::header()` hoch im Inhalt (64 im Standard): links Pfad bzw. Titel (`typo::body_strong()`) mit leiser Ergänzung in
   `TEXT_3`, dann Navigation; rechts Ansicht, Filter, genau ein Primärknopf.
 - **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `typo::caption()`-Titel in
   `TEXT_3`, Zeilen 32 mit Icon und Wert.
@@ -79,7 +84,8 @@ aus einem Guss wirkt:
 
 - **Die Werte kommen aus dem aktiven Design-Paket** (`torro_gui::design`, Konzept
   [`docs/design-pakete.md`](../../../docs/design-pakete.md)); die Zahlen in diesem Skill sind die des
-  Standardpakets „Torro“. Ein Paket ändert, *wie* ein Token aussieht, nie, *wofür* er benutzt wird – die
+  Standards (id `torro`, Name „Standard“, `designs/torro/design.toml`); daneben gibt es die eingebauten
+  Designs Compact und Console. Ein Paket ändert, *wie* ein Token aussieht, nie, *wofür* er benutzt wird – die
   Regeln hier gelten für jedes Paket. Darum sind Tokens Funktionen (`space::m()`, `size::row()`,
   `typo::body()`, `theme::font()`, `palette(theme)`) und kommen nie in ein `const` oder `static`;
   abgeleitete Werte werden in einer Funktion berechnet.
@@ -122,6 +128,14 @@ aus einem Guss wirkt:
 - **Torro-Rot ist Marke, nie Status, nie Auswahl.** Pro Fenster: ein Primärknopf, Heute-Kreis,
   Jetzt-Linie mit Zeitlabel in der Achse, das App-Logo. Aktiver Reiter, gewählte
   Seitenleistenzeile, ausgewählte Zeile: neutral (`SELECTED` + `TEXT`), wie bei Linear.
+- **Ausnahme: Akzent für die gewählte Zeile einer Liste** (#291, entschieden in der Planung). Das Design
+  sagt, wie die gewählte Zeile (die im Detail/Leser) aussieht (`[list] selection`, `layout::list()`):
+  `bar` (Standard, Compact) – neutral `SELECTED` mit einem 2-px-Strich in `ACCENT` links
+  (`widgets::selection_bar`); `fill` (Console) – die ganze Zeile in `ACCENT`, ihr Text und ihre Icons in
+  `on_accent` (`style::button::list_row`, Zellen über `widgets::row_content`) – auch ihre farbigen Marken
+  (Listenpunkt, Farbbalken eines Termins, Prioritätsbalken, Fälligkeit; entschieden zu L.32), sonst wären sie auf
+  `ACCENT` nicht lesbar; Kreise, Pillen und Punkte bleiben rund. Nur diese eine Zeile, nie Seitenleiste, Reiter,
+  Chips oder Hover; mit `bar` bleiben die eigenen Farben in der Zeile (Status, Listenfarbe).
 - Status: Fehler `STATUS_ERROR`, Warten/Abweichung/überfällig Attention-Orange, OK Grün, inaktiv
   Grau – immer mit Wort oder Icon, Farbe nur im Punkt bzw. Icon.
 - Kalender- und Listenfarben gehören dem Nutzer: als Farbbalken, Punkt, Ring oder Häkchen, nie als
@@ -134,70 +148,77 @@ aus einem Guss wirkt:
   Innerhalb von Bausteinen sind 2 und 6 erlaubt (Segment-Innenrand, Icon-Text-Abstand in Chips),
   sonst nur die Skala.
 - Label → Feld 4, innerhalb einer Gruppe 8, Gruppe → Gruppe 16–24. Nähe zeigt Zugehörigkeit.
-- **Abstände nach Rolle** (`torro_gui::layout`): `layout::inset()` 8 (Rand der eingesetzten
-  Inhaltsfläche), `page_padding()` 24 × 24 (Innenrand von Seiten), `panel_padding()` 16 × 16
-  (Paneele, schwebende Karten), `row_padding()` 0 × 16 (Listen- und Einstellungszeilen),
-  `control_padding()` 0 × 10 (Knöpfe, `style::button_padding()`), `section_gap()` 24 (zwischen Gruppen
-  und Abschnitten), `item_gap()` 8 (innerhalb einer Gruppe). Nur dort, wo die Rolle genau passt;
-  alles andere bleibt auf der Skala `space::*`.
-- **Maße** (aus den Entwürfen):
+- **Abstände nach Rolle** (`torro_gui::layout`): `layout::inset()` 0 (bündiger Inhalt; > 0 wäre der Rand
+  einer eingesetzten Inhaltsfläche), `page_padding()` 24 × 24 (Innenrand von Seiten), `panel_padding()`
+  16 × 16 (Paneele, schwebende Karten), `row_padding()` 18 × 24 (Listen- und Einstellungszeilen: Zeilen
+  fester Höhe, auch die mehrzeiligen des Eingangs, nehmen nur die Seiten und zentrieren ihren Inhalt),
+  `control_padding()` 0 × 12 (Knöpfe, `style::button_padding()`), `section_gap()` 24 (zwischen Gruppen
+  und Abschnitten), `item_gap()` 10 (innerhalb einer Gruppe), `reading_padding()` 52 × 64 (die Mail im
+  Leser, in der Lesespalte `size::reading_max()`). Nur dort, wo die Rolle genau passt; alles andere
+  bleibt auf der Skala `space::*`.
+- **Maße** (Werte des Standards seit #291; Compact und Console stehen in `designs/{compact,console}/design.toml`):
 
 | Token | Wert | Wofür |
 |---|---|---|
-| `size::control_sm()` | 28 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
-| `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
-| `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
-| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst (die Leiste der gewählten Mail war bis #227 so hoch, sie ist jetzt `control_sm()`) |
+| `size::control_sm()` | 36 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
+| `size::control()` | 38 | Eingaben, Eigenschaftszeilen |
+| `size::control_lg()` | 40 | Schnelleingabe, Primärknopf im Dialog, Knöpfe der Aktionsleiste der Mail |
+| `size::control_xl()` | 48 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst (die Leiste der gewählten Mail war bis #227 so hoch, sie ist jetzt `control_sm()`) |
 | `size::command()` | 46 | Bleibt im Paket-Format (E14, Entscheidung 9), kein Baustein nutzt es mehr: die Befehlsleiste des Lesers (E11.1) ist mit #241 entfernt |
-| `size::pill()` | 42 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
-| `size::row()` | 40 | Listenzeile (Aufgaben) |
-| `size::row_message()` | 92 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen 20, oben und unten 16 (E3.9, E11.1) |
-| `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
+| `size::pill()` | 40 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
+| `size::row()` | 48 | Listenzeile (Aufgaben, `widgets::list_row`) |
+| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, über der Haarlinie zentriert mit je 16,5 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in Console eine Zeile 24 |
+| `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text – zwei Zeilen à 22, über der Haarlinie zentriert mit je 17,5 Luft (E3.9) |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
-| `size::avatar()` / `size::avatar_lg()` | 36 / 40 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die kompakte Mail-Zeile bleibt bei 32 |
+| `size::avatar()` / `size::avatar_lg()` | 40 / 48 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die Mail-Zeile hat ihren eigenen (`[list] avatar`) |
 | `size::tile_sm()` / `size::tile()` / `size::tile_lg()` | 20 / 28 / 36 | Quellen-Kachel (`widgets::source_tile`, E8.2): neben Wörtern / Hinweiszeile, Spaltenkopf / Anhang, Kopf einer App-Karte |
-| `size::row_sidebar()` | 28 | Seitenleisten- und Menüzeile (Menü 30) |
-| `size::row_group()` | 32 | Gruppenkopf in Listen („Overdue 2“) |
-| `size::header()` | 44 | Kopfleiste |
-| `size::sidebar()` | 232 | Seitenleiste |
+| `size::row_sidebar()` | 32 | Seitenleisten- und Menüzeile (Menü 30) |
+| `size::row_group()` | 40 | Gruppenkopf in Listen („Overdue 2“), mit Platz für seinen „+“-Knopf |
+| `size::header()` | 64 | Kopfleiste |
+| `size::sidebar()` | 240 | Seitenleiste |
 | `size::props()` | 300 | Eigenschaften-Spalte |
 | `size::panel()` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, in Schmal darüber in voller Höhe (die Aufgaben-App zeigt ihr Detail auch in Mittel daneben, Abschnitt 6) |
-| `shell::rail()` | 52 | Eingeklappte Seitenleiste (Leiste, nur Icons) |
-| `size::list()` / `size::list_medium()` | 460 / 380 | Liste neben dem Detail (Breit / Mittel) |
+| `shell::rail()` = `size::rail()` | 60 | Eingeklappte Seitenleiste (Leiste, nur Icons) und eingeklappte Aktionsleiste der Mail; mindestens `control_lg()` |
+| `size::rail_wide()` | 248 | Ausgeklappte Aktionsleiste der Mail (`RailMode::Expanded`) |
+| `size::reading_max()` | 600 | Lesespalte: so breit steht der Text einer Mail höchstens im Leser (Console 1200) |
+| `size::list()` / `size::list_medium()` | 440 / 364 | Liste neben dem Detail (Breit / Mittel) |
 | `size::hour()` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
-| `layout::inset()` | 8 | Rand der eingesetzten Inhaltsfläche |
+| `layout::inset()` | 0 | Rand der Inhaltsfläche; 0 = bündig mit Linie zur Seitenleiste |
 | `size::content_max()` / `size::form_max()` | 720 / 640 | Lesbreite von Listen bzw. Formularen ohne Detail |
 
-- Knöpfe: Höhe `size::control_sm()`, Innenabstand waagerecht 10, Text `typo::caption()`-Größe 12/500; Icon-Knöpfe
-  28×28; Icons 16 (in Knöpfen 14), Strich 1.75.
-- **Radien** `radius::xs()` 4 (Chips, Terminblöcke, Segment innen, Tasten-Hinweis) · `sm()` 6 (Knöpfe,
-  Zeilen, Eingaben, Menüeinträge) · `md()` 8 (Inhaltsfläche, Menüs) · `lg()` 10 (schwebende Karten,
-  Dialoge) · voll rund für Punkte, Ringe, Avatare, Heute.
+- Knöpfe: Höhe `size::control_sm()`, Innenabstand waagerecht `control_padding()` (12), Text `typo::caption()`-Größe 12/500; Icon-Knöpfe
+  `control_sm()` im Quadrat; Icons 16 (in Knöpfen 14), Strich 1.75 – auch in den größeren Knöpfen von
+  Standard und der Aktionsleiste bleiben Icons 16.
+- **Radien** `radius::xs()` (Chips, Terminblöcke, Segment innen, Tasten-Hinweis) · `sm()` (Knöpfe,
+  Zeilen, Eingaben, Menüeinträge) · `md()` (Menüs, eingesetzte Inhaltsfläche) · `lg()` (schwebende Karten,
+  Dialoge) · voll rund für Punkte, Ringe, Avatare, Heute. Standard und Compact haben überall 4, Console 0
+  (eckig); die Rollen bleiben, nur die Werte sind gleich.
 - **Linien:** 1 logischer Pixel in `LINE`; Raster nur mit Innenlinien (keine Rahmen je Zelle,
   keine Doppellinien). Listenzeilen durch Linien getrennt, Seitenleiste ohne Linien.
 
 ## 3. Typografie
 
 - **Schrift: Inter 4** (SIL OFL), mit der App ausgeliefert (`torro_gui::fonts()`,
-  `torro_gui::settings()`), **Grundgröße 13** wie Linear. Nie `Font::DEFAULT`.
+  `torro_gui::settings()`), **Grundgröße 14** im Standard (#291; Compact 13, Console 12). Nie `Font::DEFAULT`.
   Größer oder kleiner nur über den **Zoom** der Suite (Z.1, `torro_gui::zoom`): Strg + Plus /
   Minus / 0 in jeder App, Stufen wie im Browser (67–200 %), eine Einstellung für alle (`Settings::zoom`,
   Steuerzentrale › Appearance › Interface). Umgesetzt mit Iceds `scale_factor`, nie über andere
   Schriftgrößen. Die Größenklassen rechnen in logischen Pixeln *nach* dem Zoom (1440 breit bei
   150 % = 960 = Mittel), wie Breakpoints im Browser. Jede App: `.scale_factor(…)` im Builder,
   `zoom.subscription()`, `zoom.view(…)` um die ganze Ansicht (kurze Anzeige „110%“ unten mittig).
-- **Stufen** (`torro_gui::typo`), Zeilenhöhe immer absolut:
+- **Stufen** (`torro_gui::typo`), Zeilenhöhe immer absolut; die Werte des Standards (Console zeichnet alles
+  Gelesene in 12/18, Titel fett):
 
 | Stufe | Größe / Zeile | Gewicht | Wofür |
 |---|---|---|---|
 | `typo::micro()` | 11 / 14 | 400 | Zeitachse, Uhrzeit in Terminen, Wochentag in der Wochenleiste (immer tabellarisch) |
 | `typo::caption()` | 12 / 16 | 500 | Gruppentitel (Satzschreibung, `TEXT_3`), Knöpfe, Chips, Badges |
-| `typo::meta()` | 12 / 16 | 400 | Metadaten, Zähler, Fälligkeit |
-| `typo::body()` | 13 / 20 | 400 | Standard: Listen, Seitenleiste, Eingaben, Fließtext |
-| `typo::body_strong()` | 13 / 20 | 500 | Kopfleisten-Titel, Zeilentitel, Termintitel |
-| `typo::read()` | 14 / 22 | 400 | Lesetext: die ganze Mail im Leser des Eingangs (E8.2); nie für Zeilen, Labels, Eingaben |
-| `typo::title()` | 16 / 22 | 600 | Karten- und Dialogtitel |
-| `typo::headline()` | 22 / 28 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
+| `typo::meta()` | 13 / 18 | 400 | Metadaten, Zähler, Fälligkeit |
+| `typo::body()` | 14 / 22 | 400 | Standard: Listen, Seitenleiste, Eingaben, Fließtext |
+| `typo::body_strong()` | 14 / 22 | 500 | Kopfleisten-Titel, Zeilentitel, Termintitel |
+| `typo::read()` | 16 / 26 | 400 | Lesetext: die ganze Mail im Leser des Eingangs (E8.2); nie für Zeilen, Labels, Eingaben |
+| `typo::title()` | 22 / 28 | 600 | Karten- und Dialogtitel |
+| `typo::headline()` | 28 / 36 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
 | `typo::display()` | 28 / 32 | 600 | Kopfzahl in Mini (Uhrzeit, Zahl offener Aufgaben) |
 | `typo::countdown()` | 28 / 32 | 500 | Countdown und Uhr einer Erinnerung im Vollbild (ER1.5), Ziffernschrift; nirgends sonst |
 | `typo::hero()` | 48 / 56 | 600 | Titel einer Erinnerung im Vollbild (ER1.5), höchstens zwei Zeilen; nirgends sonst |
@@ -222,6 +243,27 @@ aus einem Guss wirkt:
 - Klickziele mindestens 24×24, sonst 28.
 
 ## 5. Zustände und Bausteine
+
+**Listen (`[list]`, #291, `layout::list()` → `ListLook`).** Ein Design bestimmt, *wie* Listen gezeichnet
+werden, nie *wo* etwas steht: dieselben Zellen an derselben Stelle in jedem Design, nichts kommt hinzu
+oder fällt weg (kein Spaltenkopf, keine Großbuchstaben). `style` – `rows` (Zeilen mit ihren Zeilen: Standard,
+Compact), `line` (eine Zeile je Eintrag, `size::row_message()` hoch: Console) oder `cards`
+(Karten, die bequeme Dichte, `layout::density()`); `separators` – Haarlinie unter jeder Zeile ja/nein;
+`selection` – `bar` oder `fill` (Ausnahme oben); `avatar` – Kante des Avatars einer Mail-Zeile, 0 = keiner
+(der Platz entfällt); `preview_lines` – Zeilen Vorschau, 1 oder 2. `widgets::list_row` folgt dem selbst
+(Linie, Strich bzw. Fläche, Zellen nur mit dem Seitenrand von `row_padding()`, in der Höhe zentriert);
+Ansichten, die ihre Zeilen selbst zeichnen, nehmen `style::button::list_row`, `widgets::selection_bar` und
+`widgets::row_content` und lesen `layout::list()`. Werte je Design: Standard `rows · true · bar · 40 · 1`,
+Compact `rows · true · bar · 28 · 1`, Console `line · false · fill · 0 · 1`.
+
+**Die Zeile in `line`** (Console, #291, nach der Sichtprüfung entschieden): dieselbe Reihenfolge wie die Zeilen
+in Standard, nur auf einer Zeile – Markierungen bzw. Kachel · Absender mit Domain bzw. bei Hinweisen die
+Quelle als Name (`SourceRef::label`) · Betreff bzw. Titel (· Zahl) mit der Vorschau bzw. dem Text in `TEXT_3` ·
+Konto · Zeit rechts (`list::LineColumns`, `mail_line`, `notice_line`). Mail und Hinweise teilen dieselben
+Spalten, eine gemischte Liste (Hub) hat ein Raster; die Titelspalte hängt nicht von der Zeit der Zeile ab.
+Was nicht passt, wird mit „…“ gekürzt statt weggelassen (der Titel höchstens 60 % seiner Zelle, solange eine
+Vorschau folgt). Schmal (unter 600) nimmt die Zeit ihre eigene Breite statt der Spalte der breitesten, ein
+eigenes kurzes Zeitformat gibt es bewusst nicht.
 
 **Kategorie-Pille (E12.7, `docs/kategorien.md`).** Was eine Mail ist, steht als `widgets::category_pill`
 in Zeile, Leser und Paneel. Regel: **Farbe und Icon je Gruppe, Wort je Kategorie** – vier Farben
@@ -248,8 +290,8 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Allow/Deny (`size::control_lg()`, halbe Kartenbreite) nur für Entscheidungen in Schmal, sonst nirgends.
   Menüs eines Kartenknopfs hängen an der Knopfzeile und öffnen über ihr, wenn unten kein Platz ist – nie
   über dem Auslöser (`Placement::Below`).
-- **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – 28 hoch, Radius 6,
-  `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
+- **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – `size::control_sm()` hoch, Radius
+  `radius::sm()`, `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
   vor dem Text. GitHub-Labels zum Wählen: `widgets::label_choice(hex, name, on, on_press)` (Farbe nur als
   Punkt 8). Filter und Vorlagen werden angeklickt, nicht getippt.
 - **Aktionsleiste einer Zeile** (E3.9, `widgets::row_actions`, für Karten mit Knopfzeile
@@ -281,7 +323,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `TileFace::letter(name)`, `TileSize::Small | Medium | Large` (20 / 28 / 36, Radius xs / sm / md). Neutral
   `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
   `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
-  `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
+  `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design console`, `--design compact`).
 - **Aktionsleiste der Mail** (E14, nur das Mail-Fenster, alle Größen; Entwurf
   `docs/prototypes/inbox/mail-aktionsleiste.html#d`): Alles, was man mit der geöffneten Mail tun kann, steht in
   **einer Leiste am rechten Rand der Mail** (`widgets::action_rail`), über die ganze Höhe, Fläche `PANEL`, links eine
@@ -311,13 +353,15 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   und Gruppen mit nur einem Item ohne Titel (nur dessen Abstand darüber). Die Spalte gehört zum Layout, die Mail rückt
   nach innen. Oben scrollt, wenn das Fenster zu niedrig ist (Scrollleiste im Rand, die `kbd` bleiben frei),
   `space::s()` vor dem Fuß, der bleibt. Bekäme der Leser neben der ausgeklappten Leiste weniger als
-  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Umschalter zeigt den
-  echten Zustand, `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
+  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Kopf mit dem
+  Umschalter bleibt, der Umschalter steht aus mit dem Tooltip „Widen the window to expand actions“ –
+  `widgets::RailToggle::Off`, `widgets::action_rail_toggle` –, damit Reply und die anderen Icons nicht springen;
+  `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
   (`Panel::side(rail, RailMode::Collapsed.width())`), die Leiste immer eingeklappt und ohne Umschalter; in Mittel ist
   das Paneel `size::panel()` + Leiste breit, die Mail behält 400. **Umschalten:** Knopf oder Taste `]`
   (`shell::is_actions_key`, wie `[` für die Seitenleiste), gemerkt je Fensterart und Ausschnitt in `ui.json`
   (`ui_state::actions_from`, `"collapsed"`/`"expanded"`). Einladungen (Accept, Maybe, Decline) bleiben als Karte im
-  Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design plex`).
+  Kopf der Mail. Anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design console`).
 - **Befehlsleiste und Leiste der Zeile** (E11.1, **mit #241 entfernt**): Die Befehlsleiste oben im Leser
   (`widgets::command_bar` mit `command_split`, `command_cell`, `command_more`, `command_words`), die Leiste der
   gewählten Zeile (`widgets::row_strip`, `row_strip_words`), die Torro-Pillen (`widgets::pill_button`) und der versenkte
@@ -350,7 +394,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   er erscheint und geht – nach `widgets::TOAST_FOR` (5 s) oder mit `Escape` (vor dem Paneel).
   `Ctrl+Z` (⌘Z) nimmt zurück, solange er „Undo“ zeigt (`widgets::undo_key`). Als eigene Ebene über
   dem Fenster stapeln, immer (leer ohne Hinweis), damit das Fenster seinen Zustand behält.
-- **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius 8, Schatten, Innenrand 4;
+- **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius `radius::md()`, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `typo::caption()`-
   Titel; Trenner `LINE`.
 - **Schwebende Karte** (`widgets::popover`): 320 breit, `MENU`, Radius 10, Innenrand 16, Kopf mit
@@ -391,16 +435,16 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `label_chip_row` umbrechend mit Abstand 4; `state_pill(mark, wort)` – Zustand mit Wort, 22 hoch,
   rund, Farbe nur im Icon; `progress_bar(done, total)` – 64×4, Spur `LINE_STRONG`, Füllung `ok`,
   daneben immer „2/4“; `kbd(taste)` – Tastenhinweis (gab es schon).
-- **Seitenleiste:** Zeilen 28 mit Icon 16, Text `typo::body()` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
+- **Seitenleiste:** Zeilen `size::row_sidebar()` (32 im Standard) mit Icon 16, Text `typo::body()` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
   Zahl rechts `typo::meta()` tabellarisch in `TEXT_3`, Tasten-Hinweis als `kbd`. Gruppen „Lists ▾“ als
   `typo::caption()` in `TEXT_3` mit 12 Abstand darüber. Listen mit Ring (Aufgaben) bzw. Punkt (Kalender).
   Ein Zustand an einem Eintrag (ein Anbieter, dessen Konto Aufmerksamkeit braucht oder einen Fehler hat) ist
   ein `Mark::Badged(icon, farbe)`: das eigene Icon im Ton der Zeile mit einem Punkt 6 in der Statusfarbe auf
   der Ecke oben rechts, gleich in Spalte, Leiste und Chip – nie nur ein getöntes Icon (#248).
-- **Aufgabenzeile:** 40 hoch, Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
+- **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
   Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch
-  (überfällig Attention-Orange). Gruppenköpfe 32 auf `RAISED` mit Icon, Name, Zahl und „+“.
+  (überfällig Attention-Orange). Gruppenköpfe `size::row_group()` (40) auf `RAISED` mit Icon, Name, Zahl und „+“.
 - **Priorität** überall aus einer Abbildung (`torrotasks::list::Prio`): iCalendar 1 = Urgent
   (Quadrat), 2–4 High, 5 Medium, 6–9 Low, sonst keine; gespeichert werden 1 / 3 / 5 / 9. Zeile,
   Gruppenkopf, Chip, Eigenschaft und Menü zeigen dasselbe Wort und dasselbe Zeichen.
@@ -413,7 +457,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Umriss mit Kreis; vergangene 55 % Deckkraft; freie Zeit als „2 h free“ in `TEXT_3`.
   **Heute** = roter Kreis mit weißer Zahl; **Jetzt** = rote Linie 1 px mit Punkt und Zeitlabel in
   der Achse.
-- **Einstellungsseiten:** nur `widgets::group` (Titel, Zeilen 44 bzw. 56 mit Untertitel, Trennlinien,
+- **Einstellungsseiten:** nur `widgets::group` (Titel, Zeilen `size::header()` bzw. 12 höher mit Untertitel, Trennlinien,
   erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Eine sichtbare Aktion je Zeile, der
   Rest im „…“-Menü.
 - **Ansichten:** **leer** (`empty_state`: was hier erscheint und was zu tun ist), **lädt**
@@ -437,9 +481,9 @@ funktionieren.
 |---|---|---|---|---|---|
 | 1 | **Leiste** | Höhe < 280 und Breite ≥ 600 | 8 senkrecht, 12 waagerecht | keins | Zeitstrahl von heute / Chips |
 | 2 | **Mini** | Breite < 360 oder Höhe < 280 | 12 | keins | nächster Termin + „free until 14:00“ / Zahl offener + nächste 3 |
-| 3 | **Schmal** | Breite < 600 | bündig | Kopf 44, Navigation im Menü | ein Tag mit Wochenleiste / Liste, Detail ersetzt die Liste |
-| 4 | **Mittel** | Breite < 1024 | eingesetzt 8 | Leiste 52 + Kopf 44, Navigation im Menü | Woche + schwebende Karte / Liste 380 **neben** dem Detail, Eigenschaften als Chips unter dem Titel |
-| 5 | **Breit** | sonst | eingesetzt 8 | Seitenleiste 232 (oder Leiste 52) + Kopf 44 + Eigenschaften 300 | Woche + Eigenschaften / Liste 460 + Detail + Eigenschaften-Spalte 300 |
+| 3 | **Schmal** | Breite < 600 | bündig | Kopf 64, Navigation im Menü | ein Tag mit Wochenleiste / Liste, Detail ersetzt die Liste |
+| 4 | **Mittel** | Breite < 1024 | bündig mit Linie (`inset` 0) | Leiste 60 + Kopf 64, Navigation im Menü | Woche + schwebende Karte / Liste 364 **neben** dem Detail, Eigenschaften als Chips unter dem Titel |
+| 5 | **Breit** | sonst | bündig mit Linie (`inset` 0) | Seitenleiste 240 (oder Leiste 60) + Kopf 64 + Eigenschaften 300 | Woche + Eigenschaften / Liste 440 + Detail + Eigenschaften-Spalte 300 |
 
 **Aufgaben-App** (Entwurf `docs/prototypes/tasks/redesign.html`, R.1–R.4): ohne offene Aufgabe steht
 die Liste allein links (max. `size::content_max()`). Mit offener Aufgabe: **Breit** ab Inhaltsbreite 1320
@@ -515,20 +559,24 @@ switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-mail-certificate
 wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai menu drawer switcher remove delete-template rename-template design
-api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
+design-schemes design-switched api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other` (`wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
 `wizard-mail-certificate-public`: dieselbe Frage mit Warnung für einen öffentlichen Host; `design`: Appearance › Design mit
-Beispielpaketen, eines davon ungültig mit seinen Gründen; `mcp-hooks`: Seite von Claude Code mit
+Beispielpaketen, eines davon ungültig mit seinen Gründen; `design-schemes`: dieselbe Seite mit offener
+Auswahl der Farbschemata; `design-switched`: nach dem Wechsel zu Console, mit dem Hinweis, was mitgesetzt wurde
+(„Also switched: plain-text mail“); `mcp-hooks`: Seite von Claude Code mit
 „Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
 einem unbekannten) und `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
 Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
 entfällt jedes im Code erzwungene „hell“); `--design <id>` (nur mit `--demo`, alle Apps und die
-Steuerzentrale) zeichnet mit dem Design-Paket `<id>` aus dem Design-Ordner (`torro` = Standard, z. B.
-`plex` aus `designs/plex`; mit `TORRO_DATA_HOME` auf ein Temp-Verzeichnis mit `designs/plex` darin,
-damit der echte Ordner unberührt bleibt) – jede Ansicht mit beiden Paketen ansehen; `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
+Steuerzentrale) zeichnet mit dem Design `<id>`: den eingebauten `torro` (Standard), `compact` und
+`console` (immer wählbar, auch ohne Design-Ordner) oder einem eigenen aus dem Design-Ordner (mit
+`TORRO_DATA_HOME` auf ein Temp-Verzeichnis, damit der echte Ordner unberührt bleibt) – jede Ansicht in
+allen drei eingebauten Designs ansehen, z. B. `--design console`; `--font` und `--color-scheme` wählen
+Schrift (z. B. `plex`) und Farben ebenso; `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
 „jetzt“ samt Demo-Daten für wiederholbare Bilder (auch im Aufgaben-Detail).
 Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
 

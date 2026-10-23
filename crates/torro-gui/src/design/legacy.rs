@@ -4,9 +4,14 @@
 //! The test "same picture" in [`super`] compares them with what the standard design gives now, so
 //! a change to `Design::standard()` or to the conversion in `torro_gui` that would alter the look
 //! fails here. Never edit these values to make that test pass.
+//!
+//! Since issue #291 (task L.34) the standard has new measures on purpose (text 14/22, flush content,
+//! rails of its own), read from `designs/torro/design.toml`: the type scale, spacing, radii, sizes
+//! and paddings of before were removed here, and the tests hold the tokens to the file instead. The
+//! colours and the fonts did not change and are still held to the values below.
 
 use iced::font::Weight;
-use iced::{Color, Font, Padding, Shadow, Vector};
+use iced::{Color, Font, Shadow, Vector};
 use torro_core::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_INACTIVE, STATUS_OK, TORRO_RED};
 
 use crate::theme::Palette;
@@ -16,53 +21,6 @@ pub const FONT_MEDIUM: Font = Font { weight: Weight::Medium, ..FONT };
 pub const FONT_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..FONT };
 pub const FONT_TABULAR: Font = Font::with_name("Inter Tabular");
 pub const FONT_TABULAR_MEDIUM: Font = Font { weight: Weight::Medium, ..FONT_TABULAR };
-
-/// The type scale: size, absolute line height, font; smallest first (`typo::ALL`).
-pub const LEVELS: [(&str, f32, f32, Font); 8] = [
-    ("MICRO", 11.0, 14.0, FONT_TABULAR),
-    ("CAPTION", 12.0, 16.0, FONT_MEDIUM),
-    ("META", 12.0, 16.0, FONT),
-    ("BODY", 13.0, 20.0, FONT),
-    ("BODY_STRONG", 13.0, 20.0, FONT_MEDIUM),
-    ("TITLE", 16.0, 22.0, FONT_SEMIBOLD),
-    ("HEADLINE", 22.0, 28.0, FONT_SEMIBOLD),
-    ("DISPLAY", 28.0, 32.0, FONT_SEMIBOLD),
-];
-
-/// `space::{XS, S, M, L, XL, XXL}`.
-pub const SPACE: [f32; 6] = [4.0, 8.0, 12.0, 16.0, 24.0, 32.0];
-/// `radius::{XS, SM, MD, LG}`.
-pub const RADIUS: [f32; 4] = [4.0, 6.0, 8.0, 10.0];
-/// `size::*` (with `INSET`, now `layout::inset()`).
-pub const SIZES: [(&str, f32); 21] = [
-    ("CONTROL_SM", 28.0),
-    ("CONTROL", 32.0),
-    ("CONTROL_LG", 36.0),
-    ("ROW", 40.0),
-    ("ROW_TWO", 52.0),
-    ("ROW_SIDEBAR", 28.0),
-    ("ROW_GROUP", 32.0),
-    ("HEADER", 44.0),
-    ("SIDEBAR", 232.0),
-    ("PROPS", 300.0),
-    ("PANEL", 400.0),
-    ("LIST", 460.0),
-    ("LIST_MEDIUM", 380.0),
-    ("HOUR", 48.0),
-    ("AXIS", 52.0),
-    ("AXIS_NARROW", 44.0),
-    ("INSET", 8.0),
-    ("CONTENT_MAX", 720.0),
-    ("FORM_MAX", 640.0),
-    ("HAIRLINE", 1.0),
-    // `shell::RAIL` = `size::CONTROL_LG + 2.0 * space::S`.
-    ("RAIL", 52.0),
-];
-
-/// `style::BUTTON_PADDING`.
-pub const BUTTON_PADDING: Padding = Padding { top: 0.0, right: 10.0, bottom: 0.0, left: 10.0 };
-/// `style::PICK_LIST_PADDING`.
-pub const PICK_LIST_PADDING: Padding = Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 };
 
 const fn color(rgb: Rgb) -> Color {
     Color::from_rgb8(rgb.0, rgb.1, rgb.2)

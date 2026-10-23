@@ -1,0 +1,11 @@
+# A scheme with dark colours only (issue #291): light mode draws it dark too.
+format = 1
+dark_only = true
+
+[about]
+name = "Dark only"
+version = "1.0.0"
+
+[colors.dark]
+bg = "#050607"
+panel = "#0B0C0E"

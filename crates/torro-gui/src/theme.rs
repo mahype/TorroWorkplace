@@ -231,7 +231,12 @@ impl Palette {
 
     /// The tokens of `mode` in `scheme`, with the derived colours (`attention_text`, `error_text`)
     /// computed from it and the shadow geometry of the suite (`0 12px 32px`, `torro.css`).
+    ///
+    /// A scheme that is `dark_only` (issue #291) gives its dark tokens in either mode, the derived
+    /// colours included: its light colours are a copy of the dark ones, and text derived for light
+    /// mode would be too dark on them.
     pub fn of(scheme: &ColorScheme, mode: DesignMode) -> Palette {
+        let mode = if scheme.dark_only { DesignMode::Dark } else { mode };
         Palette::from_tokens(scheme.colors.get(mode), mode)
     }
 
@@ -291,6 +296,15 @@ impl Palette {
             sidebar_text_3: rgba(c.sidebar_text_3),
             sidebar_line: rgba(c.sidebar_line),
         }
+    }
+
+    /// These colours as the content of a chosen row drawn in [`Palette::accent`] takes them (issue
+    /// #291, `[list] selection = "fill"`): every text colour is [`Palette::on_accent`], so text and
+    /// icons in `text`, `text_2` and `text_3` stay readable on the accent (the rules hold `on_accent`
+    /// to 4.5:1 there). Views never ask for it: `widgets::list_row` draws such a row's cells in a
+    /// theme of their own ([`on_accent_theme`]), and [`palette`] hands this out there.
+    pub fn on_accent_row(&self) -> Palette {
+        Palette { text: self.on_accent, text_2: self.on_accent, text_3: self.on_accent, ..*self }
     }
 
     /// The colour of a chart series ([`ChartColor`]): one of [`Palette::chart`], or
@@ -361,12 +375,34 @@ pub const fn rgba(c: Rgba) -> Color {
 ///
 /// Inside the sidebar the theme is the sidebar's ([`sidebar_theme`]) and this returns
 /// [`Palette::of_sidebar`]: the same code draws a row in the sidebar's colours there.
+///
+/// Inside a chosen row drawn in the accent colour the theme is [`on_accent_theme`] and this returns
+/// [`Palette::on_accent_row`]: the row's text and icons come out in `on_accent`.
 pub fn palette(theme: &Theme) -> Palette {
-    design::with(|t| match t.sidebar_mode(theme) {
-        Some(DesignMode::Dark) => t.sidebar_dark,
-        Some(DesignMode::Light) => t.sidebar_light,
-        None if theme.extended_palette().is_dark => t.dark,
-        None => t.light,
+    design::with(|t| match (t.sidebar_mode(theme), t.on_accent_mode(theme)) {
+        (Some(DesignMode::Dark), _) => t.sidebar_dark,
+        (Some(DesignMode::Light), _) => t.sidebar_light,
+        (None, Some(DesignMode::Dark)) => t.on_accent_dark,
+        (None, Some(DesignMode::Light)) => t.on_accent_light,
+        (None, None) if theme.extended_palette().is_dark => t.dark,
+        (None, None) => t.light,
+    })
+}
+
+/// The theme the cells of a chosen row drawn in the accent colour are drawn in (issue #291, `[list]
+/// selection = "fill"`), for a row drawn in `theme`: an Iced theme of [`Palette::on_accent_row`] in the
+/// window's mode, so [`palette`] gives `on_accent` for every text colour inside it. Such a theme stays
+/// itself. Used by `widgets::list_row` and `widgets::row_content`; views do not need it.
+pub fn on_accent_theme(theme: &Theme) -> Theme {
+    design::with(|t| {
+        if t.on_accent_mode(theme).is_some() {
+            return theme.clone();
+        }
+        let dark = match t.sidebar_mode(theme) {
+            Some(mode) => mode == DesignMode::Dark,
+            None => theme.extended_palette().is_dark,
+        };
+        if dark { t.on_accent_dark_theme.clone() } else { t.on_accent_light_theme.clone() }
     })
 }
 
@@ -462,7 +498,7 @@ pub fn for_system() -> Theme {
 }
 
 /// Spacing between and inside elements (`.spacing()`, `.padding()`): 4 · 8 · 12 · 16 · 24 · 32 in
-/// the standard design.
+/// the standard design (Console halves it).
 ///
 /// Label → field 4 (`xs`), within a group 8 (`s`), group → group 16–24 (`l`/`xl`).
 /// Only building blocks in `torro_gui` may use 2 and 6 (segment inset, icon–text gap in chips).
@@ -523,57 +559,57 @@ pub mod radius {
 pub mod size {
     use crate::design;
 
-    /// 28: buttons, icon buttons, segments, menu buttons in the header.
+    /// 36 in the standard design: buttons, icon buttons, segments, menu buttons in the header.
     pub fn control_sm() -> f32 {
         design::with(|t| t.design.size.control_sm)
     }
-    /// 32: inputs, property rows.
+    /// 38: inputs, property rows.
     pub fn control() -> f32 {
         design::with(|t| t.design.size.control)
     }
-    /// 36: quick entry, the primary button in a dialog.
+    /// 40: quick entry, the primary button in a dialog, the buttons of the mail's action rail.
     pub fn control_lg() -> f32 {
         design::with(|t| t.design.size.control_lg)
     }
-    /// 44: the buttons of a reminder over the whole screen (task ER1.5), with text in
+    /// 48: the buttons of a reminder over the whole screen (task ER1.5), with text in
     /// `typo::body_strong()`; nowhere else.
     pub fn control_xl() -> f32 {
         design::with(|t| t.design.size.control_xl)
     }
-    /// 40: a list row (tasks).
+    /// 48: a list row (tasks, `widgets::list_row`).
     pub fn row() -> f32 {
         design::with(|t| t.design.size.row)
     }
-    /// 52: a list row on two lines (title over a `meta` line, as the inbox shows in narrow
-    /// windows). `body` (20) and `meta` (16) need 36; in [`row`] that leaves 2 above and below,
-    /// which reads cramped – 52 gives them the 8 of a one-line row.
+    /// 56: a list row on two lines (title over a `meta` line, as the inbox shows in narrow
+    /// windows): `body` (22) and `meta` (18) with room above and below, more than [`row`].
     pub fn row_two() -> f32 {
         design::with(|t| t.design.size.row_two)
     }
-    /// 92: a mail entry's row in the inbox (task E3.9) – a 32 avatar beside three lines of 20
-    /// (sender with domain and time, subject, preview), with 16 above and below (task E11.1, the
-    /// row padding of the list), so a list of mail reads at a glance instead of as one dense block.
+    /// 100: a mail entry's row in the inbox (task E3.9) – an avatar (`[list] avatar`, 40) beside
+    /// three lines (sender with domain and time, subject, preview) with the row padding of the list
+    /// above and below, so a list of mail reads at a glance instead of as one dense block. A design
+    /// that draws lists as one line ([`crate::layout::list`]) makes it one line high (Console: 24).
     pub fn row_message() -> f32 {
         design::with(|t| t.design.size.row_message)
     }
-    /// 64: any other entry's row in the inbox (task E3.9) – the source's 28 icon beside two lines of
-    /// 20 (title and time, then the text or "project · branch"), with 12 above and below.
+    /// 80: any other entry's row in the inbox (task E3.9) – the source's tile beside two lines
+    /// (title and time, then the text or "project · branch"), with room above and below.
     pub fn row_notice() -> f32 {
         design::with(|t| t.design.size.row_notice)
     }
-    /// 28: a sidebar row (menu rows are 30, set by the menu building block).
+    /// 32: a sidebar row (menu rows are 30, set by the menu building block).
     pub fn row_sidebar() -> f32 {
         design::with(|t| t.design.size.row_sidebar)
     }
-    /// 32: a group head in a list ("Overdue 2").
+    /// 40: a group head in a list ("Overdue 2"), with room for its "+" button ([`control_sm`]).
     pub fn row_group() -> f32 {
         design::with(|t| t.design.size.row_group)
     }
-    /// 44: the header bar of the content panel.
+    /// 64: the header bar of the content panel.
     pub fn header() -> f32 {
         design::with(|t| t.design.size.header)
     }
-    /// 232: the sidebar.
+    /// 240: the sidebar.
     pub fn sidebar() -> f32 {
         design::with(|t| t.design.size.sidebar)
     }
@@ -586,11 +622,11 @@ pub mod size {
     pub fn panel() -> f32 {
         design::with(|t| t.design.size.panel)
     }
-    /// 460: the list next to the detail in the wide layout.
+    /// 440: the list next to the detail in the wide layout.
     pub fn list() -> f32 {
         design::with(|t| t.design.size.list)
     }
-    /// 380: the list next to the detail in the medium layout.
+    /// 364: the list next to the detail in the medium layout.
     pub fn list_medium() -> f32 {
         design::with(|t| t.design.size.list_medium)
     }
@@ -620,12 +656,12 @@ pub mod size {
     pub fn card_gap() -> f32 {
         design::with(|t| t.design.size.card_gap)
     }
-    /// 36: the avatar of a card (task E8.2): a sender's initials, round, beside a mail card's
-    /// lines. A compact mail row keeps its 32 ([`control`]).
+    /// 40: the avatar of a card (task E8.2): a sender's initials, round, beside a mail card's
+    /// lines. A mail row has its own (`[list] avatar`, [`crate::layout::list`]).
     pub fn avatar() -> f32 {
         design::with(|t| t.design.size.avatar)
     }
-    /// 40: the large avatar (task E8.2): the sender at the head of the mail reader.
+    /// 48: the large avatar (task E8.2): the sender at the head of the mail reader.
     pub fn avatar_lg() -> f32 {
         design::with(|t| t.design.size.avatar_lg)
     }
@@ -649,16 +685,32 @@ pub mod size {
     pub fn command() -> f32 {
         design::with(|t| t.design.size.command)
     }
-    /// 42: the sender's avatar in the reader's head (task E11.1). The Torro pills of the reader that
+    /// 40: the sender's avatar in the reader's head (task E11.1). The Torro pills of the reader that
     /// had this height went with #241; the size stays in the pack format (decision 9 of E14).
     pub fn pill() -> f32 {
         design::with(|t| t.design.size.pill)
     }
-    /// 104: the height of the small map under an event's location (calendar editor, review of
+    /// 120 in the standard design: the height of the small map under an event's location (calendar editor, review of
     /// #278): two list rows and a gap, so the pin, "Open in Maps" and the attribution fit with room
     /// around them. Derived from the pack's [`row`] and [`super::space::xl`], not a value of its own.
     pub fn map_preview() -> f32 {
         row() * 2.0 + super::space::xl()
+    }
+    /// 60 in the standard design: the collapsed sidebar (the rail of icons) and the collapsed action
+    /// rail of the mail window (issue #291), at least as wide as its button [`control_lg`]. Read it
+    /// through [`crate::shell::rail()`], which is this.
+    pub fn rail() -> f32 {
+        design::with(|t| t.design.size.rail)
+    }
+    /// 248: the expanded action rail of the mail window (issue #291,
+    /// `widgets::RailMode::Expanded`).
+    pub fn rail_wide() -> f32 {
+        design::with(|t| t.design.size.rail_wide)
+    }
+    /// 600: the widest the text of a mail stands in the reader (issue #291), the reading column; its
+    /// padding is [`crate::layout::reading_padding`]. Console: 1200, the mail fills the reader.
+    pub fn reading_max() -> f32 {
+        design::with(|t| t.design.size.reading_max)
     }
     /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
     /// above the columns of a grid). Always one logical pixel, also on HiDPI screens; not part of a
@@ -864,6 +916,22 @@ mod tests {
         assert_eq!(palette(&sidebar_theme(&Theme::Light)), Palette::light(), "built-in themes too");
     }
 
+    /// Issue #291: inside a chosen row in the accent colour every text colour is `on_accent`, in the
+    /// window's mode; the surfaces stay the window's, and such a theme stays itself.
+    #[test]
+    fn a_row_on_the_accent_takes_on_accent_for_its_text() {
+        for (window, p) in [(theme(), Palette::dark()), (light(), Palette::light())] {
+            let on = on_accent_theme(&window);
+            assert_eq!(palette(&on), p.on_accent_row());
+            assert_eq!((palette(&on).text_3, palette(&on).panel), (p.on_accent, p.panel));
+            assert_eq!(text_3(&on).color, Some(p.on_accent));
+            assert_eq!(on_accent_theme(&on), on, "stays itself");
+            assert_eq!(on.extended_palette().is_dark, window.extended_palette().is_dark, "the window's mode");
+        }
+        let in_sidebar = on_accent_theme(&sidebar_theme(&light()));
+        assert_eq!(palette(&in_sidebar), Palette::light().on_accent_row(), "a row in the sidebar too");
+    }
+
     #[test]
     fn text_styles_use_the_mode_of_the_theme() {
         assert_eq!(text_2(&theme()).color, Some(Palette::dark().text_2));
@@ -898,7 +966,7 @@ mod tests {
 
     #[test]
     fn the_map_preview_is_two_rows_and_a_gap() {
-        assert_eq!(size::map_preview(), 104.0);
+        assert_eq!(size::map_preview(), 120.0);
     }
 
     #[test]
@@ -907,17 +975,20 @@ mod tests {
             [space::xs(), space::s(), space::m(), space::l(), space::xl(), space::xxl()],
             [4.0, 8.0, 12.0, 16.0, 24.0, 32.0]
         );
-        assert_eq!([radius::xs(), radius::sm(), radius::md(), radius::lg()], [4.0, 6.0, 8.0, 10.0]);
-        assert_eq!([size::control_sm(), size::control(), size::control_lg(), size::row()], [28.0, 32.0, 36.0, 40.0]);
-        assert_eq!([size::header(), size::sidebar(), size::props()], [44.0, 232.0, 300.0]);
+        // Issue #291: the standard's corners are 4 everywhere.
+        assert_eq!([radius::xs(), radius::sm(), radius::md(), radius::lg()], [4.0; 4]);
+        assert_eq!([size::control_sm(), size::control(), size::control_lg(), size::row()], [36.0, 38.0, 40.0, 48.0]);
+        assert_eq!([size::header(), size::sidebar(), size::props()], [64.0, 240.0, 300.0]);
         assert_eq!(
             [size::list(), size::list_medium(), size::content_max(), size::form_max()],
-            [460.0, 380.0, 720.0, 640.0]
+            [440.0, 364.0, 720.0, 640.0]
         );
         assert_eq!([size::hour(), size::axis(), size::axis_narrow()], [48.0, 52.0, 44.0]);
-        assert_eq!([size::row_sidebar(), size::row_group(), size::HAIRLINE], [28.0, 32.0, 1.0]);
+        assert_eq!([size::row_sidebar(), size::row_group(), size::HAIRLINE], [32.0, 40.0, 1.0]);
         // The mail window's large buttons (task E11.1).
-        assert_eq!([size::command(), size::pill(), size::control_xl(), size::row_message()], [46.0, 42.0, 44.0, 92.0]);
+        assert_eq!([size::command(), size::pill(), size::control_xl(), size::row_message()], [46.0, 40.0, 48.0, 100.0]);
+        // Issue #291: the rails and the reading column.
+        assert_eq!([size::rail(), size::rail_wide(), size::reading_max()], [60.0, 248.0, 600.0]);
     }
 
     #[test]

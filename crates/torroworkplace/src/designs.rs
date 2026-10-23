@@ -1,6 +1,9 @@
-//! The examples the suite ships (tasks L.5, L.7–L.9, L.12–L.16, L.20): `designs/`, `fonts/` and
-//! `color-schemes/` in the repository, built into this binary and written to the same three folders in
-//! the data folder (`torro_core::design::{dir, font_dir, color_scheme_dir}`).
+//! The examples the suite ships (tasks L.5, L.7–L.9, L.12–L.16, L.20): `fonts/` and `color-schemes/`
+//! in the repository, built into this binary and written to the same folders in the data folder
+//! (`torro_core::design::{dir, font_dir, color_scheme_dir}`). Since issue #291 there are no example
+//! designs: `designs/` in the repository holds the three built-in designs (Standard, Compact,
+//! Console), which `torro-core` embeds and answers without a folder, so a designs folder only gets its
+//! list of offered examples.
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
 //! centre write these folders; in `torro-core` every app would carry the fonts (about 1 MB) without
@@ -44,42 +47,10 @@ macro_rules! example_file {
 // The lists below hold every example with every file it has; the test
 // `the_embedded_files_are_the_whole_example` fails when a file is added to the repository but not here.
 
-/// The example designs with every file they have (`designs/` in the repository).
-const DESIGNS: &[Example] = &[
-    Example {
-        id: "plex",
-        files: &[example_file!("designs", "plex", "design.toml"), example_file!("designs", "plex", "preview.png")],
-    },
-    Example {
-        id: "commitr",
-        files: &[
-            example_file!("designs", "commitr", "design.toml"),
-            example_file!("designs", "commitr", "preview.png"),
-        ],
-    },
-    Example {
-        id: "ribbon",
-        files: &[example_file!("designs", "ribbon", "design.toml"), example_file!("designs", "ribbon", "preview.png")],
-    },
-    Example {
-        id: "channelr",
-        files: &[
-            example_file!("designs", "channelr", "design.toml"),
-            example_file!("designs", "channelr", "preview.png"),
-        ],
-    },
-    Example {
-        id: "guildr",
-        files: &[example_file!("designs", "guildr", "design.toml"), example_file!("designs", "guildr", "preview.png")],
-    },
-    Example {
-        id: "quattro",
-        files: &[
-            example_file!("designs", "quattro", "design.toml"),
-            example_file!("designs", "quattro", "preview.png"),
-        ],
-    },
-];
+/// The example designs: none since issue #291. The six of before (Plex, Commitr, Ribbon, Channelr,
+/// Guildr, Quattro) are gone as designs, their fonts and colour schemes stay; the folders under
+/// `designs/` in the repository are the built-in designs ([`torro_core::design::BUILT_IN_IDS`]).
+const DESIGNS: &[Example] = &[];
 
 /// The example fonts with every file they have (`fonts/` in the repository).
 const FONTS: &[Example] = &[
@@ -423,7 +394,7 @@ fn report(folders: &Folders, errors: Vec<(Part, io::Error)>) {
 #[cfg(test)]
 mod tests {
     use torro_core::design::{
-        self, ColorScheme, Design, DesignError, FontSet, LevelName, MIN_TEXT_SIZE, Rgba, STANDARD_ID, Selection, Weight,
+        self, BUILT_IN_IDS, ColorScheme, Design, DesignError, LevelName, Rgba, STANDARD_ID, Selection, Weight,
     };
 
     use super::*;
@@ -443,14 +414,15 @@ mod tests {
         Folders { designs: data.join("designs"), fonts: data.join("fonts"), color_schemes: data.join("color-schemes") }
     }
 
-    /// The design, font and colour scheme `id` of the repository, each from its own folder.
+    /// The font and colour scheme `id` of the repository, each from its own folder, with the standard
+    /// design (the examples are no designs since issue #291).
     fn shipped(id: &str) -> Selection {
         let fail = |part: &str, problems: Vec<DesignError>| -> ! {
             let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
             panic!("{part}/{id} must be valid: {reasons:#?}")
         };
         Selection {
-            design: design::load(&repo(Part::Design), id).unwrap_or_else(|p| fail("designs", p)),
+            design: Design::standard(),
             font: design::load_font(&repo(Part::Font), id).unwrap_or_else(|p| fail("fonts", p)),
             scheme: design::load_color_scheme(&repo(Part::ColorScheme), id)
                 .unwrap_or_else(|p| fail("color-schemes", p)),
@@ -503,7 +475,7 @@ mod tests {
         found
     }
 
-    /// The six examples that are a design, a font and a colour scheme.
+    /// The six examples that are a font and a colour scheme (and were a design too until issue #291).
     const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
     /// The six examples that are only a colour scheme (task L.20).
     const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
@@ -513,6 +485,13 @@ mod tests {
         for part in PARTS {
             let mut folders = entries(&repo(part));
             folders.retain(|name| repo(part).join(name).is_dir());
+            // The built-in designs are embedded in `torro-core`, not offered as examples (issue #291).
+            if part == Part::Design {
+                let mut built_in = BUILT_IN_IDS.map(String::from).to_vec();
+                built_in.sort();
+                assert_eq!(folders, built_in, "designs/ holds the built-in designs only");
+                folders.clear();
+            }
             let mut expected = ids(part);
             expected.sort();
             assert_eq!(folders, expected, "every folder in {} is an example", repo(part).display());
@@ -528,15 +507,13 @@ mod tests {
         }
     }
 
-    /// Task L.20: Nord and the other five are only colour schemes; the six others are all three parts,
-    /// and every one of them is valid.
+    /// Task L.20: Nord and the other five are only colour schemes; the six others are a font and a
+    /// colour scheme (no design since issue #291), and every one of them is valid.
     #[test]
     fn every_example_loads_without_reasons_in_its_folders() {
         let listed = |part: Part| -> Vec<String> {
             let found: Vec<(String, Vec<DesignError>)> = match part {
-                Part::Design => {
-                    design::list(&repo(part)).into_iter().map(|l| (l.id.clone(), l.problems().to_vec())).collect()
-                }
+                Part::Design => Vec::new(),
                 Part::Font => {
                     design::list_fonts(&repo(part)).into_iter().map(|l| (l.id.clone(), l.problems().to_vec())).collect()
                 }
@@ -550,66 +527,17 @@ mod tests {
             }
             found.into_iter().map(|(id, _)| id).filter(|id| id != STANDARD_ID).collect()
         };
-        assert_eq!(listed(Part::Design), COMPLETE);
+        assert!(examples(Part::Design).is_empty(), "no example designs since issue #291");
         assert_eq!(listed(Part::Font), COMPLETE);
         let mut schemes: Vec<&str> = COMPLETE.iter().chain(&SCHEMES_ONLY).copied().collect();
         schemes.sort_unstable();
         assert_eq!(listed(Part::ColorScheme), schemes);
         for id in COMPLETE {
-            let design = design::load(&repo(Part::Design), id).expect("valid");
-            assert_eq!((design.about.font.as_deref(), design.about.color_scheme.as_deref()), (Some(id), Some(id)));
-            assert!(design.preview.is_some(), "{id} keeps its preview");
+            let gone = design::load(&repo(Part::Design), id);
+            assert!(matches!(&gone, Err(p) if matches!(p[..], [DesignError::NotFound { .. }])), "{id}: {gone:?}");
         }
         for id in COMPLETE.iter().chain(&SCHEMES_ONLY) {
             assert!(design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid").logo.mark.is_some());
-        }
-    }
-
-    /// The text levels of an example as they were drawn before task L.20: the standard's, with what
-    /// the old complete pack set. `(level, size, line)`.
-    fn before(id: &str) -> Vec<(LevelName, f32, f32)> {
-        let own: &[(LevelName, f32, f32)] = match id {
-            "plex" => &[
-                (LevelName::Meta, 12.0, 18.0),
-                (LevelName::Body, 14.0, 22.0),
-                (LevelName::BodyStrong, 14.0, 22.0),
-                (LevelName::Read, 15.0, 24.0),
-                (LevelName::Title, 17.0, 24.0),
-                (LevelName::Headline, 24.0, 30.0),
-                (LevelName::Display, 30.0, 36.0),
-            ],
-            "ribbon" => &[],
-            _ => &[(LevelName::Body, 14.0, 20.0), (LevelName::BodyStrong, 14.0, 20.0)],
-        };
-        let standard = Design::standard().typo;
-        LevelName::ALL
-            .iter()
-            .map(|name| {
-                let level = standard.get(*name);
-                own.iter().find(|(own, ..)| own == name).copied().unwrap_or((*name, level.size, level.line))
-            })
-            .collect()
-    }
-
-    /// Task L.20: the sizes of the designs are meant for Inter now; in their own font they are drawn as
-    /// large as before, at most 0.5 px off. The one exception is the smallest level: a design may not
-    /// go below 11 ([`MIN_TEXT_SIZE`]), so in a font drawn more than 6.8 % larger than Inter (Lato,
-    /// Figtree, Selawik) `micro` is 12 instead of 11.
-    #[test]
-    fn the_designs_look_as_before_in_their_own_font() {
-        for id in COMPLETE {
-            let look = shipped(id);
-            for (name, size, line) in before(id) {
-                let drawn = look.level(name);
-                let smallest = name == LevelName::Micro && look.design.typo.micro.size == MIN_TEXT_SIZE;
-                let off =
-                    if smallest { (MIN_TEXT_SIZE * look.font.size_adjust * 2.0).round() / 2.0 - size } else { 0.5 };
-                assert!((drawn.size - size).abs() <= off.max(0.5), "{id} {name:?}: {} for {size}", drawn.size);
-                assert!((drawn.line - line).abs() <= 0.5, "{id} {name:?}: line {} for {line}", drawn.line);
-            }
-            // Inter draws them smaller now: the sizes are Inter's.
-            let inter = Selection { font: FontSet::standard(), ..look.clone() };
-            assert!(inter.level(LevelName::Body).size <= look.level(LevelName::Body).size, "{id}");
         }
     }
 
@@ -630,19 +558,19 @@ mod tests {
     }
 
     #[test]
-    fn the_plex_example_is_its_three_parts() {
+    fn the_plex_example_is_its_font_and_colour_scheme() {
         let look = shipped("plex");
-        assert_eq!((look.design.about.name.as_str(), look.font.about.name.as_str()), ("Plex", "Plex"));
+        assert_eq!((look.font.about.name.as_str(), look.scheme.about.name.as_str()), ("Plex", "Plex"));
         assert_eq!(look.font.fonts.text.family, "IBM Plex Sans");
         assert_eq!(look.font.fonts.numbers, look.font.fonts.text, "Plex's figures are tabular already");
         let body = look.level(LevelName::Body);
-        assert_eq!((body.size, body.line, look.design.size.row), (14.0, 22.0, 44.0));
+        assert_eq!((body.size, body.line), (15.0, 22.0), "the standard's 14/22 in IBM Plex Sans: 14 × 1.058");
         assert_eq!(look.scheme.colors.dark.accent, Rgba::hex(0x3AA6A0));
         assert!(look.scheme.logo.mark.is_some());
     }
 
     #[test]
-    fn the_commitr_example_is_its_three_parts() {
+    fn the_commitr_example_is_its_font_and_colour_scheme() {
         let look = shipped("commitr");
         assert_eq!(look.font.fonts.text.family, "Mona Sans");
         assert_eq!(look.font.fonts.numbers.family, "Commitr Figures", "Mona Sans's figures, made tabular");
@@ -652,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ribbon_example_is_its_three_parts() {
+    fn the_ribbon_example_is_its_font_and_colour_scheme() {
         let look = shipped("ribbon");
         assert_eq!(look.font.fonts.text.family, "Selawik");
         assert!(look.font.fonts.text.medium.is_none(), "Selawik has no Medium");
@@ -710,19 +638,18 @@ mod tests {
         assert_eq!(left, ["color-schemes", "designs", "fonts"], "no staging folder stays behind");
     }
 
+    /// An old designs folder keeps what it has – its Plex too, which is no example any more (issue
+    /// #291: copies of the old examples are left to their owner) – and gets its list.
     #[test]
-    fn an_old_designs_folder_with_plex_gets_the_others_and_keeps_plex() {
+    fn an_old_designs_folder_keeps_its_plex_and_gets_its_list() {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("designs");
         fs::create_dir_all(dir.join("plex")).expect("plex");
         fs::write(dir.join("plex").join("design.toml"), "format = 1\n").expect("changed plex");
         let added = install_new(&dir, Part::Design).expect("install");
-        assert_eq!(added, ids(Part::Design).iter().filter(|id| *id != "plex").map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(added, Vec::<&str>::new(), "there are no example designs to add");
         assert_eq!(fs::read_to_string(dir.join("plex").join("design.toml")).expect("read"), "format = 1\n");
-        let mut expected = ids(Part::Design);
-        expected.push(OFFERED.to_string());
-        expected.sort();
-        assert_eq!(entries(&dir), expected, "no hidden work folder stays behind");
+        assert_eq!(entries(&dir), [OFFERED, "plex"], "no hidden work folder stays behind");
     }
 
     #[test]
@@ -737,7 +664,7 @@ mod tests {
         // Deleted after it was offered: it stays deleted, in every folder.
         let all = folders(&home.path().join("data"));
         install_all(&all);
-        for part in PARTS {
+        for part in [Part::Font, Part::ColorScheme] {
             let gone = examples(part)[examples(part).len() - 1].id;
             fs::remove_dir_all(all.get(part).join(gone)).expect("delete");
         }
@@ -772,7 +699,7 @@ mod tests {
     #[test]
     fn a_folder_of_the_users_own_with_an_examples_name_stays_theirs() {
         let home = tempfile::tempdir().expect("temp dir");
-        for part in PARTS {
+        for part in [Part::Font, Part::ColorScheme] {
             let dir = home.path().join(format!("{part:?}"));
             let own = examples(part)[examples(part).len() - 1].id;
             fs::create_dir_all(dir.join(own)).expect("own");

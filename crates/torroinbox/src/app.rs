@@ -185,7 +185,8 @@ use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{
-    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailEvent, RailGroup, RailMode, ToastAction, Trail,
+    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, RailEvent, RailGroup, RailMode, RailToggle,
+    ToastAction, Trail,
 };
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -7217,7 +7218,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// Whether an expanded rail leaves the reader at least [`size::form_max()`] – without, the
-    /// rail draws collapsed ([`App::rail_mode`]) and offers no button to expand.
+    /// rail draws collapsed ([`App::rail_mode`]) with its toggle off ([`App::rail_toggle`]).
     fn rail_can_expand(&self) -> bool {
         self.reader_room(RailMode::Expanded) >= size::form_max()
     }
@@ -7280,14 +7281,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Some(mail::action_groups(&reading, entry, &self.folders, close, anchors))
     }
 
-    /// The mail's action rail of `groups` in `class` (`widgets::action_rail`): in the wide window in
-    /// the mode [`App::rail_mode`] draws, with its button while it can expand; in medium and narrow
-    /// always collapsed and without the button (decision 5 of E14). The group open beside its icon, or whose menu or
-    /// dialog is open, stands selected ([`App::rail_active`]).
+    /// The mail's action rail of `groups` in `class` (`widgets::action_rail_toggle`): in the wide window
+    /// in the mode [`App::rail_mode`] draws, with its toggle ([`App::rail_toggle`]); in medium and narrow
+    /// always collapsed and without the toggle (decision 5 of E14). The group open beside its icon, or
+    /// whose menu or dialog is open, stands selected ([`App::rail_active`]).
     fn rail<'a>(&self, class: SizeClass, groups: Vec<RailGroup<'a, Message>>) -> Element<'a, Message> {
-        let toggle = (class == SizeClass::Wide && self.rail_can_expand()).then_some(Message::ToggleActions);
         let active = self.rail_active(&groups);
-        widgets::action_rail(groups, self.rail_mode(class), active, Message::Rail, toggle)
+        widgets::action_rail_toggle(groups, self.rail_mode(class), active, Message::Rail, self.rail_toggle(class))
+    }
+
+    /// The toggle of the mail's action rail in `class`: none in medium and narrow windows; in the wide
+    /// window a working one while the rail can expand ([`App::rail_can_expand`]), else off with the reason
+    /// as its tooltip – the head stays, so the rail's icons do not move between designs and widths (issue
+    /// #291: Console's wider rail could not expand at 1600, and Reply jumped up without the head).
+    fn rail_toggle(&self, class: SizeClass) -> RailToggle<Message> {
+        match (class, self.rail_can_expand()) {
+            (SizeClass::Wide, true) => RailToggle::On(Message::ToggleActions),
+            (SizeClass::Wide, false) => RailToggle::Off(tr("Widen the window to expand actions")),
+            _ => RailToggle::Hidden,
+        }
     }
 
     /// The group of `groups` that stands selected in the collapsed rail (finding 14): the one open
@@ -9823,7 +9835,7 @@ mod tests {
     fn the_density_follows_the_design() {
         let _design = DESIGN.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().expect("temp dir");
-        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[layout]\ndensity = \"comfortable\"\n";
+        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n[list]\nstyle = \"cards\"\n";
         std::fs::create_dir_all(dir.path().join("roomy")).expect("pack folder");
         std::fs::write(dir.path().join("roomy").join("design.toml"), toml).expect("design.toml");
 
@@ -13641,12 +13653,22 @@ mod tests {
         assert!(app.rail_layer(SizeClass::Wide, &anchors).is_some(), "drawn collapsed, its groups open beside it");
         let _ = app.view();
         assert!(!app.rail_can_expand(), "no button to expand where it cannot");
+        // Issue #291: but the head stays with the toggle off, so Reply and the rest do not move.
+        let off = app.rail_toggle(SizeClass::Wide);
+        assert!(matches!(off, RailToggle::Off(why) if why == tr("Widen the window to expand actions")), "{off:?}");
+        assert!(off.has_head());
         let _ = app.update(Message::ToggleActions);
         assert_eq!(app.actions, RailMode::Expanded, "`]` keeps the choice while the rail cannot expand");
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Actions(..))));
         let _ = app.update(Message::Resized(WIDE));
         assert_eq!(app.rail_mode(SizeClass::Wide), RailMode::Expanded, "with room it shows expanded");
         assert!(app.reader_room(RailMode::Expanded) >= size::form_max());
+        assert!(
+            matches!(app.rail_toggle(SizeClass::Wide), RailToggle::On(Message::ToggleActions)),
+            "with room it works"
+        );
+        assert!(matches!(app.rail_toggle(SizeClass::Medium), RailToggle::Hidden), "medium and narrow draw no head");
+        assert!(matches!(app.rail_toggle(SizeClass::Narrow), RailToggle::Hidden));
         let _ = app.view();
     }
 

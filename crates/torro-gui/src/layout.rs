@@ -11,8 +11,12 @@
 //! padding of pages, panels, list rows and controls, and the gaps between and inside groups. They
 //! come from the active design (`[layout]` in a pack, concept `docs/design-pakete.md`), so a pack
 //! can give the whole suite more or less room in one place. Use them exactly where the role fits;
-//! everything else stays on [`crate::theme::space`]. [`density`] belongs to the same `[layout]`
-//! table but is a word, not a measure: it says whether the inbox draws a row per entry or cards.
+//! everything else stays on [`crate::theme::space`]. [`list`] and [`density`] are no measures: they
+//! say how lists are drawn (`[list]`: rows or one line, lines between them, how the chosen row shows)
+//! and whether the inbox draws a row per entry or cards, which follows the list style.
+//!
+//! An [`inset`] of 0 (all built-in designs since issue #291) draws the content flush beside the
+//! sidebar, parted from it by a line ([`crate::shell`]).
 //!
 //! ```ignore
 //! container(page).padding(layout::page_padding());            // a settings page
@@ -21,7 +25,7 @@
 //! ```
 
 use iced::Padding;
-use torro_core::design::{Density, Pad};
+use torro_core::design::{Density, ListLook, Pad};
 
 use crate::design;
 use crate::theme::size;
@@ -94,8 +98,9 @@ pub fn shown_rows(count: usize, fit: usize) -> (usize, Option<usize>) {
     }
 }
 
-/// The margin around the inset content panel beside the sidebar or rail (top, right, bottom):
-/// 8 in the standard design.
+/// The margin around the inset content panel beside the sidebar or rail (top, right, bottom): 0 in
+/// the standard design, which draws the content flush with a line beside the sidebar
+/// ([`crate::shell`]); a design of its own may inset it (the suite had 8 before issue #291).
 pub fn inset() -> f32 {
     design::with(|t| t.design.layout.inset)
 }
@@ -111,13 +116,15 @@ pub fn panel_padding() -> Padding {
     padding(design::with(|t| t.design.layout.panel_padding))
 }
 
-/// The padding of list rows (tasks, settings rows, group heads): 0 × 16 in the standard design. The
-/// height of a row comes from `size::row()` and friends; the content is centred in it.
+/// The padding of list rows (tasks, settings rows, group heads): 18 × 24 in the standard design. Rows
+/// of a fixed height (`size::row()`, `widgets::list_row`) take only its sides and centre their
+/// content; so do the inbox's rows of several lines (`list::sized_row`), whose height leaves the room
+/// above and below.
 pub fn row_padding() -> Padding {
     padding(design::with(|t| t.design.layout.row_padding))
 }
 
-/// The padding of buttons and segments: 0 × 10 in the standard design (`style::button_padding`).
+/// The padding of buttons and segments: 0 × 12 in the standard design (`style::button_padding`).
 pub fn control_padding() -> Padding {
     padding(design::with(|t| t.design.layout.control_padding))
 }
@@ -127,7 +134,7 @@ pub fn section_gap() -> f32 {
     design::with(|t| t.design.layout.section_gap)
 }
 
-/// The gap between the elements inside a group (a group's title, its card, its footer): 8 in the
+/// The gap between the elements inside a group (a group's title, its card, its footer): 10 in the
 /// standard design.
 pub fn item_gap() -> f32 {
     design::with(|t| t.design.layout.item_gap)
@@ -136,7 +143,7 @@ pub fn item_gap() -> f32 {
 /// The content width (beside the sidebar or rail, as [`crate::shell::content_width`]) from which a
 /// column as wide as the sidebar fits at the left edge of a page and still leaves the page its whole
 /// reading width ([`size::content_max`]): the column and its line, the page's padding at both sides,
-/// the reading width and the two edges of the content panel – 1003 in the standard design. Below it
+/// the reading width and the two edges of the content panel – 1011 in the standard design. Below it
 /// such a column shows as a rail. Switching here, and not at a size class, keeps the page from getting
 /// narrower as the window grows (issue #248). A function, as the measures come from the design.
 pub fn wide_column_from() -> f32 {
@@ -144,12 +151,29 @@ pub fn wide_column_from() -> f32 {
     size::sidebar() + size::HAIRLINE + page.left + page.right + size::content_max() + 2.0 * size::HAIRLINE
 }
 
+/// The padding of a mail's text in the reader (issue #291), inside the reading column
+/// [`size::reading_max`]: 52 × 64 in the standard design, 14 × 18 in Console.
+pub fn reading_padding() -> Padding {
+    padding(design::with(|t| t.design.layout.reading_padding))
+}
+
+/// How the design draws lists (`[list]`, issue #291): rows of several lines or one line, a hairline
+/// below each row or none, the chosen row with a bar of the accent colour at its left or as a whole
+/// row in the accent colour, the avatar of a mail row and its lines of preview. The cells of a row
+/// stay where they are in every design; only how they are drawn changes. `widgets::list_row` and
+/// `style::button::list_row` follow it; a view that draws rows itself reads it here.
+///
+/// The standard: rows, hairlines, a bar, avatar 40, one line of preview.
+pub fn list() -> ListLook {
+    design::with(|t| t.design.list)
+}
+
 /// How close the inbox's entries stand: [`Density::Compact`] in the standard design, one row per
 /// entry. This is the density of the *design*, not of a window – every window of the suite shows
-/// the same one, and only a pack with `layout.density = "comfortable"` asks for cards (task E13.2,
-/// issue #226).
+/// the same one, and only a design with `[list] style = "cards"` asks for cards (task E13.2, issue
+/// #226; since issue #291 from `ListLook::density`).
 pub fn density() -> Density {
-    design::with(|t| t.design.layout.density)
+    design::with(|t| t.design.list.density())
 }
 
 fn padding(pad: Pad) -> Padding {
@@ -160,15 +184,30 @@ fn padding(pad: Pad) -> Padding {
 mod tests {
     use super::*;
 
+    use torro_core::design::{ListSelection, ListStyle};
+
+    /// Issue #291 (task L.34): the gaps of the new standard – flush content, rows 18 × 24, a reading
+    /// column with wide margins.
     #[test]
     fn layout_gaps_of_the_standard_design() {
-        assert_eq!(inset(), 8.0);
+        assert_eq!(inset(), 0.0, "the content is flush");
         assert_eq!(page_padding(), Padding::new(24.0));
         assert_eq!(panel_padding(), Padding::new(16.0));
-        assert_eq!(row_padding(), Padding::new(0.0).left(16.0).right(16.0));
-        assert_eq!(control_padding(), Padding::new(0.0).left(10.0).right(10.0));
-        assert_eq!((section_gap(), item_gap()), (24.0, 8.0));
-        assert_eq!(wide_column_from(), 1003.0, "232 + 1 + 24 + 24 + 720 + 2");
+        assert_eq!(row_padding(), Padding::new(18.0).left(24.0).right(24.0));
+        assert_eq!(control_padding(), Padding::new(0.0).left(12.0).right(12.0));
+        assert_eq!((section_gap(), item_gap()), (24.0, 10.0));
+        assert_eq!(reading_padding(), Padding::new(52.0).left(64.0).right(64.0));
+        assert_eq!(wide_column_from(), 1011.0, "240 + 1 + 24 + 24 + 720 + 2");
+    }
+
+    /// Issue #291 (task L.34): the standard draws lists as rows with hairlines and a bar at the chosen
+    /// row, which is the compact density of the inbox.
+    #[test]
+    fn the_standard_draws_lists_as_rows_with_a_bar() {
+        let look = list();
+        assert_eq!((look.style, look.separators, look.selection), (ListStyle::Rows, true, ListSelection::Bar));
+        assert_eq!((look.avatar, look.preview_lines), (40.0, 1));
+        assert_eq!(density(), Density::Compact);
     }
 
     fn class(width: f32, height: f32) -> SizeClass {
