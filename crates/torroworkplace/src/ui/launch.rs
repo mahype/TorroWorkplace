@@ -169,7 +169,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 87] = [
+    pub const ALL: [(&'static str, Open); 89] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),

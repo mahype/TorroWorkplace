@@ -690,7 +690,7 @@ pub mod size {
     pub fn pill() -> f32 {
         design::with(|t| t.design.size.pill)
     }
-    /// 104: the height of the small map under an event's location (calendar editor, review of
+    /// 120 in the standard design: the height of the small map under an event's location (calendar editor, review of
     /// #278): two list rows and a gap, so the pin, "Open in Maps" and the attribution fit with room
     /// around them. Derived from the pack's [`row`] and [`super::space::xl`], not a value of its own.
     pub fn map_preview() -> f32 {
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn the_map_preview_is_two_rows_and_a_gap() {
-        assert_eq!(size::map_preview(), 104.0);
+        assert_eq!(size::map_preview(), 120.0);
     }
 
     #[test]
