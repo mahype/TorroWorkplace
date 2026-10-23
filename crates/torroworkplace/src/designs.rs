@@ -215,6 +215,62 @@ const COLOR_SCHEMES: &[Example] = &[
             example_file!("color-schemes", "everforest", "logo.svg"),
         ],
     },
+    Example {
+        id: "ayu",
+        files: &[
+            example_file!("color-schemes", "ayu", "color-scheme.toml"),
+            example_file!("color-schemes", "ayu", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "base16",
+        files: &[
+            example_file!("color-schemes", "base16", "color-scheme.toml"),
+            example_file!("color-schemes", "base16", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "edge",
+        files: &[
+            example_file!("color-schemes", "edge", "color-scheme.toml"),
+            example_file!("color-schemes", "edge", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "flexoki",
+        files: &[
+            example_file!("color-schemes", "flexoki", "color-scheme.toml"),
+            example_file!("color-schemes", "flexoki", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "iceberg",
+        files: &[
+            example_file!("color-schemes", "iceberg", "color-scheme.toml"),
+            example_file!("color-schemes", "iceberg", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "kanagawa",
+        files: &[
+            example_file!("color-schemes", "kanagawa", "color-scheme.toml"),
+            example_file!("color-schemes", "kanagawa", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "night-owl",
+        files: &[
+            example_file!("color-schemes", "night-owl", "color-scheme.toml"),
+            example_file!("color-schemes", "night-owl", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "nightfox",
+        files: &[
+            example_file!("color-schemes", "nightfox", "color-scheme.toml"),
+            example_file!("color-schemes", "nightfox", "LICENSE.txt"),
+        ],
+    },
 ];
 
 /// The examples of `part`.
@@ -485,6 +541,10 @@ mod tests {
     const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
     /// The six examples that are only a colour scheme (task L.20).
     const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
+    /// The colour schemes after free palettes that bring no logo of their own (issue #292): the suite
+    /// draws its "T" on their accent.
+    const WITHOUT_LOGO: [&str; 8] =
+        ["ayu", "base16", "edge", "flexoki", "iceberg", "kanagawa", "night-owl", "nightfox"];
 
     #[test]
     fn the_embedded_files_are_the_whole_example() {
@@ -514,7 +574,8 @@ mod tests {
     }
 
     /// Task L.20: Nord and the other five are only colour schemes; the six others are a font and a
-    /// colour scheme (no design since issue #291), and every one of them is valid.
+    /// colour scheme (no design since issue #291), and every one of them is valid. The schemes after
+    /// free palettes (issue #292) are valid too and have no logo.
     #[test]
     fn every_example_loads_without_reasons_in_its_folders() {
         let listed = |part: Part| -> Vec<String> {
@@ -535,7 +596,7 @@ mod tests {
         };
         assert!(examples(Part::Design).is_empty(), "no example designs since issue #291");
         assert_eq!(listed(Part::Font), COMPLETE);
-        let mut schemes: Vec<&str> = COMPLETE.iter().chain(&SCHEMES_ONLY).copied().collect();
+        let mut schemes: Vec<&str> = COMPLETE.iter().chain(&SCHEMES_ONLY).chain(&WITHOUT_LOGO).copied().collect();
         schemes.sort_unstable();
         assert_eq!(listed(Part::ColorScheme), schemes);
         for id in COMPLETE {
@@ -544,6 +605,10 @@ mod tests {
         }
         for id in COMPLETE.iter().chain(&SCHEMES_ONLY) {
             assert!(design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid").logo.mark.is_some());
+        }
+        for id in WITHOUT_LOGO {
+            let scheme = design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid");
+            assert!(scheme.logo.mark.is_none(), "{id} draws the suite's T on its accent");
         }
     }
 

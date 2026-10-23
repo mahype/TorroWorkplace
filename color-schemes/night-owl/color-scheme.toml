@@ -1,0 +1,65 @@
+# Night Owl – after the open Night Owl theme by Sarah Drasner (MIT), github.com/sdras/night-owl-vscode-theme
+# (themes/Night Owl-Light-color-theme.json, Night Owl-color-theme.json), task FS.2, issue #292. Light is Light Owl,
+# dark is Night Owl; teal accent in light, blue in dark, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Night Owl"
+version = "1.0.0"
+author = "Torro, after Night Owl by Sarah Drasner (MIT)"
+description = "The Night Owl colour scheme: Light Owl and Night Owl, teal and blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #637777 → #7C8E91; error #EF5350 → #EF5654.
+[colors.dark]
+bg = "#011627"
+panel = "#021320"
+raised = "#091A27"
+hover = "#0E1E2B"
+selected = "#152532"
+menu = "#0F1F2C"
+text = "#D6DEEB"
+text_2 = "#AEBAC2"
+text_3 = "#7C8E91"
+line = "#D6DEEB12"
+line_strong = "#D6DEEB22"
+line_selected = "#D6DEEB4D"
+focus_ring = "#82AAFF"
+accent = "#82AAFF"
+on_accent = "#011627"
+ok = "#22DA6E"
+attention = "#FFCB8B"
+error = "#EF5654"
+merged = "#C792EA"
+calendar = ["#82AAFF", "#22DA6E", "#F78C6C", "#C792EA", "#7FDBCA"]
+night = "#021424"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #989FB1 → #616376; accent #2AA298 → #22837B; attention #E0AF02 → #AB8602; error #DE3D3B →
+# #DE3B39; calendar (orange) #E0AF02 → #A88402; calendar (cyan) #2AA298 → #27988E.
+# Light Owl has no orange: the third calendar colour is its yellow.
+[colors.light]
+bg = "#FBFBFB"
+panel = "#F0F0F0"
+raised = "#ECECEC"
+hover = "#E8E8E9"
+selected = "#E2E2E3"
+menu = "#FBFBFB"
+text = "#403F53"
+text_2 = "#4F4F63"
+text_3 = "#616376"
+line = "#403F5314"
+line_strong = "#403F5326"
+line_selected = "#403F535D"
+focus_ring = "#22837B"
+accent = "#22837B"
+on_accent = "#FFFFFF"
+ok = "#08916A"
+attention = "#AB8602"
+error = "#DE3B39"
+merged = "#994CC3"
+calendar = ["#288ED7", "#08916A", "#A88402", "#D6438A", "#27988E"]
+night = "#F5F5F5"

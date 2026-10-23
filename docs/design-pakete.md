@@ -618,14 +618,14 @@ kommentiert (meist der gedämpfte Text, der 4,5:1 auf allen Flächen braucht).
 | Dracula | `dracula` | Light and dark | github.com/dracula/dracula-theme | MIT | Akzent Lila, Fokus Pink; hell ist Alucard; mit Logo |
 | Catppuccin | `catppuccin` | Light and dark | github.com/catppuccin/catppuccin | MIT | dunkel Mocha, hell Latte, Akzent Mauve; mit Logo |
 | Everforest | `everforest` | Light and dark | github.com/sainnhe/everforest | MIT | Waldgrün auf warmen Flächen; mit Logo |
-| Ayu | `ayu` | Light and dark | github.com/ayu-theme/ayu-colors | MIT | FS.2 |
-| Base16 | `base16` | Light and dark | github.com/tinted-theming/schemes (Default von Chris Kempson) | MIT | FS.2 |
-| Edge | `edge` | Light and dark | github.com/sainnhe/edge | MIT | FS.2 |
-| Flexoki | `flexoki` | Light and dark | github.com/kepano/flexoki | MIT | FS.2 |
-| Iceberg | `iceberg` | Light and dark | github.com/cocopon/iceberg.vim | MIT | FS.2 |
-| Kanagawa | `kanagawa` | Light and dark | github.com/rebelot/kanagawa.nvim | MIT | FS.2 |
-| Nightfox | `nightfox` | Light and dark | github.com/EdenEast/nightfox.nvim | MIT | FS.2 |
-| Night Owl | `night-owl` | Light and dark | github.com/sdras/night-owl-vscode-theme | MIT | FS.2 |
+| Ayu | `ayu` | Light and dark | github.com/ayu-theme/ayu-colors | MIT | hell ayu Light, dunkel ayu Mirage; Akzent dunkel Gelb `#FFCC66`, hell Orange `#F29718` → `#A96609` (trägt sonst weder Weiß noch den Text); gedämpfter Text, Warn- und Fehlerfarbe verschoben |
+| Base16 | `base16` | Light and dark | github.com/tinted-theming/schemes (Default von Chris Kempson) | MIT | Default Light und Default Dark; Akzent Blau `base0D` `#7CAFC2` mit dunkler Schrift; gedämpfter Text `#B8B8B8`/`#585858` stark verschoben, im Hellen Fokus, Status und Kalender dunkler |
+| Edge | `edge` | Light and dark | github.com/sainnhe/edge | MIT | Stil light und default; Akzent Blau; gedämpfter Text, Rot und im Hellen Warnfarbe verschoben; ohne Orange und Magenta (Gelb, Violett im Kalender) |
+| Flexoki | `flexoki` | Light and dark | github.com/kepano/flexoki | MIT | Akzent ohne Vorbild: Blau 600 `#205EA6` hell, 400 `#4385BE` dunkel; Link stephango.com/flexoki in der Beschreibung (Bitte des Autors); nur gedämpfter Text und dunkel Warn-/Fehlerfarbe verschoben |
+| Iceberg | `iceberg` | Light and dark | github.com/cocopon/iceberg.vim | MIT | beide Modi der Quelle, Akzent Blau; hell `panel` `#DCDFE7` → `#E1E4EB` (Kategoriefarben); gedämpfter Text und Rot verschoben |
+| Kanagawa | `kanagawa` | Light and dark | github.com/rebelot/kanagawa.nvim | MIT | hell Lotus, dunkel Wave, Akzent Blau; hell `panel` `#E7DBA0` → `#EDE5B9` (Kategoriefarben); gedämpfter Text, Rot und Orange verschoben |
+| Nightfox | `nightfox` | Light and dark | github.com/EdenEast/nightfox.nvim | MIT | hell Dayfox, dunkel Nightfox, Akzent Blau; hell `panel` `#E4DCD4` → `#E9E3DD` (Kategoriefarben); gedämpfter Text verschoben |
+| Night Owl | `night-owl` | Light and dark | github.com/sdras/night-owl-vscode-theme | MIT | hell Light Owl (Akzent Türkis `#2AA298` → `#22837B`), dunkel Night Owl (Akzent Blau); gedämpfter Text und Status verschoben |
 | One | `one` | Light and dark | github.com/atom/atom (`one-dark-syntax`, `one-light-syntax`) | MIT | FS.3 |
 | Primer | `primer` | Light and dark | github.com/primer/primitives | MIT | FS.3 |
 | Rosé Pine | `rose-pine` | Light and dark | github.com/rose-pine/palette | MIT | FS.3 |

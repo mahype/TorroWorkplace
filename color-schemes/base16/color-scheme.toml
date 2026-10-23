@@ -1,0 +1,65 @@
+# Base16 – after the open Base16 Default scheme by Chris Kempson (MIT), github.com/tinted-theming/schemes
+# (base16/default-light.yaml, base16/default-dark.yaml), task FS.2, issue #292. Light is Default Light, dark is
+# Default Dark; the blue base0D as the accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Base16"
+version = "1.0.0"
+author = "Torro, after Base16 Default by Chris Kempson (MIT)"
+description = "The Base16 Default colour scheme: neutral greys, muted blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #585858 → #A2A2A2; error #AB4642 → #D4918F.
+[colors.dark]
+bg = "#181818"
+panel = "#282828"
+raised = "#2E2E2E"
+hover = "#323232"
+selected = "#383838"
+menu = "#333333"
+text = "#D8D8D8"
+text_2 = "#C0C0C0"
+text_3 = "#A2A2A2"
+line = "#D8D8D812"
+line_strong = "#D8D8D822"
+line_selected = "#D8D8D853"
+focus_ring = "#7CAFC2"
+accent = "#7CAFC2"
+on_accent = "#181818"
+ok = "#A1B56C"
+attention = "#DC9656"
+error = "#D4918F"
+merged = "#BA8BAF"
+calendar = ["#7CAFC2", "#A1B56C", "#DC9656", "#BA8BAF", "#86C1B9"]
+night = "#202020"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #B8B8B8 → #5F5F5F; focus_ring #7CAFC2 → #4C8CA4; attention #DC9656 → #C87529; merged
+# #BA8BAF → #AB719D; calendar (blue) #7CAFC2 → #4C8CA4; calendar (green) #A1B56C → #788B46; calendar (orange) #DC9656
+# → #BF7028; calendar (magenta) #BA8BAF → #AB719D; calendar (cyan) #86C1B9 → #498F85.
+[colors.light]
+bg = "#F8F8F8"
+panel = "#E8E8E8"
+raised = "#E4E4E4"
+hover = "#E0E0E0"
+selected = "#DADADA"
+menu = "#F8F8F8"
+text = "#383838"
+text_2 = "#4A4A4A"
+text_3 = "#5F5F5F"
+line = "#38383814"
+line_strong = "#38383826"
+line_selected = "#3838385C"
+focus_ring = "#4C8CA4"
+accent = "#7CAFC2"
+on_accent = "#383838"
+ok = "#A1B56C"
+attention = "#C87529"
+error = "#AB4642"
+merged = "#AB719D"
+calendar = ["#4C8CA4", "#788B46", "#BF7028", "#AB719D", "#498F85"]
+night = "#F0F0F0"

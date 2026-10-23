@@ -110,7 +110,7 @@ Schrift (3,9:1); der heutige Akzent `#AF3A03` (6,1:1) bleibt, sein Kopfkommentar
   grün; fmt/clippy/test, auch `TORRO_LANG=de`.
 
 ### FS.2 Acht Schemata hell und dunkel: Ayu bis Night Owl
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** FS.1 · **Dateien:** `color-schemes/{ayu,base16,edge,flexoki,iceberg,kanagawa,nightfox,night-owl}/{color-scheme.toml,LICENSE.txt}` (neu), `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md`
 - Nach den gemeinsamen Regeln und der Tabelle; Flexoki mit Link und gewähltem Akzent.
 - **Abnahme:** die acht laden ohne Gründe (Test); Kommentar bei jeder verschobenen Farbe; fmt/clippy/test, auch

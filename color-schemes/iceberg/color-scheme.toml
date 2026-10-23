@@ -1,0 +1,66 @@
+# Iceberg – after the open Iceberg colour scheme by cocopon (MIT), github.com/cocopon/iceberg.vim
+# (colors/iceberg.vim), task FS.2, issue #292. Both of its modes; the blue accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Iceberg"
+version = "1.0.0"
+author = "Torro, after Iceberg by cocopon (MIT)"
+description = "The Iceberg colour scheme: cool blue greys, calm blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #6B7089 → #9598AA; error #E27878 → #E37B7B.
+# Iceberg has no magenta: the fourth calendar colour is its purple.
+[colors.dark]
+bg = "#161821"
+panel = "#1E2132"
+raised = "#242738"
+hover = "#272A3B"
+selected = "#2D3040"
+menu = "#282B3C"
+text = "#C6C8D1"
+text_2 = "#B0B2BF"
+text_3 = "#9598AA"
+line = "#C6C8D112"
+line_strong = "#C6C8D122"
+line_selected = "#C6C8D153"
+focus_ring = "#84A0C6"
+accent = "#84A0C6"
+on_accent = "#161821"
+ok = "#B4BE82"
+attention = "#E2A478"
+error = "#E37B7B"
+merged = "#A093C7"
+calendar = ["#84A0C6", "#B4BE82", "#E2A478", "#A093C7", "#89B8C2"]
+night = "#1A1C2A"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: panel #DCDFE7 → #E1E4EB (for the standard's category colours, which a scheme cannot set); text_3
+# #8389A3 → #575B73; attention #C57339 → #BF7037; error #CC517A → #C63C6A; calendar (green) #668E3D → #658C3C;
+# calendar (orange) #C57339 → #BB6D36.
+# Iceberg has no magenta: the fourth calendar colour is its purple.
+[colors.light]
+bg = "#E8E9EC"
+panel = "#E1E4EB"
+raised = "#DDE0E7"
+hover = "#D9DCE4"
+selected = "#D3D6DE"
+menu = "#E8E9EC"
+text = "#33374C"
+text_2 = "#43475E"
+text_3 = "#575B73"
+line = "#33374C14"
+line_strong = "#33374C26"
+line_selected = "#33374C5D"
+focus_ring = "#2D539E"
+accent = "#2D539E"
+on_accent = "#FFFFFF"
+ok = "#668E3D"
+attention = "#BF7037"
+error = "#C63C6A"
+merged = "#7759B4"
+calendar = ["#2D539E", "#658C3C", "#BB6D36", "#7759B4", "#3F83A6"]
+night = "#E4E6EC"

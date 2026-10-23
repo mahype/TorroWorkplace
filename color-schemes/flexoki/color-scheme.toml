@@ -1,0 +1,64 @@
+# Flexoki – after the open Flexoki colour scheme by Steph Ango (MIT), github.com/kepano/flexoki (README.md),
+# stephango.com/flexoki, task FS.2, issue #292. Light is its light theme (paper), dark its dark theme (black).
+# Flexoki has no accent of its own: chosen is its blue, 600 in light (#205EA6) and 400 in dark (#4385BE).
+# No logo of its own. The author asks for a link to stephango.com/flexoki; it stands in the description.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Flexoki"
+version = "1.0.0"
+author = "Torro, after Flexoki by Steph Ango (MIT)"
+description = "The Flexoki colour scheme: warm paper and ink, blue accent (stephango.com/flexoki)"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #878580 → #94938D; attention #DA702C → #DC7838; error #D14D41 → #DB756C.
+[colors.dark]
+bg = "#100F0F"
+panel = "#1C1B1A"
+raised = "#222120"
+hover = "#262523"
+selected = "#2C2B29"
+menu = "#272624"
+text = "#CECDC3"
+text_2 = "#B4B3AB"
+text_3 = "#94938D"
+line = "#CECDC312"
+line_strong = "#CECDC322"
+line_selected = "#CECDC351"
+focus_ring = "#4385BE"
+accent = "#4385BE"
+on_accent = "#100F0F"
+ok = "#879A39"
+attention = "#DC7838"
+error = "#DB756C"
+merged = "#8B7EC8"
+calendar = ["#4385BE", "#879A39", "#DA702C", "#CE5D97", "#3AA99F"]
+night = "#161514"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #6F6E69 → #62615D.
+[colors.light]
+bg = "#FFFCF0"
+panel = "#F2F0E5"
+raised = "#ECEAE0"
+hover = "#E8E6DB"
+selected = "#E0DED4"
+menu = "#FFFCF0"
+text = "#100F0F"
+text_2 = "#353432"
+text_3 = "#62615D"
+line = "#100F0F14"
+line_strong = "#100F0F26"
+line_selected = "#100F0F57"
+focus_ring = "#205EA6"
+accent = "#205EA6"
+on_accent = "#FFFFFF"
+ok = "#66800B"
+attention = "#BC5215"
+error = "#AF3029"
+merged = "#5E409D"
+calendar = ["#205EA6", "#66800B", "#BC5215", "#A02F6F", "#24837B"]
+night = "#F8F6EB"
