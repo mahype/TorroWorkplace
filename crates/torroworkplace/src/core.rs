@@ -8914,13 +8914,16 @@ mod tests {
 
     /// What a client on the socket gets back for `request` with `key`, come the way its kind comes
     /// ([`door_for`]).
+    ///
+    /// Boxed: a test's future lives on its thread's stack, which the core's future outgrows in a
+    /// debug build (the service spawns each request onto the heap).
     async fn ask(core: &Core, key: Option<&Key>, request: Request) -> Response {
-        core.handle_from(key, door_for(core, key), request).await.unwrap_or_else(Refused::response)
+        Box::pin(core.handle_from(key, door_for(core, key), request)).await.unwrap_or_else(Refused::response)
     }
 
     /// [`ask`] with the way `door` (#231).
     async fn ask_via(core: &Core, key: Option<&Key>, door: Door, request: Request) -> Response {
-        core.handle_from(key, door, request).await.unwrap_or_else(Refused::response)
+        Box::pin(core.handle_from(key, door, request)).await.unwrap_or_else(Refused::response)
     }
 
     /// The way a client of `key`'s kind comes when it is used as meant (#231): MCP for an MCP
