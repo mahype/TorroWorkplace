@@ -6820,8 +6820,8 @@ impl Core {
     /// out): checks the sign-in, stores it and starts the account. In this order:
     ///
     /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, sender name,
-    ///    the form of the trusted certificates (issue #284) and servers (`error`); then the stored accounts (`error` without a home directory, before
-    ///    any server is asked);
+    ///    the form of the trusted certificates (issue #284) and servers (`error`); then the stored
+    ///    accounts (`error` without a home directory, before any server is asked);
     /// 2. connecting an account that exists keeps its settings, hidden collections and rights, but
     ///    `calendars` and `tasks` switch those services on (task M3.5: adding calendars to an
     ///    account connected for mail only; never off). Without `caldav` the stored CalDAV address
@@ -6959,8 +6959,11 @@ impl Core {
             },
             None => torro_pim_caldav::Services::default(),
         };
+        // Without a CalDAV address no stored certificate can be CalDAV's: what IMAP and SMTP did not
+        // show goes, as for an account whose CalDAV was asked.
+        let caldav_asked = caldav_url.is_some() || config.caldav.is_none();
         config.trusted_certificates =
-            kept_certificates(&config.trusted_certificates, &stored_pins, &used, caldav_url.is_some());
+            kept_certificates(&config.trusted_certificates, &stored_pins, &used, caldav_asked);
         let open_roles = signed_in.open_roles;
         let provider = existing.and_then(|account| account.display_name.clone()).unwrap_or_else(|| {
             torro_pim_caldav::discover::domain_of(&config.address)
@@ -8674,8 +8677,9 @@ fn url_host(url: &str) -> Option<(String, u16)> {
 
 /// The trusted certificates a mail account keeps after a sign-in that worked (issue #284): of
 /// `offered` (the stored ones `stored`, oldest first, then those the person just confirmed) each
-/// one a server showed at this sign-in (`used`), and while CalDAV was not asked (`caldav_asked`
-/// false) the other stored ones too, since they may be CalDAV's. All of them in the account's form
+/// one a server showed at this sign-in (`used`), and while the account's CalDAV address was not
+/// asked (`caldav_asked` false; true for an account without one) the other stored ones too, since
+/// they may be CalDAV's. All of them in the account's form
 /// ([`stored_fingerprints`], `Fingerprint`'s `Display`), so equal ones compare equal. At most
 /// [`torro_mail::account::TRUSTED_CERTIFICATES_MAX`]; the oldest go first.
 fn kept_certificates(offered: &[String], stored: &[String], used: &[String], caldav_asked: bool) -> Vec<String> {
@@ -8910,13 +8914,16 @@ mod tests {
 
     /// What a client on the socket gets back for `request` with `key`, come the way its kind comes
     /// ([`door_for`]).
+    ///
+    /// Boxed: a test's future lives on its thread's stack, which the core's future outgrows in a
+    /// debug build (the service spawns each request onto the heap).
     async fn ask(core: &Core, key: Option<&Key>, request: Request) -> Response {
-        core.handle_from(key, door_for(core, key), request).await.unwrap_or_else(Refused::response)
+        Box::pin(core.handle_from(key, door_for(core, key), request)).await.unwrap_or_else(Refused::response)
     }
 
     /// [`ask`] with the way `door` (#231).
     async fn ask_via(core: &Core, key: Option<&Key>, door: Door, request: Request) -> Response {
-        core.handle_from(key, door, request).await.unwrap_or_else(Refused::response)
+        Box::pin(core.handle_from(key, door, request)).await.unwrap_or_else(Refused::response)
     }
 
     /// The way a client of `key`'s kind comes when it is used as meant (#231): MCP for an MCP
@@ -11472,9 +11479,12 @@ mod tests {
         let core = core(dir.path()).with_approvals(crate::approvals::Approvals::system());
         save_template(&core, "dev");
         let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
-        let refused = core
-            .handle_from(Some(&key), door_for(&core, Some(&key)), Request::DeleteTemplate { id: "dev".into() })
-            .await;
+        let refused = Box::pin(core.handle_from(
+            Some(&key),
+            door_for(&core, Some(&key)),
+            Request::DeleteTemplate { id: "dev".into() },
+        ))
+        .await;
         assert_eq!(refused, Err(Refused::NeedsApproval { command: "workspaces.delete_template" }));
         assert_eq!(code(&Refused::NeedsApproval { command: "x" }.response()), "forbidden");
         assert!(core.store.load("dev").is_ok());
@@ -11956,7 +11966,7 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
-        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), set).await else {
+        let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), set)).await else {
             panic!("refused")
         };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_github_token", lack: Lack::ForPeople });
@@ -16096,6 +16106,21 @@ mod tests {
         .await;
         nowhere(dir.path(), MAIL_PASSWORD, &[&asked, &connected]);
 
+        // An old certificate the account still trusts goes with the next sign-in: without a CalDAV
+        // address no stored one can be CalDAV's ("Change password…" sends no fingerprint).
+        let mut old = stored.clone();
+        if let Some(mail) = old[0].mail.as_mut() {
+            mail.trusted_certificates = vec![nobody_shows.clone(), shown.clone()];
+        }
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), &old).expect("written");
+        core.mail.reload().await;
+        let again = ask(&core, Some(&app_key), trusting(Vec::new())).await;
+        let Response::MailConnected { account, .. } = &again else { panic!("connected, got {again:?}") };
+        let view = account.mail.as_ref().expect("a mail view");
+        assert_eq!(view.trusted_certificates, std::slice::from_ref(&shown), "the unused one went");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(stored[0].mail.as_ref().expect("a mail account").trusted_certificates, std::slice::from_ref(&shown));
+
         // The server shows another certificate than the one trusted now (as if it got a new one).
         let mut changed = stored.clone();
         if let Some(mail) = changed[0].mail.as_mut() {
@@ -18609,7 +18634,7 @@ mod tests {
         for request in [Request::GetProfile, Request::ListConversations] {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Forbidden { command: name })
             );
         }
@@ -18727,7 +18752,7 @@ mod tests {
         for request in assistant_requests(&conversation.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Forbidden { command: name }),
                 "{name}"
             );
@@ -18753,7 +18778,9 @@ mod tests {
         for request in assistant_requests("0123456789abcdef") {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await.map_err(Refused::command),
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request))
+                    .await
+                    .map_err(Refused::command),
                 Err(name),
                 "{name}"
             );
@@ -18899,7 +18926,7 @@ mod tests {
         for request in requests {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request.clone()).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request.clone())).await,
                 Err(Refused::Forbidden { command: name })
             );
             let actor = crate::assistant::Actor::Bot(bot.client.clone());
@@ -18967,7 +18994,7 @@ mod tests {
         ] {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Forbidden { command: name })
             );
         }
@@ -18986,7 +19013,7 @@ mod tests {
         for request in bots_requests(&bot.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Lacks { command: name, lack: Lack::Area { area: Area::Bots } })
             );
         }
@@ -19378,7 +19405,8 @@ mod tests {
             server: Some(server),
             key: torro_ipc::Secret::new(AI_KEY),
         };
-        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), connect(ollama.url("/v1"))).await
+        let Err(refused) =
+            Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), connect(ollama.url("/v1")))).await
         else {
             panic!("refused")
         };
@@ -20959,8 +20987,12 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
 
-        let Err(refused) =
-            core.handle_from(Some(&key), door_for(&core, Some(&key)), switch(&account.id, "glm-5.3:cloud", true)).await
+        let Err(refused) = Box::pin(core.handle_from(
+            Some(&key),
+            door_for(&core, Some(&key)),
+            switch(&account.id, "glm-5.3:cloud", true),
+        ))
+        .await
         else {
             panic!("refused")
         };
@@ -21700,7 +21732,7 @@ mod tests {
             user: None,
             secret: torro_ipc::Secret::new("tk_clientSECRET"),
         };
-        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), login).await else {
+        let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), login)).await else {
             panic!("refused")
         };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_ntfy_login", lack: Lack::ForPeople });

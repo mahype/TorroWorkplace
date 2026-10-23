@@ -298,7 +298,8 @@ Hosts“ aus M2.7b für Mail-Konten; die Dienstsuche `discover_services` und die
 von ihr gefundenen Adresse bleiben streng). Bekannte Grenze: Streng ist die Dienstsuche nur im Moment der Suche. Übernimmt
 die Oberfläche einen gefundenen Server (oder einen aus TorroMail) in `connect_mail`, löst der Dienst ihn dort neu auf
 und prüft nicht mehr, ob er öffentlich ist; dann gilt er wie ein eingetippter. Der Host
-wird je Verbindung einmal aufgelöst, verbunden wird genau mit diesen Adressen. Ein Zertifikat, dem das System nicht
+wird bei IMAP und SMTP je Verbindung einmal aufgelöst, verbunden wird genau mit diesen Adressen; der Kalenderteil
+löst die CalDAV-Adresse über seinen HTTP-Client selbst auf. Ein Zertifikat, dem das System nicht
 vertraut, beantwortet der Dienst mit `untrusted-certificate` (Dienst, Host, SHA-256, `public`, wenn eine Adresse
 des Hosts öffentlich ist), bevor das Passwort hinausgeht; nichts wird gespeichert. Bestätigt der Mensch den
 Fingerabdruck, schickt die Oberfläche dieselbe Anmeldung mit ihm in `trusted_certificates` erneut. Das Konto merkt
