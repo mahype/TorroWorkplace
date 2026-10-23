@@ -501,10 +501,10 @@ pub enum Request {
     /// A server whose certificate the system does not trust is answered with
     /// [`Response::UntrustedCertificate`] (which service, host and fingerprint): the password did
     /// not go to that server and nothing was stored (when CalDAV is the one asked about, the IMAP
-    /// and SMTP servers before it already signed in with their trusted certificates). Once the person trusted the certificate, the same
-    /// request again with its fingerprint in `trusted_certificates` signs in; the account keeps the
-    /// certificates its servers showed (`accounts.list_accounts`, `trusted_certificates` of the
-    /// mail part).
+    /// and SMTP servers before it already signed in with their trusted certificates). Once the
+    /// person trusted the certificate, the same request again with its fingerprint in
+    /// `trusted_certificates` signs in; the account keeps the certificates its servers showed
+    /// (`accounts.list_accounts`, `trusted_certificates` of the mail part).
     ///
     /// Answered with [`Response::MailConnected`], never with the password. Error codes: `error`
     /// for an address `torro_mail::account_id` refuses (empty, without one `@`, with `/`, white
