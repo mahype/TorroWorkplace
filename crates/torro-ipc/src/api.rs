@@ -2368,7 +2368,9 @@ static IMPORT_TORROMAIL_ACCOUNT: Command = Command {
     description: "Copies an account of the separate TorroMail app into the suite as a mail account, for mail \
                   only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. \
                   Checks both servers, keeps the password in the system keychain and returns the account, never \
-                  the password. TorroMail keeps its account. Only the app key may use it.",
+                  the password; a certificate the system does not trust is answered with untrusted-certificate \
+                  (then connect the account with accounts.connect_mail to trust it). TorroMail keeps its \
+                  account. Only the app key may use it.",
 };
 
 // Never an MCP tool, and for the app key only: it hands the core an API key (`docs/api.md`, "Was

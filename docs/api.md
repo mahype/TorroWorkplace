@@ -295,7 +295,9 @@ eine gespeicherte CalDAV-Adresse lässt sich nicht entfernen, nur durch eine and
 **Eigene Server und Zertifikate** (#284, M11): `connect_mail` nimmt jeden Server, den ein Mensch einträgt, wie er
 ist: im öffentlichen Internet, im lokalen Netz oder auf diesem Rechner (das ersetzt die Regel „nur öffentliche
 Hosts“ aus M2.7b für Mail-Konten; die Dienstsuche `discover_services` und die Anmeldung von `connect_caldav` an einer
-von ihr gefundenen Adresse bleiben streng). Der Host
+von ihr gefundenen Adresse bleiben streng). Bekannte Grenze: Streng ist die Dienstsuche nur im Moment der Suche. Übernimmt
+die Oberfläche einen gefundenen Server (oder einen aus TorroMail) in `connect_mail`, löst der Dienst ihn dort neu auf
+und prüft nicht mehr, ob er öffentlich ist; dann gilt er wie ein eingetippter. Der Host
 wird je Verbindung einmal aufgelöst, verbunden wird genau mit diesen Adressen. Ein Zertifikat, dem das System nicht
 vertraut, beantwortet der Dienst mit `untrusted-certificate` (Dienst, Host, SHA-256, `public`, wenn eine Adresse
 des Hosts öffentlich ist), bevor das Passwort hinausgeht; nichts wird gespeichert. Bestätigt der Mensch den

@@ -499,7 +499,8 @@ pub enum Request {
     ///
     /// A server whose certificate the system does not trust is answered with
     /// [`Response::UntrustedCertificate`] (which service, host and fingerprint): the password did
-    /// not go out and nothing was stored. Once the person trusted the certificate, the same
+    /// not go to that server and nothing was stored (when CalDAV is the one asked about, the IMAP
+    /// and SMTP servers before it already signed in with their trusted certificates). Once the person trusted the certificate, the same
     /// request again with its fingerprint in `trusted_certificates` signs in; the account keeps the
     /// certificates its servers showed (`accounts.list_accounts`, `trusted_certificates` of the
     /// mail part).
@@ -3431,7 +3432,8 @@ pub enum Response {
     },
     /// A server of a mail account showed a certificate the system does not trust (issue #284),
     /// for [`Request::ConnectMail`] and [`Request::ImportTorroMailAccount`]. The password did not
-    /// go out and nothing was stored. Show the person `host` and `sha256`; if they trust it, send
+    /// go to that server and nothing was stored; when `service` is `CalDAV`, the IMAP and SMTP
+    /// servers checked before it already had it. Show the person `host` and `sha256`; if they trust it, send
     /// the request again with `sha256` in `trusted_certificates`.
     UntrustedCertificate {
         /// Which server: `IMAP`, `SMTP` or `CalDAV`.

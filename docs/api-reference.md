@@ -1443,7 +1443,7 @@ Keine Felder.
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Copies an account of the separate TorroMail app into the suite as a mail account, for mail only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. Checks both servers, keeps the password in the system keychain and returns the account, never the password. TorroMail keeps its account. Only the app key may use it.
+Copies an account of the separate TorroMail app into the suite as a mail account, for mail only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. Checks both servers, keeps the password in the system keychain and returns the account, never the password; a certificate the system does not trust is answered with untrusted-certificate (then connect the account with accounts.connect_mail to trust it). TorroMail keeps its account. Only the app key may use it.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
