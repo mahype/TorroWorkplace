@@ -117,7 +117,7 @@ Schrift (3,9:1); der heutige Akzent `#AF3A03` (6,1:1) bleibt, sein Kopfkommentar
   `TORRO_LANG=de`.
 
 ### FS.3 Acht Schemata hell und dunkel: One bis Tomorrow
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** FS.2 · **Dateien:** `color-schemes/{one,primer,rose-pine,selenized,slate,tango,tokyo-night,tomorrow}/{color-scheme.toml,LICENSE.txt}` (neu), `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md`
 - Nach den gemeinsamen Regeln und der Tabelle; Primer und One ohne Marken in `[about]`; Tango mit dem Hinweis auf die
   gemeinfreie Palette statt Lizenztext.

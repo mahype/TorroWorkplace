@@ -1,0 +1,63 @@
+# Primer – after the open Primer primitives (MIT), github.com/primer/primitives (@primer/primitives 11.10.0,
+# dist/css/functional/themes/light.css and dark.css), task FS.3, issue #292. Light is its light theme, dark its
+# dark theme; fgColor-accent as the accent, the status colours from fgColor-success, -attention, -danger and -done,
+# no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Primer"
+version = "1.0.0"
+author = "Torro, after Primer (MIT)"
+description = "The Primer colour scheme: crisp neutral greys, blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: error #F85149 → #F96760.
+[colors.dark]
+bg = "#0D1117"
+panel = "#151B23"
+raised = "#1D232B"
+hover = "#21272F"
+selected = "#292F37"
+menu = "#222830"
+text = "#F0F6FC"
+text_2 = "#C5CCD3"
+text_3 = "#9198A1"
+line = "#F0F6FC12"
+line_strong = "#F0F6FC22"
+line_selected = "#F0F6FC4F"
+focus_ring = "#4493F8"
+accent = "#4493F8"
+on_accent = "#0D1117"
+ok = "#3FB950"
+attention = "#D29922"
+error = "#F96760"
+merged = "#AB7DF8"
+calendar = ["#4493F8", "#3FB950", "#DB6D28", "#DB61A2", "#07ACE4"]
+night = "#11161D"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+[colors.light]
+bg = "#FFFFFF"
+panel = "#F6F8FA"
+raised = "#F1F3F5"
+hover = "#ECEEF1"
+selected = "#E5E7E9"
+menu = "#FFFFFF"
+text = "#1F2328"
+text_2 = "#394048"
+text_3 = "#59636E"
+line = "#1F232814"
+line_strong = "#1F232826"
+line_selected = "#1F232859"
+focus_ring = "#0969DA"
+accent = "#0969DA"
+on_accent = "#FFFFFF"
+ok = "#1A7F37"
+attention = "#9A6700"
+error = "#D1242F"
+merged = "#8250DF"
+calendar = ["#0969DA", "#1A7F37", "#BC4C00", "#BF3989", "#006A80"]
+night = "#FBFCFC"

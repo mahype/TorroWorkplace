@@ -1,0 +1,67 @@
+# Selenized – after the open Selenized colour scheme by Jan Warchoł (MIT), github.com/jan-warchol/selenized
+# (the-values.md), task FS.3, issue #292. Light is Selenized light, dark is Selenized dark; the blue accent, no
+# logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+
+[about]
+name = "Selenized"
+version = "1.0.0"
+author = "Torro, after Selenized by Jan Warchoł (MIT)"
+description = "The Selenized colour scheme: Solarized refined, blue accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: panel #184956 → #174754 (for the standard's category colours, which a scheme cannot set); text_3
+# #72898F → #B3C3C5; accent #4695F7 → #5EA3F8; attention #DBB32D → #E0BD48; error #FA5750 → #FDABA8.
+# Its fg_0 #ADBCBC does not reach 4.5:1 on the surfaces derived from bg_1 #184956: text is its brighter fg_1 #CAD8D9.
+[colors.dark]
+bg = "#103C48"
+panel = "#174754"
+raised = "#1D4C59"
+hover = "#214F5B"
+selected = "#275460"
+menu = "#22505C"
+text = "#CAD8D9"
+text_2 = "#C0CFD0"
+text_3 = "#B3C3C5"
+line = "#CAD8D912"
+line_strong = "#CAD8D922"
+line_selected = "#CAD8D959"
+focus_ring = "#5EA3F8"
+accent = "#5EA3F8"
+on_accent = "#103C48"
+ok = "#75B938"
+attention = "#E0BD48"
+error = "#FDABA8"
+merged = "#AF88EB"
+calendar = ["#4695F7", "#75B938", "#ED8649", "#F275BE", "#41C7B9"]
+night = "#14424E"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: panel #ECE3CC → #ECE4CD (for the standard's category colours, which a scheme cannot set); text_3
+# #909995 → #506064; attention #C25D1E → #C15C1E; calendar (cyan) #009C8F → #009184.
+# Its fg_0 #53676D does not reach 4.5:1 on the surfaces derived from bg_1 #ECE3CC: text is its darker fg_1 #3A4D53.
+[colors.light]
+bg = "#FBF3DB"
+panel = "#ECE4CD"
+raised = "#E8E0CA"
+hover = "#E4DDC8"
+selected = "#DED8C3"
+menu = "#FBF3DB"
+text = "#3A4D53"
+text_2 = "#44565B"
+text_3 = "#506064"
+line = "#3A4D5314"
+line_strong = "#3A4D5326"
+line_selected = "#3A4D535F"
+focus_ring = "#0072D4"
+accent = "#0072D4"
+on_accent = "#FFFFFF"
+ok = "#489100"
+attention = "#C15C1E"
+error = "#D2212D"
+merged = "#8762C6"
+calendar = ["#0072D4", "#489100", "#C25D1E", "#CA4898", "#009184"]
+night = "#F3ECD4"

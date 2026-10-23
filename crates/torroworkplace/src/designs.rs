@@ -271,6 +271,62 @@ const COLOR_SCHEMES: &[Example] = &[
             example_file!("color-schemes", "nightfox", "LICENSE.txt"),
         ],
     },
+    Example {
+        id: "one",
+        files: &[
+            example_file!("color-schemes", "one", "color-scheme.toml"),
+            example_file!("color-schemes", "one", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "primer",
+        files: &[
+            example_file!("color-schemes", "primer", "color-scheme.toml"),
+            example_file!("color-schemes", "primer", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "rose-pine",
+        files: &[
+            example_file!("color-schemes", "rose-pine", "color-scheme.toml"),
+            example_file!("color-schemes", "rose-pine", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "selenized",
+        files: &[
+            example_file!("color-schemes", "selenized", "color-scheme.toml"),
+            example_file!("color-schemes", "selenized", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "slate",
+        files: &[
+            example_file!("color-schemes", "slate", "color-scheme.toml"),
+            example_file!("color-schemes", "slate", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "tango",
+        files: &[
+            example_file!("color-schemes", "tango", "color-scheme.toml"),
+            example_file!("color-schemes", "tango", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "tokyo-night",
+        files: &[
+            example_file!("color-schemes", "tokyo-night", "color-scheme.toml"),
+            example_file!("color-schemes", "tokyo-night", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "tomorrow",
+        files: &[
+            example_file!("color-schemes", "tomorrow", "color-scheme.toml"),
+            example_file!("color-schemes", "tomorrow", "LICENSE.txt"),
+        ],
+    },
 ];
 
 /// The examples of `part`.
@@ -543,8 +599,24 @@ mod tests {
     const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
     /// The colour schemes after free palettes that bring no logo of their own (issue #292): the suite
     /// draws its "T" on their accent.
-    const WITHOUT_LOGO: [&str; 8] =
-        ["ayu", "base16", "edge", "flexoki", "iceberg", "kanagawa", "night-owl", "nightfox"];
+    const WITHOUT_LOGO: [&str; 16] = [
+        "ayu",
+        "base16",
+        "edge",
+        "flexoki",
+        "iceberg",
+        "kanagawa",
+        "night-owl",
+        "nightfox",
+        "one",
+        "primer",
+        "rose-pine",
+        "selenized",
+        "slate",
+        "tango",
+        "tokyo-night",
+        "tomorrow",
+    ];
 
     #[test]
     fn the_embedded_files_are_the_whole_example() {
