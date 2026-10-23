@@ -407,7 +407,7 @@ Mail-Darstellung um. Das Feld `colorScheme` der Designs entfällt
 es optional war und bei jedem Design ohne Vorschlag fehlte. `density` und `darkOnly` sind neu und haben Vorgaben
 (`balanced`, `false`), ein neuer Client liest also auch einen älteren Dienst (verträglich).
 `update_settings` ohne `font` oder `colorScheme` behält die gespeicherten. Die Teile enthalten keine Geheimnisse,
-darum genügt `Read` zum Auflisten. Name, Familie, Version, Autor, Beschreibung, Lizenz, die vorgeschlagenen ids und
+darum genügt `Read` zum Auflisten. Name, Familie, Version, Autor, Beschreibung, Lizenz, die vorgeschlagene Schrift-id und
 alles in `problems` (Dateinamen, Schlüssel, Meldungen des Parsers) sind Text aus dem Ordner, ebenso die Gründe in einer
 Ablehnung von `set_setting`: Die Beschreibungen der Tools sagen Agenten, ihn als Daten zu behandeln, nie als
 Anweisung. Die Apps folgen den drei Einstellungen wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem

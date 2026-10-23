@@ -516,7 +516,7 @@ eine neue Schrift vorschlagen, warten auf L.24.
   und dunkel.
 
 ### L.25 Design Compact
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Compact ist eines der drei eingebauten Designs (L.31).
 - **Modell:** Opus · **Braucht:** L.23 · **Dateien:** `designs/compact/` (`design.toml`, `preview.png`),
   `crates/torroworkplace/src/designs.rs`
 - Viel auf einen Blick. Richtwerte aus der Tabelle im Konzept (Text 12/16, Zeile 32, Seitenleiste 24, Knöpfe 24/28/32,
@@ -528,21 +528,21 @@ eine neue Schrift vorschlagen, warten auf L.24.
   Größenklassen, mit Inter und mit der breitesten Beispielschrift, mit Torro und Nord, hell und dunkel.
 
 ### L.26 Design Airy
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): kein Comfort-Design; ein luftigeres Design kann später als eigenes Issue kommen.
 - **Modell:** Opus · **Braucht:** L.23 · **Dateien:** `designs/airy/`, `crates/torroworkplace/src/designs.rs`
 - Viel Luft. Richtwerte aus dem Konzept (Text 14/22, Lesetext 16/26, Zeile 48, Seitenleiste 32 und 260 breit,
   Seitenrand 32 × 40). Seitenleiste des Kalenders in niedrigen Fenstern prüfen (siehe Plex).
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design airy`.
 
 ### L.27 Design Clear
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Standard, Compact und Console sind die einzigen mitgelieferten Designs.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/clear/`, `crates/torroworkplace/src/designs.rs`
 - Gut lesbar: Text 16/24, Klickziele bis 44, schlägt `font = "hyperlegible"` vor. Passt die Seitenleiste des Kalenders
   in 760 Höhe nicht mehr, anhalten und fragen (rollende Seitenleiste wäre eine eigene Aufgabe in `torro-gui`).
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design clear --font hyperlegible`.
 
 ### L.28 Design Folio
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Standard, Compact und Console sind die einzigen mitgelieferten Designs.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/folio/`, `crates/torroworkplace/src/designs.rs`
 - Zum Lesen: Lesetext 16/26, `content_max` 680, `title` und `headline` in der Rolle `heading`, schlägt
   `font = "source"` vor.
@@ -550,13 +550,13 @@ eine neue Schrift vorschlagen, warten auf L.24.
   langen Mail ansehen.
 
 ### L.29 Design Pebble
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): Standard, Compact und Console sind die einzigen mitgelieferten Designs.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/pebble/`, `crates/torroworkplace/src/designs.rs`
 - Weich: Radien 8/12/16/16, Knöpfe als Pillen, Zeile 44, schlägt `font = "nunito"` vor.
 - **Oberfläche/API/MCP und Abnahme:** wie L.25, mit `--design pebble --font nunito`.
 
 ### L.30 Design Square
-- [ ] erledigt
+- **Entfällt** (Issue #291, 2026-10-23): aufgegangen in Console (L.31), das JetBrains Mono vorschlägt.
 - **Modell:** Opus · **Braucht:** L.24 · **Dateien:** `designs/square/`, `crates/torroworkplace/src/designs.rs`
 - Eckig und dicht wie ein Terminal: Radien 0/0/2/2, Zeile 36, Seitenleiste 26, schlägt `font = "jetbrains-mono"` vor.
   `axis` gegen die Höchstbreite der Ziffern (L.19).
