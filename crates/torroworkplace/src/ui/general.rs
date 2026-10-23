@@ -1883,8 +1883,9 @@ fn base64(bytes: &[u8]) -> String {
 /// buttons stay where they are; a button that would change nothing is off.
 fn zoom_control<'a>(level: Zoom) -> Element<'a, Message> {
     let press = |step: Step| (step.apply(level) != level).then_some(Message::Zoom(step));
-    let width = typo::text_width(&zoom::label(Zoom::MAX), typo::body().tabular());
-    let value = container(typo::text(typo::body().tabular(), zoom::label(level))).center_x(width);
+    let width = zoom_value_width();
+    let value = typo::text(typo::body().tabular(), zoom::label(level)).wrapping(Wrapping::None);
+    let value = container(value).center_x(width);
     row![
         widgets::icon_button(Icon::Minus, tr("Zoom out"), press(Step::Out)),
         value,
@@ -1894,6 +1895,12 @@ fn zoom_control<'a>(level: Zoom) -> Element<'a, Message> {
     .spacing(space::xs())
     .align_y(Alignment::Center)
     .into()
+}
+
+/// The width of the zoom's value: the estimate of the widest level ("200%", German "200 %") rounded
+/// up by [`space::xs()`] – an estimate a hair short broke "100 %" at its space (issue #291).
+fn zoom_value_width() -> f32 {
+    typo::text_width(&zoom::label(Zoom::MAX), typo::body().tabular()).ceil() + space::xs()
 }
 
 #[cfg(test)]
@@ -2106,6 +2113,19 @@ mod tests {
         assert_eq!(suggested_tip(Some("Compact"), Some("1.2.0".into())), Some(format!("{why}\n1.2.0")));
         assert_eq!(suggested_tip(None, Some("1.2.0".into())), Some("1.2.0".into()));
         assert_eq!(suggested_tip(Some("Compact"), None), Some(why));
+    }
+
+    /// Issue #291 (review of the three designs): the zoom's value has room for every level with
+    /// `xs` to spare – the estimate of the widest is rounded up –, so "100 %" (German, with a space)
+    /// does not break into two lines; the value never wraps anyway.
+    #[test]
+    fn the_zoom_value_has_room_for_every_level() {
+        for step in Zoom::STEPS {
+            let level = Zoom::nearest(f64::from(step) / 100.0);
+            let label = zoom::label(level);
+            assert!(typo::text_width(&label, typo::body().tabular()) + space::xs() <= zoom_value_width(), "{label}");
+        }
+        drop(zoom_control(Zoom::DEFAULT));
     }
 
     /// Task L.37: choosing a design keeps what was drawn; the reload that carries it names what the
