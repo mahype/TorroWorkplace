@@ -926,7 +926,9 @@ impl Editor {
     /// title typed for "This event" does not land on the whole series because "All" was clicked
     /// before the save (the review of PR #294). While a save is under way such a change cannot go out
     /// yet, so the scope stays until the answer; a form that cannot be saved yet (a date half typed)
-    /// keeps the scope too and shows its problem, as Enter does.
+    /// keeps the scope too and shows its problem, as Enter does. A form whose save failed
+    /// ([`Editor::save_failed`]) goes out again with the old scope, else the next change would carry
+    /// it to the new one (the review of PR #296); a retry that ends the series keeps "All".
     fn choose_scope(&mut self, scope: SeriesScope) -> Action {
         if scope != SeriesScope::Occurrence && self.rule_unknown() {
             return Action::None;
@@ -936,15 +938,25 @@ impl Editor {
         }
         let switching = scope != self.scope;
         let mut pending = Action::None;
-        if switching && self.changed() {
+        if switching && self.form != self.base {
             if self.saving {
-                return Action::None;
+                // Only what was typed after the save under way waits; the sent form is decided by
+                // the answer, and a failure takes the band back ([`Editor::save_failed`]).
+                if self.changed() {
+                    return Action::None;
+                }
+            } else {
+                if let Err(problem) = self.check() {
+                    self.attempted = true;
+                    return problem.input().map_or(Action::None, Action::Focus);
+                }
+                // Not saving, `sent` is the form of a failed save: it was never stored.
+                self.sent = None;
+                pending = self.request_save(false);
+                if self.ending_series() {
+                    return pending;
+                }
             }
-            if let Err(problem) = self.check() {
-                self.attempted = true;
-                return problem.input().map_or(Action::None, Action::Focus);
-            }
-            pending = self.request_save(false);
         }
         self.scope = scope;
         self.reset = 0;
@@ -3409,6 +3421,12 @@ mod tests {
         let _ = saves_with(&mut failing, Message::Scope(SeriesScope::Series));
         failing.save_failed();
         assert_eq!(failing.scope, SeriesScope::Occurrence);
+        // "All" clicked after the failure sends the failed change again with "This event" first, so
+        // the next change does not carry it to the whole series (the review of PR #296).
+        let (retried, scope) = saves_with(&mut failing, Message::Scope(SeriesScope::Series));
+        assert_eq!((retried.location.as_deref(), scope), (Some("Room 12"), Some(SeriesScope::Occurrence)));
+        failing.save_failed();
+        assert_eq!(failing.scope, SeriesScope::Occurrence);
         failing.update(Message::Location("Room 13".into()));
         assert_eq!(saves_with(&mut failing, Message::Flush).1, Some(SeriesScope::Occurrence));
     }
@@ -3470,9 +3488,16 @@ mod tests {
         assert_eq!((ending.repeat.is_none(), ending.recurring, scope), (true, false, Some(SeriesScope::Series)));
         assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
         assert_eq!(editor.scope, SeriesScope::Series, "the scope stays while the series is being ended");
-        // The save failed: now the scope may change, and "Never" goes with it.
+        // The save failed: another scope sends the end again with "All" first, and the scope stays
+        // while it is under way (the review of PR #296).
         editor.save_failed();
-        editor.update(Message::Scope(SeriesScope::Following));
+        let (again, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Following));
+        assert_eq!((again.repeat.is_none(), scope), (true, Some(SeriesScope::Series)));
+        assert_eq!(editor.scope, SeriesScope::Series);
+        editor.save_failed();
+        // With the rule picked again nothing is pending: now the scope may change.
+        editor.update(Message::PickRepeat(occurrence().repeat.clone()));
+        assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
         assert_eq!(editor.scope, SeriesScope::Following);
         assert_eq!(editor.form.repeat.as_ref(), occurrence().repeat.as_deref(), "the stored rule is back");
         editor.update(Message::Location("Room 8".into()));
