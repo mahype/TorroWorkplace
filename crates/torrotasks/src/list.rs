@@ -30,7 +30,7 @@
 //! **Designs** (issue #291, draft of task L.32 `docs/prototypes/designs/listen.html`): the cells stand
 //! in the same places in every design; `widgets::list_row` draws the hairlines (Standard, Compact) or
 //! none (Console) and the chosen row with the accent bar or as a whole row in the accent ([`fills`]:
-//! then the list's dot and the due date in `on_accent` too). Heights, paddings and gaps are the
+//! then the list's dot, the due date and the urgent square in `on_accent` too). Heights, paddings and gaps are the
 //! design's tokens.
 //!
 //! Empty → an empty state ("Nothing to do"; in a filter list "No matches"). A filter list
@@ -1013,8 +1013,9 @@ fn row_view<'a>(
 /// Whether a row that is `selected` or not is drawn in the accent colour in the list look `look`:
 /// the chosen row of a design with `[list] selection = "fill"` (Console, issue #291). Its text and
 /// icons come out in `on_accent` by themselves (`widgets::list_row`); what has a colour of its own is
-/// drawn in `on_accent` here – the list's dot and the due date, also when overdue – so nothing
-/// coloured stands on the accent (confirmed with the draft of L.32). Status icons keep their colour.
+/// drawn in `on_accent` here – the list's dot and the due date, also when overdue, and the urgent
+/// square ([`urgent_colours`]) – so nothing coloured stands on the accent (confirmed with the draft of
+/// L.32). Status icons keep their colour.
 fn fills(look: ListLook, selected: bool) -> bool {
     selected && look.selection == ListSelection::Fill
 }
@@ -1252,24 +1253,32 @@ fn prio_cell<'a>(priority: Option<u8>) -> Element<'a, Message> {
     }
 }
 
-/// The glyph of a priority, 14 wide: urgent as an orange square with "!", the others as three
-/// bars (none: all dim).
+/// The glyph of a priority, 14 wide: urgent as an orange square with "!" ([`urgent_colours`]), the
+/// others as three bars (none: all dim).
 pub(crate) fn prio_glyph<'a, M: 'a>(prio: Prio) -> Element<'a, M> {
     match prio {
-        Prio::Urgent => container(typo::text(typo::caption(), "!").style(|t: &Theme| text::Style {
-            // The panel colour is dark on the bright orange of dark mode and white on the darker
-            // orange of light mode: readable in both.
-            color: Some(palette(t).panel),
-        }))
+        Prio::Urgent => container(
+            typo::text(typo::caption(), "!").style(|t: &Theme| text::Style { color: Some(urgent_colours(t).1) }),
+        )
         .center(icon::SIZE_SM)
         .style(|t: &Theme| container::Style {
-            background: Some(Background::Color(palette(t).attention_text)),
+            background: Some(Background::Color(urgent_colours(t).0)),
             border: border::rounded(radius::xs()),
             ..container::Style::default()
         })
         .into(),
         other => priority_view(other.level()),
     }
+}
+
+/// The colours of the urgent square drawn in `t`, `(square, "!")`: `attention_text` with the "!" in
+/// `panel` – dark on the bright orange of dark mode, white on the darker orange of light mode. In a row
+/// drawn in the accent colour (Console's chosen row, [`fills`]; its cells are drawn in
+/// `theme::on_accent_theme`, which stays itself) the square is `on_accent` with the "!" in `accent`: a
+/// coloured mark on the accent would not read (issue #291, as the list's dot and the due date).
+fn urgent_colours(t: &Theme) -> (Color, Color) {
+    let p = palette(t);
+    if theme::on_accent_theme(t) == *t { (p.on_accent, p.accent) } else { (p.attention_text, p.panel) }
 }
 
 /// The title on one line; a done task struck through in `text_3`.
@@ -1754,6 +1763,20 @@ mod tests {
         let filter = Filter::All;
         let _ = view(ListData { selected: Some(0), ..data(&todos, &filter, false) });
         assert_eq!(due_min(), size::axis_narrow(), "not the header's height");
+    }
+
+    /// Issue #291 (review of the three designs): the urgent square keeps its orange with a "!" in the
+    /// panel's colour, but in the chosen row drawn in the accent (Console) it turns `on_accent` with
+    /// the "!" in `accent` – an orange square on red would not read; in light and dark mode.
+    #[test]
+    fn the_urgent_square_turns_on_accent_in_a_filled_row() {
+        for window in [theme::theme(), theme::light()] {
+            let p = palette(&window);
+            assert_eq!(urgent_colours(&window), (p.attention_text, p.panel), "elsewhere: orange with \"!\"");
+            let on = theme::on_accent_theme(&window);
+            assert_eq!(urgent_colours(&on), (p.on_accent, p.accent), "on the accent: on_accent with \"!\"");
+            assert!(p.accent.relative_contrast(p.on_accent) >= 4.5, "the \"!\" reads on its square");
+        }
     }
 
     #[test]
