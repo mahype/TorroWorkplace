@@ -151,7 +151,7 @@ aus einem Guss wirkt:
 - **Abstände nach Rolle** (`torro_gui::layout`): `layout::inset()` 0 (bündiger Inhalt; > 0 wäre der Rand
   einer eingesetzten Inhaltsfläche), `page_padding()` 24 × 24 (Innenrand von Seiten), `panel_padding()`
   16 × 16 (Paneele, schwebende Karten), `row_padding()` 18 × 24 (Listen- und Einstellungszeilen: Zeilen
-  fester Höhe nehmen nur die Seiten, mehrzeilige Zeilen des Eingangs auch oben und unten),
+  fester Höhe, auch die mehrzeiligen des Eingangs, nehmen nur die Seiten und zentrieren ihren Inhalt),
   `control_padding()` 0 × 12 (Knöpfe, `style::button_padding()`), `section_gap()` 24 (zwischen Gruppen
   und Abschnitten), `item_gap()` 10 (innerhalb einer Gruppe), `reading_padding()` 52 × 64 (die Mail im
   Leser, in der Lesespalte `size::reading_max()`). Nur dort, wo die Rolle genau passt; alles andere
@@ -167,8 +167,8 @@ aus einem Guss wirkt:
 | `size::command()` | 46 | Bleibt im Paket-Format (E14, Entscheidung 9), kein Baustein nutzt es mehr: die Befehlsleiste des Lesers (E11.1) ist mit #241 entfernt |
 | `size::pill()` | 40 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
 | `size::row()` | 48 | Listenzeile (Aufgaben, `widgets::list_row`) |
-| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen, oben und unten `row_padding` (E3.9, E11.1); in Console eine Zeile 24 |
-| `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
+| `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen à 22, in der Höhe zentriert mit je 17 Luft – die Zeile nimmt von `row_padding` nur die Seiten (E3.9, E11.1); in Console eine Zeile 24 |
+| `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text – zwei Zeilen à 22, zentriert mit je 18 Luft (E3.9) |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
 | `size::avatar()` / `size::avatar_lg()` | 40 / 48 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die Mail-Zeile hat ihren eigenen (`[list] avatar`) |
 | `size::tile_sm()` / `size::tile()` / `size::tile_lg()` | 20 / 28 / 36 | Quellen-Kachel (`widgets::source_tile`, E8.2): neben Wörtern / Hinweiszeile, Spaltenkopf / Anhang, Kopf einer App-Karte |
