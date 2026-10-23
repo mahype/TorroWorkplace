@@ -34,6 +34,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
@@ -665,6 +666,10 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
     }
 }
 
+/// How many attachments this process has placed, for the name of the file each is written to
+/// before it is renamed into place ([`DemoSource::mail_attachment`]).
+static PLACED: AtomicU64 = AtomicU64::new(0);
+
 /// The pictures of the demo's HTML mail, by Content-ID: the shop's newsletter (`m:p2`) shows them
 /// from inline parts (`cid:`), so it draws without the network. Abstract shapes and gradients, the
 /// self-made samples of `torro-htmlview`'s tests.
@@ -1193,9 +1198,16 @@ impl DemoSource {
             Some(bytes) => bytes.to_vec(),
             None => attachment_text(&name).into_bytes(),
         };
-        std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&path, bytes))
-            .map_err(|err| InboxError::Other(err.to_string()))?;
+        // Written aside and renamed into place: tests (and other checkouts on the machine) place the
+        // same file at once, and `write` empties it first, so a reader could find it half written.
+        let aside = dir.join(format!(".{name}.{}-{}", std::process::id(), PLACED.fetch_add(1, Ordering::Relaxed)));
+        let placed = std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&aside, bytes))
+            .and_then(|()| std::fs::rename(&aside, &path));
+        if let Err(err) = placed {
+            let _ = std::fs::remove_file(&aside);
+            return Err(InboxError::Other(err.to_string()));
+        }
         Ok(path)
     }
 
@@ -1590,6 +1602,27 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
+    }
+
+    /// Several tests (and the tests of other checkouts) place the same demo picture at once: a
+    /// reader never finds the file empty or half written.
+    #[test]
+    fn a_placed_attachment_is_never_read_half_written() {
+        let demo = std::sync::Arc::new(DemoSource::new(now()));
+        let mail = demo.get_mail("m:p2").expect("the newsletter");
+        let part = mail.attachments.into_iter().find(|a| a.content_id.is_some()).expect("a picture").part;
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let (demo, part) = (std::sync::Arc::clone(&demo), part.clone());
+                std::thread::spawn(move || {
+                    (0..100).all(|_| {
+                        let path = demo.mail_attachment("m:p2", &part).expect("placed");
+                        std::fs::read(path).is_ok_and(|bytes| bytes.starts_with(b"\x89PNG"))
+                    })
+                })
+            })
+            .collect();
+        assert!(workers.into_iter().all(|worker| worker.join().unwrap_or(false)), "always the whole picture");
     }
 
     fn open_in(lane: Lane) -> ItemFilter {
