@@ -46,13 +46,15 @@ static WRITING: Mutex<()> = Mutex::new(());
 pub struct SettingsStore {
     /// `None` without a home directory: reads give the defaults, changes fail.
     file: Option<PathBuf>,
-    /// The folder of the design packs (`torro_core::design::dir`), where a chosen design must be
-    /// found and valid; `None` without a home directory, then only the standard can be chosen.
+    /// The folder of the design packs (`torro_core::design::dir`), where a chosen design other than
+    /// the built-in ones (`torro_core::design::BUILT_IN_IDS`) must be found and valid; `None` without
+    /// a home directory, then only the built-in designs can be chosen.
     designs: Option<PathBuf>,
-    /// The folder of the fonts (`torro_core::design::font_dir`), like [`SettingsStore::designs`].
+    /// The folder of the fonts (`torro_core::design::font_dir`), where a chosen font must be found and
+    /// valid; `None` without a home directory, then only the standard can be chosen.
     fonts: Option<PathBuf>,
     /// The folder of the colour schemes (`torro_core::design::color_scheme_dir`), like
-    /// [`SettingsStore::designs`].
+    /// [`SettingsStore::fonts`].
     color_schemes: Option<PathBuf>,
     /// Whether a change of `start_at_login` is applied to the system's login item. Only the
     /// daemon's store does: the entry points at the running program, and from a test that is the
@@ -96,7 +98,7 @@ impl SettingsStore {
     }
 
     /// The folder of the design packs, for `settings.list_designs`; `None` without a home
-    /// directory (only the standard exists then).
+    /// directory (only the built-in designs exist then).
     pub fn designs(&self) -> Option<&Path> {
         self.designs.as_deref()
     }
@@ -254,12 +256,21 @@ impl SettingsStore {
     /// stored design or does not load valid; else the design's font when that font loads valid
     /// (the same check as choosing it, [`SettingsStore::check_part`]) and its mail view, each only
     /// when it differs from the stored one. Only these two: never the colour scheme, never words
-    /// from the design's folder.
+    /// from the design's folder. A built-in design suggests without a designs folder too (it loads
+    /// without the disk); its font then only when that font loads, which without a fonts folder only
+    /// the standard does.
     fn suggestions_against(&self, settings: &Settings, id: &str) -> DesignSuggestions {
         if settings.design == id {
             return DesignSuggestions::default();
         }
-        let Some(chosen) = self.designs().and_then(|dir| design::load(dir, id).ok()) else {
+        let chosen = match self.designs() {
+            Some(dir) => design::load(dir, id).ok(),
+            // `design::load` gives a built-in design without touching the disk; any other id would be
+            // read relative to the working directory, so it is not looked up.
+            None if design::BUILT_IN_IDS.contains(&id) => design::load(Path::new(""), id).ok(),
+            None => None,
+        };
+        let Some(chosen) = chosen else {
             return DesignSuggestions::default();
         };
         let font = chosen.about.font.filter(|font| *font != settings.font && self.check_part(Part::Font, font).is_ok());
@@ -402,14 +413,20 @@ impl SettingsStore {
         Ok(())
     }
 
-    /// Whether the design, font or colour scheme `id` can be chosen: the standard, or one in the
-    /// folder of `part` that passes every rule. Otherwise every reason, for the person or agent who
-    /// chose it; an id the folder lacks but another holds also names the key that chooses it there
-    /// (`"nord" is a colour scheme: choose it with the key color_scheme.`, task L.22).
+    /// Whether the design, font or colour scheme `id` can be chosen: the standard, a built-in design
+    /// (`design::BUILT_IN_IDS`, also without a home directory), or one in the folder of `part` that
+    /// passes every rule. Otherwise every reason, for the person or agent who chose it; an id the
+    /// folder lacks but another holds also names the key that chooses it there (`"nord" is a colour
+    /// scheme: choose it with the key color_scheme.`, task L.22).
     fn check_part(&self, part: Part, id: &str) -> Result<(), String> {
         let refused = |reasons: String| format!("the {} {id:?} can't be used: {reasons}", part_name(part));
         let Some(dir) = self.folder(part) else {
-            return match id == design::STANDARD_ID {
+            // The built-in designs need no folder, as `settings.list_designs` shows them valid without one.
+            let built_in = match part {
+                Part::Design => design::BUILT_IN_IDS.contains(&id),
+                Part::Font | Part::ColorScheme => id == design::STANDARD_ID,
+            };
+            return match built_in {
                 true => Ok(()),
                 false => Err(refused(format!("there is no {} folder without a home directory", folder_name(part)))),
             };
@@ -1458,6 +1475,37 @@ mod tests {
         let font_only = DesignSuggestions { font: Some("jetbrains-mono".into()), mail_view: None };
         assert_eq!(store.design_suggestions("console"), font_only, "the mail view is text already");
         assert_eq!(store.current().design, "torro", "looking up changes nothing");
+    }
+
+    /// Issue #291 (review of the three designs): without a home directory there are no folders, but
+    /// the built-in designs need none – `settings.list_designs` shows Compact and Console as valid, so
+    /// they can be chosen and suggest what they suggest; a font they suggest only when it loads, which
+    /// without a fonts folder it never does. Other designs, fonts and colour schemes stay refused.
+    #[test]
+    fn built_in_designs_can_be_chosen_without_a_home_folder() {
+        let store = SettingsStore::without_file();
+        for id in design::BUILT_IN_IDS {
+            assert_eq!(store.check_part(Part::Design, id), Ok(()), "{id} is built in");
+        }
+        assert!(store.check_part(Part::Design, "nord").is_err(), "a design of a folder needs the folder");
+        assert!(store.check_part(Part::Font, "jetbrains-mono").is_err(), "no fonts folder");
+        assert!(store.check_part(Part::ColorScheme, "compact").is_err(), "not a colour scheme");
+        let text_only = DesignSuggestions { font: None, mail_view: Some(MailFormat::Text) };
+        assert_eq!(store.design_suggestions("console"), text_only, "Console's mail view, never its font");
+        assert_eq!(store.design_suggestions("compact"), DesignSuggestions::default());
+        assert_eq!(store.design_suggestions("nord"), DesignSuggestions::default(), "not looked up without a folder");
+
+        // A settings file but no folders (the folders come from another directory than the file): the
+        // choice is stored with its mail view.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore { file: Some(dir.path().join("settings.json")), ..SettingsStore::without_file() };
+        store.set(SettingKey::Design, &json!("console")).expect("built in");
+        let chosen = store.current();
+        assert_eq!(
+            (chosen.design.as_str(), chosen.font.as_str(), chosen.mail_view),
+            ("console", "torro", MailFormat::Text)
+        );
+        assert!(store.set(SettingKey::Design, &json!("nord")).is_err(), "no designs folder");
     }
 
     #[test]
