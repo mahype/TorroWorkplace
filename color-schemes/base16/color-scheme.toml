@@ -38,9 +38,9 @@ night = "#202020"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #B8B8B8 → #5F5F5F; focus_ring #7CAFC2 → #4C8CA4; attention #DC9656 → #C87529; merged
-# #BA8BAF → #AB719D; calendar (blue) #7CAFC2 → #4C8CA4; calendar (green) #A1B56C → #788B46; calendar (orange) #DC9656
-# → #BF7028; calendar (magenta) #BA8BAF → #AB719D; calendar (cyan) #86C1B9 → #498F85.
+# Moved for contrast: text_3 #B8B8B8 → #5F5F5F; accent #7CAFC2 → #447D93; attention #DC9656 → #C87529; merged #BA8BAF
+# → #AB719D; calendar[1] #7CAFC2 → #4C8CA4; calendar[2] #A1B56C → #788B46; calendar[3] #DC9656 → #BF7028; calendar[4]
+# #BA8BAF → #AB719D; calendar[5] #86C1B9 → #498F85.
 [colors.light]
 bg = "#F8F8F8"
 panel = "#E8E8E8"
@@ -54,9 +54,9 @@ text_3 = "#5F5F5F"
 line = "#38383814"
 line_strong = "#38383826"
 line_selected = "#3838385C"
-focus_ring = "#4C8CA4"
-accent = "#7CAFC2"
-on_accent = "#383838"
+focus_ring = "#447D93"
+accent = "#447D93"
+on_accent = "#FFFFFF"
 ok = "#A1B56C"
 attention = "#C87529"
 error = "#AB4642"

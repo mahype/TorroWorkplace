@@ -13,35 +13,36 @@ description = "The One colour scheme: One Light and One Dark, blue accent"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #5C6370 → #939AA7; error #E06C75 → #E37B83.
+# Moved for contrast: text #ABB2BF → #BAC0CB (titles stand out from the muted text, text reads on events); text_3
+# #5C6370 → #959CA8; error #E06C75 → #E47D85.
 # One has no magenta: the fourth calendar colour is its purple (hue-3).
 [colors.dark]
 bg = "#282C34"
 panel = "#21252B"
-raised = "#262A30"
-hover = "#292D33"
-selected = "#2D3238"
-menu = "#292D34"
-text = "#ABB2BF"
-text_2 = "#A0A7B4"
-text_3 = "#939AA7"
-line = "#ABB2BF12"
-line_strong = "#ABB2BF22"
-line_selected = "#ABB2BF56"
+raised = "#262A31"
+hover = "#292E34"
+selected = "#2F3339"
+menu = "#2A2E35"
+text = "#BAC0CB"
+text_2 = "#A9B0BB"
+text_3 = "#959CA8"
+line = "#BAC0CB12"
+line_strong = "#BAC0CB22"
+line_selected = "#BAC0CB54"
 focus_ring = "#61AFEF"
 accent = "#61AFEF"
 on_accent = "#282C34"
 ok = "#98C379"
 attention = "#E5C07B"
-error = "#E37B83"
+error = "#E47D85"
 merged = "#C678DD"
 calendar = ["#61AFEF", "#98C379", "#D19A66", "#C678DD", "#56B6C2"]
 night = "#242830"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #A0A1A7 → #5E6067; accent #4078F2 → #306DF1; error #E45649 → #DF3424; calendar (green)
-# #50A14F → #4A9549.
+# Moved for contrast: text_3 #A0A1A7 → #5E6067; accent #4078F2 → #306DF1; error #E45649 → #DF3424; calendar[2] #50A14F
+# → #4A9549.
 # One has no magenta: the fourth calendar colour is its purple (hue-3).
 [colors.light]
 bg = "#FAFAFA"

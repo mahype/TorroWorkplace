@@ -38,27 +38,27 @@ night = "#222428"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #8E908C → #646462; attention #F5871F → #C66509; calendar (orange) #F5871F → #D46C09;
-# calendar (cyan) #3E999F → #3C959A.
+# Moved for contrast: text #4D4D4C → #494948 (titles stand out from the muted text, text reads on events); text_3
+# #8E908C → #646462; attention #F5871F → #CC6809; calendar[3] #F5871F → #D46C09; calendar[5] #3E999F → #3C959A.
 # Tomorrow has no magenta: the fourth calendar colour is its purple.
 [colors.light]
 bg = "#FFFFFF"
 panel = "#EFEFEF"
 raised = "#EBEBEB"
-hover = "#E8E8E8"
+hover = "#E8E8E7"
 selected = "#E2E2E2"
 menu = "#FFFFFF"
-text = "#4D4D4C"
-text_2 = "#575756"
+text = "#494948"
+text_2 = "#555554"
 text_3 = "#646462"
-line = "#4D4D4C14"
-line_strong = "#4D4D4C26"
-line_selected = "#4D4D4C5F"
+line = "#49494814"
+line_strong = "#49494826"
+line_selected = "#4949485E"
 focus_ring = "#4271AE"
 accent = "#4271AE"
 on_accent = "#FFFFFF"
 ok = "#718C00"
-attention = "#C66509"
+attention = "#CC6809"
 error = "#C82829"
 merged = "#8959A8"
 calendar = ["#4271AE", "#718C00", "#D46C09", "#8959A8", "#3C959A"]

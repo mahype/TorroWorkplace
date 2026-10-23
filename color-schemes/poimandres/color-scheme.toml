@@ -13,27 +13,28 @@ description = "The Poimandres colour scheme: muted blue-grey, mint accent"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #767C9D → #8C92B3; error #D0679D → #D474A5.
+# Moved for contrast: text #A6ACCD → #B9BED8 (titles stand out from the muted text, text reads on events); text_3
+# #767C9D → #8D93B1; error #D0679D → #D475A6.
 # Poimandres has no orange and no violet: the third calendar colour is its yellow, merged its pink.
 [colors.dark]
 bg = "#1B1E28"
 panel = "#1B1E28"
-raised = "#20232E"
-hover = "#232631"
-selected = "#282B37"
-menu = "#232732"
-text = "#A6ACCD"
-text_2 = "#9AA0C1"
-text_3 = "#8C92B3"
-line = "#A6ACCD12"
-line_strong = "#A6ACCD22"
-line_selected = "#A6ACCD54"
+raised = "#21242E"
+hover = "#242732"
+selected = "#292C38"
+menu = "#242833"
+text = "#B9BED8"
+text_2 = "#AEB3CE"
+text_3 = "#8D93B1"
+line = "#B9BED812"
+line_strong = "#B9BED822"
+line_selected = "#B9BED853"
 focus_ring = "#5DE4C7"
 accent = "#5DE4C7"
 on_accent = "#1B1E28"
 ok = "#5DE4C7"
 attention = "#FFFAC2"
-error = "#D474A5"
+error = "#D475A6"
 merged = "#F087BD"
 calendar = ["#ADD7FF", "#5DE4C7", "#FFFAC2", "#F087BD", "#89DDFF"]
 night = "#1B1E28"

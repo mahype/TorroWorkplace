@@ -12,7 +12,8 @@ description = "The Tango colour scheme: aluminium greys, sky blue accent"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #BABDB6 → #BDC0B9; attention #FCAF3E → #FCB03F; error #EF2929 → #F9ABAB.
+# Moved for contrast: text_3 #BABDB6 → #BDC0B9; accent #729FCF → #73A0CF; attention #FCAF3E → #FCB03F; error #EF2929 →
+# #F9ABAB.
 # panel is moved from Aluminium 5 #555753 to #3A3E3F, 30 % of the way from Aluminium 6: on Aluminium 5 neither the
 # muted text nor red text reach 4.5:1 apart from white. Tango has no cyan: the fifth calendar colour is Chocolate 1;
 # merged is Plum 1.
@@ -29,8 +30,8 @@ text_3 = "#BDC0B9"
 line = "#EEEEEC12"
 line_strong = "#EEEEEC22"
 line_selected = "#EEEEEC56"
-focus_ring = "#729FCF"
-accent = "#729FCF"
+focus_ring = "#73A0CF"
+accent = "#73A0CF"
 on_accent = "#2E3436"
 ok = "#8AE234"
 attention = "#FCB03F"
@@ -42,7 +43,7 @@ night = "#34393B"
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
 # Moved for contrast: panel #D3D7CF → #E1E4DE (for the standard's category colours, which a scheme cannot set); text_3
-# #888A85 → #585C5B; calendar (green) #4E9A06 → #4A9106; calendar (cyan) #C17D11 → #B17210.
+# #888A85 → #585C5B; calendar[2] #4E9A06 → #4A9106; calendar[5] #C17D11 → #B17210.
 # Tango has no cyan: the fifth calendar colour is Chocolate 2; merged is Plum 2.
 [colors.light]
 bg = "#EEEEEC"

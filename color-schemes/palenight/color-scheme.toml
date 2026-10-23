@@ -12,26 +12,27 @@ description = "The Palenight colour scheme: soft indigo surfaces, purple accent"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #697098 → #AAB1C6; error #FF5572 → #FF91A4; merged #7E57C2 → #9170CB.
+# Moved for contrast: text #BFC7D5 → #D7DCE5 (titles stand out from the muted text, text reads on events); text_3
+# #697098 → #AEB4C8; error #FF5572 → #FF95A7; merged #7E57C2 → #9170CB.
 [colors.dark]
 bg = "#292D3E"
 panel = "#31364A"
-raised = "#363B4F"
-hover = "#393E52"
-selected = "#3E4357"
-menu = "#3A3F52"
-text = "#BFC7D5"
-text_2 = "#B6BDCE"
-text_3 = "#AAB1C6"
-line = "#BFC7D512"
-line_strong = "#BFC7D522"
-line_selected = "#BFC7D558"
+raised = "#373C4F"
+hover = "#3A3F53"
+selected = "#404558"
+menu = "#3B4053"
+text = "#D7DCE5"
+text_2 = "#C5CAD8"
+text_3 = "#AEB4C8"
+line = "#D7DCE512"
+line_strong = "#D7DCE522"
+line_selected = "#D7DCE556"
 focus_ring = "#C792EA"
 accent = "#C792EA"
 on_accent = "#292D3E"
 ok = "#C3E88D"
 attention = "#FFCB6B"
-error = "#FF91A4"
+error = "#FF95A7"
 merged = "#9170CB"
 calendar = ["#82AAFF", "#C3E88D", "#F78C6C", "#C792EA", "#89DDFF"]
 night = "#2D3244"

@@ -604,7 +604,11 @@ abgeleitet. Wo eine Farbe der Quelle eine Regel verfehlt, ist sie verschoben und
 kommentiert (meist der gedämpfte Text, der 4,5:1 auf allen Flächen braucht). Die Farben der Kategorie-Pillen
 (`category`) gehören nicht zum Format eines Farbschemas; wo die des Standards auf `panel` unter 3:1 bleiben (helle,
 farbige Flächen), ist darum `panel` so weit aufgehellt bzw. abgedunkelt, dass sie es erreichen („Kategoriefarben“ in
-der Tabelle).
+der Tabelle). Über die Regeln des Kerns hinaus gilt für die abgeleiteten Farben (Sichtprüfung #292): Der Text
+steht mindestens 1,5:1 vom gedämpften Text ab, damit Titel und Metadaten unterscheidbar bleiben (sonst wird `text`
+kräftiger); `text` und `text_2` erreichen 4,5:1 auch auf den getönten Terminflächen; der Akzent erreicht als Marke
+(Strich der gewählten Zeile, Heute, Jetzt-Linie) 3:1 auf `panel` und `selected`. Die Tabelle nennt die wichtigsten
+Änderungen; jede verschobene Farbe steht mit altem und neuem Wert im Kommentar des Schemas.
 
 | Name | id | Gruppe | Quelle | Lizenz | Anmerkung |
 |---|---|---|---|---|---|
@@ -622,7 +626,7 @@ der Tabelle).
 | Catppuccin | `catppuccin` | Light and dark | github.com/catppuccin/catppuccin | MIT | dunkel Mocha, hell Latte, Akzent Mauve; mit Logo |
 | Everforest | `everforest` | Light and dark | github.com/sainnhe/everforest | MIT | Waldgrün auf warmen Flächen; mit Logo |
 | Ayu | `ayu` | Light and dark | github.com/ayu-theme/ayu-colors | MIT | hell ayu Light, dunkel ayu Mirage; Akzent dunkel Gelb `#FFCC66`, hell Orange `#F29718` → `#A96609` (trägt sonst weder Weiß noch den Text); gedämpfter Text, Warn- und Fehlerfarbe verschoben |
-| Base16 | `base16` | Light and dark | github.com/tinted-theming/schemes (Default von Chris Kempson) | MIT | Default Light und Default Dark; Akzent Blau `base0D` `#7CAFC2` mit dunkler Schrift; gedämpfter Text `#B8B8B8`/`#585858` stark verschoben, dunkel Rot `#AB4642` → `#D4918F`, im Hellen Fokus, Status und Kalender dunkler |
+| Base16 | `base16` | Light and dark | github.com/tinted-theming/schemes (Default von Chris Kempson) | MIT | Default Light und Default Dark; Akzent Blau `base0D`, hell `#7CAFC2` → `#447D93` (als Marke zu schwach auf dem grauen `panel`); gedämpfter Text `#B8B8B8`/`#585858` stark verschoben, dunkel Rot `#AB4642` → `#D4918F`, im Hellen Fokus, Status und Kalender dunkler |
 | Edge | `edge` | Light and dark | github.com/sainnhe/edge | MIT | Stil light und default; Akzent Blau (hell `#5079BE` → `#4B75BC`); gedämpfter Text, Rot und im Hellen Warnfarbe verschoben; ohne Orange und Magenta (Gelb, Violett im Kalender) |
 | Flexoki | `flexoki` | Light and dark | github.com/kepano/flexoki | MIT | Akzent ohne Vorbild: Blau 600 `#205EA6` hell, 400 `#4385BE` dunkel; Link stephango.com/flexoki in der Beschreibung (Bitte des Autors); nur gedämpfter Text und dunkel Warn-/Fehlerfarbe verschoben |
 | Iceberg | `iceberg` | Light and dark | github.com/cocopon/iceberg.vim | MIT | beide Modi der Quelle, Akzent Blau; hell `panel` `#DCDFE7` → `#E0E2EA` (Kategoriefarben); gedämpfter Text und Rot verschoben |
@@ -631,11 +635,11 @@ der Tabelle).
 | Night Owl | `night-owl` | Light and dark | github.com/sdras/night-owl-vscode-theme | MIT | hell Light Owl (Akzent Türkis `#2AA298` → `#22837B`), dunkel Night Owl (Akzent Blau); gedämpfter Text und Status verschoben |
 | One | `one` | Light and dark | github.com/atom/atom (`one-dark-syntax`, `one-light-syntax`) | MIT | hell One Light, dunkel One Dark, Akzent Blau `hue-2` (hell `#4078F2` → `#306DF1`); Farben der Quelle sind `hsl()`, hier als Hex; gedämpfter Text und Rot verschoben |
 | Primer | `primer` | Light and dark | github.com/primer/primitives | MIT | helles und dunkles Theme der Primitives 11.10.0, Akzent `fgColor-accent`, Status aus `fgColor-success`, `-attention`, `-danger`, `-done`; nur dunkel Rot verschoben |
-| Rosé Pine | `rose-pine` | Light and dark | github.com/rose-pine/palette | MIT | hell Dawn, dunkel Rosé Pine, Akzent Iris (hell `#907AA9` → `#846B9F`); gedämpfter Text ist `subtle`; ohne Grün und Orange (OK ist Pine) |
+| Rosé Pine | `rose-pine` | Light and dark | github.com/rose-pine/palette | MIT | hell Dawn, dunkel Rosé Pine, Akzent Iris (hell `#907AA9` → `#846B9F`); gedämpfter Text ist `subtle`; ohne Grün und Orange (OK dunkel Foam, hell Pine) |
 | Selenized | `selenized` | Light and dark | github.com/jan-warchol/selenized | MIT | Selenized light und dark, Akzent Blau (dunkel `#4695F7` → `#5EA3F8`); Text ist `fg_1` statt `fg_0` (`fg_0` trägt keine 4,5:1 auf den abgeleiteten Flächen); dunkel `panel` `#184956` → `#184855` (Kategoriefarben) |
-| Slate | `slate` | Light and dark | github.com/radix-ui/colors | MIT | Slate-Skala hell und dunkel (Stufen 1, 2, 12, 11), Akzent Blue 9 `#0090FF` mit dunkler Schrift, Status und Kalender Stufe 11; nichts verschoben |
+| Slate | `slate` | Light and dark | github.com/radix-ui/colors | MIT | Slate-Skala hell und dunkel (Stufen 1, 2, 12, 11), Akzent Blue 9 `#0090FF` (hell → `#0077D2`, als Marke zu schwach auf `selected`), Status und Kalender Stufe 11 |
 | Tango | `tango` | Light and dark | Tango Desktop Project | gemeinfrei | Palette mit drei Tönen je Farbe, hell die dunkleren, dunkel die helleren; hell `panel` `#D3D7CF` → `#E1E4DE` (Kategoriefarben), dunkel `panel` Aluminium 5 `#555753` → `#3A3E3F` (sonst weder gedämpfter noch roter Text lesbar); Hinweis auf die gemeinfreie Palette statt Lizenztext |
-| Tokyo Night | `tokyo-night` | Light and dark | github.com/enkia/tokyo-night-vscode-theme | MIT | hell Tokyo Night Light, dunkel Tokyo Night, Akzent Blau; dunkel Text `editor.foreground` `#A9B1D6` und gedämpft der Kommentar `#51597D` der Quelle (der Entwurf hatte `#C0CAF5`/`#565F89` aus einer anderen Portierung); hell `panel` `#D6D8DF` → `#E1E2E7` (Kategoriefarben) |
+| Tokyo Night | `tokyo-night` | Light and dark | github.com/enkia/tokyo-night-vscode-theme | MIT | hell Tokyo Night Light, dunkel Tokyo Night, Akzent Blau; dunkel Text `editor.foreground` `#A9B1D6` und gedämpft der Kommentar `#51597D` der Quelle (der Entwurf hatte `#C0CAF5`/`#565F89` aus einer anderen Portierung), verschoben auf `#838BAF`; hell gedämpft `#707280` → `#575B70`; hell `panel` `#D6D8DF` → `#E1E2E7` (Kategoriefarben) |
 | Tomorrow | `tomorrow` | Light and dark | github.com/chriskempson/tomorrow-theme | MIT | Tomorrow und Tomorrow Night, Akzent Blau; gedämpfter Text, Rot und im Hellen Orange verschoben |
 | Cobalt2 | `cobalt2` | Dark only | github.com/wesbos/cobalt2-vscode | MIT | Akzent Gelb `#FFC600` mit dunkler Schrift; ohne Violett (`merged` ist sein Pink); nur Rot verschoben |
 | Palenight | `palenight` | Dark only | github.com/whizkydee/vscode-palenight-theme | MIT | Akzent Lila `#C792EA`; gedämpfter Text (Kommentar `#697098`) stark aufgehellt, Rot und `merged` verschoben |

@@ -37,6 +37,7 @@ night = "#141517"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: accent #0090FF → #0077D2.
 [colors.light]
 bg = "#FCFCFD"
 panel = "#F9F9FB"
@@ -50,9 +51,9 @@ text_3 = "#60646C"
 line = "#1C202414"
 line_strong = "#1C202426"
 line_selected = "#1C202458"
-focus_ring = "#0090FF"
-accent = "#0090FF"
-on_accent = "#1C2024"
+focus_ring = "#0077D2"
+accent = "#0077D2"
+on_accent = "#FFFFFF"
 ok = "#218358"
 attention = "#CC4E00"
 error = "#CE2C31"

@@ -22,7 +22,7 @@ hover = "#292D38"
 selected = "#2F333D"
 menu = "#292E39"
 text = "#CCCAC2"
-text_2 = "#B4B5B4"
+text_2 = "#B9BAB7"
 text_3 = "#979CA3"
 line = "#CCCAC212"
 line_strong = "#CCCAC222"
@@ -39,29 +39,29 @@ night = "#222733"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: text_3 #828E9F → #656B73; accent #F29718 → #A96609; attention #EBA400 → #A17000; error #F07171 →
-# #E92B2B; calendar (blue) #22A4E6 → #1897D7; calendar (green) #86B300 → #749B00; calendar (orange) #FA8532 → #ED6606;
-# calendar (cyan) #55B4D4 → #309ABE.
+# Moved for contrast: text #5C6166 → #4B4F53 (titles stand out from the muted text, text reads on events); text_3
+# #828E9F → #636A74; accent #F29718 → #A96609; attention #EBA400 → #B47E00; error #F07171 → #EA3737; calendar[1]
+# #22A4E6 → #1897D7; calendar[2] #86B300 → #749B00; calendar[3] #FA8532 → #ED6606; calendar[5] #55B4D4 → #309ABE.
 # ayu has no magenta: the fourth calendar colour is its purple.
 [colors.light]
 bg = "#FCFCFC"
 panel = "#F8F9FA"
 raised = "#F4F5F6"
-hover = "#F1F2F3"
-selected = "#ECEDEE"
+hover = "#F0F1F2"
+selected = "#EAEBED"
 menu = "#FCFCFC"
-text = "#5C6166"
-text_2 = "#60666C"
-text_3 = "#656B73"
-line = "#5C616614"
-line_strong = "#5C616626"
-line_selected = "#5C616661"
+text = "#4B4F53"
+text_2 = "#565B62"
+text_3 = "#636A74"
+line = "#4B4F5314"
+line_strong = "#4B4F5326"
+line_selected = "#4B4F535E"
 focus_ring = "#A96609"
 accent = "#A96609"
 on_accent = "#FFFFFF"
 ok = "#86B300"
-attention = "#A17000"
-error = "#E92B2B"
+attention = "#B47E00"
+error = "#EA3737"
 merged = "#A37ACC"
 calendar = ["#1897D7", "#749B00", "#ED6606", "#A37ACC", "#309ABE"]
 night = "#FAFBFB"

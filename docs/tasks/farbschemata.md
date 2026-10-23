@@ -131,7 +131,7 @@ Schrift (3,9:1); der heutige Akzent `#AF3A03` (6,1:1) bleibt, sein Kopfkommentar
 - **Abnahme:** wie FS.2, für diese fünf, dazu der Test zu `dark_only`.
 
 ### FS.5 Sichtprüfung und Abschluss
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** FS.4 · **Dateien:** `docs/tasks/farbschemata.md`, Farbwerte in
   `color-schemes/<id>/color-scheme.toml` nur, falls die Sichtprüfung einen Befund ergibt
 - Sichtprüfung (`torro-design-review`) je neues Schema, hell und dunkel (nur dunkel: einmal): `TORRO_DATA_HOME` auf

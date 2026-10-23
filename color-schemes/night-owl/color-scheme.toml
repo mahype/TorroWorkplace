@@ -39,7 +39,7 @@ night = "#021424"
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
 # Moved for contrast: text_3 #989FB1 → #616376; accent #2AA298 → #22837B; attention #E0AF02 → #AB8602; error #DE3D3B →
-# #DE3B39; calendar (orange) #E0AF02 → #A88402; calendar (cyan) #2AA298 → #27988E.
+# #DE3B39; calendar[3] #E0AF02 → #A88402; calendar[5] #2AA298 → #27988E.
 # Light Owl has no orange: the third calendar colour is its yellow.
 [colors.light]
 bg = "#FBFBFB"
