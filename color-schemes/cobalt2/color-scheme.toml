@@ -1,0 +1,38 @@
+# Cobalt2 – after the open Cobalt2 theme by Wes Bos and Roberto Achar (MIT), github.com/wesbos/cobalt2-vscode
+# (theme/cobalt2.json), task FS.4, issue #292. Dark only; the yellow accent, no logo of its own.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+dark_only = true
+
+[about]
+name = "Cobalt2"
+version = "1.0.0"
+author = "Torro, after Cobalt2 by Wes Bos and Roberto Achar (MIT)"
+description = "The Cobalt2 colour scheme: deep blue surfaces, yellow accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: error #FF628C → #FF6D94.
+# Cobalt2 has no violet: merged takes its pink.
+[colors.dark]
+bg = "#193549"
+panel = "#15232D"
+raised = "#1D2B34"
+hover = "#222F39"
+selected = "#2A3740"
+menu = "#23303A"
+text = "#FFFFFF"
+text_2 = "#D9D9D9"
+text_3 = "#AAAAAA"
+line = "#FFFFFF12"
+line_strong = "#FFFFFF22"
+line_selected = "#FFFFFF4F"
+focus_ring = "#FFC600"
+accent = "#FFC600"
+on_accent = "#193549"
+ok = "#3AD900"
+attention = "#FF9D00"
+error = "#FF6D94"
+merged = "#FB94FF"
+calendar = ["#0088FF", "#3AD900", "#FF9D00", "#FB94FF", "#80FCFF"]
+night = "#172C3B"

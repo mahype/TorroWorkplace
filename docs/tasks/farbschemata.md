@@ -124,7 +124,7 @@ Schrift (3,9:1); der heutige Akzent `#AF3A03` (6,1:1) bleibt, sein Kopfkommentar
 - **Abnahme:** wie FS.2, für diese acht.
 
 ### FS.4 Fünf Schemata nur dunkel
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** FS.3 · **Dateien:** `color-schemes/{cobalt2,palenight,poimandres,sonokai,synthwave-84}/{color-scheme.toml,LICENSE.txt}` (neu), `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md`
 - Nach den gemeinsamen Regeln, mit `dark_only = true` (#291, L.31) und nur `[colors.dark]`.
 - Test: die fünf haben `ColorScheme::dark_only`, alle anderen mitgelieferten nicht.

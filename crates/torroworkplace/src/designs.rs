@@ -327,6 +327,41 @@ const COLOR_SCHEMES: &[Example] = &[
             example_file!("color-schemes", "tomorrow", "LICENSE.txt"),
         ],
     },
+    Example {
+        id: "cobalt2",
+        files: &[
+            example_file!("color-schemes", "cobalt2", "color-scheme.toml"),
+            example_file!("color-schemes", "cobalt2", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "palenight",
+        files: &[
+            example_file!("color-schemes", "palenight", "color-scheme.toml"),
+            example_file!("color-schemes", "palenight", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "poimandres",
+        files: &[
+            example_file!("color-schemes", "poimandres", "color-scheme.toml"),
+            example_file!("color-schemes", "poimandres", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "sonokai",
+        files: &[
+            example_file!("color-schemes", "sonokai", "color-scheme.toml"),
+            example_file!("color-schemes", "sonokai", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "synthwave-84",
+        files: &[
+            example_file!("color-schemes", "synthwave-84", "color-scheme.toml"),
+            example_file!("color-schemes", "synthwave-84", "LICENSE.txt"),
+        ],
+    },
 ];
 
 /// The examples of `part`.
@@ -597,8 +632,8 @@ mod tests {
     const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
     /// The six examples that are only a colour scheme (task L.20).
     const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
-    /// The colour schemes after free palettes that bring no logo of their own (issue #292): the suite
-    /// draws its "T" on their accent.
+    /// The colour schemes after free palettes in light and dark (issue #292). They bring no logo of their
+    /// own, as the dark-only ones: the suite draws its "T" on their accent.
     const WITHOUT_LOGO: [&str; 16] = [
         "ayu",
         "base16",
@@ -617,6 +652,8 @@ mod tests {
         "tokyo-night",
         "tomorrow",
     ];
+    /// The colour schemes after free palettes that are only dark (issue #292, `dark_only`).
+    const DARK_ONLY: [&str; 5] = ["cobalt2", "palenight", "poimandres", "sonokai", "synthwave-84"];
 
     #[test]
     fn the_embedded_files_are_the_whole_example() {
@@ -668,7 +705,8 @@ mod tests {
         };
         assert!(examples(Part::Design).is_empty(), "no example designs since issue #291");
         assert_eq!(listed(Part::Font), COMPLETE);
-        let mut schemes: Vec<&str> = COMPLETE.iter().chain(&SCHEMES_ONLY).chain(&WITHOUT_LOGO).copied().collect();
+        let mut schemes: Vec<&str> =
+            COMPLETE.iter().chain(&SCHEMES_ONLY).chain(&WITHOUT_LOGO).chain(&DARK_ONLY).copied().collect();
         schemes.sort_unstable();
         assert_eq!(listed(Part::ColorScheme), schemes);
         for id in COMPLETE {
@@ -678,9 +716,24 @@ mod tests {
         for id in COMPLETE.iter().chain(&SCHEMES_ONLY) {
             assert!(design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid").logo.mark.is_some());
         }
-        for id in WITHOUT_LOGO {
+        for id in WITHOUT_LOGO.iter().chain(&DARK_ONLY) {
             let scheme = design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid");
             assert!(scheme.logo.mark.is_none(), "{id} draws the suite's T on its accent");
+        }
+    }
+
+    /// Task FS.4: the five dark-only schemes are `dark_only`, every other shipped one has both modes.
+    #[test]
+    fn only_the_five_dark_schemes_are_dark_only() {
+        let dark_only: Vec<String> = design::list_color_schemes(&repo(Part::ColorScheme))
+            .into_iter()
+            .filter(|listed| listed.result.as_ref().is_ok_and(|scheme| scheme.dark_only))
+            .map(|listed| listed.id)
+            .collect();
+        assert_eq!(dark_only, DARK_ONLY);
+        for id in DARK_ONLY {
+            let scheme = design::load_color_scheme(&repo(Part::ColorScheme), id).expect("valid");
+            assert_eq!(scheme.colors.light, scheme.colors.dark, "{id}: light mode draws the dark colours");
         }
     }
 

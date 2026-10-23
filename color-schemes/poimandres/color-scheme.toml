@@ -1,0 +1,39 @@
+# Poimandres – after the open Poimandres theme by drcmda (MIT), github.com/drcmda/poimandres-theme
+# (themes/poimandres-color-theme.json), task FS.4, issue #292. Dark only; the mint accent, no logo of its own.
+# The theme draws its whole frame in one colour, so bg and panel are both #1B1E28.
+# Everything left out here comes from the standard colour scheme "Torro".
+format = 1
+dark_only = true
+
+[about]
+name = "Poimandres"
+version = "1.0.0"
+author = "Torro, after Poimandres by drcmda (MIT)"
+description = "The Poimandres colour scheme: muted blue-grey, mint accent"
+
+# The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
+# night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
+# Moved for contrast: text_3 #767C9D → #8C92B3; error #D0679D → #D474A5.
+# Poimandres has no orange and no violet: the third calendar colour is its yellow, merged its pink.
+[colors.dark]
+bg = "#1B1E28"
+panel = "#1B1E28"
+raised = "#20232E"
+hover = "#232631"
+selected = "#282B37"
+menu = "#232732"
+text = "#A6ACCD"
+text_2 = "#9AA0C1"
+text_3 = "#8C92B3"
+line = "#A6ACCD12"
+line_strong = "#A6ACCD22"
+line_selected = "#A6ACCD54"
+focus_ring = "#5DE4C7"
+accent = "#5DE4C7"
+on_accent = "#1B1E28"
+ok = "#5DE4C7"
+attention = "#FFFAC2"
+error = "#D474A5"
+merged = "#F087BD"
+calendar = ["#ADD7FF", "#5DE4C7", "#FFFAC2", "#F087BD", "#89DDFF"]
+night = "#1B1E28"

@@ -354,7 +354,7 @@ Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird f
 
 Die Suite legt ihre Beispiele in die Ordner im Datenordner, der Dienst beim Start, die Steuerzentrale bei
 „Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, Nord,
-Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema. Beispiel-Designs gibt es seit Issue #291
+Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema, dazu 21 Farbschemata nach freien Paletten ([Mitgelieferte Farbschemata](#mitgelieferte-farbschemata)). Beispiel-Designs gibt es seit Issue #291
 nicht mehr: Die drei Designs der Suite sind eingebaut ([unten](#drei-eingebaute-designs-standard-compact-console)), und
 eine Kopie der sechs alten Beispiel-Designs in einem Datenordner bleibt ein eigenes Design ihres Besitzers. Jedes Beispiel wird **einmal angeboten**
 (L.10): Die versteckte Datei `.torro-examples` in jedem der drei Ordner hält fest, welche schon da waren, und eine neue
@@ -637,11 +637,11 @@ der Tabelle).
 | Tango | `tango` | Light and dark | Tango Desktop Project | gemeinfrei | Palette mit drei Tönen je Farbe, hell die dunkleren, dunkel die helleren; hell `panel` `#D3D7CF` → `#E2E5E0` (Kategoriefarben), dunkel `panel` Aluminium 5 `#555753` → `#3A3E3F` (sonst weder gedämpfter noch roter Text lesbar); Hinweis auf die gemeinfreie Palette statt Lizenztext |
 | Tokyo Night | `tokyo-night` | Light and dark | github.com/enkia/tokyo-night-vscode-theme | MIT | hell Tokyo Night Light, dunkel Tokyo Night, Akzent Blau; dunkel Text `editor.foreground` `#A9B1D6` und gedämpft der Kommentar `#51597D` der Quelle (der Entwurf hatte `#C0CAF5`/`#565F89` aus einer anderen Portierung); hell `panel` `#D6D8DF` → `#E2E4E9` (Kategoriefarben) |
 | Tomorrow | `tomorrow` | Light and dark | github.com/chriskempson/tomorrow-theme | MIT | Tomorrow und Tomorrow Night, Akzent Blau; gedämpfter Text, Rot und im Hellen Orange verschoben |
-| Cobalt2 | `cobalt2` | Dark only | github.com/wesbos/cobalt2-vscode | MIT | FS.4 |
-| Palenight | `palenight` | Dark only | github.com/whizkydee/vscode-palenight-theme | MIT | FS.4 |
-| Poimandres | `poimandres` | Dark only | github.com/drcmda/poimandres-theme | MIT | FS.4 |
-| Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | FS.4 |
-| Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | FS.4 |
+| Cobalt2 | `cobalt2` | Dark only | github.com/wesbos/cobalt2-vscode | MIT | Akzent Gelb `#FFC600` mit dunkler Schrift; ohne Violett (`merged` ist sein Pink); nur Rot verschoben |
+| Palenight | `palenight` | Dark only | github.com/whizkydee/vscode-palenight-theme | MIT | Akzent Lila `#C792EA`; gedämpfter Text (Kommentar `#697098`) stark aufgehellt, Rot und `merged` verschoben |
+| Poimandres | `poimandres` | Dark only | github.com/drcmda/poimandres-theme | MIT | Akzent Mint `#5DE4C7`; `bg` und `panel` beide `#1B1E28`, wie in der Quelle (der Entwurf hatte `panel` `#232733`, das dort nicht vorkommt); gedämpfter Text und Rot verschoben |
+| Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | Stil default, Akzent sein Blau `#76CCE0`; ohne Cyan und Magenta (Violett, Gelb im Kalender); gedämpfter Text und Rot verschoben |
+| Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | Akzent Pink `#FF7EDB`; Blau und Cyan sind ein Neon-Cyan (Gelb als fünfte Kalenderfarbe); gedämpfter Text und Rot verschoben |
 
 ### Mitgelieferte Schriften (Vorschlag)
 
