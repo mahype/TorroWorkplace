@@ -2182,7 +2182,10 @@ impl PimService {
     /// overwrites one. A single event that gets a rule becomes a series and is read again like one.
     /// A rule text that is no single line of the `RRULE` grammar is `error` on every path, before
     /// anything is written, unless it is the text the server stores ([`PimService::rule_refused`]).
+    /// Dates outside the years 1 to 9999 (start, end, key, the end of the rule) are `error` on every
+    /// path too ([`series::in_range`]).
     async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(Event, u32), WriteError> {
+        series::in_range(&event).map_err(|error| refused(error.code(), error.to_string()))?;
         // Boxed: reading the stored rule would otherwise sit inline in every save's future, and the
         // core's future for a request would outgrow a thread's stack.
         Box::pin(self.rule_refused(&event)).await?;
@@ -7236,6 +7239,30 @@ END:VCALENDAR
             let new = Event { href: None, etag: None, recurring: false, recurrence_id: None, ..sent };
             let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
             assert_eq!(code_of(&response), "error", "a new event, {repeat:?}: {response:?}");
+        }
+        let seen = lines(&record);
+        assert!(seen.iter().all(|line| line.starts_with("GET ")), "nothing written: {seen:?}");
+    }
+
+    /// The review of PR #296: a date beyond the year 9999 is `error` without a scope too, for a new
+    /// series ending then and for a single event, before anything is written.
+    #[tokio::test]
+    async fn dates_beyond_the_year_9999_are_refused_on_every_path() {
+        use torro_pim::model::RepeatEnd;
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let occurrence = second_of_series(&base, "\"1\"");
+        let new = Event { href: None, etag: None, recurring: false, recurrence_id: None, ..occurrence.clone() };
+        let far = EventTime::Date(chrono::NaiveDate::from_ymd_opt(10000, 1, 1).expect("a date chrono knows"));
+        let weekly = torro_pim_caldav::recur::read("FREQ=WEEKLY", None);
+        let until = Event {
+            repeat: Some(Box::new(torro_pim::model::Repeat { end: RepeatEnd::Until(far), ..weekly })),
+            ..new.clone()
+        };
+        let single = Event { start: far, end: None, repeat: None, ..new };
+        for event in [until, single] {
+            let response = service.handle_within(Request::SaveEvent { event, scope: None }, Reach::Suite).await;
+            assert_eq!(code_of(&response), "error", "{response:?}");
         }
         let seen = lines(&record);
         assert!(seen.iter().all(|line| line.starts_with("GET ")), "nothing written: {seen:?}");

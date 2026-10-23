@@ -869,8 +869,9 @@ fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
 /// chrono's dates then (the stored dates have four digits too), so a date at chrono's edge is refused
 /// instead of panicking: the save answers `error`. [`drops`], which runs before any right is checked,
 /// counts such a refused change as dropping (fail closed), so a client without the right to delete
-/// gets `forbidden` first.
-fn in_range(event: &Event) -> Result<(), SeriesError> {
+/// gets `forbidden` first. The core checks every save with it, with a scope or without, so no date
+/// iCalendar cannot hold is written (the review of PR #296).
+pub fn in_range(event: &Event) -> Result<(), SeriesError> {
     let until = event.repeat.as_deref().and_then(|repeat| match repeat.end {
         RepeatEnd::Until(until) => Some(until),
         RepeatEnd::Never | RepeatEnd::Count(_) => None,
