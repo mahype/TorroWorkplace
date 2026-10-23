@@ -1480,25 +1480,28 @@ fn notice_line_words(item: &Item, rows: &Rows<'_>, columns: LineColumns) -> Line
     )
 }
 
-/// The source's icon of `item` on a small tile (`raised`, `line` frame): in the attention colour
-/// while it waits (`on_accent` in a chosen row in the accent, [`mark_colour`]), else `text_2`.
+/// The source's icon of `item` on a small tile ([`tile_style`]): in the attention colour while it
+/// waits (`on_accent` in a chosen row in the accent, [`mark_colour`]), else `text_2`.
 pub(crate) fn source_tile<'a>(item: &Item) -> Element<'a, Message> {
     let waiting = is_waiting(item);
     let mark = icon::icon(source_icon(&item.source), icon::SIZE).style(move |t: &Theme, _| {
         let p = palette(t);
         svg::Style { color: Some(if waiting { mark_colour(t, p.attention_text) } else { p.text_2 }) }
     });
-    container(mark)
-        .center(tile())
-        .style(|t: &Theme| {
-            let p = palette(t);
-            container::Style {
-                background: Some(Background::Color(p.raised)),
-                border: border::rounded(radius::sm()).color(p.line).width(size::HAIRLINE),
-                ..container::Style::default()
-            }
-        })
-        .into()
+    container(mark).center(tile()).style(tile_style).into()
+}
+
+/// A source tile: `raised` in a `line` frame. In a chosen row in the accent the icon is `on_accent`,
+/// which would barely read on `raised`: there the tile has no surface and an `on_accent` frame.
+fn tile_style(t: &Theme) -> container::Style {
+    let p = palette(t);
+    let on_accent = theme::on_accent_theme(t) == *t;
+    let (background, frame) = if on_accent { (None, p.on_accent) } else { (Some(Background::Color(p.raised)), p.line) };
+    container::Style {
+        background,
+        border: border::rounded(radius::sm()).color(frame).width(size::HAIRLINE),
+        ..container::Style::default()
+    }
 }
 
 /// The round avatar of a mail row or card, `edge` wide (`[list] avatar` in a row, [`size::avatar()`]
@@ -2502,6 +2505,22 @@ mod tests {
             assert_eq!([text.text, text.text_2, text.text_3], [p.on_accent; 3], "sender, subject, time");
             assert_eq!(mark_colour(&window, p.unread), p.unread, "elsewhere the mark keeps its colour");
             assert!(p.on_accent.relative_contrast(p.accent) >= 4.5, "readable on the accent");
+        }
+    }
+
+    /// Issue #291 (review of PR #297): a notice's tile in the chosen row in the accent drops its `raised`
+    /// surface, so its icon in `on_accent` stands on the accent; its frame turns `on_accent` too.
+    /// Elsewhere the tile keeps `raised` and its `line` frame.
+    #[test]
+    fn a_tile_in_a_chosen_row_in_the_accent_lets_its_icon_stand_on_the_accent() {
+        for window in [theme::theme(), theme::light()] {
+            let p = palette(&window);
+            let chosen = tile_style(&theme::on_accent_theme(&window));
+            assert_eq!(chosen.background, None, "no raised surface under an on_accent icon");
+            assert_eq!(chosen.border.color, p.on_accent);
+            let elsewhere = tile_style(&window);
+            assert_eq!(elsewhere.background, Some(Background::Color(p.raised)));
+            assert_eq!(elsewhere.border.color, p.line);
         }
     }
 
