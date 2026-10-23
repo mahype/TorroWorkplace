@@ -871,7 +871,8 @@ fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
 /// counts such a refused change as dropping (fail closed), so a client without the right to delete
 /// gets `forbidden` first. The core checks every save with it, with a scope or without, so no date
 /// iCalendar cannot hold is written (the review of PR #296). A time is written in its zone, up to 14
-/// hours off UTC, so a time must stay in those years a day either side of it.
+/// hours off UTC, so a time must stay in those years a day either side of it; the end of a rule is
+/// written in UTC and only needs its own year (`UNTIL=99991231T235959Z`, "forever" for some clients).
 pub fn in_range(event: &Event) -> Result<(), SeriesError> {
     let until = event.repeat.as_deref().and_then(|repeat| match repeat.end {
         RepeatEnd::Until(until) => Some(until),
@@ -884,7 +885,11 @@ pub fn in_range(event: &Event) -> Result<(), SeriesError> {
             .into_iter()
             .all(|edge| edge.is_some_and(|edge| years.contains(&edge.year()))),
     };
-    let fine = [Some(event.start), event.end, event.recurrence_id, until].into_iter().flatten().all(fits);
+    let until_fits = until.is_none_or(|until| match until {
+        EventTime::Date(day) => years.contains(&day.year()),
+        EventTime::DateTime(at) => years.contains(&at.year()),
+    });
+    let fine = until_fits && [Some(event.start), event.end, event.recurrence_id].into_iter().flatten().all(fits);
     if fine { Ok(()) } else { Err(SeriesError::OutOfRange) }
 }
 
@@ -1905,6 +1910,12 @@ mod tests {
         };
         let event = Event { repeat: Some(Box::new(until)), ..occurrence(EXCEPTIONS, key) };
         assert_eq!(drops(EXCEPTIONS, &event, SeriesScope::Series), 1);
+        // An end of the rule late in 9999 is fine: it is written in UTC.
+        let forever = Utc.with_ymd_and_hms(9999, 12, 31, 23, 59, 59).single().expect("forever");
+        let mut repeat = occurrence(EXCEPTIONS, key).repeat.expect("a series").as_ref().clone();
+        repeat.end = RepeatEnd::Until(EventTime::DateTime(forever));
+        let lasting = Event { repeat: Some(Box::new(repeat)), ..occurrence(EXCEPTIONS, key) };
+        assert_eq!(in_range(&lasting), Ok(()));
     }
 
     #[test]
