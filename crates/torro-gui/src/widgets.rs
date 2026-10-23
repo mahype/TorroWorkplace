@@ -3536,7 +3536,8 @@ pub fn group<'a, M: 'a>(
 
 /// A row of a settings [`group`]: `label` in `BODY`, an optional `detail` below it in `META`
 /// `text_2`, and one `control` at the right (toggler, pick list, button; the rest goes into a "…"
-/// menu). [`size::header()`] high, 12 more with a detail; the padding of [`layout::row_padding`].
+/// menu). [`size::header()`] high, 12 more with a detail; the sides of [`layout::row_padding`], the
+/// content centred in the height.
 pub fn group_row<'a, M: 'a>(
     label: impl IntoFragment<'a>,
     detail: Option<String>,
@@ -3549,8 +3550,15 @@ pub fn group_row<'a, M: 'a>(
     }
     container(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center))
         .center_y(height)
-        .padding(layout::row_padding())
+        .padding(group_row_padding(layout::row_padding()))
         .into()
+}
+
+/// The padding of a [`group_row`] from the row padding `pad`: only its sides. The row has a fixed
+/// height and centres its content, so padding above and below would only squeeze the control (18
+/// above and below a row of 64 left a button of 36 only 28).
+fn group_row_padding(pad: Padding) -> Padding {
+    Padding::new(0.0).left(pad.left).right(pad.right)
 }
 
 /// A heading over a block of a settings page with quiet actions at its right (task L.18: "Design"
@@ -4723,6 +4731,25 @@ mod tests {
         assert_eq!(flyout_origin(icon, tall, true, short).y, beside_gap(), "too tall: from the top");
         // Task E14.3 (finding 6): the card ends `space::xs()` before the rail's line.
         assert_eq!(flyout_gap(), space::s() + LINE + space::xs());
+    }
+
+    /// Issue #291 (review of the three designs): a settings row of a fixed height takes only the sides
+    /// of the row padding, so its control – a button, a pick list – keeps its height in every design
+    /// (with 18 above and below a row of 64 squeezed a button of 36 to 28).
+    #[test]
+    fn a_group_row_holds_its_control_in_every_design() {
+        for id in torro_core::design::BUILT_IN_IDS {
+            let d = torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design");
+            let pad = d.layout.row_padding;
+            let full = Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal };
+            let sides = group_row_padding(full);
+            assert_eq!((sides.left, sides.right), (pad.horizontal, pad.horizontal), "{id}: the sides stay");
+            let control = d.size.control_sm.max(d.size.control);
+            for height in [d.size.header, d.size.header + d.space.m] {
+                let inner = height - sides.top - sides.bottom;
+                assert!(inner >= control, "{id}: {inner} inside a row of {height} holds a control of {control}");
+            }
+        }
     }
 
     /// Issue #291 (review of the three designs): where the rail cannot expand the head stays with the

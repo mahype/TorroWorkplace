@@ -2038,9 +2038,16 @@ impl Gallery {
                 typo::text(typo::body(), "The numbers for Q4 are in.").style(theme::text_2),
             ];
             let content = row![quiet(Icon::Mail, icon::SIZE), lines.width(Fill)].spacing(space::m());
-            container(content).center_y(size::row_message()).padding(layout::row_padding()).style(|t: &Theme| {
-                container::Style { background: Some(palette(t).selected.into()), ..container::Style::default() }
-            })
+            // A row of a fixed height takes only the sides of the row padding and centres its lines,
+            // as the inbox's rows do: 18 above and below would leave three lines of 22 too little.
+            let pad = layout::row_padding();
+            container(content)
+                .center_y(size::row_message())
+                .padding(iced::Padding::new(0.0).left(pad.left).right(pad.right))
+                .style(|t: &Theme| container::Style {
+                    background: Some(palette(t).selected.into()),
+                    ..container::Style::default()
+                })
         };
         let line = typo::line_height(typo::body());
         let first_line = (size::row_message() - 3.0 * line) / 2.0 + line / 2.0;
