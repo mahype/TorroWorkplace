@@ -697,9 +697,12 @@ Inhaberin (`taken-from:<hash>`), nie der Bildschirm.
 
 ²⁴ **Serien** (Issue #278, [termin-editor.md](termin-editor.md)): `save_event` ist `Write`, braucht aber Löschrecht
 in `calendar` (und wartet wie `delete_event` auf eine Freigabe), wenn die Änderung Termine wegfallen lässt: eine
-Regel entfernt oder gekürzt, eine andere Regel ohne einige bisherige Termine, geänderte Termine zurückgesetzt. Was
-wegfällt, zählt der Dienst aus dem gespeicherten Objekt, nie aus dem, was der Client über die Serie sagt; kann er es
-nicht zählen, gilt die Änderung als Löschen. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
+Regel entfernt oder gekürzt, eine andere Regel oder Zeitzone ohne einige bisherige Termine, ein späterer Beginn unter
+festem Enddatum (`UNTIL`), geänderte Termine zurückgesetzt. Was wegfällt, zählt der Dienst aus dem gespeicherten
+Objekt in seinem Cache, nie aus dem, was der Client über die Serie sagt; hat er das Objekt nicht im Cache oder kann
+er nicht zählen (auch bei einer ungültigen Änderung), gilt die Änderung als Löschen. Diese Prüfung kommt zuerst: Ein
+Client ohne Löschrecht bekommt dann `forbidden` (oder eine Freigabe-Anfrage), bevor er `not-found`, `unsupported`
+oder `error` sehen könnte. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
 die ganze Serie.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
@@ -819,7 +822,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
 
    Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
-   Die Suche schickt den getippten Ort, die Karte die Koordinaten, beide mit der IP-Adresse an fremde Dienste.
+   Die Suche schickt den getippten Ort mit der Sprache der Suite (bei Photon auch `near`), die Karte die Koordinaten,
+   beide mit der IP-Adresse an fremde Dienste.
    `settings.set_setting` mit `maps` und `enabled` ungleich `false` oder mit `geocoder` bzw. `tiles` (eine andere
    Such- oder Kachel-Adresse) und ein `settings.update_settings`, das Karten einschalten oder eine Adresse ändern
    würde, bekommen von jedem Client `forbidden`, auch mit Admin-Rechten. Ausschalten (`{"enabled": false}`, Freigabe

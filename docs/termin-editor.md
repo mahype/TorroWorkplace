@@ -138,8 +138,8 @@ Recherche am 2026-10-22 bei den Betreibern. Torro hat keinen eigenen Server; jed
   sind beide Dienste abschaltbar und die URLs einstellbar. Keine Verfügbarkeitszusage – das steht in der
   Steuerzentrale bei der Einstellung.
 
-**Datenschutz.** Die Suche schickt den getippten Text und die IP-Adresse an den gewählten Dienst, die
-Karte die Koordinaten. Darum: aus, bis ein Mensch es einschaltet; die Einstellung nennt die Dienste mit Link;
+**Datenschutz.** Die Suche schickt den getippten Text, die Sprache der Suite, bei Photon die Koordinaten
+von `near` und die IP-Adresse an den gewählten Dienst, die Karte die Koordinaten. Darum: aus, bis ein Mensch es einschaltet; die Einstellung nennt die Dienste mit Link;
 Termine aus Einladungen werden nie von selbst gesucht, eine Karte kommt nur für Termine mit Koordinaten.
 
 **Einstellung in der Steuerzentrale** (General › Maps, TE.10): Schalter „Maps and place search“, Adresse der
