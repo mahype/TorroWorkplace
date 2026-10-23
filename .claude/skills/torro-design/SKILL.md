@@ -290,8 +290,8 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Allow/Deny (`size::control_lg()`, halbe Kartenbreite) nur für Entscheidungen in Schmal, sonst nirgends.
   Menüs eines Kartenknopfs hängen an der Knopfzeile und öffnen über ihr, wenn unten kein Platz ist – nie
   über dem Auslöser (`Placement::Below`).
-- **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – 28 hoch, Radius 6,
-  `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
+- **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – `size::control_sm()` hoch, Radius
+  `radius::sm()`, `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
   vor dem Text. GitHub-Labels zum Wählen: `widgets::label_choice(hex, name, on, on_press)` (Farbe nur als
   Punkt 8). Filter und Vorlagen werden angeklickt, nicht getippt.
 - **Aktionsleiste einer Zeile** (E3.9, `widgets::row_actions`, für Karten mit Knopfzeile

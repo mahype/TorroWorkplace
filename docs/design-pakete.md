@@ -340,7 +340,8 @@ Tastenbelegung, Anordnung (Stufe 2).
 
 Seit Aufgabe L.20 besteht ein Aussehen aus drei Teilen in drei Ordnern ([Drei Ordner](#drei-ordner)): einem
 **Design** (die Form), einer **Schrift** und einem **Farbschema**. Am Beispiel **Plex** (Aufgabe L.5): IBM Plex Sans,
-mehr Luft, ein ruhiger Petrol-Akzent, im Repository `designs/plex/`, `fonts/plex/` und `color-schemes/plex/`.
+mehr Luft, ein ruhiger Petrol-Akzent, im Repository `fonts/plex/` und `color-schemes/plex/`; ein eigenes Design
+dazu beginnt mit einer Kopie von `designs/compact/design.toml`.
 
 | Ordner | Datei | trägt | dazu |
 |---|---|---|---|
@@ -370,8 +371,9 @@ jede App die Schriften mitschleppt.
    Repository als `<id>/design.toml` ablegen; Schrift und Farbschema aus `fonts/plex` bzw. `color-schemes/plex`
    kopieren und umbenennen.
 2. **`design.toml` beginnen:** `format = 1`, `[about]` mit `name` und `version`. Damit ist das Design schon gültig –
-   es hat die Form von Torro. Mit `font = "<id>"` und `color_scheme = "<id>"` in `[about]` schlägt es Schrift und
-   Farbschema vor, gewählt wird getrennt. Ab hier nur eintragen, was abweicht.
+   es hat die Form des Standards. Mit `font = "<id>"` und `mail_view = "text"` in `[about]` schlägt es eine Schrift
+   und die Mail-Darstellung vor; das Farbschema wählt man immer getrennt (`color_scheme` ist seit L.33 ein unbekannter
+   Schlüssel). Ab hier nur eintragen, was abweicht.
 3. **Schrift:** `font.toml` mit `format = 1`, `license` (SPDX, Plex: `"OFL-1.1"`) und `[about]`; die TTF/OTF-Dateien
    direkt in `fonts/<id>/`, die Lizenz als `LICENSE.txt` daneben. `family` ist der Familienname in der Datei (Plex:
    „IBM Plex Sans“; die Schnitte Medium und SemiBold tragen ihn als typografische Familie, das reicht). Pflicht ist

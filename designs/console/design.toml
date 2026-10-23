@@ -1,6 +1,6 @@
 # Console, built into the suite (issue #291): very dense and square, one line per mail, like a mail
 # client in a terminal. Same elements in the same places; lists are drawn as single lines without
-# hairlines, and the chosen row is a bar of the accent colour.
+# hairlines, and the chosen row is filled with the accent colour.
 #
 # Embedded at build time. A key left out would follow the standard; this file sets every key anyway, so
 # Console stays as it is when the standard changes (task L.34). Values from the boards "The three
