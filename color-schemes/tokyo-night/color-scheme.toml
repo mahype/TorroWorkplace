@@ -39,14 +39,14 @@ night = "#181822"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: panel #D6D8DF → #E2E4E9 (for the standard's category colours, which a scheme cannot set); text_3
+# Moved for contrast: panel #D6D8DF → #E1E2E7 (for the standard's category colours, which a scheme cannot set); text_3
 # #707280 → #575B70.
 [colors.light]
 bg = "#E6E7ED"
-panel = "#E2E4E9"
-raised = "#DEE0E5"
-hover = "#DADCE3"
-selected = "#D4D6DD"
+panel = "#E1E2E7"
+raised = "#DDDEE3"
+hover = "#D9DAE1"
+selected = "#D3D5DC"
 menu = "#E6E7ED"
 text = "#343B59"
 text_2 = "#444963"
@@ -62,4 +62,4 @@ attention = "#8F5E15"
 error = "#8C4351"
 merged = "#7B43BA"
 calendar = ["#2959AA", "#385F0D", "#965027", "#65359D", "#006C86"]
-night = "#E4E6EB"
+night = "#E3E4EA"

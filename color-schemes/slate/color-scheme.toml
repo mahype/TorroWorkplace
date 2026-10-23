@@ -1,6 +1,6 @@
 # Slate – after the open Radix Colors by WorkOS (MIT), github.com/radix-ui/colors, task FS.3, issue #292. Light and
 # dark are its Slate scale (steps 1, 2, 12 and 11), the accent Blue 9; status and calendar colours are step 11 of
-# Green, Amber, Red, Purple, Blue, Orange, Pink and Cyan. No logo of its own.
+# Green, Orange, Red, Purple, Blue, Pink and Cyan. No logo of its own.
 # Everything left out here comes from the standard colour scheme "Torro".
 format = 1
 

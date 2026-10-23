@@ -41,19 +41,19 @@ night = "#34393B"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: panel #D3D7CF → #E2E5E0 (for the standard's category colours, which a scheme cannot set); text_3
-# #888A85 → #595D5C; calendar (green) #4E9A06 → #4A9106; calendar (cyan) #C17D11 → #B27310.
+# Moved for contrast: panel #D3D7CF → #E1E4DE (for the standard's category colours, which a scheme cannot set); text_3
+# #888A85 → #585C5B; calendar (green) #4E9A06 → #4A9106; calendar (cyan) #C17D11 → #B17210.
 # Tango has no cyan: the fifth calendar colour is Chocolate 2; merged is Plum 2.
 [colors.light]
 bg = "#EEEEEC"
-panel = "#E2E5E0"
-raised = "#DDE1DC"
-hover = "#DADDD8"
-selected = "#D4D7D2"
+panel = "#E1E4DE"
+raised = "#DDE0DA"
+hover = "#D9DCD6"
+selected = "#D3D6D1"
 menu = "#EEEEEC"
 text = "#2E3436"
 text_2 = "#414647"
-text_3 = "#595D5C"
+text_3 = "#585C5B"
 line = "#2E343614"
 line_strong = "#2E343626"
 line_selected = "#2E34365C"
@@ -64,5 +64,5 @@ ok = "#4E9A06"
 attention = "#CE5C00"
 error = "#CC0000"
 merged = "#75507B"
-calendar = ["#3465A4", "#4A9106", "#CE5C00", "#75507B", "#B27310"]
-night = "#E8EAE6"
+calendar = ["#3465A4", "#4A9106", "#CE5C00", "#75507B", "#B17210"]
+night = "#E8E9E5"

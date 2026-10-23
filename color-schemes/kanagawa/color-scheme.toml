@@ -38,19 +38,19 @@ night = "#242430"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: panel #E7DBA0 → #EDE5B9 (for the standard's category colours, which a scheme cannot set); text_3
-# #8A8980 → #5D5D69; attention #CC6D00 → #A45800; error #C84053 → #BA3648; calendar (orange) #CC6D00 → #C46900;
-# calendar (cyan) #4E8CA2 → #4C899F.
+# Moved for contrast: panel #E7DBA0 → #ECE3B5 (for the standard's category colours, which a scheme cannot set); text_3
+# #8A8980 → #5D5C68; attention #CC6D00 → #A15600; error #C84053 → #B93548; calendar (green) #6F894E → #6E884E;
+# calendar (orange) #CC6D00 → #C36800; calendar (cyan) #4E8CA2 → #4B879C.
 [colors.light]
 bg = "#F2ECBC"
-panel = "#EDE5B9"
-raised = "#E9E1B7"
-hover = "#E6DEB5"
-selected = "#E1D9B2"
+panel = "#ECE3B5"
+raised = "#E8DFB3"
+hover = "#E5DDB1"
+selected = "#E0D8AF"
 menu = "#F2ECBC"
 text = "#545464"
 text_2 = "#585866"
-text_3 = "#5D5D69"
+text_3 = "#5D5C68"
 line = "#54546414"
 line_strong = "#54546426"
 line_selected = "#54546461"
@@ -58,8 +58,8 @@ focus_ring = "#4D699B"
 accent = "#4D699B"
 on_accent = "#FFFFFF"
 ok = "#6F894E"
-attention = "#A45800"
-error = "#BA3648"
+attention = "#A15600"
+error = "#B93548"
 merged = "#624C83"
-calendar = ["#4D699B", "#6F894E", "#C46900", "#B35B79", "#4C899F"]
-night = "#F0E9BB"
+calendar = ["#4D699B", "#6E884E", "#C36800", "#B35B79", "#4B879C"]
+night = "#EFE8B9"

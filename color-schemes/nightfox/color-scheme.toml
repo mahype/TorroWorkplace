@@ -38,19 +38,19 @@ night = "#161E2A"
 
 # The scheme's own colours: bg, panel, text, the muted text (text_3) and the accent; raised, hover, selected, menu,
 # night, text_2 and the lines are derived from them, status and calendar colours come from the scheme's palette.
-# Moved for contrast: panel #E4DCD4 → #E9E3DD (for the standard's category colours, which a scheme cannot set); text_3
-# #837A72 → #655868.
+# Moved for contrast: panel #E4DCD4 → #E8E2DB (for the standard's category colours, which a scheme cannot set); text_3
+# #837A72 → #645767.
 # Dayfox's orange is a dusty rose: the third calendar colour and attention are its yellow, an orange.
 [colors.light]
 bg = "#F6F2EE"
-panel = "#E9E3DD"
-raised = "#E5DEDA"
-hover = "#E1DBD7"
-selected = "#DBD4D3"
+panel = "#E8E2DB"
+raised = "#E4DDD8"
+hover = "#E0DAD5"
+selected = "#DAD3D1"
 menu = "#F6F2EE"
 text = "#3D2B5A"
 text_2 = "#4F3F60"
-text_3 = "#655868"
+text_3 = "#645767"
 line = "#3D2B5A14"
 line_strong = "#3D2B5A26"
 line_selected = "#3D2B5A5C"
@@ -62,4 +62,4 @@ attention = "#AC5402"
 error = "#A5222F"
 merged = "#6E33CE"
 calendar = ["#2848A9", "#396847", "#AC5402", "#A440B5", "#287980"]
-night = "#F0EAE6"
+night = "#EFEAE4"
