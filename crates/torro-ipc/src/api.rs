@@ -1971,9 +1971,10 @@ static SAVE_EVENT: Command = Command {
                   occurrence with its new `recurrence_id`, after `following` the first of the new series with its \
                   `uid`. To end a series send `repeat: null` and `recurring: false`; `repeat: null` alone keeps the \
                   rule. A change that drops events needs full access and may wait for approval, like removing an \
-                  event: removing or shortening the rule, another rule that leaves events out, any change of the time \
-                  zone, a later start under a fixed end date, resetting changed events, and any `following` or \
-                  `series` change of a series not cached (it cannot be counted then). That check comes first: \
+                  event: removing or shortening the rule, another rule that leaves events out, any change of the series' \
+                  time zone, a later start under a fixed end date, resetting changed events, and any `following` \
+                  or `series` change of a series not cached in the version of the `etag` sent (it cannot be \
+                  counted then, so a stale `etag` gets `forbidden` before `conflict`). That check comes first: \
                   without full access such a change fails with `forbidden` (or waits) before `unsupported`, \
                   `error` or `not-found` for a missing occurrence; a calendar the client may not see stays \
                   `not-found`. Changing `collection` moves it to another calendar of \

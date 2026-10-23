@@ -864,8 +864,9 @@ pub enum Request {
     ///
     /// A save that removes events of the series needs the right to delete and waits for approval
     /// like `calendar.delete_event`: a shorter or removed rule, another rule that leaves events out,
-    /// any change of the time zone, a later start under a fixed `UNTIL`, reset exceptions, and any
-    /// `following` or `series` save of a series the core has not cached (it cannot count then). That
+    /// any change of the series' time zone, a later start under a fixed `UNTIL`, reset exceptions, and
+    /// any `following` or `series` save of a series the core has not cached in the version of the
+    /// `etag` sent (it cannot count then, so a stale `etag` is `forbidden` before `conflict`). That
     /// check comes first, so without the right such a save is `forbidden` (or pending) before
     /// `unsupported`, `error` or `not-found` for a missing occurrence; a calendar the client may not
     /// see stays `not-found`. Errors: `not-found`
