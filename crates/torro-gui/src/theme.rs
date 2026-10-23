@@ -576,7 +576,7 @@ pub mod size {
     pub fn control_xl() -> f32 {
         design::with(|t| t.design.size.control_xl)
     }
-    /// 44: a list row (tasks, `widgets::list_row`).
+    /// 48: a list row (tasks, `widgets::list_row`).
     pub fn row() -> f32 {
         design::with(|t| t.design.size.row)
     }
@@ -977,7 +977,7 @@ mod tests {
         );
         // Issue #291: the standard's corners are 4 everywhere.
         assert_eq!([radius::xs(), radius::sm(), radius::md(), radius::lg()], [4.0; 4]);
-        assert_eq!([size::control_sm(), size::control(), size::control_lg(), size::row()], [36.0, 38.0, 40.0, 44.0]);
+        assert_eq!([size::control_sm(), size::control(), size::control_lg(), size::row()], [36.0, 38.0, 40.0, 48.0]);
         assert_eq!([size::header(), size::sidebar(), size::props()], [64.0, 240.0, 300.0]);
         assert_eq!(
             [size::list(), size::list_medium(), size::content_max(), size::form_max()],

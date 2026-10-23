@@ -150,12 +150,12 @@ control_sm = 30                # Knöpfe, Icon-Knöpfe, Segmente
 control = 32                   # Eingaben, Eigenschaftszeilen
 control_lg = 36                # Schnelleingabe, Primärknopf im Dialog, Knopf der Aktionsleiste
 control_xl = 44                # Knöpfe einer Erinnerung im Vollbild
-row = 36                       # Listenzeile (Aufgaben)
+row = 40                       # Listenzeile (Aufgaben)
 row_two = 48                   # zweizeilige Zeile
 row_message = 76               # Mail-Zeile im Eingang; bestimmt auch die Dichte in der Liste der Designs
 row_notice = 56                # andere Zeile im Eingang
 row_sidebar = 28               # Seitenleisten- und Menüzeile
-row_group = 28                 # Gruppenkopf in Listen
+row_group = 32                 # Gruppenkopf in Listen
 header = 48                    # Kopfleiste
 sidebar = 216                  # Seitenleiste
 props = 280                    # Eigenschaften-Spalte
@@ -640,6 +640,7 @@ steht, und nie Farben. Die Suite bringt drei Designs mit, in dieser Reihenfolge:
 | `type.meta` · `caption` | 13/18 · 12/16 | 12/16 · 11/16 | 11/16 · 11/16 |
 | `type.read` | 16/26 | 14/22 | 12/18 |
 | `type.title` · `headline` | 22/28 · 28/36 | 17/24 · 22/28 | 12/18 bold · 12/18 bold |
+| `size.row` · `row_group` | 48 · 40 | 40 · 32 | 24 · 24 |
 | `size.row_message` · `row_notice` | 100 · abgeleitet | 76 · 56 | 24 · 24 |
 | `size.row_sidebar` · `header` | 32 · 64 | 28 · 48 | 24 · 32 |
 | `size.control_sm` · `control_lg` | 36 · 40 | 30 · 36 | 24 · 28 |

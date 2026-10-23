@@ -1375,7 +1375,7 @@ mod tests {
         assert_eq!(f.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
         assert_eq!((f.size_adjust, f.license.as_str()), (1.0, "OFL-1.1"));
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 4.0, 0.0]);
-        assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [44.0, 240.0, 720.0]);
+        assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [48.0, 240.0, 720.0]);
         assert_eq!([d.size.row_message, d.size.row_notice], [100.0, 80.0], "the inbox's rows (tasks E3.9, E11.1)");
         // The comfortable density of the inbox (task E8.2).
         assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 16.0, line: 26.0 });

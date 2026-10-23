@@ -1701,8 +1701,8 @@ mod tests {
             let d = built_in(id);
             (d.size.row, d.size.row_group)
         };
-        assert_eq!(heights("torro"), (44.0, 40.0));
-        assert_eq!(heights("compact"), (36.0, 28.0));
+        assert_eq!(heights("torro"), (48.0, 40.0));
+        assert_eq!(heights("compact"), (40.0, 32.0));
         assert_eq!(heights("console"), (24.0, 24.0), "one line");
         for id in ["torro", "compact", "console"] {
             let d = built_in(id);

@@ -164,7 +164,7 @@ aus einem Guss wirkt:
 | `size::control_xl()` | 48 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst (die Leiste der gewählten Mail war bis #227 so hoch, sie ist jetzt `control_sm()`) |
 | `size::command()` | 46 | Bleibt im Paket-Format (E14, Entscheidung 9), kein Baustein nutzt es mehr: die Befehlsleiste des Lesers (E11.1) ist mit #241 entfernt |
 | `size::pill()` | 40 | Avatar im Kopf des Lesers (E11.1); die Torro-Pillen, die so hoch waren, sind mit #241 entfernt, das Maß bleibt im Paket-Format |
-| `size::row()` | 44 | Listenzeile (Aufgaben, `widgets::list_row`) |
+| `size::row()` | 48 | Listenzeile (Aufgaben, `widgets::list_row`) |
 | `size::row_message()` | 100 | Mail-Zeile im Eingang: Avatar (`[list] avatar`, 40), Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen, oben und unten `row_padding` (E3.9, E11.1); in Console eine Zeile 24 |
 | `size::row_notice()` | 80 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
@@ -428,10 +428,10 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Ein Zustand an einem Eintrag (ein Anbieter, dessen Konto Aufmerksamkeit braucht oder einen Fehler hat) ist
   ein `Mark::Badged(icon, farbe)`: das eigene Icon im Ton der Zeile mit einem Punkt 6 in der Statusfarbe auf
   der Ecke oben rechts, gleich in Spalte, Leiste und Chip – nie nur ein getöntes Icon (#248).
-- **Aufgabenzeile:** 40 hoch, Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
+- **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
   Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch
-  (überfällig Attention-Orange). Gruppenköpfe 32 auf `RAISED` mit Icon, Name, Zahl und „+“.
+  (überfällig Attention-Orange). Gruppenköpfe `size::row_group()` (40) auf `RAISED` mit Icon, Name, Zahl und „+“.
 - **Priorität** überall aus einer Abbildung (`torrotasks::list::Prio`): iCalendar 1 = Urgent
   (Quadrat), 2–4 High, 5 Medium, 6–9 Low, sonst keine; gespeichert werden 1 / 3 / 5 / 9. Zeile,
   Gruppenkopf, Chip, Eigenschaft und Menü zeigen dasselbe Wort und dasselbe Zeichen.

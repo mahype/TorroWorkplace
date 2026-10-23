@@ -758,7 +758,8 @@ es im Kommentar der `design.toml`):
   Console mit Punkt, Datum und Prioritätsbalken in `on_accent`. Agenda mit `Metrics` aus den Tokens des Designs
   (Seiten wie die Zeilen, Datumsspalte, Heute-Kreis, Termin-, Kopf-, Frei- und Leerzeilen), Console in einer Zeile
   ohne Linien zwischen Tagen, gewählter Termin wie eine gewählte Aufgabenzeile. Abweichungen vom Entwurf: Zeilen- und
-  Kopfhöhen aus `size::row()`/`row_group()` (44/36/24, 40/28/24 statt 48/40/24, 40/32/24), Pille 20 (Baustein),
+  Kopfhöhen aus `size::row()`/`row_group()` (44/36/24, 40/28/24 statt 48/40/24, 40/32/24) – erledigt 2026-10-23: die
+  Designs setzen die Werte des Entwurfs, Termine bleiben 52/44/24 (Zeile + `xs`); Pille 20 (Baustein),
   Abstände `space::m()`/`space::s()` (Console 6/4 statt 8/4), Zeitspalte `size::axis()` (52, Console zwei Achsen 96),
   Heute-Kreis in Console 20, Fälligkeit 44 auch im Standard)
 - **Modell:** Opus · **Braucht:** L.32 (bestätigt), L.34 · **Dateien:** `crates/torrotasks/src/list.rs`,

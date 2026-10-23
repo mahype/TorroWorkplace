@@ -184,7 +184,7 @@ pub(super) fn standard_of_the_table() -> Design {
             control: 38.0,
             control_lg: 40.0,
             control_xl: 48.0,
-            row: 44.0,
+            row: 48.0,
             row_two: 56.0,
             row_message: 100.0,
             row_notice: 80.0,

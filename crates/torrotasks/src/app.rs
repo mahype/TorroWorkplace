@@ -4142,16 +4142,16 @@ mod tests {
     #[test]
     fn the_list_scrolls_the_least_that_shows_the_cursor_row() {
         let mut app = app_with_rows();
-        // Heads are 40 high and flush with the rows, rows 44 (the standard since issue #291): overdue
-        // 40–84, child 84–128, then the "Today" head 128–168 and its row.
+        // Heads are 40 high and flush with the rows, rows 48 (the standard since issue #291): overdue
+        // 40–88, child 88–136, then the "Today" head 136–176 and its row.
         let _ = app.update(Message::Scrolled(0.0, 100.0));
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.scroll, Some((28.0, 100.0)), "child ends at 128, so 28 scrolls it in");
+        assert_eq!(app.scroll, Some((36.0, 100.0)), "child ends at 136, so 36 scrolls it in");
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.scroll, Some((112.0, 100.0)), "today ends at 212");
+        assert_eq!(app.scroll, Some((124.0, 100.0)), "today ends at 224");
         let _ = press(&mut app, Shortcut::Up);
-        assert_eq!(app.scroll, Some((84.0, 100.0)), "child starts at 84, above the view");
+        assert_eq!(app.scroll, Some((88.0, 100.0)), "child starts at 88, above the view");
         let _ = press(&mut app, Shortcut::Up);
         assert_eq!(app.scroll, Some((0.0, 100.0)), "the first row brings its group head along");
         let _ = app.update(Message::Scrolled(0.0, 400.0));

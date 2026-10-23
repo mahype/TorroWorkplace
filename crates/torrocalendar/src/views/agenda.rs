@@ -540,8 +540,8 @@ struct Metrics {
     gap: f32,
     /// What a row's text has beside the start column and the bar.
     text: f32,
-    /// An event row: a task row and the scale's `s`, which holds start over length with `xs` above
-    /// and below (52 / 44); one line in Console, a task row (24).
+    /// An event row: a task row and the scale's `xs`, which holds start over length with `xs` above
+    /// and below (52 / 44, draft L.32); one line in Console, a task row (24).
     event: f32,
     /// The quiet head of a day ("Today … 4 events") and an all-day chip: a sidebar row less `xs`
     /// (28 / 24); one line in Console (24).
@@ -584,7 +584,7 @@ impl Metrics {
             time,
             gap,
             text,
-            event: if line { b.row } else { b.row + b.s },
+            event: if line { b.row } else { b.row + b.xs },
             head: if line { b.row } else { b.row_sidebar - b.xs },
             free: b.row_sidebar,
             empty: if line { b.row } else { b.control_lg },
@@ -1547,6 +1547,8 @@ mod tests {
     #[test]
     fn columns_and_lines_follow_the_design() {
         // (side, date, circle, time, event, head, free, empty)
+        // The draft's event rows are a task row + 4 (52 / 44): `xs` is 4 in Standard and Compact.
+        assert_eq!((built_in("torro").space.xs, built_in("compact").space.xs), (4.0, 4.0));
         let measures = |m: Metrics| (m.side, m.date, m.circle, m.time, m.event, m.head, m.free, m.empty);
         assert_eq!(measures(metrics("torro")), (24.0, 64.0, 40.0, 52.0, 52.0, 28.0, 32.0, 40.0));
         assert_eq!(measures(metrics("compact")), (16.0, 56.0, 32.0, 52.0, 44.0, 24.0, 28.0, 36.0));
