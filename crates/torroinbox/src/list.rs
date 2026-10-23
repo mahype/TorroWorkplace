@@ -24,8 +24,10 @@
 //! - `style = "rows"` (Standard, Compact): the rows above, the avatar `[list] avatar` wide – 0 draws
 //!   none and its place goes to the text ([`lead_in`]) –, the preview on `preview_lines` lines.
 //! - `style = "line"` (Console): one line per entry, [`size::row_message()`] or [`size::row_notice()`]
-//!   high, in fixed columns without a column head – a mail's marks · date · sender · subject
-//!   ([`mail_line`]), a notice's source · time · title ([`notice_line`]).
+//!   high, in the order of the rows and in columns without a column head ([`LineColumns`]): marks or
+//!   tile · sender with domain or source · subject or title with the preview or text in `text_3` · time
+//!   at the right ([`mail_line`], [`notice_line`]). Mail and notices share the columns, so a mixed
+//!   list (the hub) has one grid.
 //! - `style = "cards"`: the mail window's cards (below); every other list keeps its rows.
 //! - `separators`: a hairline below each row or none; `selection`: the chosen row with a bar of the
 //!   accent colour at its left, or the whole row in the accent with its text, icons and coloured marks
@@ -259,13 +261,17 @@ const LINE_MARKS: usize = 4;
 /// the whole list, so the columns stand one under the other.
 const LINE_SENDER_SHARE: f32 = 0.3;
 
+/// The most of a line's title cell the subject or title takes while a preview follows it, so the
+/// preview is cut rather than left out ([`line_title_room`]).
+const LINE_TITLE_SHARE: f32 = 0.6;
+
 /// Width of the marks column of a line ([`mail_line`], [`notice_line`]): [`LINE_MARKS`] small icons
 /// with [`space::xs()`] between them; a notice's tile stands in it.
 pub(crate) fn line_marks_width() -> f32 {
     (LINE_MARKS as f32 * icon::SIZE_SM + (LINE_MARKS - 1) as f32 * space::xs()).max(tile())
 }
 
-/// Width of the date column of a line: the widest time a row shows on most days – "Yesterday 23:59"
+/// Width of the time column of a wide line: the widest time a row shows on most days – "Yesterday 23:59"
 /// or a short date – in `META`, tabular, in the language shown. A wider one ("until Wed, 14 Oct" in
 /// "Snoozed") ends in "…".
 pub(crate) fn line_date_width() -> f32 {
@@ -274,6 +280,158 @@ pub(crate) fn line_date_width() -> f32 {
     let day = chrono::NaiveDate::from_ymd_opt(2026, 9, 30).map(|day| datetime::format_short_date(day, day));
     let widest = day.iter().map(|day| typo::text_width(day, level)).fold(typo::text_width(&yesterday, level), f32::max);
     widest.ceil()
+}
+
+/// The width a clock time ("23:59") takes in a line, in `META`, tabular: what a narrow line keeps for
+/// its time ([`LineColumns::of`]), the time of most rows.
+fn line_clock_width() -> f32 {
+    typo::text_width("23:59", typo::meta().tabular()).ceil()
+}
+
+/// Whether a line `width` wide is narrow: narrower than a narrow window ([`layout::NARROW_MAX_WIDTH`]).
+/// A narrow line gives each row's time its own width instead of the column of the widest
+/// ([`line_date_width`]), which would leave a wide empty column beside a clock time.
+fn line_narrow(width: f32) -> bool {
+    width < layout::NARROW_MAX_WIDTH
+}
+
+/// The widths of the cells of a line (`style = "line"`, issue #291), in their order: the marks (a
+/// mail's marks, a notice's tile), who (sender with domain, or source), the title (subject or title
+/// with the preview or text) and the time at the right, [`cell_gap`] between them. Mail and notices
+/// take the same columns, so the title column starts at the same x in every row of a list.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LineColumns {
+    pub marks: f32,
+    pub who: f32,
+    pub title: f32,
+    pub time: f32,
+}
+
+impl LineColumns {
+    /// The columns of a line `width` wide whose time takes `time` in full: what is left of the width
+    /// beside the marker slot and the right padding ([`line_room`]), the marks [`line_marks_width`], who
+    /// [`LINE_SENDER_SHARE`] of the free room – worked out with a fixed time column, so it is the same
+    /// in every row –, the time [`line_date_width`] in a wide line and its own width in a narrow one
+    /// ([`line_narrow`], at most the wide column), the title the rest.
+    pub(crate) fn of(width: f32, time: f32) -> LineColumns {
+        let (room, gap, marks) = (line_room(width), cell_gap(), line_marks_width());
+        let narrow = line_narrow(width);
+        let column = if narrow { line_clock_width() } else { line_date_width() };
+        let free = (room - marks - column - 3.0 * gap).max(0.0);
+        let who = (free * LINE_SENDER_SHARE).floor();
+        let time = if narrow { time.ceil().min(line_date_width()) } else { column };
+        let title = (room - marks - who - time - 3.0 * gap).max(0.0);
+        LineColumns { marks, who, title, time }
+    }
+
+    /// Where each cell starts, from the start of the cells: marks, who, title, time.
+    #[cfg(test)]
+    pub(crate) fn starts(&self) -> [f32; 4] {
+        let gap = cell_gap();
+        let who = self.marks + gap;
+        let title = who + self.who + gap;
+        [0.0, who, title, title + self.title + gap]
+    }
+}
+
+/// The room of a line's cells `width` wide: the width less the marker slot of a mail ([`mail_row_left`])
+/// and the right padding – for a notice too, whose cells start at the same x ([`notice_line`]).
+fn line_room(width: f32) -> f32 {
+    (width - mail_row_left(false) - layout::row_padding().right).max(0.0)
+}
+
+/// The room of the title in the title cell of a line `room` wide, the title `title` wide in full: as
+/// wide as it needs, but at most [`LINE_TITLE_SHARE`] of the room while a `preview` follows, which gets
+/// the rest – both cut with "…" rather than one left out ([`LineWords::of`]).
+fn line_title_room(title: f32, preview: bool, room: f32) -> f32 {
+    if preview { title.ceil().min((room * LINE_TITLE_SHARE).floor()) } else { room }
+}
+
+/// What the cells of a line show, worked out from the room of its [`LineColumns`] (issue #291): who
+/// (the sender's name or the source) and beside it the domain, the title and the preview (each cut with
+/// "…", `None` where nothing is left of it), the time and the account (mail from two accounts on).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LineWords {
+    pub who: String,
+    pub domain: Option<String>,
+    pub title: String,
+    pub preview: Option<String>,
+    pub account: Option<String>,
+    pub time: String,
+}
+
+impl LineWords {
+    /// The words of a line in `columns`: `who` in `who_level` with `domain` after it in what is left,
+    /// `title` in `level` (· `count`) and `preview` in `BODY`, the `account` before the time – as the
+    /// rows show them ([`mail_rows`], [`notice_rows`]).
+    fn of(
+        columns: LineColumns,
+        (who, who_level, domain): (&str, Level, Option<&str>),
+        (title, level, count): (&str, Level, Option<&str>),
+        preview: Option<&str>,
+        account: Option<&str>,
+        time: &str,
+    ) -> LineWords {
+        let who_shown = typo::ellipsize(who, who_level, columns.who);
+        let left = columns.who - typo::text_width(&who_shown, who_level) - space::s();
+        let domain = domain.map(|domain| typo::ellipsize(domain, typo::meta(), left)).filter(|d| !d.is_empty());
+        let account_room = account.map_or(0.0, |name| {
+            (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(columns.title / 3.0)
+        });
+        let account = account.map(|name| typo::ellipsize(name, typo::meta(), account_room - cell_gap()));
+        let room = (columns.title - account_room - count.map_or(0.0, pill_width)).max(0.0);
+        let preview = preview.filter(|text| !text.is_empty());
+        let title_room = line_title_room(typo::text_width(title, level), preview.is_some(), room);
+        let title = typo::ellipsize(title, level, title_room);
+        let preview_room = room - typo::text_width(&title, level).ceil().min(title_room) - space::s();
+        let preview = preview.map(|text| typo::ellipsize(text, typo::body(), preview_room)).filter(|t| !t.is_empty());
+        let time = typo::ellipsize(time, typo::meta().tabular(), columns.time);
+        LineWords { who: who_shown, domain, title, preview, account: account.filter(|a| !a.is_empty()), time }
+    }
+}
+
+/// The cells of a line in [`LineColumns`] order: `marks` in its column, who – `who` in `who_level` and
+/// `who_colour` with the domain in `META`/`text_3` –, the title in `level` and `text` with the `count`
+/// and the preview in `BODY`/`text_3` (the matches of a search stressed, [`marked`]) and the account at
+/// its end, and the time right-aligned in its column.
+#[allow(clippy::too_many_arguments)]
+fn line_cells<'a>(
+    columns: LineColumns,
+    words: LineWords,
+    marks: Element<'a, Message>,
+    (who_level, who_colour): (Level, fn(&Theme) -> iced::widget::text::Style),
+    level: Level,
+    count: Option<String>,
+    account: Option<usize>,
+    (hits, hit_colour): (&[String], Option<Color>),
+) -> Element<'a, Message> {
+    let LineWords { who, domain, title, preview, account: account_name, time } = words;
+    let mut who = row![typo::text(who_level, who).style(who_colour).wrapping(Wrapping::None)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    if let Some(domain) = domain {
+        who = who.push(typo::text(typo::meta(), domain).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    let mut title =
+        row![marked(title, level, theme::text, hits, hit_colour)].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(count) = count {
+        title = title.push(widgets::pill(None, count));
+    }
+    if let Some(preview) = preview {
+        title = title.push(marked(preview, typo::body(), theme::text_3, hits, hit_colour));
+    }
+    let ends: Vec<Element<'a, Message>> = account_name.map(|name| account_cell(account, name)).into_iter().collect();
+    let time = container(time_cell(time)).width(columns.time).align_right(columns.time).clip(true);
+    row![
+        container(marks).width(columns.marks).clip(true),
+        container(who).width(columns.who).clip(true),
+        container(line(title, ends)).width(Fill).clip(true),
+        time,
+    ]
+    .spacing(cell_gap())
+    .align_y(Alignment::Center)
+    .width(Fill)
+    .into()
 }
 
 /// Edge of the unread dot in the left inset.
@@ -1162,35 +1320,53 @@ fn marker_slot<'a>(new: bool, bar: bool, height: f32) -> Element<'a, Message> {
         .into()
 }
 
-/// A mail as one line `width` wide in `look` (`style = "line"`, Console, issue #291): the marker slot
-/// with the unread dot, then fixed columns without a column head – the marks ([`line_marks_width`]:
-/// what the mail is, an invitation, an attachment, a flag), the date ([`line_date_width`]), the sender
-/// ([`LINE_SENDER_SHARE`] of the free room) and the subject with the number of messages from two on.
-/// The preview, the domain and the account have no room on one line.
+/// A mail as one line `width` wide in `look` (`style = "line"`, Console, issue #291), in the order of
+/// its rows ([`mail_rows`]): the marker slot with the unread dot, then in the columns of a line
+/// ([`LineColumns`], without a column head) the marks (what the mail is, an invitation, an attachment, a
+/// flag), the sender with the domain, the subject (· the number of messages from two on) with the
+/// preview in `text_3`, the account from two accounts on (unless it is the sender's domain,
+/// [`account_shown`]) and the time at the right. What has no room is cut with "…" ([`LineWords`]).
 pub(crate) fn mail_line<'a>(look: ListLook, lines: MailLines<'a>, width: f32, selected: bool) -> Element<'a, Message> {
     let parts = RowLook::of(look, selected);
-    let MailLines { name, time, marks, subject, new, count, hits, .. } = lines;
+    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
+    let account_name = account_shown(account_name, domain.as_deref());
     let words = hits.map(|hits| hits.words()).unwrap_or_default();
     let hit_colour = hits.map(|hits| hits.text).filter(|_| !parts.fill);
     let level = mail_text_level(new);
-    let gap = cell_gap();
-    let (marks_width, date_width) = (line_marks_width(), line_date_width());
-    let room = (width - mail_row_left(false) - layout::row_padding().right).max(0.0);
-    let free = (room - marks_width - date_width - 3.0 * gap).max(0.0);
-    let sender_width = (free * LINE_SENDER_SHARE).floor();
-    let subject_room = (free - sender_width - gap - count.as_deref().map_or(0.0, pill_width)).max(0.0);
-
+    let columns = LineColumns::of(width, typo::text_width(&time, typo::meta().tabular()));
+    let shown = mail_line_words(
+        columns,
+        (&name, domain.as_deref()),
+        (&subject, new, count.as_deref()),
+        &preview,
+        &account_name,
+        &time,
+    );
     let marks = row(marks.into_iter().map(|(mark, _)| mark)).spacing(space::xs()).align_y(Alignment::Center);
-    let marks = container(marks).width(marks_width).clip(true);
-    let date = typo::ellipsize(&time, typo::meta().tabular(), date_width);
-    let date = container(time_cell(date)).width(date_width).clip(true);
-    let sender = typo::text(level, typo::ellipsize(&name, level, sender_width)).style(theme::text);
-    let sender = container(sender.wrapping(Wrapping::None)).width(sender_width).clip(true);
-    let subject = marked(typo::ellipsize(&subject, level, subject_room), level, theme::text, &words, hit_colour);
-    let subject = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
-    let cells = row![marks, date, sender, subject].spacing(gap).align_y(Alignment::Center).width(Fill);
+    let cells =
+        line_cells(columns, shown, marks.into(), (level, theme::text), level, count, account, (&words, hit_colour));
     let marker = marker_slot(new, parts.bar, typo::line_height(level));
     row![marker, cells].align_y(Alignment::Center).into()
+}
+
+/// What the cells of a mail's line show in `columns` ([`LineWords`]): the sender `name` with the
+/// `domain`, the `subject` (medium while `new`, · `count`) with the `preview`, the account and the time.
+fn mail_line_words(
+    columns: LineColumns,
+    (name, domain): (&str, Option<&str>),
+    (subject, new, count): (&str, bool, Option<&str>),
+    preview: &Option<String>,
+    account: &Option<String>,
+    time: &str,
+) -> LineWords {
+    LineWords::of(
+        columns,
+        (name, typo::body_strong(), domain),
+        (subject, mail_text_level(new), count),
+        preview.as_deref(),
+        account.as_deref(),
+        time,
+    )
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -1267,25 +1443,41 @@ fn notice_rows<'a>(look: ListLook, item: &'a Item, rows: &Rows<'a>, width: f32) 
     row![mark, words].spacing(space::m()).align_y(Alignment::Center).into()
 }
 
-/// A notice as one line `width` wide (`style = "line"`, Console, issue #291), in the columns of a mail
-/// line ([`mail_line`]): the source's tile in the marks column, the time in the date column, then the
-/// title (· count) over the columns of sender and subject. Its text has no room on one line.
+/// A notice as one line `width` wide (`style = "line"`, Console, issue #291), in the order of its rows
+/// ([`notice_rows`]) and in the columns of a mail line ([`LineColumns`], one grid in a mixed list): the
+/// source's tile in the marks column, the source's name where a mail has its sender, the title (· count)
+/// with the text in `text_3` where a mail has its subject and preview, the time at the right. Its cells
+/// start where a mail's do, after the marker slot.
 pub(crate) fn notice_line<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
-    let pad = layout::row_padding();
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
-    let gap = cell_gap();
-    let (marks_width, date_width) = (line_marks_width(), line_date_width());
     let count = (item.count > 1).then(|| item.count.to_string());
-    let room = (width - pad.left - pad.right).max(0.0);
-    let title_room = (room - marks_width - date_width - 2.0 * gap - count.as_deref().map_or(0.0, pill_width)).max(0.0);
-    let tile = container(source_tile(item)).width(marks_width).align_y(iced::Center);
-    let time = typo::ellipsize(&time_text(item, rows.view, rows.now), typo::meta().tabular(), date_width);
-    let time = container(time_cell(time)).width(date_width).clip(true);
-    let (title, _) = words(item);
-    let title =
-        typo::text(level, typo::ellipsize(&title, level, title_room)).style(theme::text).wrapping(Wrapping::None);
-    let title = line(title, count.map(|count| widgets::pill(None, count)).into_iter().collect());
-    row![tile, time, title].spacing(gap).align_y(Alignment::Center).width(Fill).into()
+    let columns =
+        LineColumns::of(width, typo::text_width(&time_text(item, rows.view, rows.now), typo::meta().tabular()));
+    let shown = notice_line_words(item, rows, columns);
+    let tile = container(source_tile(item)).align_y(iced::Center);
+    let cells = line_cells(columns, shown, tile.into(), (typo::body(), theme::text_2), level, count, None, (&[], None));
+    // The marker slot of a mail is wider than the row's padding where the padding is narrower than the
+    // unread dot: the notice's cells start at the same x.
+    let lead = (mail_row_left(false) - layout::row_padding().left).max(0.0);
+    row![blank().width(lead), cells].align_y(Alignment::Center).into()
+}
+
+/// What the cells of a notice's line show in `columns` ([`LineWords`]): the source's name
+/// ([`SourceRef::label`]) where a mail has its sender, the title (medium while new, · count) with the
+/// text ([`words`]), the time.
+fn notice_line_words(item: &Item, rows: &Rows<'_>, columns: LineColumns) -> LineWords {
+    let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
+    let count = (item.count > 1).then(|| item.count.to_string());
+    let (title, text) = words(item);
+    let time = time_text(item, rows.view, rows.now);
+    LineWords::of(
+        columns,
+        (&item.source.label(), typo::body(), None),
+        (&title, level, count.as_deref()),
+        text.as_deref(),
+        None,
+        &time,
+    )
 }
 
 /// The source's icon of `item` on a small tile (`raised`, `line` frame): in the attention colour
@@ -2373,16 +2565,111 @@ mod tests {
         );
     }
 
-    /// Issue #291 (task L.35): a line's columns stand one under the other – marks, date, sender,
-    /// subject at fixed widths –, every mark of a mail fits its column, and lines and rows build in
-    /// every look and width, chosen or not.
+    /// Issue #291 (decided after the review of the three designs, replaces the columns of L.35): a line
+    /// has the order of the rows – marks · who · title with the preview · time –, its cells side by
+    /// side with the title column the widest and the time ending at the right edge of the cells.
     #[test]
-    fn lines_have_fixed_columns_and_every_look_builds() {
+    fn a_line_has_the_order_of_the_rows_and_the_time_at_the_right() {
+        for width in [480.0, 720.0, 1200.0] {
+            let columns = LineColumns::of(width, line_clock_width());
+            let [marks, who, title, time] = columns.starts();
+            assert!(marks < who && who < title && title < time, "{width}: marks, who, title, time");
+            assert_eq!(who, columns.marks + cell_gap(), "{width}: who after the marks");
+            assert_eq!(time + columns.time, line_room(width), "{width}: the time ends at the right");
+            assert!(columns.title > columns.who, "{width}: the title column takes the most");
+        }
         assert!(line_marks_width() >= LINE_MARKS as f32 * icon::SIZE_SM, "every mark of a mail");
         assert!(line_marks_width() >= tile(), "a notice's tile");
         let yesterday = trf("Yesterday {time}", &[("time", &"23:59")]);
         assert!(line_date_width() >= typo::text_width(&yesterday, typo::meta().tabular()), "a date in full");
+    }
 
+    /// Issue #291 (review): mail and notices share the title column, so a mixed list (the hub) has one
+    /// grid – the columns do not follow the row's time, and a notice's cells start where a mail's do.
+    #[test]
+    fn mail_and_notices_share_the_title_column() {
+        for width in [480.0, 720.0, 1200.0] {
+            let clock = LineColumns::of(width, line_clock_width());
+            let yesterday = LineColumns::of(width, line_date_width());
+            assert_eq!(clock.starts()[..3], yesterday.starts()[..3], "{width}: the same columns, whatever the time");
+        }
+        assert!(mail_row_left(false) >= layout::row_padding().left, "the notice's lead fills the gap, never less");
+        let view = View::ForMe;
+        let rows = rows_on(&view, "someone", true);
+        let notice = demo::sample(now()).remove(0);
+        let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let columns = LineColumns::of(720.0, line_clock_width());
+        // Both take their words from the same columns: who and title stay in theirs.
+        let lines = MailLines::of(&entry, &rows);
+        let mail_words = mail_line_words(
+            columns,
+            (&lines.name, lines.domain.as_deref()),
+            (&lines.subject, lines.new, None),
+            &lines.preview,
+            &None,
+            &lines.time,
+        );
+        let notice_words = notice_line_words(&notice, &rows, columns);
+        for shown in [&mail_words, &notice_words] {
+            assert!(typo::text_width(&shown.who, typo::body_strong()) <= columns.who, "{shown:?}");
+        }
+    }
+
+    /// Issue #291 (review): a narrow line gives each row's time its own width – no wide empty column
+    /// beside a clock time –, at most the wide column; a wide line keeps the column of the widest time.
+    #[test]
+    fn a_narrow_line_gives_its_time_its_own_width() {
+        assert!(line_narrow(480.0) && !line_narrow(720.0));
+        let clock = line_clock_width();
+        assert!(clock < line_date_width());
+        assert_eq!(LineColumns::of(480.0, clock).time, clock, "narrow: as wide as \"23:59\"");
+        assert_eq!(LineColumns::of(480.0, 1000.0).time, line_date_width(), "narrow: at most the wide column");
+        assert_eq!(LineColumns::of(720.0, clock).time, line_date_width(), "wide: the column of the widest");
+        assert!(LineColumns::of(480.0, clock).title > LineColumns::of(480.0, line_date_width()).title);
+    }
+
+    /// Issue #291 (review): a line shows what the rows show – sender with domain, subject, preview,
+    /// account, time; a notice its source, title and text –, cut with "…" rather than left out.
+    #[test]
+    fn a_line_shows_what_the_row_shows_and_cuts_rather_than_drops() {
+        let view = View::ForMe;
+        let rows = rows_on(&view, "someone", true);
+        let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let lines = MailLines::of(&entry, &rows);
+        let preview = Some("Can we go through the sidebar drafts before three? I have a few notes.".to_string());
+        let account = Some("anna@home.example.org".to_string());
+        let shown = |width: f32| {
+            let columns = LineColumns::of(width, typo::text_width(&lines.time, typo::meta().tabular()));
+            mail_line_words(
+                columns,
+                (&lines.name, lines.domain.as_deref()),
+                (&lines.subject, lines.new, None),
+                &preview,
+                &account,
+                &lines.time,
+            )
+        };
+        let wide = shown(1600.0);
+        assert_eq!((wide.who.as_str(), wide.domain.as_deref()), ("Jonas Weber", lines.domain.as_deref()));
+        assert!(wide.domain.is_some(), "the domain, as in the rows");
+        assert_eq!((wide.title.as_str(), wide.preview.as_ref()), (lines.subject.as_str(), preview.as_ref()));
+        assert_eq!((wide.account.as_ref(), wide.time.as_str()), (account.as_ref(), lines.time.as_str()));
+        let narrow = shown(480.0);
+        let cut = narrow.preview.expect("the preview is cut, not left out");
+        assert!(cut.ends_with('…') && cut.len() < preview.as_ref().map_or(0, String::len), "{cut}");
+
+        let notice = demo::sample(now()).remove(0);
+        let (title, text) = words(&notice);
+        let columns = LineColumns::of(1600.0, line_date_width());
+        let shown = notice_line_words(&notice, &rows, columns);
+        assert_eq!(shown.who, notice.source.label(), "the source where a mail has its sender");
+        assert_eq!((shown.title, shown.preview), (title, text), "title and text");
+        assert_eq!(shown.time, time_text(&notice, &view, now()));
+    }
+
+    /// Issue #291: lines and rows build in every look and width, chosen or not.
+    #[test]
+    fn every_look_builds() {
         let view = View::ForMe;
         let notice = demo::sample(now()).remove(0);
         let entry = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
