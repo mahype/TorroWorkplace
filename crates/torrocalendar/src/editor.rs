@@ -144,7 +144,7 @@ pub struct Editor {
     /// opening an event never writes it back.
     base: Form,
     /// The form handed out with the save under way, or with the last one that failed: it is not
-    /// sent again until something changes.
+    /// sent again until something changes, or another scope sends it ([`Editor::choose_scope`]).
     sent: Option<Form>,
     /// The band's scope when the last save went out: a save that fails takes the band back to it, so
     /// a change typed for "This event" is not sent again for "All" chosen meanwhile (the second
@@ -637,8 +637,6 @@ fn wall_of(time: EventTime, zone: Option<&str>) -> NaiveDateTime {
     }
 }
 
-/// The instant of an event time, a day at its midnight in UTC: for comparing keys of occurrences
-/// as the core does.
 /// How many events of a series `scope` reaches, in order: one, this and the following, all.
 fn width(scope: SeriesScope) -> u8 {
     match scope {
@@ -648,6 +646,8 @@ fn width(scope: SeriesScope) -> u8 {
     }
 }
 
+/// The instant of an event time, a day at its midnight in UTC: for comparing keys of occurrences
+/// as the core does.
 fn instant_of(time: EventTime) -> DateTime<Utc> {
     match time {
         EventTime::DateTime(at) => at,
@@ -949,6 +949,9 @@ impl Editor {
         }
         let switching = scope != self.scope;
         let mut pending = Action::None;
+        // A failed save taken along to a narrower scope goes out again with it at once.
+        let narrowing_failed =
+            switching && !self.saving && self.form != self.base && !self.changed() && width(scope) < width(self.scope);
         if switching && self.form != self.base {
             if self.saving {
                 // Only what was typed after the save under way waits; the sent form is decided by
@@ -976,6 +979,10 @@ impl Editor {
             return pending;
         }
         self.settle_scope();
+        if narrowing_failed {
+            self.sent = None;
+            return self.request_save(false);
+        }
         Action::None
     }
 
@@ -1307,7 +1314,8 @@ impl Editor {
     /// When [`Editor::choose_scope`] switched the band while the save was under way, the form goes
     /// out next with the narrower of the two scopes, so nothing typed lands on more events than it
     /// was typed for (the review of PR #296): a wider band goes back to the scope sent, a narrower
-    /// one stays and its rule settles.
+    /// one stays and the form goes out with it at the next autosave. Either way the rule settles
+    /// to the scope, so the band never shows a rule its scope cannot save.
     pub fn save_failed(&mut self) {
         self.saving = false;
         if self.scope == self.sent_scope {
@@ -1317,8 +1325,9 @@ impl Editor {
         if width(self.scope) > width(self.sent_scope) {
             self.scope = self.sent_scope;
         } else {
-            self.settle_scope();
+            self.sent = None;
         }
+        self.settle_scope();
     }
 
     /// Whether `saved`, the answer to a save, belongs to this editor's save under way. A series
@@ -3463,11 +3472,9 @@ mod tests {
         editor.update(Message::Location("Room 20".into()));
         assert_eq!(saves_with(&mut editor, Message::Flush).1, Some(SeriesScope::Following));
         editor.save_failed();
-        assert!(matches!(editor.update(Message::Scope(SeriesScope::Occurrence)), Action::None));
+        let (event, scope) = saves_with(&mut editor, Message::Scope(SeriesScope::Occurrence));
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 20"), Some(SeriesScope::Occurrence)));
         assert_eq!(editor.scope, SeriesScope::Occurrence);
-        editor.update(Message::Location("Room 21".into()));
-        let (event, scope) = saves_with(&mut editor, Message::Flush);
-        assert_eq!((event.location.as_deref(), scope), (Some("Room 21"), Some(SeriesScope::Occurrence)));
     }
 
     /// The review of PR #296: the band switched while a save is under way, then more typed; when the
@@ -3480,10 +3487,11 @@ mod tests {
         narrowed.update(Message::Location("Room 30".into()));
         assert_eq!(saves_with(&mut narrowed, Message::Flush).1, Some(SeriesScope::Series));
         assert!(matches!(narrowed.update(Message::Scope(SeriesScope::Occurrence)), Action::None));
-        narrowed.update(Message::Location("Room 31".into()));
         narrowed.save_failed();
         assert_eq!(narrowed.scope, SeriesScope::Occurrence);
-        assert_eq!(saves_with(&mut narrowed, Message::Flush).1, Some(SeriesScope::Occurrence));
+        assert!(narrowed.wants_autosave(), "nothing typed since, and still it goes out with the narrower scope");
+        let (event, scope) = saves_with(&mut narrowed, Message::Flush);
+        assert_eq!((event.location.as_deref(), scope), (Some("Room 30"), Some(SeriesScope::Occurrence)));
 
         // Sent with "This event", "All" chosen meanwhile: the band goes back to "This event".
         let mut widened = Editor::edit(&occurrence(), &calendars());
@@ -3553,8 +3561,8 @@ mod tests {
         assert_eq!((ending.repeat.is_none(), ending.recurring, scope), (true, false, Some(SeriesScope::Series)));
         assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
         assert_eq!(editor.scope, SeriesScope::Series, "the scope stays while the series is being ended");
-        // The save failed: a narrower scope sends nothing again (the review of PR #296), and "Never"
-        // does not go with it.
+        // The save failed: a narrower scope takes the form along (the review of PR #296), but "Never"
+        // does not go with it; the stored rule is back and nothing is left to send.
         editor.save_failed();
         assert!(matches!(editor.update(Message::Scope(SeriesScope::Following)), Action::None));
         assert_eq!(editor.scope, SeriesScope::Following);
