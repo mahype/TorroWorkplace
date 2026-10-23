@@ -18,7 +18,7 @@ pub enum DesignError {
     BadId { id: String },
     /// There is no folder for this id in the folder of `part`.
     NotFound { part: Part, id: String },
-    /// `[about] font` or `[about] color_scheme` of a design names something that can't be an id.
+    /// `[about] font` of a design names something that can't be an id.
     BadSuggestion { key: String, id: String },
     /// The widest figure of the `numbers` font is wider than the time axis of a design is made for
     /// ([`super::DIGIT_MAX_EM`]), in em after the size adjustment.

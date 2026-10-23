@@ -2836,7 +2836,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Format {found} isn't supported. This version reads format 1.",
         "Format {found} wird nicht unterstützt. Diese Version liest Format 1.",
     ),
-    ("Inter, quiet surfaces, Torro red", "Inter, ruhige Flächen, Torro-Rot"),
     (
         "The line height of “{key}” is {line}; it must be between {size} and twice that.",
         "Die Zeilenhöhe von „{key}“ ist {line}; sie muss zwischen {size} und dem Doppelten liegen.",

@@ -132,8 +132,10 @@ aus einem Guss wirkt:
   sagt, wie die gewählte Zeile (die im Detail/Leser) aussieht (`[list] selection`, `layout::list()`):
   `bar` (Standard, Compact) – neutral `SELECTED` mit einem 2-px-Strich in `ACCENT` links
   (`widgets::selection_bar`); `fill` (Console) – die ganze Zeile in `ACCENT`, ihr Text und ihre Icons in
-  `on_accent` (`style::button::list_row`, Zellen über `widgets::row_content`). Nur diese eine Zeile, nie
-  Seitenleiste, Reiter, Chips oder Hover; eigene Farben in der Zeile (Status, Listenfarbe) bleiben.
+  `on_accent` (`style::button::list_row`, Zellen über `widgets::row_content`) – auch ihre farbigen Marken
+  (Listenpunkt, Farbbalken eines Termins, Prioritätsbalken, Fälligkeit; entschieden zu L.32), sonst wären sie auf
+  `ACCENT` nicht lesbar; Kreise, Pillen und Punkte bleiben rund. Nur diese eine Zeile, nie Seitenleiste, Reiter,
+  Chips oder Hover; mit `bar` bleiben die eigenen Farben in der Zeile (Status, Listenfarbe).
 - Status: Fehler `STATUS_ERROR`, Warten/Abweichung/überfällig Attention-Orange, OK Grün, inaktiv
   Grau – immer mit Wort oder Icon, Farbe nur im Punkt bzw. Icon.
 - Kalender- und Listenfarben gehören dem Nutzer: als Farbbalken, Punkt, Ring oder Häkchen, nie als
@@ -546,11 +548,13 @@ switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-mail-certificate
 wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai menu drawer switcher remove delete-template rename-template design
-api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
+design-schemes design-switched api-empty api-off api-detail api-new-key api-revoke create-key create-key-done mcp-empty mcp-off
 mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other` (`wizard-mail-certificate`: Frage „Trust this certificate?“ zu einem Server im lokalen Netz,
 `wizard-mail-certificate-public`: dieselbe Frage mit Warnung für einen öffentlichen Host; `design`: Appearance › Design mit
-Beispielpaketen, eines davon ungültig mit seinen Gründen; `mcp-hooks`: Seite von Claude Code mit
+Beispielpaketen, eines davon ungültig mit seinen Gründen; `design-schemes`: dieselbe Seite mit offener
+Auswahl der Farbschemata; `design-switched`: nach dem Wechsel zu Console, mit dem Hinweis, was mitgesetzt wurde
+(„Also switched: plain-text mail“); `mcp-hooks`: Seite von Claude Code mit
 „Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
 einem unbekannten) und `--section overview|accounts|api|mcp|approvals|workspaces|appearance|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im

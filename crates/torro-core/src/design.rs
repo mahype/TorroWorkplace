@@ -473,8 +473,9 @@ pub enum Density {
 /// Margins, paddings and gaps by role (`[layout]`), the same for every element of that role.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Layout {
-    /// The margin around the inset content panel beside the sidebar (top, right, bottom).
-    /// Standard 8: `torro_gui::theme::size::INSET`, used in `torro_gui::shell`.
+    /// The margin around the inset content panel beside the sidebar (top, right, bottom), read as
+    /// `torro_gui::layout::inset()` by `torro_gui::shell`. Standard 0 (issue #291): the content is
+    /// flush, a hairline parts it from the sidebar; above 0 it is an inset panel with corners.
     pub inset: f32,
     /// Padding of content and pages. Standard 24 × 24: the control centre's pages in the wide and
     /// medium layout (`page_margin` in `torroworkplace/src/ui/mod.rs`).
@@ -482,19 +483,20 @@ pub struct Layout {
     /// Padding of panels, cards and dialogs. Standard 16 × 16: the floating card
     /// (`torro_gui::widgets::popover`, 16 above and below, 8 + 8 at the sides).
     pub panel_padding: Pad,
-    /// Padding of list rows. Standard 0 × 16: `torro_gui::widgets::list_row` and `group_row` (the
-    /// height comes from [`Size::row`], the content is centred in it).
+    /// Padding of list rows. Standard 18 × 24: `torro_gui::widgets::list_row` and `group_row` take
+    /// the sides (the height comes from [`Size::row`], the content is centred in it); the inbox's rows
+    /// of several lines also take above and below.
     pub row_padding: Pad,
-    /// Padding of buttons, chips and inputs. Standard 0 × 10: `torro_gui::style::BUTTON_PADDING`.
+    /// Padding of buttons, chips and inputs. Standard 0 × 12: `torro_gui::style::button_padding()`.
     pub control_padding: Pad,
     /// Between groups and sections. Standard 24: the groups of the control centre's General page
     /// (`torroworkplace/src/ui/general.rs`).
     pub section_gap: f32,
-    /// Between elements inside a group. Standard 8: `torro_gui::widgets::group`.
+    /// Between elements inside a group. Standard 10: `torro_gui::widgets::group`.
     pub item_gap: f32,
     /// The padding of a mail in the reader, inside the reading column [`Size::reading_max`]
-    /// (`[layout] reading_padding`, issue #291): Standard 24 × 24 so far (the page padding the reader
-    /// has today), Compact 32 × 40, Console 14 × 18. Read by `torro_gui` from task L.34 on.
+    /// (`[layout] reading_padding`, issue #291): Standard 52 × 64, Compact 32 × 40, Console 14 × 18,
+    /// read as `torro_gui::layout::reading_padding()`.
     pub reading_padding: Pad,
 }
 
@@ -584,7 +586,8 @@ pub struct Size {
     pub row: f32,
     pub row_two: f32,
     /// A mail entry's row in the inbox (task E3.9): avatar, sender, subject and preview on three
-    /// lines of 20 with 16 above and below (task E11.1).
+    /// lines with the row padding above and below (task E11.1). Standard 100 (three lines of 22 and
+    /// 18 above and below), one line in Console (24).
     pub row_message: f32,
     /// Any other entry's row in the inbox (task E3.9): source icon, title and text on two lines.
     pub row_notice: f32,
@@ -622,13 +625,13 @@ pub struct Size {
     /// beside them in the reader's head.
     pub pill: f32,
     /// The collapsed sidebar and the collapsed action rail of the mail window (issue #291), 40–80 and
-    /// at least [`Size::control_lg`], the rail's button. Standard 52 so far (`torro_gui::shell::rail()`).
+    /// at least [`Size::control_lg`], the rail's button. Standard 60 (`torro_gui::shell::rail()`).
     pub rail: f32,
-    /// The expanded action rail of the mail window (issue #291), 180–320. Standard 232 so far (the
-    /// sidebar's width, as `torro_gui::widgets::RailMode::Expanded` has it today).
+    /// The expanded action rail of the mail window (issue #291), 180–320. Standard 248
+    /// (`torro_gui::widgets::RailMode::Expanded`).
     pub rail_wide: f32,
-    /// The widest the text of a mail stands in the reader (issue #291), 480–1200. Standard 1200 so far:
-    /// the reader has no reading width yet, and 1200 is the most the rule allows.
+    /// The widest the text of a mail stands in the reader (issue #291), 480–1200: the reading column.
+    /// Standard 600, Compact 640, Console 1200.
     pub reading_max: f32,
 }
 

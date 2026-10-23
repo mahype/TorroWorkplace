@@ -105,8 +105,7 @@ pub(super) const BUILT_IN_FILES: [(&str, &str); 3] = [
 /// The descriptions of the built-in designs, English as their files say them: each is handed to
 /// `tr()`, so the translation in `i18n/de.rs` finds it ([`built_in_about`]). A description that is not
 /// here is shown as written. Names are not translated: they are names.
-const BUILT_IN_DESCRIPTIONS: [&str; 4] = [
-    "Inter, quiet surfaces, Torro red",
+const BUILT_IN_DESCRIPTIONS: [&str; 3] = [
     "Calm and open: flush content, hairlines, a reading column with wide margins",
     "Standard, built tighter",
     "Very dense and square, one line per mail",

@@ -67,9 +67,9 @@ name = "My compact"            # Pflicht; Name in der Liste, nicht übersetzt
 version = "1.0.0"              # Pflicht
 author = "Sven Wagener"        # optional
 description = "Compact with more air"   # optional
-font = "jetbrains-mono"        # optional: vorgeschlagene Schrift (id aus fonts/); greift beim Wählen ab L.33
-mail_view = "text"             # optional: Mails als "text" oder "html" zeigen; greift beim Wählen ab L.33
-# color_scheme = "nord"        # entfällt mit L.33: Farben gehören nie zu einem Design
+font = "jetbrains-mono"        # optional: vorgeschlagene Schrift (id aus fonts/); wird beim Wählen mitgesetzt
+mail_view = "text"             # optional: Mails als "text" oder "html" zeigen; wird beim Wählen mitgesetzt
+# color_scheme = "nord"        # entfallen (L.33): unbekannter Schlüssel, Farben gehören nie zu einem Design
 
 # Schriftstufen: Rolle (text | heading | numbers), Größe und Zeilenhöhe für Inter, Gewicht
 # (regular | medium | semibold | bold). Eine Stufe, die fehlt, ist die des Standards.
@@ -136,7 +136,7 @@ scale = [4, 8, 12, 16, 24, 32]
 scale = [4, 4, 4, 4]
 
 [layout]                       # Ränder [senkrecht, waagerecht] und Lücken nach Rolle
-inset = 0                      # Rand um die Inhaltsfläche neben der Seitenleiste; 0 = bündig mit Linie (ab L.34)
+inset = 0                      # Rand um die Inhaltsfläche neben der Seitenleiste; 0 = bündig mit Linie
 page_padding = [16, 16]        # Innenrand von Inhalt und Seiten
 panel_padding = [12, 12]       # Paneele, Karten, Dialoge
 row_padding = [10, 16]         # Listenzeilen (die Höhe kommt aus [size])
@@ -188,8 +188,8 @@ preview_lines = 1              # Zeilen Vorschau unter dem Betreff, 1 oder 2
 ```
 
 **Entfallen:** `layout.density` (seit Issue #291 ein unbekannter Schlüssel; Karten sind `[list] style = "cards"`,
-`rows` und `line` sind die kompakte Dichte) und `[about] color_scheme` (L.33 nimmt ihn aus dem Code; bis dahin wird er
-noch gelesen). Schriften stehen in `fonts/<id>/font.toml`, Farben und Logo in `color-schemes/<id>/color-scheme.toml`.
+`rows` und `line` sind die kompakte Dichte) und `[about] color_scheme` (seit L.33 ein unbekannter Schlüssel: Das Design wird
+mit Grund abgelehnt). Schriften stehen in `fonts/<id>/font.toml`, Farben und Logo in `color-schemes/<id>/color-scheme.toml`.
 
 Die Schlüssel für Farben unten (`[colors.dark]`, `[colors.light]`, Seitenleiste, Diagramm, Lesestatus, Arbeitszeit)
 gehören heute ins Farbschema, nicht ins Design.
@@ -344,7 +344,7 @@ mehr Luft, ein ruhiger Petrol-Akzent, im Repository `designs/plex/`, `fonts/plex
 
 | Ordner | Datei | trägt | dazu |
 |---|---|---|---|
-| `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `mail_view`; `color_scheme` bis L.33), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | `preview.png` |
+| `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `mail_view`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | `preview.png` |
 | `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
 | `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg` |
 
@@ -509,7 +509,8 @@ Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Untero
   stehen (Commitr in allen dreien). `torro` ist alle drei, eingebaut, ohne Ordner.
 - Neu und optional im `[about]` eines Designs: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das
   Farbschema, die zum Design gedacht sind. Nur Vorschläge, gewählt wird getrennt. Seit Issue #291 kommt `mail_view`
-  (`"html"`, `"text"`) dazu, und `color_scheme` entfällt mit L.33: Farben gehören nie zu einem Design.
+  (`"html"`, `"text"`) dazu, und `color_scheme` ist seit L.33 entfallen: Farben gehören nie zu einem Design. Wer ein
+  Design wählt, bekommt die vorgeschlagene Schrift (wenn sie gültig lädt) und die Ansicht der Mails mitgesetzt.
 - Jeder Teil wird für sich geprüft und für sich abgelehnt.
 - Ein Tray-Symbol gibt es im neuen Format nicht mehr: Der Tray zeichnet immer das rote Raster (Issue #114).
 - In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), im Tooltip der Name aus
@@ -607,9 +608,9 @@ Aufgabe in `torro-gui`.
 
 ## Drei eingebaute Designs: Standard, Compact, Console
 
-> **Issue #291, Stand 2026-10-22.** Aufgaben L.31–L.38 in [tasks/design-pakete.md](tasks/design-pakete.md). L.31
-> (Kern) ist umgesetzt; bis L.34 trägt `designs/torro/design.toml` noch die Form von vorher, damit keine App sich
-> ändert.
+> **Issue #291, Stand 2026-10-23.** Aufgaben L.31–L.38 in [tasks/design-pakete.md](tasks/design-pakete.md). L.31–L.37
+> sind umgesetzt: Kern, Dienst, Bausteine, Mail, Aufgaben, Kalender und Appearance folgen den drei Designs; die
+> Zeilenhöhen sind die des bestätigten Entwurfs L.32.
 
 Ein Design bestimmt nur, wie viel auf den Bildschirm passt: Maße und *wie* Listen gezeichnet werden, nie *wo* etwas
 steht, und nie Farben. Die Suite bringt drei Designs mit, in dieser Reihenfolge:
@@ -634,7 +635,7 @@ steht, und nie Farben. Die Suite bringt drei Designs mit, in dieser Reihenfolge:
 
 **Werte** (Größen für Inter; die Begründung abgeleiteter Werte steht als Kommentar in der jeweiligen Datei):
 
-| Schlüssel | Standard (ab L.34) | Compact | Console |
+| Schlüssel | Standard | Compact | Console |
 |---|---|---|---|
 | `type.body` / `body_strong` | 14/22 | 13/20 | 12/18 (`body_strong` bold) |
 | `type.meta` · `caption` | 13/18 · 12/16 | 12/16 · 11/16 | 11/16 · 11/16 |
@@ -655,9 +656,9 @@ steht, und nie Farben. Die Suite bringt drei Designs mit, in dieser Reihenfolge:
 | `[list] avatar` · `preview_lines` | 40 · 1 | 28 · 1 | 0 · 1 |
 | `[about] font` · `mail_view` | – · – | – · – | `jetbrains-mono` · `text` |
 
-Bis L.34 gilt für Standard noch die Form von vorher: Text 13/20, Zeile 40, Mail-Zeile 92, eingesetzte Fläche 8,
-Radien 4/6/8/10, `rail` 52, `rail_wide` 232, keine Lesebreite (`reading_max` 1200), `reading_padding` 24 × 24, Avatar
-der Mail-Zeile 32.
+Seit L.34 ersetzt diese Form die von vorher (Text 13/20, Zeile 40, Mail-Zeile 92, eingesetzte Fläche 8, Radien
+4/6/8/10, `rail` 52, `rail_wide` 232, keine Lesebreite, `reading_padding` 24 × 24, Avatar der Mail-Zeile 32). Ein
+eigenes Design mit `inset` > 0 bekommt weiterhin die eingesetzte Inhaltsfläche.
 
 ## Wählen und wechseln
 
