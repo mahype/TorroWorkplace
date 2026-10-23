@@ -398,7 +398,8 @@ fn stored_now(socket: &Path) -> Option<Chosen> {
 }
 
 /// The three folders the parts are read from: the user's ([`Folders::user`]) or, in tests, others.
-/// A folder that is `None` (no home directory, or a test that leaves it out) holds only the standard.
+/// A folder that is `None` (no home directory, or a test that leaves it out) holds only what is built
+/// in: the three designs (`torro_core::design::BUILT_IN_IDS`), the standard font and colour scheme.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folders {
     /// The designs folder (`torro_core::design::dir`).

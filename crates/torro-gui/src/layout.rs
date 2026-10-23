@@ -118,7 +118,8 @@ pub fn panel_padding() -> Padding {
 
 /// The padding of list rows (tasks, settings rows, group heads): 18 × 24 in the standard design. Rows
 /// of a fixed height (`size::row()`, `widgets::list_row`) take only its sides and centre their
-/// content; the inbox's rows of several lines take it above and below too.
+/// content; so do the inbox's rows of several lines (`list::sized_row`), whose height leaves the room
+/// above and below.
 pub fn row_padding() -> Padding {
     padding(design::with(|t| t.design.layout.row_padding))
 }

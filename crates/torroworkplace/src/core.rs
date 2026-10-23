@@ -353,8 +353,8 @@ impl Drop for SearchSlot<'_> {
 }
 
 /// The listing of the part folder `dir` by `list` (designs, fonts or colour schemes, tasks L.3 and
-/// L.22). Without a home directory only the standard exists; a folder that is not there lists just
-/// that.
+/// L.22). Without a home directory only what is built in exists – the three designs, the standard
+/// font and colour scheme; a folder that is not there lists just that.
 fn listed_in<T>(
     dir: Option<&std::path::Path>,
     list: fn(&std::path::Path) -> Vec<torro_core::design::Listed<T>>,
