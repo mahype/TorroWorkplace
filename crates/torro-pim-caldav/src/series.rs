@@ -870,20 +870,21 @@ fn find(stored: &str, event: &Event) -> Result<Found, SeriesError> {
 /// instead of panicking: the save answers `error`. [`drops`], which runs before any right is checked,
 /// counts such a refused change as dropping (fail closed), so a client without the right to delete
 /// gets `forbidden` first. The core checks every save with it, with a scope or without, so no date
-/// iCalendar cannot hold is written (the review of PR #296).
+/// iCalendar cannot hold is written (the review of PR #296). A time is written in its zone, up to 14
+/// hours off UTC, so a time must stay in those years a day either side of it.
 pub fn in_range(event: &Event) -> Result<(), SeriesError> {
     let until = event.repeat.as_deref().and_then(|repeat| match repeat.end {
         RepeatEnd::Until(until) => Some(until),
         RepeatEnd::Never | RepeatEnd::Count(_) => None,
     });
-    let year = |time: EventTime| match time {
-        EventTime::Date(day) => day.year(),
-        EventTime::DateTime(at) => at.year(),
+    let years = 1..=9999;
+    let fits = |time: EventTime| match time {
+        EventTime::Date(day) => years.contains(&day.year()),
+        EventTime::DateTime(at) => [at.checked_sub_signed(Duration::days(1)), at.checked_add_signed(Duration::days(1))]
+            .into_iter()
+            .all(|edge| edge.is_some_and(|edge| years.contains(&edge.year()))),
     };
-    let fine = [Some(event.start), event.end, event.recurrence_id, until]
-        .into_iter()
-        .flatten()
-        .all(|time| (1..=9999).contains(&year(time)));
+    let fine = [Some(event.start), event.end, event.recurrence_id, until].into_iter().flatten().all(fits);
     if fine { Ok(()) } else { Err(SeriesError::OutOfRange) }
 }
 
@@ -1888,7 +1889,9 @@ mod tests {
         let key = berlin(2026, 10, 13, 10);
         let edge = EventTime::Date(NaiveDate::MAX);
         let far = EventTime::DateTime(Utc.with_ymd_and_hms(10000, 1, 1, 0, 0, 0).single().expect("far"));
-        for (start, end) in [(edge, None), (far, None), (berlin(2026, 10, 13, 9), Some(far))] {
+        // The review of PR #296: in UTC still 9999, but at +14 hours (Kiritimati) already 10000.
+        let late = EventTime::DateTime(Utc.with_ymd_and_hms(9999, 12, 31, 23, 0, 0).single().expect("late"));
+        for (start, end) in [(edge, None), (far, None), (late, None), (berlin(2026, 10, 13, 9), Some(far))] {
             let event = Event { start, end, ..occurrence(EXCEPTIONS, key) };
             for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
                 assert_eq!(save(EXCEPTIONS, &event, scope, &writing()).map(|_| ()), Err(SeriesError::OutOfRange));
