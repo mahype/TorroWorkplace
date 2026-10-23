@@ -17,14 +17,28 @@ use torro_gui::{style, typo, widgets};
 
 use crate::app::Message;
 
-/// Height of a week row and of the weekday line (`.mini td{height:24px}`).
+/// Height of a week row and of the weekday line in the active design ([`cell_in`]).
 fn cell() -> f32 {
-    space::xl()
+    cell_in(space::xl(), typo::line_height(typo::micro()), space::xs())
 }
-/// Edge of the circle behind a day number (`.mini td span{width:22px}`): the cell less a line
-/// above and below, so today's circle does not touch the highlighted row's edges.
+
+/// Height of a week row and of the weekday line for a design whose `xl` gap, `micro` line and `xs` gap
+/// are these: `xl` (`.mini td{height:24px}` in the standard), but at least the line of a day's number
+/// with `xs` around it – a dense design's `xl` (Console 12) is smaller than the number (14), which
+/// would run over its row (issue #291).
+fn cell_in(xl: f32, micro_line: f32, xs: f32) -> f32 {
+    xl.max(micro_line + xs)
+}
+
+/// Edge of the circle behind a day number (`.mini td span{width:22px}`): [`circle_in`] of the cell.
 fn circle() -> f32 {
-    cell() - 2.0
+    circle_in(cell())
+}
+
+/// The circle in a cell `cell` high: the cell less a line above and below, so today's circle does not
+/// touch the highlighted row's edges.
+fn circle_in(cell: f32) -> f32 {
+    cell - 2.0
 }
 /// Today's number: the tabular figures of the axis, one weight up, white on red.
 fn today_level() -> typo::Level {
@@ -165,6 +179,29 @@ mod tests {
         let weeks = weeks(date(2026, 8, 1));
         assert_eq!(weeks.len(), 6);
         assert_eq!(weeks[5][0], date(2026, 8, 31));
+    }
+
+    /// A built-in design (issue #291) from its embedded file, read without switching the process's.
+    fn built_in(id: &str) -> torro_core::design::Design {
+        torro_core::design::load(std::path::Path::new(""), id).expect("a built-in design")
+    }
+
+    /// Issue #291 (review of the three designs): a day's cell holds its number – the line of `micro`
+    /// and `xs` around it – in every design, so Console's numbers (14 high, its `xl` is 12) no longer
+    /// run over their rows; Standard and Compact keep their 24. The circle stays a line inside the cell.
+    #[test]
+    fn a_day_cell_holds_its_number_in_every_design() {
+        let cell = |id: &str| {
+            let d = built_in(id);
+            cell_in(d.space.xl, d.typo.micro.line, d.space.xs)
+        };
+        assert_eq!([cell("torro"), cell("compact"), cell("console")], [24.0, 24.0, 16.0]);
+        for id in ["torro", "compact", "console"] {
+            let d = built_in(id);
+            assert!(cell(id) >= d.typo.micro.line + d.space.xs, "{id}: the number fits its cell");
+            assert!(circle_in(cell(id)) >= d.typo.micro.line, "{id}: and today's circle");
+        }
+        assert_eq!((super::cell(), circle()), (24.0, 22.0), "the process draws the standard");
     }
 
     #[test]
