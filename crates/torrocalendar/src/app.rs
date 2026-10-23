@@ -50,7 +50,7 @@ use iced::widget::{column, container, pick_list, responsive, row, svg};
 use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Night, Quarter, WorkingHours};
+use torro_core::settings::{Maps, Night, Quarter, WorkingHours};
 use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
@@ -68,6 +68,7 @@ use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
+use torro_pim::model::{Geo, SeriesScope};
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, calendar, collections};
 
@@ -271,8 +272,12 @@ pub enum Open {
     Editor,
     /// The side panel with a new event.
     EditorNew,
-    /// The side panel with an event that cannot be edited (the first occurrence of a series).
+    /// The side panel with an event of a read-only calendar. The demo has none, so the first event
+    /// that is not part of a series opens as if its calendar were read-only.
     EditorReadOnly,
+    /// The side panel with an occurrence of a series (task TE.7): the first one of the demo's daily
+    /// standup, with the band "Changes apply to".
+    EditorSeries,
     /// The timeline with the night's card open under "Nights" in the header.
     Night,
     /// The view menu ("Week ▾"); only the medium and narrow header have it.
@@ -290,7 +295,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 16] = [
+    const ALL: [(&'static str, Open); 17] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
@@ -300,6 +305,7 @@ impl Open {
         ("editor", Open::Editor),
         ("editor-new", Open::EditorNew),
         ("editor-read-only", Open::EditorReadOnly),
+        ("editor-series", Open::EditorSeries),
         ("night", Open::Night),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
@@ -560,6 +566,9 @@ pub struct App {
     working_hours: WorkingHours,
     /// The settings in the content area, while they are open (task S.19).
     settings: Option<SettingsPane>,
+    /// The suite's maps settings for the editor (task TE.8); `None` until read. The demo has no core
+    /// and shows maps on, with its own places and map ([`App::search_places`], [`App::editor_map`]).
+    maps: Option<Maps>,
 }
 
 #[derive(Debug, Clone)]
@@ -637,8 +646,10 @@ pub enum Message {
     Editor(editor::Message),
     /// Keyboard: a new event on the shown day at 09:00.
     NewEventHere,
-    /// The answer to a save of the editor with this count ([`App::edits`]).
-    Saved(u64, Result<Event, String>),
+    /// The answer to a save of the editor with this count ([`App::edits`]): the event as stored and
+    /// how many changed occurrences of its series the core reset (task TE.7). Boxed: an event with
+    /// its series and people is far larger than every other message.
+    Saved(u64, Result<Box<(Event, u32)>, String>),
     Deleted(Result<(), String>),
     /// A link of the editor was handed to the browser (issue #126).
     LinkOpened(Result<(), String>),
@@ -674,6 +685,14 @@ pub enum Message {
     Night(Result<(Night, WorkingHours), String>),
     /// The core answered a save of the night.
     NightSaved(Result<(), String>),
+    /// The maps settings (task TE.8), read when the editor opens and on every tick while it is
+    /// open; an error keeps the ones we have.
+    Maps(Result<Maps, String>),
+    /// The answer to a place search of the editor opened as `edits` (task TE.8), for this text.
+    Places(u64, String, Result<Vec<torro_ipc::Place>, editor::PlaceFailure>),
+    /// The map of this point for the editor opened as `edits`, drawn dark or not; `None` when it
+    /// could not be had (task TE.8).
+    Map(u64, Geo, bool, Option<iced::widget::image::Handle>),
 }
 
 /// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
@@ -777,7 +796,11 @@ impl App {
             night_card: None,
             working_hours: WorkingHours::DEFAULT,
             settings: None,
+            maps: None,
         };
+        if app.source.is_demo() {
+            app.maps = Some(Maps { enabled: true, ..Maps::default() });
+        }
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
@@ -1105,16 +1128,19 @@ impl App {
             Message::Editor(message) => {
                 let Some(editor) = self.editor.as_mut() else { return Task::none() };
                 let action = editor.update(message);
-                return self.editor_action(action);
+                let done = self.editor_action(action);
+                // Picking a place gives the form coordinates: their map comes now.
+                return Task::batch([done, self.editor_map()]);
             }
             Message::Saved(edit, result) => {
                 let current = edit == self.edits;
                 match result {
                     Ok(saved) => {
+                        let (saved, reset) = *saved;
                         // The editor keeps editing on top of the stored version, with its new etag,
                         // and sends what was typed meanwhile.
                         let follow_up = match self.editor.as_mut() {
-                            Some(editor) if current && editor.awaits(&saved) => editor.stored(&saved),
+                            Some(editor) if current && editor.awaits(&saved) => editor.stored(&saved, reset),
                             _ => editor::Action::None,
                         };
                         return Task::batch([self.editor_action(follow_up), self.load()]);
@@ -1123,7 +1149,9 @@ impl App {
                         if let Some(editor) = self.editor.as_mut().filter(|_| current) {
                             editor.save_failed();
                         }
-                        self.error = Some(trf("Save failed: {error}", &[("error", &err)]));
+                        self.error = Some(err);
+                        // A conflict or a vanished event: the calendar shows what the server has now.
+                        return self.load();
                     }
                 }
             }
@@ -1148,10 +1176,18 @@ impl App {
                 if self.editor.is_none() {
                     return Task::batch([appearance, accounts, self.load()]);
                 }
-                return Task::batch([appearance, accounts]);
+                // Maps turned on or off in the control centre reach the open editor.
+                return Task::batch([appearance, accounts, self.fetch_maps()]);
             }
-            Message::SystemMode(mode) => self.system_mode = mode,
-            Message::Appearance(Ok(appearance)) => self.appearance = appearance,
+            // The editor's map follows the appearance (task TE.8).
+            Message::SystemMode(mode) => {
+                self.system_mode = mode;
+                return self.editor_map();
+            }
+            Message::Appearance(Ok(appearance)) => {
+                self.appearance = appearance;
+                return self.editor_map();
+            }
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
             // The canvases (week, timeline, radar) keep no cache: the next frame draws with the new
@@ -1222,8 +1258,95 @@ impl App {
                     return self.fetch_night();
                 }
             }
+            Message::Maps(Ok(maps)) => {
+                if let Some(editor) = self.editor.as_mut() {
+                    editor.set_maps(maps.clone());
+                }
+                self.maps = Some(maps);
+                return self.editor_map();
+            }
+            // The core may be starting up: keep the settings we have.
+            Message::Maps(Err(_)) => {}
+            Message::Places(edit, query, answer) => {
+                if let Some(editor) = self.editor.as_mut().filter(|_| edit == self.edits) {
+                    editor.places_found(&query, answer);
+                }
+            }
+            Message::Map(edit, geo, dark, picture) => {
+                if let Some(editor) = self.editor.as_mut().filter(|_| edit == self.edits) {
+                    editor.map_loaded(geo, dark, picture);
+                }
+            }
         }
         Task::none()
+    }
+
+    /// Asks the core for the maps settings (task TE.8), for the editor. The demo keeps its own.
+    fn fetch_maps(&self) -> Task<Message> {
+        let Source::Core(client) = &self.source else { return Task::none() };
+        let socket = client.socket.clone();
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &torro_ipc::Request::Settings).await {
+                    Ok(torro_ipc::Response::Settings { settings }) => Ok(settings.maps),
+                    Ok(other) => Err(format!("unexpected answer: {other:?}")),
+                    Err(err) => Err(err.to_string()),
+                }
+            },
+            Message::Maps,
+        )
+    }
+
+    /// Looks `query` up for the editor open now (the core's `search_places`, task TE.8). An error comes
+    /// back by its code (`editor::PlaceFailure::from_code`: `unsupported` means maps are off), never in
+    /// the core's English words. The demo suggests its fixed places and sends nothing.
+    fn search_places(&self, query: String) -> Task<Message> {
+        let edit = self.edits;
+        let Source::Core(client) = &self.source else {
+            return Task::done(Message::Places(edit, query, Ok(editor::demo_places())));
+        };
+        let socket = client.socket.clone();
+        let request = torro_ipc::Request::SearchPlaces { query: query.clone(), near: None };
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &request).await {
+                    Ok(torro_ipc::Response::Places { places }) => Ok(places),
+                    Ok(torro_ipc::Response::Error { code, .. }) => Err(editor::PlaceFailure::from_code(&code)),
+                    Ok(_) => Err(editor::PlaceFailure::Other),
+                    Err(_) => Err(editor::PlaceFailure::NoAnswer),
+                }
+            },
+            move |answer| Message::Places(edit, query.clone(), answer),
+        )
+    }
+
+    /// Fetches the map the editor asks for, if it asks (task TE.8, [`Editor::map_wanted`]): the
+    /// core's `map_preview` in the darkness the window is drawn in. A map that cannot be had comes
+    /// back as `None`. The demo draws a sketch in the window's colours and sends nothing.
+    fn editor_map(&mut self) -> Task<Message> {
+        let theme = self.theme();
+        let dark = theme.extended_palette().is_dark;
+        let Some(geo) = self.editor.as_mut().and_then(|editor| editor.map_wanted(dark)) else { return Task::none() };
+        let edit = self.edits;
+        let Source::Core(client) = &self.source else {
+            return Task::done(Message::Map(edit, geo, dark, Some(editor::demo_map(&theme))));
+        };
+        let socket = client.socket.clone();
+        let request =
+            torro_ipc::Request::MapPreview { geo, width: editor::MAP_WIDTH, height: editor::MAP_HEIGHT, dark };
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &request).await {
+                    Ok(torro_ipc::Response::Image { png }) => {
+                        use base64::Engine as _;
+                        let bytes = base64::engine::general_purpose::STANDARD.decode(png).ok()?;
+                        Some(iced::widget::image::Handle::from_bytes(bytes))
+                    }
+                    _ => None,
+                }
+            },
+            move |picture| Message::Map(edit, geo, dark, picture),
+        )
     }
 
     /// The window with the zoom badge over it.
@@ -1619,17 +1742,20 @@ impl App {
     }
 
     /// Opens `editor` in the side panel. A change still waiting in the editor open before is saved.
-    fn open_editor(&mut self, editor: Editor) -> Task<Message> {
+    fn open_editor(&mut self, mut editor: Editor) -> Task<Message> {
         let leave = self.close_editor();
         self.edits += 1;
+        if let Some(maps) = &self.maps {
+            editor.set_maps(maps.clone());
+        }
         self.editor = Some(editor);
-        leave
+        Task::batch([leave, self.fetch_maps(), self.editor_map()])
     }
 
     /// Closes the side panel; a change that still waits to be saved is saved.
     fn close_editor(&mut self) -> Task<Message> {
         match self.editor.take().and_then(|editor| editor.leave()) {
-            Some(event) => self.save(event),
+            Some((event, scope)) => self.save(event, scope),
             None => Task::none(),
         }
     }
@@ -1641,12 +1767,18 @@ impl App {
             editor::Action::Close => self.close_editor(),
             // The first field with a problem, after Enter.
             editor::Action::Focus(id) => iced::widget::operation::focus(id),
-            editor::Action::Save(event) => self.save(event),
+            editor::Action::Save(event, scope) => self.save(event, scope),
             // Checked again here: only web and mail addresses ever reach the browser.
             editor::Action::OpenLink(url) if links::openable(&url) => {
                 Task::perform(async move { webbrowser::open(&url).map_err(|err| err.to_string()) }, Message::LinkOpened)
             }
             editor::Action::OpenLink(_) => Task::none(),
+            editor::Action::SearchPlaces(query) => self.search_places(query),
+            // Checked again here: only web addresses and `geo:` links reach the system.
+            editor::Action::OpenMaps(url) if editor::openable_map(&url) => {
+                Task::perform(async move { open_map(&url) }, Message::LinkOpened)
+            }
+            editor::Action::OpenMaps(_) => Task::none(),
             editor::Action::Copy(text) => iced::clipboard::write(text),
             // Task ER2.3: the core shows the event's reminder now; the demo has no core.
             editor::Action::Preview(href) => {
@@ -1664,24 +1796,54 @@ impl App {
                     Message::Previewed,
                 )
             }
-            editor::Action::Delete(event) => {
+            editor::Action::Delete(event, scope) => {
                 self.editor = None;
                 let source = self.source.clone();
                 Task::perform(
-                    async move { source.delete_event(event).await.map_err(|e| e.to_string()) },
+                    async move { source.delete_event(event, scope).await.map_err(|e| e.to_string()) },
                     Message::Deleted,
                 )
             }
         }
     }
 
-    /// Saves `event` (the core's `save_event`) for the editor open now.
-    fn save(&self, event: Event) -> Task<Message> {
-        let source = self.source.clone();
+    /// Saves `event` with `scope` (the core's `save_event`, task TE.7) for the editor open now. The
+    /// core's answer is asked for directly, because it says how many changed occurrences the save
+    /// reset (`Response::Event.reset`), which `PimSource::save_event` does not hand on; the demo
+    /// resets none. A failure comes back as the sentence the window shows ([`save_failed`]).
+    fn save(&self, event: Event, scope: Option<SeriesScope>) -> Task<Message> {
         let edit = self.edits;
-        Task::perform(async move { source.save_event(event).await.map_err(|e| e.to_string()) }, move |result| {
-            Message::Saved(edit, result)
-        })
+        let done = move |result| Message::Saved(edit, result);
+        match &self.source {
+            Source::Core(client) => {
+                let socket = client.socket.clone();
+                let request = torro_ipc::Request::SaveEvent { event, scope };
+                Task::perform(
+                    async move {
+                        match torro_ipc::client::call(&socket, &request).await {
+                            Ok(torro_ipc::Response::Event { event, reset }) => Ok(Box::new((event, reset))),
+                            Ok(torro_ipc::Response::Error { code, message }) => Err(save_failed(&code, &message)),
+                            Ok(other) => Err(save_failed("error", &format!("unexpected answer: {other:?}"))),
+                            Err(err) => Err(save_failed("offline", &err.to_string())),
+                        }
+                    },
+                    done,
+                )
+            }
+            Source::Demo(_) => {
+                let source = self.source.clone();
+                Task::perform(
+                    async move {
+                        match source.save_event(event, scope).await {
+                            Ok(event) => Ok(Box::new((event, 0))),
+                            Err(torro_pim::ProviderError::Conflict { .. }) => Err(save_failed("conflict", "")),
+                            Err(err) => Err(save_failed("error", &err.to_string())),
+                        }
+                    },
+                    done,
+                )
+            }
+        }
     }
 
     fn current_view(&self, night: &Anchor) -> Element<'_, Message> {
@@ -2037,7 +2199,20 @@ impl App {
         }
         let event = match self.launch.open {
             Some(Open::Editor) => self.events.iter().find(|event| !event.recurring).or(self.events.first()),
-            Some(Open::EditorReadOnly) => self.events.iter().find(|event| event.recurring).or(self.events.first()),
+            Some(Open::EditorReadOnly) => {
+                let event = self.events.iter().find(|event| !event.recurring).or(self.events.first());
+                // As if its calendar were read-only: the demo has no read-only event calendar.
+                let calendars: Vec<Collection> = self
+                    .writable_calendars()
+                    .into_iter()
+                    .map(|calendar| Collection { writable: false, ..calendar })
+                    .collect();
+                if let Some(editor) = event.map(|event| Editor::edit(event, &calendars)) {
+                    let _ = self.open_editor(editor);
+                }
+                None
+            }
+            Some(Open::EditorSeries) => self.events.iter().find(|event| event.recurring).or(self.events.first()),
             Some(Open::EditorNew) => {
                 let _ = self.update(Message::NewEventHere);
                 None
@@ -2115,10 +2290,39 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     widgets::popover(head, tr("Night"), rows, actions)
 }
 
+/// Opens a link of "Open in Maps" (task TE.8) that passed `editor::openable_map`: a `geo:` link with
+/// the program Linux has for it (`xdg-open`), anything else in the browser.
+fn open_map(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if url.starts_with("geo:") {
+        let status = std::process::Command::new("xdg-open").arg(url).status().map_err(|err| err.to_string())?;
+        return if status.success() { Ok(()) } else { Err(format!("xdg-open ended with {status}")) };
+    }
+    webbrowser::open(url).map_err(|err| err.to_string())
+}
+
+/// The sentence the window shows when a save failed with the error `code` of the core (`message`
+/// is the core's, in English): what happened and what to do now. The calendar loads again either way.
+fn save_failed(code: &str, message: &str) -> String {
+    match code {
+        "conflict" => {
+            tr("The event was changed elsewhere. It has been loaded again; open it to change it.").to_string()
+        }
+        "not-found" => tr("The event is no longer there. The calendar has been loaded again.").to_string(),
+        "unsupported" => tr("This change only works for this event. Choose This event and try again.").to_string(),
+        _ => trf("Save failed: {error}", &[("error", &message)]),
+    }
+}
+
 /// Whether `a` and `b` are the same event: the same uid in the same calendar, and for the
-/// occurrences of a series (which share their uid) the same start.
+/// occurrences of a series (which share their uid) the same key, else the same start.
 fn same_event(a: &Event, b: &Event) -> bool {
-    a.uid == b.uid && a.collection == b.collection && (!a.recurring || a.start == b.start)
+    // An occurrence is known by its key, which stays when it is moved (task TE.7).
+    let same_occurrence = match (a.recurrence_id, b.recurrence_id) {
+        (Some(a), Some(b)) => a == b,
+        _ => a.start == b.start,
+    };
+    a.uid == b.uid && a.collection == b.collection && (!a.recurring || same_occurrence)
 }
 
 /// The title of an account's group in the sidebar and the menu (task K.31): its host, which is
@@ -2540,7 +2744,7 @@ mod tests {
             iced::widget::text_editor::Edit::Insert('X'),
         ))));
         let _ = app.update(Message::Editor(editor::Message::Flush));
-        let _ = app.update(Message::Saved(earlier, Ok(event)));
+        let _ = app.update(Message::Saved(earlier, Ok(Box::new((event, 0)))));
         assert!(app.editor.as_ref().is_some_and(|editor| editor.event().is_none()), "the draft stays a draft");
     }
 
@@ -2563,7 +2767,7 @@ mod tests {
         let _ = app.update(Message::OpenEvent(index));
         let _ = app.update(Message::Editor(editor::Message::Delete));
         assert!(app.editor.is_some(), "it asks first");
-        assert!(app.update(Message::Editor(editor::Message::ConfirmDelete)).units() > 0);
+        assert!(app.update(Message::Editor(editor::Message::ConfirmDelete(None))).units() > 0);
         assert!(app.editor.is_none());
     }
 
@@ -2597,6 +2801,21 @@ mod tests {
         let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
         let _ = app.update(Message::Loaded(Ok((collections, events))));
         app
+    }
+
+    /// Task TE.8: `--demo --open editor` shows a place with its map, from the demo's own places and
+    /// sketch, so the visual check sees the map without any service.
+    #[test]
+    fn the_demo_editor_shows_a_place_with_its_map() {
+        let mut app = launched(&["--demo", "--open", "editor", "--now", "2026-10-13T10:30"]);
+        assert!(app.maps.as_ref().is_some_and(|maps| maps.enabled), "the demo shows maps on");
+        let dark = app.theme().extended_palette().is_dark;
+        let editor = app.editor.as_mut().expect("the editor is open");
+        let geo = editor.event().and_then(|event| event.geo).expect("the event has a place");
+        assert_eq!(editor.map_wanted(dark), None, "its map was asked for when the editor opened");
+        let _ = app.update(Message::Map(app.edits, geo, dark, Some(editor::demo_map(&app.theme()))));
+        let _ = app.update(Message::Places(app.edits, "Hafenstr".into(), Ok(editor::demo_places())));
+        let _ = app.view();
     }
 
     #[test]
@@ -2919,14 +3138,28 @@ mod tests {
         // Only an existing event can be deleted: this one is the first that is not a series.
         assert!(matches!(editor.update(editor::Message::Delete), editor::Action::None), "it asks first");
         assert!(
-            matches!(editor.update(editor::Message::ConfirmDelete), editor::Action::Delete(event) if !event.recurring)
+            matches!(editor.update(editor::Message::ConfirmDelete(None)), editor::Action::Delete(event, None) if !event.recurring)
         );
         let new = launched(&["--demo", "--open", "editor-new"]);
         let editor = new.editor.as_ref().expect("the editor is open");
         assert!(editor.event().is_none(), "it is a draft");
-        let series = launched(&["--demo", "--open", "editor-read-only"]);
-        let editor = series.editor.as_ref().expect("the editor is open");
-        assert!(editor.event().is_some_and(|event| event.recurring), "a series opens read-only");
+        let read_only = launched(&["--demo", "--open", "editor-read-only"]);
+        let mut editor = read_only.editor.clone().expect("the editor is open");
+        assert!(editor.event().is_some_and(|event| !event.recurring));
+        assert!(matches!(editor.update(editor::Message::Delete), editor::Action::None));
+        assert!(
+            matches!(editor.update(editor::Message::ConfirmDelete(None)), editor::Action::None),
+            "as if its calendar were read-only: nothing to delete"
+        );
+        // Task TE.7: an occurrence of the standup, edited like any other event, with its scope.
+        let series = launched(&["--demo", "--open", "editor-series"]);
+        let mut editor = series.editor.clone().expect("the editor is open");
+        assert!(editor.event().is_some_and(|event| event.recurring && !event.exceptions.is_empty()));
+        let _ = editor.update(editor::Message::Location("Room 7".into()));
+        assert!(
+            matches!(editor.update(editor::Message::Flush), editor::Action::Save(_, Some(SeriesScope::Occurrence))),
+            "This event at first"
+        );
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "editor"]);
         let _ = closed.update(Message::Editor(editor::Message::Close));

@@ -51,6 +51,7 @@ use torro_mail::{
     Draft, Endpoint, Flag, Folder, InvitationAnswer, MailSettings, Message, MessageSummary, Notify, Role, Services,
 };
 use torro_pim::model::GitHubLabel;
+use torro_pim::model::{Geo, SeriesScope};
 use torro_pim::source::GitHubRepo;
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
@@ -837,10 +838,97 @@ pub enum Request {
     /// Creates (`href: None`) or updates; answered with [`Response::Event`]. `collection` must be
     /// the exact id of a listed calendar, else `not-found`. Changing `collection` moves it to
     /// another calendar of the same account; moving to another account fails with `unsupported`.
+    ///
+    /// An occurrence of a series (`recurring: true`) needs `scope` (`docs/termin-editor.md`,
+    /// decisions 3 to 5): without one it stays `unsupported`, so a client that does not know series
+    /// never overwrites one. `scope` without `href` (an event not saved yet) is `error`; moving to
+    /// another calendar together with `occurrence` or `following` is `unsupported`.
+    ///
+    /// The answer is always the occurrence written, with the `recurrence_id` it has now (moved
+    /// along when the series moved), never another one: for `following` the first event of the new
+    /// series, with the new series' `uid`, `href`, `etag` and rule (the rest of a `COUNT`); when the
+    /// series cannot be read again (the occurrence lies outside the cached window, or reading
+    /// failed) it is built from the object written. Its `reset` counts the changed events of the
+    /// series that were reset (task TE.4). For `following` only what the client changed against the
+    /// occurrence as stored goes to the new series; time counts as changed only when start or length
+    /// differ from the stored occurrence (a changed occurrence keeps its own changes).
+    ///
+    /// The rule: `repeat` set changes it as its fields say; [`torro_pim::model::Repeat::rule`] is
+    /// only read back, never written, except for a custom rule of an event that has no rule yet. A
+    /// `repeat.rule` that is not one line of the `RRULE` grammar is `error`, whatever the scope,
+    /// unless it is the rule the server stores (sent back unchanged).
+    /// `repeat: None` ends the series only together with `recurring: false` (for `series` the
+    /// occurrence becomes a single event, for `following` the series ends before it and this one
+    /// stays alone); with `recurring: true` the stored rule stays as it is, so an occurrence a client
+    /// got without its rule never ends its series by being sent back.
+    ///
+    /// A save that removes events of the series (a shorter or removed rule, reset exceptions) needs
+    /// the right to delete and waits for approval like `calendar.delete_event`. Errors: `not-found`
+    /// (no such occurrence: reload), `conflict` (the series changed meanwhile, or no `etag`),
+    /// `unsupported` (switching between all-day and timed for `following`/`series`, a rule that
+    /// cannot be counted for `following`, moving with `occurrence`/`following`), `error` (`scope`
+    /// without `href`, a `repeat.rule` that is no valid RRULE value).
     #[serde(rename = "calendar.save_event")]
-    SaveEvent { event: Event },
+    SaveEvent {
+        event: Event,
+        /// Which events of the series the change is about: `occurrence` (only this one),
+        /// `following` (this one and all after it: the series is split here) or `series` (all of
+        /// them). Leave it out for an event that is not part of a series.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<SeriesScope>,
+    },
+    /// Deletes the event; answered with [`Response::Ok`]. An occurrence of a series needs `scope`
+    /// like [`Request::SaveEvent`]: `occurrence` deletes only it, `following` ends the series
+    /// before it, `series` deletes all of them; without one it stays `unsupported`. Errors as for
+    /// [`Request::SaveEvent`].
     #[serde(rename = "calendar.delete_event")]
-    DeleteEvent { event: Event },
+    DeleteEvent {
+        event: Event,
+        /// Which events of the series to delete, as for `calendar.save_event`. Leave it out for an
+        /// event that is not part of a series.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<SeriesScope>,
+    },
+    /// Looks up places for the event editor's location (task TE.5, `docs/termin-editor.md` "Ort und
+    /// Karte"): first matching locations of events in calendars the client may read (no network),
+    /// then what the place search service set in the settings (`maps`, Photon unless changed) finds. Sends `query` and
+    /// the computer's IP address to that service; only on Enter or "Search", never while typing.
+    /// Answered with [`Response::Places`], at most a handful, best first.
+    ///
+    /// Limits, checked before anything is asked: `query` 1 to [`pim::MAX_PLACE_QUERY_CHARS`]
+    /// characters, `near` within ±85.0511 latitude and ±180 longitude, else `error`. Error codes:
+    /// `unsupported` while maps are off (nothing is sent then), `busy` when searches come faster
+    /// than one a second or the service asks to wait, `offline` when it cannot be reached, `error`.
+    /// The query is never logged.
+    #[serde(rename = "calendar.search_places")]
+    SearchPlaces {
+        /// What to look for, as typed: an address, a place or a name (`Alexanderplatz 1, Berlin`).
+        query: String,
+        /// Prefer places near this point, e.g. the place of the event before; left out, none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        near: Option<Geo>,
+    },
+    /// A small map around `geo` for the event editor (task TE.5): tiles of the tile service set in
+    /// the settings (`maps`, OpenStreetMap unless changed) at zoom 16, put together at twice the
+    /// density and cut to `width` × `height` logical pixels with `geo` in the middle; `dark` darkens
+    /// it for the dark appearance. Sends the area's tile numbers (so where `geo` is) to that
+    /// service. Answered with [`Response::Image`].
+    ///
+    /// Limits: `width` 1 to [`pim::MAX_MAP_WIDTH`], `height` 1 to [`pim::MAX_MAP_HEIGHT`], `geo`
+    /// within ±85.0511 latitude and ±180 longitude, else `error`. Error codes as for
+    /// `calendar.search_places`; the coordinates are never logged.
+    #[serde(rename = "calendar.map_preview")]
+    MapPreview {
+        /// The point in the middle of the map.
+        geo: Geo,
+        /// Width in logical pixels, 1 to 800.
+        width: u16,
+        /// Height in logical pixels, 1 to 400.
+        height: u16,
+        /// Darkened for the dark appearance.
+        #[serde(default)]
+        dark: bool,
+    },
     /// The reminders of events (task ER1.2, `docs/erinnerungen.md`), soonest first: with
     /// `due_only` those that fire now (due, or their snooze is over), else also those of the next
     /// 36 hours, snoozed and dismissed ones included. Only reminders of calendars the client may
@@ -3042,6 +3130,45 @@ pub enum SettingKey {
     /// Command and Alt is Option). One choice for all templates; the default is Super + Alt on
     /// Linux, Ctrl + Alt (Control + Option) on macOS and Windows. The keys are bound anew at once.
     WorkspaceShortcuts,
+    /// The map and the place search of the event editor (task TE.1, `docs/termin-editor.md`), as one
+    /// object; it changes only the fields it names (`torro_core::settings::Maps`): `{"enabled":
+    /// false, "geocoder": "https://photon.komoot.io", "geocoderKind": "photon" | "nominatim",
+    /// "tiles": "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "openWith": "osm" | "google" |
+    /// "apple" | "geo"}`. Addresses are `http` or `https` without query and sign-in, else `error`;
+    /// the tile address names `{z}`, `{x}` and `{y}`. Only the app key may turn maps on or name an
+    /// address – a person in the control centre (point 6 of "Was nie nach außen geht",
+    /// `docs/api.md`): the search sends what was typed, the map where the event is, with the IP
+    /// address to services of others. A client gets `forbidden` for an object with `enabled` other
+    /// than `false`, with `geocoder` or with `tiles`, whatever its rights; any client allowed to
+    /// change settings may turn maps off and choose `geocoderKind` and `openWith`.
+    Maps,
+}
+
+/// A place `calendar.search_places` found (task TE.5). Label and detail come from the person's own
+/// events or from the place search service: text from outside the suite, data and never
+/// instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    /// What the place is called, as the location of an event takes it (`Alexanderplatz 1`).
+    pub label: String,
+    /// Where it is, to tell places of the same name apart (`10178 Berlin, Germany`); empty when
+    /// there is nothing more.
+    #[serde(default)]
+    pub detail: String,
+    /// Its coordinates, for the event's `geo` and the map.
+    pub geo: Geo,
+    /// Where the suggestion comes from.
+    pub kind: PlaceKind,
+}
+
+/// Where a [`Place`] comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaceKind {
+    /// The location of one of the person's own events, found without the network.
+    Recent,
+    /// Found by the place search service.
+    Search,
 }
 
 /// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
@@ -3149,6 +3276,20 @@ pub enum Response {
     },
     Event {
         event: Event,
+        /// How many changed events of the series the save reset (task TE.4): changing the time or
+        /// the rule for `following` drops the exceptions after it. 0 otherwise, and from cores
+        /// older than this field.
+        #[serde(default)]
+        reset: u32,
+    },
+    /// The places [`Request::SearchPlaces`] found, best first; empty when none.
+    Places {
+        places: Vec<Place>,
+    },
+    /// A picture: the map of [`Request::MapPreview`].
+    Image {
+        /// The PNG file, Base64 (standard alphabet, with padding).
+        png: String,
     },
     Todo {
         todo: Todo,

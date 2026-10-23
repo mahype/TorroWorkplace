@@ -16,12 +16,26 @@
 //!   months ahead, fetched on start, every 5 minutes, after a `Sync` request and after
 //!   sign-in. Reads are answered from the cache, so the apps never wait for the network;
 //!   ranges outside the window are fetched from the server directly.
+//! - **Series** (task TE.3, `docs/termin-editor.md` decisions 1 and 2): the server expands them into
+//!   occurrences, which lose rule and zones on the way. So the cache also holds the stored object
+//!   of every `href` with events in the window ([`Slot::objects`]), fetched after the expansion with
+//!   one `calendar-multiget` per calendar for the hrefs whose ETag is new ([`stale_hrefs`]); hrefs
+//!   gone from the window are forgotten ([`held_objects`]). Every occurrence then gets `repeat`,
+//!   `time_zone` and, where the server left it out, `recurrence_id` from its object
+//!   ([`complete_events`]).
 //! - Writes go to the server first (ETag-guarded) and update the cache with the answer.
-//!   Series are refused until series editing exists, because writing one occurrence back would
-//!   overwrite the whole series. The core decides what a series is, not the client (task
+//!   An occurrence of a series is changed or deleted only with a `scope` (task TE.4,
+//!   [`PimService::save_in_series`]); without one it is refused, because writing one occurrence
+//!   back would overwrite the whole series. The core decides what a series is, not the client (task
 //!   A.2b): from the cached item in the version the client names, else from the server. An
 //!   existing item is only changed, moved or deleted with the `etag` it was read with. Moving
 //!   an item to a collection of another account is refused (`unsupported`) for now.
+//! - **Series** (task TE.4): `torro_pim_caldav::series` plans the change on the stored object, the
+//!   CalDAV client writes it (a split: the new object first, then the shortened series, the new one
+//!   taken back when that fails), and the core then reads the occurrences of the objects it wrote
+//!   again and replaces them and their stored objects in the cache ([`PimService::refresh_series`]).
+//!   Whether a save removes events of a series ([`PimService::removes_events`]) is read from the
+//!   stored object in the cache only, never from what the client says.
 //! - When a server refuses an app password (401/403), the core asks once whether this device
 //!   was marked for a remote wipe and, if so, removes that account, its secret and its cache
 //!   (task S.12, `account::remote_wipe`).
@@ -110,7 +124,7 @@ use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response, ServerService};
 use torro_mail_imap::tls::{Seen, Trust, client_config};
 use torro_pim::account::{collection_id, local_id};
-use torro_pim::model::{GitHubKind, GitHubState, Link};
+use torro_pim::model::{GitHubKind, GitHubState, Link, SeriesScope};
 use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
 use torro_pim::{
     AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo, combined_state,
@@ -118,7 +132,9 @@ use torro_pim::{
 use torro_pim_caldav::discover::{self, DiscoverError, Discoverer, NoDns};
 use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
-use torro_pim_caldav::{CalDavAccount, CalDavClient, Services};
+use torro_pim_caldav::{
+    CalDavAccount, CalDavClient, ObjectFacts, RawObject, SeriesFailure, SeriesWrite, Services, series,
+};
 use torro_pim_github::api::{self as github_api, MAX_MATCHES};
 use torro_pim_github::lists::{self, FilterFile};
 use torro_pim_github::{Api, FilterList, IssueRef, address, item, scope};
@@ -127,7 +143,7 @@ use torro_core::i18n::{tr, trf};
 
 use crate::account::github::{SystemTokens, TokenStore};
 use crate::account::{self, Connected, Stored};
-use crate::approvals::{Facts, Known};
+use crate::approvals::{Facts, Known, Removal};
 use crate::inbox::{AccountCheck, Health, Trouble};
 use crate::notify;
 use crate::settings_service::SettingsStore;
@@ -172,6 +188,11 @@ struct Slot {
     /// token ([`PimService::reconcile_links`]).
     private: Vec<String>,
     events: Vec<Event>,
+    /// The stored object of every `href` in `events`, not expanded (task TE.3): what the rule,
+    /// the zones and the changed occurrences of a series are. Fetched only when its ETag is new,
+    /// dropped when its href leaves `events`; a write drops the object it changed until the next
+    /// sync fetches it again, so an object here always matches the ETag it was read with.
+    objects: HashMap<String, RawObject>,
     /// The range `events` covers; `None` before the first successful sync.
     window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     todos: Vec<Todo>,
@@ -200,6 +221,7 @@ impl Slot {
             collections: Vec::new(),
             private: Vec::new(),
             events: Vec::new(),
+            objects: HashMap::new(),
             window: None,
             todos: Vec::new(),
             wipe_checked: false,
@@ -973,11 +995,12 @@ impl PimService {
             Request::DeleteTodo { todo } if self.is_filter_list(&todo.collection).await => {
                 error("unsupported", "the items of a GitHub filter list cannot be deleted; they live on GitHub".into())
             }
-            Request::SaveEvent { event } => match self.save_event(event).await {
-                Ok(event) => Response::Event { event },
+            // Boxed: a write to a series reads and writes several objects and holds events on the way.
+            Request::SaveEvent { event, scope } => match Box::pin(self.save_event(event, scope)).await {
+                Ok((event, reset)) => Response::Event { event, reset },
                 Err(err) => self.write_failed(err).await,
             },
-            Request::DeleteEvent { event } => match self.delete_event(event).await {
+            Request::DeleteEvent { event, scope } => match Box::pin(self.delete_event(event, scope)).await {
                 Ok(()) => Response::Ok,
                 Err(err) => self.write_failed(err).await,
             },
@@ -1072,7 +1095,13 @@ impl PimService {
             | Request::UpdateSortRule { .. }
             | Request::RemoveSortRule { .. }
             | Request::MoveSortRule { .. } => return None,
-            Request::SaveEvent { event } | Request::DeleteEvent { event } => {
+            // A place search or a map reads no calendar (task TE.1); recent places are filtered
+            // by the reach where they are read (task TE.5).
+            Request::SearchPlaces { .. } | Request::MapPreview { .. } => return None,
+            // A split of a series (task TE.4) makes its new object in the collection that holds
+            // `href`, never under an href of the request: checked here with the href. Only a whole
+            // series may move, so with `occurrence` or `following` that is `collection` itself.
+            Request::SaveEvent { event, .. } | Request::DeleteEvent { event, .. } => {
                 (Role::Calendar, &event.collection, event.href.as_deref())
             }
             Request::SaveTodo { todo } | Request::DeleteTodo { todo }
@@ -1369,6 +1398,15 @@ impl PimService {
     pub async fn cache_events(&self, events: Vec<Event>) {
         if let Some(slot) = self.state.write().await.accounts.first_mut() {
             slot.events = events;
+        }
+    }
+
+    /// Puts `objects` into the cache of the first account as a sync would after the expansion (task
+    /// TE.4: what a save of a series removes is read from them), for the core's handler tests.
+    #[cfg(test)]
+    pub async fn cache_objects(&self, objects: Vec<RawObject>) {
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.objects = objects.into_iter().map(|object| (object.href.clone(), object)).collect();
         }
     }
 
@@ -1993,16 +2031,18 @@ impl PimService {
     /// password runs the remote wipe check.
     async fn sync_account(&self, id: &str) -> Result<(), ProviderError> {
         let _running = self.syncing.lock().await;
-        let (client, nextcloud, wanted, ocs) = self
+        let (client, nextcloud, wanted, ocs, known) = self
             .state
             .read()
             .await
             .slot(id)
             .and_then(|slot| {
-                Some((slot.client.clone()?, slot.is_nextcloud(), slot.services(), slot.capabilities_due(Utc::now())))
+                let known = slot.objects.iter().map(|(href, object)| (href.clone(), object.etag.clone())).collect();
+                let due = slot.capabilities_due(Utc::now());
+                Some((slot.client.clone()?, slot.is_nextcloud(), slot.services(), due, known))
             })
             .ok_or_else(not_connected)?;
-        let result = fetch_all(&client, id, nextcloud, wanted).await;
+        let result = fetch_all(&client, id, nextcloud, wanted, &known).await;
         // Only after CalDAV took the app password: a refused one must not be tried a second time
         // (Nextcloud's brute-force protection would count it against the person).
         let capabilities = match (&result, ocs) {
@@ -2021,7 +2061,7 @@ impl PimService {
             return Err(not_connected());
         };
         match result {
-            Ok(Fetched { collections, private, events, window, todos }) => {
+            Ok(Fetched { collections, private, mut events, objects, window, todos }) => {
                 // Before the collections reach the cache, so no app sees them shown first.
                 if let Some(wanted) = slot.choice.take() {
                     for collection in collections.iter().filter(|c| !chosen(wanted, c.kind)) {
@@ -2032,6 +2072,8 @@ impl PimService {
                 }
                 slot.collections = collections;
                 slot.private = private;
+                slot.objects = held_objects(std::mem::take(&mut slot.objects), objects, &events);
+                complete_events(&mut events, &slot.objects);
                 slot.events = events;
                 slot.window = Some(window);
                 slot.todos = todos;
@@ -2096,19 +2138,59 @@ impl PimService {
                 }
             }
         }
-        // Outside the cached window: ask the servers.
+        // Outside the cached window: ask the servers. Every event gets its rule, zones and changed
+        // occurrences from its stored object: the one held for it when it reaches into the window,
+        // else fetched now (one multiget per calendar). Without them an occurrence would come
+        // without `repeat`, and a client could not tell the rule (finding 3 of the review of #278).
         for (account, client, mine) in ask {
-            for (id, url) in mine {
-                let found = client.events(&url, start, end).await.map_err(|err| Failed::at(&account, err))?;
-                events.extend(found.into_iter().map(|e| Event { collection: id.clone(), ..e }));
+            let mut found = Vec::new();
+            for (id, url) in &mine {
+                let fetched = client.events(url, start, end).await.map_err(|err| Failed::at(&account, err))?;
+                found.extend(fetched.into_iter().map(|e| Event { collection: id.clone(), ..e }));
             }
+            let missing: Vec<(&str, Vec<String>)> = {
+                let state = self.state.read().await;
+                let held = |href: &str| state.slot(&account).is_some_and(|slot| slot.objects.contains_key(href));
+                mine.iter()
+                    .map(|(id, url)| (url.as_str(), unheld_hrefs(&found, id, held)))
+                    .filter(|(_, hrefs)| !hrefs.is_empty())
+                    .collect()
+            };
+            let mut fetched = HashMap::new();
+            for (url, hrefs) in missing {
+                match Box::pin(client.objects(url, &hrefs)).await {
+                    Ok(objects) => fetched.extend(objects.into_iter().map(|object| (object.href.clone(), object))),
+                    // The occurrences still list; their rule stays unknown, and a save keeps it.
+                    Err(err) => {
+                        eprintln!("torroworkplace: series of {account} outside the window were not read: {err}")
+                    }
+                }
+            }
+            if let Some(slot) = self.state.read().await.slot(&account) {
+                complete_events(&mut found, &slot.objects);
+            }
+            complete_events(&mut found, &fetched);
+            events.extend(found);
         }
         Ok(events)
     }
 
-    async fn save_event(&self, event: Event) -> Result<Event, WriteError> {
-        if event.recurring {
-            return Err(series(Role::Calendar));
+    /// `calendar.save_event`, answered with the saved event and how many changed occurrences of a
+    /// series were reset (`Response::Event::reset`). `scope` is checked here (task TE.1): only with
+    /// an `href`. With a scope the series path writes it ([`PimService::save_in_series`]); without
+    /// one an occurrence of a series is `unsupported`, so a client that does not know series never
+    /// overwrites one. A single event that gets a rule becomes a series and is read again like one.
+    /// A rule text that is no single line of the `RRULE` grammar is `error` on every path, before
+    /// anything is written, unless it is the text the server stores ([`PimService::rule_refused`]).
+    async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(Event, u32), WriteError> {
+        // Boxed: reading the stored rule would otherwise sit inline in every save's future, and the
+        // core's future for a request would outgrow a thread's stack.
+        Box::pin(self.rule_refused(&event)).await?;
+        scope_needs_href(&event, scope)?;
+        match scope {
+            Some(scope) => return self.save_in_series(event, scope).await,
+            None if event.recurring => return Err(series(Role::Calendar)),
+            None => {}
         }
         let place = self.place(&event.collection).await?;
         let (uid, etag) = (event.uid.clone(), event.etag.clone());
@@ -2125,6 +2207,9 @@ impl PimService {
                 holder.client.delete_event(&old).await.map_err(|err| Failed::at(&holder.account, err))?;
                 if let Some(slot) = self.state.write().await.slot_mut(&holder.account) {
                     slot.events.retain(|e| e.href != old.href);
+                    if let Some(href) = &old.href {
+                        slot.objects.remove(href);
+                    }
                 }
                 new
             }
@@ -2138,16 +2223,114 @@ impl PimService {
             }
         };
         let saved = Event { collection: place.id.clone(), ..saved };
+        // A rule made it a series: its occurrences come from the server, like those of any series.
+        if saved.repeat.is_some()
+            && let Some((href, etag)) = saved.href.clone().zip(saved.etag.clone())
+        {
+            // The first occurrence of a new series is the event itself, keyed by its start.
+            let key = Some(saved.start);
+            let first = Event { recurrence_id: key, recurring: true, ..saved.clone() };
+            let written =
+                SeriesWrite { kept: Some((href.clone(), etag)), split: None, key, reset: 0, event: Some(first) };
+            let refreshed = self.refresh_series(&place, &place, &href, &written).await;
+            return Ok((answer_of(&refreshed, &written, saved), 0));
+        }
         if let Some(slot) = self.state.write().await.slot_mut(&place.account) {
             slot.events.retain(|e| e.href != saved.href);
             slot.events.push(saved.clone());
+            // The held object is of the version before: the next sync fetches the new one.
+            if let Some(href) = &saved.href {
+                slot.objects.remove(href);
+            }
         }
-        Ok(saved)
+        Ok((saved, 0))
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), WriteError> {
-        if event.recurring {
-            return Err(series(Role::Calendar));
+    /// `calendar.save_event` with a scope (task TE.4, `docs/termin-editor.md` decisions 3 to 6): the
+    /// occurrence `event` (its `href`, `etag` and `recurrence_id` as read) changes alone, with the
+    /// following ones (the series is split) or with the whole series ([`CalDavClient::save_in_series`]).
+    ///
+    /// Checked before anything is written: the calendar as for every write ([`PimService::place`]);
+    /// moving to another calendar only with `series` (else `unsupported`), within the account; the
+    /// version the client read ([`PimService::check_version`]: no `etag` or a newer one on the server
+    /// is `conflict`, gone is `not-found`). The series itself refuses an occurrence it does not have
+    /// (`not-found`) and changes it cannot write (`unsupported`). A split makes its new object in the
+    /// calendar of the stored series, under an href the CalDAV client makes, never one of the request.
+    ///
+    /// Afterwards the occurrences of the objects written are read again and replace the cached ones
+    /// ([`PimService::refresh_series`]); the answer is the occurrence with the key the changed one has
+    /// now (the first of the new series after a split, with its uid and rule), and the number of
+    /// changed occurrences reset ([`answer_of`]).
+    async fn save_in_series(&self, event: Event, scope: SeriesScope) -> Result<(Event, u32), WriteError> {
+        let place = self.place(&event.collection).await?;
+        let href = event.href.clone().unwrap_or_default();
+        let old = moved(Some(&href), &place.url);
+        if old.is_some() && scope != SeriesScope::Series {
+            let message = "only a whole series moves to another calendar: send scope `series`";
+            return Err(refused("unsupported", message.into()));
+        }
+        let holder = match &old {
+            Some(old) => self.holder_of(old, &place).await?,
+            None => place.clone(),
+        };
+        let item = Item::new(Role::Calendar, &holder.url, &href, event.etag.as_deref(), &event.uid);
+        self.check_version(&holder, item).await?;
+        let to = old.is_some().then_some(place.url.as_str());
+        let sent = Event { collection: holder.url.clone(), ..event.clone() };
+        // Boxed: a write to a series (read, plan, up to three requests) would otherwise sit inline in
+        // the core's future for every request and outgrow a thread's stack.
+        let written = Box::pin(holder.client.save_in_series(&sent, scope, to))
+            .await
+            .map_err(|failure| series_failed(&holder.account, failure))?;
+        let refreshed = self.refresh_series(&holder, &place, &href, &written).await;
+        let answer = Event { collection: place.id.clone(), ..event };
+        Ok((answer_of(&refreshed, &written, answer), written.reset))
+    }
+
+    /// `error` for an event whose rule text ([`torro_pim::model::Repeat::rule`]) is no single line of
+    /// the `RRULE` grammar ([`torro_pim_caldav::recur::check`]): it could carry `ATTENDEE`, `VALARM` or
+    /// `END:VEVENT` lines into the stored object (finding 1 of the review of #278). Checked for every
+    /// save, whatever the scope; the writer would leave such a text out anyway.
+    ///
+    /// A text that is the rule the server stores for the event's `href` passes: a series whose stored
+    /// rule fails the check (no `FREQ`, an `X-` part with a `:` …) comes to the client with that text
+    /// and goes back with it on every save, and the writer keeps the stored rule (the second review of
+    /// #278, finding 1). The stored rule is read only for a text that fails the check: from the cache
+    /// ([`stored_rule_of`]), else from the server; nothing is written before.
+    async fn rule_refused(&self, event: &Event) -> Result<(), WriteError> {
+        let Some(repeat) = event.repeat.as_deref() else { return Ok(()) };
+        let Err(why) = torro_pim_caldav::recur::check(&repeat.rule) else { return Ok(()) };
+        if self.stored_rule(event).await.is_some_and(|stored| stored.trim() == repeat.rule.trim()) {
+            return Ok(());
+        }
+        Err(refused("error", format!("repeat.rule is no valid RRULE value: {why}")))
+    }
+
+    /// The rule text the server stores for the event at `event.href`: from the cache when it holds the
+    /// object in the version `event.etag` names, else read from the server. `None` for a new event,
+    /// an object without a rule, and when it cannot be read.
+    async fn stored_rule(&self, event: &Event) -> Option<String> {
+        let href = event.href.as_deref()?;
+        let cached = {
+            let state = self.state.read().await;
+            held_object(&state, &event.collection, href, event.etag.as_deref()).map(|held| stored_rule_of(&held.ics))
+        };
+        if let Some(rule) = cached {
+            return rule;
+        }
+        let place = self.place(&event.collection).await.ok()?;
+        let holder = self.holder_of(href, &place).await.ok()?;
+        holder.client.stored_rule(&holder.url, href).await.ok().flatten()
+    }
+
+    /// `calendar.delete_event`; `scope` as for [`PimService::save_event`]: with one the series path
+    /// deletes it ([`PimService::delete_in_series`]), without one an occurrence is `unsupported`.
+    async fn delete_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(), WriteError> {
+        scope_needs_href(&event, scope)?;
+        match scope {
+            Some(scope) => return self.delete_in_series(event, scope).await,
+            None if event.recurring => return Err(series(Role::Calendar)),
+            None => {}
         }
         let place = self.place(&event.collection).await?;
         if let Some(href) = event.href.as_deref() {
@@ -2158,8 +2341,73 @@ impl PimService {
         place.client.delete_event(&gone).await.map_err(|err| Failed::at(&place.account, err))?;
         if let Some(slot) = self.state.write().await.slot_mut(&place.account) {
             slot.events.retain(|e| e.href != gone.href);
+            if let Some(href) = &gone.href {
+                slot.objects.remove(href);
+            }
         }
         Ok(())
+    }
+
+    /// `calendar.delete_event` with a scope (task TE.4): an `EXDATE` for one occurrence, the end of
+    /// the series before it for the following ones, the whole object for the series
+    /// ([`CalDavClient::delete_in_series`]); checked like [`PimService::save_in_series`], and the
+    /// series read again afterwards.
+    async fn delete_in_series(&self, event: Event, scope: SeriesScope) -> Result<(), WriteError> {
+        let place = self.place(&event.collection).await?;
+        let href = event.href.clone().unwrap_or_default();
+        let item = Item::new(Role::Calendar, &place.url, &href, event.etag.as_deref(), &event.uid);
+        self.check_version(&place, item).await?;
+        let gone = Event { collection: place.url.clone(), ..event };
+        let written = place
+            .client
+            .delete_in_series(&gone, scope)
+            .await
+            .map_err(|failure| series_failed(&place.account, failure))?;
+        self.refresh_series(&place, &place, &href, &written).await;
+        Ok(())
+    }
+
+    /// Replaces in the cache what a write to a series changed (task TE.4): the occurrences of the
+    /// object at `old_href` (in `holder`) go, and those of the objects `written` names (in `place`,
+    /// where a moved series went) are read again from the server, expanded in the account's window
+    /// ([`CalDavClient::occurrences`]), together with their stored objects, and completed like after a
+    /// sync. Returns the occurrences read. When reading fails, the cache holds none of them until the
+    /// next sync, rather than old ones.
+    async fn refresh_series(&self, holder: &Place, place: &Place, old_href: &str, written: &SeriesWrite) -> Vec<Event> {
+        let hrefs: Vec<String> =
+            [&written.kept, &written.split].into_iter().flatten().map(|(href, _)| href.clone()).collect();
+        let window = self.state.read().await.slot(&place.account).and_then(|slot| slot.window);
+        let (start, end) = window.unwrap_or_else(default_window);
+        let fetched = match place.client.occurrences(&place.url, &hrefs, start, end).await {
+            Ok(events) => Box::pin(place.client.objects(&place.url, &hrefs)).await.map(|objects| (events, objects)),
+            Err(err) => Err(err),
+        };
+        let mut state = self.state.write().await;
+        if let Some(slot) = state.slot_mut(&holder.account) {
+            slot.events.retain(|e| e.href.as_deref() != Some(old_href));
+            slot.objects.remove(old_href);
+        }
+        let Some(slot) = state.slot_mut(&place.account) else { return Vec::new() };
+        slot.events.retain(|e| !e.href.as_ref().is_some_and(|href| hrefs.contains(href)));
+        hrefs.iter().for_each(|href| {
+            slot.objects.remove(href);
+        });
+        match fetched {
+            Ok((events, objects)) => {
+                let objects: HashMap<String, RawObject> =
+                    objects.into_iter().map(|object| (object.href.clone(), object)).collect();
+                let mut events: Vec<Event> =
+                    events.into_iter().map(|e| Event { collection: place.id.clone(), ..e }).collect();
+                complete_events(&mut events, &objects);
+                slot.objects.extend(objects);
+                slot.events.extend(events.iter().cloned());
+                events
+            }
+            Err(err) => {
+                eprintln!("torroworkplace: a changed series of {} could not be read again: {err}", place.account);
+                Vec::new()
+            }
+        }
     }
 
     async fn save_todo(&self, todo: Todo) -> Result<Todo, WriteError> {
@@ -2375,6 +2623,17 @@ impl PimService {
     /// tasks), else from the server ([`CalDavClient::stored_item`]). The write that follows
     /// sends the same `etag` as `If-Match`, so the version checked is the version written.
     async fn check_existing(&self, place: &Place, item: Item<'_>) -> Result<(), WriteError> {
+        self.check_item(place, item, true).await
+    }
+
+    /// [`PimService::check_existing`] for a write to a series (task TE.4): the same checks of the
+    /// version, but a series is what is expected here.
+    async fn check_version(&self, place: &Place, item: Item<'_>) -> Result<(), WriteError> {
+        self.check_item(place, item, false).await
+    }
+
+    /// The checks of [`PimService::check_existing`]; a series is refused only with `refuse_series`.
+    async fn check_item(&self, place: &Place, item: Item<'_>, refuse_series: bool) -> Result<(), WriteError> {
         let Some(url) = item_url(item.collection, item.href) else {
             return Err(ProviderError::Other(format!("{} is not an item in {}", item.href, item.collection)).into());
         };
@@ -2384,18 +2643,41 @@ impl PimService {
         if item.role == Role::Calendar {
             let state = self.state.read().await;
             if let Some(recurring) = state.slot(&place.account).and_then(|slot| cached_series(slot, &url, etag)) {
-                return if recurring { Err(series(item.role)) } else { Ok(()) };
+                return if recurring && refuse_series { Err(series(item.role)) } else { Ok(()) };
             }
         }
         let stored = place.client.stored_item(item.collection, item.href).await;
         match stored.map_err(|err| Failed::at(&place.account, err))? {
             None => Err(refused("not-found", format!("{} is not on the server any more: reload", item.href))),
-            Some(stored) if stored.recurring => Err(series(item.role)),
+            Some(stored) if stored.recurring && refuse_series => Err(series(item.role)),
             Some(stored) if stored.etag != etag => {
                 Err(Failed::at(&place.account, ProviderError::Conflict { uid: item.uid.to_string() }).into())
             }
             Some(_) => Ok(()),
         }
+    }
+}
+
+/// What a save of a series removes (task TE.4).
+impl PimService {
+    /// Whether `request` is a `calendar.save_event` with a scope that removes events of a series or
+    /// resets changed ones: a shorter series, another rule, no rule, a split with new times
+    /// ([`series::drops`]). The core then checks it as it checks `calendar.delete_event`: the right to
+    /// delete, and an approval where deleting needs one.
+    ///
+    /// Read from the stored object the cache holds for its `href` in the version of its `etag`, never
+    /// from what the client says the series is. Without such an object the core cannot tell and
+    /// counts it as removing (fail closed). One occurrence (`occurrence`) and requests without a
+    /// scope never remove events this way: without a scope a series is not written at all.
+    pub async fn removes_events(&self, request: &Request) -> bool {
+        let Request::SaveEvent { event, scope: Some(scope) } = request else { return false };
+        if *scope == SeriesScope::Occurrence {
+            return false;
+        }
+        let Some(href) = event.href.as_deref() else { return false };
+        let state = self.state.read().await;
+        held_object(&state, &event.collection, href, event.etag.as_deref())
+            .is_none_or(|held| series::drops(&held.ics, event, *scope) > 0)
     }
 }
 
@@ -2407,7 +2689,10 @@ impl PimService {
     ///
     /// - writes of events and tasks with an `href`: the item at that `href`, resolved as the
     ///   write resolves it ([`touched`]), and for a save that moves it the collection losing it
-    ///   ([`Facts::moved_from`]); the collection written to by its display name;
+    ///   ([`Facts::moved_from`]); the collection written to by its display name. An event is the
+    ///   occurrence with the request's `recurrence_id` (task TE.4), so a change of one occurrence of
+    ///   a series names its date; a series' save with a scope also says how many changed occurrences
+    ///   it resets ([`Facts::resets`], [`series::resets`] on the stored object in the cache);
     /// - `tasks.move_todo`: the task at `href` and its list, compared as `move_todo` compares;
     /// - `tasks.save_todo` on a GitHub filter list (tasks G.5, G.5b): the item the list holds under
     ///   the `uid`, the one [`PimService::save_filter_todo`] closes or reopens, and for an issue
@@ -2430,12 +2715,10 @@ impl PimService {
         let name_of = |id: &str| state.collections().find(|c| c.id == id).map(|c| c.name.clone());
         let named = |id: &str| Facts { name: name_of(id), ..Facts::default() };
         let written = |collection: &str, href: Option<&str>, etag: Option<&str>, role: Role, save: bool| {
-            let touched = href.and_then(|href| touched(&state, collection, href, etag, role, save));
-            let (item, moved_from) = match touched {
-                Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
-                None => (None, None),
-            };
-            Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
+            written_item(&state, collection, href, etag, role, save, None)
+        };
+        let event_written = |collection: &str, href: Option<&str>, etag: Option<&str>, role: Role, save: bool, key| {
+            written_item(&state, collection, href, etag, role, save, key)
         };
         match request {
             // The event as the cache holds it, never the client's text (task ER1.3).
@@ -2457,11 +2740,33 @@ impl PimService {
                     .collect();
                 Facts { calendars, ..Facts::default() }
             }
-            Request::DeleteEvent { event } => {
-                written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, false)
+            // With a scope the occurrence is found by its key; without one an occurrence of a series is
+            // refused anyway, and a key the client made up must not blank a single event's summary.
+            Request::DeleteEvent { event, scope } => {
+                let (href, etag) = (event.href.as_deref(), event.etag.as_deref());
+                let key = scope.map(|_| event.recurrence_id);
+                event_written(&event.collection, href, etag, Role::Calendar, false, key)
             }
-            Request::SaveEvent { event } => {
-                written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, true)
+            Request::SaveEvent { event, scope } => {
+                let (href, etag) = (event.href.as_deref(), event.etag.as_deref());
+                let key = scope.map(|_| event.recurrence_id);
+                let facts = event_written(&event.collection, href, etag, Role::Calendar, true, key);
+                let held = href.and_then(|href| held_object(&state, &event.collection, href, etag));
+                let resets = scope.zip(held).map_or(0, |(scope, held)| series::resets(&held.ics, event, scope));
+                let removal = match (scope, held) {
+                    (None | Some(SeriesScope::Occurrence), _) => Removal::Nothing,
+                    // As `removes_events` counts it: not held in this version, so it may remove events.
+                    (Some(_), None) => Removal::Unknown,
+                    (Some(scope), Some(held)) => match series::drops(&held.ics, event, *scope) {
+                        0 => Removal::Nothing,
+                        _ if series::ends_series(event) => Removal::EndsSeries,
+                        dropped => match dropped.saturating_sub(resets) {
+                            0 => Removal::Nothing,
+                            more => Removal::Events(more),
+                        },
+                    },
+                };
+                Facts { resets, removal, ..facts }
             }
             Request::DeleteTodo { todo } => {
                 written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, false)
@@ -2533,7 +2838,9 @@ impl PimService {
 /// The item is `None` when the holder's cache has nothing at that address, or has it in another
 /// version than `etag`, the one the write will be checked against: the server may hold a newer
 /// version than the cache (a client can read one past the cached window), and the summary must
-/// not name the old title for it. Of a series the first occurrence.
+/// not name the old title for it. An event is the occurrence whose `recurrence_id` is `key` (task
+/// TE.4), `None` for a single event: one of a series is found only with its key, never by being
+/// first; `key` itself `None` (tasks) takes any.
 fn touched(
     state: &State,
     collection: &str,
@@ -2541,6 +2848,7 @@ fn touched(
     etag: Option<&str>,
     role: Role,
     save: bool,
+    key: Option<Option<EventTime>>,
 ) -> Option<(String, Option<Known>)> {
     let slot = state.owner(collection)?;
     let at = |id: &str| slot.url(id).and_then(|url| item_url(url, href)).map(|target| (id.to_string(), target));
@@ -2560,6 +2868,7 @@ fn touched(
             .events
             .iter()
             .filter(|e| is_target(&e.collection, e.href.as_deref(), e.etag.as_deref()))
+            .filter(|e| key.is_none_or(|key| e.recurrence_id == key))
             .min_by_key(|e| e.start)
             .map(|e| Known { title: e.summary.clone(), start: Some(e.start) }),
         Role::TaskList => slot
@@ -2569,6 +2878,39 @@ fn touched(
             .map(|t| Known { title: t.summary.clone(), start: None }),
     };
     Some((holder, item))
+}
+
+/// The [`Facts`] of a write of an item to `collection` with `href` ([`touched`] with `key`): the item
+/// as cached, the collection written to and, for a move, the one losing it.
+fn written_item(
+    state: &State,
+    collection: &str,
+    href: Option<&str>,
+    etag: Option<&str>,
+    role: Role,
+    save: bool,
+    key: Option<Option<EventTime>>,
+) -> Facts {
+    let name_of = |id: &str| state.collections().find(|c| c.id == id).map(|c| c.name.clone());
+    let touched = href.and_then(|href| touched(state, collection, href, etag, role, save, key));
+    let (item, moved_from) = match touched {
+        Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
+        None => (None, None),
+    };
+    Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
+}
+
+/// The stored object of the event at `href` written to `collection` (resolved as [`touched`]
+/// resolves it, a move included) as the cache holds it, when it is the version `etag` (task TE.4):
+/// what a save of a series really changes is read from it, never from the client's event.
+fn held_object<'a>(state: &'a State, collection: &str, href: &str, etag: Option<&str>) -> Option<&'a RawObject> {
+    let slot = state.owner(collection)?;
+    let at = |id: &str| slot.url(id).and_then(|url| item_url(url, href)).map(|target| (id.to_string(), target));
+    let (holder, target) = at(collection).or_else(|| slot.collections.iter().find_map(|c| at(&c.id)))?;
+    let url = slot.url(&holder)?;
+    slot.objects
+        .values()
+        .find(|object| object.etag.as_deref() == etag && item_url(url, &object.href).as_ref() == Some(&target))
 }
 
 /// The trouble of an account whose sync just failed with `err` at `now`, after `before`: a refused
@@ -3634,6 +3976,9 @@ struct Fetched {
     /// The ids of the private ones among `collections` ([`Slot::private`]).
     private: Vec<String>,
     events: Vec<Event>,
+    /// The stored objects fetched in this sync: those of the hrefs whose ETag was new
+    /// ([`stale_hrefs`]); the others are still in [`Slot::objects`].
+    objects: Vec<RawObject>,
     window: (DateTime<Utc>, DateTime<Utc>),
     todos: Vec<Todo>,
 }
@@ -3642,12 +3987,14 @@ struct Fetched {
 /// collection ids with the account in front. Nextcloud's placeholder names are translated only
 /// for a `nextcloud` account: on another server they are what the user named the collection.
 /// With `wanted` (a mail account, task M2.7) only the collections of those services are kept, and
-/// the others are not even read.
+/// the others are not even read. `known` holds the ETag of every stored object the cache has (by
+/// href, task TE.3): only the others are fetched, one `calendar-multiget` per calendar.
 async fn fetch_all(
     client: &CalDavClient,
     account: &str,
     nextcloud: bool,
     wanted: Option<Services>,
+    known: &HashMap<String, Option<String>>,
 ) -> Result<Fetched, ProviderError> {
     let today = Local::now().date_naive();
     let start = today - Span::days(WINDOW_BACK_DAYS);
@@ -3662,6 +4009,7 @@ async fn fetch_all(
         .collect();
     let mut collections: Vec<Collection> = listed.into_iter().map(|(collection, _)| collection).collect();
     let mut events = Vec::new();
+    let mut objects = Vec::new();
     let mut todos = Vec::new();
     for collection in &mut collections {
         if let Some(name) = placeholder_name(&collection.name).filter(|_| nextcloud) {
@@ -3671,6 +4019,9 @@ async fn fetch_all(
         let id = collection_id(account, &url);
         if collection.kind.has_events() {
             let found = client.events(&url, window.0, window.1).await?;
+            let stale = stale_hrefs(&found, known);
+            // Boxed: the multiget's future would otherwise sit inline in every sync's future.
+            objects.extend(Box::pin(client.objects(&url, &stale)).await?);
             events.extend(found.into_iter().map(|e| Event { collection: id.clone(), ..e }));
         }
         if collection.kind.has_todos() {
@@ -3678,7 +4029,69 @@ async fn fetch_all(
         }
         collection.id = id;
     }
-    Ok(Fetched { collections, private, events, window, todos })
+    Ok(Fetched { collections, private, events, objects, window, todos })
+}
+
+/// The hrefs of `events` whose stored object must be fetched (task TE.3): each once, in the order
+/// of `events`, unless `known` holds it with the ETag the event came with. An event without an ETag
+/// always counts as new: nothing tells whether the held object is still the one stored.
+fn stale_hrefs(events: &[Event], known: &HashMap<String, Option<String>>) -> Vec<String> {
+    let mut stale: Vec<String> = Vec::new();
+    for event in events {
+        let Some(href) = &event.href else { continue };
+        let current = event.etag.is_some() && known.get(href) == Some(&event.etag);
+        if !current && !stale.contains(href) {
+            stale.push(href.clone());
+        }
+    }
+    stale
+}
+
+/// The stored objects to hold after a sync (task TE.3): for every href of `events`, the one just
+/// `fetched`, else the one held before (`old`); objects of hrefs no event names any more are
+/// forgotten.
+fn held_objects(
+    mut old: HashMap<String, RawObject>,
+    fetched: Vec<RawObject>,
+    events: &[Event],
+) -> HashMap<String, RawObject> {
+    let mut fetched: HashMap<String, RawObject> =
+        fetched.into_iter().map(|object| (object.href.clone(), object)).collect();
+    let mut held = HashMap::new();
+    for href in events.iter().filter_map(|event| event.href.as_ref()) {
+        if held.contains_key(href) {
+            continue;
+        }
+        if let Some(object) = fetched.remove(href).or_else(|| old.remove(href)) {
+            held.insert(href.clone(), object);
+        }
+    }
+    held
+}
+
+/// The hrefs of `events` of the calendar `collection` (an id) whose stored object is not `held`, each
+/// once: those [`PimService::events`] fetches for a range outside the cached window, as a sync does
+/// for the window (a server that leaves `RECURRENCE-ID` out of its expansion shows a series only in
+/// its stored object).
+fn unheld_hrefs(events: &[Event], collection: &str, held: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut hrefs: Vec<String> = Vec::new();
+    for event in events.iter().filter(|e| e.collection == collection) {
+        if let Some(href) = event.href.as_ref().filter(|href| !held(href) && !hrefs.contains(href)) {
+            hrefs.push(href.clone());
+        }
+    }
+    hrefs
+}
+
+/// Puts on every event of `events` what its stored object in `objects` says (task TE.3,
+/// [`ObjectFacts::complete`]): the rule, the zone and, where the server left it out, the key of
+/// the occurrence. Each object is read once; an event without a held object stays as it is.
+fn complete_events(events: &mut [Event], objects: &HashMap<String, RawObject>) {
+    let mut facts: HashMap<&str, ObjectFacts> = HashMap::new();
+    for event in events {
+        let Some(object) = event.href.as_deref().and_then(|href| objects.get(href)) else { continue };
+        facts.entry(object.href.as_str()).or_insert_with(|| ObjectFacts::read(&object.ics)).complete(event);
+    }
 }
 
 /// Whether a collection of `kind` serves a service of `wanted` (task M7.1): one with events and
@@ -3886,13 +4299,63 @@ fn refused(code: &'static str, message: String) -> WriteError {
     WriteError::Refused { code, message }
 }
 
+/// `error` for a `scope` on an event that is not saved yet (task TE.1): a scope names events of a
+/// series on the server.
+fn scope_needs_href(event: &Event, scope: Option<SeriesScope>) -> Result<(), WriteError> {
+    match (scope, &event.href) {
+        (Some(_), None) => {
+            Err(refused("error", "a scope names events of a series on the server: leave it out for a new event".into()))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The refusal for a series: `unsupported` until series editing exists.
 fn series(role: Role) -> WriteError {
     let message = match role {
-        Role::Calendar => "recurring events cannot be edited yet",
+        Role::Calendar => "a recurring event is changed or deleted with a scope: occurrence, following or series",
         Role::TaskList => "recurring tasks cannot be edited yet",
     };
     refused("unsupported", message.into())
+}
+
+/// The failure of a write to a series as the core answers it: the server's, of `account`, or the
+/// series' own refusal with its code (`not-found`, `unsupported`).
+fn series_failed(account: &str, failure: SeriesFailure) -> WriteError {
+    match failure {
+        SeriesFailure::Server(err) => Failed::at(account, err).into(),
+        SeriesFailure::Refused(err) => refused(err.code(), err.to_string()),
+    }
+}
+
+/// The occurrence a write to a series answers with (task TE.4): the occurrence with the key the
+/// changed one has now (`written.key`; `None` for a series that became a single event) of the object
+/// `written` names last (the new one after a split), as read again; when it was not read (outside
+/// the window: a date more than a year ahead, or moved out of it; or reading failed), the occurrence
+/// as written ([`SeriesWrite::event`]: after a split with the new uid and the rest of a `COUNT`) with
+/// the new `href` and `etag`. Never another occurrence: the editor goes on with this key (finding 2
+/// of the review of #278). `sent` with the new `href` and `etag` only when neither is there.
+fn answer_of(refreshed: &[Event], written: &SeriesWrite, sent: Event) -> Event {
+    let Some((href, etag)) = written.split.as_ref().or(written.kept.as_ref()) else { return sent };
+    let read = refreshed.iter().find(|e| e.href.as_deref() == Some(href.as_str()) && e.recurrence_id == written.key);
+    if let Some(found) = read {
+        return found.clone();
+    }
+    let base = written.event.clone().unwrap_or_else(|| Event { recurrence_id: written.key, ..sent.clone() });
+    Event { href: Some(href.clone()), etag: Some(etag.clone()), collection: sent.collection, ..base }
+}
+
+/// The `RRULE` text of the main event of the stored object `ics`; `None` without one.
+fn stored_rule_of(ics: &str) -> Option<String> {
+    ObjectFacts::read(ics).repeat.map(|repeat| repeat.rule)
+}
+
+/// The cached window around now ([`WINDOW_BACK_DAYS`], [`WINDOW_AHEAD_DAYS`]), for an account that
+/// has not synced yet.
+fn default_window() -> (DateTime<Utc>, DateTime<Utc>) {
+    let today = Local::now().date_naive();
+    let day = |date: chrono::NaiveDate| date.and_time(chrono::NaiveTime::MIN).and_utc();
+    (day(today - Span::days(WINDOW_BACK_DAYS)), day(today + Span::days(WINDOW_AHEAD_DAYS)))
 }
 
 /// An item on the server that a write is about to change, move away or delete.
@@ -3953,6 +4416,8 @@ fn provider_error(err: &ProviderError) -> Response {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use chrono::TimeZone;
+
     use super::*;
 
     /// The account most tests use; the core's handler tests sign it in with
@@ -3990,6 +4455,15 @@ pub(crate) mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -4114,7 +4588,8 @@ pub(crate) mod tests {
             service.handle_within(Request::Events { start: now, end: now + Span::days(1) }, Reach::Suite).await,
             Response::Events { events: vec![] }
         );
-        let response = service.handle_within(Request::SaveEvent { event: event(now, 1) }, Reach::Suite).await;
+        let response =
+            service.handle_within(Request::SaveEvent { event: event(now, 1), scope: None }, Reach::Suite).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-connected"), "{response:?}");
         assert_eq!(service.sync().await, Err(not_connected()));
     }
@@ -4124,7 +4599,7 @@ pub(crate) mod tests {
         let service = service();
         let response = service
             .handle_within(
-                Request::DeleteEvent { event: Event { recurring: true, ..event(Utc::now(), 1) } },
+                Request::DeleteEvent { event: Event { recurring: true, ..event(Utc::now(), 1) }, scope: None },
                 Reach::Suite,
             )
             .await;
@@ -4132,6 +4607,39 @@ pub(crate) mod tests {
             matches!(response, Response::Error { ref code, ref message } if code == "unsupported" && message.contains("recurring")),
             "{response:?}"
         );
+    }
+
+    /// Task TE.1: a scope on an event not saved yet is an `error`, before anything is looked up; an
+    /// occurrence without a scope stays `unsupported` (task TE.4 writes it with one).
+    #[tokio::test]
+    async fn scopes_are_checked_and_an_occurrence_without_one_stays_refused() {
+        let service = service();
+        let occurrence = Event {
+            recurring: true,
+            href: Some("/cal/work/e.ics".into()),
+            etag: Some("\"1\"".into()),
+            ..event(Utc::now(), 1)
+        };
+        for request in [
+            Request::SaveEvent { event: occurrence.clone(), scope: None },
+            Request::DeleteEvent { event: occurrence.clone(), scope: None },
+        ] {
+            let response = service.handle_within(request, Reach::Suite).await;
+            assert!(
+                matches!(response, Response::Error { ref code, ref message } if code == "unsupported" && message.contains("scope")),
+                "{response:?}"
+            );
+        }
+        for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+            let new = Event { href: None, etag: None, ..event(Utc::now(), 1) };
+            for request in [
+                Request::SaveEvent { event: new.clone(), scope: Some(scope) },
+                Request::DeleteEvent { event: new, scope: Some(scope) },
+            ] {
+                let response = service.handle_within(request, Reach::Suite).await;
+                assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
+            }
+        }
     }
 
     #[test]
@@ -4359,6 +4867,7 @@ pub(crate) mod tests {
         let now = Utc::now();
         let save = |collection: &str, href: Option<&str>| Request::SaveEvent {
             event: Event { collection: collection.into(), href: href.map(str::to_string), ..event(now, 1) },
+            scope: None,
         };
         let (work, home) = (cal("work"), cal("home"));
         let (work_url, home_url) = (url("work"), url("home"));
@@ -4407,7 +4916,7 @@ pub(crate) mod tests {
         let outside = format!("{}../../files/anna/notes.txt", url("home"));
         assert!(service.holder_of(&outside, &place).await.is_err(), "no collection holds it, so nothing is written");
         let moved_out = Event { href: Some(outside), ..event(Utc::now(), 1) };
-        let response = service.handle_within(Request::SaveEvent { event: moved_out }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved_out, scope: None }, Reach::Suite).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
     }
 
@@ -4435,7 +4944,7 @@ pub(crate) mod tests {
         let known = |title: &str, start| Some(Known { title: title.into(), start });
 
         // Deleting: the item at the href, whatever the client calls it.
-        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&board)) }).await;
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&board)), scope: None }).await;
         assert_eq!(
             facts,
             Facts {
@@ -4447,20 +4956,23 @@ pub(crate) mod tests {
         );
         // Written another way, the same address: the same item.
         let same = "/remote.php/dav/calendars/anna/work/e.ics";
-        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(same)) }).await;
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(same)), scope: None }).await;
         assert_eq!(facts.item, known("Board meeting", Some(start)));
         // A version the cache does not hold (the server may have a newer one): unknown.
         let newer = Event { etag: Some("\"2\"".into()), ..lunch(&work, Some(&board)) };
-        assert_eq!(service.facts(&Request::DeleteEvent { event: newer }).await.item, None);
+        assert_eq!(service.facts(&Request::DeleteEvent { event: newer, scope: None }).await.item, None);
         // Nothing cached there, or not an item of the calendar: unknown.
         let missing = format!("{}gone.ics", url("work"));
-        assert_eq!(service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&missing)) }).await.item, None);
+        assert_eq!(
+            service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&missing)), scope: None }).await.item,
+            None
+        );
         let outside = format!("{}../home/e.ics", url("work"));
-        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&outside)) }).await;
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&outside)), scope: None }).await;
         assert_eq!((facts.item, facts.moved_from), (None, None), "a delete never follows an href elsewhere");
 
         // Saving into `home` with work's href moves it: the item comes from work, which loses it.
-        let facts = service.facts(&Request::SaveEvent { event: lunch(&home, Some(&board)) }).await;
+        let facts = service.facts(&Request::SaveEvent { event: lunch(&home, Some(&board)), scope: None }).await;
         assert_eq!(
             facts,
             Facts {
@@ -4470,7 +4982,7 @@ pub(crate) mod tests {
                 ..Facts::default()
             }
         );
-        let created = service.facts(&Request::SaveEvent { event: lunch(&home, None) }).await;
+        let created = service.facts(&Request::SaveEvent { event: lunch(&home, None), scope: None }).await;
         assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None, ..Facts::default() });
 
         // Tasks, and reordering by the exact href.
@@ -4507,7 +5019,7 @@ pub(crate) mod tests {
             format!("{ANNA}/https://evil.example.org/remote.php/dav/calendars/anna/work/"),
         ] {
             let event = Event { collection, href: None, etag: None, ..event(Utc::now(), 1) };
-            let response = service.handle_within(Request::SaveEvent { event }, Reach::Suite).await;
+            let response = service.handle_within(Request::SaveEvent { event, scope: None }, Reach::Suite).await;
             assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
         }
     }
@@ -5475,14 +5987,14 @@ pub(crate) mod tests {
         }
         let (home, _) = on_server(&second, HOME, "");
         let new = Event { collection: home.clone(), href: None, etag: None, uid: "new".into(), ..event(Utc::now(), 1) };
-        let response = service.handle_within(Request::SaveEvent { event: new }, Reach::Suite).await;
-        let Response::Event { event: saved } = response else { panic!("saved, got {response:?}") };
+        let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
+        let Response::Event { event: saved, .. } = response else { panic!("saved, got {response:?}") };
         assert_eq!(saved.collection, home, "answered with the id, not the URL");
         assert!(lines(&first_record).is_empty(), "nothing reached the other account: {:?}", lines(&first_record));
         assert_eq!(lines(&second_record), [format!("PUT {HOME}new.ics If-None-Match *")]);
         assert_eq!(service.state.read().await.accounts[1].events, vec![saved.clone()], "cached at its account");
 
-        let deleted = service.handle_within(Request::DeleteEvent { event: saved }, Reach::Suite).await;
+        let deleted = service.handle_within(Request::DeleteEvent { event: saved, scope: None }, Reach::Suite).await;
         assert_eq!(deleted, Response::Ok);
         // The saved version is cached as a single event of that account, so no read first.
         assert_eq!(lines(&second_record)[1..], [format!("DELETE {HOME}new.ics If-Match \"2\"")]);
@@ -5491,7 +6003,7 @@ pub(crate) mod tests {
         // Moving between accounts would read the old item with the new account's password.
         let listed = listed_event(&first, Some("\"1\""));
         let moved = Event { collection: home, ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&first_record).is_empty(), "nothing sent: {:?}", lines(&first_record));
     }
@@ -5517,7 +6029,8 @@ pub(crate) mod tests {
         };
         assert_eq!(collections.into_iter().map(|c| c.id).collect::<Vec<_>>(), [second_work]);
         let (first_work, _) = on_server(&first, WORK, "");
-        let save = Request::SaveEvent { event: Event { collection: first_work.clone(), ..event(Utc::now(), 1) } };
+        let save =
+            Request::SaveEvent { event: Event { collection: first_work.clone(), ..event(Utc::now(), 1) }, scope: None };
         assert_eq!(
             service.out_of_reach(client, &save).await,
             Some(first_work),
@@ -5549,16 +6062,16 @@ pub(crate) mod tests {
         // Moving "within anna" from bob's server: the href is in no collection of hers.
         let moved = Event { collection: anna_work, href: Some(bob_href), ..event(Utc::now(), 1) };
         for request in [
-            Request::SaveEvent { event: new },
-            Request::SaveEvent { event: changed.clone() },
-            Request::DeleteEvent { event: changed },
+            Request::SaveEvent { event: new, scope: None },
+            Request::SaveEvent { event: changed.clone(), scope: None },
+            Request::DeleteEvent { event: changed, scope: None },
             Request::SaveTodo { todo: task.clone() },
             Request::DeleteTodo { todo: task },
         ] {
             let response = service.handle_within(request.clone(), Reach::Suite).await;
             assert_eq!(code_of(&response), "not-found", "{request:?}: {response:?}");
         }
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
         assert_ne!(code_of(&response), "ok", "{response:?}");
         assert!(lines(&anna_record).is_empty(), "nothing reached anna's server: {:?}", lines(&anna_record));
         assert!(lines(&bob_record).is_empty(), "nothing reached bob's server: {:?}", lines(&bob_record));
@@ -5608,19 +6121,22 @@ pub(crate) mod tests {
         let single = Event { recurring: false, summary: "Replaced".into(), ..listed.clone() };
 
         // The cache knows this version is a series: refused without asking the server.
-        for request in [Request::SaveEvent { event: single.clone() }, Request::DeleteEvent { event: single.clone() }] {
+        for request in [
+            Request::SaveEvent { event: single.clone(), scope: None },
+            Request::DeleteEvent { event: single.clone(), scope: None },
+        ] {
             let response = service.handle_within(request, Reach::Suite).await;
             assert_eq!(code_of(&response), "unsupported", "{response:?}");
         }
         // The same with a relative href, which resolves to the same item.
         let relative = Event { href: Some(format!("{WORK}e.ics")), ..single.clone() };
-        let response = service.handle_within(Request::SaveEvent { event: relative }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: relative, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
 
         // A version the cache does not hold: the server is asked, and nothing is written.
         let newer = Event { etag: Some("\"1b\"".into()), ..single };
-        let response = service.handle_within(Request::SaveEvent { event: newer }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: newer, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics")]);
     }
@@ -5630,7 +6146,9 @@ pub(crate) mod tests {
         let (base, record) = fake_server(server_holding(SERIES)).await;
         let service = service_on(&base).await;
         let event = listed_event(&base, Some("\"1\""));
-        for request in [Request::SaveEvent { event: event.clone() }, Request::DeleteEvent { event }] {
+        for request in
+            [Request::SaveEvent { event: event.clone(), scope: None }, Request::DeleteEvent { event, scope: None }]
+        {
             let response = service.handle_within(request, Reach::Suite).await;
             assert_eq!(code_of(&response), "unsupported", "{response:?}");
         }
@@ -5664,10 +6182,10 @@ pub(crate) mod tests {
         let moved_todo = Todo { collection: home, ..todo.clone() };
         let blank_etag = Event { etag: Some(String::new()), ..event.clone() };
         for request in [
-            Request::SaveEvent { event: event.clone() },
-            Request::DeleteEvent { event },
-            Request::SaveEvent { event: moved_event },
-            Request::SaveEvent { event: blank_etag },
+            Request::SaveEvent { event: event.clone(), scope: None },
+            Request::DeleteEvent { event, scope: None },
+            Request::SaveEvent { event: moved_event, scope: None },
+            Request::SaveEvent { event: blank_etag, scope: None },
             Request::SaveTodo { todo: todo.clone() },
             Request::DeleteTodo { todo },
             Request::SaveTodo { todo: moved_todo },
@@ -5692,8 +6210,10 @@ pub(crate) mod tests {
         // The cache holds this version as a single event: no check; the stored object is read
         // only to write the change onto it (task P.1).
         let renamed = Event { summary: "Renamed".into(), ..listed.clone() };
-        let response = service.handle_within(Request::SaveEvent { event: renamed }, Reach::Suite).await;
-        let Response::Event { event: saved } = response else { panic!("expected the saved event, got {response:?}") };
+        let response = service.handle_within(Request::SaveEvent { event: renamed, scope: None }, Reach::Suite).await;
+        let Response::Event { event: saved, .. } = response else {
+            panic!("expected the saved event, got {response:?}")
+        };
         assert_eq!(saved.etag.as_deref(), Some("\"2\""));
         assert_eq!(saved.collection, listed.collection, "answered with the collection id");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("PUT {WORK}e.ics If-Match \"1\"")]);
@@ -5704,10 +6224,10 @@ pub(crate) mod tests {
         let response = service.handle_within(Request::SaveTodo { todo: done }, Reach::Suite).await;
         assert!(matches!(response, Response::Todo { .. }), "{response:?}");
         // Deleting with the new etag, and creating, which must not overwrite anything.
-        let response = service.handle_within(Request::DeleteEvent { event: saved }, Reach::Suite).await;
+        let response = service.handle_within(Request::DeleteEvent { event: saved, scope: None }, Reach::Suite).await;
         assert_eq!(response, Response::Ok);
         let new = Event { href: None, etag: None, uid: "new".into(), ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: new }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
         assert!(matches!(response, Response::Event { .. }), "{response:?}");
         assert_eq!(
             lines(&record)[2..],
@@ -5729,8 +6249,8 @@ pub(crate) mod tests {
         let listed = listed_event(&base, Some("\"1\""));
         let (home, _) = on_server(&base, HOME, "");
         let moved = Event { collection: home.clone(), ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
-        let Response::Event { event: saved } = response else { panic!("moved, got {response:?}") };
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
+        let Response::Event { event: saved, .. } = response else { panic!("moved, got {response:?}") };
         assert_eq!(saved.collection, home);
         assert_eq!(
             lines(&record),
@@ -5752,7 +6272,7 @@ pub(crate) mod tests {
         cache_occurrences(&service, &listed, true).await;
         let (home, _) = on_server(&base, HOME, "");
         let moved = Event { collection: home, recurring: false, ..listed };
-        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        let response = service.handle_within(Request::SaveEvent { event: moved, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&record).is_empty(), "nothing created, nothing deleted: {:?}", lines(&record));
     }
@@ -5942,10 +6462,11 @@ pub(crate) mod tests {
         .await;
         let service = service_on(&base).await;
         let stale = listed_event(&base, Some("\"1\""));
-        let response = service.handle_within(Request::SaveEvent { event: stale.clone() }, Reach::Suite).await;
+        let response =
+            service.handle_within(Request::SaveEvent { event: stale.clone(), scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "conflict", "{response:?}");
         let gone = Event { href: stale.href.map(|href| href.replace("e.ics", "gone.ics")), ..stale };
-        let response = service.handle_within(Request::DeleteEvent { event: gone }, Reach::Suite).await;
+        let response = service.handle_within(Request::DeleteEvent { event: gone, scope: None }, Reach::Suite).await;
         assert_eq!(code_of(&response), "not-found", "{response:?}");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("GET {WORK}gone.ics")], "only reads");
     }
@@ -6295,5 +6816,526 @@ pub(crate) mod tests {
         assert_eq!(slot.described.len(), MAX_DESCRIBED);
         assert_eq!(slot.described("o/r1"), Some(details(1)), "kept as the newest");
         assert_eq!(slot.described("o/r2"), None);
+    }
+
+    // Series (task TE.3): the stored objects next to the expanded occurrences.
+
+    /// A calendar-query answer (expanded) or a multiget answer with `items` (href, ETag,
+    /// iCalendar) under `work`.
+    macro_rules! dav_answer {
+        ($(($href:literal, $etag:literal, $ics:literal)),* $(,)?) => {
+            concat!(
+                r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">"#,
+                $(
+                    "<d:response><d:href>/remote.php/dav/calendars/anna/work/", $href, "</d:href><d:propstat><d:prop>",
+                    "<d:getetag>\"", $etag, "\"</d:getetag><c:calendar-data>", $ics,
+                    "</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>",
+                )*
+                "</d:multistatus>"
+            )
+        };
+    }
+
+    const STANDUP_OCCURRENCE: &str = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20261019T073000Z\nSUMMARY:Standup\nRECURRENCE-ID:20261019T073000Z\nEND:VEVENT\nEND:VCALENDAR\n";
+    const EXPANDED_FIRST: &str = dav_answer!(
+        (
+            "standup.ics",
+            "s1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20261019T073000Z\nSUMMARY:Standup\nRECURRENCE-ID:20261019T073000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+        (
+            "lunch.ics",
+            "l1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:lunch\nDTSTART:20261022T103000Z\nSUMMARY:Lunch\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+    );
+    const STORED_FIRST: &str = dav_answer!(
+        (
+            "standup.ics",
+            "s1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART;TZID=Europe/Berlin:20261019T093000\nRRULE:FREQ=WEEKLY;BYDAY=MO\nSUMMARY:Standup\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+        (
+            "lunch.ics",
+            "l1",
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:lunch\nDTSTART;TZID=Europe/Berlin:20261022T123000\nSUMMARY:Lunch\nEND:VEVENT\nEND:VCALENDAR\n"
+        ),
+    );
+    /// The standup became daily (new ETag), the lunch was deleted.
+    const EXPANDED_LATER: &str = dav_answer!((
+        "standup.ics",
+        "s2",
+        "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20261019T073000Z\nSUMMARY:Standup\nRECURRENCE-ID:20261019T073000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+    ),);
+    const STORED_LATER: &str = dav_answer!((
+        "standup.ics",
+        "s2",
+        "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART;TZID=Europe/Berlin:20261019T093000\nRRULE:FREQ=DAILY\nSUMMARY:Standup\nEND:VEVENT\nEND:VCALENDAR\n"
+    ),);
+
+    /// A Nextcloud with the calendar `work` that answers the expansion and the multiget from
+    /// `later` on with the second version of its events.
+    fn server_with_series(later: Arc<std::sync::atomic::AtomicBool>) -> impl Fn(&Seen) -> Reply + Send + Sync {
+        move |seen| {
+            let later = later.load(std::sync::atomic::Ordering::SeqCst);
+            match seen.method.as_str() {
+                "REPORT" if seen.body.contains("calendar-multiget") => {
+                    (207, None, if later { STORED_LATER } else { STORED_FIRST })
+                }
+                "REPORT" if seen.body.contains("name=\"VEVENT\"") => {
+                    (207, None, if later { EXPANDED_LATER } else { EXPANDED_FIRST })
+                }
+                _ => healthy_server(seen),
+            }
+        }
+    }
+
+    /// The bodies of the multigets the fake server saw.
+    fn multigets(record: &std::sync::Mutex<Vec<Seen>>) -> Vec<String> {
+        let seen = record.lock().expect("record");
+        seen.iter().filter(|s| s.body.contains("calendar-multiget")).map(|s| s.body.clone()).collect()
+    }
+
+    /// Task TE.3: after the expansion the core fetches the stored objects of the hrefs whose ETag
+    /// is new, in one multiget per calendar, puts rule and zone on every occurrence, fetches nothing
+    /// when nothing changed and forgets the object of an href that is gone.
+    #[tokio::test]
+    async fn only_objects_with_a_new_etag_are_fetched_and_gone_ones_are_forgotten() {
+        let later = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (base, record) = fake_server(server_with_series(Arc::clone(&later))).await;
+        let service = service_on(&base).await;
+        let held = |service: &PimService| {
+            let state = service.state.try_read().expect("no sync running");
+            let mut hrefs: Vec<String> =
+                state.accounts[0].objects.keys().map(|h| h.rsplit('/').next().unwrap_or("").to_string()).collect();
+            hrefs.sort();
+            (hrefs, state.accounts[0].events.clone())
+        };
+
+        service.sync().await.expect("synced");
+        let asked = multigets(&record);
+        assert_eq!(asked.len(), 1, "one multiget for the calendar");
+        assert!(asked[0].contains("work/standup.ics</d:href>") && asked[0].contains("work/lunch.ics</d:href>"));
+        assert!(!asked[0].contains("expand"), "the stored objects as they are");
+        let (hrefs, events) = held(&service);
+        assert_eq!(hrefs, ["lunch.ics", "standup.ics"]);
+        let standup = events.iter().find(|e| e.uid == "standup").expect("standup");
+        let rule = standup.repeat.as_deref().map(|r| r.rule.as_str());
+        assert_eq!((rule, standup.time_zone.as_deref()), (Some("FREQ=WEEKLY;BYDAY=MO"), Some("Europe/Berlin")));
+        assert!(standup.recurring && standup.recurrence_id.is_some());
+        let lunch = events.iter().find(|e| e.uid == "lunch").expect("lunch");
+        assert_eq!((lunch.repeat.as_ref(), lunch.time_zone.as_deref()), (None, Some("Europe/Berlin")));
+
+        service.sync().await.expect("synced again");
+        assert_eq!(multigets(&record).len(), 1, "nothing changed, nothing fetched");
+        let (_, events) = held(&service);
+        assert!(events.iter().any(|e| e.repeat.is_some()), "the held objects still complete the occurrences");
+
+        later.store(true, std::sync::atomic::Ordering::SeqCst);
+        service.sync().await.expect("synced after the change");
+        let asked = multigets(&record);
+        assert_eq!(asked.len(), 2);
+        assert!(asked[1].contains("work/standup.ics</d:href>") && !asked[1].contains("lunch"), "only the new ETag");
+        let (hrefs, events) = held(&service);
+        assert_eq!(hrefs, ["standup.ics"], "the lunch's object is forgotten");
+        let rule = events[0].repeat.as_deref().map(|r| r.rule.as_str());
+        assert_eq!(rule, Some("FREQ=DAILY"));
+    }
+
+    #[test]
+    fn stale_hrefs_are_named_once_and_events_without_an_etag_always_count() {
+        let event = |href: Option<&str>, etag: Option<&str>| Event {
+            href: href.map(String::from),
+            etag: etag.map(String::from),
+            ..parse_one(STANDUP_OCCURRENCE)
+        };
+        let known: HashMap<String, Option<String>> =
+            [("a".to_string(), Some("1".to_string())), ("b".to_string(), None)].into();
+        let events = [
+            event(Some("a"), Some("1")),
+            event(Some("a"), Some("1")),
+            event(Some("b"), None),
+            event(Some("c"), Some("1")),
+            event(Some("c"), Some("1")),
+            event(None, None),
+            event(Some("a"), Some("2")),
+        ];
+        assert_eq!(stale_hrefs(&events, &known), ["b", "c", "a"]);
+        let object = |href: &str, ics: &str| RawObject { href: href.into(), etag: None, ics: ics.into() };
+        let old: HashMap<String, RawObject> =
+            [("a".to_string(), object("a", "old")), ("gone".to_string(), object("gone", "old"))].into();
+        let held = held_objects(old, vec![object("c", "new")], &events);
+        let mut kept: Vec<(&str, &str)> = held.values().map(|o| (o.href.as_str(), o.ics.as_str())).collect();
+        kept.sort();
+        assert_eq!(kept, [("a", "old"), ("c", "new")], "b was not found, gone is forgotten");
+    }
+
+    fn parse_one(ics: &str) -> Event {
+        torro_pim_caldav::parse_events(ics, "/cal/").remove(0)
+    }
+
+    // Writing series (task TE.4).
+
+    /// The second occurrence of [`SERIES`] (weekly from 11 Oct, 08:00 UTC), as the core caches it.
+    fn second_of_series(base: &str, etag: &str) -> Event {
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 18, 8, 0, 0).single().expect("time"));
+        Event {
+            recurring: true,
+            recurrence_id: Some(key),
+            repeat: Some(Box::new(torro_pim_caldav::recur::read("FREQ=WEEKLY", None))),
+            start: key,
+            end: None,
+            ..listed_event(base, Some(etag))
+        }
+    }
+
+    const EXPANDED_SECOND: &str = r#"<d:multistatus xmlns:d="DAV:" xmlns:cal="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/remote.php/dav/calendars/anna/work/e.ics</d:href><d:propstat><d:prop><d:getetag>"2"</d:getetag><cal:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:u
+DTSTART:20261011T080000Z
+RECURRENCE-ID:20261011T080000Z
+SUMMARY:Workshop
+END:VEVENT
+END:VCALENDAR
+</cal:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+
+    /// A server holding [`SERIES`] at `e.ics` in version `"1"`: a new object is made in version
+    /// `"n1"`, the series is written in version `"2"` (or refused with 412 when `refuse` is set), and
+    /// the multigets answer with the old series' first occurrence.
+    fn server_splitting(refuse: bool) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        move |seen| match (seen.method.as_str(), seen.if_none_match.is_some()) {
+            ("GET", _) => (200, Some("\"1\""), SERIES),
+            ("PUT", true) => (201, Some("\"n1\""), ""),
+            ("PUT", false) if refuse => (412, None, ""),
+            ("PUT", false) => (204, Some("\"2\""), ""),
+            ("DELETE", _) => (204, None, ""),
+            ("REPORT", _) if seen.body.contains("expand") => (207, None, EXPANDED_SECOND),
+            ("REPORT", _) => (207, None, NOTHING),
+            _ => (405, None, ""),
+        }
+    }
+
+    #[tokio::test]
+    async fn splitting_a_series_writes_the_new_part_first_and_reads_both_again() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let event = Event { summary: "Workshop in a new format".into(), ..second_of_series(&base, "\"1\"") };
+        let request = Request::SaveEvent { event: event.clone(), scope: Some(SeriesScope::Following) };
+        let Response::Event { event: saved, reset } = service.handle_within(request, Reach::Suite).await else {
+            panic!("expected the saved occurrence")
+        };
+        assert_eq!(reset, 0);
+        let seen = lines(&record);
+        assert_eq!(seen[..2], [format!("GET {WORK}e.ics"), format!("GET {WORK}e.ics")], "{seen:?}");
+        assert!(
+            seen[2].starts_with(&format!("PUT {WORK}")) && seen[2].ends_with("@torro.ics If-None-Match *"),
+            "{seen:?}"
+        );
+        assert_eq!(seen[3], format!("PUT {WORK}e.ics If-Match \"1\""));
+        assert!(seen[4..].iter().all(|line| line == &format!("REPORT {WORK}")) && seen.len() == 6, "{seen:?}");
+        let bodies: Vec<String> = record.lock().expect("record").iter().map(|s| s.body.clone()).collect();
+        assert!(bodies[2].contains("RELATED-TO;RELTYPE=SIBLING:u") && bodies[2].contains("Workshop in a new format"));
+        assert!(bodies[3].contains("RRULE:FREQ=WEEKLY;UNTIL=20261018T075959Z"), "{}", bodies[3]);
+        // The answer is the first occurrence of the new series: outside what the server answered
+        // here, so the event as sent, with the new object's href and version.
+        assert!(saved.href.as_deref().is_some_and(|href| href.ends_with("@torro.ics")), "{saved:?}");
+        assert_eq!((saved.etag.as_deref(), saved.recurrence_id), (Some("\"n1\""), event.recurrence_id));
+        // The uid and rule of the new series, from the object written.
+        assert!(saved.uid.ends_with("@torro") && saved.uid != event.uid, "{saved:?}");
+        assert_eq!(saved.repeat.as_deref().map(|r| r.rule.as_str()), Some("FREQ=WEEKLY"));
+        assert_eq!(
+            (saved.summary.as_str(), saved.collection.as_str()),
+            ("Workshop in a new format", event.collection.as_str())
+        );
+        // The cache holds what the server answered for the old series, nothing of before.
+        let state = service.state.read().await;
+        let cached: Vec<(&str, Option<&str>)> =
+            state.accounts[0].events.iter().map(|e| (e.summary.as_str(), e.etag.as_deref())).collect();
+        assert_eq!(cached, [("Workshop", Some("\"2\""))]);
+    }
+
+    #[tokio::test]
+    async fn a_split_whose_second_write_fails_takes_the_new_part_back() {
+        let (base, record) = fake_server(server_splitting(true)).await;
+        let service = service_on(&base).await;
+        let event = Event { summary: "Workshop in a new format".into(), ..second_of_series(&base, "\"1\"") };
+        let request = Request::SaveEvent { event, scope: Some(SeriesScope::Following) };
+        let response = service.handle_within(request, Reach::Suite).await;
+        assert_eq!(code_of(&response), "conflict", "{response:?}");
+        let seen = lines(&record);
+        assert_eq!(seen.len(), 5, "{seen:?}");
+        let new = seen[2].trim_start_matches("PUT ").trim_end_matches(" If-None-Match *").to_string();
+        assert_eq!(seen[4], format!("DELETE {new} If-Match \"n1\""), "the new part goes again");
+    }
+
+    #[tokio::test]
+    async fn a_series_changed_meanwhile_is_a_conflict_and_nothing_is_written() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+            let stale = second_of_series(&base, "\"0\"");
+            let response = service
+                .handle_within(Request::SaveEvent { event: stale.clone(), scope: Some(scope) }, Reach::Suite)
+                .await;
+            assert_eq!(code_of(&response), "conflict", "{response:?}");
+            let response =
+                service.handle_within(Request::DeleteEvent { event: stale, scope: Some(scope) }, Reach::Suite).await;
+            assert_eq!(code_of(&response), "conflict", "{response:?}");
+        }
+        assert!(lines(&record).iter().all(|line| line.starts_with("GET ")), "only reads: {:?}", lines(&record));
+        // An occurrence the series does not have is `not-found`, before anything is written.
+        let wednesday = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 21, 8, 0, 0).single().expect("time"));
+        let other = Event { recurrence_id: Some(wednesday), ..second_of_series(&base, "\"1\"") };
+        let response = service
+            .handle_within(Request::DeleteEvent { event: other, scope: Some(SeriesScope::Occurrence) }, Reach::Suite)
+            .await;
+        assert_eq!(code_of(&response), "not-found", "{response:?}");
+        assert!(lines(&record).iter().all(|line| line.starts_with("GET ")));
+    }
+
+    #[tokio::test]
+    async fn deleting_one_occurrence_excludes_its_date() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let request =
+            Request::DeleteEvent { event: second_of_series(&base, "\"1\""), scope: Some(SeriesScope::Occurrence) };
+        assert_eq!(service.handle_within(request, Reach::Suite).await, Response::Ok);
+        let seen = record.lock().expect("record").clone();
+        let put = seen.iter().find(|s| s.method == "PUT").expect("written");
+        assert_eq!(put.if_match.as_deref(), Some("\"1\""));
+        assert!(put.body.contains("EXDATE:20261018T080000Z"), "{}", put.body);
+    }
+
+    fn renamed_again(event: &Event) -> Event {
+        Event { summary: "Workshop III".into(), ..event.clone() }
+    }
+
+    /// The occurrence of [`SERIES`] at `key` cached with its stored object, in `work`.
+    async fn cache_series(service: &PimService, key: EventTime) -> Event {
+        let mut slot = slot_on("http://127.0.0.1:9/remote.php/dav/");
+        let base = "http://127.0.0.1:9/remote.php/dav/";
+        let event = Event { recurrence_id: Some(key), start: key, ..second_of_series(base, "\"1\"") };
+        let object =
+            RawObject { href: event.href.clone().unwrap_or_default(), etag: Some("\"1\"".into()), ics: SERIES.into() };
+        slot.events = vec![event.clone()];
+        slot.objects = [(object.href.clone(), object)].into();
+        service.state.write().await.accounts.push(slot);
+        event
+    }
+
+    /// Task TE.4: an approval names the occurrence by its key, never the first one or the client's
+    /// start, and says how many changed occurrences a save resets, from the stored object.
+    #[tokio::test]
+    async fn facts_name_the_occurrence_by_its_key_and_what_a_save_removes() {
+        let service = service();
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 18, 8, 0, 0).single().expect("time"));
+        let cached = cache_series(&service, key).await;
+        let claimed = Event {
+            summary: "Lunch".into(),
+            start: EventTime::DateTime(Utc.with_ymd_and_hms(2026, 12, 24, 12, 0, 0).single().expect("time")),
+            ..cached.clone()
+        };
+        let facts =
+            service.facts(&Request::SaveEvent { event: claimed.clone(), scope: Some(SeriesScope::Series) }).await;
+        assert_eq!(facts.item, Some(Known { title: "Workshop".into(), start: Some(key) }));
+        let other = Event { recurrence_id: Some(EventTime::DateTime(Utc::now())), ..claimed.clone() };
+        let facts = service.facts(&Request::DeleteEvent { event: other, scope: Some(SeriesScope::Occurrence) }).await;
+        assert_eq!(facts.item, None, "no occurrence with that key: unknown");
+
+        // Removing events of the series needs the right to delete; a new title does not.
+        let renamed = Event { summary: "Workshop II".into(), ..cached.clone() };
+        let ended = Event { repeat: None, recurring: false, ..cached.clone() };
+        // Without its rule but still recurring (a client that never got it): the series stays.
+        let unknown_rule = Event { repeat: None, ..cached.clone() };
+        let save = |event: &Event, scope| Request::SaveEvent { event: event.clone(), scope: Some(scope) };
+        assert!(!service.removes_events(&save(&renamed, SeriesScope::Series)).await);
+        assert!(!service.removes_events(&save(&ended, SeriesScope::Occurrence)).await);
+        assert!(service.removes_events(&save(&ended, SeriesScope::Series)).await);
+        assert!(!service.removes_events(&save(&unknown_rule, SeriesScope::Series)).await);
+        let uncached = Event { etag: Some("\"9\"".into()), ..renamed };
+        assert!(service.removes_events(&save(&uncached, SeriesScope::Series)).await, "unknown: counted as removing");
+        assert!(!service.removes_events(&Request::SaveEvent { event: ended.clone(), scope: None }).await);
+        let service = &service;
+        let removal = |request: Request| async move { service.facts(&request).await.removal };
+        assert_eq!(removal(save(&ended, SeriesScope::Series)).await, Removal::EndsSeries);
+        assert_eq!(removal(save(&unknown_rule, SeriesScope::Following)).await, Removal::Nothing);
+        assert_eq!(removal(save(&renamed_again(&cached), SeriesScope::Series)).await, Removal::Nothing);
+        assert_eq!(removal(save(&uncached, SeriesScope::Following)).await, Removal::Unknown);
+    }
+
+    // Findings of the review of #278.
+
+    const SMUGGLED: &str = "FREQ=WEEKLY\r\nATTENDEE;RSVP=TRUE:mailto:eve@example.org\r\nEND:VEVENT";
+
+    /// Finding 1: a rule text with more lines is `error` on every path, before anything is written,
+    /// whether the client says it is custom or not. The stored rule is read to compare (it is not the
+    /// stored text), nothing more.
+    #[tokio::test]
+    async fn a_rule_text_with_more_lines_is_refused_before_anything_is_written() {
+        let (base, record) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        let occurrence = second_of_series(&base, "\"1\"");
+        for custom in [true, false] {
+            let repeat = torro_pim::model::Repeat {
+                rule: SMUGGLED.into(),
+                custom,
+                ..torro_pim_caldav::recur::read("FREQ=WEEKLY", None)
+            };
+            let sent = Event { repeat: Some(Box::new(repeat)), ..occurrence.clone() };
+            for scope in [Some(SeriesScope::Occurrence), Some(SeriesScope::Following), Some(SeriesScope::Series)] {
+                let response =
+                    service.handle_within(Request::SaveEvent { event: sent.clone(), scope }, Reach::Suite).await;
+                assert_eq!(code_of(&response), "error", "{scope:?}: {response:?}");
+            }
+            let new = Event { href: None, etag: None, recurring: false, recurrence_id: None, ..sent };
+            let response = service.handle_within(Request::SaveEvent { event: new, scope: None }, Reach::Suite).await;
+            assert_eq!(code_of(&response), "error", "a new event: {response:?}");
+        }
+        let seen = lines(&record);
+        assert!(seen.iter().all(|line| line.starts_with("GET ")), "nothing written: {seen:?}");
+    }
+
+    /// A series on the fake server whose stored rule is `rule`, at `e.ics` in version `"1"`; writes as
+    /// [`server_splitting`] takes them, the multigets answer with nothing.
+    fn server_with_rule(rule: &'static str) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        let ics: &'static str =
+            Box::leak(SERIES.replace("RRULE:FREQ=WEEKLY", &format!("RRULE:{rule}")).into_boxed_str());
+        move |seen| match (seen.method.as_str(), seen.if_none_match.is_some()) {
+            ("GET", _) => (200, Some("\"1\""), ics),
+            ("PUT", true) => (201, Some("\"n1\""), ""),
+            ("PUT", false) => (204, Some("\"2\""), ""),
+            ("REPORT", _) => (207, None, NOTHING),
+            _ => (405, None, ""),
+        }
+    }
+
+    /// The second review of #278, finding 1: a stored rule that fails the check (no `FREQ`, an `X-`
+    /// part with a `:`) comes back with every save of its series; a new title saves with every scope,
+    /// from the cache and from the server, and the rule stays as stored.
+    #[tokio::test]
+    async fn a_stored_rule_that_fails_the_check_goes_back_with_a_new_title() {
+        for rule in ["BYDAY=MO", "FREQ=WEEKLY;X-URL=https://example.org"] {
+            let (base, record) = fake_server(server_with_rule(rule)).await;
+            let service = service_on(&base).await;
+            let repeat = torro_pim_caldav::recur::read(rule, None);
+            assert!(repeat.custom && torro_pim_caldav::recur::check(rule).is_err(), "{rule}");
+            let sent = Event {
+                summary: "Workshop renamed".into(),
+                repeat: Some(Box::new(repeat)),
+                ..second_of_series(&base, "\"1\"")
+            };
+            for scope in [SeriesScope::Occurrence, SeriesScope::Following, SeriesScope::Series] {
+                let request = Request::SaveEvent { event: sent.clone(), scope: Some(scope) };
+                let response = service.handle_within(request, Reach::Suite).await;
+                assert!(matches!(response, Response::Event { .. }), "{rule}, {scope:?}: {response:?}");
+            }
+            let seen = record.lock().expect("record").clone();
+            let written: Vec<&Seen> = seen.iter().filter(|s| s.method == "PUT").collect();
+            assert!(written.len() >= 3, "{rule}: {:?}", lines(&record));
+            for put in written {
+                assert!(put.body.contains(&format!("RRULE:{rule}")) || !put.body.contains("RRULE"), "{}", put.body);
+            }
+            // From the cache: the stored object held in the version the client read.
+            let cached = service_on(&base).await;
+            {
+                let mut state = cached.state.write().await;
+                let slot = state.accounts.first_mut().expect("the account");
+                let href = sent.href.clone().unwrap_or_default();
+                let ics = SERIES.replace("RRULE:FREQ=WEEKLY", &format!("RRULE:{rule}"));
+                slot.objects = [(href.clone(), RawObject { href, etag: Some("\"1\"".into()), ics })].into();
+            }
+            assert_eq!(cached.stored_rule(&sent).await.as_deref(), Some(rule));
+            let request = Request::SaveEvent { event: sent.clone(), scope: Some(SeriesScope::Occurrence) };
+            let response = cached.handle_within(request, Reach::Suite).await;
+            assert!(matches!(response, Response::Event { .. }), "{rule}, cached: {response:?}");
+            // Another text that fails the check is still refused.
+            let other = torro_pim::model::Repeat {
+                rule: format!("{rule};X-A=b c"),
+                ..torro_pim_caldav::recur::read(rule, None)
+            };
+            let refused = Event { repeat: Some(Box::new(other)), ..sent };
+            let request = Request::SaveEvent { event: refused, scope: Some(SeriesScope::Series) };
+            assert_eq!(code_of(&cached.handle_within(request, Reach::Suite).await), "error", "{rule}");
+        }
+    }
+
+    /// Finding 2: the answer is the occurrence written, also when it lies beyond what is read again.
+    #[tokio::test]
+    async fn the_answer_names_the_occurrence_written_even_beyond_the_window() {
+        let (base, _) = fake_server(server_splitting(false)).await;
+        let service = service_on(&base).await;
+        // 53 weeks after the first occurrence: the server's expansion (the first one only) lacks it.
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2027, 10, 17, 8, 0, 0).single().expect("time"));
+        let far = Event {
+            summary: "Workshop next year".into(),
+            recurrence_id: Some(key),
+            start: key,
+            ..second_of_series(&base, "\"1\"")
+        };
+        let request = Request::SaveEvent { event: far.clone(), scope: Some(SeriesScope::Occurrence) };
+        let Response::Event { event: saved, reset } = service.handle_within(request, Reach::Suite).await else {
+            panic!("expected the saved occurrence")
+        };
+        assert_eq!((saved.recurrence_id, saved.start, reset), (Some(key), key, 0), "never the first one");
+        assert_eq!(
+            (saved.summary.as_str(), saved.etag.as_deref(), saved.uid.as_str()),
+            ("Workshop next year", Some("\"2\""), "u")
+        );
+        assert_eq!((saved.collection.as_str(), saved.href.as_deref()), (far.collection.as_str(), far.href.as_deref()));
+        assert_eq!(saved.repeat.as_deref().map(|r| r.rule.as_str()), Some("FREQ=WEEKLY"));
+        assert_eq!(saved.exceptions, [key], "its change is the series' only one");
+    }
+
+    /// Finding 2: after a split the answer carries the new series' uid and rule, also when reading
+    /// the series again fails.
+    #[tokio::test]
+    async fn a_split_answers_with_the_new_series_when_reading_again_fails() {
+        let (base, _) = fake_server(|seen: &Seen| match seen.method.as_str() {
+            "REPORT" => (500, None, ""),
+            _ => server_splitting(false)(seen),
+        })
+        .await;
+        let service = service_on(&base).await;
+        let event = Event { summary: "Workshop in a new format".into(), ..second_of_series(&base, "\"1\"") };
+        let request = Request::SaveEvent { event: event.clone(), scope: Some(SeriesScope::Following) };
+        let Response::Event { event: saved, .. } = service.handle_within(request, Reach::Suite).await else {
+            panic!("expected the saved occurrence")
+        };
+        assert!(saved.uid.ends_with("@torro") && saved.href.as_deref().is_some_and(|h| h.ends_with("@torro.ics")));
+        assert_eq!((saved.recurrence_id, saved.etag.as_deref()), (event.recurrence_id, Some("\"n1\"")));
+        assert_eq!(saved.repeat.as_deref().map(|r| r.rule.as_str()), Some("FREQ=WEEKLY"));
+        assert!(saved.recurring);
+    }
+
+    const EXPANDED_FAR: &str = dav_answer!((
+        "standup.ics",
+        "s1",
+        "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:standup\nDTSTART:20280103T083000Z\nSUMMARY:Standup\nRECURRENCE-ID:20280103T083000Z\nEND:VEVENT\nEND:VCALENDAR\n"
+    ),);
+
+    /// Finding 3: an occurrence outside the cached window comes with its rule, zone and changed
+    /// occurrences: the core fetches the stored objects it does not hold.
+    #[tokio::test]
+    async fn a_series_outside_the_window_comes_with_its_rule() {
+        let (base, record) = fake_server(|seen: &Seen| match (seen.method.as_str(), seen.path.ends_with("/work/")) {
+            ("REPORT", true) if seen.body.contains("calendar-multiget") => (207, None, STORED_FIRST),
+            ("REPORT", true) => (207, None, EXPANDED_FAR),
+            ("REPORT", false) => (207, None, NOTHING),
+            _ => (404, None, ""),
+        })
+        .await;
+        let service = service_on(&base).await;
+        let start = Utc.with_ymd_and_hms(2028, 1, 1, 0, 0, 0).single().expect("time");
+        let request = Request::Events { start, end: start + Span::days(31) };
+        let Response::Events { events } = service.handle_within(request, Reach::Suite).await else {
+            panic!("expected events")
+        };
+        let standup = events.iter().find(|e| e.uid == "standup").expect("the standup");
+        let rule = standup.repeat.as_deref().map(|r| r.rule.as_str());
+        assert_eq!((rule, standup.time_zone.as_deref()), (Some("FREQ=WEEKLY;BYDAY=MO"), Some("Europe/Berlin")));
+        assert!(standup.recurring && standup.recurrence_id.is_some());
+        let asked = multigets(&record);
+        assert_eq!(asked.len(), 1, "one multiget for the calendar with events");
+        assert!(asked[0].contains("work/standup.ics</d:href>"));
     }
 }

@@ -10,15 +10,67 @@
 //! [`PimSource::accounts`] reads `Accounts` (with a GitHub token's scopes) and leaves out the
 //! collections, which come with [`PimSource::collections`]; that one joins `CalendarCollections`
 //! and `TaskCollections`, so the apps keep one call each.
+//!
+//! Also here: the limits of `calendar.search_places` and `calendar.map_preview` (task TE.1,
+//! [`limit_refusal`]), checked by the core before it asks any service.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use torro_pim::model::SeriesScope;
 use torro_pim::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 use crate::Request;
 use crate::Response;
+
+/// The longest query `calendar.search_places` takes, in characters.
+pub const MAX_PLACE_QUERY_CHARS: usize = 200;
+
+/// The widest map `calendar.map_preview` draws, in logical pixels.
+pub const MAX_MAP_WIDTH: u16 = 800;
+
+/// The highest map `calendar.map_preview` draws, in logical pixels.
+pub const MAX_MAP_HEIGHT: u16 = 400;
+
+/// Why `request` is outside the limits of `calendar.search_places` or `calendar.map_preview`, as
+/// the answer the core gives (`error`), or `None` when it is inside them or another request:
+///
+/// - `query` holds 1 to [`MAX_PLACE_QUERY_CHARS`] characters and not only spaces;
+/// - `width` is 1 to [`MAX_MAP_WIDTH`], `height` 1 to [`MAX_MAP_HEIGHT`];
+/// - `geo` and `near` lie on a map ([`torro_pim::model::Geo::on_map`]: latitude within ±85.0511,
+///   longitude within ±180).
+///
+/// The messages never repeat the query or the coordinates: they may end up in a log.
+pub fn limit_refusal(request: &Request) -> Option<Response> {
+    let refuse = |message: String| Some(Response::Error { code: "error".into(), message });
+    let off_map = |geo: &torro_pim::model::Geo| !geo.on_map();
+    match request {
+        Request::SearchPlaces { query, near } => {
+            let chars = query.chars().count();
+            if query.trim().is_empty() || chars > MAX_PLACE_QUERY_CHARS {
+                return refuse(format!("the query holds 1 to {MAX_PLACE_QUERY_CHARS} characters"));
+            }
+            if near.as_ref().is_some_and(off_map) {
+                return refuse(NOT_ON_A_MAP.into());
+            }
+            None
+        }
+        Request::MapPreview { geo, width, height, .. } => {
+            if !(1..=MAX_MAP_WIDTH).contains(width) || !(1..=MAX_MAP_HEIGHT).contains(height) {
+                return refuse(format!("a map is 1 to {MAX_MAP_WIDTH} wide and 1 to {MAX_MAP_HEIGHT} high"));
+            }
+            if off_map(geo) {
+                return refuse(NOT_ON_A_MAP.into());
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The answer to a point a map cannot show.
+const NOT_ON_A_MAP: &str = "a point on a map lies within ±85.0511 latitude and ±180 longitude";
 
 /// Talks to the core at its socket.
 #[derive(Debug, Clone)]
@@ -147,17 +199,17 @@ impl PimSource for PimClient {
         }
     }
 
-    async fn save_event(&self, event: Event) -> Result<Event, ProviderError> {
+    async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<Event, ProviderError> {
         let uid = event.uid.clone();
-        match self.ask(Request::SaveEvent { event }).await.map_err(|err| with_uid(err, &uid))? {
-            Response::Event { event } => Ok(event),
+        match self.ask(Request::SaveEvent { event, scope }).await.map_err(|err| with_uid(err, &uid))? {
+            Response::Event { event, .. } => Ok(event),
             other => Err(unexpected(other)),
         }
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), ProviderError> {
+    async fn delete_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(), ProviderError> {
         let uid = event.uid.clone();
-        expect_ok(self.ask(Request::DeleteEvent { event }).await.map_err(|err| with_uid(err, &uid))?)
+        expect_ok(self.ask(Request::DeleteEvent { event, scope }).await.map_err(|err| with_uid(err, &uid))?)
     }
 
     async fn save_todo(&self, todo: Todo) -> Result<Todo, ProviderError> {
@@ -339,6 +391,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -429,7 +490,11 @@ mod tests {
                 Response::Events { events: vec![Event { summary: format!("{start} until {end}"), ..event() }] }
             }
             Request::Todos => Response::Todos { todos: vec![todo()] },
-            Request::SaveEvent { event } => Response::Event { event: stored_event(event) },
+            // The scope comes back in the summary, so a test can see that it went along.
+            Request::SaveEvent { event, scope } => {
+                let summary = format!("{} {scope:?}", event.summary);
+                Response::Event { event: stored_event(Event { summary, ..event }), reset: 0 }
+            }
             Request::SaveTodo { todo } => Response::Todo { todo: stored_todo(todo) },
             // The answer names what arrived: the moved task's href as uid, `before` as summary.
             Request::MoveTodo { href, etag, before } => Response::Todos {
@@ -648,14 +713,56 @@ mod tests {
     #[tokio::test]
     async fn save_event_returns_the_stored_event() {
         let core = start(|request| async move { answer(request) }).await;
-        let saved = core.client().save_event(event()).await.unwrap();
-        assert_eq!(saved, stored_event(event()));
+        let saved = core.client().save_event(event(), None).await.unwrap();
+        assert_eq!(saved, stored_event(Event { summary: "Standup None".into(), ..event() }));
+        let occurrence = Event { recurring: true, ..event() };
+        let saved = core.client().save_event(occurrence, Some(SeriesScope::Following)).await.unwrap();
+        assert_eq!(saved.summary, "Standup Some(Following)", "the scope goes with the request");
     }
 
     #[tokio::test]
     async fn delete_event_is_ok() {
         let core = start(|request| async move { answer(request) }).await;
-        core.client().delete_event(event()).await.unwrap();
+        core.client().delete_event(event(), None).await.unwrap();
+        core.client().delete_event(event(), Some(SeriesScope::Occurrence)).await.unwrap();
+    }
+
+    /// Task TE.1: the limits of the place search and the map, without the query or the point in
+    /// the message.
+    #[test]
+    fn place_search_and_map_stay_within_their_limits() {
+        use torro_pim::model::Geo;
+        let search = |query: &str, near: Option<Geo>| Request::SearchPlaces { query: query.into(), near };
+        let map = |lat: f64, lon: f64, width: u16, height: u16| Request::MapPreview {
+            geo: Geo { lat, lon },
+            width,
+            height,
+            dark: false,
+        };
+        let berlin = Some(Geo { lat: 52.52, lon: 13.405 });
+        assert_eq!(limit_refusal(&search("Alexanderplatz", berlin)), None);
+        assert_eq!(limit_refusal(&search(&"ä".repeat(MAX_PLACE_QUERY_CHARS), None)), None, "characters, not bytes");
+        assert_eq!(limit_refusal(&map(52.52, 13.405, MAX_MAP_WIDTH, MAX_MAP_HEIGHT)), None);
+        assert_eq!(limit_refusal(&map(-85.05, -180.0, 1, 1)), None);
+        for refused in [
+            search("", None),
+            search("   ", None),
+            search(&"a".repeat(MAX_PLACE_QUERY_CHARS + 1), None),
+            search("Alexanderplatz", Some(Geo { lat: 86.0, lon: 0.0 })),
+            map(52.52, 13.405, MAX_MAP_WIDTH + 1, 104),
+            map(52.52, 13.405, 336, MAX_MAP_HEIGHT + 1),
+            map(52.52, 13.405, 0, 104),
+            map(52.52, 13.405, 336, 0),
+            map(85.06, 13.405, 336, 104),
+            map(52.52, 180.5, 336, 104),
+        ] {
+            let Some(Response::Error { code, message }) = limit_refusal(&refused) else {
+                panic!("refused: {refused:?}");
+            };
+            assert_eq!(code, "error");
+            assert!(!message.contains("Alexanderplatz") && !message.contains("52.52"), "{message}");
+        }
+        assert_eq!(limit_refusal(&Request::Ping), None);
     }
 
     #[tokio::test]
@@ -783,7 +890,10 @@ mod tests {
     #[tokio::test]
     async fn conflict_on_write_names_the_item() {
         let core = start(|_| async { Response::Error { code: "conflict".into(), message: "changed".into() } }).await;
-        assert_eq!(core.client().save_event(event()).await, Err(ProviderError::Conflict { uid: "meeting-1".into() }));
+        assert_eq!(
+            core.client().save_event(event(), None).await,
+            Err(ProviderError::Conflict { uid: "meeting-1".into() })
+        );
         assert_eq!(core.client().save_todo(todo()).await, Err(ProviderError::Conflict { uid: "todo-1".into() }));
         let stored = stored_todo(todo());
         assert_eq!(core.client().move_todo(stored, None).await, Err(ProviderError::Conflict { uid: "todo-1".into() }));

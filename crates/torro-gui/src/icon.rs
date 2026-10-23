@@ -177,6 +177,15 @@ pub enum Icon {
     TextQuote,
     /// The segment "HTML" of the mail reader's view switch (task E11.1); "Text" is [`Icon::AlignLeft`].
     Code,
+    /// The time zone of an event (task TE.7).
+    Globe,
+    /// "Show as: Free" of an event (task TE.7): the time stays open. "Busy" is [`Icon::CircleDot`],
+    /// the circle taken.
+    Circle,
+    /// A reminder over the whole screen (style "Full screen", review of #278).
+    Maximize,
+    /// "Preview reminder": show an event's reminder now (review of #278).
+    BellRing,
 }
 
 impl Icon {
@@ -282,6 +291,10 @@ impl Icon {
         Icon::ListOrdered,
         Icon::TextQuote,
         Icon::Code,
+        Icon::Globe,
+        Icon::Circle,
+        Icon::Maximize,
+        Icon::BellRing,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -397,6 +410,10 @@ impl Icon {
             Icon::ListOrdered => include_bytes!("../assets/icons/list-ordered.svg"),
             Icon::TextQuote => include_bytes!("../assets/icons/text-quote.svg"),
             Icon::Code => include_bytes!("../assets/icons/code.svg"),
+            Icon::Globe => include_bytes!("../assets/icons/globe.svg"),
+            Icon::Circle => include_bytes!("../assets/icons/circle.svg"),
+            Icon::Maximize => include_bytes!("../assets/icons/maximize.svg"),
+            Icon::BellRing => include_bytes!("../assets/icons/bell-ring.svg"),
         }
     }
 }

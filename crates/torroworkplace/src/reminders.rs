@@ -7,6 +7,7 @@
 //!   without gets the default lead. A calendar set to "off" reminds of nothing; all-day and free
 //!   events only when the setting says so. Whether the person accepted an event is not known yet
 //!   (attendees come with task K.26), nor are work hours (K.33): those filters wait for them.
+//!   A cancelled event (`STATUS:CANCELLED`, task TE.2) reminds of nothing and is no call.
 //! - **When a reminder is due:** from the moment it fires until its event ends, but one that was
 //!   never shown is only due within [`grace`] after the later of its firing and its event's start.
 //!   So after a sleep the reminder of a running meeting still comes ("Started 3 min ago"), while a
@@ -39,6 +40,7 @@ use torro_core::AppId;
 use torro_core::paths::AppPaths;
 use torro_core::settings::{CalendarReminders, Reminders as Settings};
 use torro_ipc::{Join, Reminder, ReminderState, Response, Snooze};
+use torro_pim::model::EventStatus;
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Transparency};
 
 /// The ledger's file in the core's state folder.
@@ -259,10 +261,18 @@ fn style_of(alarm: &Alarm, calendar: CalendarReminders) -> AlarmStyle {
     })
 }
 
-/// Another event than `event` with a call link runs at `now`.
+/// The event was called off: it reminds of nothing and holds no call.
+fn cancelled(event: &Event) -> bool {
+    event.status == Some(EventStatus::Cancelled)
+}
+
+/// Another event than `event` with a call link runs at `now`; a cancelled one does not count.
 fn in_a_call(events: &[Event], event: &Event, now: DateTime<Utc>) -> bool {
     events.iter().any(|other| {
-        !(other.uid == event.uid && other.start == event.start) && running(other, now) && join_of(other).is_some()
+        !(other.uid == event.uid && other.start == event.start)
+            && !cancelled(other)
+            && running(other, now)
+            && join_of(other).is_some()
     })
 }
 
@@ -275,6 +285,7 @@ pub fn plan(events: &[Event], settings: &Settings, ledger: &Ledger, now: DateTim
     for event in events {
         let calendar = settings.calendar(&event.collection);
         let skipped = calendar == CalendarReminders::Off
+            || cancelled(event)
             || (event.all_day() && !settings.all_day)
             || (event.transparency == Transparency::Transparent && !settings.free_events);
         let (start, end) = (starts(event), ends(event));

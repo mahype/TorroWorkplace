@@ -149,6 +149,14 @@ pub struct Settings {
     /// does not read gives the defaults, never a settings file that fails.
     #[serde(default, deserialize_with = "lenient_reminders")]
     pub reminders: Reminders,
+    /// The small map and the place search of the event editor (task TE.1, [`Maps`]): off until a
+    /// person turns them on. Read leniently: a value that does not read gives the defaults (off).
+    /// Left out of `settings.update_settings`, the stored ones stay.
+    // Read from JSON without it, its addresses are empty until `Settings::fill_unnamed_parts` fills
+    // them in, like `font`.
+    #[serde(default = "Maps::unnamed", deserialize_with = "lenient_maps")]
+    #[schemars(transform = without_default)]
+    pub maps: Maps,
     /// "Allow API keys" (#231, `docs/api.md` "Transport"): while off, the core refuses every key of
     /// the kind `script` (`unauthorized`). On unless a person turned it off; only a person turns it
     /// on again (`settings.set_setting allow_api_keys`, app key only), any client allowed to change
@@ -390,6 +398,186 @@ fn lenient_reminders<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Remin
     Ok(Reminders::from_value(&value).unwrap_or_default())
 }
 
+/// The map and the place search of the event editor (task TE.1, `docs/termin-editor.md` "Ort und
+/// Karte", `settings.set_setting maps`), as one object: `{"enabled": false, "geocoder":
+/// "https://photon.komoot.io", "geocoderKind": "photon", "tiles":
+/// "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "openWith": "osm"}`.
+///
+/// Off until a person turns it on: the search sends what was typed, and the map the coordinates,
+/// with the computer's IP address to services of others. Turning it on and changing either address
+/// is the person's alone (point 6 of "Was nie nach außen geht", `docs/api.md`). Addresses with a
+/// query (`?key=…`) or a sign-in (`user:pass@`) are refused ([`Maps::check_changes`]): services
+/// that need a key of their own come later, with the key in the keyring, never in the settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Maps {
+    /// The small map and the place search are on. Off unless a person turned them on.
+    pub enabled: bool,
+    /// The base address of the place search service (`https://photon.komoot.io` unless changed):
+    /// `http` or `https`, without query and without sign-in.
+    pub geocoder: String,
+    /// Which protocol the place search service speaks: `photon` (the default) or `nominatim`.
+    pub geocoder_kind: GeocoderKind,
+    /// The address of the map tiles, with `{z}`, `{x}` and `{y}` for zoom and tile
+    /// (`https://tile.openstreetmap.org/{z}/{x}/{y}.png` unless changed): `http` or `https`, without
+    /// query and without sign-in.
+    pub tiles: String,
+    /// What "Open in Maps" opens: `osm` (openstreetmap.org, the default), `google`, `apple` (macOS
+    /// only) or `geo` (the `geo:` link, for the program the system has for it).
+    pub open_with: MapsApp,
+}
+
+/// The protocol of a place search service ([`Maps::geocoder_kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum GeocoderKind {
+    /// Photon (`/api?q=…`), the default.
+    #[default]
+    Photon,
+    /// Nominatim (`/search?format=jsonv2`); the OpenStreetMap Foundation's own server only as a
+    /// deliberate choice, its rules allow one search a second for the whole suite.
+    Nominatim,
+}
+
+/// What "Open in Maps" opens ([`Maps::open_with`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MapsApp {
+    /// openstreetmap.org in the browser, the default.
+    #[default]
+    Osm,
+    /// Google Maps in the browser.
+    Google,
+    /// Apple Maps (macOS only; elsewhere openstreetmap.org).
+    Apple,
+    /// A `geo:` link, for the program the system has for it.
+    Geo,
+}
+
+impl Default for Maps {
+    fn default() -> Maps {
+        Maps {
+            enabled: false,
+            geocoder: Maps::PHOTON.into(),
+            geocoder_kind: GeocoderKind::Photon,
+            tiles: Maps::OSM_TILES.into(),
+            open_with: MapsApp::Osm,
+        }
+    }
+}
+
+impl Maps {
+    /// The public Photon server of komoot, the standard place search.
+    pub const PHOTON: &str = "https://photon.komoot.io";
+    /// The OpenStreetMap Foundation's tiles, the standard map.
+    pub const OSM_TILES: &str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+
+    /// What [`Settings::maps`] reads as when the JSON leaves it out: both addresses empty, so
+    /// [`Settings::fill_unnamed_parts`] can tell "left out" (keep the stored ones) from anything a
+    /// client sent. Never stored: filled in on every way in.
+    fn unnamed() -> Maps {
+        Maps { geocoder: String::new(), tiles: String::new(), ..Maps::default() }
+    }
+
+    /// Whether these are [`Maps::unnamed`]: the field was left out.
+    fn is_unnamed(&self) -> bool {
+        self.geocoder.is_empty() && self.tiles.is_empty()
+    }
+
+    /// The settings as `settings.set_setting maps` takes them.
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// These settings with the fields `change` names (left-out fields stay as they are), or why it
+    /// does not fit: not an object, a field of the wrong kind, or an address that changes and is
+    /// refused by [`Maps::check_changes`]. For `settings.set_setting maps`.
+    pub fn merged(&self, change: &serde_json::Value) -> Result<Maps, String> {
+        // The messages name fields, never values: an address may carry a key someone pasted.
+        let serde_json::Value::Object(change) = change else {
+            return Err("that is not a setting for maps: send an object".into());
+        };
+        let mut merged = match self.to_value() {
+            serde_json::Value::Object(current) => current,
+            _ => serde_json::Map::new(),
+        };
+        merged.extend(change.iter().map(|(field, value)| (field.clone(), value.clone())));
+        let fields: Vec<&str> = change.keys().map(String::as_str).collect();
+        let maps: Maps = serde_json::from_value(serde_json::Value::Object(merged)).map_err(|_| {
+            format!("a field of {} is not a setting for maps: see settings.set_setting maps", fields.join(", "))
+        })?;
+        maps.check_changes(self)?;
+        Ok(maps)
+    }
+
+    /// Whether the addresses that differ from `stored` may be used: `http` or `https` with a host,
+    /// no query (`?`), no fragment (`#`), no sign-in (`user@`) and no spaces; the tile address
+    /// also names `{z}`, `{x}` and `{y}`. An address equal to `stored` is not checked again: a file
+    /// edited by hand must not block switching maps off.
+    pub fn check_changes(&self, stored: &Maps) -> Result<(), String> {
+        if self.geocoder != stored.geocoder {
+            plain_address(&self.geocoder).map_err(|why| format!("the place search address {why}"))?;
+        }
+        if self.tiles != stored.tiles {
+            plain_address(&self.tiles).map_err(|why| format!("the map tile address {why}"))?;
+            if !["{z}", "{x}", "{y}"].iter().all(|part| self.tiles.contains(part)) {
+                return Err("the map tile address must name {z}, {x} and {y}".into());
+            }
+        }
+        Ok(())
+    }
+
+    /// The settings a client may write when it sends `sent` whole (`settings.update_settings`), these
+    /// being the stored ones: on only when on now and in `sent`, both addresses as stored, the rest
+    /// as sent. Left out (`sent` unnamed), everything stays as stored.
+    pub fn from_client(&self, sent: &Maps) -> Maps {
+        if sent.is_unnamed() {
+            return self.clone();
+        }
+        Maps {
+            enabled: self.enabled && sent.enabled,
+            geocoder: self.geocoder.clone(),
+            tiles: self.tiles.clone(),
+            geocoder_kind: sent.geocoder_kind,
+            open_with: sent.open_with,
+        }
+    }
+
+    /// Whether writing `sent` whole over these stored settings is a person's alone: it turns maps
+    /// on, or changes an address. Left out (`sent` unnamed), it changes nothing.
+    pub fn needs_a_person(&self, sent: &Maps) -> bool {
+        !sent.is_unnamed()
+            && ((sent.enabled && !self.enabled) || sent.geocoder != self.geocoder || sent.tiles != self.tiles)
+    }
+}
+
+/// Why `address` is no plain web address for [`Maps::check_changes`], as the end of a sentence.
+fn plain_address(address: &str) -> Result<(), String> {
+    let rest = address.strip_prefix("https://").or_else(|| address.strip_prefix("http://"));
+    let Some(rest) = rest else { return Err("must start with https:// or http://".into()) };
+    let host = rest.split('/').next().unwrap_or_default();
+    if host.is_empty() {
+        return Err("names no server".into());
+    }
+    if host.contains('@') {
+        return Err("may not carry a sign-in (user@): services with a key of their own come later".into());
+    }
+    if address.contains(['?', '#']) {
+        return Err("may not carry a query (?…) or a fragment (#…): services with a key of their own come later".into());
+    }
+    if address.chars().any(char::is_whitespace) {
+        return Err("may not contain spaces".into());
+    }
+    Ok(())
+}
+
+/// `maps` as written, or the defaults (off) when it does not read; a file edited by hand keeps its
+/// addresses, which are checked only when they change.
+fn lenient_maps<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Maps, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// What a new chat of the assistant starts with (issue #131, `settings.set_setting
 /// assistant_default`): `{"engine": "ai:ollama@localhost:11434", "model": "qwen3:8b", "effort":
 /// "high"}`. The chat window takes it while the engine is offered (`assistant.list_engines`) and
@@ -492,16 +680,19 @@ fn standard_design() -> String {
 
 impl Settings {
     /// Puts the font and the colour scheme of `stored` where these settings name none (an empty id: the
-    /// field was left out of the JSON they were read from, task L.22). For the settings file `stored` is
-    /// [`Settings::default`], so a file without them draws with the standard; for the settings a client
-    /// sends it is the stored settings, so a client that does not know the fields keeps the person's
-    /// choice.
+    /// field was left out of the JSON they were read from, task L.22), and so the maps when they were
+    /// left out (task TE.1). For the settings file `stored` is [`Settings::default`], so a file without
+    /// them draws with the standard and has maps off; for the settings a client sends it is the stored
+    /// settings, so a client that does not know the fields keeps the person's choice.
     pub fn fill_unnamed_parts(&mut self, stored: &Settings) {
         if self.font.is_empty() {
             self.font = stored.font.clone();
         }
         if self.color_scheme.is_empty() {
             self.color_scheme = stored.color_scheme.clone();
+        }
+        if self.maps.is_unnamed() {
+            self.maps = stored.maps.clone();
         }
     }
 }
@@ -535,6 +726,7 @@ impl Default for Settings {
             mail_appearance: MailAppearance::default(),
             mail_to_cloud: false,
             reminders: Reminders::default(),
+            maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
             allow_api_keys: on(),
@@ -1943,6 +2135,7 @@ mod tests {
             mail_appearance: MailAppearance::App,
             mail_to_cloud: false,
             reminders: Reminders::default(),
+            maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
             allow_api_keys: true,
@@ -2143,6 +2336,7 @@ mod tests {
                 sound: ReminderSound::None,
                 ..Reminders::default()
             },
+            maps: Maps { enabled: true, open_with: MapsApp::Geo, ..Maps::default() },
             ai_assignments: BTreeMap::new(),
             hidden_categories: Vec::new(),
             allow_api_keys: false,
@@ -2494,6 +2688,82 @@ mod tests {
         let loaded = load_from(&path);
         assert_eq!(loaded.language, Language::German, "the other settings stay");
         assert_eq!(loaded.reminders, Reminders::default());
+    }
+
+    // Maps (task TE.1).
+
+    #[test]
+    fn maps_are_off_with_photon_and_osm_and_a_file_without_them_reads_so() {
+        let maps = Settings::default().maps;
+        assert!(!maps.enabled);
+        assert_eq!((maps.geocoder.as_str(), maps.tiles.as_str()), (Maps::PHOTON, Maps::OSM_TILES));
+        assert_eq!((maps.geocoder_kind, maps.open_with), (GeocoderKind::Photon, MapsApp::Osm));
+        let dir = TempDir::new("no-maps");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert_eq!(load_from(&path).maps, Maps::default(), "settings from before TE.1");
+        fs::write(&path, r#"{"language":"german","maps":{"enabled":"yes"}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!((loaded.language, loaded.maps), (Language::German, Maps::default()), "read leniently: off");
+        let value = serde_json::to_value(&maps).expect("json");
+        assert_eq!(value["geocoderKind"], "photon");
+        assert_eq!(value["openWith"], "osm");
+    }
+
+    #[test]
+    fn maps_change_only_the_fields_named_and_refuse_addresses_with_keys() {
+        let maps = Maps::default();
+        let on = maps.merged(&serde_json::json!({"enabled": true, "openWith": "google"})).expect("valid");
+        assert!(on.enabled);
+        assert_eq!((on.open_with, on.geocoder.as_str()), (MapsApp::Google, Maps::PHOTON), "left out stays");
+        let own = on
+            .merged(&serde_json::json!({"geocoder": "http://photon.local:2322", "geocoderKind": "nominatim"}))
+            .expect("an own server");
+        assert_eq!((own.geocoder.as_str(), own.geocoder_kind), ("http://photon.local:2322", GeocoderKind::Nominatim));
+        for wrong in [
+            serde_json::json!({"geocoder": "https://api.example.org/search?key=secret"}),
+            serde_json::json!({"geocoder": "https://anna:secret@geo.example.org"}),
+            serde_json::json!({"geocoder": "ftp://geo.example.org"}),
+            serde_json::json!({"geocoder": "https://"}),
+            serde_json::json!({"tiles": "https://tiles.example.org/{z}/{x}/{y}.png?api_key=1"}),
+            serde_json::json!({"tiles": "https://tiles.example.org/{z}/{x}.png"}),
+            serde_json::json!({"tiles": "https://tiles.example.org/{z}/{x}/{y}.png#x"}),
+            serde_json::json!({"enabled": "yes"}),
+            serde_json::json!({"openWith": "bing"}),
+            serde_json::json!(true),
+        ] {
+            assert!(maps.merged(&wrong).is_err(), "{wrong}");
+        }
+        let keyed = maps.merged(&serde_json::json!({"geocoder": "https://x.org/?key=1"})).expect_err("a key");
+        assert!(keyed.contains("query") && !keyed.contains("key=1"), "{keyed}");
+        let odd = maps.merged(&serde_json::json!({"geocoder": "https://x.org/?key=1", "enabled": "yes"}));
+        assert!(odd.is_err_and(|why| !why.contains("key=1")), "the value is never repeated");
+
+        // An address edited by hand into the file does not block turning maps off.
+        let by_hand = Maps { enabled: true, tiles: "https://t.example.org/{z}/{x}/{y}.png?key=1".into(), ..maps };
+        let off = by_hand.merged(&serde_json::json!({"enabled": false})).expect("off");
+        assert!(!off.enabled && off.tiles == by_hand.tiles);
+    }
+
+    #[test]
+    fn whole_settings_without_maps_keep_the_stored_ones_and_clients_turn_nothing_on() {
+        let stored = Maps { enabled: true, geocoder: "https://geo.example.org".into(), ..Maps::default() };
+        let read = Settings { maps: stored.clone(), ..Settings::default() };
+        let mut sent: Settings = serde_json::from_str(r#"{"language":"german"}"#).expect("without maps");
+        assert!(!stored.needs_a_person(&sent.maps), "left out changes nothing");
+        assert_eq!(stored.from_client(&sent.maps), stored);
+        sent.fill_unnamed_parts(&read);
+        assert_eq!(sent.maps, stored, "the stored ones stay");
+
+        let off = Maps { enabled: false, open_with: MapsApp::Geo, ..stored.clone() };
+        assert!(!stored.needs_a_person(&off), "turning off and choosing the app is no person's alone");
+        assert_eq!(stored.from_client(&off), off);
+        let other_tiles = Maps { tiles: "https://tiles.example.org/{z}/{x}/{y}.png".into(), ..stored.clone() };
+        assert!(stored.needs_a_person(&other_tiles));
+        assert_eq!(stored.from_client(&other_tiles).tiles, stored.tiles, "the stored address stays");
+        let was_off = Maps { enabled: false, ..stored.clone() };
+        assert!(was_off.needs_a_person(&stored), "turning on");
+        assert!(!was_off.from_client(&stored).enabled, "a client turns nothing on");
     }
 
     /// An absolute path on this system, for the tests of folders and logos.

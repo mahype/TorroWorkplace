@@ -105,8 +105,12 @@ pub struct Event {
     pub end: Option<EventTime>,
     pub location: Option<String>,
     pub description: Option<String>,
-    /// One occurrence of a recurring series. Editing series is not supported yet, so the
-    /// apps show these read-only.
+    /// One occurrence of a recurring series. Changing or deleting it needs a `scope`
+    /// (`calendar.save_event`, `calendar.delete_event`, [`SeriesScope`]); without one the core
+    /// answers `unsupported`, so a client that does not know series never overwrites one. `true`
+    /// exactly when [`Event::recurrence_id`] or [`Event::repeat`] is set (task TE.3 fills both in).
+    /// Sent as `false` with `repeat: None` and scope `series` or `following`, it ends the series
+    /// ([`Event::repeat`]).
     pub recurring: bool,
     /// Whether the event blocks the time (iCalendar `TRANSP`): `opaque` (busy) or
     /// `transparent` (free, e.g. a reminder or "working from home"). Missing means `opaque`, as
@@ -119,6 +123,54 @@ pub struct Event {
     /// read: a save rewrites the event's reminders only when it differs.
     #[serde(default)]
     pub alarms: Vec<Alarm>,
+    /// Which occurrence of a series this is (iCalendar `RECURRENCE-ID`): the start the rule gives
+    /// it, which stays when the occurrence is moved. `None` for an event that is not part of a
+    /// series. Send it back as read: the core finds the occurrence by `href` and this key.
+    #[serde(default)]
+    pub recurrence_id: Option<EventTime>,
+    /// The rule of the series (iCalendar `RRULE` of the series' main event), the same on every
+    /// occurrence; `None` for an event that does not repeat, and for an occurrence whose stored
+    /// object the core could not read. Setting it on a single event makes it a series. `None` on an
+    /// occurrence saved with `scope: series` or `following` ends the series only together with
+    /// `recurring: false`; with `recurring: true` the stored rule stays, so an occurrence that came
+    /// without its rule is never turned into a single event by being sent back.
+    // Boxed, like `organizer`: an event lives in many futures and answers, and the rule and the
+    // organiser would double its size although most events have neither (the wire is the same).
+    #[serde(default)]
+    pub repeat: Option<Box<Repeat>>,
+    /// The time zone the event's times belong to, as an IANA name (`Europe/Berlin`, iCalendar
+    /// `TZID` of `DTSTART`). `None`: the zone of the computer when saving; UTC when the server
+    /// gave none. `start` and `end` stay instants in UTC either way; the zone decides at which
+    /// local time a series repeats across a change to or from daylight saving time.
+    #[serde(default)]
+    pub time_zone: Option<String>,
+    /// A web address that belongs to the event (iCalendar `URL`), e.g. the agenda. The apps open
+    /// only `http` and `https` addresses. `None` when there is none.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Whether the event takes place (iCalendar `STATUS`); `None` when the event does not say.
+    #[serde(default)]
+    pub status: Option<EventStatus>,
+    /// Where the event is, as coordinates (iCalendar `GEO`, also read from Apple's
+    /// `X-APPLE-STRUCTURED-LOCATION`). `None` when unknown; then only `location` names the place.
+    #[serde(default)]
+    pub geo: Option<Geo>,
+    /// Who organises the event (iCalendar `ORGANIZER`); `None` for an event without invitees.
+    /// Read only: saving never writes it, the server's copy stays.
+    #[serde(default)]
+    pub organizer: Option<Box<Attendee>>,
+    /// The people invited (iCalendar `ATTENDEE`), in the stored order; empty when none. Read only,
+    /// like [`Event::organizer`]: the suite sends no invitations.
+    #[serde(default)]
+    pub attendees: Vec<Attendee>,
+    /// The changed occurrences of the series (iCalendar `RECURRENCE-ID` of each exception in the
+    /// stored object), the same on every occurrence; empty for an event that is not part of a series
+    /// or a series without changed occurrences. Read only: the core fills it in from the stored
+    /// object, and a save ignores it. The event editor counts with it how many changed events a
+    /// change of "this and following" would reset, before it is made (`docs/termin-editor.md`,
+    /// decision 4).
+    #[serde(default)]
+    pub exceptions: Vec<EventTime>,
 }
 
 impl Event {
@@ -127,10 +179,11 @@ impl Event {
         matches!(self.start, EventTime::Date(_))
     }
 
-    /// The event makes its time busy: opaque and not all-day. All-day entries (holidays,
-    /// birthdays) and transparent ones leave the time free, whatever they say.
+    /// The event makes its time busy: opaque, not all-day and not cancelled. All-day entries
+    /// (holidays, birthdays), transparent ones and cancelled ones (`STATUS:CANCELLED`, task TE.2)
+    /// leave the time free, whatever else they say.
     pub fn busy(&self) -> bool {
-        self.transparency == Transparency::Opaque && !self.all_day()
+        self.transparency == Transparency::Opaque && !self.all_day() && self.status != Some(EventStatus::Cancelled)
     }
 }
 
@@ -189,6 +242,228 @@ pub enum AlarmStyle {
     Notification,
     /// Over the whole screen until the person reacts.
     FullScreen,
+}
+
+/// The rule of a series (iCalendar `RRULE`, RFC 5545 section 3.3.10), as far as the event editor
+/// shows it (`docs/termin-editor.md`). A rule with parts the editor cannot show keeps them in
+/// [`Repeat::rule`] and says so with [`Repeat::custom`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Repeat {
+    /// How often: every day, week, month or year (`FREQ`).
+    pub freq: RepeatFreq,
+    /// Every how many days, weeks, months or years (`INTERVAL`), 1 or more; 1 when left out.
+    #[serde(default = "every_one")]
+    pub interval: u16,
+    /// On which weekdays (`BYDAY`), each optionally the n-th of the month or year: `nth: 4` is the
+    /// fourth, `nth: -1` the last. Empty: the weekday of the start (weekly) or none.
+    #[serde(default)]
+    pub weekdays: Vec<RepeatDay>,
+    /// On which days of the month (`BYMONTHDAY`), 1 to 31 or -1 (the last) to -31. Empty: none.
+    #[serde(default)]
+    pub month_days: Vec<i8>,
+    /// In which months (`BYMONTH`), 1 to 12. Empty: none.
+    #[serde(default)]
+    pub months: Vec<u8>,
+    /// When the series ends: never, after a number of events, or at a day or instant.
+    #[serde(default)]
+    pub end: RepeatEnd,
+    /// The rule as read from the server, without `RRULE:` (`FREQ=WEEKLY;BYDAY=TU`); empty for a
+    /// rule a client builds. Only read back: a save writes the stored rule (custom, or the fields
+    /// unchanged) or one made from the fields, never this text, except for a custom rule of an event
+    /// that has no rule yet. Sent back unchanged it may be any stored rule; any other text must be
+    /// one line of the `RRULE` grammar (RFC 5545 parts with valid values, `X-NAME=value` in plain
+    /// ASCII), else the save is refused with `error`.
+    #[serde(default)]
+    pub rule: String,
+    /// The rule has parts the fields above do not show (`BYSETPOS`, `BYHOUR`, `BYWEEKNO`,
+    /// `RDATE` …): the editor shows it as "Custom rule" and can only replace it whole. Sent with
+    /// `custom` set, the stored rule stays as it is, whatever the fields and [`Repeat::rule`] say;
+    /// to change it, send the new fields with `custom: false`.
+    #[serde(default)]
+    pub custom: bool,
+}
+
+fn every_one() -> u16 {
+    1
+}
+
+/// How often a series repeats (iCalendar `FREQ`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatFreq {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+/// One weekday of a rule (iCalendar `BYDAY`: `TU`, `4TU`, `-1FR`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct RepeatDay {
+    /// The weekday.
+    pub day: Weekday,
+    /// The n-th of the month (monthly) or year (yearly): 1 to 53, or -1 (the last) to -53; `None`
+    /// for every such weekday.
+    #[serde(default)]
+    pub nth: Option<i8>,
+}
+
+/// A day of the week, in a rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Weekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl From<chrono::Weekday> for Weekday {
+    fn from(day: chrono::Weekday) -> Weekday {
+        match day {
+            chrono::Weekday::Mon => Weekday::Monday,
+            chrono::Weekday::Tue => Weekday::Tuesday,
+            chrono::Weekday::Wed => Weekday::Wednesday,
+            chrono::Weekday::Thu => Weekday::Thursday,
+            chrono::Weekday::Fri => Weekday::Friday,
+            chrono::Weekday::Sat => Weekday::Saturday,
+            chrono::Weekday::Sun => Weekday::Sunday,
+        }
+    }
+}
+
+impl From<Weekday> for chrono::Weekday {
+    fn from(day: Weekday) -> chrono::Weekday {
+        match day {
+            Weekday::Monday => chrono::Weekday::Mon,
+            Weekday::Tuesday => chrono::Weekday::Tue,
+            Weekday::Wednesday => chrono::Weekday::Wed,
+            Weekday::Thursday => chrono::Weekday::Thu,
+            Weekday::Friday => chrono::Weekday::Fri,
+            Weekday::Saturday => chrono::Weekday::Sat,
+            Weekday::Sunday => chrono::Weekday::Sun,
+        }
+    }
+}
+
+/// When a series ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum RepeatEnd {
+    /// It goes on (neither `COUNT` nor `UNTIL`).
+    #[default]
+    Never,
+    /// After this many events, the first one counted (`COUNT`).
+    Count(u32),
+    /// With the last event starting on this day or at this instant (`UNTIL`, inclusive).
+    Until(EventTime),
+}
+
+/// Which events of a series a change or a delete is about (`calendar.save_event`,
+/// `calendar.delete_event`, `docs/termin-editor.md` decisions 3 to 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SeriesScope {
+    /// Only this occurrence: changing it stores an exception, deleting it excludes its date.
+    Occurrence,
+    /// This occurrence and all after it: the series is split here (the old one ends the second
+    /// before), and later exceptions may be reset when time or rule change.
+    Following,
+    /// Every event of the series: the series itself changes, or is deleted whole.
+    Series,
+}
+
+/// Whether an event takes place (iCalendar `STATUS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum EventStatus {
+    /// It takes place (`CONFIRMED`).
+    Confirmed,
+    /// Not settled yet (`TENTATIVE`).
+    Tentative,
+    /// Called off (`CANCELLED`); it keeps no time busy and never reminds.
+    Cancelled,
+}
+
+/// A point on Earth in degrees (WGS 84), as iCalendar `GEO` gives it.
+///
+/// `Eq` holds because a `Geo` never holds NaN: JSON has no NaN, and whoever makes one from other
+/// text (an iCalendar parser) goes through [`Geo::new`], which refuses it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Geo {
+    /// Latitude, -90 (south) to 90 (north).
+    pub lat: f64,
+    /// Longitude, -180 (west) to 180 (east).
+    pub lon: f64,
+}
+
+impl Eq for Geo {}
+
+impl Geo {
+    /// The farthest north or south a map shows: the edge of the Web Mercator projection that map
+    /// tiles use. `calendar.map_preview` and `calendar.search_places` refuse points beyond it.
+    pub const MAP_MAX_LAT: f64 = 85.0511;
+
+    /// The point at `lat`, `lon`, or `None` when one is not a finite number or out of range
+    /// (latitude beyond ±90, longitude beyond ±180).
+    pub fn new(lat: f64, lon: f64) -> Option<Geo> {
+        (lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0).then_some(Geo { lat, lon })
+    }
+
+    /// Whether a map can show the point: latitude within ±[`Geo::MAP_MAX_LAT`], longitude within
+    /// ±180, both finite.
+    pub fn on_map(&self) -> bool {
+        self.lat.is_finite() && self.lon.is_finite() && self.lat.abs() <= Self::MAP_MAX_LAT && self.lon.abs() <= 180.0
+    }
+}
+
+/// Someone invited to an event, or its organiser (iCalendar `ATTENDEE`, `ORGANIZER`). Read only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Attendee {
+    /// The display name (`CN`); `None` when the event gives none.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The mail address, without `mailto:`; `None` when the event names the person otherwise.
+    #[serde(default)]
+    pub email: Option<String>,
+    /// Their answer (`PARTSTAT`); `needs_action` when the event says nothing.
+    #[serde(default)]
+    pub partstat: PartStat,
+    /// Their part in the event (`ROLE`); `required` when the event says nothing.
+    #[serde(default)]
+    pub role: AttendeeRole,
+}
+
+/// The answer of someone invited (iCalendar `PARTSTAT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PartStat {
+    /// Not answered yet (`NEEDS-ACTION`), also when the event says nothing.
+    #[default]
+    NeedsAction,
+    Accepted,
+    Declined,
+    Tentative,
+    /// Passed on to someone else (`DELEGATED`).
+    Delegated,
+}
+
+/// The part someone invited has in an event (iCalendar `ROLE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AttendeeRole {
+    /// Leads it (`CHAIR`).
+    Chair,
+    /// Expected to come (`REQ-PARTICIPANT`), also when the event says nothing.
+    #[default]
+    Required,
+    /// Welcome to come (`OPT-PARTICIPANT`).
+    Optional,
+    /// Only informed (`NON-PARTICIPANT`).
+    NonParticipant,
 }
 
 /// A task (VTODO).
@@ -503,8 +778,96 @@ mod tests {
         assert_eq!(serde_json::from_str::<Event>(&json).expect("back"), free);
         assert!(!free.busy(), "free time is not busy");
         let day = NaiveDate::from_ymd_opt(2026, 10, 12).expect("date");
-        let all_day = Event { start: EventTime::Date(day), end: None, ..event };
+        let all_day = Event { start: EventTime::Date(day), end: None, ..event.clone() };
         assert!(!all_day.busy(), "all-day entries never make the time busy");
+        // Task TE.2: a cancelled event keeps no time busy; tentative and confirmed ones do.
+        let status = |status| Event { status: Some(status), ..event.clone() };
+        assert!(!status(EventStatus::Cancelled).busy(), "cancelled events leave the time free");
+        assert!(status(EventStatus::Tentative).busy() && status(EventStatus::Confirmed).busy());
+    }
+
+    /// Task TE.1: an event from an older client reads without the fields of the event editor, and
+    /// one with all of them comes back as it went.
+    #[test]
+    fn an_event_reads_without_the_editor_fields_and_round_trips_with_them() {
+        let json = r#"{"uid":"e","collection":"a/https://x/cal/","href":null,"etag":null,"summary":"Call",
+            "start":{"datetime":"2026-10-13T09:00:00Z"},"end":null,"location":null,"description":null,
+            "recurring":true}"#;
+        let old: Event = serde_json::from_str(json).expect("old event");
+        assert_eq!((old.recurrence_id, &old.repeat, &old.time_zone, &old.url), (None, &None, &None, &None));
+        assert_eq!((old.status, old.geo, &old.organizer, old.attendees.len()), (None, None, &None, 0));
+
+        let start = EventTime::DateTime(DateTime::from_timestamp(1_791_882_000, 0).expect("instant"));
+        let until = EventTime::Date(NaiveDate::from_ymd_opt(2026, 12, 22).expect("date"));
+        let full = Event {
+            recurrence_id: Some(start),
+            repeat: Some(Box::new(Repeat {
+                freq: RepeatFreq::Monthly,
+                interval: 2,
+                weekdays: vec![RepeatDay { day: Weekday::Tuesday, nth: Some(-1) }],
+                month_days: vec![-1],
+                months: vec![10],
+                end: RepeatEnd::Until(until),
+                rule: "FREQ=MONTHLY;INTERVAL=2;BYDAY=-1TU".into(),
+                custom: false,
+            })),
+            time_zone: Some("Europe/Berlin".into()),
+            url: Some("https://example.org/agenda".into()),
+            status: Some(EventStatus::Tentative),
+            geo: Geo::new(52.52, 13.405),
+            organizer: Some(Box::new(Attendee {
+                name: Some("Anna".into()),
+                email: Some("anna@example.org".into()),
+                partstat: PartStat::Accepted,
+                role: AttendeeRole::Chair,
+            })),
+            attendees: vec![Attendee {
+                name: None,
+                email: Some("ben@example.org".into()),
+                partstat: PartStat::NeedsAction,
+                role: AttendeeRole::Optional,
+            }],
+            ..old
+        };
+        let value = serde_json::to_value(&full).expect("json");
+        assert_eq!(value["status"], "tentative");
+        assert_eq!(value["repeat"]["freq"], "monthly");
+        assert_eq!(value["repeat"]["weekdays"][0], serde_json::json!({"day": "tuesday", "nth": -1}));
+        assert_eq!(value["repeat"]["end"], serde_json::json!({"until": {"date": "2026-12-22"}}));
+        assert_eq!(value["attendees"][0]["partstat"], "needs_action");
+        assert_eq!(value["organizer"]["role"], "chair");
+        assert_eq!(serde_json::from_value::<Event>(value).expect("back"), full);
+
+        let short: Repeat = serde_json::from_str(r#"{"freq":"weekly"}"#).expect("a rule with defaults");
+        assert_eq!((short.interval, short.end, short.custom, short.rule.as_str()), (1, RepeatEnd::Never, false, ""));
+        let count: RepeatEnd = serde_json::from_str(r#"{"count":9}"#).expect("count");
+        assert_eq!(count, RepeatEnd::Count(9));
+        let someone: Attendee = serde_json::from_str("{}").expect("an attendee without anything");
+        assert_eq!((someone.partstat, someone.role), (PartStat::NeedsAction, AttendeeRole::Required));
+    }
+
+    #[test]
+    fn series_scopes_are_snake_case() {
+        for (scope, name) in [
+            (SeriesScope::Occurrence, "occurrence"),
+            (SeriesScope::Following, "following"),
+            (SeriesScope::Series, "series"),
+        ] {
+            assert_eq!(serde_json::to_value(scope).expect("json"), serde_json::json!(name));
+        }
+    }
+
+    #[test]
+    fn a_geo_is_a_finite_point_and_a_map_shows_only_some() {
+        assert_eq!(Geo::new(52.52, 13.405), Some(Geo { lat: 52.52, lon: 13.405 }));
+        for (lat, lon) in [(f64::NAN, 0.0), (0.0, f64::INFINITY), (90.1, 0.0), (0.0, -180.5)] {
+            assert_eq!(Geo::new(lat, lon), None, "{lat} {lon}");
+        }
+        assert!(Geo { lat: 85.05, lon: -180.0 }.on_map());
+        assert!(!Geo { lat: 85.06, lon: 0.0 }.on_map(), "beyond Web Mercator");
+        assert!(!Geo { lat: 0.0, lon: 180.1 }.on_map());
+        let weekday: chrono::Weekday = Weekday::from(chrono::Weekday::Sun).into();
+        assert_eq!(weekday, chrono::Weekday::Sun);
     }
 
     #[test]

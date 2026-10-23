@@ -23,6 +23,7 @@ use torro_core::timing;
 use torro_ipc::pim::PimClient;
 use torro_ipc::{Request, Response};
 use torro_pim::demo::DemoSource;
+use torro_pim::model::SeriesScope;
 use torro_pim::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
@@ -445,12 +446,12 @@ impl PimSource for Source {
         delegate!(self, s => s.todos())
     }
 
-    async fn save_event(&self, event: Event) -> Result<Event, ProviderError> {
-        delegate!(self, s => s.save_event(event))
+    async fn save_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<Event, ProviderError> {
+        delegate!(self, s => s.save_event(event, scope))
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), ProviderError> {
-        delegate!(self, s => s.delete_event(event))
+    async fn delete_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(), ProviderError> {
+        delegate!(self, s => s.delete_event(event, scope))
     }
 
     async fn save_todo(&self, todo: Todo) -> Result<Todo, ProviderError> {

@@ -6,6 +6,8 @@
 //! left edge while its day is in view), the hours, the all-day chips (several days as one chip),
 //! the events as full-height columns with their title and time turned to read upwards, and
 //! "3 h free" under gaps of two hours or more. Overlapping events share the height in lanes.
+//! Cancelled events are faded and struck through and leave their time free; tentative ones are a
+//! dashed outline without fill ([`super::Look`], task TE.9).
 //!
 //! Nights (the suite's setting, 22:00–06:00 by default, task K.27) are folded into a narrow band
 //! with zigzag edges, a moon and "Night · 8 h"; events in it are dots in their calendar colour. A
@@ -51,9 +53,9 @@ use torro_gui::widgets::{self, Anchor};
 use layout::{Block, Hit, Rows, Segment, Span, Timed, Track};
 pub use layout::{is_double_click, moon_target_size};
 
-use super::ViewData;
 use super::glance::span;
 use super::week::{self, BAR, FREE_MINUTES, NOW_DOT, Tone, day_circle, day_number, now_label, now_label_width};
+use super::{Look, ViewData, strike, takes_time};
 use crate::app::Message;
 
 /// Id of the timeline's scrollable, for the scroll to now ([`State::show`]) and the wheel.
@@ -250,6 +252,16 @@ struct Entry {
     start: NaiveDateTime,
     end: NaiveDateTime,
     title: String,
+    /// Whether it takes place (`STATUS`), for its [`Look`].
+    status: Option<torro_pim::model::EventStatus>,
+}
+
+impl Entry {
+    /// How it shows at `now`: faded when over or cancelled, struck through when cancelled, dashed
+    /// when tentative.
+    fn look(&self, now: NaiveDateTime) -> Look {
+        Look::of(self.status, self.end <= now)
+    }
 }
 
 /// Everything the canvas draws, built once per view.
@@ -290,6 +302,7 @@ impl Plan {
                 start,
                 end,
                 title: week::title(item.event),
+                status: item.event.status,
             });
             if all_day {
                 plan.spans.push(Span::of(id, start, end));
@@ -645,9 +658,16 @@ fn folded_night(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, night:
 }
 
 /// "3 h free" under the gaps of two hours or more between the events of a day, from now on.
+/// Cancelled events leave their time free.
 fn free_time(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dyn Fn(f32, f32) -> bool) {
     let (top, bottom) = rows.free();
-    for (start, end) in layout::free_gaps(&plan.track, &plan.timed, plan.now, FREE_MINUTES) {
+    let busy: Vec<Timed> = plan
+        .timed
+        .iter()
+        .filter(|timed| plan.entries.get(timed.id).is_some_and(|entry| takes_time(entry.status)))
+        .copied()
+        .collect();
+    for (start, end) in layout::free_gaps(&plan.track, &busy, plan.now, FREE_MINUTES) {
         let (x0, x1) = (plan.track.x_of(start), plan.track.x_of(end));
         if !seen(x0, x1 - x0) {
             continue;
@@ -659,24 +679,30 @@ fn free_time(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dy
     }
 }
 
-/// The all-day chips: tinted with the bar, the title in one line.
+/// The all-day chips: tinted with the bar (a dashed outline when tentative), the title in one line
+/// (struck through when cancelled).
 fn chips(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dyn Fn(f32, f32) -> bool) {
     let chips = layout::chips(&plan.track, rows, &plan.spans);
     for chip in chips.iter().filter(|chip| seen(chip.rect.x, chip.rect.width)) {
         let Some(entry) = plan.entries.get(chip.id) else { continue };
-        let tone = Tone::of(p, entry.color, p.panel, entry.end <= plan.now);
-        week::surface(frame, chip.rect, &tone);
+        let look = entry.look(plan.now);
+        let tone = Tone::of(p, entry.color, p.panel, look.faded);
+        week::event_surface(frame, chip.rect, &tone, look);
         let room = chip.rect.width - 2.0 * label_pad() - BAR;
         let title = ellipsize(&entry.title, typo::caption(), room);
         let at = Point::new(chip.rect.x + BAR + label_pad(), chip.rect.center_y());
         frame.with_clip(chip.rect, |frame| {
             week::label(frame, &title, at, typo::caption(), tone.title, Alignment::Left, Vertical::Center);
+            if look.struck {
+                strike(frame, at, text_width(&title, typo::caption()), tone.title);
+            }
         });
     }
     selection(frame, p, plan, &chips);
 }
 
-/// The events as columns: tinted with the bar, title and time turned to read upwards.
+/// The events as columns: tinted with the bar (a dashed outline when tentative), title and time
+/// turned to read upwards (the title struck through when cancelled).
 fn columns(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dyn Fn(f32, f32) -> bool) {
     let blocks: Vec<Block> = layout::blocks(&plan.track, rows, &plan.timed)
         .into_iter()
@@ -684,9 +710,10 @@ fn columns(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dyn 
         .collect();
     for block in &blocks {
         let Some(entry) = plan.entries.get(block.id) else { continue };
-        let tone = Tone::of(p, entry.color, p.panel, entry.end <= plan.now);
-        week::surface(frame, block.rect, &tone);
-        column_text(frame, block.rect, entry, &tone);
+        let look = entry.look(plan.now);
+        let tone = Tone::of(p, entry.color, p.panel, look.faded);
+        week::event_surface(frame, block.rect, &tone, look);
+        column_text(frame, block.rect, entry, &tone, look.struck);
     }
     selection(frame, p, plan, &blocks);
 }
@@ -700,12 +727,13 @@ fn selection(frame: &mut Frame, p: &Palette, plan: &Plan, blocks: &[Block]) {
 
 /// Title (`CAPTION`) and, from [`TWO_LINES`] on, the time (`MICRO`) of a column, turned −90° to
 /// read from the bottom up, starting [`text_end()`] above its bottom and cut with "…" to its height.
-/// A column too narrow for both gets the title alone, in its middle.
+/// A column too narrow for both gets the title alone, in its middle. A cancelled event's title
+/// (`struck`) is struck through.
 ///
 /// Not clipped: Iced 0.14 draws shapes inside `Frame::with_clip` wrongly once the canvas is
 /// scrolled sideways (stray triangles, missing shapes), and turned text is shapes. The cut to the
 /// height and the choice of lines by width keep the text inside the column instead.
-fn column_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone) {
+fn column_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, struck: bool) {
     let room = rect.height - 2.0 * text_end();
     if room <= 0.0 {
         return;
@@ -716,6 +744,13 @@ fn column_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone) {
     let y = rect.y + rect.height - text_end();
     let title = ellipsize(&entry.title, typo::caption(), room);
     upright(frame, &title, Point::new(x, y), typo::caption(), tone.title);
+    if struck {
+        frame.with_save(|frame| {
+            frame.translate(Vector::new(x.round(), y.round()));
+            frame.rotate(-FRAC_PI_2);
+            strike(frame, Point::new(0.0, line / 2.0), text_width(&title, typo::caption()), tone.title);
+        });
+    }
     if two {
         let time = time_text(entry, room);
         upright(frame, &time, Point::new(x + line, y), typo::micro(), tone.time);
@@ -846,6 +881,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -996,8 +1040,14 @@ mod tests {
 
     #[test]
     fn time_text_shows_the_range_where_it_fits() {
-        let entry =
-            Entry { index: 0, color: Color::BLACK, start: at(13, 10, 0), end: at(13, 11, 30), title: "x".into() };
+        let entry = Entry {
+            index: 0,
+            color: Color::BLACK,
+            start: at(13, 10, 0),
+            end: at(13, 11, 30),
+            title: "x".into(),
+            status: None,
+        };
         assert_eq!(time_text(&entry, 200.0), "10:00 – 11:30");
         assert_eq!(time_text(&entry, 40.0), "10:00");
     }

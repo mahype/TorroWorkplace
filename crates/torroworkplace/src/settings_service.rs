@@ -28,8 +28,9 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design::{self, DesignError, Part};
 use torro_core::settings::{
-    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, PdfSettings,
-    PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice, WorkingHours, Zoom,
+    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Maps, Night,
+    PdfSettings, PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice,
+    WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -162,6 +163,10 @@ impl SettingsStore {
     /// stays on only when it is on as stored and in `new`, the PDF folder and the logos of the
     /// templates stay as stored (`torro_core::settings::Tools::from_client`); the other fields of
     /// the templates come from `new`, refused like in [`SettingsStore::update`] when they do not fit.
+    ///
+    /// Nor does a client turn maps on or name another search or tile service (task TE.1): maps stay
+    /// on only when on as stored and in `new`, both addresses stay as stored; `new` without `maps`
+    /// keeps them all (`torro_core::settings::Maps::from_client`).
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
@@ -177,6 +182,7 @@ impl SettingsStore {
             let allow_mcp = settings.allow_mcp && new.allow_mcp;
             let reminders = Reminders { calendars, ..new.reminders.clone() };
             let tools = settings.tools.from_client(&new.tools);
+            let maps = settings.maps.from_client(&new.maps);
             *settings = Settings {
                 hidden_collections: hidden,
                 ai_assignments: assignments,
@@ -187,6 +193,7 @@ impl SettingsStore {
                 allow_mcp,
                 reminders,
                 tools,
+                maps,
                 ..new
             };
         })
@@ -339,6 +346,9 @@ impl SettingsStore {
         if new.tools.pdf != old.tools.pdf {
             new.tools.pdf.check_changes(&old.tools.pdf)?;
         }
+        // The addresses of maps too (task TE.1): one with a key in its query must not get in through
+        // `update_settings` either.
+        new.maps.check_changes(&old.maps)?;
         let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
         save_to(file, &new)?;
         if let Some(enabled) = self.login_item_change(&old, &new) {
@@ -466,6 +476,10 @@ enum Change {
     PdfTemplate(PdfTemplateId, PdfTemplate),
     /// The modifiers of the template keys (issue #243).
     WorkspaceShortcuts(torro_core::settings::ShortcutModifiers),
+    /// A change of maps and the place search (task TE.1): the fields it names, checked against the
+    /// defaults when parsed and merged onto the stored ones when applied ([`Maps::merged`]). Who may
+    /// turn them on or name a service is the core's check (`Request::kept_for_people`).
+    Maps(serde_json::Value),
 }
 
 impl Change {
@@ -528,6 +542,11 @@ impl Change {
             SettingKey::WorkspaceShortcuts => {
                 Change::WorkspaceShortcuts(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
+            // Strict, like the reminders: the file's reading falls back to the defaults (off) instead.
+            SettingKey::Maps => {
+                Maps::default().merged(value)?;
+                Change::Maps(value.clone())
+            }
         })
     }
 
@@ -585,6 +604,13 @@ impl Change {
             Change::PdfFolder(folder) => settings.tools.pdf.folder = folder,
             Change::PdfTemplate(id, template) => *settings.tools.pdf.template_mut(id) = template,
             Change::WorkspaceShortcuts(modifiers) => settings.workspaces.modifiers = modifiers,
+            // Checked when parsed; an address only when it changes, so one edited into the file by
+            // hand does not keep maps from being turned off.
+            Change::Maps(change) => {
+                if let Ok(merged) = settings.maps.merged(&change) {
+                    settings.maps = merged;
+                }
+            }
         }
     }
 }
@@ -1315,6 +1341,8 @@ mod tests {
         Change::parse(SettingKey::Reminders, &reminders).expect("valid reminders").apply(&mut settings);
         let keys = json!("ctrl_shift");
         Change::parse(SettingKey::WorkspaceShortcuts, &keys).expect("valid modifiers").apply(&mut settings);
+        Change::parse(SettingKey::Maps, &json!({"openWith": "apple"})).expect("valid maps").apply(&mut settings);
+        assert!(Change::parse(SettingKey::Maps, &json!({"tiles": "https://t.org/{z}/{x}/{y}?key=1"})).is_err());
         assert!(Change::parse(SettingKey::WorkspaceShortcuts, &json!("hyper")).is_err(), "only the four choices");
         assert_eq!(
             settings,
@@ -1340,6 +1368,7 @@ mod tests {
                 mail_appearance: MailAppearance::App,
                 mail_to_cloud: false,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
+                maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
                 ai_assignments: std::collections::BTreeMap::new(),
                 hidden_categories: Vec::new(),
                 allow_api_keys: true,

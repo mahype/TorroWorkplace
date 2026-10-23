@@ -1,16 +1,32 @@
 //! Just enough iCalendar (RFC 5545) to read events (VEVENT) and tasks (VTODO).
 //!
 //! The server expands recurring events for us (`<C:expand>` in the calendar query), so
-//! every occurrence arrives as its own VEVENT with times in UTC. Times with a TZID that
-//! slip through anyway are read as local time; a full time zone database comes with the
-//! sync engine.
+//! every occurrence arrives as its own VEVENT with times in UTC. A stored object read as it is
+//! (an update writes onto it, an invitation came by mail) keeps its `TZID`s: an IANA name
+//! (`Europe/Berlin`, also behind a vendor prefix like `/mozilla.org/20050126_1/Europe/Berlin`) is
+//! converted with `chrono-tz` and kept as the event's `time_zone` (task TE.2), and so is the Windows
+//! name of a common zone (`W. Europe Standard Time` is `Europe/Berlin`, [`windows_zone`], as Outlook
+//! and Exchange write them); any other name and floating times are read as the computer's local time.
+//!
+//! Cancelled events (`STATUS:CANCELLED`) are read with their status (task TE.2): the calendar
+//! shows them struck through, and [`Event::busy`] and the reminders leave them out. Cancelled
+//! tasks are still skipped. Organizer and attendees are read for display only; nothing writes them.
 //!
 //! An event's reminders (task ER1.1, `docs/erinnerungen.md`) are its `VALARM` components with
 //! `ACTION:DISPLAY` or `AUDIO` ([`alarm`]). Mail alarms, `ACTION:NONE` (Apple's placeholder) and
 //! alarms whose `TRIGGER` cannot be read are not the model's: they are left out, not reported.
+//!
+//! What the server's expansion loses (task TE.3, `docs/termin-editor.md` decisions 1 and 2) comes
+//! from the stored object of each `href` ([`ObjectFacts`]): the rule of the series, the zones of
+//! its `DTSTART`s and which occurrences were changed. Nextcloud (Sabre) gives every occurrence it
+//! expands a `RECURRENCE-ID` (its start, in UTC; a changed one keeps its own) and turns every time
+//! into UTC, dropping the `VTIMEZONE`s (`Sabre\VObject\Component\VCalendar::expand`,
+//! `Recur\EventIterator::getEventObject`); the fixture `nextcloud-expand-series.xml` shows it.
+//! For a server that leaves the key out, [`ObjectFacts::complete`] derives it.
 
-use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use torro_pim::model::Link;
+use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
+use chrono_tz::Tz;
+use torro_pim::model::{Attendee, AttendeeRole, EventStatus, Geo, Link, PartStat, Repeat, RepeatEnd, RepeatFreq};
 use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Todo, Transparency};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
@@ -26,7 +42,8 @@ impl Property<'_> {
     }
 }
 
-/// The events in one iCalendar object (one `calendar-data`), skipping cancelled ones.
+/// The events in one iCalendar object (one `calendar-data`), cancelled ones included (with
+/// `status: Cancelled`); a VEVENT without a readable `DTSTART` is left out.
 pub fn parse_events(ics: &str, collection: &str) -> Vec<Event> {
     let mut events = Vec::new();
     for_each_component(ics, "VEVENT", |props, alarms| events.extend(to_event(props, alarms, collection)));
@@ -51,6 +68,120 @@ pub fn is_series(ics: &str) -> bool {
         });
     }
     series
+}
+
+/// What the stored object of one `href` (read without expansion, `CalDavClient::objects`) says
+/// about the events the server expanded from it (task TE.3): the rule and zone of the series' main
+/// event and its changed occurrences. Read once per object with [`ObjectFacts::read`], then put on
+/// every occurrence with [`ObjectFacts::complete`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ObjectFacts {
+    /// The rule of the main event (the VEVENT without `RECURRENCE-ID`): its `RRULE` read with
+    /// [`crate::recur::read`] in the zone of its `DTSTART`, marked custom when the event also has
+    /// extra dates (`RDATE`), an `EXRULE` or more than one `RRULE`. Extra dates without a rule give
+    /// a custom rule with empty text (its `freq` then means nothing). `None` for a single event and
+    /// for an object holding only changed occurrences.
+    pub repeat: Option<Repeat>,
+    /// The IANA zone of the main event's `DTSTART` (as [`Event::time_zone`]); `None` for an all-day
+    /// or UTC start, a zone chrono-tz does not know, or no main event.
+    pub zone: Option<String>,
+    /// The changed occurrences, in the stored order.
+    pub exceptions: Vec<Exception>,
+}
+
+/// One changed occurrence in a stored object (a VEVENT with `RECURRENCE-ID`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Exception {
+    /// Which occurrence it replaces (`RECURRENCE-ID`), as an instant or a day.
+    pub recurrence_id: EventTime,
+    /// Where it starts now (`DTSTART`).
+    pub start: EventTime,
+    /// The IANA zone of its `DTSTART`, as [`ObjectFacts::zone`].
+    pub zone: Option<String>,
+}
+
+impl ObjectFacts {
+    /// The facts of the stored iCalendar object `ics`. Only VEVENTs count; one without a readable
+    /// `DTSTART`, a changed occurrence whose `RECURRENCE-ID` cannot be read and every main event
+    /// after the first are left out.
+    pub fn read(ics: &str) -> ObjectFacts {
+        let mut facts = ObjectFacts::default();
+        let mut has_main = false;
+        for_each_component(ics, "VEVENT", |props, _| {
+            let Some(dtstart) = find(props, "DTSTART") else { return };
+            let Some(start) = parse_time(dtstart) else { return };
+            let tz = matches!(start, EventTime::DateTime(_)).then(|| dtstart.param("TZID").and_then(zone)).flatten();
+            let zone = tz.map(|tz| tz.name().to_string());
+            match find(props, "RECURRENCE-ID") {
+                Some(key) => {
+                    if let Some(recurrence_id) = parse_time(key) {
+                        facts.exceptions.push(Exception { recurrence_id, start, zone });
+                    }
+                }
+                None if !has_main => {
+                    has_main = true;
+                    facts.zone = zone;
+                    facts.repeat = main_rule(props, tz);
+                }
+                None => {}
+            }
+        });
+        facts
+    }
+
+    /// Puts what the server's expansion lost on `event`, an occurrence of this object (or the
+    /// object's single event):
+    ///
+    /// - `recurrence_id`, when the server left it out and the object is a series: the changed
+    ///   occurrence that starts where `event` starts, else `event.start` (an occurrence the rule
+    ///   made starts at its key).
+    /// - `time_zone`: the zone of the changed occurrence with that key, else of the main event;
+    ///   left as it is when the object names none.
+    /// - `repeat`: the rule of the series, the same on every occurrence; and `recurring` for an
+    ///   occurrence of a series, so it stays true exactly when `recurrence_id` or `repeat` is set.
+    /// - `exceptions`: the keys of the changed occurrences in the stored order, on every occurrence
+    ///   of a series; empty for a single event.
+    pub fn complete(&self, event: &mut Event) {
+        let series = self.repeat.is_some() || !self.exceptions.is_empty();
+        if series && event.recurrence_id.is_none() {
+            let changed = self.exceptions.iter().find(|exception| exception.start == event.start);
+            event.recurrence_id = Some(changed.map_or(event.start, |exception| exception.recurrence_id));
+        }
+        let changed =
+            event.recurrence_id.and_then(|key| self.exceptions.iter().find(|exception| exception.recurrence_id == key));
+        let zone = changed.map_or(&self.zone, |exception| &exception.zone);
+        if let Some(zone) = zone.as_ref().filter(|_| !event.all_day()) {
+            event.time_zone = Some(zone.clone());
+        }
+        event.repeat = self.repeat.clone().map(Box::new);
+        event.exceptions =
+            if series { self.exceptions.iter().map(|exception| exception.recurrence_id).collect() } else { Vec::new() };
+        event.recurring |= event.recurrence_id.is_some() || event.repeat.is_some();
+    }
+}
+
+/// The rule of a main event with the properties `props` and the zone `tz` of its `DTSTART`, as
+/// [`ObjectFacts::repeat`] describes it.
+fn main_rule(props: &[Property<'_>], tz: Option<Tz>) -> Option<Repeat> {
+    let count = |name: &str| props.iter().filter(|p| p.name.eq_ignore_ascii_case(name)).count();
+    let first = find(props, "RRULE");
+    let more = count("RRULE") > 1 || count("RDATE") > 0 || count("EXRULE") > 0;
+    let mut repeat = match first {
+        Some(rule) => crate::recur::read(rule.value, tz),
+        None if more => Repeat {
+            freq: RepeatFreq::Daily,
+            interval: 1,
+            weekdays: Vec::new(),
+            month_days: Vec::new(),
+            months: Vec::new(),
+            end: RepeatEnd::Never,
+            rule: String::new(),
+            custom: true,
+        },
+        None => return None,
+    };
+    repeat.custom |= more;
+    Some(repeat)
 }
 
 /// Calls `visit` with the own properties of every top-level `component` in `ics` and the
@@ -173,14 +304,12 @@ fn split_list(value: &str) -> Vec<&str> {
     parts
 }
 
-/// The event one VEVENT's own properties and its `VALARM`s describe; `None` for a cancelled one
-/// or one without a readable `DTSTART`.
+/// The event one VEVENT's own properties and its `VALARM`s describe; `None` for one without a
+/// readable `DTSTART`. A cancelled event is read like any other, with `status: Cancelled`.
 pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], collection: &str) -> Option<Event> {
     let get = |name: &str| find(props, name);
-    if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
-        return None;
-    }
-    let start = parse_time(get("DTSTART")?)?;
+    let dtstart = get("DTSTART")?;
+    let start = parse_time(dtstart)?;
     let end = match get("DTEND").and_then(parse_time) {
         Some(end) => Some(end),
         None => get("DURATION").and_then(|p| parse_duration(p.value)).map(|d| add(start, d)),
@@ -198,7 +327,158 @@ pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], col
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
         transparency: transparency(get("TRANSP")),
         alarms: alarms.iter().filter_map(|props| alarm(props)).collect(),
+        recurrence_id: get("RECURRENCE-ID").and_then(parse_time),
+        // An occurrence the server expanded has lost the rule: the core adds it from the stored
+        // object ([`ObjectFacts::complete`], task TE.3).
+        repeat: None,
+        time_zone: matches!(start, EventTime::DateTime(_))
+            .then(|| dtstart.param("TZID").and_then(zone))
+            .flatten()
+            .map(|tz| tz.name().to_string()),
+        url: get("URL").map(|p| p.value.trim().to_string()).filter(|s| !s.is_empty()),
+        status: get("STATUS").and_then(|p| status(p.value)),
+        geo: geo(props),
+        organizer: get("ORGANIZER").map(|p| Box::new(person(p))),
+        attendees: props.iter().filter(|p| p.name.eq_ignore_ascii_case("ATTENDEE")).map(person).collect(),
+        exceptions: Vec::new(),
     })
+}
+
+/// The IANA zone a `TZID` names, also behind a vendor prefix (`/mozilla.org/20050126_1/Europe/Berlin`,
+/// as older Thunderbird and Citadel write it) and for the Windows name of a common zone
+/// ([`windows_zone`]); `None` for any other name, which only the object's own `VTIMEZONE` explains.
+pub(crate) fn zone(tzid: &str) -> Option<Tz> {
+    let tzid = tzid.trim();
+    let suffixes = tzid.match_indices('/').map(|(i, _)| &tzid[i + 1..]);
+    std::iter::once(tzid).chain(suffixes).find_map(|name| name.parse::<Tz>().ok()).or_else(|| windows_zone(tzid))
+}
+
+/// The IANA zone of a Windows zone name as Outlook and Exchange write it in `TZID` (the first zone
+/// CLDR's `windowsZones.xml` names for it, or one with the same rules), for the common ones only:
+/// with it a series from Outlook is counted and written in its real zone instead of the computer's
+/// (finding 6 of the review of #278). `None` for names not in the list.
+fn windows_zone(name: &str) -> Option<Tz> {
+    let iana = match name {
+        "W. Europe Standard Time" => Tz::Europe__Berlin,
+        "Central Europe Standard Time" => Tz::Europe__Budapest,
+        "Central European Standard Time" => Tz::Europe__Warsaw,
+        "Romance Standard Time" => Tz::Europe__Paris,
+        "GMT Standard Time" => Tz::Europe__London,
+        "Greenwich Standard Time" => Tz::Atlantic__Reykjavik,
+        "E. Europe Standard Time" => Tz::Europe__Chisinau,
+        "FLE Standard Time" => Tz::Europe__Helsinki,
+        "GTB Standard Time" => Tz::Europe__Bucharest,
+        "Russian Standard Time" => Tz::Europe__Moscow,
+        "Turkey Standard Time" => Tz::Europe__Istanbul,
+        "Israel Standard Time" => Tz::Asia__Jerusalem,
+        "South Africa Standard Time" => Tz::Africa__Johannesburg,
+        "Arabian Standard Time" => Tz::Asia__Dubai,
+        "India Standard Time" => Tz::Asia__Kolkata,
+        "China Standard Time" => Tz::Asia__Shanghai,
+        "Singapore Standard Time" => Tz::Asia__Singapore,
+        "Tokyo Standard Time" => Tz::Asia__Tokyo,
+        "Korea Standard Time" => Tz::Asia__Seoul,
+        "AUS Eastern Standard Time" => Tz::Australia__Sydney,
+        "E. Australia Standard Time" => Tz::Australia__Brisbane,
+        "Cen. Australia Standard Time" => Tz::Australia__Adelaide,
+        "W. Australia Standard Time" => Tz::Australia__Perth,
+        "New Zealand Standard Time" => Tz::Pacific__Auckland,
+        "Eastern Standard Time" => Tz::America__New_York,
+        "Central Standard Time" => Tz::America__Chicago,
+        "Mountain Standard Time" => Tz::America__Denver,
+        "US Mountain Standard Time" => Tz::America__Phoenix,
+        "Pacific Standard Time" => Tz::America__Los_Angeles,
+        "Alaskan Standard Time" => Tz::America__Anchorage,
+        "Hawaiian Standard Time" => Tz::Pacific__Honolulu,
+        "Atlantic Standard Time" => Tz::America__Halifax,
+        "Canada Central Standard Time" => Tz::America__Regina,
+        "SA Pacific Standard Time" => Tz::America__Bogota,
+        "E. South America Standard Time" => Tz::America__Sao_Paulo,
+        "Argentina Standard Time" => Tz::America__Argentina__Buenos_Aires,
+        "UTC" | "Coordinated Universal Time" => Tz::UTC,
+        _ => return None,
+    };
+    Some(iana)
+}
+
+/// The status of an event (`STATUS`); `None` for a value RFC 5545 does not give events.
+fn status(value: &str) -> Option<EventStatus> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        "CONFIRMED" => Some(EventStatus::Confirmed),
+        "TENTATIVE" => Some(EventStatus::Tentative),
+        "CANCELLED" => Some(EventStatus::Cancelled),
+        _ => None,
+    }
+}
+
+/// Where the event is: `GEO:lat;lon` (RFC 5545 section 3.8.1.6), else the `geo:` URI of Apple's
+/// `X-APPLE-STRUCTURED-LOCATION` (RFC 5870: `geo:lat,lon[,alt][;u=…]`). A value that is not two
+/// numbers in range is none.
+fn geo(props: &[Property<'_>]) -> Option<Geo> {
+    let point = |lat: &str, lon: &str| Geo::new(lat.trim().parse().ok()?, lon.trim().parse().ok()?);
+    let stored = find(props, "GEO").and_then(|p| {
+        // Some programs write a comma instead of the semicolon.
+        let (lat, lon) = p.value.split_once(';').or_else(|| p.value.split_once(','))?;
+        point(lat, lon)
+    });
+    stored.or_else(|| {
+        let apple = find(props, "X-APPLE-STRUCTURED-LOCATION")?.value.trim();
+        let coords = strip_prefix_ignore_case(apple, "geo:")?.split(';').next()?;
+        let mut parts = coords.split(',');
+        point(parts.next()?, parts.next()?)
+    })
+}
+
+/// `text` without `prefix`, whatever the case of the prefix.
+fn strip_prefix_ignore_case<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then(|| &text[prefix.len()..])
+}
+
+/// The person an `ORGANIZER` or `ATTENDEE` names: `CN` as the name, the `mailto:` address (else
+/// the `EMAIL` parameter of RFC 7986), `PARTSTAT` and `ROLE`; unknown values are the defaults.
+fn person(prop: &Property<'_>) -> Attendee {
+    let address = strip_prefix_ignore_case(prop.value.trim(), "mailto:").or_else(|| prop.param("EMAIL"));
+    let partstat = match prop.param("PARTSTAT").map(|v| v.trim().to_ascii_uppercase()).as_deref() {
+        Some("ACCEPTED") => PartStat::Accepted,
+        Some("DECLINED") => PartStat::Declined,
+        Some("TENTATIVE") => PartStat::Tentative,
+        Some("DELEGATED") => PartStat::Delegated,
+        _ => PartStat::NeedsAction,
+    };
+    let role = match prop.param("ROLE").map(|v| v.trim().to_ascii_uppercase()).as_deref() {
+        Some("CHAIR") => AttendeeRole::Chair,
+        Some("OPT-PARTICIPANT") => AttendeeRole::Optional,
+        Some("NON-PARTICIPANT") => AttendeeRole::NonParticipant,
+        _ => AttendeeRole::Required,
+    };
+    Attendee {
+        name: prop.param("CN").map(param_text).filter(|name| !name.is_empty()),
+        email: address.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
+        partstat,
+        role,
+    }
+}
+
+/// A parameter value as text: trimmed, with the `^` escapes of RFC 6868 (`^n` line break, `^'`
+/// double quote, `^^` caret) resolved.
+fn param_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.trim().chars();
+    while let Some(c) = chars.next() {
+        if c != '^' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('\'') => out.push('"'),
+            Some('^') => out.push('^'),
+            Some(other) => out.extend(['^', other]),
+            None => out.push('^'),
+        }
+    }
+    out
 }
 
 /// The reminder one `VALARM`'s properties describe: `ACTION:DISPLAY` or `AUDIO` with a readable
@@ -246,6 +526,8 @@ fn add(time: EventTime, duration: Duration) -> EventTime {
     }
 }
 
+/// A `DATE`, a UTC time (`…Z`), a time in the IANA zone its `TZID` names ([`zone`]) or, for a
+/// floating time or a zone chrono-tz does not know, a time in the computer's local zone.
 fn parse_time(prop: &Property<'_>) -> Option<EventTime> {
     let value = prop.value.trim();
     if prop.param("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE")) || value.len() == 8 {
@@ -255,10 +537,28 @@ fn parse_time(prop: &Property<'_>) -> Option<EventTime> {
         let naive = NaiveDateTime::parse_from_str(utc, "%Y%m%dT%H%M%S").ok()?;
         return Some(EventTime::DateTime(naive.and_utc()));
     }
-    // Floating or TZID time: read as local time for now.
     let naive = NaiveDateTime::parse_from_str(value, "%Y%m%dT%H%M%S").ok()?;
+    if let Some(tz) = prop.param("TZID").and_then(zone) {
+        return Some(EventTime::DateTime(in_zone(tz, naive)));
+    }
+    // Floating time, or a zone only the object's VTIMEZONE explains: the computer's local time.
     let local = Local.from_local_datetime(&naive).earliest()?;
     Some(EventTime::DateTime(local.with_timezone(&Utc)))
+}
+
+/// The instant the wall-clock time `naive` names in `tz`, as RFC 5545 section 3.3.5 reads it: a
+/// time that occurs twice (the hour before winter time) is the first one, a time the clocks skip
+/// (the hour before summer time) counts with the offset before the gap (02:30 becomes 03:30).
+pub(crate) fn in_zone(tz: Tz, naive: NaiveDateTime) -> DateTime<Utc> {
+    match tz.from_local_datetime(&naive).earliest() {
+        Some(at) => at.with_timezone(&Utc),
+        None => {
+            // In the gap: the offset a day before is the one before it (zones change at most
+            // twice a year).
+            let before = tz.offset_from_utc_datetime(&(naive - Duration::days(1))).fix();
+            (naive - Duration::seconds(i64::from(before.local_minus_utc()))).and_utc()
+        }
+    }
 }
 
 /// `P1D`, `PT1H30M`, `-PT15M`, `P2W` …
@@ -354,9 +654,11 @@ mod tests {
     const SAMPLE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:abc\r\nDTSTART:20261011T080000Z\r\nDTEND:20261011T093000Z\r\nSUMMARY:Workshop\\, Teil 1\r\nLOCATION:Raum\r\n  3\r\nBEGIN:VALARM\r\nTRIGGER:-PT15M\r\nDESCRIPTION:Alarm\r\nEND:VALARM\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:day\r\nDTSTART;VALUE=DATE:20261012\r\nDURATION:P1D\r\nSUMMARY:Urlaub\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:gone\r\nSTATUS:CANCELLED\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
 
     #[test]
-    fn reads_timed_all_day_and_skips_cancelled() {
+    fn reads_timed_all_day_and_cancelled() {
         let events = parse_events(SAMPLE, "/cal/");
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3, "cancelled events are read since TE.2");
+        assert_eq!(events[2].status, Some(EventStatus::Cancelled));
+        assert_eq!((events[0].status, events[0].time_zone.as_deref()), (None, None), "UTC times name no zone");
         let first = &events[0];
         assert_eq!(first.summary, "Workshop, Teil 1");
         assert_eq!(first.location.as_deref(), Some("Raum 3"));
@@ -555,5 +857,222 @@ RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         );
         let event = parse_events(&ics, "/cal/").remove(0);
         assert_eq!(event.description, None, "an alarm's description is not the event's");
+    }
+
+    // New fields, time zones and attendees (task TE.2).
+
+    const NEXTCLOUD_BERLIN: &str = include_str!("../tests/fixtures/nextcloud-event-berlin.ics");
+    const NEXTCLOUD_CANCELLED: &str = include_str!("../tests/fixtures/nextcloud-event-cancelled.ics");
+    const NEXTCLOUD_ATTENDEES: &str = include_str!("../tests/fixtures/nextcloud-event-attendees.ics");
+    const APPLE_PLACE: &str = include_str!("../tests/fixtures/apple-structured-location.ics");
+
+    fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> EventTime {
+        EventTime::DateTime(Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).single().expect("a time"))
+    }
+
+    fn one(ics: &str) -> Event {
+        parse_events(ics, "/cal/").into_iter().next().expect("an event")
+    }
+
+    #[test]
+    fn tzid_times_are_converted_with_the_zone_and_the_zone_is_kept() {
+        // Summer time: 10:00 in Berlin is 08:00 UTC.
+        let summer = one(NEXTCLOUD_BERLIN);
+        assert_eq!(summer.start, utc(2026, 10, 13, 8, 0));
+        assert_eq!(summer.end, Some(utc(2026, 10, 13, 9, 30)));
+        assert_eq!(summer.time_zone.as_deref(), Some("Europe/Berlin"));
+        // Winter time: 09:00 in Berlin is 08:00 UTC.
+        let winter = one(NEXTCLOUD_CANCELLED);
+        assert_eq!(winter.start, utc(2026, 1, 20, 8, 0));
+        assert_eq!(winter.time_zone.as_deref(), Some("Europe/Berlin"));
+    }
+
+    #[test]
+    fn zone_names_behind_a_prefix_and_common_windows_names_are_found() {
+        assert_eq!(zone("Europe/Berlin"), Some(Tz::Europe__Berlin));
+        assert_eq!(zone(" America/Argentina/Buenos_Aires "), Some(Tz::America__Argentina__Buenos_Aires));
+        assert_eq!(zone("/mozilla.org/20050126_1/Europe/Berlin"), Some(Tz::Europe__Berlin));
+        assert_eq!(zone("/citadel.org/20190914_1/America/New_York"), Some(Tz::America__New_York));
+        assert_eq!(zone("W. Europe Standard Time"), Some(Tz::Europe__Berlin));
+        assert_eq!(zone(" Pacific Standard Time "), Some(Tz::America__Los_Angeles));
+        assert_eq!(zone("Mars Standard Time"), None);
+        assert_eq!(zone(""), None);
+        // A Windows name reads in its zone, whatever the computer's is.
+        let windows = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=W. Europe Standard Time");
+        let event = one(&windows);
+        assert_eq!((event.start, event.time_zone.as_deref()), (utc(2026, 10, 13, 8, 0), Some("Europe/Berlin")));
+        // Unknown names are read as local time, as before, and name no zone.
+        let unknown = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=Mars Standard Time");
+        assert_eq!(one(&unknown).time_zone, None);
+        let prefixed = NEXTCLOUD_BERLIN.replace("TZID=Europe/Berlin", "TZID=/mozilla.org/20050126_1/Europe/Berlin");
+        let event = one(&prefixed);
+        assert_eq!((event.start, event.time_zone.as_deref()), (utc(2026, 10, 13, 8, 0), Some("Europe/Berlin")));
+    }
+
+    #[test]
+    fn times_around_the_change_of_the_clock_follow_rfc_5545() {
+        let berlin = Tz::Europe__Berlin;
+        let naive = |d: u32, mo: u32, h: u32, mi: u32| {
+            NaiveDate::from_ymd_opt(2026, mo, d).and_then(|d| d.and_hms_opt(h, mi, 0)).expect("a time")
+        };
+        let at = |y, mo, d, h, mi| Utc.with_ymd_and_hms(y, mo, d, h, mi, 0).single().expect("a time");
+        // 02:30 on 29 March does not exist: counted with the offset before the gap (+01:00).
+        assert_eq!(in_zone(berlin, naive(29, 3, 2, 30)), at(2026, 3, 29, 1, 30));
+        // 02:30 on 25 October happens twice: the first one (+02:00).
+        assert_eq!(in_zone(berlin, naive(25, 10, 2, 30)), at(2026, 10, 25, 0, 30));
+        assert_eq!(in_zone(berlin, naive(25, 10, 3, 30)), at(2026, 10, 25, 2, 30));
+    }
+
+    #[test]
+    fn reads_url_status_and_a_cancelled_event() {
+        let event = one(NEXTCLOUD_BERLIN);
+        assert_eq!(event.url.as_deref(), Some("https://wiki.example.org/planung/2026-10-13"));
+        assert_eq!(event.status, Some(EventStatus::Confirmed));
+        assert_eq!((event.geo, event.organizer.as_deref(), event.attendees.len()), (None, None, 0));
+        let cancelled = one(NEXTCLOUD_CANCELLED);
+        assert_eq!(cancelled.status, Some(EventStatus::Cancelled));
+        assert_eq!(cancelled.summary, "Jahresgespräch");
+        assert!(!cancelled.busy(), "a cancelled event keeps no time busy");
+        let status = |value: &str| one(&NEXTCLOUD_BERLIN.replace("STATUS:CONFIRMED", value)).status;
+        assert_eq!(status("status: tentative "), Some(EventStatus::Tentative));
+        assert_eq!(status("STATUS:X-POSTPONED"), None, "an unknown status is none");
+        assert_eq!(status("STATUS:NEEDS-ACTION"), None, "a task's status is not an event's");
+    }
+
+    #[test]
+    fn reads_the_place_from_geo_or_from_apple() {
+        let geo = one(NEXTCLOUD_ATTENDEES).geo.expect("GEO");
+        assert_eq!((geo.lat, geo.lon), (52.520008, 13.404954));
+        let apple = one(APPLE_PLACE);
+        let place = apple.geo.expect("Apple's place");
+        assert_eq!((place.lat, place.lon), (52.516275, 13.377704));
+        assert_eq!(apple.location.as_deref(), Some("Brandenburger Tor\nPariser Platz, 10117 Berlin, Deutschland"));
+        // GEO wins over Apple's place; broken values are none.
+        let both = APPLE_PLACE.replace("SEQUENCE:0", "GEO:48.137154;11.576124");
+        assert_eq!(one(&both).geo.map(|g| (g.lat, g.lon)), Some((48.137154, 11.576124)));
+        for broken in ["GEO:91;13", "GEO:52.5", "GEO:nan;13", "GEO:north;east"] {
+            let ics = NEXTCLOUD_ATTENDEES.replace("GEO:52.520008;13.404954", broken);
+            assert_eq!(one(&ics).geo, None, "{broken}");
+        }
+        let comma = NEXTCLOUD_ATTENDEES.replace("GEO:52.520008;13.404954", "GEO:52.5,13.4");
+        assert_eq!(one(&comma).geo.map(|g| (g.lat, g.lon)), Some((52.5, 13.4)), "a comma is forgiven");
+        let with_params = APPLE_PLACE.replace("geo:52.516275,13.377704", "GEO:52.5,13.4,34;u=35");
+        assert_eq!(one(&with_params).geo.map(|g| (g.lat, g.lon)), Some((52.5, 13.4)), "altitude and u= are left out");
+    }
+
+    #[test]
+    fn reads_organizer_and_attendees() {
+        let event = one(NEXTCLOUD_ATTENDEES);
+        let anna = Attendee {
+            name: Some("Anna Beispiel".into()),
+            email: Some("anna@example.org".into()),
+            partstat: PartStat::NeedsAction,
+            role: AttendeeRole::Required,
+        };
+        assert_eq!(event.organizer.as_deref(), Some(&anna));
+        assert_eq!(
+            event.attendees,
+            [
+                Attendee { partstat: PartStat::Accepted, role: AttendeeRole::Chair, ..anna.clone() },
+                Attendee {
+                    name: Some("Beispiel, Ben".into()),
+                    email: Some("ben@example.org".into()),
+                    partstat: PartStat::Tentative,
+                    role: AttendeeRole::Required,
+                },
+                Attendee {
+                    name: None,
+                    email: Some("carla@example.org".into()),
+                    partstat: PartStat::NeedsAction,
+                    role: AttendeeRole::Optional,
+                },
+                Attendee {
+                    name: Some("Raum 2".into()),
+                    email: None,
+                    partstat: PartStat::Accepted,
+                    role: AttendeeRole::NonParticipant,
+                },
+            ]
+        );
+        let declined = one(NEXTCLOUD_CANCELLED).attendees;
+        assert_eq!(declined[1].partstat, PartStat::Declined);
+        // RFC 6868 escapes and the EMAIL parameter of RFC 7986.
+        let odd = NEXTCLOUD_BERLIN.replace(
+            "STATUS:CONFIRMED",
+            "ATTENDEE;CN=Dr. ^'Q^' Muster;EMAIL=q@example.org;PARTSTAT=X-UNKNOWN:urn:uuid:1",
+        );
+        let q = one(&odd).attendees.remove(0);
+        assert_eq!((q.name.as_deref(), q.email.as_deref()), (Some("Dr. \"Q\" Muster"), Some("q@example.org")));
+        assert_eq!(q.partstat, PartStat::NeedsAction, "unknown answers are not answers");
+    }
+
+    #[test]
+    fn reads_the_recurrence_id() {
+        let ics = NEXTCLOUD_BERLIN.replace("STATUS:CONFIRMED", "RECURRENCE-ID;TZID=Europe/Berlin:20261013T100000");
+        let event = one(&ics);
+        assert_eq!(event.recurrence_id, Some(utc(2026, 10, 13, 8, 0)));
+        assert!(event.recurring);
+        assert_eq!(one(NEXTCLOUD_BERLIN).recurrence_id, None);
+    }
+
+    // The stored object of a series (task TE.3).
+
+    fn facts(extra: &str) -> ObjectFacts {
+        ObjectFacts::read(&NEXTCLOUD_BERLIN.replace("STATUS:CONFIRMED", extra))
+    }
+
+    #[test]
+    fn extra_dates_and_exclusion_rules_make_the_rule_custom() {
+        let weekly = facts("RRULE:FREQ=WEEKLY;BYDAY=TU").repeat.expect("a rule");
+        assert!(!weekly.custom);
+        assert_eq!(facts("RRULE:FREQ=WEEKLY;BYDAY=TU").zone.as_deref(), Some("Europe/Berlin"));
+        for extra in [
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\r\nRDATE;TZID=Europe/Berlin:20261016T100000",
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\r\nEXRULE:FREQ=MONTHLY;BYDAY=1TU",
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\r\nRRULE:FREQ=WEEKLY;BYDAY=TH",
+        ] {
+            let repeat = facts(extra).repeat.expect("a rule");
+            assert!(repeat.custom, "{extra}");
+            assert_eq!(repeat.rule, "FREQ=WEEKLY;BYDAY=TU", "the first rule's text: {extra}");
+        }
+        let dates_only = facts("RDATE;TZID=Europe/Berlin:20261016T100000").repeat.expect("a series");
+        assert!(dates_only.custom && dates_only.rule.is_empty());
+        assert_eq!(facts("SEQUENCE:3"), ObjectFacts { zone: Some("Europe/Berlin".into()), ..ObjectFacts::default() });
+    }
+
+    #[test]
+    fn an_object_of_changed_occurrences_only_has_no_rule() {
+        let only = facts("RECURRENCE-ID;TZID=Europe/Berlin:20261013T090000");
+        assert_eq!((&only.repeat, &only.zone), (&None, &None));
+        let key = utc(2026, 10, 13, 7, 0);
+        assert_eq!(
+            only.exceptions,
+            [Exception { recurrence_id: key, start: utc(2026, 10, 13, 8, 0), zone: Some("Europe/Berlin".into()) }]
+        );
+        let mut occurrence = Event { time_zone: None, recurring: false, ..one(NEXTCLOUD_BERLIN) };
+        only.complete(&mut occurrence);
+        assert_eq!(occurrence.recurrence_id, Some(key), "found by its start");
+        assert_eq!((occurrence.time_zone.as_deref(), occurrence.recurring), (Some("Europe/Berlin"), true));
+        assert_eq!(occurrence.exceptions, [key], "the changed occurrences, for the editor (TE.7)");
+    }
+
+    #[test]
+    fn every_occurrence_learns_the_changed_occurrences_of_its_series() {
+        let key = utc(2026, 10, 20, 8, 0);
+        // The main event with a weekly rule, and a changed occurrence an hour later.
+        let object = NEXTCLOUD_BERLIN.replace(
+            "STATUS:CONFIRMED",
+            "RRULE:FREQ=WEEKLY;BYDAY=TU\nEND:VEVENT\nBEGIN:VEVENT\nUID:x\n\
+             RECURRENCE-ID;TZID=Europe/Berlin:20261020T100000\nDTSTART;TZID=Europe/Berlin:20261020T110000",
+        );
+        let series = ObjectFacts::read(&object);
+        assert_eq!(series.exceptions.len(), 1, "{object}");
+        let mut occurrence = Event { exceptions: vec![utc(2000, 1, 1, 0, 0)], ..one(NEXTCLOUD_BERLIN) };
+        series.complete(&mut occurrence);
+        assert_eq!(occurrence.exceptions, [key]);
+        // A single event has none, whatever the client sent.
+        let mut single = Event { exceptions: vec![key], ..one(NEXTCLOUD_BERLIN) };
+        ObjectFacts::read(NEXTCLOUD_BERLIN).complete(&mut single);
+        assert!(single.exceptions.is_empty());
     }
 }

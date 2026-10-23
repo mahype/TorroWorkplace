@@ -466,6 +466,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
         let answered =
             Response::InvitationAnswered { delivery: torro_ipc::mail::Delivery::Accepted, event: Some(event) };
@@ -639,7 +648,7 @@ mod tests {
             "location": null, "description": "From mail: Anna", "recurring": false
         }))
         .expect("an event");
-        let answer = Response::Event { event };
+        let answer = Response::Event { event, reset: 0 };
         let remote = for_model(&made, &answer, Place::Remote);
         assert!(remote.withheld && !remote.value.to_string().contains("Secret"), "{}", remote.value);
         assert!(for_model(&made, &answer, Place::Local).value.to_string().contains("Secret offer"));

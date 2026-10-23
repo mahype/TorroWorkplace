@@ -63,6 +63,9 @@ pulldown-cmark.workspace = true
 dirs.workspace = true
 # Which session loads the templates at login when not on Hyprland: the system's start (task WS.5).
 sysinfo.workspace = true
+# The map of the event editor (task TE.5): tiles put together, darkened and sent as Base64 PNG.
+image.workspace = true
+base64.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build
 # script, so a cross build for Windows (cargo-xwin) would not get the crate. `build.rs` decides by the target OS.

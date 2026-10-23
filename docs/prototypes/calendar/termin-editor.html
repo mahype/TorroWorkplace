@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Calendar – Event editor</title>
+<!-- Entwurf: Termin-Editor mit allen Feldern (Issue #278, docs/termin-editor.md). Drei Layouts zur Auswahl,
+     jedes mit eigenem Vorschlag für die Wiederholung und für die Karte. Das Paneel ist size::panel() = 400 breit.
+     ?layout=a  Eigenschaften (Linear): eine Zeile je Feld, Bearbeiten in schwebenden Karten
+     ?layout=b  Abschnitte: alles offen, Eingaben direkt im Paneel
+     ?layout=c  Kompakt: Karte als Kopf, Chips unter dem Titel, Vorschau der nächsten Termine
+     ?state=    main (Standard) · repeat (Wiederholung bearbeiten) · remind (eigene Erinnerung, A)
+                · search (Adresse suchen, B) · delete (Termin einer Serie löschen)
+     Gemeinsam: Band „Changes apply to“ für Termine einer Serie; der Editor speichert selbst, ohne Speichern-Knopf.
+     ?theme=light hell. Alle Termine und Adressen sind Beispieldaten; die Karte ist gezeichnet, keine echte Kachel. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--attention:#FF9500;--ok:#3FB984;
+  --map-land:#1B1D21;--map-park:#1E2A22;--map-water:#16202E;--map-road:#2C2F35;--map-major:#3A3E46;--map-label:#6F747D}
+:root[data-theme="light"]{--attention:#B86A00;--ok:#1F9D68;
+  --map-land:#F1EFEA;--map-park:#DCEBD5;--map-water:#C7DDF0;--map-road:#FFFFFF;--map-major:#FBE6B2;--map-label:#7A7E85}
+body{overflow:hidden}
+.app{display:flex;height:100vh}
+.panel{margin:8px}
+.cal{flex:1;display:flex;min-height:0}
+
+/* ---------- Woche im Hintergrund (vereinfacht) ---------- */
+.weekbg{flex:1;min-width:0;display:flex;flex-direction:column}
+.dh{display:grid;grid-template-columns:52px repeat(5,1fr);height:44px;border-bottom:1px solid var(--line)}
+.dh div{display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;color:var(--text3)}
+.dh b{font:500 13px/24px "Inter Tabular",Inter,sans-serif;color:var(--text2);min-width:24px;height:24px;border-radius:12px;text-align:center}
+.dh .today b{background:var(--accent);color:#fff}
+.wg{flex:1;position:relative;display:grid;grid-template-columns:52px repeat(5,1fr);overflow:hidden}
+.ax{padding-top:7px}
+.ax div{height:48px;font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);text-align:right;padding:0 8px;transform:translateY(-7px)}
+.col{position:relative;border-left:1px solid var(--line);background:repeating-linear-gradient(to bottom,var(--line) 0 1px,transparent 1px 48px)}
+.ev{position:absolute;left:2px;right:4px;border-radius:4px;padding:3px 6px 3px 9px;overflow:hidden;font-size:12px;line-height:16px;font-weight:500;
+  background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c)}
+.ev small{display:block;font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text2)}
+.ev.cur{outline:2px solid var(--focus);outline-offset:1px}
+.ev .rep{position:absolute;right:6px;top:4px;color:var(--text3)}
+
+/* ---------- Seitenpaneel (torro_gui::panel, 400) ---------- */
+.side{width:400px;flex:none;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;position:relative}
+.shead{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--line);color:var(--text2)}
+.shead .grow{flex:1}
+.shead svg.chev{width:14px;height:14px;color:var(--text3)}
+.sbody{flex:1;overflow:hidden;padding:20px 24px 24px}
+.sfoot{flex:none;display:flex;align-items:center;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.sfoot .grow{flex:1}
+.sfoot.col{flex-direction:column;align-items:stretch;gap:12px}
+.scopebar{flex:none;display:flex;align-items:center;gap:8px;height:44px;padding:0 16px;border-bottom:1px solid var(--line);font-size:12px;color:var(--text2)}
+.scopebar svg{color:var(--text3)}
+.scopebar .grow{flex:1}
+.btn.danger{border-color:transparent;background:none;color:#E5484D}
+:root[data-theme="light"] .btn.danger{color:#CD2B31}
+.ttl{margin:0 0 16px;font-size:22px;line-height:28px;font-weight:600}
+.ttlin{display:block;width:100%;margin:0 0 16px;padding:0;border:0;background:none;color:var(--text);font:600 22px/28px Inter,sans-serif}
+.cap{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:20px 0 8px;display:flex;align-items:center;gap:8px}
+.cap .grow{flex:1}
+.cap:first-child{margin-top:0}
+.hr{height:1px;background:var(--line);margin:16px -24px}
+
+/* Eigenschaftszeile (widgets::prop_line): Bezeichnung 88, Wert daneben, ganze Zeile ein Knopf */
+.pl{display:grid;grid-template-columns:88px 1fr;align-items:center;gap:8px;min-height:32px;padding:0 8px;margin:0 -8px;border-radius:6px}
+.pl:hover,.pl.hl{background:var(--hover)}
+.pl .k{font-size:12px;line-height:16px;color:var(--text3)}
+.pl .v{display:flex;align-items:center;gap:8px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl .v svg{color:var(--text3)}
+.pl .v .ph{color:var(--text3)}
+.pl.top{align-items:start;padding-top:6px;padding-bottom:6px}
+.pl.top .k{padding-top:2px}
+.pl .stack{display:flex;flex-direction:column;gap:4px;min-width:0;white-space:normal}
+.sub{font-size:12px;line-height:16px;color:var(--text3)}
+.lnk{color:var(--text);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px;overflow:hidden;text-overflow:ellipsis}
+
+/* Chips (widgets::choice_chip, state_pill) */
+.chip{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text);white-space:nowrap}
+.chip svg{width:14px;height:14px;color:var(--text3)}
+.chip.on{background:var(--selected);border-color:var(--line-selected,rgba(255,255,255,.28))}
+:root[data-theme="light"] .chip.on{border-color:rgba(0,0,0,.32)}
+.chip .x{margin-left:2px;color:var(--text3)}
+.chip.ghost{background:none;border-color:transparent;color:var(--text2)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.day{width:32px;height:28px;display:inline-grid;place-items:center;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text2)}
+.day.on{background:var(--selected);color:var(--text);border-color:rgba(255,255,255,.28)}
+:root[data-theme="light"] .day.on{border-color:rgba(0,0,0,.32)}
+
+/* Eingaben (style::text_input) */
+.in{height:32px;display:inline-flex;align-items:center;gap:8px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--panel);color:var(--text);white-space:nowrap;min-width:0}
+.in.tab{font-family:"Inter Tabular",Inter,sans-serif}
+.in .ph{color:var(--text3)}
+.in svg{width:14px;height:14px;color:var(--text3)}
+.in.focus{box-shadow:0 0 0 1px var(--panel),0 0 0 3px var(--focus)}
+.in.grow{flex:1}
+.sel{height:32px;display:inline-flex;align-items:center;gap:6px;padding:0 8px 0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);white-space:nowrap}
+.sel svg{width:14px;height:14px;color:var(--text3)}
+.row{display:flex;align-items:center;gap:8px}
+.row + .row{margin-top:8px}
+.row .lbl{width:56px;flex:none;font-size:12px;color:var(--text3)}
+.seg{height:28px}
+.seg span{white-space:nowrap}
+.seg.full{display:flex}.seg.full span{flex:1}
+.toggle{width:28px;height:16px;border-radius:8px;background:var(--line-strong);position:relative;flex:none}
+.toggle::after{content:"";position:absolute;left:2px;top:2px;width:12px;height:12px;border-radius:50%;background:var(--text2)}
+.toggle.on{background:var(--text2)}.toggle.on::after{left:14px;background:var(--panel)}
+.radio{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--text3);flex:none;display:grid;place-items:center}
+.radio.on{border-color:var(--text)}.radio.on::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--text)}
+.note{font-size:12px;line-height:16px;color:var(--text2)}
+textarea.notes{display:block;width:100%;height:64px;resize:none;border:1px solid var(--line-strong);border-radius:6px;background:var(--panel);color:var(--text);font:400 13px/20px Inter,sans-serif;padding:6px 10px}
+
+/* Erinnerungen */
+.rem{display:flex;align-items:center;gap:8px;min-height:32px}
+.rem .grow{flex:1;min-width:0}
+.rem svg{color:var(--text3)}
+.remrow{display:flex;align-items:center;gap:6px}
+.remrow + .remrow{margin-top:6px}
+
+/* Karte (gezeichnet; in der App ein PNG aus dem Kern) */
+.map{position:relative;border-radius:8px;overflow:hidden;border:1px solid var(--line-strong);background:var(--map-land)}
+.map svg.m{display:block;width:100%;height:100%}
+.map .attr{position:absolute;right:0;bottom:0;padding:1px 6px;font-size:11px;line-height:14px;color:var(--text2);
+  background:color-mix(in srgb,var(--panel) 80%,transparent);border-top-left-radius:4px}
+.map .open{position:absolute;left:8px;bottom:8px}
+.map .pin{position:absolute;left:50%;top:50%;transform:translate(-50%,-100%)}
+.map .pin svg{width:28px;height:28px;color:var(--c-work);fill:color-mix(in srgb,var(--c-work) 35%,var(--panel));stroke-width:1.75}
+.map.small .pin svg{width:22px;height:22px}
+.map.hero{border:0;border-radius:0;border-bottom:1px solid var(--line)}
+.map .over{position:absolute;right:8px;top:8px;display:flex;gap:4px}
+.map .over .iconbtn{background:color-mix(in srgb,var(--menu) 90%,transparent);border:1px solid var(--line-strong)}
+
+/* Schwebende Karten und Menüs */
+.pop{position:absolute;z-index:40;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);padding:16px}
+.pop h5{margin:0 0 12px;font-size:16px;line-height:22px;font-weight:600}
+.menu{display:block}
+.menu .item svg{color:var(--text3)}
+.menu .item .sub{margin-left:auto}
+.menu .item.on{background:var(--selected)}
+.menu .item.on::after{display:none}
+.sugg .item{height:auto;min-height:44px;align-items:flex-start;padding:6px 8px}
+.sugg .item svg{margin-top:2px}
+.sugg .item b{display:block;font-weight:500}
+.sugg .item .sub{margin:0}
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:50;display:grid;place-items:center}
+:root[data-theme="light"] .scrim{background:rgba(0,0,0,.30)}
+.dialog{width:400px;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);padding:20px}
+.dialog h5{margin:0 0 4px;font-size:16px;line-height:22px;font-weight:600}
+.opt{display:flex;align-items:flex-start;gap:10px;padding:8px;margin:0 -8px;border-radius:6px}
+.opt.on{background:var(--selected)}
+.opt .radio{margin-top:3px}
+.opt b{font-weight:500;display:block}
+.acts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+kbd{margin-left:6px}
+.btn.primary kbd{color:rgba(255,255,255,.8);border-color:rgba(255,255,255,.35)}
+
+/* Vorschau der nächsten Termine (Layout C) */
+.next{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font:400 11px/14px "Inter Tabular",Inter,sans-serif;text-align:center;color:var(--text3)}
+.next span{height:24px;display:grid;place-items:center;border-radius:12px}
+.next .h{color:var(--text3);font-family:Inter,sans-serif;font-weight:500}
+.next .o{color:var(--text)}
+.next .x{background:color-mix(in srgb,var(--c-work) var(--tint),transparent);color:var(--text);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c-work) 60%,transparent)}
+.next .gap{color:var(--text3);text-decoration:line-through}
+.badge{font-size:11px;line-height:14px;padding:1px 6px;border-radius:4px;background:var(--selected);color:var(--text2);font-weight:500}
+.nl{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--panel)}
+.nl svg{width:14px;height:14px;color:var(--text3)}
+.parsed{display:flex;align-items:center;gap:6px;margin-top:8px;color:var(--text2);font-size:12px}
+.parsed svg{width:14px;height:14px;color:var(--ok)}
+</style></head>
+<body>
+<div id="root"></div>
+<script>
+const q = new URLSearchParams(location.search);
+if (q.get('theme') === 'light') document.documentElement.dataset.theme = 'light';
+const L = q.get('layout') || 'a', S = q.get('state') || 'main';
+const ic = (n, c = '') => `<i data-lucide="${n}" class="${c}"></i>`;
+
+// Gezeichnete Karte (Hafenstraße, Wasser unten, Park links oben). In der App liefert der Kern ein fertiges Bild.
+const map = (w, h, cls = '', extra = '') => `<div class="map ${cls}" style="height:${h}px">
+  <svg class="m" viewBox="0 0 400 160" preserveAspectRatio="xMidYMid slice">
+    <rect width="400" height="160" fill="var(--map-land)"/>
+    <path d="M0 118 C80 104 150 132 230 118 S360 100 400 112 L400 160 L0 160Z" fill="var(--map-water)"/>
+    <path d="M18 8 h86 v44 h-86z" fill="var(--map-park)" rx="4"/>
+    <path d="M300 20 h70 v34 h-70z" fill="var(--map-park)"/>
+    <g stroke="var(--map-road)" stroke-width="5" fill="none" stroke-linecap="round">
+      <path d="M0 66 H400"/><path d="M120 0 V112"/><path d="M262 0 L246 112"/><path d="M0 30 L110 36"/><path d="M330 66 L360 0"/>
+      <path d="M150 66 L190 20 L300 24"/><path d="M60 66 L52 108"/><path d="M190 66 L198 104"/>
+    </g>
+    <g stroke="var(--map-major)" stroke-width="8" fill="none" stroke-linecap="round"><path d="M0 96 C120 88 260 100 400 90"/></g>
+    <text x="140" y="86" font-size="10" font-family="Inter" fill="var(--map-label)">Hafenstraße</text>
+    <text x="300" y="140" font-size="10" font-family="Inter" fill="var(--map-label)">Elbe</text>
+  </svg>
+  <span class="pin">${ic('map-pin')}</span>${extra}
+  <span class="attr">© OpenStreetMap</span></div>`;
+
+const head = `<div class="shead"><span class="dot" style="--c:var(--c-work)"></span><span>Work</span>${ic('chevron-right', 'chev')}<span class="tab">Tue, 27 Oct</span>
+  <span class="grow"></span><button class="iconbtn">${ic('ellipsis')}</button><button class="iconbtn">${ic('x')}</button></div>`;
+// Der Editor speichert selbst (kein Speichern-Knopf, wie heute). Bei einem Termin einer Serie gilt die Wahl
+// im Band unter dem Kopf für jede Änderung (Vorbild Outlook: erst den Umfang wählen, dann ändern).
+const scopebar = `<div class="scopebar">${ic('repeat', 's14')}<span>Changes apply to</span><span class="grow"></span>
+  <span class="seg"><span class="on">This event</span><span>Following</span><span>All</span></span></div>`;
+const foot = S === 'delete' ? `<div class="sfoot col">
+  <div><b style="font-weight:500">Delete “Weekly product sync”?</b><div class="sub">It repeats every week. Other apps and your phone see the change.</div></div>
+  <div class="row" style="margin:0;flex-wrap:wrap"><button class="btn">Only this event</button><button class="btn">This and following</button><button class="btn danger" style="border:1px solid var(--line-strong)">${ic('trash-2', 's14')}All events</button><span class="grow"></span><button class="btn ghost">Cancel<kbd>Esc</kbd></button></div></div>`
+  : `<div class="sfoot"><button class="btn ghost">${ic('bell-ring', 's14')}Preview reminder</button><span class="grow"></span>
+  <button class="btn danger">${ic('trash-2', 's14')}Delete event</button></div>`;
+
+/* ---------- A: Eigenschaften ---------- */
+const layoutA = () => `
+  <h2 class="ttl">Weekly product sync</h2>
+  <div class="pl"><span class="k">When</span><span class="v tab">Tue, 27 Oct · 10:00 – 10:45</span></div>
+  <div class="pl ${S === 'repeat' ? 'hl' : ''}" id="arep"><span class="k">Repeat</span><span class="v">${ic('repeat', 's14')}Every week on Tue · until 22 Dec</span></div>
+  <div class="pl"><span class="k">Time zone</span><span class="v">${ic('globe', 's14')}Berlin <span class="ph">CET · your time zone</span></span></div>
+  <div class="pl"><span class="k">Calendar</span><span class="v"><span class="dot" style="--c:var(--c-work)"></span>Work</span></div>
+  <div class="pl"><span class="k">Show as</span><span class="v">${ic('circle-slash', 's14')}Busy</span></div>
+  <div class="pl"><span class="k">Status</span><span class="v">${ic('circle-check', 's14')}Confirmed</span></div>
+  <div class="hr"></div>
+  <div class="pl top"><span class="k">Location</span><span class="stack"><span class="v">${ic('map-pin', 's14')}Hafenstraße 4, 20359 Hamburg</span>
+    ${map(336, 104, 'small', '<span class="over"><button class="iconbtn" title="Open in Maps">' + ic('arrow-up-right', 's14') + '</button></span>')}</span></div>
+  <div class="pl"><span class="k">Link</span><span class="v">${ic('link', 's14')}<span class="lnk">meet.example.org/product-sync</span></span></div>
+  <div class="hr"></div>
+  <div class="pl top ${S === 'remind' ? 'hl' : ''}" id="arem"><span class="k">Reminders</span><span class="stack">
+    <span class="rem">${ic('maximize', 's14')}<span class="grow">5 min before</span><span class="sub">Full screen</span>${ic('x', 's14')}</span>
+    <span class="rem">${ic('bell', 's14')}<span class="grow">Day before at 18:00</span><span class="sub">Notification</span>${ic('x', 's14')}</span>
+    <span class="rem" style="color:var(--text2)">${ic('plus', 's14')}<span class="grow">Add reminder</span></span></span></div>
+  <div class="pl"><span class="k">People</span><span class="v"><span style="display:flex"><span class="avatar" style="background:#5B8CFF">AB</span><span class="avatar" style="background:#3FB984">JK</span><span class="avatar" style="background:#8A8F98">+3</span></span><span class="ph">Anna Berg organizes</span></span></div>
+  <div class="hr"></div>
+  <div class="cap">Notes</div>
+  <textarea class="notes">Agenda: release 0.3, the event editor, inbox numbers.</textarea>`;
+
+const popA = () => S === 'repeat' ? `
+  <div class="pop menu" style="left:auto;right:404px;top:150px;width:248px;padding:4px">
+    <div class="label">Repeat</div>
+    <div class="item">Never</div><div class="item">Every day</div><div class="item">Every weekday<span class="sub">Mon – Fri</span></div>
+    <div class="item on">Every week<span class="sub">on Tue</span></div><div class="item">Every 2 weeks<span class="sub">on Tue</span></div>
+    <div class="item">Every month<span class="sub">4th Tue</span></div><div class="item">Every year<span class="sub">27 Oct</span></div>
+    <div class="sep"></div><div class="item hl">${ic('sliders-horizontal')}Custom…</div></div>
+  <div class="pop" style="right:16px;top:228px;width:368px">
+    <h5>Custom repeat</h5>
+    <div class="row"><span class="lbl">Every</span><span class="in tab" style="width:56px">1</span><span class="sel">week${ic('chevrons-up-down')}</span></div>
+    <div class="row"><span class="lbl">On</span><span class="chips">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => `<span class="day ${i === 1 ? 'on' : ''}">${d}</span>`).join('')}</span></div>
+    <div class="row" style="align-items:flex-start"><span class="lbl" style="padding-top:6px">Ends</span><span style="display:flex;flex-direction:column;gap:8px;flex:1">
+      <span class="row" style="margin:0"><span class="radio"></span>Never</span>
+      <span class="row" style="margin:0"><span class="radio on"></span>On<span class="in tab">22.12.2026</span></span>
+      <span class="row" style="margin:0"><span class="radio"></span>After<span class="in tab" style="width:56px"><span class="ph">10</span></span><span class="faint">times</span></span></span></div>
+    <div class="hr" style="margin:16px -16px 12px"></div>
+    <div class="note">Every week on Tuesday, until 22 Dec 2026 · 9 events</div>
+    <div class="acts"><button class="btn ghost">Cancel</button><button class="btn">Done</button></div>
+  </div>` : S === 'remind' ? `
+  <div class="pop" style="right:16px;top:300px;width:368px">
+    <h5>Add reminder</h5>
+    <div class="chips" style="margin-bottom:12px">${['At start', '5 min', '10 min', '15 min', '30 min', '1 hour', '1 day'].map((t, i) => `<span class="chip ${i === 2 ? 'on' : ''}">${t}</span>`).join('')}</div>
+    <div class="cap" style="margin-top:0">Custom</div>
+    <div class="row"><span class="radio on"></span><span class="in tab" style="width:56px">2</span><span class="sel">hours${ic('chevrons-up-down')}</span><span class="sel">before start${ic('chevrons-up-down')}</span></div>
+    <div class="row"><span class="radio"></span><span class="sel">Day before${ic('chevrons-up-down')}</span><span class="faint">at</span><span class="in tab" style="width:64px">18:00</span></div>
+    <div class="row"><span class="radio"></span><span class="faint">On</span><span class="in tab"><span class="ph">26.10.2026</span></span><span class="faint">at</span><span class="in tab" style="width:64px"><span class="ph">09:00</span></span></div>
+    <div class="cap">Style</div>
+    <div class="seg full"><span>Calendar default</span><span class="on">${'Notification'}</span><span>Full screen</span></div>
+    <div class="acts"><button class="btn ghost">Cancel</button><button class="btn">Add</button></div>
+  </div>` : '';
+
+/* ---------- B: Abschnitte ---------- */
+const layoutB = () => `
+  <input class="ttlin" value="Weekly product sync">
+  <div class="cap">Time<span class="grow"></span><span class="faint" style="display:flex;align-items:center;gap:6px;font-weight:400">All day<span class="toggle"></span></span></div>
+  <div class="row"><span class="lbl">Starts</span><span class="in tab grow">Tue, 27.10.2026</span><span class="in tab" style="width:72px">10:00</span></div>
+  <div class="row"><span class="lbl">Ends</span><span class="in tab grow">Tue, 27.10.2026</span><span class="in tab" style="width:72px">10:45</span></div>
+  <div class="row"><span class="lbl">Zone</span><span class="sel" style="flex:1">${ic('globe')}Europe/Berlin<span class="faint" style="margin-left:auto">CET</span>${ic('chevrons-up-down')}</span></div>
+
+  <div class="cap">Repeat</div>
+  <div class="seg full"><span>None</span><span>Day</span><span class="on">Week</span><span>Month</span><span>Year</span></div>
+  ${S === 'repeat' ? `
+  <div class="row" style="margin-top:8px"><span class="lbl">Every</span><span class="in tab" style="width:56px">1</span><span class="faint">month</span></div>
+  <div class="row"><span class="lbl">On</span><span style="display:flex;flex-direction:column;gap:8px">
+     <span class="row" style="margin:0"><span class="radio"></span>Day 27</span>
+     <span class="row" style="margin:0"><span class="radio on"></span>The<span class="sel">fourth${ic('chevrons-up-down')}</span><span class="sel">Tuesday${ic('chevrons-up-down')}</span></span></span></div>`
+  : `
+  <div class="row" style="margin-top:8px"><span class="lbl">Every</span><span class="in tab" style="width:56px">1</span><span class="faint">week on</span></div>
+  <div class="row"><span class="lbl"></span><span class="chips">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => `<span class="day ${i === 1 ? 'on' : ''}">${d}</span>`).join('')}</span></div>`}
+  <div class="row"><span class="lbl">Ends</span><span class="seg"><span>Never</span><span class="on">On date</span><span>After</span></span><span class="in tab grow">22.12.2026</span></div>
+  <div class="note" style="margin-top:8px">${S === 'repeat' ? 'Every month on the fourth Tuesday, until 22 Dec 2026' : 'Every week on Tuesday, until 22 Dec 2026 · 9 events'}</div>
+
+  <div class="cap">Place</div>
+  <div class="row"><span class="in grow ${S === 'search' ? 'focus' : ''}">${ic('map-pin')}${S === 'search' ? 'Hafenstr 4 hamb' : 'Hafenstraße 4, 20359 Hamburg'}</span></div>
+  ${S === 'search' ? '' : `<div style="margin-top:8px">${map(352, 140, '', `<span class="open"><button class="btn">${ic('map', 's14')}Open in Maps</button></span>`)}</div>`}
+  <div class="row"><span class="in grow">${ic('link')}<span class="lnk">https://meet.example.org/product-sync</span></span></div>
+
+  <div class="cap">Reminders<span class="grow"></span><button class="btn ghost" style="height:24px">${ic('plus', 's14')}Add</button></div>
+  <div class="remrow"><span class="in tab" style="width:48px">5</span><span class="sel">min${ic('chevrons-up-down')}</span><span class="sel">before${ic('chevrons-up-down')}</span><span class="sel" style="flex:1">${ic('maximize')}Full screen${ic('chevrons-up-down')}</span><button class="iconbtn">${ic('x', 's14')}</button></div>
+  <div class="remrow"><span class="sel" style="flex:1">Day before at 18:00${ic('chevrons-up-down')}</span><span class="sel" style="flex:1">${ic('bell')}Notification${ic('chevrons-up-down')}</span><button class="iconbtn">${ic('x', 's14')}</button></div>
+
+  <div class="cap">Details</div>
+  <div class="row"><span class="lbl">Show as</span><span class="seg"><span class="on">Busy</span><span>Free</span></span></div>
+  <div class="row"><span class="lbl">Status</span><span class="seg"><span class="on">Confirmed</span><span>Tentative</span><span>Cancelled</span></span></div>
+  <div class="row"><span class="lbl">Calendar</span><span class="sel" style="flex:1"><span class="dot" style="--c:var(--c-work)"></span>Work${ic('chevrons-up-down')}</span></div>
+  <div class="cap">Notes</div>
+  <textarea class="notes">Agenda: release 0.3, the event editor, inbox numbers.</textarea>`;
+
+const popB = () => S === 'search' ? `
+  <div class="pop menu sugg" style="left:auto;right:24px;top:588px;width:352px;padding:4px">
+    <div class="label">Suggestions</div>
+    <div class="item hl">${ic('map-pin')}<span><b>Hafenstraße 4</b><span class="sub">20359 Hamburg, Germany</span></span></div>
+    <div class="item">${ic('map-pin')}<span><b>Hafenstraße 4</b><span class="sub">21614 Buxtehude, Germany</span></span></div>
+    <div class="item">${ic('building-2')}<span><b>Hafenstraße 40</b><span class="sub">Office building · 20359 Hamburg</span></span></div>
+    <div class="item">${ic('history')}<span><b>Room 3.12, Hafenstraße 4</b><span class="sub">Used in 6 events</span></span></div>
+    <div class="sep"></div>
+    <div class="item">${ic('type')}<span><b>Use “Hafenstr 4 hamb” as written</b><span class="sub">Without a map</span></span></div>
+    <div class="label" style="padding-top:4px">Search by Photon · © OpenStreetMap contributors</div>
+  </div>` : '';
+
+/* ---------- C: Kompakt ---------- */
+const layoutC = () => `
+  <h2 class="ttl" style="margin-bottom:8px">Weekly product sync</h2>
+  <div class="sub tab" style="font-size:13px;line-height:20px;color:var(--text2);margin-bottom:12px">Tue, 27 Oct · 10:00 – 10:45 <span class="faint">· 45 min</span></div>
+  <div class="chips" style="margin-bottom:16px">
+    <span class="chip ${S === 'repeat' ? 'on' : ''}" id="crep">${ic('repeat')}Weekly on Tue</span>
+    <span class="chip">${ic('bell')}5 min · 18:00 day before</span>
+    <span class="chip"><span class="dot" style="--c:var(--c-work)"></span>Work</span>
+    <span class="chip">${ic('circle-slash')}Busy</span>
+    <span class="chip">${ic('circle-check')}Confirmed</span>
+    <span class="chip">${ic('globe')}Berlin</span>
+    <span class="chip ghost">${ic('plus')}Add</span>
+  </div>
+  <div class="pl"><span class="k">Location</span><span class="v">Hafenstraße 4, 20359 Hamburg</span></div>
+  <div class="pl"><span class="k">Link</span><span class="v"><span class="lnk">meet.example.org/product-sync</span><button class="btn" style="margin-left:auto">${ic('video', 's14')}Join</button></span></div>
+  <div class="pl"><span class="k">People</span><span class="v"><span style="display:flex"><span class="avatar" style="background:#5B8CFF">AB</span><span class="avatar" style="background:#3FB984">JK</span><span class="avatar" style="background:#8A8F98">+3</span></span><span class="ph">Anna Berg organizes</span></span></div>
+  <div class="hr"></div>
+  <div class="cap">Notes</div>
+  <textarea class="notes" style="height:120px">Agenda: release 0.3, the event editor, inbox numbers.</textarea>
+  <div class="cap">Next in this series</div>
+  <div class="note tab">3 Nov · 10 Nov · <s class="faint">17 Nov</s> · 24 Nov · 1 Dec …</div>`;
+
+const popC = () => S === 'repeat' ? `
+  <div class="pop" style="right:16px;top:360px;width:368px">
+    <div class="nl">${ic('sparkle')}<span>every week on tue until 22.12.</span></div>
+    <div class="parsed">${ic('circle-check')}Every week on Tuesday, until 22 Dec 2026</div>
+    <div class="hr" style="margin:12px -16px"></div>
+    <div class="row" style="margin:0 0 8px"><span class="seg full" style="flex:1"><span>Day</span><span class="on">Week</span><span>Month</span><span>Year</span></span></div>
+    <div class="row"><span class="faint">Every</span><span class="in tab" style="width:48px">1</span><span class="chips">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => `<span class="day ${i === 1 ? 'on' : ''}" style="width:28px">${d}</span>`).join('')}</span></div>
+    <div class="cap">November 2026</div>
+    <div class="next">${['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => `<span class="h">${d}</span>`).join('')}
+      ${[26, 27, 28, 29, 30, 31, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29].map((n, i) =>
+        `<span class="${i === 1 ? 'x' : [8, 15, 29].includes(i) ? 'x' : i === 22 ? 'gap' : i > 5 ? 'o' : ''}">${n}</span>`).join('')}</div>
+    <div class="note" style="margin-top:8px">17 Nov is skipped (exception). 9 events until 22 Dec.</div>
+    <div class="acts"><button class="btn ghost">Cancel</button><button class="btn">Done</button></div>
+  </div>` : '';
+
+const body = { a: layoutA, b: layoutB, c: layoutC }[L]();
+const pop = { a: popA, b: popB, c: popC }[L]();
+const heroMap = L === 'c' ? map(400, 132, 'hero', `<span class="over"><button class="iconbtn" title="Open in Maps">${ic('arrow-up-right', 's14')}</button></span>`) : '';
+
+const hours = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00', '21:00', '22:00', '23:00'];
+document.getElementById('root').innerHTML = `<div class="app"><main class="panel">
+  <div class="header"><div class="crumbs"><b>October 2026</b><span class="faint">Week 44</span></div>
+    <button class="btn ghost" style="margin-left:8px">Today</button><button class="iconbtn">${ic('chevron-left')}</button><button class="iconbtn">${ic('chevron-right')}</button>
+    <span class="grow"></span><div class="seg"><span>Day</span><span class="on">Week</span><span>Month</span><span>Agenda</span></div>
+    <button class="btn primary">${ic('plus', 's14')}New event</button></div>
+  <div class="cal">
+    <div class="weekbg">
+      <div class="dh"><div></div>${[['Mon', 26], ['Tue', 27, 'today'], ['Wed', 28], ['Thu', 29], ['Fri', 30]].map(([d, n, c]) => `<div class="${c || ''}">${d}<b>${n}</b></div>`).join('')}</div>
+      <div class="wg">
+        <div class="ax">${hours.map(h => `<div>${h}</div>`).join('')}</div>
+        <div class="col"><div class="ev" style="--c:var(--c-work);top:0px;height:46px">Standup<small>09:00 – 09:15</small></div><div class="ev" style="--c:var(--c-personal);top:168px;height:44px">Lunch with Ben<small>12:30</small></div></div>
+        <div class="col"><div class="ev cur" style="--c:var(--c-work);top:48px;height:36px">Weekly product sync<small>10:00 – 10:45</small><span class="rep">${ic('repeat', 's14')}</span></div><div class="ev" style="--c:var(--c-work);top:240px;height:48px">Design review<small>14:00</small></div></div>
+        <div class="col"><div class="ev" style="--c:var(--c-family);top:384px;height:72px">Parents' evening<small>17:00 – 18:30</small></div></div>
+        <div class="col"><div class="ev" style="--c:var(--c-work);top:72px;height:96px">Workshop API<small>10:30 – 12:30</small></div></div>
+        <div class="col"><div class="ev" style="--c:var(--c-personal);top:336px;height:48px">Climbing<small>16:00</small></div></div>
+      </div>
+    </div>
+    <aside class="side">${head}${scopebar}${heroMap}<div class="sbody">${body}</div>${foot}${pop}</aside>
+  </div></main></div>`;
+lucide.createIcons();
+</script>
+</body></html>

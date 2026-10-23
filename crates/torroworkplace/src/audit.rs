@@ -199,6 +199,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetGithubToken { .. }
         // Never the address searched or signed in with (task M7.1): it names a person.
         | Request::DiscoverServices { .. }
+        // Never the place searched for or the point of a map (task TE.1): where a person goes.
+        | Request::SearchPlaces { .. }
+        | Request::MapPreview { .. }
         | Request::ConnectCalDav { .. }
         | Request::Sync
         | Request::CalendarCollections
@@ -239,7 +242,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // is added by the core, which looks it up ([`taken_from_id`]).
         | Request::SetTemplateShortcut { id: template, .. }
         | Request::SetTemplateStartup { id: template, .. } => vec![format!("template:{}", hashed(template))],
-        Request::SaveEvent { event } | Request::DeleteEvent { event } => {
+        Request::SaveEvent { event, .. } | Request::DeleteEvent { event, .. } => {
             [Some(collection(&event.collection)), item(&event.href)].into_iter().flatten().collect()
         }
         Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
@@ -778,8 +781,17 @@ pub(crate) mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
-        let ids = ids(&Request::DeleteEvent { event });
+        let ids = ids(&Request::DeleteEvent { event, scope: None });
         assert_eq!(ids[0], format!("collection:nextcloud:anna@cloud.example.org/{}", hashed("cal/work/")));
         assert!(ids[1].starts_with("item:") && ids[1].len() == "item:".len() + 16, "{ids:?}");
         assert!(!ids.join(" ").contains("Dinner") && !ids.join(" ").contains("work"), "{ids:?}");

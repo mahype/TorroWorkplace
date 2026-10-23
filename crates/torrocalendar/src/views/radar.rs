@@ -17,7 +17,9 @@
 //! (task K.29). Overlapping events share their ring in lanes. Events are arcs filled strongly in
 //! their calendar's colour (much stronger than the week grid's tint; [`mini::fill`] for the large
 //! and the mini dials alike) with a colour bar where they start, past ones faded, the one open in
-//! the side panel outlined with the focus ring. Titles run along the arc letter by letter (upright
+//! the side panel outlined with the focus ring. Cancelled events are faded with their title struck
+//! through, letter by letter; tentative ones are a dashed outline without fill or bar
+//! ([`super::Look`], task TE.9). Titles run along the arc letter by letter (upright
 //! in the bottom half) in light or dark text, whichever reads on the fill: in `MICRO` in narrow
 //! lanes, in `CAPTION` in wider ones, with the time on a second line where the lane is wide enough.
 //!
@@ -78,13 +80,14 @@ use torro_gui::style;
 use torro_gui::theme::{self, Palette, mix, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, line_height, text_width};
 use torro_gui::widgets::{self, Anchor};
+use torro_pim::model::EventStatus;
 
 use layout::{Arc, Dial, END, Hit, Span, Window, opacity, pieces, split};
 
 use super::glance;
 use super::timeline::{self, is_double_click};
 use super::week;
-use super::{ViewData, short_date};
+use super::{Look, ViewData, dashes, short_date, strike};
 use crate::app::Message;
 
 /// Where the radar shows its mini radars of the coming days.
@@ -167,8 +170,6 @@ const TEXT_MIN: f32 = 20.0;
 /// A title cut shorter than this many letters is left out: "Lun…" still hints at the lunch, "Lu…"
 /// says nothing (the tooltip has the whole title).
 const MIN_TITLE_LETTERS: usize = 3;
-/// Past events are faded like in the week grid.
-const PAST_OPACITY: f32 = 0.55;
 /// Steps of the arcs drawn as polygons: one corner per degree at most.
 const DEGREES_PER_CORNER: f32 = 1.0;
 /// Pixels of a smooth (touchpad) scroll that make one wheel step.
@@ -340,11 +341,19 @@ struct Entry {
     calendar: String,
     /// Local times, title, colour, all-day (as the glance sees it).
     event: glance::Entry,
+    /// Whether it takes place (`STATUS`), for its [`Look`].
+    status: Option<EventStatus>,
 }
 
 impl Entry {
     fn timed(&self) -> bool {
         !self.event.all_day
+    }
+
+    /// How it shows at `now`: faded when over or cancelled, struck through when cancelled, dashed
+    /// when tentative.
+    fn look(&self, now: NaiveDateTime) -> Look {
+        Look::of(self.status, self.event.end <= now)
     }
 }
 
@@ -399,6 +408,7 @@ impl Plan {
                 index: item.index,
                 calendar: item.event.collection.clone(),
                 event: glance::Entry::new(item),
+                status: item.event.status,
             })
             .collect();
         entries.sort_by(|a, b| {
@@ -875,13 +885,19 @@ impl canvas::Program<Message> for Radar {
         let tones = |entry: &Entry| [tone(&p, entry, plan.now, p.panel), tone(&p, entry, plan.now, p.night)];
         for arc in &arcs {
             let Some(entry) = plan.entries.get(arc.id) else { continue };
-            event_arc(&mut frame, &dial, window, &plan.nights, arc, &tones(entry), &faded);
+            let look = entry.look(plan.now);
+            if look.dashed {
+                dashed_arc(&mut frame, &dial, window, &plan.nights, arc, &tones(entry), &faded);
+            } else {
+                event_arc(&mut frame, &dial, window, &plan.nights, arc, &tones(entry), &faded);
+            }
         }
         for arc in &arcs {
             let Some(entry) = plan.entries.get(arc.id) else { continue };
             let [day, night] = tones(entry);
             let starts_at_night = in_night(&plan.nights, window.rel_of(arc.from));
-            arc_text(&mut frame, &dial, window, arc, entry, if starts_at_night { &night } else { &day }, &faded);
+            let tone = if starts_at_night { &night } else { &day };
+            arc_text(&mut frame, &dial, window, arc, entry, tone, &faded);
         }
         for arc in arcs.iter().filter(|arc| plan.is_selected(arc.id)) {
             let path = sector_path(
@@ -929,7 +945,9 @@ impl Radar {
 
 /// The colours of an event, composed over its ground (the panel, or the night): the fill in its
 /// calendar's colour ([`event_fill`]), the bar in full colour, title and time in light or dark text,
-/// whichever reads on the fill ([`on_fill`]); one that has ended faded as in the week grid.
+/// whichever reads on the fill ([`on_fill`]); one that has ended or is cancelled faded as in the week
+/// grid ([`Look`]). A tentative event has no fill: its text stands on the track in `text` and
+/// `text_2`, its dashed outline takes the bar's colour.
 struct Tone {
     fill: Color,
     bar: Color,
@@ -939,8 +957,12 @@ struct Tone {
 
 fn tone(p: &Palette, entry: &Entry, now: NaiveDateTime, ground: Color) -> Tone {
     let colour = entry.event.color;
-    let past = entry.event.end <= now;
-    let fade = |c: Color| if past { mix(ground, c, PAST_OPACITY) } else { c };
+    let look = entry.look(now);
+    let fade = |c: Color| look.over(ground, c);
+    if look.dashed {
+        let track = ring_track(colour, ground);
+        return Tone { fill: fade(track), bar: fade(colour), title: fade(p.text), time: fade(p.text_2) };
+    }
     let fill = event_fill(p, colour, ground);
     let title = on_fill(fill);
     Tone { fill: fade(fill), bar: fade(colour), title: fade(title), time: fade(mix(fill, title, TIME_SHARE)) }
@@ -1004,6 +1026,40 @@ fn event_arc(
     }
 }
 
+/// The outline of a tentative event's arc: dashes ([`dashes`]) along its outer and inner edge and
+/// across its ends (the start only where it starts in the window), 1 px in the bar's colour
+/// (`stroke-dasharray="3 3"` in the mock-up). Each dash takes the opacity of the place it lies on,
+/// so the outline fades with the last quarter like a fill.
+fn dashed_arc(
+    frame: &mut Frame,
+    dial: &Dial,
+    window: &Window,
+    nights: &[(f32, f32)],
+    arc: &Arc,
+    tones: &[Tone; 2],
+    faded: &dyn Fn(Color, f32) -> Color,
+) {
+    let colour_at = |angle: f32| {
+        let rel = window.rel_of(angle);
+        faded(tones[usize::from(in_night(nights, rel))].bar, opacity(rel))
+    };
+    for radius in [arc.outer, arc.inner].into_iter().filter(|radius| *radius > 0.0) {
+        let length = (arc.to - arc.from).to_radians() * radius;
+        for (from, to) in dashes(length) {
+            let (a, b) = (arc.from + (from / radius).to_degrees(), arc.from + (to / radius).to_degrees());
+            line(frame, dial.point(radius, a), dial.point(radius, b), colour_at((a + b) / 2.0), size::HAIRLINE);
+        }
+    }
+    let ends = [arc.starts.then_some(arc.from), Some(arc.to)];
+    for angle in ends.into_iter().flatten() {
+        let colour = colour_at(angle);
+        for (from, to) in dashes(arc.width()) {
+            let (a, b) = (dial.point(arc.inner + from, angle), dial.point(arc.inner + to, angle));
+            line(frame, a, b, colour, size::HAIRLINE);
+        }
+    }
+}
+
 /// The level of an event's title in a lane `width` wide: `MICRO` from [`MICRO_LANE`] on, `CAPTION`
 /// from [`ONE_LINE`] on, none in narrower lanes.
 fn title_level(width: f32) -> Option<typo::Level> {
@@ -1017,7 +1073,9 @@ fn title_level(width: f32) -> Option<typo::Level> {
 }
 
 /// The title along the arc in [`title_level`], cut with "…", and below it the time where the lane
-/// takes two lines. Each letter takes the opacity of the place it stands on.
+/// takes two lines. Each letter takes the opacity of the place it stands on. The title of a
+/// cancelled event is struck through: every letter gets its piece of the strike, so the line follows
+/// the arc.
 fn arc_text(
     frame: &mut Frame,
     dial: &Dial,
@@ -1038,15 +1096,16 @@ fn arc_text(
     let up = if flipped { -1.0 } else { 1.0 };
     let middle = arc.middle();
     let Some(title) = arc_title(&entry.event.title, room, level) else { return };
-    let mut lines = vec![(title, level, tone.title, 0.0)];
+    let struck = Look::of(entry.status, false).struck;
+    let mut lines = vec![(title, level, tone.title, 0.0, struck)];
     if let Some(time) = arc_time(entry, room).filter(|_| width >= TWO_LINES) {
         // Title over time, the pair centred on the middle of the lane.
         let (title_h, time_h) = (line_height(level), line_height(typo::micro()));
         let half = (title_h + time_h) / 2.0;
         lines[0].3 = half - title_h / 2.0;
-        lines.push((time, typo::micro(), tone.time, time_h / 2.0 - half));
+        lines.push((time, typo::micro(), tone.time, time_h / 2.0 - half, false));
     }
-    for (text, level, colour, lift) in lines {
+    for (text, level, colour, lift, struck) in lines {
         if text.is_empty() {
             continue;
         }
@@ -1066,6 +1125,10 @@ fn arc_text(
                 frame.translate(iced::Vector::new(at.x, at.y));
                 frame.rotate(glyph.turn);
                 label(frame, &glyph.letter, Point::ORIGIN, level, faded(colour, alpha));
+                if struck {
+                    let width = text_width(&glyph.letter, level);
+                    strike(frame, Point::new(-width / 2.0, 0.0), width, faded(colour, alpha));
+                }
             });
         }
     }
@@ -1326,6 +1389,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -1765,7 +1837,7 @@ mod tests {
         let breakfast = plan.entries.iter().find(|e| e.event.title == "Breakfast").expect("breakfast");
         let past = tone(&p, breakfast, plan.now, p.panel);
         let fill = event_fill(&p, breakfast.event.color, p.panel);
-        assert_eq!(past.fill, mix(p.panel, fill, PAST_OPACITY));
+        assert_eq!(past.fill, mix(p.panel, fill, super::super::FADED));
         // The track is the calendar's colour at a tenth: much closer to the panel than to the fill.
         let track = ring_track(BLUE, p.panel);
         assert!(track.relative_contrast(p.panel) < 1.3);

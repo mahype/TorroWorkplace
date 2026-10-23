@@ -644,6 +644,15 @@ fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
         alarms: Vec::new(),
+        recurrence_id: None,
+        repeat: None,
+        time_zone: None,
+        url: None,
+        status: None,
+        geo: None,
+        organizer: None,
+        attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
 }
 
@@ -833,6 +842,15 @@ fn event_from_invitation(
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
         alarms: Vec::new(),
+        recurrence_id: None,
+        repeat: None,
+        time_zone: None,
+        url: None,
+        status: None,
+        geo: None,
+        organizer: None,
+        attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
 }
 
@@ -849,6 +867,19 @@ fn invitation_calendar_refusal(
     let declines = answer == torro_mail::InvitationAnswer::Decline;
     (declines && !rights.area(Area::Calendar).allows(Access::Delete))
         .then(|| Refused::Forbidden { command: "calendar.delete_event" }.response())
+}
+
+/// The operation of `calendar.delete_event` for the same event and scope as the `calendar.save_event`
+/// `request` (task TE.4): a save that removes events of a series is checked as that delete. `None`
+/// for every other request. A function of its own, so the request built for it never lives in the
+/// handler's future.
+fn delete_operation(request: &Request) -> Option<torro_ipc::api::Operation> {
+    match request {
+        Request::SaveEvent { event, scope } => {
+            Some(Request::DeleteEvent { event: event.clone(), scope: *scope }.operation())
+        }
+        _ => None,
+    }
 }
 
 /// A decline removes the copy of the event made before: for a client whose `confirm` asks before
@@ -1835,6 +1866,9 @@ pub struct Core {
     /// ([`Core::bind_template_keys`]). Written down for the next core of the same Hyprland instance
     /// ([`crate::workspace_keys::Ledger`]); none in tests.
     keys: crate::workspace_keys::BoundKeys,
+    /// The place search and the map of the event editor (task TE.5): throttles, answers and the
+    /// tile cache for the whole service ([`crate::places::Places::system`]; tests keep no tiles).
+    places: crate::places::Places,
 }
 
 impl Core {
@@ -1890,6 +1924,7 @@ impl Core {
             } else {
                 crate::workspace_keys::BoundKeys::system()
             },
+            places: crate::places::Places::system(),
         }
     }
 
@@ -2827,6 +2862,22 @@ impl Core {
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return Ok(not_reached(&request, &outside));
         }
+        // A save that removes events of a series (a shorter series, another rule, no rule, a split
+        // with new times: task TE.4) is checked as `calendar.delete_event` is: the right to delete
+        // first, then an approval where deleting waits for one. What it removes comes from the
+        // stored object in the core's cache, never from what the client says the series is.
+        let removal = match self.pim.removes_events(&request).await {
+            true => delete_operation(&request),
+            false => None,
+        };
+        if let Some(delete) = removal
+            && !rights.allows(delete)
+        {
+            let kind = self.client_kind(&id).unwrap_or_default();
+            let command = request.operation().name();
+            let lack = torro_ipc::api::Lack::of_in(&kind, &rights, delete, &[], &[], via.origin.mode);
+            return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
+        }
         // A task made of a mail reads the mail, and opening one shows a mail or a task (task
         // E8.7a): what the client may not read is `not-found` before anyone is asked.
         if let Request::CreateTodoFromMail { account, .. } = &request
@@ -2921,6 +2972,7 @@ impl Core {
         if question
             || from_mail
             || rights.needs_approval_of(operation)
+            || removal.is_some_and(|delete| rights.needs_approval_of(delete))
             || invitation_deletes_waiting(&request, &rights)
             || self.opens_a_web_page(&request, inbox_client.as_ref())
             || self.proposes_bot(&id, &request)
@@ -3612,6 +3664,13 @@ impl Core {
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return not_reached(&request, &outside);
         }
+        // A save that removes events of a series still needs the right to delete (task TE.4).
+        if let Some(delete) = delete_operation(&request)
+            && !rights.allows(delete)
+            && self.pim.removes_events(&request).await
+        {
+            return Refused::Forbidden { command }.response();
+        }
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
         }
@@ -4060,6 +4119,11 @@ impl Core {
             Request::Todos => self.todos_with_mail(reach).await,
             Request::CreateTodoFromMail { account, id, collection, title, due } => {
                 self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, None).await
+            }
+            // The place search and the map of the event editor (tasks TE.1, TE.5); boxed, as their
+            // answer waits for other services.
+            request @ (Request::SearchPlaces { .. } | Request::MapPreview { .. }) => {
+                Box::pin(self.places(request, reach)).await
             }
             pim @ (Request::ConnectNextcloud { .. }
             | Request::CalendarCollections
@@ -5722,8 +5786,8 @@ impl Core {
         let origin = self.mail_origin_of(&entry).await;
         let event = event_from_entry(&entry, made, origin);
         let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
-        let saved = match self.pim.handle_within(Request::SaveEvent { event }, reach).await {
-            Response::Event { event } => event,
+        let saved = match self.pim.handle_within(Request::SaveEvent { event, scope: None }, reach).await {
+            Response::Event { event, .. } => event,
             failed => return failed,
         };
         let done = Request::SetItemDone { id: id.to_string(), done: true, dismissed: false };
@@ -5736,7 +5800,7 @@ impl Core {
             Response::Item { item } => self.settle(&item),
             _ => {}
         }
-        Response::Event { event: saved }
+        Response::Event { event: saved, reset: 0 }
     }
 
     /// `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120): asks an AI
@@ -6197,7 +6261,7 @@ impl Core {
         let event = match (reply.answer, plan.target.clone()) {
             (InvitationAnswer::Decline, _) => {
                 if let Some(copy) = plan.copy.clone() {
-                    match self.pim.handle_within(Request::DeleteEvent { event: copy }, reach).await {
+                    match self.pim.handle_within(Request::DeleteEvent { event: copy, scope: None }, reach).await {
                         Response::Ok => {}
                         failed => return failed,
                     }
@@ -6206,8 +6270,8 @@ impl Core {
             }
             (_, Some(target)) => {
                 let event = event_from_invitation(&plan.invitation, &plan.found, target, plan.copy.as_ref());
-                match self.pim.handle_within(Request::SaveEvent { event }, reach).await {
-                    Response::Event { event } => Some(event),
+                match self.pim.handle_within(Request::SaveEvent { event, scope: None }, reach).await {
+                    Response::Event { event, .. } => Some(event),
                     failed => return failed,
                 }
             }
@@ -7819,7 +7883,9 @@ impl Core {
     /// - `settings.update_settings` that switches on what is off: the microphone (point 6), mail to cloud
     ///   models (`mail_to_cloud`, task C.17), the ways in (`allow_api_keys`, `allow_mcp`, #231), a tool of
     ///   the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path
-    ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`),
+    ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`); or that turns maps on
+    ///   or names another search or tile service than the stored one (task TE.1,
+    ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay),
     /// - `settings.set_setting pdf_folder` with a folder other than the stored one,
     /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template.
     ///
@@ -7835,6 +7901,8 @@ impl Core {
                     || on(settings.allow_api_keys, now.allow_api_keys)
                     || on(settings.allow_mcp, now.allow_mcp)
                     || now.tools.needs_a_person(&settings.tools)
+                    // Maps on, or another search or tile service (task TE.1).
+                    || now.maps.needs_a_person(&settings.maps)
             }
             Request::SetSetting { key: SettingKey::PdfFolder, value } => {
                 let Ok(Some(folder)) = torro_core::settings::PdfSettings::folder_from(value) else { return false };
@@ -7845,6 +7913,51 @@ impl Core {
                 template.logo.is_some() && self.settings.current().tools.pdf.template(id).logo != template.logo
             }
             _ => false,
+        }
+    }
+
+    /// `calendar.search_places` and `calendar.map_preview` (tasks TE.1, TE.5): `error` outside the
+    /// limits ([`torro_ipc::pim::limit_refusal`]), `unsupported` while maps are off, so nothing is
+    /// sent and nothing read. With maps on [`crate::places::Places`] asks the services of the
+    /// settings; the person (`Reach::Suite`) goes before clients there. A search starts with the
+    /// earlier places of events `reach` may read ([`Core::recent_places`]). No message repeats the
+    /// query or the point.
+    async fn places(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::pim::limit_refusal(&request) {
+            return refused;
+        }
+        let maps = self.settings.current().maps;
+        if !maps.enabled {
+            let message = "maps and place search are off; a person can turn them on in the settings";
+            return Response::Error { code: "unsupported".into(), message: message.into() };
+        }
+        let asker = match reach {
+            Reach::Suite => crate::places::Asker::Person,
+            Reach::Client(_) => crate::places::Asker::Client,
+        };
+        match request {
+            Request::SearchPlaces { query, near } => {
+                let recent = self.recent_places(&query, reach).await;
+                self.places.search(&maps, &query, near, asker, recent).await
+            }
+            Request::MapPreview { geo, width, height, dark } => {
+                self.places.map(&maps, geo, width, height, dark, asker).await
+            }
+            _ => Response::Error { code: "error".into(), message: "not a place request".into() },
+        }
+    }
+
+    /// The earlier places for `query` ([`crate::places::recent_places`]) among the events of the
+    /// calendars `reach` may read: the calendar service leaves out the others before it reads any
+    /// event (`calendar.list_events`). The window lies inside what a sync keeps
+    /// ([`crate::places::recent_window`]), so once the calendars synced the events come from the
+    /// cache; a calendar that cannot be read gives no places.
+    async fn recent_places(&self, query: &str, reach: Reach<'_>) -> Vec<torro_ipc::Place> {
+        let now = Utc::now();
+        let (start, end) = crate::places::recent_window(now);
+        match Box::pin(self.pim.handle_within(Request::Events { start, end }, reach)).await {
+            Response::Events { events } => crate::places::recent_places(&events, query, now),
+            _ => Vec::new(),
         }
     }
 
@@ -10343,17 +10456,95 @@ mod tests {
 
         let claimed =
             torro_pim::Event { summary: "Lunch".into(), etag: Some("1".into()), ..event_in(&work, Some(board)) };
-        let asked = waits(ask(&core, Some(&key), Request::DeleteEvent { event: claimed.clone() }).await);
+        let asked = waits(ask(&core, Some(&key), Request::DeleteEvent { event: claimed.clone(), scope: None }).await);
         assert!(asked.summary.contains("Board meeting") && asked.summary.contains("Work"), "{}", asked.summary);
         assert!(!asked.summary.contains("Lunch"), "{}", asked.summary);
 
         // An href the core does not hold is an unknown event, still not "Lunch".
         let unknown = torro_pim::Event { href: Some("https://cloud.example.org/cal/work/x.ics".into()), ..claimed };
-        let asked = waits(ask(&core, Some(&key), Request::DeleteEvent { event: unknown }).await);
+        let asked = waits(ask(&core, Some(&key), Request::DeleteEvent { event: unknown, scope: None }).await);
         assert_eq!(
             asked.summary,
             torro_core::i18n::trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &"Work")])
         );
+    }
+
+    /// Task TE.4: a save that removes events of a series is checked as `calendar.delete_event`. A client
+    /// that may write but not delete can neither shorten a series nor end its rule through a save; one
+    /// whose deletes wait for a person (`Confirm::OnDelete`) waits; a change that removes nothing is a
+    /// write and waits for nobody. What it removes comes from the stored object in the cache.
+    #[tokio::test]
+    async fn a_save_that_removes_events_of_a_series_needs_the_right_to_delete() {
+        use chrono::TimeZone;
+        const RUNS: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:run\r\nDTSTART:20261012T060000Z\r\nSUMMARY:Morning run\r\nRRULE:FREQ=DAILY;COUNT=10\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let work = id("/cal/work/");
+        core.pim.cache_collections(vec![torro_pim::Collection { name: "Work".into(), ..calendar(&work) }]).await;
+        let href = "https://cloud.example.org/cal/work/run.ics";
+        let key =
+            torro_pim::EventTime::DateTime(chrono::Utc.with_ymd_and_hms(2026, 10, 14, 6, 0, 0).single().expect("t"));
+        let rule = |text: &str| Some(Box::new(torro_pim_caldav::recur::read(text, None)));
+        let occurrence = torro_pim::Event {
+            uid: "run".into(),
+            summary: "Morning run".into(),
+            etag: Some("\"1\"".into()),
+            start: key,
+            recurring: true,
+            recurrence_id: Some(key),
+            repeat: rule("FREQ=DAILY;COUNT=10"),
+            ..event_in(&work, Some(href))
+        };
+        core.pim.cache_events(vec![occurrence.clone()]).await;
+        let stored = torro_pim_caldav::RawObject { href: href.into(), etag: Some("\"1\"".into()), ics: RUNS.into() };
+        core.pim.cache_objects(vec![stored]).await;
+        let shorter = torro_pim::Event { repeat: rule("FREQ=DAILY;COUNT=5"), ..occurrence.clone() };
+        // Ending the rule takes `recurring: false`; without its rule but still recurring, the rule stays.
+        let ended = torro_pim::Event { repeat: None, recurring: false, ..occurrence.clone() };
+        let rule_unknown = torro_pim::Event { repeat: None, summary: "Run".into(), ..occurrence.clone() };
+        let renamed = torro_pim::Event { summary: "Run".into(), ..occurrence.clone() };
+        let save = |event: &torro_pim::Event, scope| Request::SaveEvent { event: event.clone(), scope: Some(scope) };
+        let waited = |response: &Response| matches!(response, Response::Pending { .. });
+        let refused = |response: &Response| matches!(response, Response::Error { code, .. } if code == "forbidden");
+
+        let mut write_only = RightsTemplate::ReadAndWrite.rights();
+        write_only.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+        let (_, writer) = client(&core, write_only).await;
+        for request in [
+            save(&shorter, torro_pim::model::SeriesScope::Series),
+            save(&ended, torro_pim::model::SeriesScope::Series),
+            save(&ended, torro_pim::model::SeriesScope::Following),
+        ] {
+            let response = ask(&core, Some(&writer), request).await;
+            assert!(refused(&response), "{response:?}");
+        }
+        // A new title removes nothing: it runs as a write (here it finds no server).
+        let response = ask(&core, Some(&writer), save(&renamed, torro_pim::model::SeriesScope::Following)).await;
+        assert!(!waited(&response) && !refused(&response), "{response:?}");
+        let response = ask(&core, Some(&writer), save(&ended, torro_pim::model::SeriesScope::Occurrence)).await;
+        assert!(!waited(&response) && !refused(&response), "one occurrence drops nothing: {response:?}");
+        let response = ask(&core, Some(&writer), save(&rule_unknown, torro_pim::model::SeriesScope::Series)).await;
+        assert!(!waited(&response) && !refused(&response), "the rule stays: {response:?}");
+
+        // With the right to delete and `Confirm::OnDelete`, it waits for a person.
+        let (deleter_id, deleter) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let asked = waits(ask(&core, Some(&deleter), save(&shorter, torro_pim::model::SeriesScope::Series)).await);
+        assert!(asked.summary.contains(tr("all events of the series")), "{}", asked.summary);
+        let removes = torro_core::i18n::trf("{change}; removes {n} events", &[("change", &""), ("n", &5)]);
+        assert!(asked.summary.ends_with(&removes), "says what goes: {}", asked.summary);
+        // The right to delete taken away while it waits: refused when it runs.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut narrowed = RightsTemplate::ReadAndWrite.rights();
+        narrowed.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+        let update = Request::UpdateClient { id: deleter_id.clone(), rights: narrowed };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert!(refused(&response), "{response:?}");
+        let update = Request::UpdateClient { id: deleter_id, rights: RightsTemplate::ReadAndWrite.rights() };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let response = ask(&core, Some(&deleter), save(&renamed, torro_pim::model::SeriesScope::Series)).await;
+        assert!(!waited(&response), "a write waits for nobody: {response:?}");
     }
 
     #[tokio::test]
@@ -10759,6 +10950,176 @@ mod tests {
         assert!(!settings(&core).await.mail_to_cloud, "local again once the person allowed it");
     }
 
+    /// Task TE.1: no client turns maps on or names another tile or search service, not with every
+    /// right, neither with `set_setting` nor with the whole settings; turning them off waits for a
+    /// person's approval like any admin change. Only the app key turns them on, and an address with a
+    /// key in it is refused even then.
+    #[tokio::test]
+    async fn only_people_turn_maps_on_and_agents_may_turn_them_off() {
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let maps = |value| Request::SetSetting { key: SettingKey::Maps, value };
+        let tiles = "https://tiles.example.org/{z}/{x}/{y}.png";
+
+        for refused in [serde_json::json!({"enabled": true}), serde_json::json!({"tiles": tiles})] {
+            assert_eq!(code(&ask(&core, Some(&key), maps(refused.clone())).await), "forbidden", "{refused}");
+        }
+        // Whole settings are large: each one is boxed, so the test's frame stays small.
+        let mut whole = Box::new(settings(&core).await);
+        whole.maps.enabled = true;
+        let on = Request::UpdateSettings { settings: *whole };
+        assert_eq!(code(&Box::pin(ask(&core, Some(&key), on)).await), "forbidden");
+        let mut other = Box::new(settings(&core).await);
+        other.maps.tiles = tiles.into();
+        let other = Request::UpdateSettings { settings: *other };
+        assert_eq!(code(&Box::pin(ask(&core, Some(&key), other)).await), "forbidden", "another tile service");
+        assert!(!settings(&core).await.maps.enabled, "still off");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        let keyed = maps(serde_json::json!({"geocoder": "https://geo.example.org/api?key=secret"}));
+        assert_eq!(code(&ask(&core, Some(&app_key), keyed).await), "error", "a key goes in the keyring, later");
+        assert_eq!(ask(&core, Some(&app_key), maps(serde_json::json!({"enabled": true}))).await, Response::Ok);
+        assert!(settings(&core).await.maps.enabled);
+        let mut keyed = Box::new(settings(&core).await);
+        keyed.maps.tiles = "https://t.example.org/{z}/{x}/{y}.png?key=1".into();
+        assert_eq!(code(&Box::pin(core.handle(Request::UpdateSettings { settings: *keyed })).await), "error");
+
+        // Whole settings of a client that does not know maps keep them on.
+        let without: torro_core::settings::Settings =
+            serde_json::from_value(serde_json::json!({"language": "german"})).expect("settings without maps");
+        let asked = waits(Box::pin(ask(&core, Some(&key), Request::UpdateSettings { settings: without })).await);
+        let allowed = approval(Box::pin(ask(&core, Some(&app_key), decide(&asked.id, true))).await);
+        assert!(matches!(allowed.state, torro_ipc::ApprovalState::Done { .. }), "{allowed:?}");
+        assert!(settings(&core).await.maps.enabled, "left out, so kept");
+
+        let asked = waits(ask(&core, Some(&key), maps(serde_json::json!({"enabled": false}))).await);
+        assert_eq!(asked.summary, tr("Turn off maps and place search"));
+        let allowed = approval(Box::pin(ask(&core, Some(&app_key), decide(&asked.id, true))).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(!settings(&core).await.maps.enabled, "off once the person allowed it");
+    }
+
+    /// Tasks TE.1 and TE.5: the place search and the map check their limits first, then answer
+    /// `unsupported` while maps are off, without asking any service. No answer repeats the query.
+    /// Turned on, they ask the services of the settings.
+    #[tokio::test]
+    async fn place_search_and_map_check_limits_and_are_off_by_default() {
+        use torro_pim::model::Geo;
+        let server = httpmock::MockServer::start_async().await;
+        let answer = r#"{"type":"FeatureCollection","features":[{"type":"Feature",
+            "geometry":{"type":"Point","coordinates":[13.4132,52.5219]},
+            "properties":{"name":"Alexanderplatz","city":"Berlin"}}]}"#;
+        let photon = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api").query_param("q", "Alexanderplatz");
+                then.status(200).body(answer);
+            })
+            .await;
+        let tiles = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path_includes("/tiles/17/");
+                then.status(200).body(place_tile());
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let search = |query: &str| Request::SearchPlaces { query: query.into(), near: None };
+        let map =
+            |lat: f64, width: u16| Request::MapPreview { geo: Geo { lat, lon: 13.4 }, width, height: 104, dark: false };
+        let long = "Alexanderplatz ".repeat(20);
+        for (request, wanted) in [
+            (search("Alexanderplatz"), "unsupported"),
+            (map(52.5, 336), "unsupported"),
+            (search(&long), "error"),
+            (search(" "), "error"),
+            (map(52.5, 801), "error"),
+            (map(85.1, 336), "error"),
+        ] {
+            let answer = core.handle(request.clone()).await;
+            assert_eq!(code(&answer), wanted, "{request:?}");
+            let Response::Error { message, .. } = answer else { panic!("an error") };
+            assert!(!message.contains("Alexanderplatz") && !message.contains("52.5"), "{message}");
+        }
+        assert_eq!((photon.calls_async().await, tiles.calls_async().await), (0, 0), "off asks nothing");
+
+        let services = serde_json::json!({
+            "enabled": true,
+            "geocoder": server.base_url(),
+            "tiles": format!("{}/tiles/{{z}}/{{x}}/{{y}}.png", server.base_url()),
+        });
+        let on = Request::SetSetting { key: torro_ipc::SettingKey::Maps, value: services };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        let Response::Places { places } = core.handle(search("Alexanderplatz")).await else { panic!("places") };
+        let found: Vec<(&str, &str)> = places.iter().map(|p| (p.label.as_str(), p.detail.as_str())).collect();
+        assert_eq!(found, [("Alexanderplatz", "Berlin")]);
+        assert_eq!(places[0].kind, torro_ipc::PlaceKind::Search);
+        let Response::Image { png } = core.handle(map(52.5, 336)).await else { panic!("a map") };
+        assert!(!png.is_empty() && tiles.calls_async().await > 0);
+        assert_eq!(code(&core.handle(map(85.1, 336)).await), "error", "limits first, with maps on too");
+    }
+
+    /// A map tile of one colour, as PNG, for the fake tile service (task TE.5).
+    fn place_tile() -> Vec<u8> {
+        let tile = image::RgbImage::from_pixel(256, 256, image::Rgb([242, 239, 233]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(tile).write_to(&mut png, image::ImageFormat::Png).expect("encoded");
+        png.into_inner()
+    }
+
+    /// Task TE.5: earlier places come from the events of calendars the asker may read only; a
+    /// client limited to one calendar never sees the locations of the others.
+    #[tokio::test]
+    async fn earlier_places_come_only_from_calendars_the_client_may_read() {
+        use torro_pim::model::Geo;
+        let server = httpmock::MockServer::start_async().await;
+        let nothing = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/api");
+                then.status(200).body(r#"{"type":"FeatureCollection","features":[]}"#);
+            })
+            .await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let at = |collection: &str, location: &str, lat: f64| torro_pim::Event {
+            location: Some(location.into()),
+            geo: Some(Geo { lat, lon: 13.4 }),
+            ..event_in(collection, Some(&format!("https://cloud.example.org/cal/{collection}/{lat}.ics")))
+        };
+        core.pim
+            .cache_events_as_synced(vec![
+                at(&fake.work, "Rathaus Mitte, Berlin", 52.51),
+                at(&fake.home, "Rathaus Pankow, Berlin", 52.56),
+            ])
+            .await;
+        let maps = serde_json::json!({"enabled": true, "geocoder": server.base_url()});
+        let on = Request::SetSetting { key: torro_ipc::SettingKey::Maps, value: maps };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        let labels = |response: Response| match response {
+            Response::Places { places } => {
+                assert!(places.iter().all(|place| place.kind == torro_ipc::PlaceKind::Recent));
+                places.into_iter().map(|place| place.label).collect::<std::collections::BTreeSet<_>>()
+            }
+            other => panic!("places, got {other:?}"),
+        };
+        let search = || Request::SearchPlaces { query: "rathaus berlin".into(), near: None };
+
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let all = labels(ask(&core, Some(&app_key), search()).await);
+        assert_eq!(all, ["Rathaus Mitte, Berlin".to_string(), "Rathaus Pankow, Berlin".to_string()].into());
+        let mut home_only = RightsTemplate::FullAccess.rights();
+        home_only.calendars = Selection::Only(vec![fake.home.clone()]);
+        let (_, key) = client(&core, home_only).await;
+        assert_eq!(labels(ask(&core, Some(&key), search()).await), ["Rathaus Pankow, Berlin".to_string()].into());
+        assert_eq!(nothing.calls_async().await, 1, "the service's answer is kept for the client");
+    }
+
     /// Task C.9: the voice status and test come from the assistant app; without it the status says
     /// it is missing and the test is `unsupported`. Reading the status is open to a client with
     /// read access to the settings.
@@ -10888,7 +11249,7 @@ mod tests {
         let widened = Request::UpdateClient { id: client_id.clone(), rights: RightsTemplate::ReadAndWrite.rights() };
         assert_eq!(ask(&core, Some(&app_key), widened).await, Response::Ok);
         core.pim.cache_collections(vec![calendar(&id("/cal/work/"))]).await;
-        let delete = Request::DeleteEvent { event: event_in(&id("/cal/work/"), Some("/cal/work/u.ics")) };
+        let delete = Request::DeleteEvent { event: event_in(&id("/cal/work/"), Some("/cal/work/u.ics")), scope: None };
         let asked = waits(ask(&core, Some(&key), delete).await);
         let hide = Request::SetCollectionShown { collection: id("/cal/work/"), shown: false };
         assert_eq!(ask(&core, Some(&app_key), hide).await, Response::Ok);
@@ -11145,6 +11506,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -11156,9 +11526,9 @@ mod tests {
         let key = limited_client(&core).await;
 
         for request in [
-            Request::SaveEvent { event: event_in(&id("/cal/home/"), None) },
-            Request::DeleteEvent { event: event_in(&id("/cal/home/"), Some("/cal/home/u.ics")) },
-            Request::SaveEvent { event: event_in(&id("/cal/work/"), Some("/cal/home/u.ics")) },
+            Request::SaveEvent { event: event_in(&id("/cal/home/"), None), scope: None },
+            Request::DeleteEvent { event: event_in(&id("/cal/home/"), Some("/cal/home/u.ics")), scope: None },
+            Request::SaveEvent { event: event_in(&id("/cal/work/"), Some("/cal/home/u.ics")), scope: None },
             Request::SetCollectionShown { collection: id("/cal/home/"), shown: true },
         ] {
             assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "not-found", "{request:?}");
@@ -14031,7 +14401,7 @@ mod tests {
         let id = posted_entry(&core).await;
         let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         let request = make_event(&id, &fake.work, None);
-        let Response::Event { event } = ask(&core, Some(&key), request.clone()).await else {
+        let Response::Event { event, .. } = ask(&core, Some(&key), request.clone()).await else {
             panic!("answered with the event")
         };
         let Request::CreateEventFromItem { start, end, .. } = request else { panic!("an event's request") };
@@ -14061,7 +14431,9 @@ mod tests {
         // Counted as done (task E8.8a): the statistics have no column of their own for events.
         let app_key = crate::clients::tests::app_key(dir.path());
         let mine = make_event(&id, &fake.home, Some("Call Anna"));
-        let Response::Event { event } = ask(&core, Some(&app_key), mine).await else { panic!("the app key makes one") };
+        let Response::Event { event, .. } = ask(&core, Some(&app_key), mine).await else {
+            panic!("the app key makes one")
+        };
         assert_eq!(event.summary, "Call Anna");
         let week = Request::GetStats { range: torro_ipc::StatsRange::Week, until: None };
         let Response::Stats(stats) = ask(&core, Some(&app_key), week).await else { panic!("statistics") };
@@ -14136,7 +14508,7 @@ mod tests {
 
         let app_key = crate::clients::tests::app_key(dir.path());
         let ran = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
-        let Response::Event { event } = ran_with(&ran) else { panic!("an event: {ran:?}") };
+        let Response::Event { event, .. } = ran_with(&ran) else { panic!("an event: {ran:?}") };
         assert_eq!(event.summary, "Deploy failed");
         assert_eq!(created_on(&fake), 1);
         assert!(matches!(entry(&core, dir.path(), &id).await.state, torro_inbox::State::Done { .. }));
@@ -21056,6 +21428,15 @@ mod tests {
                 recurring: false,
                 transparency: torro_pim::Transparency::Opaque,
                 alarms: Vec::new(),
+                recurrence_id: None,
+                repeat: None,
+                time_zone: None,
+                url: None,
+                status: None,
+                geo: None,
+                organizer: None,
+                attendees: Vec::new(),
+                exceptions: Vec::new(),
             };
             room.fake.service.cache_events_of_today(vec![foreign]).await;
             let declined = ask(core, key, respond(&room.id, InvitationAnswer::Decline, None)).await;

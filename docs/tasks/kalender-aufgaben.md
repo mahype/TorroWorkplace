@@ -27,7 +27,9 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - Der Kern hält alle Sammlungen, alle Aufgaben und die Termine von 3 Monaten zurück bis
   12 Monate voraus im Speicher. Er holt sie beim Start, alle 5 Minuten und auf Anforderung.
   Lesen geht nie ins Netz. Schreiben geht zuerst an den Server, ETag-geschützt.
-- Wiederkehrende Termine erscheinen als einzelne Vorkommen und sind vorerst nur lesbar.
+- Wiederkehrende Termine erscheinen als einzelne Vorkommen. Seit #278 lassen sie sich als dieses
+  Vorkommen, ab hier oder als ganze Serie ändern und löschen (Dienst TE.4, Editor TE.7 in
+  [termin-editor.md](termin-editor.md); Konzept [../termin-editor.md](../termin-editor.md)).
 
 ## Aufgaben
 
@@ -394,7 +396,9 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   ohne Nacht), fmt/clippy/test grün, Sichtprüfung leerer Tag und voller Tag, hell/dunkel.
 
 ### K.26 Teilnehmer und Status von Terminen – und nichts mehr verlieren beim Speichern
-- [ ] erledigt
+- [x] erledigt (mit TE.9, #278; die Avatare im Termin-Paneel und am Bogen des Radars sind nicht Teil von TE.9)
+- **Aufgegangen in Issue #278** ([termin-editor.md](termin-editor.md)): Modell und iCalendar in TE.1/TE.2,
+  Anzeige in TE.9. Wird mit TE.9 abgehakt.
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Dateien:** `crates/torro-pim/src/model.rs`,
   `crates/torro-pim/src/demo.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`, Anzeige in
   `crates/torrocalendar/src/views/{agenda,radar}.rs` und im Termin-Paneel (nennen)

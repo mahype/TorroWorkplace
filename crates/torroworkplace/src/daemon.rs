@@ -756,6 +756,9 @@ fn describe(request: &Request) -> String {
         Request::Todos => "todos".into(),
         Request::SaveEvent { .. } => "save event".into(),
         Request::DeleteEvent { .. } => "delete event".into(),
+        // Never the query or the point (task TE.1).
+        Request::SearchPlaces { .. } => "search places".into(),
+        Request::MapPreview { .. } => "map preview".into(),
         Request::ListReminders { .. } => "reminders".into(),
         Request::SnoozeReminder { .. } => "snooze reminder".into(),
         Request::DismissReminder { .. } => "dismiss reminder".into(),

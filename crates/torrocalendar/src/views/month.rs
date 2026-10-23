@@ -9,12 +9,14 @@
 //!
 //! Each cell lists its events, all-day first, then by start, as rows 20 high: all-day entries
 //! as tinted chips with a bar in the calendar colour, timed ones with a dot and `14:00 Title`;
-//! entries that are over are faded. As many rows as the cell is high (at most four, the
-//! `+n more` line included); with more entries, the last row sums the rest up. A timed event that
-//! continues from an earlier day shows as `… Title` on the following days. Multi-day and all-day
-//! events appear on every day they cover. Click on a day number → `ShowDay(date)`, on an event →
-//! `OpenEvent(index)`, on empty space in a cell → `NewEvent { date, time: None }`. The event open
-//! in the side panel (`ViewData::selected`) is outlined with the focus ring on every day it shows.
+//! entries that are over are faded, cancelled ones faded and struck through, tentative ones a
+//! dashed outline (all-day) or a ring (timed) without fill ([`super::Look`], task TE.9). As many
+//! rows as the cell is high (at most four, the `+n more` line included); with more entries, the
+//! last row sums the rest up. A timed event that continues from an earlier day shows as `… Title`
+//! on the following days. Multi-day and all-day events appear on every day they cover. Click on a
+//! day number → `ShowDay(date)`, on an event → `OpenEvent(index)`, on empty space in a cell →
+//! `NewEvent { date, time: None }`. The event open in the side panel (`ViewData::selected`) is
+//! outlined with the focus ring on every day it shows.
 //!
 //! Every colour comes from the theme's [`Palette`] when the view is drawn, so light and dark
 //! both work.
@@ -24,7 +26,7 @@ use iced::alignment::Vertical;
 use iced::border::{self, Radius};
 use iced::widget::button;
 use iced::widget::text::{Style as TextStyle, Wrapping};
-use iced::widget::{Space, column, container, mouse_area, responsive, row, rule};
+use iced::widget::{Space, column, container, mouse_area, responsive, row, rule, stack};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
@@ -33,7 +35,7 @@ use torro_gui::typo::{ellipsize, text_width};
 use torro_gui::{style, typo};
 use torro_pim::{Event, EventTime};
 
-use super::{Item, ViewData};
+use super::{DashedShape, FADED, Item, Look, ViewData, dashed, title_text};
 use crate::app::Message;
 
 /// Lines per cell at most, the `+n more` line included.
@@ -52,9 +54,6 @@ fn day_number_level() -> typo::Level {
 const DOT: f32 = 6.0;
 /// Width of the colour bar on the left of an all-day chip.
 const BAR: f32 = 3.0;
-/// Entries that are over, and those of the neighbouring months, are drawn at this opacity over
-/// the panel (as in the week view).
-const FADE_OPACITY: f32 = 0.55;
 /// Weekend cells get this much of the window background over the panel (as in the week view).
 const WEEKEND_SHADE: f32 = 0.35;
 /// Cells of the neighbouring months get this much of the window background over the panel: more
@@ -134,9 +133,11 @@ fn cell<'a>(
     let (shown, more) = visible_split(day.len(), lines);
     let mut rows = column![].spacing(LINE_GAP);
     for item in &day[..shown] {
-        let faded = !in_month || ends_before(item.event, today);
+        let look = Look::of(item.event.status, ends_before(item.event, today));
+        // The neighbouring months are dimmed on top of what the event itself says.
+        let look = Look { faded: look.faded || !in_month, ..look };
         let chosen = selected == Some(item.index);
-        rows = rows.push(event_row(*item, date, faded, chosen, width - 2.0 * space::xs()));
+        rows = rows.push(event_row(*item, date, look, chosen, width - 2.0 * space::xs()));
     }
     if more > 0 {
         let summary = trf("{n} more", &[("n", &more)]);
@@ -198,18 +199,24 @@ fn day_number<'a>(date: NaiveDate, today: NaiveDate, in_month: bool) -> Element<
 }
 
 /// One event row `width` wide in a cell: all-day entries as a tinted chip with a bar, timed ones
-/// with a dot. The title is cut with "…" to what is left of the row ([`title_room`]). `faded`
-/// rows (over, or in a neighbouring month) are drawn at [`FADE_OPACITY`]. The `selected` row (open
-/// in the side panel) is outlined in `focus_ring`; a row has no room around it, so the ring lies
-/// on its edge.
-fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, width: f32) -> Element<'a, Message> {
+/// with a dot. The title is cut with "…" to what is left of the row ([`title_room`]). Faded rows
+/// (`look.faded`: over, cancelled, or in a neighbouring month) are drawn at [`FADED`]; a cancelled
+/// one is struck through, a tentative one has a dashed outline instead of the chip's fill and bar,
+/// or a ring instead of the dot. The `selected` row (open in the side panel) is outlined in
+/// `focus_ring`; a row has no room around it, so the ring lies on its edge.
+fn event_row<'a>(item: Item<'a>, date: NaiveDate, look: Look, selected: bool, width: f32) -> Element<'a, Message> {
     let (prefix, title) = entry_parts(item.event, date);
     let title = ellipsize(&title, typo::caption(), title_room(item.event.all_day(), prefix.as_deref(), width));
     let color = item.color;
-    let title = typo::text(typo::caption(), title)
-        .style(move |theme: &Theme| TextStyle { color: Some(shade(&palette(theme), palette(theme).text, faded)) })
-        .wrapping(Wrapping::None);
-    let body: Element<'a, Message> = if item.event.all_day() {
+    let faded = look.faded;
+    let title = title_text(typo::caption(), title, look.struck, move |theme| {
+        shade(&palette(theme), palette(theme).text, faded)
+    });
+    let body: Element<'a, Message> = if item.event.all_day() && look.dashed {
+        let title =
+            container(title).padding([0.0, space::s()]).height(Length::Fill).align_y(Vertical::Center).clip(true);
+        stack![row![Space::new().width(BAR), title]].push_under(dashed(color, faded, DashedShape::Outline)).into()
+    } else if item.event.all_day() {
         let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |theme| container::Style {
             background: Some(Background::Color(shade(&palette(theme), color, faded))),
             border: Border { radius: Radius::new(0.0).left(radius::xs()), ..Border::default() },
@@ -231,11 +238,7 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, w
             });
         row![bar, fill].height(Length::Fill).into()
     } else {
-        let dot = container(Space::new()).width(DOT).height(DOT).style(move |theme| container::Style {
-            background: Some(Background::Color(shade(&palette(theme), color, faded))),
-            border: border::rounded(DOT / 2.0),
-            ..container::Style::default()
-        });
+        let dot = super::dot(color, DOT, look);
         let mut line =
             row![dot].spacing(space::xs()).align_y(Vertical::Center).padding(Padding::ZERO.left(space::xs()));
         if let Some(prefix) = prefix {
@@ -274,7 +277,7 @@ fn title_room(all_day: bool, prefix: Option<&str>, width: f32) -> f32 {
 
 /// `color` as it is drawn on the panel: faded towards it when `faded`, like CSS `opacity`.
 fn shade(p: &Palette, color: Color, faded: bool) -> Color {
-    if faded { mix(p.panel, color, FADE_OPACITY) } else { color }
+    if faded { mix(p.panel, color, FADED) } else { color }
 }
 
 /// How much of the window background lies over a cell's panel: [`OUTSIDE_SHADE`] for a day of a
@@ -414,6 +417,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -548,7 +560,7 @@ mod tests {
         for p in [Palette::dark(), Palette::light()] {
             assert_eq!(shade(&p, p.text, false), p.text);
             let faded = shade(&p, p.text, true);
-            assert!((faded.r - mix(p.panel, p.text, FADE_OPACITY).r).abs() < 1e-6);
+            assert!((faded.r - mix(p.panel, p.text, FADED).r).abs() < 1e-6);
             assert!((faded.r - p.panel.r).abs() < (p.text.r - p.panel.r).abs());
             let tint = over(p.tinted(p.calendar[0]), p.panel);
             assert_eq!(tint.a, 1.0, "composed, so the bar does not shine through");

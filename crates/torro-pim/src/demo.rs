@@ -31,7 +31,10 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{GITHUB_KIND, account_of, local_id};
-use crate::model::{ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
+use crate::model::{
+    Attendee, AttendeeRole, ChecksState, EventStatus, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel,
+    GitHubState, Link, PartStat, Repeat, RepeatDay, RepeatEnd, RepeatFreq, ReviewState, SeriesScope, Weekday,
+};
 use crate::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, move_plan};
 use crate::{
     AccountState, Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime,
@@ -47,6 +50,95 @@ struct Data {
 }
 
 impl Data {
+    /// Every occurrence of the object at `href` gets the version `version`, as a server gives the
+    /// whole object a new ETag.
+    fn new_version(&mut self, href: &str, version: &str) {
+        for e in self.events.iter_mut().filter(|e| e.href.as_deref() == Some(href)) {
+            e.etag = Some(version.to_string());
+        }
+    }
+
+    /// `following` or `series` for the occurrence at `found`, changed to `event` (task TE.4), in
+    /// memory: each occurrence reached gets the fields `event` changed against the occurrence as it
+    /// was, a start moved by the same distance (and the new length), and the rule; `following` moves
+    /// them into a new object (new uid and href) unless the occurrence is the first. A series without
+    /// rule keeps only the occurrence changed. The demo expands no rules, so the dates stay as they
+    /// are otherwise. Returns the occurrence as changed.
+    fn series_save(&mut self, found: usize, event: Event, following: bool, version: &str) -> Event {
+        let before = self.events[found].clone();
+        let href = before.href.clone();
+        let from = before.recurrence_id.map_or(instant(before.start), instant);
+        let shift = instant(event.start) - instant(before.start);
+        let length = event.end.map(|end| instant(end) - instant(event.start));
+        let moved = |time: EventTime| match time {
+            EventTime::Date(day) => EventTime::Date(day + chrono::Duration::days(shift.num_days())),
+            EventTime::DateTime(at) => EventTime::DateTime(at + shift),
+        };
+        let reached =
+            |e: &Event| e.href == href && (!following || e.recurrence_id.map_or(instant(e.start), instant) >= from);
+        let first = !self.events.iter().any(|e| e.href == href && !reached(e));
+        let split = following && !first;
+        let new_href = split.then(|| {
+            self.next_id += 1;
+            let uid = format!("demo-event-{}", self.next_id);
+            (uid.clone(), format!("{}{uid}.ics", url_of(&before.collection)))
+        });
+        if event.repeat.is_none() {
+            // No rule: of the occurrences reached, only the one changed stays, as a single event.
+            self.events.retain(|e| !reached(e) || e.recurrence_id == before.recurrence_id);
+        }
+        let mut answer = event.clone();
+        for e in self.events.iter_mut().filter(|e| reached(e)) {
+            let edited = e.recurrence_id == before.recurrence_id;
+            macro_rules! carry {
+                ($($field:ident),*) => {$( if event.$field != before.$field { e.$field = event.$field.clone(); } )*};
+            }
+            carry!(summary, location, description, transparency, url, status, geo, alarms, time_zone);
+            e.repeat = event.repeat.clone();
+            e.start = if edited { event.start } else { moved(e.start) };
+            e.end = if edited { event.end } else { length.map(|l| plus(e.start, l)).or(e.end) };
+            e.recurrence_id = e.recurrence_id.map(moved).filter(|_| e.repeat.is_some());
+            e.recurring = e.repeat.is_some();
+            if let Some((uid, href)) = &new_href {
+                e.uid = uid.clone();
+                e.href = Some(href.clone());
+            }
+            e.etag = Some(version.to_string());
+            if edited {
+                answer = e.clone();
+            }
+        }
+        // The changed occurrences (`Event::exceptions`, task TE.7) move with their keys; a split takes
+        // those from here on into the new object. (A server would reset them after a split with a new
+        // time; the demo keeps them.)
+        let (kept, taken): (Vec<EventTime>, Vec<EventTime>) =
+            before.exceptions.iter().copied().partition(|key| split && instant(*key) < from);
+        let taken: Vec<EventTime> = taken.into_iter().map(moved).collect();
+        let series = event.repeat.is_some();
+        for e in self
+            .events
+            .iter_mut()
+            .filter(|e| e.href == href || new_href.as_ref().is_some_and(|(_, h)| e.href.as_ref() == Some(h)))
+        {
+            let new_object = e.href != href;
+            e.exceptions = match (series, split, new_object) {
+                (false, ..) => Vec::new(),
+                (true, true, false) => kept.clone(),
+                (true, true, true) => taken.clone(),
+                (true, false, _) => kept.iter().chain(&taken).copied().collect(),
+            };
+        }
+        if let Some(updated) =
+            self.events.iter().find(|e| e.href == answer.href && e.recurrence_id == answer.recurrence_id)
+        {
+            answer.exceptions = updated.exceptions.clone();
+        }
+        if let Some(href) = &href {
+            self.new_version(href, version);
+        }
+        answer
+    }
+
     /// `collection` is a known one that takes no changes: a filter list.
     fn read_only(&self, collection: &str) -> bool {
         self.collections.iter().any(|c| c.id == collection && !c.writable)
@@ -300,8 +392,14 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     ];
     let mut events = sample_events(monday);
     for (n, item) in events.iter_mut().enumerate() {
-        item.href = Some(format!("{}evt-{}.ics", url_of(&item.collection), n + 1));
-        item.etag = Some(format!("\"sample-evt-{}\"", n + 1));
+        // A series is one object on a server (task TE.3): every occurrence has its href and version.
+        if item.repeat.is_some() {
+            item.href = Some(format!("{}{}.ics", url_of(&item.collection), item.uid));
+            item.etag = Some(format!("\"sample-{}\"", item.uid));
+        } else {
+            item.href = Some(format!("{}evt-{}.ics", url_of(&item.collection), n + 1));
+            item.etag = Some(format!("\"sample-evt-{}\"", n + 1));
+        }
     }
     let mut todos = sample_todos(today);
     for (n, item) in todos.iter_mut().enumerate() {
@@ -341,6 +439,22 @@ fn at(day: NaiveDate, hour: u32, minute: u32) -> EventTime {
     EventTime::DateTime(local.map(|time| time.with_timezone(&Utc)).unwrap_or_default())
 }
 
+/// The instant of an event time, a day at its midnight in UTC: for comparing and moving times.
+fn instant(time: EventTime) -> DateTime<Utc> {
+    match time {
+        EventTime::DateTime(at) => at,
+        EventTime::Date(day) => day.and_time(chrono::NaiveTime::MIN).and_utc(),
+    }
+}
+
+/// `start` plus `length`; a day by whole days.
+fn plus(start: EventTime, length: chrono::Duration) -> EventTime {
+    match start {
+        EventTime::Date(day) => EventTime::Date(day + chrono::Duration::days(length.num_days())),
+        EventTime::DateTime(at) => EventTime::DateTime(at + length),
+    }
+}
+
 /// An event without href, etag and details. Set the rest with struct update syntax.
 fn event(collection: &str, uid: &str, summary: &str, start: EventTime, end: EventTime) -> Event {
     Event {
@@ -356,7 +470,21 @@ fn event(collection: &str, uid: &str, summary: &str, start: EventTime, end: Even
         recurring: false,
         transparency: crate::Transparency::Opaque,
         alarms: Vec::new(),
+        recurrence_id: None,
+        repeat: None,
+        time_zone: None,
+        url: None,
+        status: None,
+        geo: None,
+        organizer: None,
+        attendees: Vec::new(),
+        exceptions: Vec::new(),
     }
+}
+
+/// Someone invited to an event, or its organiser.
+fn person(name: &str, email: &str, partstat: PartStat, role: AttendeeRole) -> Attendee {
+    Attendee { name: Some(name.into()), email: Some(email.into()), partstat, role }
 }
 
 /// A reminder `minutes` before the start (task ER1.1); `style: None` follows the calendar.
@@ -628,22 +756,60 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
     let day = |offset: u64| monday + Days::new(offset);
     let mut events = Vec::new();
 
-    // The daily standup is one series: the same uid, one occurrence per weekday, read-only. Its
-    // call and board are links (issue #126: links in the details open, a call gets "Join").
+    // The daily standup is one series: the same uid and href, one occurrence per weekday, each
+    // with its key and the rule, as a server expands it (task TE.3). Its call and board are links
+    // (issue #126: links in the details open, a call gets "Join").
+    let workdays = [Weekday::Monday, Weekday::Tuesday, Weekday::Wednesday, Weekday::Thursday, Weekday::Friday];
+    let every_workday = Repeat {
+        freq: RepeatFreq::Weekly,
+        interval: 1,
+        weekdays: workdays.map(|day| RepeatDay { day, nth: None }).to_vec(),
+        month_days: Vec::new(),
+        months: Vec::new(),
+        end: RepeatEnd::Never,
+        rule: "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR".into(),
+        custom: false,
+    };
+    // Two occurrences were moved on the server (changed occurrences, task TE.7): Thursday's to 10:00
+    // and next Wednesday's to 10:15. Every occurrence knows their keys, as the core fills them in.
+    let moved = |offset: u64| match offset {
+        3 => Some((10, 0)),
+        9 => Some((10, 15)),
+        _ => None,
+    };
+    let exceptions: Vec<EventTime> = [0, 1, 2, 3, 4, 7, 8, 9, 10, 11]
+        .into_iter()
+        .filter(|o| moved(*o).is_some())
+        .map(|o| at(day(o), 9, 30))
+        .collect();
     for offset in [0, 1, 2, 3, 4, 7, 8, 9, 10, 11] {
+        let key = at(day(offset), 9, 30);
+        let (hour, minute) = moved(offset).unwrap_or((9, 30));
+        let start = at(day(offset), hour, minute);
         events.push(Event {
             recurring: true,
+            recurrence_id: Some(key),
+            repeat: Some(Box::new(every_workday.clone())),
+            exceptions: exceptions.clone(),
             location: Some("https://cloud.example.org/call/daily7k2p".into()),
             description: Some(
                 "What I did, what I will do, what blocks me. Board: https://example.org/board/sprint-12.".into(),
             ),
-            ..event(WORK, "daily-standup@torro-demo", "Daily Standup", at(day(offset), 9, 30), at(day(offset), 9, 45))
+            ..event(
+                WORK,
+                "daily-standup@torro-demo",
+                "Daily Standup",
+                start,
+                plus(start, chrono::Duration::minutes(15)),
+            )
         });
     }
 
     events.extend([
         Event {
             location: Some("Meeting room Elbe".into()),
+            // Where the room is, so the event editor shows its small map (task TE.8).
+            geo: Some(crate::model::Geo { lat: 53.5458, lon: 9.9672 }),
             description: Some(
                 "Agree on goals and scope for the next sprint. Backlog (sorted by priority): \
                  https://example.org/backlog.\nRemote: https://us02web.zoom.us/j/81234567890"
@@ -651,7 +817,33 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
             ),
             // A call to join: over the whole screen shortly before, the day before as a notification.
             alarms: vec![reminder(5, Some(AlarmStyle::FullScreen)), reminder(24 * 60, Some(AlarmStyle::Notification))],
+            // Invited by Anna, with four colleagues who answered differently (tasks TE.7, TE.9).
+            organizer: Some(Box::new(person(
+                "Anna Berg",
+                "anna@work.example.org",
+                PartStat::Accepted,
+                AttendeeRole::Chair,
+            ))),
+            attendees: vec![
+                person("Anna Berg", "anna@work.example.org", PartStat::Accepted, AttendeeRole::Chair),
+                person("Jonas Keller", "jonas@work.example.org", PartStat::Accepted, AttendeeRole::Required),
+                person("Lena Vogt", "lena@work.example.org", PartStat::Tentative, AttendeeRole::Required),
+                person("Ben Ott", "ben@work.example.org", PartStat::NeedsAction, AttendeeRole::Optional),
+                person("Mia Schulz", "mia@work.example.org", PartStat::Declined, AttendeeRole::Optional),
+            ],
             ..event(WORK, "sprint-planning@torro-demo", "Sprint planning", at(day(0), 10, 0), at(day(0), 11, 30))
+        },
+        // Called off, still shown crossed out (task TE.9).
+        Event {
+            location: Some("Room Rhine".into()),
+            status: Some(EventStatus::Cancelled),
+            ..event(WORK, "marketing-sync@torro-demo", "Marketing sync", at(day(2), 16, 0), at(day(2), 16, 30))
+        },
+        // Not settled yet (task TE.9).
+        Event {
+            location: Some("Video call".into()),
+            status: Some(EventStatus::Tentative),
+            ..event(WORK, "partner-call@torro-demo", "Partner call", at(day(3), 11, 0), at(day(3), 12, 0))
         },
         Event {
             location: Some("Room Rhine".into()),
@@ -944,37 +1136,70 @@ impl PimSource for DemoSource {
         Ok(self.lock().todos.clone())
     }
 
-    async fn save_event(&self, mut event: Event) -> Result<Event, ProviderError> {
+    /// Every occurrence of a series is its own event here, found by its href and its key
+    /// (`recurrence_id`), as all occurrences share the href and the version of their object. A scope
+    /// (task TE.4) reaches the occurrence alone, those from it on, or all of them ([`Data::series_save`]);
+    /// without one, only that occurrence changes, as before. Each write gives the object a new version.
+    async fn save_event(&self, mut event: Event, scope: Option<SeriesScope>) -> Result<Event, ProviderError> {
         let mut data = self.lock();
         data.next_id += 1;
         let version = format!("\"demo-{}\"", data.next_id);
-        match event.href.clone() {
-            None => {
-                if event.uid.is_empty() {
-                    event.uid = format!("demo-event-{}", data.next_id);
-                }
-                event.href = Some(format!("{}{}.ics", url_of(&event.collection), event.uid));
-                event.etag = Some(version);
-                data.events.push(event.clone());
+        let Some(href) = event.href.clone() else {
+            if event.uid.is_empty() {
+                event.uid = format!("demo-event-{}", data.next_id);
             }
-            Some(href) => {
-                let Some(slot) = data.events.iter_mut().find(|e| e.href.as_deref() == Some(href.as_str())) else {
-                    return Err(ProviderError::Other(format!("No event at {href}")));
-                };
-                if slot.etag != event.etag {
-                    return Err(ProviderError::Conflict { uid: event.uid });
+            event.href = Some(format!("{}{}.ics", url_of(&event.collection), event.uid));
+            event.etag = Some(version);
+            data.events.push(event.clone());
+            return Ok(event);
+        };
+        let key = event.recurrence_id;
+        let Some(found) =
+            data.events.iter().position(|e| e.href.as_deref() == Some(href.as_str()) && e.recurrence_id == key)
+        else {
+            return Err(ProviderError::Other(format!("No event at {href}")));
+        };
+        if data.events[found].etag != event.etag {
+            return Err(ProviderError::Conflict { uid: event.uid });
+        }
+        match scope {
+            Some(scope @ (SeriesScope::Following | SeriesScope::Series)) => {
+                Ok(data.series_save(found, event, scope == SeriesScope::Following, &version))
+            }
+            None | Some(SeriesScope::Occurrence) => {
+                event.etag = Some(version.clone());
+                // A changed occurrence: every occurrence of the series learns its key (task TE.7).
+                if let Some(key) = key {
+                    for e in data.events.iter_mut().filter(|e| e.href.as_deref() == Some(href.as_str())) {
+                        if !e.exceptions.contains(&key) {
+                            e.exceptions.push(key);
+                        }
+                    }
+                    event.exceptions = data.events[found].exceptions.clone();
                 }
-                event.etag = Some(version);
-                *slot = event.clone();
+                data.events[found] = event.clone();
+                data.new_version(&href, &version);
+                Ok(event)
             }
         }
-        Ok(event)
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), ProviderError> {
+    /// One occurrence (without a scope, or `occurrence`), it and those after it (`following`), or all
+    /// of its series (`series`), found as [`DemoSource::save_event`] finds them.
+    async fn delete_event(&self, event: Event, scope: Option<SeriesScope>) -> Result<(), ProviderError> {
         let mut data = self.lock();
         let before = data.events.len();
-        data.events.retain(|e| e.href != event.href || e.uid != event.uid);
+        let same = |e: &Event| e.href == event.href && e.uid == event.uid;
+        let key = event.recurrence_id.map(instant);
+        match scope {
+            Some(SeriesScope::Series) => data.events.retain(|e| !same(e)),
+            Some(SeriesScope::Following) => {
+                data.events.retain(|e| !same(e) || e.recurrence_id.map(instant) < key);
+            }
+            None | Some(SeriesScope::Occurrence) => {
+                data.events.retain(|e| !same(e) || e.recurrence_id != event.recurrence_id);
+            }
+        }
         if data.events.len() == before { Err(ProviderError::Other("No such event".into())) } else { Ok(()) }
     }
 
@@ -1319,10 +1544,10 @@ mod tests {
             ]
         );
         let events_in = |id: &str| events.iter().filter(|e| e.collection == id).count();
-        assert_eq!(events_in(WORK), 19);
+        assert_eq!(events_in(WORK), 21);
         assert_eq!(events_in(PERSONAL), 4);
         assert_eq!(events_in(FAMILY), 4);
-        assert_eq!(events.len(), 27);
+        assert_eq!(events.len(), 29);
         let todos_in = |id: &str| todos.iter().filter(|t| t.collection == id).count();
         assert_eq!(todos_in(TASKS), 14);
         assert_eq!(todos_in(GROCERIES), 5);
@@ -1358,11 +1583,16 @@ mod tests {
         let (collections, events, todos) = sample(sunday());
         let filter_list = |id: &str| collections.iter().any(|c| c.id == id && c.source.is_some());
         let mut hrefs = HashSet::new();
+        let mut occurrences = HashSet::new();
         for e in &events {
             let href = e.href.as_deref().expect("sample event has an href");
             assert!(href.starts_with(url_of(&e.collection)) && href.ends_with(".ics"), "{href}");
             assert!(e.etag.is_some(), "{href}");
-            assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
+            // The occurrences of a series share their href; each has its own key.
+            assert!(occurrences.insert((href.to_owned(), e.recurrence_id)), "duplicate occurrence {href}");
+            if e.recurrence_id.is_none() || !hrefs.contains(href) {
+                assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
+            }
         }
         for t in &todos {
             let href = t.href.as_deref().expect("sample task has an href");
@@ -1583,12 +1813,23 @@ mod tests {
         days.sort();
         days.dedup();
         assert_eq!(days.len(), 10, "one occurrence per day");
+        let hrefs: HashSet<Option<&str>> = standups.iter().map(|e| e.href.as_deref()).collect();
+        assert_eq!(hrefs.len(), 1, "one object for the whole series, as on a server");
+        let moved: Vec<&&Event> = standups.iter().filter(|e| e.recurrence_id != Some(e.start)).collect();
+        assert_eq!(moved.len(), 2, "two occurrences were moved");
+        let keys: Vec<EventTime> = moved.iter().filter_map(|e| e.recurrence_id).collect();
         for e in standups {
             assert!(e.recurring);
+            assert_eq!(e.exceptions, keys, "every occurrence knows the changed ones");
+            let key = e.recurrence_id.expect("each occurrence has its key");
+            let repeat = e.repeat.as_deref().expect("the rule is on every occurrence");
+            assert_eq!((repeat.freq, repeat.weekdays.len(), repeat.custom), (RepeatFreq::Weekly, 5, false));
+            let at_key = instant(key).with_timezone(&Local);
+            assert_eq!((at_key.hour(), at_key.minute()), (9, 30), "the rule says 9:30");
             let (start, end) = timed_bounds(e).expect("standup is timed");
             let (start, end) = (start.with_timezone(&Local), end.with_timezone(&Local));
-            assert_eq!((start.hour(), start.minute()), (9, 30));
-            assert_eq!((end.hour(), end.minute()), (9, 45));
+            assert_eq!(end - start, chrono::Duration::minutes(15));
+            assert_eq!(start.date_naive(), at_key.date_naive(), "moved within its day");
             assert!(start.weekday().number_from_monday() <= 5, "standup on a weekend");
         }
     }
@@ -1740,6 +1981,72 @@ mod tests {
         assert!(matches!(source.move_todo(moved, elsewhere).await, Err(ProviderError::Other(_))));
     }
 
+    /// The occurrences of the standup share their href (task TE.3): a change or a delete of one
+    /// finds it by its key and leaves the others alone.
+    #[tokio::test]
+    async fn one_occurrence_of_the_series_is_changed_and_deleted_alone() {
+        let source = DemoSource::new(sunday());
+        let series = |events: Vec<Event>| -> Vec<Event> {
+            events.into_iter().filter(|e| e.uid == "daily-standup@torro-demo").collect()
+        };
+        let all = series(source.lock().events.clone());
+        let second = Event { summary: "Standup, later".into(), ..all[1].clone() };
+        let saved = source.save_event(second, Some(SeriesScope::Occurrence)).await.expect("saved");
+        let now = series(source.lock().events.clone());
+        assert_eq!(now.iter().filter(|e| e.summary == "Standup, later").count(), 1);
+        assert_eq!(now[0].summary, "Daily Standup", "the first occurrence is untouched");
+        let key = all[1].recurrence_id.expect("a key");
+        assert!(now.iter().all(|e| e.exceptions.contains(&key)), "every occurrence learns the changed one");
+        assert!(saved.exceptions.contains(&key));
+        source.delete_event(saved, Some(SeriesScope::Occurrence)).await.expect("deleted");
+        assert_eq!(series(source.lock().events.clone()).len(), all.len() - 1, "only that one is gone");
+    }
+
+    /// Task TE.4: the following ones move into a new series, all of them change together, and deleting
+    /// from an occurrence on leaves the ones before.
+    #[tokio::test]
+    async fn the_standup_changes_and_goes_by_scope() {
+        let source = DemoSource::new(sunday());
+        let series = |source: &DemoSource| -> Vec<Event> {
+            let mut events: Vec<Event> =
+                source.lock().events.iter().filter(|e| e.summary.contains("Standup")).cloned().collect();
+            events.sort_by_key(|e| instant(e.start));
+            events
+        };
+        let all = series(&source);
+        let third = Event { summary: "Standup, new room".into(), ..all[2].clone() };
+        let saved = source.save_event(third, Some(SeriesScope::Following)).await.expect("split");
+        let now = series(&source);
+        assert_eq!(now.iter().filter(|e| e.summary == "Daily Standup").count(), 2, "the first two stay");
+        assert_eq!(now.iter().filter(|e| e.summary == "Standup, new room").count(), all.len() - 2);
+        assert_ne!(saved.href, all[0].href, "a new object");
+        assert!(now.iter().all(|e| e.href == all[0].href || e.href == saved.href));
+        assert_eq!(now[0].etag, now[1].etag, "one version per object");
+
+        let renamed = Event { summary: "Standup".into(), ..now[0].clone() };
+        source.save_event(renamed, Some(SeriesScope::Series)).await.expect("all");
+        assert_eq!(series(&source).iter().filter(|e| e.summary == "Standup").count(), 2, "only the old series");
+
+        let later = series(&source).into_iter().find(|e| e.href == saved.href).expect("the new series");
+        let half_hour = chrono::Duration::minutes(30);
+        let keys: Vec<Option<EventTime>> = series(&source)
+            .into_iter()
+            .filter(|e| e.href == saved.href)
+            .map(|e| e.recurrence_id.map(|key| plus(key, half_hour)))
+            .collect();
+        let exceptions: Vec<EventTime> = later.exceptions.iter().map(|key| plus(*key, half_hour)).collect();
+        let moved = Event { start: plus(later.start, half_hour), ..later.clone() };
+        let moved = Event { end: later.end.map(|end| plus(end, half_hour)), ..moved };
+        source.save_event(moved, Some(SeriesScope::Series)).await.expect("moved");
+        let shifted: Vec<Event> = series(&source).into_iter().filter(|e| e.href == saved.href).collect();
+        assert_eq!(shifted.iter().map(|e| e.recurrence_id).collect::<Vec<_>>(), keys, "keys move along");
+        assert!(shifted.iter().all(|e| e.exceptions == exceptions), "and the changed occurrences with them");
+
+        let fourth = shifted[1].clone();
+        source.delete_event(fourth, Some(SeriesScope::Following)).await.expect("deleted");
+        assert_eq!(series(&source).len(), 3, "two of the old series, one of the new");
+    }
+
     fn source_with_calendar() -> DemoSource {
         let source = DemoSource::default();
         source.lock().collections.push(Collection {
@@ -1770,16 +2077,25 @@ mod tests {
             recurring: false,
             transparency: crate::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         };
-        let mut saved = source.save_event(new).await.unwrap();
+        let mut saved = source.save_event(new, None).await.unwrap();
         assert!(saved.href.is_some() && saved.etag.is_some());
         let stale = saved.clone();
         saved.summary = "Workshop Teil 1".into();
-        let updated = source.save_event(saved).await.unwrap();
-        assert!(matches!(source.save_event(stale).await, Err(ProviderError::Conflict { .. })));
+        let updated = source.save_event(saved, None).await.unwrap();
+        assert!(matches!(source.save_event(stale, None).await, Err(ProviderError::Conflict { .. })));
         let range = source.events(start - chrono::Duration::days(1), start + chrono::Duration::days(1)).await.unwrap();
         assert_eq!(range, vec![updated.clone()]);
-        source.delete_event(updated).await.unwrap();
+        source.delete_event(updated, None).await.unwrap();
         assert!(
             source
                 .events(start - chrono::Duration::days(1), start + chrono::Duration::days(1))
@@ -1787,6 +2103,19 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Tasks TE.7 and TE.9: `--demo` shows a cancelled, a tentative and an invited event.
+    #[test]
+    fn the_sample_has_a_cancelled_a_tentative_and_an_invited_event() {
+        let events = sample_events(NaiveDate::from_ymd_opt(2026, 10, 12).expect("a monday"));
+        let with = |status| events.iter().filter(|e| e.status == Some(status)).count();
+        assert_eq!((with(EventStatus::Cancelled), with(EventStatus::Tentative)), (1, 1));
+        let invited: Vec<&Event> = events.iter().filter(|e| e.organizer.is_some()).collect();
+        assert_eq!(invited.len(), 1);
+        assert!((4..=5).contains(&invited[0].attendees.len()));
+        let answers: HashSet<PartStat> = invited[0].attendees.iter().map(|a| a.partstat).collect();
+        assert!(answers.len() >= 3, "people answered differently: {answers:?}");
     }
 
     #[test]

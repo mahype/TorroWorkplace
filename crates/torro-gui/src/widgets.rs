@@ -112,9 +112,18 @@ const PILL_HEIGHT: f32 = 20.0;
 fn pill_icon() -> f32 {
     space::m()
 }
-/// Edge of an avatar in [`avatar_stack`] and how far the next one is moved right.
-const AVATAR: f32 = 22.0;
-const AVATAR_STEP: f32 = 20.0;
+/// Edge of an avatar in [`avatar_stack`]: the source tile's 28, so two initials in `CAPTION` fit
+/// inside the ring.
+fn avatar_edge() -> f32 {
+    size::tile()
+}
+/// How far the next avatar of an [`avatar_stack`] is moved right: it overlaps the one before by
+/// [`space::xs()`] (its ring and a little more), so neither covers the other's initials.
+fn avatar_step() -> f32 {
+    avatar_edge() - space::xs()
+}
+/// The ring around each avatar of an [`avatar_stack`], in the surface under it.
+const AVATAR_RING: f32 = 2.0;
 /// Edge of the chevron after a sidebar group title.
 const GROUP_CHEVRON: f32 = 12.0;
 /// Width of the bar that marks the selected list row.
@@ -486,13 +495,28 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
     options: impl IntoIterator<Item = (L, M)>,
     active: usize,
 ) -> Element<'a, M> {
+    segmented_maybe(options.into_iter().map(|(label, message)| (label, Some(message))), active)
+}
+
+/// A [`segmented`] control in which a segment may be off: `(label, None)` is drawn at 40 % and takes
+/// no click (a choice that does not apply now; say why in a tooltip around the control). Frame,
+/// height and the active segment as in [`segmented`].
+///
+/// ```ignore
+/// let scopes = [(tr("This event"), Some(Message::Scope(One))), (tr("All"), None)];
+/// widgets::with_tooltip(widgets::segmented_maybe(scopes, 0), tr("Why All is off"))
+/// ```
+pub fn segmented_maybe<'a, M: Clone + 'a, L: IntoFragment<'a>>(
+    options: impl IntoIterator<Item = (L, Option<M>)>,
+    active: usize,
+) -> Element<'a, M> {
     let inner = size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
     let segments = options.into_iter().enumerate().map(|(i, (label, message))| {
         button(container(typo::text(typo::caption(), label).wrapping(Wrapping::None)).center_y(Fill))
             .height(inner)
             .padding(style::button_padding())
             .style(style::button::segment(i == active))
-            .on_press(message)
+            .on_press_maybe(message)
             .into()
     });
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
@@ -3812,30 +3836,63 @@ pub fn status_dot<'a, M: 'a>(status: Status) -> Element<'a, M> {
 }
 
 /// Overlapping round avatars (event guests): `people` as `(initials, colour)`, then "+`more`"
-/// when `more > 0`. Each is 22 across with a `panel` ring, initials in `MICRO`.
-pub fn avatar_stack<'a, M: 'a>(people: &[(&'a str, Color)], more: usize) -> Element<'a, M> {
+/// when `more > 0`. Each is [`size::tile()`] across with a ring in `panel`; the person's colour only
+/// tints the surface (`Palette::tinted` over `panel`, never the full colour as a surface) and the
+/// initials stand in `CAPTION` and `text` on it, readable at 4.5:1 in light and dark. "+n" is neutral
+/// (`selected`, `text_2`). A colour with alpha below 1 fades the avatar to that alpha (ended
+/// events). The labels are copied, so they may be built on the spot ([`String`] or `&str`).
+///
+/// ```ignore
+/// widgets::avatar_stack(&[("AW".to_string(), colour)], 2)
+/// ```
+pub fn avatar_stack<'a, M: 'a, S: AsRef<str>>(people: &[(S, Color)], more: usize) -> Element<'a, M> {
+    let edge = avatar_edge();
     let avatar = |label: String, colour: Option<Color>| -> Element<'a, M> {
-        container(typo::text(typo::micro(), label))
-            .center(AVATAR)
+        container(typo::text(typo::caption(), label).wrapping(Wrapping::None))
+            .center(edge)
             .style(move |t| {
                 let p = palette(t);
+                let (surface, ink) = avatar_colours(&p, colour);
                 container::Style {
-                    text_color: Some(p.panel),
-                    background: Some(Background::Color(colour.unwrap_or(p.text_3))),
-                    border: border::rounded(AVATAR / 2.0).color(p.panel).width(2),
+                    text_color: Some(ink),
+                    background: Some(Background::Color(surface)),
+                    border: border::rounded(edge / 2.0).color(p.panel).width(AVATAR_RING),
                     ..container::Style::default()
                 }
             })
             .into()
     };
     let mut faces: Vec<Element<'a, M>> =
-        people.iter().map(|(initials, colour)| avatar((*initials).to_owned(), Some(*colour))).collect();
+        people.iter().map(|(initials, colour)| avatar(initials.as_ref().to_owned(), Some(*colour))).collect();
     if more > 0 {
         faces.push(avatar(format!("+{more}"), None));
     }
-    let width = AVATAR + AVATAR_STEP * faces.len().saturating_sub(1) as f32;
-    let layers = faces.into_iter().enumerate().map(|(i, face)| pin(face).x(AVATAR_STEP * i as f32).into());
-    stack(std::iter::once(blank().width(width).height(AVATAR).into()).chain(layers)).into()
+    let width = avatar_stack_width(faces.len());
+    let step = avatar_step();
+    let layers = faces.into_iter().enumerate().map(|(i, face)| pin(face).x(step * i as f32).into());
+    stack(std::iter::once(blank().width(width).height(edge).into()).chain(layers)).into()
+}
+
+/// The surface and the ink of an avatar of an [`avatar_stack`]: a person's `colour` tinted over
+/// `panel` with `text` on it (both faded by the colour's alpha), "+n" (`None`) `selected` with
+/// `text_2`.
+fn avatar_colours(p: &Palette, colour: Option<Color>) -> (Color, Color) {
+    match colour {
+        Some(colour) => {
+            let fade = colour.a;
+            (theme::over(Color { a: p.tint * fade, ..colour }, p.panel), p.text.scale_alpha(fade))
+        }
+        None => (p.selected, p.text_2),
+    }
+}
+
+/// The width of an [`avatar_stack`] with `faces` avatars ("+n" counts as one), for a row that must
+/// leave it room; 0 without any.
+pub fn avatar_stack_width(faces: usize) -> f32 {
+    match faces {
+        0 => 0.0,
+        n => avatar_edge() + avatar_step() * (n - 1) as f32,
+    }
 }
 
 /// `#RRGGBB` (or `#RRGGBBAA`, alpha ignored) as a colour; `None` for anything else.
@@ -4984,6 +5041,24 @@ mod tests {
         ];
         assert!(!blocks.is_empty());
         let _: Subscription<()> = escape();
+    }
+
+    /// Review of #278: the initials of an avatar read at 4.5:1 on its tinted surface in light and
+    /// dark, for every calendar colour, and the stack leaves room for every face.
+    #[test]
+    fn avatar_initials_are_readable_on_every_calendar_colour() {
+        for p in [Palette::dark(), Palette::light()] {
+            for colour in p.calendar.into_iter().map(Some).chain([None]) {
+                let (surface, ink) = avatar_colours(&p, colour);
+                let ratio = ink.relative_contrast(surface);
+                assert!(ratio >= 4.5, "{colour:?}: {ratio:.2}:1");
+            }
+        }
+        assert_eq!(avatar_stack_width(0), 0.0);
+        assert_eq!(avatar_stack_width(1), size::tile());
+        assert!(avatar_stack_width(4) > 3.0 * size::tile(), "they overlap only by their rings");
+        let owned = [("AW".to_string(), Palette::dark().calendar[0])];
+        let _: Element<'_, Msg> = avatar_stack(&owned, 2);
     }
 
     fn actions() -> Vec<RowAction<'static, Msg>> {

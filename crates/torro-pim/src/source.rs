@@ -18,7 +18,7 @@ use std::future::Future;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::GitHubLabel;
+use crate::model::{GitHubLabel, SeriesScope};
 use crate::{Collection, Event, PimAccount, ProviderError, Todo};
 
 pub trait PimSource: Send + Sync {
@@ -51,9 +51,25 @@ pub trait PimSource: Send + Sync {
 
     /// Creates (`href: None`) or updates an event; returns it as stored, with `href` and
     /// `etag` set. An outdated `etag` fails with [`ProviderError::Conflict`].
-    fn save_event(&self, event: Event) -> impl Future<Output = Result<Event, ProviderError>> + Send;
+    ///
+    /// `scope` says which events of a series the change is about (`calendar.save_event`,
+    /// [`SeriesScope`]): the core refuses an occurrence ([`Event::recurring`]) saved without one
+    /// (`unsupported`, [`ProviderError::Other`]), so an app that does not ask never overwrites a
+    /// series; the demo data ignore it for now. `None` for single events. The answer of `following` is the first event
+    /// of the new series, otherwise the occurrence with the same `recurrence_id`.
+    fn save_event(
+        &self,
+        event: Event,
+        scope: Option<SeriesScope>,
+    ) -> impl Future<Output = Result<Event, ProviderError>> + Send;
 
-    fn delete_event(&self, event: Event) -> impl Future<Output = Result<(), ProviderError>> + Send;
+    /// Deletes an event, as [`PimSource::events`] returned it (`href` and `etag` set). `scope` as
+    /// for [`PimSource::save_event`]: required for an occurrence, `None` for single events.
+    fn delete_event(
+        &self,
+        event: Event,
+        scope: Option<SeriesScope>,
+    ) -> impl Future<Output = Result<(), ProviderError>> + Send;
 
     /// Creates (`href: None`) or updates a task; returns it as stored.
     fn save_todo(&self, todo: Todo) -> impl Future<Output = Result<Todo, ProviderError>> + Send;

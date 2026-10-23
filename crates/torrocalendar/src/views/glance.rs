@@ -15,6 +15,10 @@
 //! Both are displays, not small apps: no buttons, forms or dialogs (a larger tile is the tiling
 //! manager's job). They are rebuilt only with the app's minute tick and on new data.
 //!
+//! A glance shows what happens: cancelled events are left out ([`entries`], task TE.9), so they
+//! never run, never lead and never end "Free until". The same goes for the day dots of the week
+//! strip and the mini radars, which take their entries from here.
+//!
 //! The decisions – what runs, what comes next, the texts, the strip's hours and lanes, how much
 //! fits – are plain functions with tests; the views only lay out their results.
 
@@ -35,7 +39,7 @@ use torro_gui::typo::{self, ellipsize, line_height, text_width};
 use torro_gui::{style, widgets};
 use torro_pim::{Event as CalendarEvent, EventTime};
 
-use super::{Item, ViewData, short_date};
+use super::{Item, ViewData, short_date, takes_time};
 use crate::app::Message;
 
 const UNTITLED: &str = "(untitled)";
@@ -135,9 +139,11 @@ fn local(time: EventTime) -> NaiveDateTime {
     }
 }
 
-/// The entries of `items`, by start (then end, then title).
+/// The entries of `items`, by start (then end, then title). Cancelled events are left out: they
+/// keep no time busy ([`takes_time`]), and a tile read from a distance has no room for what does
+/// not happen.
 pub fn entries(items: &[Item<'_>]) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = items.iter().map(Entry::new).collect();
+    let mut entries: Vec<Entry> = items.iter().filter(|item| takes_time(item.event.status)).map(Entry::new).collect();
     entries.sort_by(|a, b| (a.start, a.end, &a.title).cmp(&(b.start, b.end, &b.title)));
     entries
 }
@@ -958,6 +964,47 @@ mod tests {
         assert_eq!(when(focus, now), Some(trf("ends in {span}", &[("span", &trf("{n} min", &[("n", &19)]))])));
         assert_eq!(display(focus), Some(tr("Now").to_string()));
         assert_eq!(headline(focus), None, "nothing is free while an event runs");
+    }
+
+    #[test]
+    fn cancelled_events_are_left_out_so_they_neither_run_nor_lead() {
+        let event = |summary: &str, start: NaiveDateTime, end: NaiveDateTime, status| CalendarEvent {
+            uid: String::new(),
+            collection: String::new(),
+            href: None,
+            etag: None,
+            summary: summary.into(),
+            start: EventTime::DateTime(torro_gui::datetime::to_utc(start)),
+            end: Some(EventTime::DateTime(torro_gui::datetime::to_utc(end))),
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
+        };
+        let cancelled = Some(torro_pim::model::EventStatus::Cancelled);
+        let events = [
+            event("Standup", at(9, 30), at(10, 0), cancelled),
+            event("Review", at(14, 0), at(15, 0), None),
+            event("Dentist", at(16, 0), at(17, 0), Some(torro_pim::model::EventStatus::Tentative)),
+        ];
+        let items: Vec<Item<'_>> =
+            events.iter().enumerate().map(|(index, event)| Item { index, event, color: Color::BLACK }).collect();
+        let entries = entries(&items);
+        let titles: Vec<&str> = entries.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, ["Review", "Dentist"]);
+        let lead = focus(&entries, at(9, 41));
+        assert_eq!(title(lead), Some("Review"), "the cancelled standup does not run");
+        assert_eq!(headline(lead), Some(trf("Free until {time}", &[("time", &"14:00")])));
     }
 
     #[test]

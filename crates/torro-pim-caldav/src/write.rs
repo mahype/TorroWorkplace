@@ -2,7 +2,7 @@
 //!
 //! [`to_ics_event`] / [`to_ics_todo`] produce a complete `VCALENDAR` (RFC 5545: CRLF line
 //! ends, lines folded at 75 octets, text escaped, `DTSTAMP`, `PRODID:-//Torro//Workplace//DE`,
-//! times in UTC with `Z`, dates as `VALUE=DATE`). The `CalDavClient` methods PUT them to
+//! dates as `VALUE=DATE`, a task's times in UTC with `Z`). The `CalDavClient` methods PUT them to
 //! `href` (new items: `<collection>/<uid>.ics`, with `If-None-Match: *`; updates with
 //! `If-Match: <etag>`) and DELETE with `If-Match`. A 412 answer becomes
 //! `ProviderError::Conflict`. The new ETag comes from the PUT answer's `ETag` header; when
@@ -26,6 +26,17 @@
 //! as it was. Lines are folded anew, so the result is valid even when the server sent long
 //! unfolded lines.
 //!
+//! An event's times go out in its time zone (task TE.2, decision 7 in `docs/termin-editor.md`):
+//! `DTSTART;TZID=Europe/Berlin:20261013T100000` and, once per zone in the object, a `VTIMEZONE`
+//! made from `chrono-tz` ([`vtimezone`]), so a weekly series at 10:00 stays at 10:00 across the
+//! change to summer time. The zone is the event's `time_zone`, else the one the stored object uses,
+//! else the computer's ([`machine_zone`]); UTC with `Z` only when none of them is known. Unchanged
+//! times stay as stored, whatever zone they are in.
+//!
+//! `URL`, `STATUS` and `GEO` are model fields since TE.2. When the place changes (`location` or
+//! `geo`), Apple's `X-APPLE-STRUCTURED-LOCATION` goes: it would point to the old place. Organizer
+//! and attendees are never written; their lines stay as stored, the suite sends no invitations.
+//!
 //! An event's reminders (`Event::alarms`, task ER1.1) are its `VALARM`s with `ACTION:DISPLAY` or
 //! `AUDIO`. While the list stays as read, every `VALARM` stays as stored. When it changed, only
 //! those alarms are replaced ([`AlarmPlan`]): one that is still wanted keeps its block as it is,
@@ -39,9 +50,11 @@
 //! ([`list_segment`]): `MKCALENDAR` never replaces a collection, and an address that is taken
 //! (`405`, `409`) only means trying the next one.
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Offset, TimeDelta, TimeZone, Utc, Weekday};
+use chrono_tz::{OffsetName, Tz};
 use reqwest::{Method, StatusCode, Url};
 use roxmltree::Node;
+use torro_pim::model::{EventStatus, Repeat, RepeatEnd, SeriesScope};
 use torro_pim::{
     Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, ProviderError, Todo,
     Transparency,
@@ -49,16 +62,19 @@ use torro_pim::{
 
 use crate::CalDavClient;
 use crate::ical::{self, Property};
+use crate::series::{self, Plan, SeriesError, SeriesFailure};
 
 const NS_DAV: &str = "DAV:";
+const NS_CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
 const PRODID: &str = "-//Torro//Workplace//DE";
 /// RFC 5545 section 3.1: a content line is at most 75 octets, longer ones are folded.
 /// The leading space of a continuation line counts towards the 75.
 const MAX_LINE_OCTETS: usize = 75;
 
-/// The event as a new `VCALENDAR` text.
+/// The event as a new `VCALENDAR` text. Its times are written in its `time_zone`, else in the
+/// computer's zone ([`machine_zone`]), with that zone's `VTIMEZONE`; in UTC when neither is known.
 pub fn to_ics_event(event: &Event) -> String {
-    event_ics(event, Utc::now())
+    event_ics(event, Utc::now(), machine_zone())
 }
 
 /// The task as a new `VCALENDAR` text.
@@ -72,9 +88,21 @@ pub fn to_ics_todo(todo: &Todo) -> String {
 /// fields that differ from what `stored` says, plus a new `DTSTAMP` and `LAST-MODIFIED`; the
 /// properties of unchanged fields, every property the model does not know, nested and other
 /// components stay as they are. A field the model cleared (no location) loses its property.
+/// Organizer and attendees are never written: their stored lines stay whatever the event says.
+///
+/// Times that changed are written in the event's `time_zone`; without one in the zone the stored
+/// `DTSTART` names (so a client that does not know zones keeps them), else in the computer's
+/// ([`machine_zone`]). A `time_zone` other than the stored one rewrites `DTSTART` and `DTEND`
+/// even when the instants stay. A `VTIMEZONE` is added only for a zone the object has none for.
 /// Without a VEVENT in `stored` the result is [`to_ics_event`].
 pub fn merge_ics_event(stored: &str, event: &Event) -> String {
-    event_onto(stored, event, Utc::now())
+    event_onto(stored, event, Utc::now(), machine_zone())
+}
+
+/// The zone of this computer as chrono-tz knows it (`iana-time-zone`), the zone new times are
+/// written in when the event names none; `None` when the system gives no IANA name.
+pub fn machine_zone() -> Option<Tz> {
+    iana_time_zone::get_timezone().ok().and_then(|name| ical::zone(&name))
 }
 
 /// The task written onto `stored`, the iCalendar object the server holds for it.
@@ -243,6 +271,20 @@ impl CalDavClient {
         etag: Option<&str>,
         ics: String,
     ) -> Result<(String, String), ProviderError> {
+        // Boxed: callers keep this future inline in theirs, up to the core's future for a request.
+        Box::pin(self.put_sent(collection, uid, href, etag, ics)).await.map_err(Unwritten::into_error)
+    }
+
+    /// [`CalDavClient::put_item`], saying whether a failed PUT surely wrote nothing
+    /// ([`Unwritten`]).
+    async fn put_sent(
+        &self,
+        collection: &str,
+        uid: &str,
+        href: Option<&str>,
+        etag: Option<&str>,
+        ics: String,
+    ) -> Result<(String, String), Unwritten> {
         let (header, value) = precondition(href, etag)?;
         let (url, href) = match href {
             Some(href) => (resolve(collection, href)?, href.to_string()),
@@ -260,15 +302,16 @@ impl CalDavClient {
             .header("Content-Type", "text/calendar; charset=utf-8")
             .body(ics)
             .header(header, value);
-        let response = request.send().await.map_err(transport_error)?;
+        let response = request.send().await.map_err(|err| Unwritten::Unknown(transport_error(err)))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(status_error(status, uid, &url));
+            return Err(Unwritten::Refused(status_error(status, uid, &url)));
         }
         let header_etag = etag_header(&response);
         let etag = match header_etag {
             Some(etag) => etag,
-            None => self.fetch_etag(&url).await?,
+            // Written already: a failure from here on leaves the new version on the server.
+            None => self.fetch_etag(&url).await.map_err(Unwritten::Unknown)?,
         };
         Ok((href, etag))
     }
@@ -282,18 +325,30 @@ impl CalDavClient {
         href: Option<&str>,
         etag: Option<&str>,
     ) -> Result<(), ProviderError> {
+        Box::pin(self.delete_sent(collection, uid, href, etag)).await.map_err(Unwritten::into_error)
+    }
+
+    /// [`CalDavClient::delete_item`], saying whether a failed DELETE surely deleted nothing
+    /// ([`Unwritten`]).
+    async fn delete_sent(
+        &self,
+        collection: &str,
+        uid: &str,
+        href: Option<&str>,
+        etag: Option<&str>,
+    ) -> Result<(), Unwritten> {
         let Some(href) = href else { return Ok(()) };
         let (header, value) = precondition(Some(href), etag)?;
         let url = self.on_server(resolve(collection, href)?)?;
         let request =
             self.http.delete(url.clone()).basic_auth(&self.username, Some(&self.password)).header(header, value);
-        let response = request.send().await.map_err(transport_error)?;
+        let response = request.send().await.map_err(|err| Unwritten::Unknown(transport_error(err)))?;
         let status = response.status();
         // 404: already gone, which is what the caller wanted.
         if status.is_success() || status == StatusCode::NOT_FOUND {
             Ok(())
         } else {
-            Err(status_error(status, uid, &url))
+            Err(Unwritten::Refused(status_error(status, uid, &url)))
         }
     }
 
@@ -309,6 +364,15 @@ impl CalDavClient {
             None => self.fetch_etag(&fetched.url).await?,
         };
         Ok(Some(StoredItem { etag, recurring: crate::ical::is_series(&fetched.ics) }))
+    }
+
+    /// The `RRULE` text of the series stored at `href`, an item directly in `collection`
+    /// ([`item_url`]), as [`crate::ObjectFacts::repeat`] reads it; `Ok(None)` when nothing is stored
+    /// there (404) or the object has no rule. The core compares a client's rule text that fails
+    /// [`crate::recur::check`] with it: the stored text going back unchanged is no smuggled line.
+    pub async fn stored_rule(&self, collection: &str, href: &str) -> Result<Option<String>, ProviderError> {
+        let Some(fetched) = self.fetch_item(collection, href).await? else { return Ok(None) };
+        Ok(crate::ical::ObjectFacts::read(&fetched.ics).repeat.map(|repeat| repeat.rule))
     }
 
     /// The iCalendar object stored at `href` in `collection`, to write a change onto; `None`
@@ -348,6 +412,246 @@ impl CalDavClient {
         let xml = self.request("PROPFIND", url, "0", body).await?;
         etag_from_multistatus(&xml).ok_or_else(|| ProviderError::Other(format!("{url}: server sent no ETag")))
     }
+
+    /// Changes the occurrence `event` of the series stored at its `href` in its `collection` (a URL)
+    /// with `scope` (task TE.4, [`series::save`]): reads the stored object, plans the change and
+    /// writes it, every write of the stored object with the `etag` the event was read with
+    /// (`If-Match`), so a series someone changed meanwhile is a conflict and stays as it is.
+    ///
+    /// "This and all following" writes the new object first (`If-None-Match: *`, a new UID in the
+    /// same collection) and then the shortened series; when the server refuses that second write
+    /// (an error status), the new object is deleted again and the error is the answer, so the series
+    /// is never doubled. With `to` (a collection URL of the same server) the whole series moves
+    /// there: written new (`If-None-Match: *`), then the stored object deleted (`If-Match`); when the
+    /// server refuses that delete, the new object is deleted again and the error is the answer, so
+    /// the series never lies twice. A second step without an answer (connection lost, timeout) may
+    /// have been done on the server: then nothing is taken back – that could lose events – and the
+    /// error is the answer; the next sync reads both objects as the server holds them. A split
+    /// cannot move.
+    ///
+    /// The change is planned on the version the client read: when the server answers the read with
+    /// another ETag than `event.etag`, it is a conflict before anything is written, so not even a
+    /// new object (a split, a move) is built from a version the client has not seen.
+    ///
+    /// Refused before anything is written ([`SeriesFailure::Refused`]): no such occurrence (also an
+    /// object that is gone), and changes the suite cannot write yet. An update without `href` or
+    /// `etag` is refused as [`CalDavClient::save_event`] refuses it.
+    pub async fn save_in_series(
+        &self,
+        event: &Event,
+        scope: SeriesScope,
+        to: Option<&str>,
+    ) -> Result<SeriesWrite, SeriesFailure> {
+        let (href, etag) = series_item(event)?;
+        let stored = self.stored_version(event, href, etag).await?;
+        let uid = new_uid();
+        let writing = series::Writing { now: Utc::now(), local: machine_zone(), new_uid: &uid };
+        let outcome = series::save(&stored, event, scope, &writing)?;
+        let (reset, key) = (outcome.reset, outcome.key);
+        match (outcome.plan, to) {
+            (Plan::Replace { ics }, None) => {
+                let written = series::occurrence(&ics, key);
+                let kept = self.put_item(&event.collection, &event.uid, Some(href), Some(etag), ics).await?;
+                Ok(SeriesWrite { kept: Some(kept), split: None, key, reset, event: written })
+            }
+            (Plan::Replace { ics }, Some(to)) => {
+                let written = series::occurrence(&ics, key);
+                let (moved_href, moved_etag) = self.put_item(to, &event.uid, None, None, ics).await?;
+                if let Err(failed) = self.delete_sent(&event.collection, &event.uid, Some(href), Some(etag)).await {
+                    // Taken back only when the server refused the delete, or the series would lie in
+                    // both calendars. Without an answer it may be gone already: the copy stays, so the
+                    // series is never lost, and the next sync shows what each calendar holds.
+                    if let Unwritten::Refused(_) = failed {
+                        let undone = self.delete_item(to, &event.uid, Some(&moved_href), Some(&moved_etag)).await;
+                        if undone.is_err() {
+                            eprintln!("torro-pim-caldav: the moved copy of a series could not be taken back");
+                        }
+                    }
+                    return Err(failed.into_error().into());
+                }
+                Ok(SeriesWrite { kept: Some((moved_href, moved_etag)), split: None, key, reset, event: written })
+            }
+            (Plan::Split { new, old }, None) => {
+                let written = series::occurrence(&new, key);
+                let (new_href, new_etag) = self.put_item(&event.collection, &uid, None, None, new).await?;
+                match self.put_sent(&event.collection, &event.uid, Some(href), Some(etag), old).await {
+                    Ok(kept) => {
+                        let split = Some((new_href, new_etag));
+                        Ok(SeriesWrite { kept: Some(kept), split, key, reset, event: written })
+                    }
+                    Err(Unwritten::Refused(err)) => {
+                        // Taken back, or the events after the split would show twice.
+                        let undone = self.delete_item(&event.collection, &uid, Some(&new_href), Some(&new_etag)).await;
+                        if undone.is_err() {
+                            eprintln!("torro-pim-caldav: the new part of a split series could not be taken back");
+                        }
+                        Err(err.into())
+                    }
+                    // No answer: the shortened series may be written already, and taking the new part
+                    // back would lose the events after the split. Both stay; the next sync shows them.
+                    Err(Unwritten::Unknown(err)) => Err(err.into()),
+                }
+            }
+            (Plan::Split { .. }, Some(_)) => {
+                Err(SeriesError::Unsupported("only a whole series moves to another calendar").into())
+            }
+            (Plan::Delete, _) => {
+                self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await?;
+                Ok(SeriesWrite { kept: None, split: None, key: None, reset, event: None })
+            }
+        }
+    }
+
+    /// The object stored at `href` for a write to the series of `event`, in the version `etag` the
+    /// client read: `NoOccurrence` when it is gone, a conflict when the server holds another version
+    /// (by the ETag of its answer; a server that sends none is checked by the `If-Match` of the write).
+    async fn stored_version(&self, event: &Event, href: &str, etag: &str) -> Result<String, SeriesFailure> {
+        let fetched = self.fetch_item(&event.collection, href).await?.ok_or(SeriesError::NoOccurrence)?;
+        if fetched.etag.as_deref().is_some_and(|stored| stored != etag) {
+            return Err(ProviderError::Conflict { uid: event.uid.clone() }.into());
+        }
+        Ok(fetched.ics)
+    }
+
+    /// Deletes the occurrence `event` of the series stored at its `href` with `scope` (task TE.4,
+    /// [`series::delete`]): an `EXDATE`, the end of the series before it, or the whole object, always
+    /// with the `etag` the event was read with. Refused like [`CalDavClient::save_in_series`].
+    pub async fn delete_in_series(&self, event: &Event, scope: SeriesScope) -> Result<SeriesWrite, SeriesFailure> {
+        let (href, etag) = series_item(event)?;
+        let stored = self.stored_version(event, href, etag).await?;
+        match series::delete(&stored, event, scope, Utc::now())?.plan {
+            Plan::Replace { ics } => {
+                let kept = self.put_item(&event.collection, &event.uid, Some(href), Some(etag), ics).await?;
+                Ok(SeriesWrite { kept: Some(kept), split: None, key: None, reset: 0, event: None })
+            }
+            Plan::Delete | Plan::Split { .. } => {
+                self.delete_item(&event.collection, &event.uid, Some(href), Some(etag)).await?;
+                Ok(SeriesWrite { kept: None, split: None, key: None, reset: 0, event: None })
+            }
+        }
+    }
+
+    /// The occurrences in `[start, end)` of the objects at `hrefs` in `collection` (a URL), expanded by
+    /// the server like [`CalDavClient::events`], each with `href` and `etag` (task TE.4: after a write
+    /// to a series the core replaces only these). One `calendar-multiget` REPORT (RFC 4791 section
+    /// 7.9) with `expand`; hrefs off this account's server are not asked for, an href the server no
+    /// longer has is left out, and an empty `hrefs` sends nothing.
+    pub async fn occurrences(
+        &self,
+        collection: &str,
+        hrefs: &[String],
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<Event>, ProviderError> {
+        let url = parse_url(collection)?;
+        let paths: Vec<String> = hrefs
+            .iter()
+            .filter_map(|href| url.join(href.trim()).ok())
+            .filter_map(|href| self.on_server(href).ok())
+            .map(|href| format!("<d:href>{}</d:href>", xml_text(href.path())))
+            .collect();
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (s, e) = (ical::format_utc(start), ical::format_utc(end));
+        let body = format!(
+            r#"<c:calendar-multiget xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data><c:expand start="{s}" end="{e}"/></c:calendar-data></d:prop>
+  {}
+</c:calendar-multiget>"#,
+            paths.join("\n  ")
+        );
+        let xml = self.request("REPORT", &url, "0", &body).await?;
+        expanded_in_answer(&xml, &url, collection)
+    }
+}
+
+/// Why a write failed, and whether it surely changed nothing on the server: the second step of a
+/// move or a split is taken back only then (the second review of #278, finding 4).
+#[derive(Debug)]
+enum Unwritten {
+    /// Nothing was changed: the request was not sent (no precondition, an address off the server),
+    /// or the server answered it with an error status (412, 403, 409, 5xx …).
+    Refused(ProviderError),
+    /// The request went out but its end is unknown: no answer (connection lost, timeout), or it was
+    /// written and the ETag that follows could not be read.
+    Unknown(ProviderError),
+}
+
+impl Unwritten {
+    fn into_error(self) -> ProviderError {
+        match self {
+            Unwritten::Refused(err) | Unwritten::Unknown(err) => err,
+        }
+    }
+}
+
+impl From<ProviderError> for Unwritten {
+    /// The checks before a request is sent.
+    fn from(err: ProviderError) -> Self {
+        Unwritten::Refused(err)
+    }
+}
+
+/// What a write to a series did (task TE.4, [`CalDavClient::save_in_series`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeriesWrite {
+    /// The href and ETag of the stored object now (where it moved to, for a move); `None` when it was
+    /// deleted.
+    pub kept: Option<(String, String)>,
+    /// The href and ETag of the new object a split made ("this and all following").
+    pub split: Option<(String, String)>,
+    /// The key of the changed occurrence afterwards ([`series::Outcome::key`]), in the object of
+    /// `split` when there is one.
+    pub key: Option<EventTime>,
+    /// How many changed occurrences were reset ([`series::Outcome::reset`]).
+    pub reset: u32,
+    /// The changed occurrence as written, read from the object sent ([`series::occurrence`]): uid,
+    /// times, fields, `recurrence_id` (= `key`), the rule and changed occurrences of the object that
+    /// holds it (the new one after a split). Without `collection`, `href` and `etag` (those are in
+    /// `kept`/`split`); `None` after a delete. The core answers with it when it cannot read the
+    /// occurrence again, so the answer always names the occurrence written, never another.
+    pub event: Option<Event>,
+}
+
+/// The `href` and `etag` an occurrence of a series is written with; refused without either, as every
+/// update is ([`precondition`]).
+fn series_item(event: &Event) -> Result<(&str, &str), ProviderError> {
+    let href =
+        event.href.as_deref().ok_or_else(|| ProviderError::Other("a series needs the href of its events".into()))?;
+    let (_, etag) = precondition(Some(href), event.etag.as_deref())?;
+    Ok((href, etag))
+}
+
+/// The occurrences in a `calendar-multiget` answer with `expand` for `collection` (`base` parsed):
+/// each with the `href` (absolute) and `etag` of its resource; a response without calendar data (an
+/// href the server does not have) is left out.
+fn expanded_in_answer(xml: &str, base: &Url, collection: &str) -> Result<Vec<Event>, ProviderError> {
+    let doc = roxmltree::Document::parse(xml)
+        .map_err(|err| ProviderError::Other(format!("unreadable server answer: {err}")))?;
+    let mut events = Vec::new();
+    for response in doc.root_element().children().filter(|n| is_dav(*n, "response")) {
+        let href = dav_child(response, "href").and_then(|n| n.text()).and_then(|h| base.join(h.trim()).ok());
+        let Some(prop) = response
+            .children()
+            .filter(|n| is_dav(*n, "propstat"))
+            .find(|ps| dav_child(*ps, "status").and_then(|s| s.text()).is_some_and(|s| s.contains(" 200")))
+            .and_then(|ps| dav_child(ps, "prop"))
+        else {
+            continue;
+        };
+        let data = prop.children().find(|n| {
+            n.is_element() && n.tag_name().name() == "calendar-data" && n.tag_name().namespace() == Some(NS_CALDAV)
+        });
+        let Some(data) = data.and_then(|n| n.text()) else { continue };
+        let etag = dav_child(prop, "getetag").and_then(|n| n.text()).map(str::trim).filter(|e| !e.is_empty());
+        for mut event in ical::parse_events(data, collection) {
+            event.href = href.as_ref().map(Url::to_string);
+            event.etag = etag.map(str::to_string);
+            events.push(event);
+        }
+    }
+    Ok(events)
 }
 
 /// What an item on the server is, as [`CalDavClient::stored_item`] read it.
@@ -496,26 +800,86 @@ fn xml_text(text: &str) -> String {
     out
 }
 
-fn event_ics(event: &Event, now: DateTime<Utc>) -> String {
-    let mut body = new_lines(event_fields(event, None, now));
+/// The event as a new object; `local` is the computer's zone ([`machine_zone`], passed in so tests
+/// do not depend on the machine they run on).
+fn event_ics(event: &Event, now: DateTime<Utc>, local: Option<Tz>) -> String {
+    let zone = write_zone(event, None, local);
+    let fields = event_fields(event, None, zone, now);
+    let zones = zone.filter(|_| uses_zone(&fields)).map(|tz| vtimezone(tz, instant(event.start))).unwrap_or_default();
+    let mut body = new_lines(fields);
     body.extend(event.alarms.iter().flat_map(|alarm| fresh_alarm(*alarm)));
-    calendar("VEVENT", &body)
+    calendar("VEVENT", &zones, &body)
 }
 
 fn todo_ics(todo: &Todo, now: DateTime<Utc>) -> String {
-    calendar("VTODO", &new_lines(todo_fields(todo, None, now)))
+    calendar("VTODO", &[], &new_lines(todo_fields(todo, None, now)))
 }
 
-fn event_onto(stored: &str, event: &Event, now: DateTime<Utc>) -> String {
+pub(crate) fn event_onto(stored: &str, event: &Event, now: DateTime<Utc>, local: Option<Tz>) -> String {
+    let defined = defined_zones(stored);
     let merged = merge_component(stored, "VEVENT", &event.uid, |props, alarms| {
-        let before = ical::to_event(props, alarms, &event.collection);
-        let mut fields = event_fields(event, before.as_ref(), now);
-        fields.push(last_modified(now));
-        // The reminders are rewritten only when they differ from what is stored.
-        let alarms = before.is_none_or(|before| before.alarms != event.alarms).then(|| event.alarms.clone());
-        Rewrite { fields, alarms }
+        event_rewrite(event, props, alarms, &defined, now, local)
     });
-    merged.unwrap_or_else(|| event_ics(event, now))
+    merged.unwrap_or_else(|| event_ics(event, now, local))
+}
+
+/// `block`, one `VEVENT` of a stored object (unfolded lines from its `BEGIN` to its `END`), with
+/// `event` written onto it as [`merge_ics_event`] writes onto a whole object (task TE.4: a series
+/// changes one component at a time). Returns the new block and the `VTIMEZONE` (unfolded, possibly
+/// none) of a zone the new times use that is not among `defined`, the zones the object holds.
+pub(crate) fn event_onto_block(
+    block: &[String],
+    event: &Event,
+    defined: &[String],
+    now: DateTime<Utc>,
+    local: Option<Tz>,
+) -> (Vec<String>, Vec<String>) {
+    // The block alone in a calendar: the one component merge_component can pick.
+    let mut wrapped = String::new();
+    push_line(&mut wrapped, "BEGIN:VCALENDAR");
+    block.iter().for_each(|line| push_line(&mut wrapped, line));
+    push_line(&mut wrapped, "END:VCALENDAR");
+    let merged = merge_component(&wrapped, "VEVENT", &event.uid, |props, alarms| {
+        event_rewrite(event, props, alarms, defined, now, local)
+    });
+    let lines = merged.map(|text| ical::unfold(&text)).unwrap_or_default();
+    let inner = lines.get(1..lines.len().saturating_sub(1)).unwrap_or_default();
+    let begin = inner.iter().position(|line| line.eq_ignore_ascii_case("BEGIN:VEVENT")).unwrap_or(0);
+    let (zones, block) = inner.split_at(begin);
+    (block.to_vec(), zones.to_vec())
+}
+
+/// What [`merge_component`] changes in a stored `VEVENT` with the properties `props` and the
+/// reminders `alarms` when `event` is written onto it: the fields that differ (the rule included,
+/// [`event_fields`]), `LAST-MODIFIED`, the reminders when they differ, and the `VTIMEZONE` of a
+/// zone that is not among `defined`.
+fn event_rewrite(
+    event: &Event,
+    props: &[Property<'_>],
+    alarms: &[Vec<Property<'_>>],
+    defined: &[String],
+    now: DateTime<Utc>,
+    local: Option<Tz>,
+) -> Rewrite {
+    let mut before = ical::to_event(props, alarms, &event.collection);
+    if let Some(before) = before.as_mut() {
+        // The reader leaves the rule to the core (an expanded occurrence has none); here it is the
+        // component's own, so a rule that stays is not written again.
+        let zone = before.time_zone.as_deref().and_then(ical::zone);
+        let rule = props.iter().find(|prop| prop.name.eq_ignore_ascii_case("RRULE"));
+        before.repeat = rule.map(|rule| Box::new(crate::recur::read(rule.value, zone)));
+    }
+    let zone = write_zone(event, before.as_ref(), local);
+    let mut fields = event_fields(event, before.as_ref(), zone, now);
+    fields.push(last_modified(now));
+    // One VTIMEZONE per zone in the object: only a zone it does not define yet gets one.
+    let zones = zone
+        .filter(|tz| uses_zone(&fields) && !defined.iter().any(|name| name == tz.name()))
+        .map(|tz| vtimezone(tz, instant(event.start)))
+        .unwrap_or_default();
+    // The reminders are rewritten only when they differ from what is stored.
+    let alarms = before.as_ref().is_none_or(|before| before.alarms != event.alarms).then(|| event.alarms.clone());
+    Rewrite { fields, alarms, zones }
 }
 
 fn todo_onto(stored: &str, todo: &Todo, now: DateTime<Utc>) -> String {
@@ -524,7 +888,7 @@ fn todo_onto(stored: &str, todo: &Todo, now: DateTime<Utc>) -> String {
         let mut fields = todo_fields(todo, before.as_ref(), now);
         fields.push(last_modified(now));
         // A task's alarms are not the model's (yet): they stay as stored.
-        Rewrite { fields, alarms: None }
+        Rewrite { fields, alarms: None, zones: Vec::new() }
     });
     merged.unwrap_or_else(|| todo_ics(todo, now))
 }
@@ -578,20 +942,36 @@ fn last_modified(now: DateTime<Utc>) -> Field {
 }
 
 /// The fields of an event. `before` is the event as the stored object describes it; `None`
-/// (a new object, or one the model cannot read) marks every field as changed.
-fn event_fields(event: &Event, before: Option<&Event>, now: DateTime<Utc>) -> Vec<Field> {
+/// (a new object, or one the model cannot read) marks every field as changed. Times go out in
+/// `zone` ([`write_zone`]), UTC without one.
+fn event_fields(event: &Event, before: Option<&Event>, zone: Option<Tz>, now: DateTime<Utc>) -> Vec<Field> {
     let differs = |same: fn(&Event, &Event) -> bool| before.is_none_or(|before| !same(before, event));
-    let start_moved = differs(|a, b| a.start == b.start);
+    // A zone the event names that is not the stored one moves the wall-clock times, even when
+    // the instants stay; no zone in the event keeps the stored one. Days have no zone.
+    let rezoned = before.is_none_or(|before| {
+        let named = event.time_zone.as_deref().and_then(ical::zone);
+        let timed = matches!(event.start, EventTime::DateTime(_));
+        timed && named.is_some() && named != before.time_zone.as_deref().and_then(ical::zone)
+    });
+    let start_moved = rezoned || differs(|a, b| a.start == b.start);
+    let place_moved = differs(|a, b| non_empty(&a.location) == non_empty(&b.location) && a.geo == b.geo);
     vec![
         Field::new(&["UID"], differs(|a, b| a.uid == b.uid), vec![text_line("UID", &event.uid)]),
         stamp(now),
-        Field::new(&["DTSTART"], start_moved, vec![time_line("DTSTART", event.start)]),
+        Field::new(&["DTSTART"], start_moved, vec![time_line("DTSTART", event.start, zone)]),
         // A stored DURATION counts from DTSTART: when the start moves, the end is written as
         // DTEND, or the event would grow or shrink.
         Field::new(
             &["DTEND", "DURATION"],
             start_moved || differs(|a, b| a.end == b.end),
-            event.end.map(|end| time_line("DTEND", end)).into_iter().collect(),
+            event.end.map(|end| time_line("DTEND", end, zone)).into_iter().collect(),
+        ),
+        // The rule of a series (task TE.4): written when it is new or its fields changed; a rule
+        // that stays keeps its stored text, an event without one has none.
+        Field::new(
+            &["RRULE"],
+            rule_line(event, before, zone) != before.and_then(stored_rule_line),
+            rule_line(event, before, zone).into_iter().collect(),
         ),
         Field::new(&["SUMMARY"], differs(|a, b| a.summary == b.summary), vec![text_line("SUMMARY", &event.summary)]),
         Field::new(
@@ -614,7 +994,266 @@ fn event_fields(event: &Event, before: Option<&Event>, now: DateTime<Utc>) -> Ve
                 .into_iter()
                 .collect(),
         ),
+        Field::new(
+            &["URL"],
+            differs(|a, b| uri(&a.url) == uri(&b.url)),
+            uri(&event.url).map(|url| format!("URL:{url}")).into_iter().collect(),
+        ),
+        // An unknown stored STATUS reads as none and stays while the event says none.
+        Field::new(
+            &["STATUS"],
+            differs(|a, b| a.status == b.status),
+            event.status.map(status_line).into_iter().collect(),
+        ),
+        Field::new(
+            &["GEO"],
+            differs(|a, b| a.geo == b.geo),
+            event.geo.map(|geo| format!("GEO:{};{}", geo.lat, geo.lon)).into_iter().collect(),
+        ),
+        // Apple's place (name, address, coordinates) belongs to the old place once it moved.
+        Field::new(&["X-APPLE-STRUCTURED-LOCATION"], place_moved, Vec::new()),
     ]
+}
+
+/// The `RRULE` line of `event`'s rule ([`rule_text`] against the rule `before` holds); `None` without
+/// a rule or for an empty one (extra dates only, which stay as stored).
+fn rule_line(event: &Event, before: Option<&Event>, zone: Option<Tz>) -> Option<String> {
+    let stored = before.and_then(|before| before.repeat.as_deref()).map(|repeat| repeat.rule.as_str());
+    let text = rule_text(event.repeat.as_deref()?, stored, event.start, zone);
+    (!text.is_empty()).then(|| format!("RRULE:{text}"))
+}
+
+/// The `RRULE` line `before`, an event read from a stored component, has there.
+fn stored_rule_line(before: &Event) -> Option<String> {
+    let rule = before.repeat.as_deref()?.rule.trim();
+    (!rule.is_empty()).then(|| format!("RRULE:{rule}"))
+}
+
+/// The rule text (`RRULE` value) to write for `repeat` on a series that starts at `start` in `zone`,
+/// where `stored` is the rule stored now. The client's [`Repeat::rule`] never reaches the object,
+/// except for a custom rule of a series that has none stored yet (and then only when it passes
+/// [`crate::recur::check`]): a client could otherwise smuggle lines in after `RRULE:` (finding 1 of
+/// the review of #278).
+///
+/// - [`Repeat::custom`]: `stored`, as the model promises (the editor can only replace a custom rule
+///   whole, by fields); without one, the client's text when it is valid, else nothing;
+/// - `stored` when the fields of `repeat` are those of `stored` (also when a client built them anew
+///   with an empty [`Repeat::rule`]): an untouched rule keeps its text, `WKST` and order;
+/// - else a rule made from the fields alone ([`crate::recur::write`]), with an end that fits the
+///   start: a day for an all-day series, an instant for a timed one (the last second of that day in
+///   `zone`), as RFC 5545 asks of `UNTIL`.
+pub(crate) fn rule_text(repeat: &Repeat, stored: Option<&str>, start: EventTime, zone: Option<Tz>) -> String {
+    let stored = stored.map(str::trim).filter(|stored| !stored.is_empty());
+    if repeat.custom {
+        return match stored {
+            Some(stored) => stored.to_string(),
+            None => crate::recur::write(repeat),
+        };
+    }
+    if let Some(stored) = stored
+        && crate::recur::keeps_stored(stored, repeat)
+    {
+        return stored.to_string();
+    }
+    let end = match (repeat.end, start) {
+        (RepeatEnd::Until(EventTime::DateTime(at)), EventTime::Date(_)) => {
+            RepeatEnd::Until(EventTime::Date(at.with_timezone(&zone.unwrap_or(Tz::UTC)).date_naive()))
+        }
+        (RepeatEnd::Until(EventTime::Date(day)), EventTime::DateTime(_)) => {
+            let last = day.and_hms_opt(23, 59, 59).unwrap_or_else(|| day.and_time(chrono::NaiveTime::MIN));
+            RepeatEnd::Until(EventTime::DateTime(zone.map_or_else(|| last.and_utc(), |tz| ical::in_zone(tz, last))))
+        }
+        (end, _) => end,
+    };
+    crate::recur::write(&Repeat { end, rule: String::new(), ..repeat.clone() })
+}
+
+/// `STATUS:CONFIRMED`, `TENTATIVE` or `CANCELLED`.
+fn status_line(status: EventStatus) -> String {
+    let value = match status {
+        EventStatus::Confirmed => "CONFIRMED",
+        EventStatus::Tentative => "TENTATIVE",
+        EventStatus::Cancelled => "CANCELLED",
+    };
+    format!("STATUS:{value}")
+}
+
+/// The zone an event's times are written in: its own `time_zone`, else the one its stored `DTSTART`
+/// names (`before`), else the computer's (`local`). `None` means UTC: no zone is known, or the zone
+/// is UTC itself, which needs no `VTIMEZONE`.
+fn write_zone(event: &Event, before: Option<&Event>, local: Option<Tz>) -> Option<Tz> {
+    let named = |e: &Event| e.time_zone.as_deref().and_then(ical::zone);
+    named(event).or_else(|| before.and_then(named)).or(local).filter(|tz| !is_utc(*tz))
+}
+
+/// The zone is UTC under one of its names.
+pub(crate) fn is_utc(tz: Tz) -> bool {
+    matches!(
+        tz,
+        Tz::UTC | Tz::Etc__UTC | Tz::Etc__Universal | Tz::Universal | Tz::Etc__Zulu | Tz::Zulu | Tz::GMT | Tz::Etc__GMT
+    )
+}
+
+/// A changed field writes a time with a `TZID`, so the object needs that zone's `VTIMEZONE`.
+fn uses_zone(fields: &[Field]) -> bool {
+    fields
+        .iter()
+        .filter(|field| field.changed)
+        .flat_map(|field| &field.lines)
+        .any(|line| ical::parse_line(line).is_some_and(|prop| prop.param("TZID").is_some()))
+}
+
+/// The `TZID`s of the `VTIMEZONE`s in `stored`.
+pub(crate) fn defined_zones(stored: &str) -> Vec<String> {
+    let mut zones = Vec::new();
+    let mut inside = false;
+    for line in ical::unfold(stored) {
+        let Some(prop) = ical::parse_line(&line) else { continue };
+        let value = prop.value.trim();
+        match prop.name.to_ascii_uppercase().as_str() {
+            "BEGIN" if value.eq_ignore_ascii_case("VTIMEZONE") => inside = true,
+            "END" if value.eq_ignore_ascii_case("VTIMEZONE") => inside = false,
+            "TZID" if inside => zones.push(value.to_string()),
+            _ => {}
+        }
+    }
+    zones
+}
+
+/// The instant of an event time; a day counts from its midnight in UTC (only the year matters).
+fn instant(time: EventTime) -> DateTime<Utc> {
+    match time {
+        EventTime::DateTime(at) => at,
+        EventTime::Date(date) => date.and_time(chrono::NaiveTime::MIN).and_utc(),
+    }
+}
+
+/// The `VTIMEZONE` of `tz` (RFC 5545 section 3.6.5), unfolded, as calendar programs write it: one
+/// `DAYLIGHT` and one `STANDARD` with a yearly rule (`RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU`)
+/// starting in 1970, read off the changes of the clock in the year of `around`. A zone without
+/// summer time gets one `STANDARD`; a year with other than two changes (a zone that starts or ends
+/// summer time, or pauses it) gets one observance per change on its date, without a rule.
+pub(crate) fn vtimezone(tz: Tz, around: DateTime<Utc>) -> Vec<String> {
+    let changes = clock_changes(tz, around.year());
+    let mut out = vec!["BEGIN:VTIMEZONE".to_string(), format!("TZID:{}", tz.name())];
+    if changes.is_empty() {
+        let offset = tz.offset_from_utc_datetime(&around.naive_utc());
+        let fixed = offset.fix();
+        let start = NaiveDate::from_ymd_opt(1970, 1, 1).map(|d| d.and_time(chrono::NaiveTime::MIN));
+        out.extend(observance("STANDARD", fixed, fixed, offset.abbreviation(), start, None));
+    }
+    let yearly = changes.len() == 2;
+    for change in &changes {
+        let after = tz.offset_from_utc_datetime(&change.at.naive_utc());
+        let kind = if change.to.local_minus_utc() > change.from.local_minus_utc() { "DAYLIGHT" } else { "STANDARD" };
+        // The wall clock just before the change, as DTSTART of an observance counts it.
+        let local = change.at.naive_utc() + TimeDelta::seconds(i64::from(change.from.local_minus_utc()));
+        let (start, rule) = if yearly { yearly_rule(local) } else { (Some(local), None) };
+        out.extend(observance(kind, change.from, change.to, after.abbreviation(), start, rule));
+    }
+    out.push("END:VTIMEZONE".to_string());
+    out
+}
+
+/// One change of a zone's clock: the instant and the offsets before and after.
+struct ClockChange {
+    at: DateTime<Utc>,
+    from: chrono::FixedOffset,
+    to: chrono::FixedOffset,
+}
+
+/// The changes of `tz`'s offset in `year`, in order, each to the second.
+fn clock_changes(tz: Tz, year: i32) -> Vec<ClockChange> {
+    let offset = |at: DateTime<Utc>| tz.offset_from_utc_datetime(&at.naive_utc()).fix();
+    let Some(mut day) = Utc.with_ymd_and_hms(year, 1, 1, 0, 0, 0).single() else { return Vec::new() };
+    let mut changes = Vec::new();
+    // Day by day, then halving the day the offset changed in down to the second.
+    while day.year() == year {
+        let next = day + TimeDelta::days(1);
+        let (from, to) = (offset(day), offset(next));
+        if from != to {
+            let (mut low, mut high) = (day, next);
+            while high - low > TimeDelta::seconds(1) {
+                let middle = low + (high - low) / 2;
+                if offset(middle) == from { low = middle } else { high = middle }
+            }
+            changes.push(ClockChange { at: high, from, to });
+        }
+        day = next;
+    }
+    changes
+}
+
+/// The start in 1970 and the yearly rule of a change that happens at the wall-clock time `local`:
+/// the same weekday in the same week of the month (`2SU`), or the last one (`-1SU`) when it falls in
+/// the month's last seven days.
+fn yearly_rule(local: NaiveDateTime) -> (Option<NaiveDateTime>, Option<String>) {
+    let (month, weekday) = (local.month(), local.weekday());
+    let last_day = days_in_month(local.year(), month);
+    let week: i8 = if local.day() + 7 > last_day { -1 } else { ((local.day() - 1) / 7 + 1) as i8 };
+    let day = if week < 0 {
+        let last = NaiveDate::from_ymd_opt(1970, month, days_in_month(1970, month));
+        last.map(|last| {
+            last - TimeDelta::days(i64::from(
+                (7 + last.weekday().num_days_from_monday() - weekday.num_days_from_monday()) % 7,
+            ))
+        })
+    } else {
+        NaiveDate::from_weekday_of_month_opt(1970, month, weekday, week.unsigned_abs())
+    };
+    let rule = format!("RRULE:FREQ=YEARLY;BYMONTH={month};BYDAY={week}{}", weekday_code(weekday));
+    (day.map(|day| day.and_time(local.time())), Some(rule))
+}
+
+/// The number of days of `month` in `year`.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    let next =
+        if month == 12 { NaiveDate::from_ymd_opt(year + 1, 1, 1) } else { NaiveDate::from_ymd_opt(year, month + 1, 1) };
+    next.and_then(|next| next.pred_opt()).map_or(31, |last| last.day())
+}
+
+/// `MO` … `SU`, as `BYDAY` names the weekdays.
+fn weekday_code(weekday: Weekday) -> &'static str {
+    match weekday {
+        Weekday::Mon => "MO",
+        Weekday::Tue => "TU",
+        Weekday::Wed => "WE",
+        Weekday::Thu => "TH",
+        Weekday::Fri => "FR",
+        Weekday::Sat => "SA",
+        Weekday::Sun => "SU",
+    }
+}
+
+/// One `STANDARD` or `DAYLIGHT` block; nothing when there is no start.
+fn observance(
+    kind: &str,
+    from: chrono::FixedOffset,
+    to: chrono::FixedOffset,
+    name: Option<&str>,
+    start: Option<NaiveDateTime>,
+    rule: Option<String>,
+) -> Vec<String> {
+    let Some(start) = start else { return Vec::new() };
+    let mut out = vec![
+        format!("BEGIN:{kind}"),
+        format!("TZOFFSETFROM:{}", utc_offset(from)),
+        format!("TZOFFSETTO:{}", utc_offset(to)),
+    ];
+    out.extend(name.filter(|name| !name.is_empty()).map(|name| text_line("TZNAME", name)));
+    out.push(format!("DTSTART:{}", start.format("%Y%m%dT%H%M%S")));
+    out.extend(rule);
+    out.push(format!("END:{kind}"));
+    out
+}
+
+/// `+0100`, `-0330`, or with seconds `+005328` (RFC 5545 section 3.3.14).
+fn utc_offset(offset: chrono::FixedOffset) -> String {
+    let seconds = offset.local_minus_utc();
+    let sign = if seconds < 0 { '-' } else { '+' };
+    let seconds = seconds.unsigned_abs();
+    let (hours, minutes, rest) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
+    if rest == 0 { format!("{sign}{hours:02}{minutes:02}") } else { format!("{sign}{hours:02}{minutes:02}{rest:02}") }
 }
 
 /// The fields of a task; `before` as in [`event_fields`].
@@ -632,7 +1271,8 @@ fn todo_fields(todo: &Todo, before: Option<&Todo>, now: DateTime<Utc>) -> Vec<Fi
         Field::new(
             &["DUE"],
             differs(|a, b| a.due == b.due),
-            todo.due.map(|due| time_line("DUE", due)).into_iter().collect(),
+            // A task's times stay in UTC: tasks have no zone in the model.
+            todo.due.map(|due| time_line("DUE", due, None)).into_iter().collect(),
         ),
         Field::new(
             &["PRIORITY"],
@@ -727,10 +1367,12 @@ fn optional_text(name: &str, value: &Option<String>) -> Vec<String> {
 }
 
 /// What [`merge_component`] changes in a component: its fields, and, when `alarms` is set, the
-/// reminders the model holds ([`AlarmPlan`]).
+/// reminders the model holds ([`AlarmPlan`]). `zones` (unfolded `VTIMEZONE`s, possibly none) go
+/// right before the component.
 struct Rewrite {
     fields: Vec<Field>,
     alarms: Option<Vec<Alarm>>,
+    zones: Vec<String>,
 }
 
 /// `stored` with the `component` (`VEVENT`, `VTODO`) that has `uid` (else the first one)
@@ -763,7 +1405,7 @@ fn merge_component(
         .iter()
         .map(|block| (block.begin + 1..block.end).filter_map(|i| ical::parse_line(lines.get(i)?)).collect())
         .collect();
-    let Rewrite { fields, alarms } = rewrite(&own, &alarm_props);
+    let Rewrite { fields, alarms, zones } = rewrite(&own, &alarm_props);
     let dropped = |prop: &Property<'_>| fields.iter().any(|field| field.changed && field.covers.matches(prop));
     let plan = alarms.map(|wanted| AlarmPlan::new(&lines, chosen, &alarm_props, &wanted));
 
@@ -779,6 +1421,9 @@ fn merge_component(
         }
         if plan.as_ref().is_some_and(|plan| plan.replaces(i)) {
             continue;
+        }
+        if i == chosen.begin {
+            zones.iter().for_each(|new| push_line(&mut out, new));
         }
         push_line(&mut out, line);
         if i == chosen.begin {
@@ -967,12 +1612,16 @@ fn components(parsed: &[Option<Property<'_>>], component: &str) -> Vec<Candidate
     found
 }
 
-/// Wraps one component in a `VCALENDAR`. `body` holds unfolded content lines.
-fn calendar(component: &str, body: &[String]) -> String {
+/// Wraps one component in a `VCALENDAR`, after the `zones` it uses. `zones` and `body` hold
+/// unfolded content lines.
+fn calendar(component: &str, zones: &[String], body: &[String]) -> String {
     let mut out = String::new();
     push_line(&mut out, "BEGIN:VCALENDAR");
     push_line(&mut out, "VERSION:2.0");
     push_line(&mut out, &format!("PRODID:{PRODID}"));
+    for line in zones {
+        push_line(&mut out, line);
+    }
     push_line(&mut out, &format!("BEGIN:{component}"));
     for line in body {
         push_line(&mut out, line);
@@ -983,10 +1632,12 @@ fn calendar(component: &str, body: &[String]) -> String {
 }
 
 /// Appends one content line, folded at 75 octets and ended with CRLF. Folds fall between
-/// characters, never inside a UTF-8 sequence.
-fn push_line(out: &mut String, line: &str) {
+/// characters, never inside a UTF-8 sequence. Control characters other than a tab are left out
+/// (RFC 5545 section 3.1 allows none in a line): a line break inside `line` would start a new
+/// property, so nothing that reaches here can add a line, whatever a field held.
+pub(crate) fn push_line(out: &mut String, line: &str) {
     let mut octets = 0;
-    for ch in line.chars() {
+    for ch in line.chars().filter(|ch| *ch == '\t' || !ch.is_control()) {
         let len = ch.len_utf8();
         if octets + len > MAX_LINE_OCTETS {
             out.push_str("\r\n ");
@@ -1018,11 +1669,15 @@ fn escape(text: &str) -> String {
     out
 }
 
-/// `DTSTART:20261011T080000Z` for a time, `DTSTART;VALUE=DATE:20261011` for a day.
-fn time_line(name: &str, time: EventTime) -> String {
-    match time {
-        EventTime::Date(date) => format!("{name};VALUE=DATE:{}", date_value(date)),
-        EventTime::DateTime(at) => format!("{name}:{}", utc(at)),
+/// `DTSTART;TZID=Europe/Berlin:20261011T100000` for a time in `zone`, `DTSTART:20261011T080000Z`
+/// without one, `DTSTART;VALUE=DATE:20261011` for a day (days have no zone).
+pub(crate) fn time_line(name: &str, time: EventTime, zone: Option<Tz>) -> String {
+    match (time, zone) {
+        (EventTime::Date(date), _) => format!("{name};VALUE=DATE:{}", date_value(date)),
+        (EventTime::DateTime(at), Some(tz)) => {
+            format!("{name};TZID={}:{}", tz.name(), at.with_timezone(&tz).format("%Y%m%dT%H%M%S"))
+        }
+        (EventTime::DateTime(at), None) => format!("{name}:{}", utc(at)),
     }
 }
 
@@ -1037,7 +1692,7 @@ fn date_value(date: NaiveDate) -> String {
 /// A UID for a new item: `<nanoseconds since 1970>-<process id>@torro`. It needs no random
 /// number generator and no new dependency; the process id keeps two instances started in
 /// the same nanosecond apart.
-fn new_uid() -> String {
+pub(crate) fn new_uid() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
@@ -1138,8 +1793,7 @@ fn dav_child<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
-    use torro_pim::model::{GitHubDetails, GitHubKind, GitHubLabel, GitHubState, Link};
+    use torro_pim::model::{Geo, GitHubDetails, GitHubKind, GitHubLabel, GitHubState, Link};
 
     use super::*;
 
@@ -1167,6 +1821,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -1214,7 +1877,7 @@ mod tests {
 
     #[test]
     fn timed_event_has_frame_and_utc_times() {
-        let ics = event_ics(&event(), now());
+        let ics = event_ics(&event(), now(), None);
         assert!(ics.ends_with("\r\n"));
         assert!(!ics.replace("\r\n", "").contains('\n'), "bare LF in output");
         let lines = unfolded_lines(&ics);
@@ -1243,7 +1906,7 @@ mod tests {
         event.end = Some(EventTime::Date(NaiveDate::from_ymd_opt(2026, 10, 12).unwrap()));
         event.location = Some("Büro, Raum 3".to_string());
         event.description = Some(String::new());
-        let lines = unfolded_lines(&event_ics(&event, now()));
+        let lines = unfolded_lines(&event_ics(&event, now(), None));
         assert!(lines.contains(&"DTSTART;VALUE=DATE:20261011".to_string()));
         assert!(lines.contains(&"DTEND;VALUE=DATE:20261012".to_string()));
         assert!(lines.contains(&"LOCATION:Büro\\, Raum 3".to_string()));
@@ -1287,7 +1950,7 @@ mod tests {
     fn text_values_are_escaped() {
         let mut event = event();
         event.summary = "Essen, Trinken; Pause\\ und\nZeile".to_string();
-        let lines = unfolded_lines(&event_ics(&event, now()));
+        let lines = unfolded_lines(&event_ics(&event, now(), None));
         assert!(lines.contains(&"SUMMARY:Essen\\, Trinken\\; Pause\\\\ und\\nZeile".to_string()));
     }
 
@@ -1296,7 +1959,7 @@ mod tests {
         let text = "Größe und Übung für Äpfel, Bäume; Wälder\nZweite Zeile mit Umlauten ÖÜ ".repeat(6);
         let mut event = event();
         event.description = Some(text.clone());
-        let ics = event_ics(&event, now());
+        let ics = event_ics(&event, now(), None);
 
         for line in ics.split("\r\n") {
             assert!(line.len() <= MAX_LINE_OCTETS, "line has {} octets: {line}", line.len());
@@ -1315,7 +1978,7 @@ mod tests {
     fn multibyte_summary_is_folded_between_characters() {
         let mut event = event();
         event.summary = "ÄÖÜ".repeat(50);
-        let ics = event_ics(&event, now());
+        let ics = event_ics(&event, now(), None);
         for line in ics.split("\r\n") {
             assert!(line.len() <= MAX_LINE_OCTETS, "line has {} octets", line.len());
         }
@@ -1642,7 +2305,7 @@ mod tests {
         let mut event = read_event(THUNDERBIRD_EVENT);
         event.location = Some("Raum 4".into());
         event.description = Some("Neue Agenda".into());
-        let written = event_onto(THUNDERBIRD_EVENT, &event, later());
+        let written = event_onto(THUNDERBIRD_EVENT, &event, later(), None);
         let replaced = [
             EVENT_STAMPS[0],
             EVENT_STAMPS[1],
@@ -1661,19 +2324,23 @@ mod tests {
     }
 
     #[test]
-    fn a_moved_event_gets_utc_times_and_keeps_the_rest() {
-        let mut event = read_event(THUNDERBIRD_EVENT);
+    fn a_moved_event_keeps_its_stored_zone_and_the_rest() {
+        // Task TE.2: the event names no zone (an older client), so the stored one is kept; the
+        // computer's zone does not matter then, and the object has its VTIMEZONE already.
+        let mut event = Event { time_zone: None, ..read_event(THUNDERBIRD_EVENT) };
         event.start = EventTime::DateTime(at(14, 8));
         event.end = Some(EventTime::DateTime(at(14, 9)));
-        let written = event_onto(THUNDERBIRD_EVENT, &event, later());
+        let written = event_onto(THUNDERBIRD_EVENT, &event, later(), Some(Tz::America__New_York));
         let replaced = [
             EVENT_STAMPS[0],
             EVENT_STAMPS[1],
             "DTSTART;TZID=Europe/Berlin:20261013T100000",
             "DTEND;TZID=Europe/Berlin:20261013T113000",
         ];
-        let new = with_stamps(&["DTSTART:20261014T080000Z", "DTEND:20261014T090000Z"]);
+        let new =
+            with_stamps(&["DTSTART;TZID=Europe/Berlin:20261014T100000", "DTEND;TZID=Europe/Berlin:20261014T110000"]);
         assert_rewritten(THUNDERBIRD_EVENT, &written, &replaced, &new);
+        assert_eq!(read_event(&written), Event { time_zone: Some("Europe/Berlin".into()), ..event });
     }
 
     #[test]
@@ -1685,13 +2352,13 @@ DTEND:20261011T090000Z\r\nSUMMARY:Focus\r\nTRANSP:TRANSPARENT\r\nX-FOO:bar\r\nEN
 
         // Another field changes: the stored TRANSP stays as it was.
         focus.summary = "Deep work".into();
-        let renamed = event_onto(stored, &focus, later());
+        let renamed = event_onto(stored, &focus, later(), None);
         assert_rewritten(stored, &renamed, &["SUMMARY:Focus"], &with_stamps(&["SUMMARY:Deep work"]));
         assert_eq!(read_event(&renamed), focus);
 
         // Busy again: TRANSP goes, as missing means opaque.
         let busy = Event { transparency: Transparency::Opaque, ..read_event(stored) };
-        let written = event_onto(stored, &busy, later());
+        let written = event_onto(stored, &busy, later(), None);
         assert_rewritten(stored, &written, &["TRANSP:TRANSPARENT"], &with_stamps(&[]));
         assert_eq!(read_event(&written).transparency, Transparency::Opaque);
 
@@ -1699,16 +2366,16 @@ DTEND:20261011T090000Z\r\nSUMMARY:Focus\r\nTRANSP:TRANSPARENT\r\nX-FOO:bar\r\nEN
         let opaque = stored.replace("TRANSP:TRANSPARENT", "TRANSP:OPAQUE");
         let mut meeting = read_event(&opaque);
         meeting.summary = "Meeting".into();
-        assert!(unfolded_lines(&event_onto(&opaque, &meeting, later())).contains(&"TRANSP:OPAQUE".to_string()));
+        assert!(unfolded_lines(&event_onto(&opaque, &meeting, later(), None)).contains(&"TRANSP:OPAQUE".to_string()));
         meeting.transparency = Transparency::Transparent;
-        let free = event_onto(&opaque, &meeting, later());
+        let free = event_onto(&opaque, &meeting, later(), None);
         assert_eq!(read_event(&free), meeting);
 
         // New objects: a line only for free time.
-        let new_busy = unfolded_lines(&event_ics(&event(), now()));
+        let new_busy = unfolded_lines(&event_ics(&event(), now(), None));
         assert!(!new_busy.iter().any(|line| line.starts_with("TRANSP")), "{new_busy:?}");
         let new_free = Event { transparency: Transparency::Transparent, ..event() };
-        assert!(unfolded_lines(&event_ics(&new_free, now())).contains(&"TRANSP:TRANSPARENT".to_string()));
+        assert!(unfolded_lines(&event_ics(&new_free, now(), None)).contains(&"TRANSP:TRANSPARENT".to_string()));
     }
 
     #[test]
@@ -1718,14 +2385,14 @@ SUMMARY:Kurz\r\nX-FOO:bar\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         // The end moves: DTSTART stays as stored, the duration is replaced.
         let mut event = read_event(stored);
         event.end = Some(EventTime::DateTime(at(11, 10)));
-        let written = event_onto(stored, &event, later());
+        let written = event_onto(stored, &event, later(), None);
         let new = with_stamps(&["DTEND:20261011T100000Z"]);
         assert_rewritten(stored, &written, &["DURATION:PT1H"], &new);
 
         // Only the start moves: a kept DURATION would move the end too, so DTEND is written.
         let mut event = read_event(stored);
         event.start = EventTime::DateTime(at(11, 7));
-        let written = event_onto(stored, &event, later());
+        let written = event_onto(stored, &event, later(), None);
         let new = with_stamps(&["DTSTART:20261011T070000Z", "DTEND:20261011T090000Z"]);
         assert_rewritten(stored, &written, &["DTSTART:20261011T080000Z", "DURATION:PT1H"], &new);
         assert_eq!(read_event(&written), event);
@@ -1773,7 +2440,7 @@ BEGIN:VTODO\r\nUID:b\r\nSUMMARY:Zweite\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         let todo = todo();
         assert_eq!(todo_onto(THUNDERBIRD_EVENT, &todo, later()), todo_ics(&todo, later()));
         let event = event();
-        assert_eq!(event_onto(NEXTCLOUD_TODO, &event, later()), event_ics(&event, later()));
+        assert_eq!(event_onto(NEXTCLOUD_TODO, &event, later(), None), event_ics(&event, later(), None));
     }
 
     #[test]
@@ -2024,7 +2691,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
             ],
             ..event()
         };
-        let ics = event_ics(&event, now());
+        let ics = event_ics(&event, now(), None);
         assert_eq!(
             alarm_blocks(&ics)[1],
             [
@@ -2041,9 +2708,9 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
 
     #[test]
     fn an_event_without_reminders_is_written_as_before() {
-        let stored = event_ics(&event(), now());
+        let stored = event_ics(&event(), now(), None);
         assert!(alarm_blocks(&stored).is_empty());
-        let written = event_onto(&stored, &event(), later());
+        let written = event_onto(&stored, &event(), later(), None);
         assert_rewritten(&stored, &written, &["DTSTAMP:20261011T120000Z"], &stamps());
     }
 
@@ -2053,7 +2720,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
             let mut event = read_event(stored);
             assert!(!event.alarms.is_empty(), "the fixture has reminders");
             event.summary.push_str(" (moved)");
-            let written = event_onto(stored, &event, later());
+            let written = event_onto(stored, &event, later(), None);
             assert_eq!(alarm_blocks(&written), alarm_blocks(stored), "every VALARM stays line for line");
             assert_eq!(read_event(&written), event);
         }
@@ -2063,7 +2730,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
     fn a_changed_style_keeps_the_alarm_s_own_properties() {
         let mut event = read_event(APPLE_EVENT);
         event.alarms[1].style = Some(AlarmStyle::FullScreen);
-        let written = event_onto(APPLE_EVENT, &event, later());
+        let written = event_onto(APPLE_EVENT, &event, later(), None);
         let (stored, blocks) = (alarm_blocks(APPLE_EVENT), alarm_blocks(&written));
         assert_eq!(blocks.len(), 3, "Apple's ACTION:NONE placeholder stays");
         assert_eq!(blocks[0], stored[0], "the unchanged reminder stays line for line");
@@ -2088,7 +2755,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
     fn a_moved_default_reminder_is_no_longer_apples_default() {
         let mut event = read_event(APPLE_EVENT);
         event.alarms[0] = alarm(10, None);
-        let written = event_onto(APPLE_EVENT, &event, later());
+        let written = event_onto(APPLE_EVENT, &event, later(), None);
         let first = &alarm_blocks(&written)[0];
         assert!(first.contains(&"TRIGGER:-PT10M".to_string()));
         assert!(first.contains(&"ATTACH;VALUE=URI:Chord".to_string()), "the sound stays");
@@ -2103,7 +2770,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
     fn removing_the_reminders_keeps_mail_and_unreadable_alarms() {
         let mut event = read_event(NEXTCLOUD_EVENT);
         event.alarms.clear();
-        let written = event_onto(NEXTCLOUD_EVENT, &event, later());
+        let written = event_onto(NEXTCLOUD_EVENT, &event, later(), None);
         let blocks = alarm_blocks(&written);
         let stored = alarm_blocks(NEXTCLOUD_EVENT);
         assert_eq!(blocks, [stored[1].clone(), stored[4].clone()], "the mail alarm and the broken one");
@@ -2114,7 +2781,7 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
     fn a_reminder_added_in_front_leaves_the_stored_ones_alone() {
         let mut event = read_event(NEXTCLOUD_EVENT);
         event.alarms.insert(0, alarm(5, Some(AlarmStyle::FullScreen)));
-        let written = event_onto(NEXTCLOUD_EVENT, &event, later());
+        let written = event_onto(NEXTCLOUD_EVENT, &event, later(), None);
         let (stored, blocks) = (alarm_blocks(NEXTCLOUD_EVENT), alarm_blocks(&written));
         assert_eq!(blocks[0], fresh_alarm(alarm(5, Some(AlarmStyle::FullScreen))));
         // The kept ones follow in the model's order, then the alarms the model does not hold.
@@ -2123,5 +2790,639 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
             [stored[0].clone(), stored[2].clone(), stored[3].clone(), stored[1].clone(), stored[4].clone()]
         );
         assert_eq!(read_event(&written), event);
+    }
+
+    // New fields, time zones and attendees (task TE.2).
+
+    const NEXTCLOUD_BERLIN: &str = include_str!("../tests/fixtures/nextcloud-event-berlin.ics");
+    const NEXTCLOUD_CANCELLED: &str = include_str!("../tests/fixtures/nextcloud-event-cancelled.ics");
+    const NEXTCLOUD_ATTENDEES: &str = include_str!("../tests/fixtures/nextcloud-event-attendees.ics");
+    const APPLE_PLACE: &str = include_str!("../tests/fixtures/apple-structured-location.ics");
+
+    /// The stamps of a fixture: the lines a write always replaces.
+    fn fixture_stamps(ics: &str) -> Vec<&str> {
+        ics.lines().filter(|l| l.starts_with("DTSTAMP:") || l.starts_with("LAST-MODIFIED:")).collect()
+    }
+
+    /// The `VTIMEZONE` blocks of `ics` with their lines, unfolded.
+    fn zone_blocks(ics: &str) -> Vec<Vec<String>> {
+        let lines = unfolded_lines(&ics.replace("\r\n", "\n").replace('\n', "\r\n"));
+        let mut blocks = Vec::new();
+        let mut current: Option<Vec<String>> = None;
+        for line in lines {
+            if line == "BEGIN:VTIMEZONE" {
+                current = Some(Vec::new());
+            }
+            if let Some(block) = current.as_mut() {
+                block.push(line.clone());
+            }
+            if line == "END:VTIMEZONE" {
+                blocks.extend(current.take());
+            }
+        }
+        blocks
+    }
+
+    fn berlin(month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Utc> {
+        let naive = NaiveDate::from_ymd_opt(2026, month, day).and_then(|d| d.and_hms_opt(hour, minute, 0)).unwrap();
+        Tz::Europe__Berlin.from_local_datetime(&naive).single().unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn fixtures_from_nextcloud_and_apple_read_and_write_back_unchanged() {
+        for stored in [NEXTCLOUD_BERLIN, NEXTCLOUD_CANCELLED, NEXTCLOUD_ATTENDEES, APPLE_PLACE, THUNDERBIRD_EVENT] {
+            let event = read_event(stored);
+            // Whatever zone the computer is in: nothing moved, so nothing is rewritten.
+            for local in [None, Some(Tz::America__New_York)] {
+                let written = event_onto(stored, &event, later(), local);
+                assert_rewritten(stored, &written, &fixture_stamps(stored), &stamps());
+                assert_eq!(read_event(&written), event);
+            }
+        }
+    }
+
+    const BERLIN_ZONE: [&str; 18] = [
+        "BEGIN:VTIMEZONE",
+        "TZID:Europe/Berlin",
+        "BEGIN:DAYLIGHT",
+        "TZOFFSETFROM:+0100",
+        "TZOFFSETTO:+0200",
+        "TZNAME:CEST",
+        "DTSTART:19700329T020000",
+        "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU",
+        "END:DAYLIGHT",
+        "BEGIN:STANDARD",
+        "TZOFFSETFROM:+0200",
+        "TZOFFSETTO:+0100",
+        "TZNAME:CET",
+        "DTSTART:19701025T030000",
+        "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU",
+        "END:STANDARD",
+        "END:VTIMEZONE",
+        "",
+    ];
+
+    #[test]
+    fn a_new_time_in_berlin_writes_tzid_and_vtimezone_and_reads_back() {
+        let event = Event {
+            start: EventTime::DateTime(berlin(10, 13, 10, 0)),
+            end: Some(EventTime::DateTime(berlin(10, 13, 11, 30))),
+            time_zone: Some("Europe/Berlin".into()),
+            ..event()
+        };
+        // The event's own zone wins over the computer's.
+        let ics = event_ics(&event, now(), Some(Tz::Asia__Tokyo));
+        let lines = unfolded_lines(&ics);
+        assert!(lines.contains(&"DTSTART;TZID=Europe/Berlin:20261013T100000".to_string()), "{lines:?}");
+        assert!(lines.contains(&"DTEND;TZID=Europe/Berlin:20261013T113000".to_string()));
+        assert_eq!(zone_blocks(&ics), [BERLIN_ZONE[..17].iter().map(|l| l.to_string()).collect::<Vec<_>>()]);
+        let zone = lines.iter().position(|l| l == "BEGIN:VTIMEZONE").expect("zone");
+        let component = lines.iter().position(|l| l == "BEGIN:VEVENT").expect("event");
+        assert!(zone < component, "the zone comes before the event that uses it");
+        assert_eq!(read_event(&ics), event);
+    }
+
+    #[test]
+    fn without_a_zone_new_times_go_out_in_the_computer_s_zone_else_utc() {
+        let mut event = event();
+        event.start = EventTime::DateTime(berlin(10, 11, 10, 0));
+        event.end = Some(EventTime::DateTime(berlin(10, 11, 11, 0)));
+        let ics = event_ics(&event, now(), Some(Tz::Europe__Berlin));
+        assert!(unfolded_lines(&ics).contains(&"DTSTART;TZID=Europe/Berlin:20261011T100000".to_string()));
+        assert_eq!(read_event(&ics), Event { time_zone: Some("Europe/Berlin".into()), ..event.clone() });
+        // No zone known, or the zone is UTC: UTC with Z, no VTIMEZONE.
+        for local in [None, Some(Tz::UTC), Some(Tz::Etc__UTC)] {
+            let ics = event_ics(&event, now(), local);
+            assert!(unfolded_lines(&ics).contains(&"DTSTART:20261011T080000Z".to_string()), "{local:?}");
+            assert!(zone_blocks(&ics).is_empty());
+        }
+        // An unknown zone name counts as none; all-day events have no zone.
+        let unknown = Event { time_zone: Some("Mars Standard Time".into()), ..event.clone() };
+        assert!(unfolded_lines(&event_ics(&unknown, now(), None)).contains(&"DTSTART:20261011T080000Z".to_string()));
+        let day = NaiveDate::from_ymd_opt(2026, 10, 11).unwrap();
+        let all_day =
+            Event { start: EventTime::Date(day), end: None, time_zone: Some("Europe/Berlin".into()), ..event };
+        let ics = event_ics(&all_day, now(), Some(Tz::Europe__Berlin));
+        assert!(unfolded_lines(&ics).contains(&"DTSTART;VALUE=DATE:20261011".to_string()));
+        assert!(zone_blocks(&ics).is_empty(), "nothing uses the zone");
+    }
+
+    #[test]
+    fn summer_and_winter_time_keep_the_wall_clock() {
+        // 09:00 in Berlin is 07:00 UTC in July and 08:00 UTC in January; both are written as 09:00.
+        for (month, utc_hour) in [(7, 7), (1, 8)] {
+            let start = Utc.with_ymd_and_hms(2026, month, 15, utc_hour, 0, 0).unwrap();
+            assert_eq!(start, berlin(month, 15, 9, 0));
+            let event = Event {
+                start: EventTime::DateTime(start),
+                end: Some(EventTime::DateTime(start + TimeDelta::hours(1))),
+                time_zone: Some("Europe/Berlin".into()),
+                ..event()
+            };
+            let ics = event_ics(&event, now(), None);
+            let line = format!("DTSTART;TZID=Europe/Berlin:2026{month:02}15T090000");
+            assert!(unfolded_lines(&ics).contains(&line), "{line}");
+            assert_eq!(read_event(&ics), event);
+        }
+        // The night of the change: 01:30 UTC on 29 March is 03:30 summer time.
+        let change = Event {
+            start: EventTime::DateTime(Utc.with_ymd_and_hms(2026, 3, 29, 1, 30, 0).unwrap()),
+            end: None,
+            time_zone: Some("Europe/Berlin".into()),
+            ..event()
+        };
+        let ics = event_ics(&change, now(), None);
+        assert!(unfolded_lines(&ics).contains(&"DTSTART;TZID=Europe/Berlin:20260329T033000".to_string()));
+        assert_eq!(read_event(&ics), change);
+    }
+
+    #[test]
+    fn vtimezones_follow_each_zone_s_rules() {
+        let around = Utc.with_ymd_and_hms(2026, 6, 1, 0, 0, 0).unwrap();
+        let rules = |tz: Tz| -> Vec<String> {
+            vtimezone(tz, around).into_iter().filter(|l| l.starts_with("RRULE") || l.starts_with("DTSTART")).collect()
+        };
+        assert_eq!(
+            rules(Tz::America__New_York),
+            [
+                "DTSTART:19700308T020000",
+                "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU",
+                "DTSTART:19701101T020000",
+                "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU",
+            ]
+        );
+        // The southern hemisphere: winter time first in the year.
+        let sydney = vtimezone(Tz::Australia__Sydney, around);
+        assert_eq!(
+            sydney.iter().filter(|l| l.starts_with("BEGIN:") || l.starts_with("RRULE")).collect::<Vec<_>>(),
+            [
+                "BEGIN:VTIMEZONE",
+                "BEGIN:STANDARD",
+                "RRULE:FREQ=YEARLY;BYMONTH=4;BYDAY=1SU",
+                "BEGIN:DAYLIGHT",
+                "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=1SU",
+            ]
+        );
+        assert!(sydney.contains(&"TZOFFSETTO:+1100".to_string()));
+        // No summer time: one STANDARD, no rule.
+        assert_eq!(
+            vtimezone(Tz::Asia__Kolkata, around),
+            [
+                "BEGIN:VTIMEZONE",
+                "TZID:Asia/Kolkata",
+                "BEGIN:STANDARD",
+                "TZOFFSETFROM:+0530",
+                "TZOFFSETTO:+0530",
+                "TZNAME:IST",
+                "DTSTART:19700101T000000",
+                "END:STANDARD",
+                "END:VTIMEZONE",
+            ]
+        );
+        assert_eq!(utc_offset(chrono::FixedOffset::west_opt(3 * 3600 + 30 * 60).unwrap()), "-0330");
+        assert_eq!(utc_offset(chrono::FixedOffset::east_opt(53 * 60 + 28).unwrap()), "+005328");
+    }
+
+    #[test]
+    fn the_zone_is_written_once_per_object() {
+        // A stored event in UTC gets Berlin: one VTIMEZONE, before the event.
+        let stored = event_ics(&event(), now(), None);
+        let berlin_event = Event { time_zone: Some("Europe/Berlin".into()), ..read_event(&stored) };
+        let once = event_onto(&stored, &berlin_event, later(), None);
+        let lines = unfolded_lines(&once);
+        assert!(
+            lines.contains(&"DTSTART;TZID=Europe/Berlin:20261011T100000".to_string()),
+            "a new zone rewrites the times"
+        );
+        assert_eq!(zone_blocks(&once).len(), 1);
+        assert!(lines.iter().position(|l| l == "BEGIN:VTIMEZONE") < lines.iter().position(|l| l == "BEGIN:VEVENT"));
+        assert_eq!(read_event(&once), berlin_event);
+        // Moved again, the object keeps its one VTIMEZONE.
+        let moved = Event { start: EventTime::DateTime(at(12, 8)), end: None, ..berlin_event };
+        let twice = event_onto(&once, &moved, later(), None);
+        assert_eq!(zone_blocks(&twice), zone_blocks(&once));
+        // A Thunderbird event moved to New York: its Berlin zone stays, New York's comes before the event.
+        let mut thunderbird = read_event(THUNDERBIRD_EVENT);
+        thunderbird.time_zone = Some("America/New_York".into());
+        let written = event_onto(THUNDERBIRD_EVENT, &thunderbird, later(), None);
+        let zones: Vec<String> = zone_blocks(&written).iter().map(|block| block[1].clone()).collect();
+        assert_eq!(zones, ["TZID:Europe/Berlin", "TZID:America/New_York"]);
+        assert!(unfolded_lines(&written).contains(&"DTSTART;TZID=America/New_York:20261013T040000".to_string()));
+        assert_eq!(read_event(&written), thunderbird);
+    }
+
+    #[test]
+    fn url_status_and_geo_are_written_and_replace_only_their_lines() {
+        let event = Event {
+            url: Some(" https://wiki.example.org/a\r\nX-EVIL:1 ".into()),
+            status: Some(EventStatus::Tentative),
+            geo: Geo::new(52.520008, 13.404954),
+            ..event()
+        };
+        let ics = event_ics(&event, now(), None);
+        let lines = unfolded_lines(&ics);
+        for line in ["URL:https://wiki.example.org/aX-EVIL:1", "STATUS:TENTATIVE", "GEO:52.520008;13.404954"] {
+            assert!(lines.contains(&line.to_string()), "{line} missing in {lines:?}");
+        }
+        assert!(!lines.iter().any(|l| l.starts_with("X-EVIL")), "a URL cannot add properties");
+        let back = read_event(&ics);
+        assert_eq!((back.status, back.geo), (event.status, event.geo));
+
+        // Changed on a Nextcloud event: only URL and STATUS change; then both cleared.
+        let mut stored = read_event(NEXTCLOUD_BERLIN);
+        stored.url = Some("https://wiki.example.org/neu".into());
+        stored.status = Some(EventStatus::Cancelled);
+        let written = event_onto(NEXTCLOUD_BERLIN, &stored, later(), None);
+        let mut replaced = fixture_stamps(NEXTCLOUD_BERLIN);
+        replaced.extend(["URL:https://wiki.example.org/planung/2026-10-13", "STATUS:CONFIRMED"]);
+        let new = with_stamps(&["URL:https://wiki.example.org/neu", "STATUS:CANCELLED"]);
+        assert_rewritten(NEXTCLOUD_BERLIN, &written, &replaced, &new);
+        assert_eq!(read_event(&written), stored);
+        stored.url = None;
+        stored.status = None;
+        let cleared = event_onto(NEXTCLOUD_BERLIN, &stored, later(), None);
+        let mut replaced = fixture_stamps(NEXTCLOUD_BERLIN);
+        replaced.extend(["URL:https://wiki.example.org/planung/2026-10-13", "STATUS:CONFIRMED"]);
+        assert_rewritten(NEXTCLOUD_BERLIN, &cleared, &replaced, &stamps());
+    }
+
+    #[test]
+    fn a_cancelled_event_stays_cancelled_when_other_fields_change() {
+        let mut event = read_event(NEXTCLOUD_CANCELLED);
+        event.summary = "Jahresgespräch (abgesagt)".into();
+        let written = event_onto(NEXTCLOUD_CANCELLED, &event, later(), None);
+        let mut replaced = fixture_stamps(NEXTCLOUD_CANCELLED);
+        replaced.push("SUMMARY:Jahresgespräch");
+        assert_rewritten(
+            NEXTCLOUD_CANCELLED,
+            &written,
+            &replaced,
+            &with_stamps(&["SUMMARY:Jahresgespräch (abgesagt)"]),
+        );
+        assert_eq!(read_event(&written).status, Some(EventStatus::Cancelled));
+    }
+
+    const APPLE_LOCATION: &str = "X-APPLE-STRUCTURED-LOCATION;VALUE=URI;X-ADDRESS=\"Pariser Platz, 10117 Berlin, Deutschland\";X-APPLE-MAPKIT-HANDLE=CAESBg==;X-APPLE-RADIUS=141.17;X-APPLE-REFERENCEFRAME=1;X-TITLE=Brandenburger Tor:geo:52.516275,13.377704";
+
+    #[test]
+    fn apple_s_place_goes_when_the_place_changes_and_stays_otherwise() {
+        let stored = read_event(APPLE_PLACE);
+        let renamed = Event { summary: "Dinner".into(), ..stored.clone() };
+        let kept = event_onto(APPLE_PLACE, &renamed, later(), None);
+        assert!(unfolded_lines(&kept).contains(&APPLE_LOCATION.to_string()));
+
+        // A new location: Apple's place goes; the coordinates it gave are written as GEO only if
+        // the client keeps them (here it clears them along with the place).
+        let moved = Event { location: Some("Café Einstein".into()), geo: None, ..stored.clone() };
+        let written = event_onto(APPLE_PLACE, &moved, later(), None);
+        let mut replaced = fixture_stamps(APPLE_PLACE);
+        replaced.extend(["LOCATION:Brandenburger Tor\\nPariser Platz\\, 10117 Berlin\\, Deutschland", APPLE_LOCATION]);
+        assert_rewritten(APPLE_PLACE, &written, &replaced, &with_stamps(&["LOCATION:Café Einstein"]));
+        assert_eq!(read_event(&written), moved);
+
+        // New coordinates for the same name: GEO is written, Apple's place goes.
+        let pinned = Event { geo: Geo::new(52.5163, 13.3777), ..stored };
+        let written = event_onto(APPLE_PLACE, &pinned, later(), None);
+        let mut replaced = fixture_stamps(APPLE_PLACE);
+        replaced.push(APPLE_LOCATION);
+        assert_rewritten(APPLE_PLACE, &written, &replaced, &with_stamps(&["GEO:52.5163;13.3777"]));
+        assert_eq!(read_event(&written), pinned);
+    }
+
+    #[test]
+    fn attendees_are_never_written() {
+        // A new event with attendees in the model goes out without them.
+        let anna = torro_pim::model::Attendee {
+            name: Some("Anna".into()),
+            email: Some("anna@example.org".into()),
+            partstat: torro_pim::model::PartStat::Accepted,
+            role: torro_pim::model::AttendeeRole::Chair,
+        };
+        let invited = Event { organizer: Some(Box::new(anna.clone())), attendees: vec![anna], ..event() };
+        let lines = unfolded_lines(&event_ics(&invited, now(), None));
+        assert!(!lines.iter().any(|l| l.starts_with("ATTENDEE") || l.starts_with("ORGANIZER")), "{lines:?}");
+
+        // Changed or dropped in the model, the stored ones stay as they are.
+        let mut event = read_event(NEXTCLOUD_ATTENDEES);
+        assert_eq!(event.attendees.len(), 4);
+        event.attendees.truncate(1);
+        event.organizer = None;
+        let written = event_onto(NEXTCLOUD_ATTENDEES, &event, later(), None);
+        assert_rewritten(NEXTCLOUD_ATTENDEES, &written, &fixture_stamps(NEXTCLOUD_ATTENDEES), &stamps());
+    }
+
+    // Rules of series (task TE.4).
+
+    fn weekly(end: RepeatEnd) -> Repeat {
+        Repeat {
+            freq: torro_pim::model::RepeatFreq::Weekly,
+            interval: 1,
+            weekdays: Vec::new(),
+            month_days: Vec::new(),
+            months: Vec::new(),
+            end,
+            rule: String::new(),
+            custom: false,
+        }
+    }
+
+    #[test]
+    fn a_new_event_with_a_rule_is_a_series_and_a_single_one_gets_its_rule_onto_the_stored_object() {
+        let series = Event { repeat: Some(Box::new(weekly(RepeatEnd::Count(4)))), ..event() };
+        let lines = unfolded_lines(&event_ics(&series, now(), None));
+        assert!(lines.contains(&"RRULE:FREQ=WEEKLY;COUNT=4".to_string()), "{lines:?}");
+        assert!(!unfolded_lines(&event_ics(&event(), now(), None)).iter().any(|l| l.starts_with("RRULE")));
+
+        let stored = read_event(NEXTCLOUD_BERLIN);
+        let repeated = Event { repeat: Some(Box::new(weekly(RepeatEnd::Never))), ..stored.clone() };
+        let written = event_onto(NEXTCLOUD_BERLIN, &repeated, later(), None);
+        assert_rewritten(
+            NEXTCLOUD_BERLIN,
+            &written,
+            &fixture_stamps(NEXTCLOUD_BERLIN),
+            &with_stamps(&["RRULE:FREQ=WEEKLY"]),
+        );
+        // Written again unchanged, the rule keeps its line.
+        let again = Event { repeat: Some(Box::new(crate::recur::read("FREQ=WEEKLY", None))), ..stored };
+        let rewritten = event_onto(&written, &again, later(), None);
+        assert!(unfolded_lines(&rewritten).contains(&"RRULE:FREQ=WEEKLY".to_string()));
+        assert_eq!(unfolded_lines(&rewritten).iter().filter(|l| l.starts_with("RRULE:FREQ=WEEKLY")).count(), 1);
+    }
+
+    #[test]
+    fn a_rule_keeps_its_stored_text_while_its_fields_stay_and_its_end_fits_the_start() {
+        let stored = "FREQ=WEEKLY;WKST=SU;BYDAY=TU";
+        let built = Repeat { rule: String::new(), ..crate::recur::read(stored, None) };
+        let timed = EventTime::DateTime(at(13, 8));
+        assert_eq!(rule_text(&built, Some(stored), timed, None), stored, "the same fields, built anew");
+        let day = NaiveDate::from_ymd_opt(2026, 12, 22).expect("day");
+        // A day as the end of a timed series: its last second in the zone of the series.
+        let until_day = weekly(RepeatEnd::Until(EventTime::Date(day)));
+        assert_eq!(rule_text(&until_day, None, timed, Some(Tz::Europe__Berlin)), "FREQ=WEEKLY;UNTIL=20261222T225959Z");
+        // An instant as the end of an all-day series: its day.
+        let until_time = weekly(RepeatEnd::Until(EventTime::DateTime(at(22, 22))));
+        let all_day = EventTime::Date(NaiveDate::from_ymd_opt(2026, 10, 13).expect("day"));
+        assert_eq!(rule_text(&until_time, None, all_day, Some(Tz::Europe__Berlin)), "FREQ=WEEKLY;UNTIL=20261023");
+    }
+
+    /// Task TE.4: after a write to a series the core reads only its occurrences, expanded.
+    #[tokio::test]
+    async fn occurrences_of_some_objects_come_expanded_from_one_multiget() {
+        const EXPANDED: &str = include_str!("../tests/fixtures/nextcloud-expand-series.xml");
+        let server = httpmock::MockServer::start_async().await;
+        let collection = server.url("/remote.php/dav/calendars/anna/work/");
+        let multiget = server
+            .mock_async(|when, then| {
+                when.path("/remote.php/dav/calendars/anna/work/")
+                    .header("depth", "0")
+                    .body_includes("<c:calendar-multiget")
+                    .body_includes("<c:expand start=\"20261001T000000Z\" end=\"20261101T000000Z\"/>")
+                    .body_includes("<d:href>/remote.php/dav/calendars/anna/work/standup.ics</d:href>")
+                    .body_excludes("elsewhere");
+                then.status(207).body(EXPANDED);
+            })
+            .await;
+        let account = crate::CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
+        let client = CalDavClient::new(reqwest::Client::new(), &account, torro_core::account::Secret::new("secret"))
+            .expect("client");
+        let hrefs = [format!("{collection}standup.ics"), "https://elsewhere.example.org/x.ics".to_string()];
+        let (start, end) =
+            (Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap(), Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap());
+        let events = client.occurrences(&collection, &hrefs, start, end).await.expect("occurrences");
+        assert_eq!(multiget.calls_async().await, 1);
+        let standups: Vec<&Event> = events.iter().filter(|e| e.summary.starts_with("Daily Standup")).collect();
+        assert!(standups.len() > 1, "expanded: {events:?}");
+        assert!(standups.iter().all(|e| {
+            e.href.as_deref() == Some(format!("{collection}standup.ics").as_str())
+                && e.etag.as_deref() == Some("\"8b1a9953c4611296a827abf8c47804d7\"")
+        }));
+        assert!(client.occurrences(&collection, &[], start, end).await.expect("nothing").is_empty());
+        assert_eq!(multiget.calls_async().await, 1, "nothing asked for, nothing sent");
+    }
+
+    // Findings of the review of #278.
+
+    /// Finding 1: no line can carry another one in, whatever reaches the writer.
+    #[test]
+    fn a_line_never_holds_a_line_break() {
+        let mut out = String::new();
+        push_line(&mut out, "RRULE:FREQ=WEEKLY\r\nATTENDEE:mailto:eve@example.org\u{0}\tX");
+        assert_eq!(out, "RRULE:FREQ=WEEKLYATTENDEE:mailto:eve@example.org\tX\r\n");
+    }
+
+    /// Finding 1: a custom rule keeps the stored text; a client's text is used only for a series
+    /// without one, and only when it is a valid line.
+    #[test]
+    fn a_custom_rule_keeps_the_stored_text_and_a_client_text_must_be_valid() {
+        let start = EventTime::DateTime(at(13, 8));
+        let custom = |rule: &str| Repeat { rule: rule.into(), custom: true, ..weekly(RepeatEnd::Never) };
+        let stored = Some("FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2");
+        assert_eq!(rule_text(&custom("FREQ=DAILY"), stored, start, None), "FREQ=MONTHLY;BYDAY=TU;BYSETPOS=2");
+        assert_eq!(rule_text(&custom("FREQ=DAILY;BYHOUR=9"), None, start, None), "FREQ=DAILY;BYHOUR=9");
+        assert_eq!(rule_text(&custom("FREQ=DAILY\r\nATTENDEE:x"), None, start, None), "");
+        // Not custom: the fields decide, never the client's text.
+        let fields = Repeat { rule: "FREQ=WEEKLY\r\nATTENDEE:x".into(), ..weekly(RepeatEnd::Never) };
+        assert_eq!(rule_text(&fields, None, start, None), "FREQ=WEEKLY");
+        assert_eq!(rule_text(&fields, Some("FREQ=WEEKLY;WKST=SU"), start, None), "FREQ=WEEKLY;WKST=SU");
+        // A stored text that fails the check stays while its fields stay (the second review of #278).
+        let sloppy = "FREQ=WEEKLY; BYDAY=TU";
+        let read = crate::recur::read(sloppy, None);
+        assert!(!read.custom && crate::recur::check(sloppy).is_err());
+        assert_eq!(rule_text(&read, Some(sloppy), start, None), sloppy);
+        let no_rule = Event { repeat: Some(Box::new(custom("FREQ=DAILY\nEND:VEVENT"))), ..event() };
+        let ics = event_ics(&no_rule, now(), None);
+        assert!(
+            !ics.contains("END:VEVENT\r\nEND:VEVENT") && !unfolded_lines(&ics).iter().any(|l| l.starts_with("RRULE"))
+        );
+    }
+
+    const SERIES_ICS: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nDTSTART:20261011T080000Z\r\nRRULE:FREQ=WEEKLY\r\nSUMMARY:Workshop\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    /// The second occurrence of [`SERIES_ICS`] at `href`, read in version `"1"`.
+    fn second_occurrence(collection: &str) -> Event {
+        let key = EventTime::DateTime(Utc.with_ymd_and_hms(2026, 10, 18, 8, 0, 0).unwrap());
+        Event {
+            collection: collection.to_string(),
+            href: Some(format!("{collection}e.ics")),
+            etag: Some("\"1\"".into()),
+            uid: "u".into(),
+            summary: "Workshop".into(),
+            start: key,
+            end: None,
+            recurring: true,
+            recurrence_id: Some(key),
+            repeat: Some(Box::new(crate::recur::read("FREQ=WEEKLY", None))),
+            ..event()
+        }
+    }
+
+    fn client_of(server: &httpmock::MockServer) -> CalDavClient {
+        let account = crate::CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
+        CalDavClient::new(reqwest::Client::new(), &account, torro_core::account::Secret::new("secret")).expect("client")
+    }
+
+    /// Finding 7: the change is planned on the version the client read; another one on the server is
+    /// a conflict before anything is written.
+    #[tokio::test]
+    async fn a_series_newer_than_the_client_read_is_a_conflict_before_writing() {
+        let server = httpmock::MockServer::start_async().await;
+        let work = server.url("/remote.php/dav/calendars/anna/work/");
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/remote.php/dav/calendars/anna/work/e.ics");
+                then.status(200).header("ETag", "\"2\"").body(SERIES_ICS);
+            })
+            .await;
+        let puts = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::PUT);
+                then.status(204);
+            })
+            .await;
+        let deletes = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE);
+                then.status(204);
+            })
+            .await;
+        let client = client_of(&server);
+        let event = Event { summary: "Workshop II".into(), ..second_occurrence(&work) };
+        let saved = client.save_in_series(&event, SeriesScope::Series, None).await;
+        assert!(matches!(saved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{saved:?}");
+        let deleted = client.delete_in_series(&event, SeriesScope::Occurrence).await;
+        assert!(matches!(deleted, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{deleted:?}");
+        assert_eq!((puts.calls_async().await, deletes.calls_async().await), (0, 0), "nothing written");
+    }
+
+    /// Finding 7: a series moved to another calendar is taken back there when the old one cannot be
+    /// deleted, so it never lies twice.
+    #[tokio::test]
+    async fn a_moved_series_whose_old_object_stays_is_taken_back() {
+        let server = httpmock::MockServer::start_async().await;
+        let work = server.url("/remote.php/dav/calendars/anna/work/");
+        let home = server.url("/remote.php/dav/calendars/anna/home/");
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/remote.php/dav/calendars/anna/work/e.ics");
+                then.status(200).header("ETag", "\"1\"").body(SERIES_ICS);
+            })
+            .await;
+        let created = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::PUT)
+                    .path("/remote.php/dav/calendars/anna/home/u.ics")
+                    .header("If-None-Match", "*");
+                then.status(201).header("ETag", "\"n1\"");
+            })
+            .await;
+        let refused = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE)
+                    .path("/remote.php/dav/calendars/anna/work/e.ics")
+                    .header("If-Match", "\"1\"");
+                then.status(412);
+            })
+            .await;
+        let taken_back = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE)
+                    .path("/remote.php/dav/calendars/anna/home/u.ics")
+                    .header("If-Match", "\"n1\"");
+                then.status(204);
+            })
+            .await;
+        let client = client_of(&server);
+        let event = second_occurrence(&work);
+        let moved = client.save_in_series(&event, SeriesScope::Series, Some(&home)).await;
+        assert!(matches!(moved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{moved:?}");
+        assert_eq!((created.calls_async().await, refused.calls_async().await), (1, 1));
+        assert_eq!(taken_back.calls_async().await, 1, "the copy in home goes again");
+    }
+
+    /// A client that gives up on an answer after a short while, for the tests of a lost answer.
+    fn impatient_client_of(server: &httpmock::MockServer) -> CalDavClient {
+        let account = crate::CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
+        let http = reqwest::Client::builder().timeout(std::time::Duration::from_millis(200)).build().expect("http");
+        CalDavClient::new(http, &account, torro_core::account::Secret::new("secret")).expect("client")
+    }
+
+    /// The server holding [`SERIES_ICS`] at `work/e.ics` in version `"1"` that makes any new object
+    /// (`If-None-Match: *`) in version `"n1"`; returns the mocks of the new object and of its delete.
+    async fn series_server(server: &httpmock::MockServer) -> (httpmock::Mock<'_>, httpmock::Mock<'_>) {
+        server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::GET).path("/remote.php/dav/calendars/anna/work/e.ics");
+                then.status(200).header("ETag", "\"1\"").body(SERIES_ICS);
+            })
+            .await;
+        let created = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::PUT).header("If-None-Match", "*");
+                then.status(201).header("ETag", "\"n1\"");
+            })
+            .await;
+        let taken_back = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE).header("If-Match", "\"n1\"");
+                then.status(204);
+            })
+            .await;
+        (created, taken_back)
+    }
+
+    /// The second review of #278, finding 4: a split whose shortened series the server refuses (412)
+    /// takes the new part back; one whose answer never comes leaves both, as the server may hold them.
+    #[tokio::test]
+    async fn a_split_is_taken_back_only_when_the_server_refuses_the_second_write() {
+        for lost in [false, true] {
+            let server = httpmock::MockServer::start_async().await;
+            let work = server.url("/remote.php/dav/calendars/anna/work/");
+            let (created, taken_back) = series_server(&server).await;
+            let second = server
+                .mock_async(|when, then| {
+                    when.method(httpmock::Method::PUT)
+                        .path("/remote.php/dav/calendars/anna/work/e.ics")
+                        .header("If-Match", "\"1\"");
+                    if lost {
+                        then.status(204).header("ETag", "\"2\"").delay(std::time::Duration::from_secs(1));
+                    } else {
+                        then.status(412);
+                    }
+                })
+                .await;
+            let client = impatient_client_of(&server);
+            let event = Event { summary: "Workshop II".into(), ..second_occurrence(&work) };
+            let saved = client.save_in_series(&event, SeriesScope::Following, None).await;
+            assert!(saved.is_err(), "{lost}: {saved:?}");
+            if !lost {
+                assert!(matches!(saved, Err(SeriesFailure::Server(ProviderError::Conflict { .. }))), "{saved:?}");
+            }
+            assert_eq!((created.calls_async().await, second.calls_async().await), (1, 1), "{lost}");
+            let expected = if lost { 0 } else { 1 };
+            assert_eq!(taken_back.calls_async().await, expected, "taken back only after a refusal: {lost}");
+        }
+    }
+
+    /// The second review of #278, finding 4: a move whose delete of the old series gets no answer
+    /// leaves the copy, so the series is never lost; a refused delete takes it back (see above).
+    #[tokio::test]
+    async fn a_move_without_an_answer_to_the_delete_keeps_the_copy() {
+        let server = httpmock::MockServer::start_async().await;
+        let work = server.url("/remote.php/dav/calendars/anna/work/");
+        let home = server.url("/remote.php/dav/calendars/anna/home/");
+        let (created, taken_back) = series_server(&server).await;
+        let unanswered = server
+            .mock_async(|when, then| {
+                when.method(httpmock::Method::DELETE)
+                    .path("/remote.php/dav/calendars/anna/work/e.ics")
+                    .header("If-Match", "\"1\"");
+                then.status(204).delay(std::time::Duration::from_secs(1));
+            })
+            .await;
+        let client = impatient_client_of(&server);
+        let moved = client.save_in_series(&second_occurrence(&work), SeriesScope::Series, Some(&home)).await;
+        assert!(matches!(moved, Err(SeriesFailure::Server(ProviderError::Offline))), "{moved:?}");
+        assert_eq!((created.calls_async().await, unanswered.calls_async().await), (1, 1));
+        assert_eq!(taken_back.calls_async().await, 0, "the copy in home stays");
     }
 }

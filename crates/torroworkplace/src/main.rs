@@ -49,6 +49,7 @@ mod mail;
 mod mcp;
 mod notify;
 mod pim;
+mod places;
 mod reminders;
 mod settings_service;
 mod sources;

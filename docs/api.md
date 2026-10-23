@@ -77,7 +77,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
 | `workspaces` | `list_templates`, `list_screens` ²³ | `save_template`, `rename_template`, `load_template` ¹, `set_template_shortcut` ²³ | `update_template`, `delete_template` | `set_template_startup` ²³ |
-| `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰ | `save_event` ¹⁹, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` | |
+| `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰, `search_places`, `map_preview` (Termin-Editor, TE.1) | `save_event` ¹⁹, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
@@ -810,6 +810,18 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
    `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
+
+   Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
+   Die Suche schickt den getippten Ort, die Karte die Koordinaten, beide mit der IP-Adresse an fremde Dienste.
+   `settings.set_setting` mit `maps` und `enabled` ungleich `false` oder mit `geocoder` bzw. `tiles` (eine andere
+   Such- oder Kachel-Adresse) und ein `settings.update_settings`, das Karten einschalten oder eine Adresse ändern
+   würde, bekommen von jedem Client `forbidden`, auch mit Admin-Rechten. Ausschalten (`{"enabled": false}`, Freigabe
+   „Turn off maps and place search“) und die Wahl von `geocoderKind` und `openWith` sind gewöhnliche Admin-Änderungen;
+   ein `update_settings` ohne `maps` behält den Stand. Adressen mit Query (`?key=…`) oder Zugangsdaten (`user:pass@`)
+   lehnt der Dienst mit `error` ab, auch vom App-Schlüssel: Anbieter mit eigenem Schlüssel kommen später, mit dem
+   Schlüssel im Schlüsselbund. Solange Karten aus sind, antworten `calendar.search_places` und `calendar.map_preview`
+   `unsupported`, ohne einen Dienst zu fragen (Tests `only_people_turn_maps_on_or_name_their_services` in `torro-ipc`
+   und `only_people_turn_maps_on_and_agents_may_turn_them_off` im Kern).
 
    Ebenso **ein Modell anschalten, das anderswo rechnet** (#231, Aufgabe S.24, `ai.set_model_enabled` mit
    `enabled: true`): Ollamas Cloud-Modelle, OpenRouter, Anthropic und Server im Netz. Jeder Client bekommt

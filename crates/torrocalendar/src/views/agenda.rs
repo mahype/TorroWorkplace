@@ -12,6 +12,12 @@
 //!   place (map pin, or a camera for a link or a video call). Hover `hover`, the event open in the
 //!   side panel `selected`, ended ones at 55 %. The running event is tinted and says "40 min left"
 //!   (not in the narrow layout, where the row has no room for it); after it the red now line.
+//!   Beside it the people invited who have not declined, as avatars with their initials (at most
+//!   three and "+2"; not in the narrow layout either).
+//! - **State** ([`super::Look`], task TE.9): a cancelled event is struck through and at 55 %, and
+//!   it leaves its time free (no "40 min left", no break in "3 h free") and says "· cancelled" after
+//!   its title; a tentative one has a dashed bar and says "· tentative" after its title, a
+//!   tentative all-day chip a dashed outline instead of its fill.
 //! - **Free time** of two hours or more between two events of a day: "3 h free" with a dotted line;
 //!   on today only what is still ahead.
 //! - **Empty days** between days with events as one line per week, "3 d · Nothing planned ·
@@ -28,7 +34,9 @@ use iced::border::{self, Radius};
 use iced::mouse;
 use iced::widget::canvas::{self, Frame, LineDash, Path, Stroke};
 use iced::widget::text::{Style as TextStyle, Wrapping};
-use iced::widget::{Space, button, canvas as canvas_widget, column, container, mouse_area, responsive, row, rule, svg};
+use iced::widget::{
+    Space, button, canvas as canvas_widget, column, container, mouse_area, responsive, row, rule, stack, svg,
+};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Point, Rectangle, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, month_name, to_local, week_start, weekday_name};
@@ -38,11 +46,12 @@ use torro_gui::theme::{self, Palette, over, palette, radius, size, space};
 use torro_gui::typo::{ellipsize, text_width};
 use torro_gui::widgets::{self, empty_state};
 use torro_gui::{style, typo};
+use torro_pim::model::{Attendee, EventStatus, PartStat};
 use torro_pim::{Event, EventTime};
 
 use super::glance::span;
 use super::week::{BAR, FREE_MINUTES, now_label, now_label_width};
-use super::{Item, ViewData};
+use super::{DashedShape, Item, Look, ViewData, dashed, takes_time, title_text};
 use crate::app::Message;
 
 /// Width of the date column (`.day{grid-template-columns:56px 1fr}`): the time axis and a little.
@@ -81,8 +90,6 @@ fn free_row() -> f32 {
 fn gap_row() -> f32 {
     size::control_lg()
 }
-/// Ended events and chips are drawn at this opacity (`.ev.past`).
-const PAST_ALPHA: f32 = 0.55;
 /// Dash and gap of the dotted line after "3 h free" (`repeating-linear-gradient(… 0 3px,
 /// transparent 3px 6px)`).
 const DASH: [f32; 2] = [3.0, 3.0];
@@ -90,7 +97,8 @@ const DASH: [f32; 2] = [3.0, 3.0];
 const SEPARATOR: &str = " · ";
 /// Between the first and the last of a run of empty days: "Tue 20 – Thu 22".
 const RANGE: &str = " – ";
-
+/// Avatars beside a row at most; the others are counted in "+2" (`.av` in the mock-up).
+const AVATARS: usize = 3;
 /// One block of the list, in display order.
 #[derive(Debug, Clone, PartialEq)]
 enum Block {
@@ -134,6 +142,8 @@ struct Chip {
     note: Option<String>,
     /// Its last day is before today.
     past: bool,
+    /// Whether it takes place (`STATUS`), for its [`Look`].
+    status: Option<EventStatus>,
 }
 
 /// A line under the chips of a day.
@@ -165,8 +175,14 @@ struct Row {
     minutes: Option<i64>,
     /// Over on this day.
     past: bool,
-    /// Running now (today only): whole minutes until the event ends.
+    /// Running now (today only, never when cancelled): whole minutes until the event ends.
     left: Option<i64>,
+    /// Whether it takes place (`STATUS`), for its [`Look`] and the free time around it.
+    status: Option<EventStatus>,
+    /// The initials of the first [`AVATARS`] people invited who have not declined ([`people`]).
+    people: Vec<String>,
+    /// How many more of them there are: "+2".
+    more: usize,
 }
 
 /// The agenda in the layout of `class`: the narrow layout has the narrower date and time columns
@@ -190,9 +206,9 @@ pub fn view(data: ViewData<'_>, class: SizeClass) -> Element<'_, Message> {
 /// week begins, the days with events (and today when it is in the window), and runs of empty days
 /// between them, split at week boundaries. Empty days before the first and after the last shown
 /// day are left out. No events in the window → nothing at all (the empty state).
-fn plan(items: &[Item<'_>], start: NaiveDate, end: NaiveDate, now: NaiveDateTime) -> Vec<Block> {
+fn plan<'a>(items: &[Item<'a>], start: NaiveDate, end: NaiveDate, now: NaiveDateTime) -> Vec<Block> {
     let window_last = end - Duration::days(1);
-    let mut by_day: BTreeMap<NaiveDate, Vec<&Item<'_>>> = BTreeMap::new();
+    let mut by_day: BTreeMap<NaiveDate, Vec<&Item<'a>>> = BTreeMap::new();
     for item in items {
         let (first, last) = covered_days(item.event);
         let mut day = first.max(start);
@@ -285,6 +301,7 @@ fn chips(items: &[&Item<'_>], date: NaiveDate, today: NaiveDate) -> Vec<Chip> {
                 title: title(item.event),
                 note: position(first, last, date),
                 past: last < today,
+                status: item.event.status,
             };
             (first, chip)
         })
@@ -296,8 +313,8 @@ fn chips(items: &[&Item<'_>], date: NaiveDate, today: NaiveDate) -> Vec<Chip> {
 /// The timed events of `date` in order of their start, with "3 h free" before an event that
 /// follows two or more free hours, and on today the now line before the first event still ahead
 /// (at the end when none is). On today free time counts from now: what is behind is not free any
-/// more.
-fn lines(items: &[&Item<'_>], date: NaiveDate, now: NaiveDateTime) -> Vec<Line> {
+/// more. A cancelled event leaves its time free: it neither ends nor starts free time.
+fn lines<'a>(items: &[&Item<'a>], date: NaiveDate, now: NaiveDateTime) -> Vec<Line> {
     let mut rows: Vec<(NaiveDateTime, NaiveDateTime, Row)> =
         items.iter().filter(|item| !item.event.all_day()).map(|item| segment(item, date, now)).collect();
     rows.sort_by(|(a, _, x), (b, _, y)| {
@@ -312,6 +329,10 @@ fn lines(items: &[&Item<'_>], date: NaiveDate, now: NaiveDateTime) -> Vec<Line> 
         if !now_shown && start > now {
             lines.push(Line::Now(now.time()));
             now_shown = true;
+        }
+        if !takes_time(row.status) {
+            lines.push(Line::Event(row));
+            continue;
         }
         if let Some(until) = busy_until {
             let from = if today { until.max(now) } else { until };
@@ -330,8 +351,8 @@ fn lines(items: &[&Item<'_>], date: NaiveDate, now: NaiveDateTime) -> Vec<Line> 
 }
 
 /// The part of a timed event on `date` as `(start, end, row)`: from its start (00:00 on the days
-/// after its first) to its end or midnight, whichever comes first.
-fn segment(item: &Item<'_>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Row) {
+/// after its first) to its end or midnight, whichever comes first. A cancelled event never runs.
+fn segment<'a>(item: &Item<'a>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Row) {
     let event = item.event;
     let (first, last) = covered_days(event);
     let event_start = local_at(event.start);
@@ -339,7 +360,8 @@ fn segment(item: &Item<'_>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDateTi
     let start = if date == first { event_start } else { date.and_time(NaiveTime::MIN) };
     let midnight = (date + Duration::days(1)).and_time(NaiveTime::MIN);
     let end = event_end.map_or(start, |end| end.min(midnight));
-    let running = date == now.date() && start <= now && now < end;
+    let running = date == now.date() && start <= now && now < end && takes_time(event.status);
+    let (people, more) = people(&event.attendees);
     let place = event.location.as_deref().and_then(|text| text.lines().next()).map(str::trim).filter(|p| !p.is_empty());
     let row = Row {
         index: item.index,
@@ -352,8 +374,21 @@ fn segment(item: &Item<'_>, date: NaiveDate, now: NaiveDateTime) -> (NaiveDateTi
         minutes: event_end.map(|_| (end - start).num_minutes()),
         past: end <= now,
         left: event_end.filter(|_| running).map(|end| minutes_until(now, end)),
+        status: event.status,
+        people,
+        more,
     };
     (start, end, row)
+}
+
+/// The avatars of an event: the initials ([`super::initials`]) of the first [`AVATARS`] of
+/// `attendees` who have not declined, in their stored order, and how many more of them there are.
+/// Someone without a name or address to take a letter from still counts among the more.
+fn people(attendees: &[Attendee]) -> (Vec<String>, usize) {
+    let coming: Vec<&Attendee> = attendees.iter().filter(|a| a.partstat != PartStat::Declined).collect();
+    let shown: Vec<String> = coming.iter().take(AVATARS).filter_map(|a| super::initials(a)).collect();
+    let more = coming.len() - shown.len();
+    (shown, more)
 }
 
 /// The length of an event under its start: "15 min", "2 h", and "1 h 30" without the second
@@ -467,7 +502,7 @@ impl Metrics {
 }
 
 /// The whole list in a scrollable, at most [`size::content_max()`] wide.
-fn list(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'static, Message> {
+fn list<'a>(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
     let mut list = column![].width(Length::Fill);
     for (n, block) in blocks.iter().enumerate() {
         // Days and gaps are separated by a line, but not from a week head, whose own line already
@@ -507,7 +542,7 @@ fn week_head(label: &str, first: bool) -> Element<'static, Message> {
 }
 
 /// A day: the date column, and beside it the head, the chips and the lines.
-fn day_view(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'static, Message> {
+fn day_view<'a>(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'a, Message> {
     let head = row![
         typo::text(typo::caption(), day.label.clone().unwrap_or_default()).style(theme::text_2),
         Space::new().width(Length::Fill),
@@ -574,29 +609,32 @@ fn date_view(date: NaiveDate, today: NaiveDate, width: f32) -> Element<'static, 
 }
 
 /// An all-day chip (`.chip`): tinted, the bar at the left, title in `CAPTION`, "day 2 of 3" in
-/// `META` / `text_3`. Outlined in `focus_ring` while open in the side panel.
+/// `META` / `text_3`; a cancelled one struck through and at 55 %, a tentative one a dashed outline
+/// without fill. Outlined in `focus_ring` while open in the side panel.
 fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Message> {
-    let (color, alpha) = (chip.color, if chip.past { PAST_ALPHA } else { 1.0 });
+    let look = Look::of(chip.status, chip.past);
+    let (color, alpha) = (chip.color, look.alpha());
     let note_width = chip.note.as_deref().map_or(0.0, |note| text_width(note, typo::meta()) + space::xs());
     let room = m.text + m.time + 2.0 * m.gap - 2.0 * space::s() - note_width;
-    let mut content = row![
-        typo::text(typo::caption(), ellipsize(&chip.title, typo::caption(), room))
-            .style(move |t: &Theme| faded(palette(t).text, alpha))
-            .wrapping(Wrapping::None)
-    ]
-    .spacing(space::xs())
-    .align_y(Alignment::Center);
+    let title = ellipsize(&chip.title, typo::caption(), room);
+    let mut content =
+        row![title_text(typo::caption(), title, look.struck, move |t| palette(t).text.scale_alpha(alpha))]
+            .spacing(space::xs())
+            .align_y(Alignment::Center);
     if let Some(note) = &chip.note {
         content = content
             .push(typo::text(typo::meta(), note.clone()).style(move |t: &Theme| faded(palette(t).text_3, alpha)));
     }
-    let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |_| container::Style {
-        background: Some(Background::Color(color.scale_alpha(alpha))),
-        border: Border { radius: Radius::new(0.0).left(radius::xs()), ..Border::default() },
-        ..container::Style::default()
-    });
-    let body =
-        container(content).padding([0.0, space::s()]).height(Length::Fill).center_y(Length::Fill).style(move |t| {
+    let body = container(content).padding([0.0, space::s()]).height(Length::Fill).center_y(Length::Fill);
+    let surface: Element<'static, Message> = if look.dashed {
+        stack![row![Space::new().width(BAR), body]].push_under(dashed(color, look.faded, DashedShape::Outline)).into()
+    } else {
+        let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |_| container::Style {
+            background: Some(Background::Color(color.scale_alpha(alpha))),
+            border: Border { radius: Radius::new(0.0).left(radius::xs()), ..Border::default() },
+            ..container::Style::default()
+        });
+        let body = body.style(move |t| {
             let p = palette(t);
             container::Style {
                 background: Some(Background::Color(tint(&p, color).scale_alpha(alpha))),
@@ -604,7 +642,9 @@ fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Messag
                 ..container::Style::default()
             }
         });
-    let chip_box = container(row![bar, body].height(day_head())).style(move |t| container::Style {
+        row![bar, body].into()
+    };
+    let chip_box = container(container(surface).height(day_head())).style(move |t| container::Style {
         border: if selected {
             border::rounded(radius::xs()).color(palette(t).focus_ring).width(style::FOCUS_RING_WIDTH)
         } else {
@@ -615,11 +655,13 @@ fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Messag
     mouse_area(chip_box).on_press(Message::OpenEvent(chip.index)).interaction(mouse::Interaction::Pointer).into()
 }
 
-/// An event row (`.ev`): start over duration, the bar, title over place, and on the running event
-/// "40 min left" at the right. Hover `hover`, open in the side panel `selected`, running tinted,
-/// ended at 55 %.
-fn row_view(event: &Row, m: Metrics, selected: bool) -> Element<'static, Message> {
-    let alpha = if event.past { PAST_ALPHA } else { 1.0 };
+/// An event row (`.ev`): start over duration, the bar, title over place, and at the right the
+/// avatars of the people invited and, on the running event, "40 min left". Hover `hover`, open in
+/// the side panel `selected`, running tinted, ended at 55 %; cancelled struck through and at 55 %,
+/// tentative with a dashed bar and "· tentative" after the title, cancelled with "· cancelled".
+fn row_view<'a>(event: &Row, m: Metrics, selected: bool) -> Element<'a, Message> {
+    let look = Look::of(event.status, event.past);
+    let alpha = look.alpha();
     let color = event.color;
 
     let mut time =
@@ -632,26 +674,53 @@ fn row_view(event: &Row, m: Metrics, selected: bool) -> Element<'static, Message
     }
     let time = container(time).width(m.time).height(Length::Fill).center_y(Length::Fill).clip(true);
 
-    let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |_| container::Style {
-        background: Some(Background::Color(color.scale_alpha(alpha))),
-        border: border::rounded(BAR / 2.0),
-        ..container::Style::default()
-    });
+    let bar: Element<'a, Message> = if look.dashed {
+        container(dashed(color, look.faded, DashedShape::Bar)).width(BAR).height(Length::Fill).into()
+    } else {
+        container(Space::new())
+            .width(BAR)
+            .height(Length::Fill)
+            .style(move |_| container::Style {
+                background: Some(Background::Color(color.scale_alpha(alpha))),
+                border: border::rounded(BAR / 2.0),
+                ..container::Style::default()
+            })
+            .into()
+    };
 
     let left = event.left.filter(|_| !m.narrow).map(|minutes| trf("{span} left", &[("span", &span(minutes))]));
-    let side_width = left.as_deref().map_or(0.0, |label| text_width(label, typo::meta()) + 2.0 * space::s() + m.gap);
+    let faces = if m.narrow { 0 } else { event.people.len() + usize::from(event.more > 0) };
+    let mut side_width =
+        left.as_deref().map_or(0.0, |label| text_width(label, typo::meta()) + 2.0 * space::s() + m.gap);
+    if faces > 0 {
+        side_width += avatars_width(faces) + m.gap;
+    }
+    let state = state_word(event.status).map(|word| format!("{SEPARATOR}{word}"));
+    let suffix_width = state.as_deref().map_or(0.0, |text| text_width(text, typo::body()));
     let room = m.text - side_width;
-    let mut what = column![
-        typo::text(typo::body_strong(), ellipsize(&event.title, typo::body_strong(), room))
-            .style(move |t: &Theme| faded(palette(t).text, alpha))
-            .wrapping(Wrapping::None)
-    ];
+    let title = ellipsize(&event.title, typo::body_strong(), (room - suffix_width).max(0.0));
+    let mut heading =
+        row![title_text(typo::body_strong(), title, look.struck, move |t| palette(t).text.scale_alpha(alpha))];
+    if let Some(text) = state {
+        heading = heading.push(
+            typo::text(typo::body(), text)
+                .style(move |t: &Theme| faded(palette(t).text_3, alpha))
+                .wrapping(Wrapping::None),
+        );
+    }
+    let mut what = column![heading];
     if let Some(detail) = detail_view(event, room, alpha) {
         what = what.push(detail);
     }
     let what = container(what).width(Length::Fill).height(Length::Fill).center_y(Length::Fill).clip(true);
 
     let mut cells = row![time, bar, what].spacing(m.gap).height(Length::Fill);
+    if faces > 0 {
+        let people: Vec<(&str, Color)> =
+            event.people.iter().map(|initial| (initial.as_str(), color.scale_alpha(alpha))).collect();
+        let avatars = widgets::avatar_stack(&people, event.more);
+        cells = cells.push(container(avatars).height(Length::Fill).center_y(Length::Fill));
+    }
     if let Some(label) = left {
         cells = cells.push(container(widgets::pill(None, label)).height(Length::Fill).center_y(Length::Fill));
     }
@@ -663,6 +732,16 @@ fn row_view(event: &Row, m: Metrics, selected: bool) -> Element<'static, Message
         .style(move |t, status| row_style(&palette(t), status, selected, running.then_some(color)))
         .on_press(Message::OpenEvent(event.index))
         .into()
+}
+
+/// The word after the title of an event that is not simply on: "tentative", "cancelled" (behind
+/// " · ", quietly), so the state never shows by the dashes or the stroke alone.
+fn state_word(status: Option<EventStatus>) -> Option<&'static str> {
+    match status? {
+        EventStatus::Tentative => Some(tr("tentative")),
+        EventStatus::Cancelled => Some(tr("cancelled")),
+        EventStatus::Confirmed => None,
+    }
 }
 
 /// The line under the title: map pin or camera, the place and "day 2 of 3"; `None` with neither.
@@ -749,6 +828,12 @@ fn gap_view(first: NaiveDate, last: NaiveDate, m: Metrics) -> Element<'static, M
         .into()
 }
 
+/// The width of [`widgets::avatar_stack`] with `faces` avatars, so the title is cut before the
+/// avatars and never under them.
+fn avatars_width(faces: usize) -> f32 {
+    widgets::avatar_stack_width(faces)
+}
+
 /// The tinted surface of an event in `color`, composed over the panel.
 fn tint(p: &Palette, color: Color) -> Color {
     over(p.tinted(color), p.panel)
@@ -825,6 +910,15 @@ mod tests {
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
             alarms: Vec::new(),
+            recurrence_id: None,
+            repeat: None,
+            time_zone: None,
+            url: None,
+            status: None,
+            geo: None,
+            organizer: None,
+            attendees: Vec::new(),
+            exceptions: Vec::new(),
         }
     }
 
@@ -945,6 +1039,72 @@ mod tests {
         ];
         let blocks = planned(&events, 14, 15, local(10, 8, 0));
         assert_eq!(words(days(&blocks)[0]), ["09:00", "11:00", "free 3", "15:30", "15:30", "free 2", "18:00"]);
+    }
+
+    #[test]
+    fn cancelled_events_leave_their_time_free_and_never_run() {
+        let cancelled =
+            |summary: &str, start, end| Event { status: Some(EventStatus::Cancelled), ..event(summary, start, end) };
+        let events = [
+            event("a", at(14, 9, 0), Some(at(14, 10, 0))),
+            cancelled("called off", at(14, 11, 0), Some(at(14, 12, 0))),
+            event("b", at(14, 14, 0), Some(at(14, 15, 0))),
+        ];
+        // Without the cancelled event 10:00–14:00 is free: four hours, after the struck row.
+        let blocks = planned(&events, 14, 15, local(10, 8, 0));
+        assert_eq!(words(days(&blocks)[0]), ["09:00", "11:00", "free 4", "14:00"]);
+        let blocks = planned(&events, 14, 15, local(14, 11, 30));
+        let found = rows(days(&blocks)[0]);
+        assert_eq!(found[1].left, None, "a cancelled event does not run");
+        assert_eq!(found[1].status, Some(EventStatus::Cancelled));
+        assert_eq!(Look::of(found[1].status, found[1].past), Look { faded: true, struck: true, dashed: false });
+    }
+
+    #[test]
+    fn avatars_show_three_who_come_and_count_the_others() {
+        let person = |name: Option<&str>, email: Option<&str>, partstat| Attendee {
+            name: name.map(str::to_string),
+            email: email.map(str::to_string),
+            partstat,
+            role: torro_pim::model::AttendeeRole::default(),
+        };
+        let attendees = vec![
+            person(Some("Anna Weber"), None, PartStat::Accepted),
+            person(Some("Jonas"), Some("jonas@example.org"), PartStat::Declined),
+            person(None, Some("lena@example.org"), PartStat::NeedsAction),
+            person(Some("  Örjan"), None, PartStat::Tentative),
+            person(Some("Mia"), None, PartStat::Accepted),
+            person(None, None, PartStat::Accepted),
+        ];
+        let initials = |all: &[&str]| all.iter().map(|i| i.to_string()).collect::<Vec<_>>();
+        assert_eq!(people(&attendees), (initials(&["AW", "L", "Ö"]), 2), "Jonas declined; Mia and one without a name");
+        assert_eq!(people(&attendees[..1]), (initials(&["AW"]), 0));
+        assert_eq!(people(&[]), (Vec::new(), 0));
+        let events = [Event { attendees, ..event("team", at(14, 9, 0), Some(at(14, 10, 0))) }];
+        let blocks = planned(&events, 14, 15, local(10, 8, 0));
+        let row = rows(days(&blocks)[0])[0];
+        assert_eq!((row.people.clone(), row.more), (initials(&["AW", "L", "Ö"]), 2));
+    }
+
+    /// Review of #278: a cancelled row says so in words, as a tentative one does.
+    #[test]
+    fn the_state_of_a_row_is_said_in_a_word() {
+        assert_eq!(state_word(Some(EventStatus::Cancelled)), Some(tr("cancelled")));
+        assert_eq!(state_word(Some(EventStatus::Tentative)), Some(tr("tentative")));
+        assert_eq!((state_word(Some(EventStatus::Confirmed)), state_word(None)), (None, None));
+    }
+
+    #[test]
+    fn tentative_rows_are_dashed_and_build_in_every_layout() {
+        let events =
+            [Event { status: Some(EventStatus::Tentative), ..event("maybe", at(14, 9, 0), Some(at(14, 10, 0))) }];
+        let blocks = planned(&events, 14, 15, local(10, 8, 0));
+        let row = rows(days(&blocks)[0])[0];
+        assert!(Look::of(row.status, row.past).dashed);
+        // The row builds with its dashed bar and "· tentative" in every layout.
+        for narrow in [false, true] {
+            let _ = row_view(row, Metrics::new(size::content_max(), narrow), false);
+        }
     }
 
     #[test]

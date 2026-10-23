@@ -14,9 +14,12 @@ workspace = true
 torro-core.workspace = true
 torro-pim.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 hickory-resolver.workspace = true
+iana-time-zone.workspace = true
 reqwest.workspace = true
 roxmltree.workspace = true
+rrule.workspace = true
 serde.workspace = true
 tokio.workspace = true
 
