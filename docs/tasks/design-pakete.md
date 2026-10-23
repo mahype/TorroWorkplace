@@ -800,7 +800,11 @@ es im Kommentar der `design.toml`):
   Sichtprüfung breit und schmal, hell und dunkel, in allen drei Designs.
 
 ### L.38 Abschluss: Übersetzungen, #256, Sichtprüfung
-- [ ] erledigt
+- [x] erledigt (2026-10-23: Übersetzungen in `de.rs`; L.25–L.30 entfallen; `torro-api-review` ohne Fehler; Sichtprüfung
+  ohne Hyprland nur mit Bildern, die die Apps selbst speichern (`text_editor` fehlt darauf), Funde behoben
+  (Dringend-Quadrat, Mini-Monat, Console-Zeile in Reihenfolge der Zeilen, Umschalter der Aktionsleiste bleibt, Zoom,
+  Schriftname); `shoot.sh` in allen Größenklassen nicht möglich. #256 kürzen: Text liegt bereit, das Bearbeiten des
+  Issues übernimmt der Mensch)
 - **Modell:** Opus · **Braucht:** L.35, L.36, L.37 · **Dateien:** `crates/torro-core/src/i18n/de.rs`,
   `docs/tasks/design-pakete.md`
 - Deutsche Übersetzungen aller neuen Texte aus L.31–L.37 in `de.rs`. L.25–L.30 als entfallen markieren (Verweis auf
