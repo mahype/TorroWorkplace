@@ -11479,9 +11479,12 @@ mod tests {
         let core = core(dir.path()).with_approvals(crate::approvals::Approvals::system());
         save_template(&core, "dev");
         let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
-        let refused = core
-            .handle_from(Some(&key), door_for(&core, Some(&key)), Request::DeleteTemplate { id: "dev".into() })
-            .await;
+        let refused = Box::pin(core.handle_from(
+            Some(&key),
+            door_for(&core, Some(&key)),
+            Request::DeleteTemplate { id: "dev".into() },
+        ))
+        .await;
         assert_eq!(refused, Err(Refused::NeedsApproval { command: "workspaces.delete_template" }));
         assert_eq!(code(&Refused::NeedsApproval { command: "x" }.response()), "forbidden");
         assert!(core.store.load("dev").is_ok());
@@ -11963,7 +11966,7 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
-        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), set).await else {
+        let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), set)).await else {
             panic!("refused")
         };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_github_token", lack: Lack::ForPeople });
@@ -18631,7 +18634,7 @@ mod tests {
         for request in [Request::GetProfile, Request::ListConversations] {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Forbidden { command: name })
             );
         }
@@ -18749,7 +18752,7 @@ mod tests {
         for request in assistant_requests(&conversation.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Forbidden { command: name }),
                 "{name}"
             );
@@ -18775,7 +18778,9 @@ mod tests {
         for request in assistant_requests("0123456789abcdef") {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await.map_err(Refused::command),
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request))
+                    .await
+                    .map_err(Refused::command),
                 Err(name),
                 "{name}"
             );
@@ -18921,7 +18926,7 @@ mod tests {
         for request in requests {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request.clone()).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request.clone())).await,
                 Err(Refused::Forbidden { command: name })
             );
             let actor = crate::assistant::Actor::Bot(bot.client.clone());
@@ -18989,7 +18994,7 @@ mod tests {
         ] {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Forbidden { command: name })
             );
         }
@@ -19008,7 +19013,7 @@ mod tests {
         for request in bots_requests(&bot.id) {
             let name = request.operation().name();
             assert_eq!(
-                core.handle_from(Some(&key), door_for(&core, Some(&key)), request).await,
+                Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await,
                 Err(Refused::Lacks { command: name, lack: Lack::Area { area: Area::Bots } })
             );
         }
@@ -19400,7 +19405,8 @@ mod tests {
             server: Some(server),
             key: torro_ipc::Secret::new(AI_KEY),
         };
-        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), connect(ollama.url("/v1"))).await
+        let Err(refused) =
+            Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), connect(ollama.url("/v1")))).await
         else {
             panic!("refused")
         };
@@ -20981,8 +20987,12 @@ mod tests {
         }
         let (_, key) = client(&core, rights).await;
 
-        let Err(refused) =
-            core.handle_from(Some(&key), door_for(&core, Some(&key)), switch(&account.id, "glm-5.3:cloud", true)).await
+        let Err(refused) = Box::pin(core.handle_from(
+            Some(&key),
+            door_for(&core, Some(&key)),
+            switch(&account.id, "glm-5.3:cloud", true),
+        ))
+        .await
         else {
             panic!("refused")
         };
@@ -21722,7 +21732,7 @@ mod tests {
             user: None,
             secret: torro_ipc::Secret::new("tk_clientSECRET"),
         };
-        let Err(refused) = core.handle_from(Some(&key), door_for(&core, Some(&key)), login).await else {
+        let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), login)).await else {
             panic!("refused")
         };
         assert_eq!(refused, Refused::Lacks { command: "accounts.set_ntfy_login", lack: Lack::ForPeople });
