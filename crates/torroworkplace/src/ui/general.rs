@@ -1277,7 +1277,8 @@ enum FontHint<'a> {
     /// It is listed and can be used, another font is drawn; `font` is its family.
     Other { design: &'a str, font: &'a str, id: &'a str },
     /// It is not listed as usable – not in the fonts folder, or broken –, so the font stayed; `font`
-    /// is its id, all there is to name it by.
+    /// is its name as the core lists it (a broken one has no family, then its pack's name), else its
+    /// id, all there is to name it by.
     Missing { design: &'a str, font: &'a str },
 }
 
@@ -1325,7 +1326,11 @@ fn font_hint<'a>(state: &'a State, settings: &'a Settings) -> Option<FontHint<'a
     let fonts = ok(&state.fonts)?;
     let design = info.name.as_str();
     Some(match fonts.iter().find(|entry| entry.info.id == suggested && entry.info.valid) {
-        None => FontHint::Missing { design, font: suggested },
+        // Listed but not usable: named as listed (its pack's name); not listed at all: by its id.
+        None => {
+            let listed = fonts.iter().find(|entry| entry.info.id == suggested);
+            FontHint::Missing { design, font: listed.map_or(suggested, |entry| entry.info.name()) }
+        }
         Some(entry) if drawn(fonts, &settings.font) == suggested => {
             FontHint::Drawn { design, font: entry.info.name(), id: suggested }
         }
@@ -2087,6 +2092,25 @@ mod tests {
         assert!(!missing.marks("jetbrains-mono"), "no button to mark");
         let sentence: [(&str, &dyn std::fmt::Display); 2] = [("design", &"Console"), ("font", &"jetbrains-mono")];
         assert_eq!(missing.sentence(), trf("{design} suggests {font}, which isn't installed.", &sentence));
+        // Issue #291: listed by the core but not usable – named as listed, not by its id.
+        if let Some(Ok(fonts)) = state.fonts.as_mut() {
+            let listed = FontInfo {
+                id: "jetbrains-mono".into(),
+                family: None,
+                name: "JetBrains Mono".into(),
+                version: String::new(),
+                author: None,
+                description: None,
+                license: None,
+                standard: false,
+                valid: false,
+                problems: vec!["A file is missing.".into()],
+                active: false,
+            };
+            fonts.push(Entry { info: listed, part: None, preview: None });
+        }
+        let named = font_hint(&state, &settings).expect("Console suggests one");
+        assert_eq!(named, FontHint::Missing { design: "Console", font: "JetBrains Mono" });
 
         // Compact suggests the demo's Tabular, for this test.
         if let Some(Ok(designs)) = state.designs.as_mut() {
