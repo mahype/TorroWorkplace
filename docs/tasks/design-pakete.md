@@ -736,7 +736,10 @@ es im Kommentar der `design.toml`):
 
 ### L.35 Mail und Eingang: Listendarstellung und Lesespalte
 - [x] erledigt (2026-10-23: `list::RowLook` aus `ListLook`, Zeilen in `rows` mit Avatar `[list] avatar` (0: kein Avatar,
-  auch nicht im Kopf des Lesers) und `preview_lines`, in `line` feste Spalten `mail_line`/`notice_line`; gewählte Zeile
+  auch nicht im Kopf des Lesers) und `preview_lines`, in `line` eine Zeile `mail_line`/`notice_line` (nach der
+  Sichtprüfung geändert: Reihenfolge wie die Zeilen in Standard – Markierungen bzw. Kachel · Absender mit Domain bzw.
+  Quelle als Name · Betreff bzw. Titel mit Vorschau bzw. Text in `TEXT_3` · Konto · Zeit rechts –, Mail und Hinweise
+  mit gemeinsamer Titelspalte, kürzen statt weglassen, schmal die Zeit in eigener Breite; `list::LineColumns`); gewählte Zeile
   `fill` mit Text und farbigen Marken in `on_accent` (`list::mark_colour`); die Kachel der Hinweise ist `size::tile()`;
   der Kopf des Lesers steht auf der Achse der Lesespalte. Abweichung: im Paneel gelten Lesebreite und Rand oben/unten,
   seitlich bleibt der Rand des Paneels, damit der Text mit Titel und Kopf auf einer Linie steht)
@@ -745,7 +748,8 @@ es im Kommentar der `design.toml`):
   Avatar `list.avatar` (0 = ohne, der Platz entfällt, der Text beginnt am Rand der Zeile; auch im Kopf des Lesers),
   `preview_lines`, `separators`, `selection`; `Line` eine Zeile `size::row_message()` hoch in festen Spalten
   Markierungen · Datum · Absender · Betreff, ohne Spaltenkopf; die Hinweis-Zeilen des Eingangs in `Line` ebenso eine
-  Zeile (Quelle · Zeit · Titel, `size::row_notice()`, in Console 24); `Cards` wie heute die Karten. Die Aktionsleiste bleibt
+  Zeile (Quelle · Zeit · Titel, `size::row_notice()`, in Console 24) – die Spaltenreihenfolge ist nach der Sichtprüfung
+  durch die Reihenfolge der Standard-Zeile ersetzt (Notiz oben); `Cards` wie heute die Karten. Die Aktionsleiste bleibt
   rechts, nur Breite und Knöpfe folgen dem Design (L.34).
 - **Leser:** Text und HTML der Mail höchstens `size::reading_max()` breit, Innenrand `layout::reading_padding()`
   (`mail::body`), auch im Paneel.

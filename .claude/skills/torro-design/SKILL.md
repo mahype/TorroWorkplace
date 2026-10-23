@@ -247,7 +247,7 @@ aus einem Guss wirkt:
 **Listen (`[list]`, #291, `layout::list()` → `ListLook`).** Ein Design bestimmt, *wie* Listen gezeichnet
 werden, nie *wo* etwas steht: dieselben Zellen an derselben Stelle in jedem Design, nichts kommt hinzu
 oder fällt weg (kein Spaltenkopf, keine Großbuchstaben). `style` – `rows` (Zeilen mit ihren Zeilen: Standard,
-Compact), `line` (eine Zeile je Eintrag in festen Spalten, `size::row_message()` hoch: Console) oder `cards`
+Compact), `line` (eine Zeile je Eintrag, `size::row_message()` hoch: Console) oder `cards`
 (Karten, die bequeme Dichte, `layout::density()`); `separators` – Haarlinie unter jeder Zeile ja/nein;
 `selection` – `bar` oder `fill` (Ausnahme oben); `avatar` – Kante des Avatars einer Mail-Zeile, 0 = keiner
 (der Platz entfällt); `preview_lines` – Zeilen Vorschau, 1 oder 2. `widgets::list_row` folgt dem selbst
@@ -255,6 +255,15 @@ Compact), `line` (eine Zeile je Eintrag in festen Spalten, `size::row_message()`
 Ansichten, die ihre Zeilen selbst zeichnen, nehmen `style::button::list_row`, `widgets::selection_bar` und
 `widgets::row_content` und lesen `layout::list()`. Werte je Design: Standard `rows · true · bar · 40 · 1`,
 Compact `rows · true · bar · 28 · 1`, Console `line · false · fill · 0 · 1`.
+
+**Die Zeile in `line`** (Console, #291, nach der Sichtprüfung entschieden): dieselbe Reihenfolge wie die Zeilen
+in Standard, nur auf einer Zeile – Markierungen bzw. Kachel · Absender mit Domain bzw. bei Hinweisen die
+Quelle als Name (`SourceRef::label`) · Betreff bzw. Titel (· Zahl) mit der Vorschau bzw. dem Text in `TEXT_3` ·
+Konto · Zeit rechts (`list::LineColumns`, `mail_line`, `notice_line`). Mail und Hinweise teilen dieselben
+Spalten, eine gemischte Liste (Hub) hat ein Raster; die Titelspalte hängt nicht von der Zeit der Zeile ab.
+Was nicht passt, wird mit „…“ gekürzt statt weggelassen (der Titel höchstens 60 % seiner Zelle, solange eine
+Vorschau folgt). Schmal (unter 600) nimmt die Zeit ihre eigene Breite statt der Spalte der breitesten, ein
+eigenes kurzes Zeitformat gibt es bewusst nicht.
 
 **Kategorie-Pille (E12.7, `docs/kategorien.md`).** Was eine Mail ist, steht als `widgets::category_pill`
 in Zeile, Leser und Paneel. Regel: **Farbe und Icon je Gruppe, Wort je Kategorie** – vier Farben
@@ -344,8 +353,10 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   und Gruppen mit nur einem Item ohne Titel (nur dessen Abstand darüber). Die Spalte gehört zum Layout, die Mail rückt
   nach innen. Oben scrollt, wenn das Fenster zu niedrig ist (Scrollleiste im Rand, die `kbd` bleiben frei),
   `space::s()` vor dem Fuß, der bleibt. Bekäme der Leser neben der ausgeklappten Leiste weniger als
-  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Umschalter zeigt den
-  echten Zustand, `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
+  `size::form_max()`, wird sie **nur eingeklappt dargestellt** (der gemerkte Modus bleibt, der Kopf mit dem
+  Umschalter bleibt, der Umschalter steht aus mit dem Tooltip „Widen the window to expand actions“ –
+  `widgets::RailToggle::Off`, `widgets::action_rail_toggle` –, damit Reply und die anderen Icons nicht springen;
+  `]` schaltet den gemerkten Modus). **Mittel und Schmal:** die Mail steht im Paneel
   (`Panel::side(rail, RailMode::Collapsed.width())`), die Leiste immer eingeklappt und ohne Umschalter; in Mittel ist
   das Paneel `size::panel()` + Leiste breit, die Mail behält 400. **Umschalten:** Knopf oder Taste `]`
   (`shell::is_actions_key`, wie `[` für die Seitenleiste), gemerkt je Fensterart und Ausschnitt in `ui.json`
@@ -424,7 +435,7 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   `label_chip_row` umbrechend mit Abstand 4; `state_pill(mark, wort)` – Zustand mit Wort, 22 hoch,
   rund, Farbe nur im Icon; `progress_bar(done, total)` – 64×4, Spur `LINE_STRONG`, Füllung `ok`,
   daneben immer „2/4“; `kbd(taste)` – Tastenhinweis (gab es schon).
-- **Seitenleiste:** Zeilen 28 mit Icon 16, Text `typo::body()` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
+- **Seitenleiste:** Zeilen `size::row_sidebar()` (32 im Standard) mit Icon 16, Text `typo::body()` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
   Zahl rechts `typo::meta()` tabellarisch in `TEXT_3`, Tasten-Hinweis als `kbd`. Gruppen „Lists ▾“ als
   `typo::caption()` in `TEXT_3` mit 12 Abstand darüber. Listen mit Ring (Aufgaben) bzw. Punkt (Kalender).
   Ein Zustand an einem Eintrag (ein Anbieter, dessen Konto Aufmerksamkeit braucht oder einen Fehler hat) ist
