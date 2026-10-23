@@ -863,10 +863,12 @@ pub enum Request {
     /// got without its rule never ends its series by being sent back.
     ///
     /// A save that removes events of the series needs the right to delete and waits for approval
-    /// like `calendar.delete_event`: a shorter or removed rule, another rule or time zone that leaves
-    /// events out, a later start under a fixed `UNTIL`, reset exceptions, and any `following` or
-    /// `series` save of a series the core has not cached (it cannot count then). That check comes
-    /// first, so without the right such a save is `forbidden` (or pending) before any of these. Errors: `not-found`
+    /// like `calendar.delete_event`: a shorter or removed rule, another rule that leaves events out,
+    /// any change of the time zone, a later start under a fixed `UNTIL`, reset exceptions, and any
+    /// `following` or `series` save of a series the core has not cached (it cannot count then). That
+    /// check comes first, so without the right such a save is `forbidden` (or pending) before
+    /// `unsupported`, `error` or `not-found` for a missing occurrence; a calendar the client may not
+    /// see stays `not-found`. Errors: `not-found`
     /// (no such occurrence: reload), `conflict` (the series changed meanwhile, or no `etag`),
     /// `unsupported` (switching between all-day and timed for `following`/`series`, a rule that
     /// cannot be counted for `following`, `following` at a date added apart from the rule (`RDATE`),

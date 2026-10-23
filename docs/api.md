@@ -697,12 +697,12 @@ Inhaberin (`taken-from:<hash>`), nie der Bildschirm.
 
 ²⁴ **Serien** (Issue #278, [termin-editor.md](termin-editor.md)): `save_event` ist `Write`, braucht aber Löschrecht
 in `calendar` (und wartet wie `delete_event` auf eine Freigabe), wenn die Änderung Termine wegfallen lässt: eine
-Regel entfernt oder gekürzt, eine andere Regel oder Zeitzone ohne einige bisherige Termine, ein späterer Beginn unter
-festem Enddatum (`UNTIL`), geänderte Termine zurückgesetzt. Was wegfällt, zählt der Dienst aus dem gespeicherten
+Regel entfernt oder gekürzt, eine andere Regel ohne einige bisherige Termine, jede andere Zeitzone der Serie, ein
+späterer Beginn unter festem Enddatum (`UNTIL`), geänderte Termine zurückgesetzt. Was wegfällt, zählt der Dienst aus dem gespeicherten
 Objekt in seinem Cache, nie aus dem, was der Client über die Serie sagt; hat er das Objekt nicht im Cache oder kann
 er nicht zählen (auch bei einer ungültigen Änderung), gilt die Änderung als Löschen. Diese Prüfung kommt zuerst: Ein
-Client ohne Löschrecht bekommt dann `forbidden` (oder eine Freigabe-Anfrage), bevor er `not-found`, `unsupported`
-oder `error` sehen könnte. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
+Client ohne Löschrecht bekommt dann `forbidden` (oder eine Freigabe-Anfrage), bevor er `unsupported`, `error` oder
+`not-found` für ein fehlendes Vorkommen sehen könnte; ein Kalender, den er nicht sehen darf, bleibt `not-found`. `delete_event` mit `scope` löscht einen Termin, alle folgenden oder
 die ganze Serie.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
