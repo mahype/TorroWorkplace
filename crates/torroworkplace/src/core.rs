@@ -11092,11 +11092,19 @@ mod tests {
             Response::SaveTargets { files, .. } => files[1].part.clone(),
             other => panic!("targets: {other:?}"),
         };
-        let one = Request::SaveMailAttachments { id: id.clone(), parts: vec![part], to: SaveTo::Downloads };
+        // A part named twice is one file, as the core saves it.
+        let one =
+            Request::SaveMailAttachments { id: id.clone(), parts: vec![part.clone(), part], to: SaveTo::Downloads };
         let asked = waits(ask(&core, Some(&key), one).await);
         let args: [(&str, &dyn std::fmt::Display); 3] =
             [("n", &1), ("subject", &"\"Recent\""), ("target", &tr("Downloads"))];
         assert_eq!(asked.summary, trf("Save an attachment of the mail {subject} to {target}", &args));
+
+        // A part the stored message does not have is refused before anybody is asked.
+        let before = core.approvals.list(None, Utc::now()).await.unwrap_or_default().len();
+        let unknown = Request::SaveMailAttachments { id: id.clone(), parts: vec!["99".into()], to: SaveTo::Downloads };
+        assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+        assert_eq!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().len(), before, "nobody asked");
 
         let mut outside = rights;
         outside.mail_accounts = Selection::Only(Vec::new());

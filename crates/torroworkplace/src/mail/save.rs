@@ -446,7 +446,16 @@ pub async fn to_approve(mail: &MailService, reach: Reach<'_>, id: &str, parts: &
     let stores = mail.stores(reach).await;
     let located = read::locate(&stores, id).await?;
     let message = read::stored_message(&located).await?;
-    let count = match (parts.len(), &message.text) {
+    // A part named twice is one file; once the store knows the attachments, a part it does not know
+    // is refused here, so nobody approves a call that would end in `not-found`.
+    let mut named: Vec<&String> = parts.iter().collect();
+    named.sort();
+    named.dedup();
+    let known = |part: &String| message.attachments.iter().any(|attachment| &attachment.part == part);
+    if message.text.is_some() && !named.iter().all(|part| known(part)) {
+        return Err(read::no_attachment());
+    }
+    let count = match (named.len(), &message.text) {
         (0, Some(_)) => message.attachments.iter().filter(|attachment| !attachment.inline).count(),
         (0, None) => 0,
         (named, _) => named,

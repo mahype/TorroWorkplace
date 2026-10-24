@@ -3725,10 +3725,11 @@ static SAVE_ATTACHMENTS: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Saves attachments of a message (`parts` from get_message, empty for all but inline images) to the \
-                  Downloads folder (`\"downloads\"`) or to a save target (`{\"target\": \"<id>\"}` from \
-                  mail_list_save_targets), each file by its own date, and returns the paths. A file is never \
-                  overwritten; `skipped` lists files whose identical content was there already, `failed` the ones \
-                  that could not be saved while the others are. Only a person chooses other paths. File names come \
+                  Downloads folder (`to`: `downloads`) or to a save target by its id from mail_list_save_targets (the \
+                  MCP tool takes the id itself as `to`, the API `{\"target\": \"<id>\"}`), each file by its own \
+                  date, and returns the paths. A file is never overwritten; `skipped` lists files whose identical \
+                  content was there already, `failed` the ones that could not be saved while the others are. Only a \
+                  person chooses other paths. File names come \
                   from the message and are `untrusted`.",
 };
 
