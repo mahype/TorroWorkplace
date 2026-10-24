@@ -5260,6 +5260,62 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Copied file", "Datei kopiert"),
     ("Moved file", "Datei verschoben"),
     ("Moved to trash", "In den Papierkorb gelegt"),
+    // The tool files (WD.2, #304): its bounds, its errors, its approvals
+    (
+        "No such file or folder in the allowed folders.",
+        "Keine solche Datei und kein solcher Ordner in den freigegebenen Ordnern.",
+    ),
+    ("The files cannot be changed: {reason}", "Die Dateien können nicht geändert werden: {reason}"),
+    (
+        "The system does not let Torro Workplace in there. Allow it under System Settings › Privacy & Security › Files and Folders.",
+        "Das System lässt Torro Workplace dort nicht hinein. Erlaube es unter Systemeinstellungen › Datenschutz & Sicherheit › Dateien und Ordner.",
+    ),
+    ("The system does not let Torro Workplace in there.", "Das System lässt Torro Workplace dort nicht hinein."),
+    (
+        "Give a full path of one line, without . or .. parts.",
+        "Gib einen vollständigen Pfad in einer Zeile an, ohne . oder .. darin.",
+    ),
+    ("Give the new path with a name at its end.", "Gib den neuen Pfad mit einem Namen am Ende an."),
+    ("A name may be at most 255 bytes long.", "Ein Name darf höchstens 255 Bytes lang sein."),
+    (
+        "The tools may only read in this folder; a person can allow more in the assistant's settings.",
+        "Die Werkzeuge dürfen in diesem Ordner nur lesen; mehr kann ein Mensch in den Einstellungen des Assistenten erlauben.",
+    ),
+    (
+        "This is or holds an allowed folder or files the suite protects; it stays where it is.",
+        "Das ist oder enthält einen freigegebenen Ordner oder Dateien, die die Suite schützt; es bleibt, wo es ist.",
+    ),
+    ("Give a folder here, not a file.", "Gib hier einen Ordner an, keine Datei."),
+    (
+        "Give a name of 1 to 200 characters to look for, in one line.",
+        "Gib einen Namen mit 1 bis 200 Zeichen in einer Zeile an, nach dem gesucht wird.",
+    ),
+    ("Only files can be copied, not folders or links.", "Nur Dateien lassen sich kopieren, keine Ordner oder Links."),
+    (
+        "A folder or a link can only be moved on the same drive.",
+        "Ein Ordner oder Link lässt sich nur auf demselben Laufwerk verschieben.",
+    ),
+    ("A folder cannot be moved into itself.", "Ein Ordner lässt sich nicht in sich selbst verschieben."),
+    ("Every free name for it is taken.", "Alle freien Namen dafür sind vergeben."),
+    ("Make the folder \"{new}\" in \"{folder}\"", "Ordner „{new}“ in „{folder}“ anlegen"),
+    ("Make a folder in an unknown place", "Ordner an unbekannter Stelle anlegen"),
+    ("Copy \"{name}\" to \"{folder}\"", "„{name}“ nach „{folder}“ kopieren"),
+    ("Copy \"{name}\" to \"{folder}\" as \"{new}\"", "„{name}“ als „{new}“ nach „{folder}“ kopieren"),
+    ("Copy an unknown file", "Unbekannte Datei kopieren"),
+    ("Rename \"{name}\" to \"{new}\"", "„{name}“ in „{new}“ umbenennen"),
+    ("Move \"{name}\" to \"{folder}\"", "„{name}“ nach „{folder}“ verschieben"),
+    ("Move \"{name}\" to \"{folder}\" as \"{new}\"", "„{name}“ als „{new}“ nach „{folder}“ verschieben"),
+    ("Move an unknown file or folder", "Unbekannte Datei oder unbekannten Ordner verschieben"),
+    ("From: {path}", "Von: {path}"),
+    ("To: {path}", "Nach: {path}"),
+    (
+        "A file there is never replaced; a free name is chosen.",
+        "Eine Datei dort wird nie ersetzt; es wird ein freier Name gewählt.",
+    ),
+    (
+        "The files changed after the approval was asked for; nothing was done.",
+        "Die Dateien haben sich nach der Anfrage zur Freigabe geändert; es wurde nichts getan.",
+    ),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
         "Includes tools added later. Each works only while it is on in the assistant's settings.",

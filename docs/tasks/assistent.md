@@ -1073,7 +1073,7 @@ WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, k
   `docs/api-reference.md`; Übersetzungen in `de.rs`.
 
 ### WD.2 Kern: Ordnergrenzen, auflisten, suchen, anlegen, kopieren, verschieben
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WD.1 · **Dateien:** `crates/torroworkplace/src/tools/{mod,folders,organize}.rs`
   (`folders.rs` und `organize.rs` neu), `crates/torroworkplace/src/{core,approvals,client_setup}.rs`,
   `crates/torroworkplace/assets/assistant/skill.md`, `crates/torro-core/src/i18n/de.rs`

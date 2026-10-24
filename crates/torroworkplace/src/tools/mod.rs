@@ -1,11 +1,13 @@
 //! The assistant's own tools (concept "Eigene Werkzeuge" in `docs/assistent.md`, issue #225): abilities only the
 //! assistant and the bots have, each with a switch and settings of its own. The first one makes PDFs; the second,
-//! `files` (issue #304, "Werkzeug Dateien"), organizes files in the folders a person allowed – its commands answer
-//! `unsupported` until its handlers are here (tasks WD.2, WD.3).
+//! `files` (issue #304, "Werkzeug Dateien"), organizes files in the folders a person allowed – moving to the trash
+//! answers `unsupported` until task WD.3.
 //!
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
 //! - `files`: the register of every file a tool made (task WZ.4).
+//! - `folders`: the bounds of the tool `files` – allowed folders, their access, what stays locked (task WD.2).
+//! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2).
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: the tool's switch for every key
 //! (`Lack::ToolOff`), for a client its rights and selection (`Lack::Tool`) and that a file is its own; the handlers
@@ -13,6 +15,8 @@
 //! path or content: only the kind of an error.
 
 pub mod files;
+pub mod folders;
+pub mod organize;
 pub mod pdf;
 pub mod place;
 
@@ -45,6 +49,10 @@ pub struct Roots {
     pub home: Option<PathBuf>,
     /// The fonts folder (`torro_core::design::font_dir`); `None` sets in the standard's.
     pub fonts: Option<PathBuf>,
+    /// What the tool `files` never reaches, whatever allowed folder holds it (decision 24, [`folders::Allowed`]):
+    /// the suite's own folders, the files with client keys and hooks ([`crate::client_setup::protected_files`]) and
+    /// the system's key stores ([`folders::key_stores`]). Each is locked with all it holds.
+    pub excluded: Vec<PathBuf>,
 }
 
 /// The tools' handlers and their register.
@@ -56,15 +64,26 @@ pub struct Tools {
 
 impl Tools {
     /// The person's: the register in the core's data folder, the system's desktop and home folder, the design
-    /// packs' folder, files opened with the system's program. In tests none of them: nothing of the person's.
+    /// packs' folder, files opened with the system's program, and locked for the tool `files` the config, data and
+    /// state folders of every app of the suite, the files with client keys and hooks and the system's key stores.
+    /// In tests none of them: nothing of the person's.
     pub fn system() -> Tools {
         if cfg!(test) {
             return Tools::new(Roots::default());
         }
         let data =
             torro_core::paths::AppPaths::for_app(torro_core::AppId::WORKPLACE).map(|paths| paths.data.join("tools"));
-        let roots =
-            Roots { data, desktop: dirs::desktop_dir(), home: dirs::home_dir(), fonts: torro_core::design::font_dir() };
+        let home = dirs::home_dir();
+        let mut excluded: Vec<PathBuf> = torro_core::AppId::ALL
+            .iter()
+            .filter_map(|app| torro_core::paths::AppPaths::for_app(*app))
+            .flat_map(|paths| [paths.config, paths.data, paths.state])
+            .collect();
+        if let Some(env) = crate::client_setup::Env::current() {
+            excluded.extend(crate::client_setup::protected_files(&env));
+        }
+        excluded.extend(home.as_deref().map(folders::key_stores).unwrap_or_default());
+        let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
         Tools { register: Register::in_dir(roots.data.clone()), roots, open: Arc::new(system_open) }
     }
 
@@ -357,6 +376,7 @@ pub(crate) mod tests {
                 desktop: Some(self.desktop()),
                 home: Some(self.home()),
                 fonts: None,
+                excluded: Vec::new(),
             };
             let opened = Arc::clone(&self.opened);
             Tools::new(roots).with_opener(Arc::new(move |path: &Path| {
@@ -430,6 +450,7 @@ pub(crate) mod tests {
             desktop: Some(room.desktop()),
             home: Some(room.home()),
             fonts: Some(repo_fonts),
+            excluded: Vec::new(),
         };
         let tools = Tools::new(roots);
         let contains = |bytes: &[u8], name: &[u8]| bytes.windows(name.len()).any(|window| window == name);
