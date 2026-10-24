@@ -1494,11 +1494,13 @@ pub(crate) mod tests {
         let listed = answer(&service, Reach::Suite, &context, list).await;
         let Response::SaveTargets { targets, files, .. } = listed else { panic!("targets: {listed:?}") };
         assert_eq!((targets, files), (vec![made], Vec::new()));
-        let gone = to_approve(&service, Reach::Suite, &id, &[]).await.expect("still in the store");
-        assert_eq!(gone.count, 0, "nothing known to count");
         // Parts named while the mail cannot be read are no number in front of a person.
         let named: Vec<String> = (1..=30).map(|n| n.to_string()).collect();
-        let named = to_approve(&service, Reach::Suite, &id, &named).await.expect("still in the store");
-        assert_eq!(named.count, 0, "no count from the request");
+        // The failed fetch may also tell the store the mail is gone (the server's EXPUNGE, depending
+        // on timing); then it is `not-found`, which is right as well.
+        match to_approve(&service, Reach::Suite, &id, &named).await {
+            Ok(gone) => assert_eq!(gone.count, 0, "nothing known to count, no count from the request"),
+            Err(gone) => assert_eq!(code(&gone), "not-found"),
+        }
     }
 }
