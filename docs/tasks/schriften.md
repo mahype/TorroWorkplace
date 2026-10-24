@@ -265,7 +265,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
   ohne „isn't installed“.
 
 ### SR.8 Abschluss: Übersetzungen, L.24, Sichtprüfung
-- [ ] erledigt
+- [x] erledigt (2026-10-24: Sichtprüfung auf macOS mit einem Bildschirmfoto aus Iced, alle 25 Schriften hell und dunkel im Standard; Linux und Hyprland nicht möglich; `torroworkplace` (release, macOS) 95,8 MB vor und 127,4 MB nach den Schriften)
 - **Modell:** Opus · **Braucht:** SR.7 · **Dateien:** `crates/torro-core/src/i18n/de.rs`,
   `docs/tasks/design-pakete.md`, `docs/tasks/schriften.md`
 - Deutsche Übersetzungen aller neuen Texte aus SR.1–SR.4 (Gründe der Systemschriften, „Search“, „No matches“, „Torro
