@@ -1235,7 +1235,7 @@ nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
   `TORRO_BLESS=1 cargo test -p torro-ipc`, `docs/api-reference.md` committet.
 
 ### M12.2 Schema auflösen und Vorschlag
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M12.1 · **Dateien:** `crates/torro-mail/src/save_target.rs`
 - **Oberfläche/API/MCP:** keine; Bibliothek für M12.3 und M12.7.
 - Reine Funktionen ohne Dateizugriff:

@@ -43,4 +43,7 @@ pub use message::{
     MessageSummary, MessageTraits, Role,
 };
 pub use order::Order;
-pub use save_target::{DateSource, FileKind, OnConflict, SaveTarget, SaveTargetSpec, SuggestWhen};
+pub use save_target::{
+    DateSource, FileFacts, FileKind, OnConflict, Resolved, SaveTarget, SaveTargetSpec, SchemaError, SuggestWhen,
+    Suggestion,
+};
