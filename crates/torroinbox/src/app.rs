@@ -2461,6 +2461,9 @@ pub enum Message {
     /// shown, an open group not shown is shown, the open group shown folds
     /// ([`App::toggle_category_group`]).
     ToggleCategoryGroup(CategoryGroup),
+    /// A click on a group in the navigation menu or the rail (issue #300), where its fold does not
+    /// show: opens and shows the group and closes the menu like every view; never folds it.
+    ShowCategoryGroup(CategoryGroup),
     /// Opens the link held back from a fraudulent mail after all (task E12.9).
     OpenLinkAnyway,
     /// One category picked: the question "Always for this sender?" follows.
@@ -3611,6 +3614,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
             }
             Message::ToggleCategoryGroup(group) => return self.toggle_category_group(group),
+            Message::ShowCategoryGroup(group) => return self.show_category_group(group),
             Message::AskCategory(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_category(&id);
@@ -8454,6 +8458,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.update(Message::Show(self.category_group_view(group)))
     }
 
+    /// A click on `group` where its fold does not show – the navigation menu and the rail (issue
+    /// #300): it opens and is shown, and the menu closes like for every view. Folding there would
+    /// change nothing to see, only what the expanded sidebar shows later.
+    fn show_category_group(&mut self, group: CategoryGroup) -> Task<Message> {
+        self.open_groups.insert(group);
+        if self.category_group_active(group) {
+            self.close_menus();
+            return Task::none();
+        }
+        self.update(Message::Show(self.category_group_view(group)))
+    }
+
     /// The group the category start states open (`--open category-group`, `category`,
     /// `category-menu`): the one with the most categories that hold mail, the first of them on a
     /// tie – "Waiting for me" in the demo.
@@ -8751,11 +8767,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// rail lists no categories, so there the group is marked also while one of them is shown.
     fn category_rows<'a>(&self, mode: SidebarMode, branch: CategoryBranch) -> Vec<Element<'a, Message>> {
         let CategoryBranch { group: entry, open, line, categories } = branch;
-        let active = match (mode, entry.target) {
-            (SidebarMode::Rail, Target::Fold(group)) => self.category_group_shown(group),
-            _ => entry.active,
+        let (active, message) = match (mode, entry.target) {
+            (SidebarMode::Rail, Target::Fold(group)) => {
+                (self.category_group_shown(group), Message::ShowCategoryGroup(group))
+            }
+            _ => (entry.active, entry.message()),
         };
-        let (trail, message) = (entry.trail(), entry.message());
+        let trail = entry.trail();
         let mut rows = vec![widgets::sidebar_fold_in(mode, entry.mark, entry.label, trail, active, open, message)];
         if mode == SidebarMode::Expanded && !categories.is_empty() {
             let children = categories
@@ -8788,8 +8806,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let entries = categories
                 .into_iter()
                 .flat_map(|branch| {
+                    // Folding shows nothing in the menu: its group only shows and opens.
+                    let target = branch.group.target;
                     let children = branch.categories.into_iter().map(|e| item(e).nested());
-                    std::iter::once(item(branch.group)).chain(children).collect::<Vec<_>>()
+                    let mut group = item(branch.group);
+                    if let Target::Fold(of) = target {
+                        group.on_press = Message::ShowCategoryGroup(of);
+                    }
+                    std::iter::once(group).chain(children).collect::<Vec<_>>()
                 })
                 .collect();
             sections.push(MenuSection::titled(tr("Categories"), entries));
@@ -13527,6 +13551,21 @@ mod tests {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
         }
+        // From the menu (and the rail, where folding shows nothing) a click on a group shows it and
+        // closes the menu, also on the group already shown – it never folds unseen.
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        assert_eq!(app.menu, None, "the menu closes like for every view");
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        app.open_groups.remove(&group);
+        let _ = app.update(Message::ToggleNav);
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        assert_eq!(app.menu, None);
+        assert!(app.open_groups.contains(&group), "a folded group shown opens");
+        let other = CategoryGroup::Info;
+        assert!(app.update(Message::ShowCategoryGroup(other)).units() > 0, "another group is loaded");
+        assert!(app.open_groups.contains(&other) && app.category_group_active(other));
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        load(&mut app);
         // Staged once: a group folded afterwards stays folded over the next load.
         let _ = app.update(Message::ToggleCategoryGroup(group));
         load(&mut app);
