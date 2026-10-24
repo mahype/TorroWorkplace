@@ -805,8 +805,108 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Element<'a, M> {
+    sidebar_row(mode, SidebarRow { mark: mark.into(), scale: Scale::Row, fold: None }, label, trail, active, on_press)
+}
+
+/// A group row that folds its children in and out (the category groups of the mail window, issue
+/// #300): expanded like [`sidebar_item_in`], with a chevron ([`Icon::ChevronDown`] when `open`, else
+/// [`Icon::ChevronRight`], 12 in `text_3`) right after the label, so the icons of all rows stay in one
+/// column; in the rail exactly a [`sidebar_item_in`], without a chevron (the rail shows no children).
+/// The whole row is the button; what a click does (show the group, fold it) is the app's to decide.
+/// Put the open group's children after it in a [`sidebar_branch`].
+///
+/// ```ignore
+/// let open = self.open_groups.contains(&group);
+/// items.push(widgets::sidebar_fold_in(mode, Mark::Tinted(icon, colour), tr("Paper trail"), Trail::Count(7), active, open, Message::Fold(group)));
+/// if open && mode == SidebarMode::Expanded {
+///     items.push(widgets::sidebar_branch(colour, children));
+/// }
+/// ```
+pub fn sidebar_fold_in<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    mark: impl Into<Mark>,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    open: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let row = SidebarRow { mark: mark.into(), scale: Scale::Row, fold: Some(open) };
+    sidebar_row(mode, row, label, trail, active, on_press)
+}
+
+/// The children of an open group ([`sidebar_fold_in`]) as one branch: `rows` ([`sidebar_child`])
+/// below one another with the sidebar's gap, [`icon::SIZE`] + [`space::s()`] further in than the
+/// group, and a 1-px line in `line` (the group's colour) under the middle of the group's icon, over
+/// the whole height of the branch – it binds the children to their group. Only in the expanded
+/// sidebar; the rail shows no branches.
+///
+/// ```ignore
+/// let children = categories.iter().map(|c| widgets::sidebar_child(Mark::Tinted(c.icon, colour), c.label, Trail::Count(c.unread), c.active, Message::Show(c.view))).collect();
+/// items.push(widgets::sidebar_branch(colour, children));
+/// ```
+pub fn sidebar_branch<'a, M: 'a>(line: Color, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
+    let children = container(column(rows).spacing(crate::shell::SIDEBAR_GAP))
+        .width(Fill)
+        .padding(Padding::new(0.0).left(branch_indent()));
+    let stroke = container(blank())
+        .width(LINE)
+        .height(Fill)
+        .style(move |_| container::Style { background: Some(Background::Color(line)), ..container::Style::default() });
+    let guide =
+        container(stroke).width(Fill).height(Fill).padding(Padding::new(0.0).left(branch_line_x() - LINE / 2.0));
+    // The children are the stack's first layer and so give it its height; the line fills it.
+    stack![children, guide].width(Fill).into()
+}
+
+/// A child row in a [`sidebar_branch`] (a category under its group, issue #300): drawn like an
+/// expanded [`sidebar_item_in`], with the mark one step smaller ([`icon::SIZE_SM`]) so the group
+/// above it keeps the rank.
+///
+/// ```ignore
+/// widgets::sidebar_child(Mark::Tinted(Icon::TextQuote, colour), tr("Invoice received"), Trail::Count(2), shown, Message::Show(view))
+/// ```
+pub fn sidebar_child<'a, M: Clone + 'a>(
+    mark: impl Into<Mark>,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let row = SidebarRow { mark: mark.into(), scale: Scale::Small, fold: None };
+    sidebar_row(SidebarMode::Expanded, row, label, trail, active, on_press)
+}
+
+/// How far the children of a group stand in ([`sidebar_branch`], nested [`MenuItem`]s): one icon
+/// and the gap after it, so a child's mark starts where the group's label does.
+fn branch_indent() -> f32 {
+    icon::SIZE + space::s()
+}
+
+/// Where the line of a [`sidebar_branch`] runs, from the branch's left edge: the middle of the
+/// group's icon in the row above.
+fn branch_line_x() -> f32 {
+    style::ITEM_PADDING.left + icon::SIZE / 2.0
+}
+
+/// What sets the sidebar rows apart: the mark and its scale, and for a folding group whether it is
+/// open (`Some`, drawn with a chevron).
+struct SidebarRow {
+    mark: Mark,
+    scale: Scale,
+    fold: Option<bool>,
+}
+
+fn sidebar_row<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    parts: SidebarRow,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
     let tone = if active { Tone::Text } else { Tone::Text2 };
-    let mark = mark_view(mark.into(), Scale::Row, tone);
+    let mark = mark_view(parts.mark, parts.scale, tone);
     let row_button = |content: Element<'a, M>, padding: Padding| {
         button(content)
             .width(Fill)
@@ -817,10 +917,22 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
     };
     match mode {
         SidebarMode::Expanded => {
-            let content = row![mark, line_label(typo::body(), label)]
-                .push(trail_view(trail))
-                .spacing(space::s())
-                .align_y(Alignment::Center);
+            let name = match parts.fold {
+                None => line_label(typo::body(), label),
+                Some(open) => {
+                    // The chevron follows the name instead of the row's end, so the label takes
+                    // only its own width; both are clipped together if the name is too long.
+                    let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+                    let name = row![
+                        typo::text(typo::body(), label).wrapping(Wrapping::None),
+                        toned(chevron, GROUP_CHEVRON, Tone::Text3)
+                    ]
+                    .spacing(space::xs())
+                    .align_y(Alignment::Center);
+                    container(name).width(Fill).clip(true).into()
+                }
+            };
+            let content = row![mark, name].push(trail_view(trail)).spacing(space::s()).align_y(Alignment::Center);
             row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING).into()
         }
         SidebarMode::Rail => {
@@ -1634,14 +1746,24 @@ pub struct MenuItem<'a, M> {
     pub trail: Trail,
     /// Marks the current choice.
     pub current: bool,
+    /// A child of the entry above it (a category under its group, issue #300): indented by an icon
+    /// and its gap, with the mark one step smaller.
+    pub nested: bool,
     /// Sent when the entry is clicked; the app closes the menu itself.
     pub on_press: M,
 }
 
 impl<'a, M> MenuItem<'a, M> {
-    /// An entry with `mark` and `label` that sends `on_press`; no trail, not current.
+    /// An entry with `mark` and `label` that sends `on_press`; no trail, not current, not nested.
     pub fn new(mark: impl Into<Mark>, label: impl IntoFragment<'a>, on_press: M) -> Self {
-        Self { mark: Some(mark.into()), label: label.into_fragment(), trail: Trail::None, current: false, on_press }
+        Self {
+            mark: Some(mark.into()),
+            label: label.into_fragment(),
+            trail: Trail::None,
+            current: false,
+            nested: false,
+            on_press,
+        }
     }
 
     /// The same entry with `trail` at the end.
@@ -1652,6 +1774,11 @@ impl<'a, M> MenuItem<'a, M> {
     /// The same entry marked as the current choice when `current` is true.
     pub fn current(self, current: bool) -> Self {
         Self { current, ..self }
+    }
+
+    /// The same entry as a child of the one above it: indented, its mark one step smaller.
+    pub fn nested(self) -> Self {
+        Self { nested: true, ..self }
     }
 }
 
@@ -1692,9 +1819,10 @@ pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
 }
 
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
+    let scale = if item.nested { Scale::Small } else { Scale::Row };
     let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = item.mark {
-        content = content.push(mark_view(mark, Scale::Row, Tone::Text));
+        content = content.push(mark_view(mark, scale, Tone::Text));
     }
     content = content.push(line_label(typo::body(), item.label)).push(trail_view(item.trail));
     if item.current {
@@ -1704,13 +1832,18 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
             ..container::Style::default()
         }));
     }
-    button(container(content).center_y(Fill))
+    let entry = button(container(content).center_y(Fill))
         .width(Fill)
         .height(style::MENU_ITEM_HEIGHT)
         .padding(style::ITEM_PADDING)
         .style(style::button::menu_item(false))
-        .on_press(item.on_press)
-        .into()
+        .on_press(item.on_press);
+    if item.nested {
+        // The whole entry moves in, hover surface included, as in the sidebar's branch.
+        container(entry).padding(Padding::new(0.0).left(branch_indent())).into()
+    } else {
+        entry.into()
+    }
 }
 
 /// A menu card: `menu` surface, `line_strong` border, radius 8, shadow, 4 inside, [`menu_width()`]
@@ -5156,6 +5289,52 @@ mod tests {
         let item = item.trail(Trail::Count(5)).current(true);
         assert_eq!((item.trail, item.current, item.on_press.clone()), (Trail::Count(5), true, Msg::Go));
         assert_eq!(MenuSection::titled("Lists", vec![item]).title.as_deref(), Some("Lists"));
+    }
+
+    /// Issue #300 (task E17.1): a nested entry is the builder's to set; a new entry is not nested.
+    #[test]
+    fn menu_items_are_nested_only_when_asked() {
+        assert!(!MenuItem::new(Icon::Inbox, "Waiting for me", Msg::Go).nested);
+        let child = MenuItem::new(Icon::Inbox, "Reply needed", Msg::Go).trail(Trail::Count(2)).nested();
+        assert!(child.nested);
+        assert_eq!(child.trail, Trail::Count(2), "nesting keeps the rest of the entry");
+        let _: Element<'_, Msg> = menu(vec![MenuSection::new(vec![child])]);
+    }
+
+    /// Issue #300 (task E17.1): the children of a group sit one icon and its gap further in, and the
+    /// line that binds them to the group runs under the middle of the group's icon, left of them.
+    #[test]
+    fn a_branch_is_indented_by_an_icon_with_its_line_under_the_group_icon() {
+        assert_eq!(branch_indent(), icon::SIZE + space::s());
+        assert_eq!(branch_indent(), 24.0, "the standard design's 16 + 8");
+        assert_eq!(branch_line_x(), style::ITEM_PADDING.left + icon::SIZE / 2.0);
+        assert_eq!(branch_line_x(), 16.0, "the middle of the group's icon");
+        assert!(branch_line_x() < branch_indent(), "the line stays left of the indented rows");
+    }
+
+    /// Issue #300 (task E17.1): the group row, its branch and its children build in both sidebar modes.
+    #[test]
+    fn the_folding_group_and_its_branch_build_in_both_modes() {
+        let colour = Color::from_rgb(0.2, 0.5, 0.9);
+        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+            for (active, open) in [(false, false), (true, false), (false, true), (true, true)] {
+                let _ = sidebar_fold_in(
+                    mode,
+                    Mark::Tinted(Icon::Inbox, colour),
+                    "Waiting for me",
+                    Trail::Count(4),
+                    active,
+                    open,
+                    Msg::Go,
+                );
+            }
+            let children = vec![
+                sidebar_child(Mark::Tinted(Icon::Inbox, colour), "Reply needed", Trail::Count(2), true, Msg::Go),
+                sidebar_child(Mark::Tinted(Icon::Inbox, colour), "Waiting", Trail::None, false, Msg::Close),
+            ];
+            let _ = sidebar_branch(colour, children);
+            let _ = sidebar_branch::<Msg>(colour, Vec::new());
+        }
     }
 
     #[test]

@@ -3901,7 +3901,7 @@ E17.1 Bausteine in torro-gui ── E17.2 Mail-Fenster: Klickregel und Darstellu
 ```
 
 ### E17.1 Bausteine: Gruppe mit Chevron, eingerückte Zweige, eingerückte Menüeinträge
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/widgets.rs`,
   `crates/torro-gui/src/shell.rs` (nur Sichtbarkeit von `SIDEBAR_GAP`), `crates/torro-gui/examples/gallery.rs`,
   `crates/torrotasks/src/detail.rs` (nur die zwei `MenuItem { … }`-Literale), `.claude/skills/torro-design/SKILL.md`
