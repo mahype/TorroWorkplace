@@ -1,0 +1,26 @@
+# The font Fira Code (task SR.7, issue #299): Fira Code. Its size adjustment comes from its x-height.
+# Source: github.com/tonsky/FiraCode release 6.2 (Fira_Code_v6.2.zip, ttf; licence LICENSE at tag 6.2),
+# Version 6.002; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Fira Code files are the maker's, unchanged.
+# x-height 0.540 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.011; widest figure
+# of numbers 0.615 em, 0.622 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 1200, Medium
+# 1200, SemiBold 1200, Bold 1200 of 1950 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Mono" in the control centre (#299).
+kind = "mono"
+
+[about]
+name = "Fira Code"
+version = "1.0.0"
+author = "Torro"
+description = "Fira Code: the monospace of Fira Mono, with ligatures for code"
+
+[fonts.text]
+family = "Fira Code"
+regular = "FiraCode-Regular.ttf"
+medium = "FiraCode-Medium.ttf"
+semibold = "FiraCode-SemiBold.ttf"
+bold = "FiraCode-Bold.ttf"

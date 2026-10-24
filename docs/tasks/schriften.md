@@ -255,7 +255,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
 - **Abnahme:** wie SR.5.
 
 ### SR.7 Serif und Mono: Literata, Merriweather, Lora, Newsreader, JetBrains Mono, Fira Code, Plex Mono, Source Code Pro, Geist Mono, Inconsolata
-- [ ] erledigt
+- [x] erledigt (2026-10-24: Ziffernschriften von Merriweather und Lora heißen wegen des RFN „Torro Serif Figures“ und „Torro Quill Figures“; Newsreader nur als feste Schnitte „Newsreader 16pt“; Merriweather allein 6,9 MB. `jetbrains-mono` lädt gültig (Test); die Demo zeigt Console weiter mit „isn't installed“, weil sie ihre eigenen Beispielschriften listet)
 - **Modell:** Opus · **Braucht:** SR.6 · **Dateien:** `fonts/{literata,merriweather,lora,newsreader,jetbrains-mono,
   fira-code,plex-mono,source-code-pro,geist-mono,inconsolata}/`, `crates/torroworkplace/src/designs.rs`,
   `docs/design-pakete.md`

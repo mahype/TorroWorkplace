@@ -690,22 +690,32 @@ Name (RFN) trägt einen anderen Familiennamen.
 | `channelr` | Lato | sans | google/fonts | OFL-1.1 | „Lato“ | nein | gleich breit |
 | `commitr` | Mona Sans, Ziffern Commitr Figures | sans | github/mona-sans 2.0.27 | OFL-1.1 | „Mona“ | ja (Commitr Figures) | Commitr Figures, eingefroren |
 | `dm-sans` | DM Sans, Ziffern DM Sans Figures | sans | googlefonts/dm-fonts @4412393, 4.004 | OFL-1.1 | – | ja (DM Sans Figures) | DM Sans Figures, `tnum` eingefroren |
+| `fira-code` | Fira Code | mono | tonsky/FiraCode 6.2 | OFL-1.1 | – | nein | gleich breit |
 | `fira-sans` | Fira Sans, Ziffern Fira Sans Figures | sans | google/fonts ofl/firasans @e7db6ca, 4.203 | OFL-1.1 | – | ja (Fira Sans Figures) | Fira Sans Figures, `tnum` eingefroren |
 | `geist` | Geist, Ziffern Geist Figures | sans | vercel/geist-font v1.8.2 | OFL-1.1 | – | ja (Geist Figures) | Geist Figures, `tnum` eingefroren |
+| `geist-mono` | Geist Mono | mono | vercel/geist-font v1.8.2 | OFL-1.1 | – | nein | gleich breit |
 | `guildr` | Figtree, Ziffern Figtree Tabular | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte, Figtree Tabular) | Figtree Tabular, eingefroren |
 | `hyperlegible` | Atkinson Hyperlegible Next, Ziffern Hyperlegible Figures | sans | googlefonts/atkinson-hyperlegible-next @7925f50, 2.001 | OFL-1.1 | – | ja (Hyperlegible Figures) | Hyperlegible Figures, `tnum` eingefroren |
+| `inconsolata` | Inconsolata | mono | google/fonts ofl/inconsolata/static @e7db6ca, 3.001 | OFL-1.1 | – | nein | gleich breit |
+| `jetbrains-mono` | JetBrains Mono | mono | JetBrains/JetBrainsMono v2.304 | OFL-1.1 | – | nein | gleich breit |
 | `lexend` | Lexend, Ziffern Lexend Figures | sans | googlefonts/lexend @7894f02, 1.008 | OFL-1.1 | nur „RevReading Lexend“ | ja (Lexend Figures) | Lexend Figures: die Standardziffern auf eine Breite gebracht und mittig (kein `tnum`) |
+| `literata` | Literata, Ziffern Literata Figures | serif | googlefonts/literata 3.103 | OFL-1.1 | – | ja (Literata Figures) | Literata Figures, `tnum` eingefroren |
+| `lora` | Lora, Ziffern Torro Quill Figures | serif | cyrealtype/Lora-Cyrillic v3.021 | OFL-1.1 | „Lora“ | ja (Torro Quill Figures, umbenannt) | Torro Quill Figures, `tnum` eingefroren |
 | `manrope` | Manrope, Ziffern Manrope Figures | sans | googlefonts/manrope @468c0db, 4.505 | OFL-1.1 | – | ja (Manrope Figures) | Manrope Figures, `tnum` eingefroren |
+| `merriweather` | Merriweather, Ziffern Torro Serif Figures | serif | EbenSorkin/Merriweather4 4.009 (feste Schnitte) | OFL-1.1 | „Merriweather“ | ja (Torro Serif Figures, umbenannt) | Torro Serif Figures, `tnum` eingefroren |
+| `newsreader` | Newsreader 16pt | serif | productiontype/NewsReader @cfcb4f7 (feste Schnitte 16pt), 1.003 | OFL-1.1 | – | nein | gleich breit je Schnitt |
 | `noto-sans` | Noto Sans | sans | notofonts/latin-greek-cyrillic NotoSans-v2.015 | OFL-1.1 | – | nein | gleich breit |
 | `nunito` | Nunito | sans | googlefonts/nunito @8c6a9bb, 3.602 | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
 | `open-sans` | Open Sans (ohne Medium) | sans | googlefonts/opensans @bd7e376, 3.003 | OFL-1.1 | – | nein | gleich breit |
 | `plex` | IBM Plex Sans | sans | github.com/IBM/plex 1.1.0 | OFL-1.1 | „Plex“ | nein | gleich breit |
+| `plex-mono` | IBM Plex Mono (Name „Plex Mono“) | mono | IBM/plex @ibm/plex-mono@2.5.0 | OFL-1.1 | „Plex“ | nein | gleich breit |
 | `public-sans` | Public Sans, Ziffern Public Sans Figures | sans | uswds/public-sans v2.001 | OFL-1.1 | – | ja (Public Sans Figures) | Public Sans Figures: die Standardziffern auf eine Breite gebracht und mittig (`tnum` wäre nach dem Größenausgleich zu breit) |
 | `quattro` | Roboto Flex | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
 | `ribbon` | Selawik | sans | microsoft/Selawik 1.01 | OFL-1.1 | „Selawik“ | nein | gleich breit |
 | `roboto` | Roboto (ohne SemiBold) | sans | googlefonts/roboto-3-classic v3.016 | OFL-1.1 | – | nein | gleich breit je Schnitt |
 | `rubik` | Rubik, Ziffern Rubik Figures | sans | googlefonts/rubik @e337a5f, 2.300 | OFL-1.1 | – | ja (feste Schnitte, Rubik Figures) | Rubik Figures, `tnum` eingefroren |
 | `source` | Source Sans 3, Überschriften Source Serif 4 | sans | adobe-fonts/source-sans 3.052R, adobe-fonts/source-serif 4.005R | OFL-1.1 | „Source“ | nein | gleich breit je Schnitt |
+| `source-code-pro` | Source Code Pro | mono | adobe-fonts/source-code-pro 2.042R | OFL-1.1 | „Source“ | nein | gleich breit |
 | `work-sans` | Work Sans, Ziffern Work Sans Figures | sans | weiweihuanghuang/Work-Sans @b35c810, 2.012 | OFL-1.1 | – | ja (Work Sans Figures) | Work Sans Figures, `tnum` eingefroren |
 
 Zu prüfen beim Bauen: Höhere Seitenleistenzeilen (Airy 32, Clear 36) schieben in niedrigen Fenstern „Settings“ aus der

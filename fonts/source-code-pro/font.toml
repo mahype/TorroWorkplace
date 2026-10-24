@@ -1,0 +1,28 @@
+# The font Source Code Pro (task SR.7, issue #299): Source Code Pro. Its size adjustment comes from its
+# x-height.
+# Source: github.com/adobe-fonts/source-code-pro release 2.042R-u/1.062R-i/1.026R-vf
+# (TTF-source-code-pro-2.042R-u_1.062R-i.zip; licence LICENSE.md at that tag), Version 2.042; downloaded
+# 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: "Source". Unchanged files keep their names.
+# The Source Code Pro files are the maker's, unchanged (only the file names spelled <Family>-<Weight>.ttf).
+# x-height 0.486 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.123; widest figure
+# of numbers 0.600 em, 0.674 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 600, Medium 600,
+# SemiBold 600, Bold 600 of 1000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Mono" in the control centre (#299).
+kind = "mono"
+
+[about]
+name = "Source Code Pro"
+version = "1.0.0"
+author = "Torro"
+description = "Source Code Pro: a clear monospace that sits well beside Source Sans"
+
+[fonts.text]
+family = "Source Code Pro"
+regular = "SourceCodePro-Regular.ttf"
+medium = "SourceCodePro-Medium.ttf"
+semibold = "SourceCodePro-SemiBold.ttf"
+bold = "SourceCodePro-Bold.ttf"

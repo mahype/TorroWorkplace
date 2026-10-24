@@ -1,0 +1,26 @@
+# The font Inconsolata (task SR.7, issue #299): Inconsolata. Its size adjustment comes from its x-height.
+# Source: github.com/google/fonts (ofl/inconsolata/static at commit e7db6ca), Version 3.001; downloaded
+# 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Inconsolata files are the maker's, unchanged.
+# x-height 0.457 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.150; widest figure
+# of numbers 0.500 em, 0.575 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 500, Medium 500,
+# SemiBold 500, Bold 500 of 1000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Mono" in the control centre (#299).
+kind = "mono"
+
+[about]
+name = "Inconsolata"
+version = "1.0.0"
+author = "Torro"
+description = "Inconsolata: a humanist monospace for code and terminals"
+
+[fonts.text]
+family = "Inconsolata"
+regular = "Inconsolata-Regular.ttf"
+medium = "Inconsolata-Medium.ttf"
+semibold = "Inconsolata-SemiBold.ttf"
+bold = "Inconsolata-Bold.ttf"

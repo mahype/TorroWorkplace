@@ -146,6 +146,17 @@ const FONTS: &[Example] = &[
         ],
     },
     Example {
+        id: "fira-code",
+        files: &[
+            example_file!("fonts", "fira-code", "font.toml"),
+            example_file!("fonts", "fira-code", "FiraCode-Bold.ttf"),
+            example_file!("fonts", "fira-code", "FiraCode-Medium.ttf"),
+            example_file!("fonts", "fira-code", "FiraCode-Regular.ttf"),
+            example_file!("fonts", "fira-code", "FiraCode-SemiBold.ttf"),
+            example_file!("fonts", "fira-code", "LICENSE.txt"),
+        ],
+    },
+    Example {
         id: "fira-sans",
         files: &[
             example_file!("fonts", "fira-sans", "font.toml"),
@@ -172,6 +183,17 @@ const FONTS: &[Example] = &[
         ],
     },
     Example {
+        id: "geist-mono",
+        files: &[
+            example_file!("fonts", "geist-mono", "font.toml"),
+            example_file!("fonts", "geist-mono", "GeistMono-Bold.ttf"),
+            example_file!("fonts", "geist-mono", "GeistMono-Medium.ttf"),
+            example_file!("fonts", "geist-mono", "GeistMono-Regular.ttf"),
+            example_file!("fonts", "geist-mono", "GeistMono-SemiBold.ttf"),
+            example_file!("fonts", "geist-mono", "LICENSE.txt"),
+        ],
+    },
+    Example {
         id: "hyperlegible",
         files: &[
             example_file!("fonts", "hyperlegible", "font.toml"),
@@ -182,6 +204,28 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "hyperlegible", "HyperlegibleFigures-Medium.ttf"),
             example_file!("fonts", "hyperlegible", "HyperlegibleFigures-Regular.ttf"),
             example_file!("fonts", "hyperlegible", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "inconsolata",
+        files: &[
+            example_file!("fonts", "inconsolata", "font.toml"),
+            example_file!("fonts", "inconsolata", "Inconsolata-Bold.ttf"),
+            example_file!("fonts", "inconsolata", "Inconsolata-Medium.ttf"),
+            example_file!("fonts", "inconsolata", "Inconsolata-Regular.ttf"),
+            example_file!("fonts", "inconsolata", "Inconsolata-SemiBold.ttf"),
+            example_file!("fonts", "inconsolata", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "jetbrains-mono",
+        files: &[
+            example_file!("fonts", "jetbrains-mono", "font.toml"),
+            example_file!("fonts", "jetbrains-mono", "JetBrainsMono-Bold.ttf"),
+            example_file!("fonts", "jetbrains-mono", "JetBrainsMono-Medium.ttf"),
+            example_file!("fonts", "jetbrains-mono", "JetBrainsMono-Regular.ttf"),
+            example_file!("fonts", "jetbrains-mono", "JetBrainsMono-SemiBold.ttf"),
+            example_file!("fonts", "jetbrains-mono", "LICENSE.txt"),
         ],
     },
     Example {
@@ -198,6 +242,32 @@ const FONTS: &[Example] = &[
         ],
     },
     Example {
+        id: "literata",
+        files: &[
+            example_file!("fonts", "literata", "font.toml"),
+            example_file!("fonts", "literata", "LICENSE.txt"),
+            example_file!("fonts", "literata", "Literata-Bold.ttf"),
+            example_file!("fonts", "literata", "Literata-Medium.ttf"),
+            example_file!("fonts", "literata", "Literata-Regular.ttf"),
+            example_file!("fonts", "literata", "Literata-SemiBold.ttf"),
+            example_file!("fonts", "literata", "LiterataFigures-Medium.ttf"),
+            example_file!("fonts", "literata", "LiterataFigures-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "lora",
+        files: &[
+            example_file!("fonts", "lora", "font.toml"),
+            example_file!("fonts", "lora", "LICENSE.txt"),
+            example_file!("fonts", "lora", "Lora-Bold.ttf"),
+            example_file!("fonts", "lora", "Lora-Medium.ttf"),
+            example_file!("fonts", "lora", "Lora-Regular.ttf"),
+            example_file!("fonts", "lora", "Lora-SemiBold.ttf"),
+            example_file!("fonts", "lora", "TorroQuillFigures-Medium.ttf"),
+            example_file!("fonts", "lora", "TorroQuillFigures-Regular.ttf"),
+        ],
+    },
+    Example {
         id: "manrope",
         files: &[
             example_file!("fonts", "manrope", "font.toml"),
@@ -208,6 +278,30 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "manrope", "Manrope-SemiBold.ttf"),
             example_file!("fonts", "manrope", "ManropeFigures-Medium.ttf"),
             example_file!("fonts", "manrope", "ManropeFigures-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "merriweather",
+        files: &[
+            example_file!("fonts", "merriweather", "font.toml"),
+            example_file!("fonts", "merriweather", "LICENSE.txt"),
+            example_file!("fonts", "merriweather", "Merriweather-Bold.ttf"),
+            example_file!("fonts", "merriweather", "Merriweather-Medium.ttf"),
+            example_file!("fonts", "merriweather", "Merriweather-Regular.ttf"),
+            example_file!("fonts", "merriweather", "Merriweather-SemiBold.ttf"),
+            example_file!("fonts", "merriweather", "TorroSerifFigures-Medium.ttf"),
+            example_file!("fonts", "merriweather", "TorroSerifFigures-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "newsreader",
+        files: &[
+            example_file!("fonts", "newsreader", "font.toml"),
+            example_file!("fonts", "newsreader", "LICENSE.txt"),
+            example_file!("fonts", "newsreader", "Newsreader16pt-Bold.ttf"),
+            example_file!("fonts", "newsreader", "Newsreader16pt-Medium.ttf"),
+            example_file!("fonts", "newsreader", "Newsreader16pt-Regular.ttf"),
+            example_file!("fonts", "newsreader", "Newsreader16pt-SemiBold.ttf"),
         ],
     },
     Example {
@@ -240,6 +334,17 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "open-sans", "OpenSans-Bold.ttf"),
             example_file!("fonts", "open-sans", "OpenSans-Regular.ttf"),
             example_file!("fonts", "open-sans", "OpenSans-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "plex-mono",
+        files: &[
+            example_file!("fonts", "plex-mono", "font.toml"),
+            example_file!("fonts", "plex-mono", "IBMPlexMono-Bold.ttf"),
+            example_file!("fonts", "plex-mono", "IBMPlexMono-Medium.ttf"),
+            example_file!("fonts", "plex-mono", "IBMPlexMono-Regular.ttf"),
+            example_file!("fonts", "plex-mono", "IBMPlexMono-SemiBold.ttf"),
+            example_file!("fonts", "plex-mono", "LICENSE.txt"),
         ],
     },
     Example {
@@ -289,6 +394,17 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "source", "SourceSans3-SemiBold.ttf"),
             example_file!("fonts", "source", "SourceSerif4-Regular.ttf"),
             example_file!("fonts", "source", "SourceSerif4-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "source-code-pro",
+        files: &[
+            example_file!("fonts", "source-code-pro", "font.toml"),
+            example_file!("fonts", "source-code-pro", "LICENSE.txt"),
+            example_file!("fonts", "source-code-pro", "SourceCodePro-Bold.ttf"),
+            example_file!("fonts", "source-code-pro", "SourceCodePro-Medium.ttf"),
+            example_file!("fonts", "source-code-pro", "SourceCodePro-Regular.ttf"),
+            example_file!("fonts", "source-code-pro", "SourceCodePro-SemiBold.ttf"),
         ],
     },
     Example {
@@ -821,21 +937,31 @@ mod tests {
     /// The six examples that are a font and a colour scheme (and were a design too until issue #291).
     const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
     /// The fonts that are only a font (issue #299, tasks SR.5–SR.7), by id.
-    const FONTS_ONLY: [&str; 15] = [
+    const FONTS_ONLY: [&str; 25] = [
         "cantarell",
         "dm-sans",
+        "fira-code",
         "fira-sans",
         "geist",
+        "geist-mono",
         "hyperlegible",
+        "inconsolata",
+        "jetbrains-mono",
         "lexend",
+        "literata",
+        "lora",
         "manrope",
+        "merriweather",
+        "newsreader",
         "noto-sans",
         "nunito",
         "open-sans",
+        "plex-mono",
         "public-sans",
         "roboto",
         "rubik",
         "source",
+        "source-code-pro",
         "work-sans",
     ];
     /// The six examples that are only a colour scheme (task L.20).
@@ -1019,6 +1145,17 @@ mod tests {
             ("geist", "Geist", "Geist Figures"),
             ("rubik", "Rubik", "Rubik Figures"),
             ("cantarell", "Cantarell", "Cantarell Figures"),
+            // SR.7: Merriweather and Lora have a Reserved Font Name, so their changed figures are named apart.
+            ("literata", "Literata", "Literata Figures"),
+            ("merriweather", "Merriweather", "Torro Serif Figures"),
+            ("lora", "Lora", "Torro Quill Figures"),
+            ("newsreader", "Newsreader 16pt", "Newsreader 16pt"),
+            ("jetbrains-mono", "JetBrains Mono", "JetBrains Mono"),
+            ("fira-code", "Fira Code", "Fira Code"),
+            ("plex-mono", "IBM Plex Mono", "IBM Plex Mono"),
+            ("source-code-pro", "Source Code Pro", "Source Code Pro"),
+            ("geist-mono", "Geist Mono", "Geist Mono"),
+            ("inconsolata", "Inconsolata", "Inconsolata"),
         ] {
             let font = design::load_font(&repo(Part::Font), id).unwrap_or_else(|p| panic!("{id}: {p:?}"));
             assert_eq!((font.fonts.text.family.as_str(), font.fonts.numbers.family.as_str()), (text, numbers));
@@ -1030,6 +1167,11 @@ mod tests {
             let font = design::load_font(&repo(Part::Font), id).expect("valid");
             assert!(font.kind.is_some() && font.license == "OFL-1.1", "{id}: {:?}", font.kind);
         }
+        // Console suggests JetBrains Mono (`[about] font`); the id must stay what the design names.
+        let console = design::load(&repo(Part::Design), "console").expect("built in");
+        assert_eq!(console.about.font.as_deref(), Some("jetbrains-mono"));
+        let mono = design::load_font(&repo(Part::Font), "jetbrains-mono").expect("valid");
+        assert_eq!(mono.kind, Some(torro_core::design::FontKind::Mono));
     }
 
     #[test]
