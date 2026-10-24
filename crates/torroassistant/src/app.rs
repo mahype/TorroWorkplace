@@ -1806,7 +1806,7 @@ impl App {
     /// sections and its first load, which goes over [`Backend::settings`] and never over this
     /// window's own requests.
     fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
-        let (mut host, load) = Host::new(self.backend.settings(), settings::SECTIONS.to_vec(), settings::wanted());
+        let (mut host, load) = Host::new(self.backend.settings(), settings::SECTIONS.to_vec(), settings_wanted());
         if let Some(id) = section {
             host.open(id);
         }
@@ -2147,5 +2147,15 @@ pub(crate) fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
 }
 
 mod bots;
+/// What a load of the settings asks for: the sections' own requests ([`settings::wanted`]) and the
+/// installed MCP servers (`extensions.list_extensions`, task MA.10), which Access offers a level of its
+/// own for under "Extensions" (`torro_settings_ui::rights::Known::extensions`). Asked by this window,
+/// which shows Access, rather than by every app whose settings use the library.
+fn settings_wanted() -> Vec<Request> {
+    let mut wanted = settings::wanted();
+    wanted.push(Request::ListExtensions);
+    wanted
+}
+
 #[cfg(test)]
 mod tests;

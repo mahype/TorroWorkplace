@@ -822,9 +822,12 @@ impl Ui {
                 let kind = if open == Open::McpHooks { "claude-code" } else { "codex" };
                 let client = self.data.clients.iter_mut().find(|client| client.kind == kind).map(|client| {
                     match open {
-                        // The rights editor's commands too (task S.33): one switched off.
+                        // The rights editor's commands too (task S.33): one switched off. And the
+                        // MCP servers (task MA.10): "Time" read, one of its tools switched off.
                         Open::McpDetail => {
                             client.rights.denied.insert("calendar.list_reminders".into());
+                            client.rights.extensions.insert("time".into(), torro_ipc::api::Level::Read);
+                            client.rights.denied.insert(torro_ipc::extensions::denied_name("time", "convert_time"));
                         }
                         // An agent that may use bots and read the assistant's conversations: both
                         // warnings.
@@ -847,6 +850,8 @@ impl Ui {
                     Open::McpDetail => {
                         let calendar = torro_settings_ui::rights::Message::Expand(torro_ipc::api::Area::Calendar);
                         messages.push(page(api::PageMessage::Rights(calendar)));
+                        let time = torro_settings_ui::rights::Message::ExpandServer("time".into());
+                        messages.push(page(api::PageMessage::Rights(time)));
                     }
                     _ => {}
                 }

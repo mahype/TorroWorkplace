@@ -114,6 +114,11 @@ pub struct Data {
     /// so `allowed` is always `true` here. They are switched and set in the control centre since
     /// task MA.7 ([`assistant::tools`] only leads there).
     pub tools: Vec<ToolInfo>,
+    /// The installed MCP servers (`extensions.list_extensions`, task MA.10), each with whether it is
+    /// switched on and the tools a person allowed: what Access offers a level of its own for, under
+    /// "Extensions" ([`rights::Known`]). Empty from a load that did not ask for them, and from a core
+    /// before issue #302, which answers `unsupported`.
+    pub extensions: Vec<torro_ipc::extensions::ExtensionInfo>,
     /// What the assistant can answer with (`assistant.list_engines`): an AI account, a coding
     /// agent with its own models.
     pub engines: Vec<Engine>,
@@ -190,6 +195,7 @@ impl Data {
             Response::Memories { notes } => self.memories = notes,
             Response::Bots { bots } => self.bots = bots,
             Response::Tools { tools } => self.tools = tools,
+            Response::Extensions { extensions } => self.extensions = extensions,
             Response::Engines { engines } => self.engines = engines,
             Response::AiModels { account, models } => {
                 // Several accounts answer the same command in one load (task E12.10); each

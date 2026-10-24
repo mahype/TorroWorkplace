@@ -274,7 +274,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Sichtprüfung; Übersetzungen in `de.rs`.
 
 ### MA.10 Rechte-Editor: Bereiche `ext:<id>`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torro-settings-ui/src/{rights,lib,demo}.rs`,
   `crates/torroworkplace/src/ui/{api,mcp,mod}.rs`, `crates/torroassistant/src/{app,bots}.rs` und
   `crates/torroassistant/src/view/editor.rs` (nur `Known` füllen), `crates/torro-core/src/i18n/de.rs`

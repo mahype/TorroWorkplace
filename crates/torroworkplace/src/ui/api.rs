@@ -414,7 +414,9 @@ impl Page {
     }
 }
 
-/// What the editor's selections offer: what the shell loaded into [`Data`].
+/// What the editor's selections offer: what the shell loaded into [`Data`]. The MCP servers too
+/// (task MA.10), each with a level of its own under "Extensions"; none while their list failed,
+/// which MCP connections shows with "Retry".
 fn known(data: &Data) -> rights::Known<'_> {
     rights::Known {
         calendars: &data.calendars,
@@ -423,6 +425,7 @@ fn known(data: &Data) -> rights::Known<'_> {
         clients: &data.clients,
         accounts: &data.accounts,
         tools: &data.tools,
+        extensions: data.extensions.entries(),
     }
 }
 

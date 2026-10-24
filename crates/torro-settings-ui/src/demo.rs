@@ -19,9 +19,10 @@ use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Setti
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
+use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Level, Rights, Selection};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
+use torro_ipc::extensions::{ExtensionInfo, ExtensionTool, ServerSpec, Source, Status, ToolState};
 use torro_ipc::inbox::{
     CategoryClearAccount, CategoryClearJob, CategoryClearPreview, CategoryClearProgress, CategoryJob,
     CategoryJobAccount, CategoryJobControl, CategoryJobPreview, CategoryJobScope, CategoryJobState,
@@ -103,7 +104,8 @@ impl Demo {
     }
 
     /// The assistant's client, so the sections show the assistant as on, with one command switched
-    /// off, so the rights editor shows what that looks like (task S.33); and the clients of the
+    /// off, so the rights editor shows what that looks like (task S.33), and reading the MCP server
+    /// "Time" with one of its tools switched off (task MA.10, [`Demo::extensions`]); and the clients of the
     /// sample bots ([`Demo::bots`]): the travel planner reads two calendars, so Access has a bot to
     /// open (task S.34), the release helper may use nothing. The demo only pretends to switch or
     /// change them.
@@ -127,7 +129,11 @@ impl Demo {
                 "a51c3e88",
                 "Assistant",
                 ASSISTANT_CLIENT,
-                Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
+                Rights {
+                    denied: ["calendar.list_reminders".to_string(), "ext.time.convert_time".to_string()].into(),
+                    extensions: [("time".to_string(), Level::Read)].into(),
+                    ..Rights::assistant()
+                },
             ),
             client("c0000001", tr("Travel planner"), BOT_CLIENT, travel),
             client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none()),
@@ -506,6 +512,58 @@ impl Demo {
             .collect()
     }
 
+    /// The installed MCP servers as `extensions.list_extensions` lists them (task MA.10), for the
+    /// rows of Access under "Extensions": "Time", switched on, with two read tools a person allowed;
+    /// "Notes", a server of one's own switched off after its tools were allowed, so its row shows the
+    /// mark of a server that is off. Nothing runs: the demo starts no program.
+    fn extensions(&self) -> Vec<ExtensionInfo> {
+        let tool = |server: &str, name: &str, description: &str, access| ExtensionTool {
+            extension: server.into(),
+            extension_name: server.into(),
+            name: name.into(),
+            tool_name: torro_ipc::extensions::tool_name(server, name),
+            description: description.into(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            access,
+            state: ToolState::Allowed,
+        };
+        let server = |id: &str, name: &str, command: &str, enabled, tools| ExtensionInfo {
+            id: id.into(),
+            name: name.into(),
+            source: Source::Custom,
+            server: ServerSpec::Stdio { command: command.into(), args: Vec::new(), env: Default::default() },
+            enabled,
+            status: Status::Stopped,
+            tools,
+            secrets: Vec::new(),
+            notes: Vec::new(),
+            fingerprint: Some(format!("demo-{id}")),
+        };
+        vec![
+            server(
+                "time",
+                "Time",
+                "uvx",
+                true,
+                vec![
+                    tool("time", "get_current_time", "Get the current time in a time zone.", Access::Read),
+                    tool("time", "convert_time", "Convert a time between time zones.", Access::Read),
+                ],
+            ),
+            server(
+                "notes",
+                "Notes",
+                "/usr/local/bin/notes-mcp",
+                false,
+                vec![
+                    tool("notes", "search_notes", "Search the notes.", Access::Read),
+                    tool("notes", "add_note", "Add a note.", Access::Write),
+                    tool("notes", "delete_note", "Delete a note for good.", Access::Delete),
+                ],
+            ),
+        ]
+    }
+
     /// The sample engine: an AI account. Coding agents are not offered any more (task C.19,
     /// issue #219), and the demo shows what the product can do.
     fn engines(&self) -> Vec<Engine> {
@@ -734,6 +792,7 @@ impl Backend for Demo {
             Request::ListMemories => Response::Memories { notes: self.memories() },
             Request::ListBots => Response::Bots { bots: self.bots() },
             Request::ListTools => Response::Tools { tools: self.tools() },
+            Request::ListExtensions => Response::Extensions { extensions: self.extensions() },
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { account, .. } => Response::AiModels { account: account.clone(), models: self.models() },
             Request::AiAssignments => Response::AiAssignments { assignments: self.assignments() },
@@ -948,6 +1007,23 @@ mod tests {
         let answer = demo.call(Request::Settings).await.expect("the demo answers");
         assert_eq!(answer, Response::Settings { settings: demo.settings().clone() });
         assert!(demo.sent().is_empty(), "reading is not a change");
+    }
+
+    /// Task MA.10: the MCP servers come with a load that asks for them, so Access offers each a
+    /// level; the assistant's client reads "Time", one of its tools switched off.
+    #[tokio::test]
+    async fn the_servers_reach_access() {
+        let demo: Arc<dyn Backend> = Arc::new(Demo::new());
+        let data = crate::load(demo, vec![Request::ListClients, Request::ListExtensions]).await;
+        let known = crate::rights::Known::of(&data);
+        let ids: Vec<&str> = known.extensions.iter().map(|server| server.id.as_str()).collect();
+        assert_eq!(ids, ["time", "notes"]);
+        assert!(known.extensions.iter().any(|server| !server.enabled), "one switched off, with its mark");
+        let assistant = data.clients.iter().find(|client| client.kind == ASSISTANT_CLIENT).expect("the assistant");
+        assert_eq!(assistant.rights.extension("time"), Level::Read);
+        let listed = crate::rights::server_tools(&known.extensions[0], &assistant.rights);
+        assert_eq!(listed.len(), 2, "both read tools");
+        assert_eq!(crate::rights::server_off_count(&known.extensions[0], &assistant.rights), 1);
     }
 
     /// A change is answered as done and remembered, but nothing is kept.

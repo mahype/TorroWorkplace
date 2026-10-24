@@ -19,11 +19,18 @@
 //!   ("Calendar · 2 off", [`off_count`]). Lowering the level keeps the entries of
 //!   commands it no longer allows (harmless: the level refuses them anyway); they show again when
 //!   the level rises.
+//! - **MCP servers (task MA.10, issue #302):** under "Extensions" a row per installed server
+//!   ([`Known::extensions`]) with its own level ([`Rights::extensions`], [`server_levels`]) – the area's
+//!   level manages the servers, it opens none of them. "Show commands" of a server lists the tools a
+//!   person allowed that its level covers ([`server_tools`]), named after [`Naming`] like the
+//!   catalogue's commands ([`Naming::server_tool`]), each with the level it needs and a switch
+//!   (`ext.<id>.<tool>` in [`Rights::denied`]). A server switched off under MCP connections gets a
+//!   mark in the attention colour; without any server a sentence says where they are added.
 //! - **"Ask first"** (never, on delete, on every change) and the **selections** of calendars, task
 //!   lists, GitHub repositories, inbox sources, mail accounts and the assistant's own tools (task
 //!   WZ.7; "All" or the switched-on ones, [`Pick`]) for each area the rights reach; a tool that is
-//!   off in the assistant's settings gets a mark in the attention colour. What they offer comes from [`Known`], which the
-//!   window that shows the editor fills from its own data.
+//!   switched off under MCP connections (task MA.7) gets a mark in the attention colour. What they
+//!   offer comes from [`Known`], which the window that shows the editor fills from its own data.
 //!
 //! Every change edits a draft of the client's rights, which the editor shows at once
 //! ([`shown`]); [`SAVE_DELAY`] after the last change (`docs/settings.md`: autosave after 500 ms) it
@@ -53,6 +60,7 @@ use torro_ipc::api::{
     self, Access, Area, AreaRights, CATALOGUE, Command, Confirm, HOOK_CLIENT, Level, Mcp, Operation, Outbound, Rights,
     RightsTemplate, Selection, active_level, has_command, levels, shows_area,
 };
+use torro_ipc::extensions::{self, ExtensionInfo, ExtensionTool, ToolState};
 use torro_ipc::tools::ToolInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response};
 use torro_pim::Collection;
@@ -78,6 +86,8 @@ pub struct State {
     repo_input: String,
     /// The areas opened with "Show commands".
     open: BTreeSet<Area>,
+    /// The MCP servers, by id, whose tools are shown ("Show commands" of a server's row).
+    open_servers: BTreeSet<String>,
 }
 
 /// Rights the editor changed, on their way to the core.
@@ -118,6 +128,18 @@ impl Naming {
             Naming::Tools => command.tool_name(),
         }
     }
+
+    /// The name of `tool` of an MCP server in this naming (task MA.10): what switches it off for one
+    /// client, `ext.<id>.<tool>` ([`extensions::denied_name`]), for a key, whose program calls it with
+    /// `extensions.call_tool`; the name agents see, `ext_<id>_<tool>` ([`ExtensionTool::tool_name`]),
+    /// over MCP and in Access. A tool without a name towards agents (never one the editor lists, which
+    /// lists allowed tools only) keeps the first.
+    pub fn server_tool(self, tool: &ExtensionTool) -> String {
+        match (self, &tool.tool_name) {
+            (Naming::Tools, Some(name)) => name.clone(),
+            _ => extensions::denied_name(&tool.extension, &tool.name),
+        }
+    }
 }
 
 /// What the selections of the editor offer: everything the window knows of each kind, filled by
@@ -130,8 +152,10 @@ impl Naming {
 ///   (`accounts.list_accounts`, [`api::signed_in_mail`]),
 /// - inbox sources: `sources` (`inbox.list_sources`), the source of every one of `clients`
 ///   (`clients.list_clients`) and the sources of the remote accounts ([`api::present_sources`]),
-/// - tools: `tools` (`tools.list_tools` with the app key, task WZ.7), each with whether it is on in
-///   the assistant's settings.
+/// - tools: `tools` (`tools.list_tools` with the app key, task WZ.7), each with whether it is
+///   switched on under MCP connections,
+/// - MCP servers: `extensions` (`extensions.list_extensions`, task MA.10), each with whether it is
+///   switched on and the tools it reported with their state; a row of its own under "Extensions".
 ///
 /// The accounts also name the account a calendar or list belongs to. A list left empty offers
 /// nothing of its kind; a selection still shows what it names, so it can be unticked.
@@ -143,6 +167,7 @@ pub struct Known<'a> {
     pub clients: &'a [ClientInfo],
     pub accounts: &'a [AccountInfo],
     pub tools: &'a [ToolInfo],
+    pub extensions: &'a [ExtensionInfo],
 }
 
 impl<'a> Known<'a> {
@@ -155,6 +180,7 @@ impl<'a> Known<'a> {
             clients: &data.clients,
             accounts: &data.accounts,
             tools: &data.tools,
+            extensions: &data.extensions,
         }
     }
 }
@@ -239,14 +265,15 @@ impl Pick {
             ),
             (Pick::MailAccounts, true) => tr("Includes mail accounts added later."),
             (Pick::MailAccounts, false) => tr("Mail accounts left off don't exist for this agent."),
-            // The switch is the person's, in the assistant's settings: the rights alone never make a
-            // tool work (`docs/assistent.md`, "Schalter und Rechte sind zwei Dinge").
-            (Pick::Tools, true) => {
-                tr("Includes tools added later. Each works only while it is on in the assistant's settings.")
-            }
-            (Pick::Tools, false) => {
-                tr("This agent can't use tools left off. Each works only while it is on in the assistant's settings.")
-            }
+            // The switch is the person's, under MCP connections in the control centre (task MA.7): the
+            // rights alone never make a tool work (`docs/assistent.md`, "Schalter und Rechte sind zwei
+            // Dinge").
+            (Pick::Tools, true) => tr(
+                "Includes tools added later. Each works only while it is on under MCP connections in the control centre.",
+            ),
+            (Pick::Tools, false) => tr(
+                "This agent can't use tools left off. Each works only while it is on under MCP connections in the control centre.",
+            ),
         }
     }
 }
@@ -275,6 +302,17 @@ pub enum Message {
     /// The switch of one command: its catalogue name ([`Command::name`]) and whether it is on –
     /// allowed – now. Off puts the name into [`Rights::denied`], on takes it out.
     Command(&'static str, bool),
+    /// A segment of an MCP server's level (task MA.10): the server's id ([`ExtensionInfo::id`]) and
+    /// the level. [`Level::NoAccess`] takes the server out of [`Rights::extensions`] (missing is no
+    /// access); every other level is stored for it.
+    ServerLevel(String, Level),
+    /// "Show commands" or "Hide commands" of an MCP server's row, by the server's id: opens or closes
+    /// the list of its tools.
+    ExpandServer(String),
+    /// The switch of one tool of an MCP server: the server's id, the tool's name as the server calls
+    /// it ([`ExtensionTool::name`]) and whether it is on – allowed – now. Off puts `ext.<id>.<tool>`
+    /// ([`extensions::denied_name`]) into [`Rights::denied`], on takes it out.
+    ServerTool(String, String, bool),
     /// The clock while a draft waits ([`subscription`]).
     Clock(Instant),
 }
@@ -287,7 +325,8 @@ pub enum Message {
 /// - [`Message::Clock`] sends a waiting draft once it is due: `clients.update_client` with the
 ///   whole rights, as [`Action::Send`] with that one request. It needs no `client`, so a draft
 ///   still goes out after the page moved on.
-/// - [`Message::RepoInput`] and [`Message::Expand`] only change what the editor shows.
+/// - [`Message::RepoInput`], [`Message::Expand`] and [`Message::ExpandServer`] only change what the
+///   editor shows.
 ///
 /// A hook client's rights are fixed (the core narrows them to `Rights::hook` whatever is sent), and
 /// without a `client` there is nothing to change: both leave everything as it is.
@@ -299,7 +338,7 @@ pub fn update<A>(state: &mut State, message: Message, client: Option<&ClientInfo
             }
             _ => Action::None,
         },
-        Message::RepoInput(_) | Message::Expand(_) => {
+        Message::RepoInput(_) | Message::Expand(_) | Message::ExpandServer(_) => {
             view_only(state, message);
             Action::None
         }
@@ -318,12 +357,12 @@ pub fn update<A>(state: &mut State, message: Message, client: Option<&ClientInfo
 /// Applies `message` to `rights` that no client holds yet – what the assistant's first start offers
 /// until "Turn on assistant" – for a client of `kind`. Nothing is saved: the caller keeps `rights`
 /// and sends them along when it creates the client. Returns `true` when `rights` changed.
-/// [`Message::RepoInput`] and [`Message::Expand`] change only what the editor shows,
-/// [`Message::Clock`] nothing.
+/// [`Message::RepoInput`], [`Message::Expand`] and [`Message::ExpandServer`] change only what the
+/// editor shows, [`Message::Clock`] nothing.
 pub fn change(state: &mut State, rights: &mut Rights, kind: &str, message: Message, known: &Known) -> bool {
     match message {
         Message::Clock(_) => false,
-        Message::RepoInput(_) | Message::Expand(_) => {
+        Message::RepoInput(_) | Message::Expand(_) | Message::ExpandServer(_) => {
             view_only(state, message);
             false
         }
@@ -336,14 +375,15 @@ fn view_only(state: &mut State, message: Message) {
     match message {
         Message::RepoInput(text) => state.repo_input = text,
         Message::Expand(area) => toggle(&mut state.open, area),
+        Message::ExpandServer(id) => toggle(&mut state.open_servers, id),
         _ => {}
     }
 }
 
-/// Opens `area` when it is closed, closes it when it is open.
-fn toggle(open: &mut BTreeSet<Area>, area: Area) {
-    if !open.remove(&area) {
-        open.insert(area);
+/// Opens `item` (an area, a server's id) when it is closed, closes it when it is open.
+fn toggle<T: Ord>(open: &mut BTreeSet<T>, item: T) {
+    if !open.remove(&item) {
+        open.insert(item);
     }
 }
 
@@ -358,6 +398,13 @@ fn toggle(open: &mut BTreeSet<Area>, area: Area) {
 /// A command's switch only takes names of the catalogue that can be switched off
 /// ([`api::deniable`]), are MCP tools and belong to an area the kind shows; switching one on that is
 /// not off changes nothing.
+///
+/// An MCP server's level ([`Message::ServerLevel`]) and a switch of one of its tools
+/// ([`Message::ServerTool`]) change only [`Rights::extensions`] and [`Rights::denied`], and only for a
+/// kind that shows the area `extensions`. A level other than "No access" needs a server `known` lists
+/// (one removed meanwhile can only be closed); a tool's switch needs a valid server id and tool name
+/// ([`extensions::parse_denied_name`]). Lowering a server's level keeps its tools switched off, as for
+/// an area.
 ///
 /// "Selected" starts with every known candidate ticked ([`candidates`]): the client keeps what it
 /// reaches until the person unticks something. A level goes through [`Rights::set_level`], the rule
@@ -386,11 +433,20 @@ pub fn change_rights(
             let level = rights.area(area).level;
             rights.areas.insert(area, AreaRights { level, admin });
         }
-        Message::Command(name, on) if switchable(name, kind) => {
-            if on {
-                rights.denied.remove(name);
-            } else {
-                rights.denied.insert(name.to_string());
+        Message::Command(name, on) if switchable(name, kind) => switch(&mut rights.denied, name, on),
+        Message::ServerLevel(id, level) if shows_area(Area::Extensions, kind) => match level {
+            Level::NoAccess => {
+                rights.extensions.remove(&id);
+            }
+            level if known.extensions.iter().any(|server| server.id == id) => {
+                rights.extensions.insert(id, level);
+            }
+            _ => {}
+        },
+        Message::ServerTool(id, tool, on) if shows_area(Area::Extensions, kind) => {
+            let name = extensions::denied_name(&id, &tool);
+            if extensions::parse_denied_name(&name).is_some() {
+                switch(&mut rights.denied, &name, on);
             }
         }
         Message::Confirm(confirm) => rights.confirm = confirm,
@@ -411,11 +467,27 @@ pub fn change_rights(
     *rights != before
 }
 
+/// Switches the command or server tool `name` on (out of `denied`) or off (into it).
+fn switch(denied: &mut BTreeSet<String>, name: &str, on: bool) {
+    if on {
+        denied.remove(name);
+    } else {
+        denied.insert(name.to_string());
+    }
+}
+
+/// The commands that need no level in `extensions` and are not switched one by one: the core checks
+/// each MCP server and each of its tools instead (`PER_SERVER` in `torro_ipc::api`, issue #302), so
+/// the editor gives them neither a row nor a switch – switched off, `extensions.call_tool` would shut
+/// every server's tools at once, past the levels of the servers.
+const PER_SERVER: [&str; 2] = ["extensions.list_tools", "extensions.call_tool"];
+
 /// Whether the command `name` has a switch for a client of `kind`: a command of the catalogue that
-/// can be switched off ([`api::deniable`]), offered to agents ([`Mcp::Tool`]) and in an area the
-/// kind shows.
+/// can be switched off ([`api::deniable`]), offered to agents ([`Mcp::Tool`]), in an area the kind
+/// shows and not one of the per-server commands ([`PER_SERVER`]).
 fn switchable(name: &str, kind: &str) -> bool {
     api::deniable(name)
+        && !PER_SERVER.contains(&name)
         && CATALOGUE
             .iter()
             .any(|command| command.name == name && command.mcp == Mcp::Tool && shows_area(command.area, kind))
@@ -484,6 +556,7 @@ pub fn forget(state: &mut State, id: &str) {
 pub fn leave(state: &mut State) {
     state.repo_input.clear();
     state.open.clear();
+    state.open_servers.clear();
 }
 
 /// The clock that saves a waiting draft; none while nothing waits, so the editor costs nothing at
@@ -509,13 +582,15 @@ pub fn shown<'a>(state: &'a State, client: &'a ClientInfo) -> &'a Rights {
 /// The commands of `area` the editor lists with a switch for `rights`: every MCP tool of the area
 /// ([`Mcp::Tool`]) that level, admin switch and "Send on my behalf" allow – whether it is switched
 /// off or not ([`Rights::denied`]) –, in the order of the catalogue. Commands kept from agents are
-/// never listed: no right opens them.
+/// never listed: no right opens them. Nor are `extensions.list_tools` and `extensions.call_tool`
+/// ([`PER_SERVER`]): they go through without a level, and what they reach is set per server
+/// ([`server_tools`]).
 pub fn commands(area: Area, rights: &Rights) -> Vec<&'static Command> {
     let open = Rights { denied: BTreeSet::new(), ..rights.clone() };
     CATALOGUE
         .iter()
         .copied()
-        .filter(|command| command.area == area && command.mcp == Mcp::Tool)
+        .filter(|command| command.area == area && command.mcp == Mcp::Tool && !PER_SERVER.contains(&command.name))
         .filter(|command| open.allows(Operation { command, access: command.access }))
         .collect()
 }
@@ -524,6 +599,48 @@ pub fn commands(area: Area, rights: &Rights) -> Vec<&'static Command> {
 /// the level no longer allows do not count: they are not shown either.
 pub fn off_count(area: Area, rights: &Rights) -> usize {
     commands(area, rights).into_iter().filter(|command| rights.denied.contains(command.name)).count()
+}
+
+/// The levels a client can be given for an MCP server, least first: all four, whatever its tools
+/// need now – a server's tools can change (each change waits for a person, `extensions.confirm_tools`),
+/// and its level should not have to. "Full" is [`Level::Full`], whose access ([`Level::access`]) is
+/// [`Access::Delete`]: it covers every tool, since a tool needs at most `delete` (`docs/tasks/
+/// mcp-anbindungen.md`, "Zugriff je Werkzeug": the catalogue's, `delete` where it names none).
+pub fn server_levels() -> [Level; 4] {
+    [Level::NoAccess, Level::Read, Level::Write, Level::Full]
+}
+
+/// The tools of `server` the editor lists with a switch for `rights`: those a person allowed as the
+/// server describes them now ([`ToolState::Allowed`]) whose access the client's level for the server
+/// covers ([`Rights::extension`]) – switched off or not –, in the server's order. A tool waiting for a
+/// person ([`ToolState::Review`]) or never offered ([`ToolState::Unsupported`]) reaches no client, so
+/// it is not listed.
+pub fn server_tools<'s>(server: &'s ExtensionInfo, rights: &Rights) -> Vec<&'s ExtensionTool> {
+    let held = rights.extension(&server.id).access();
+    server
+        .tools
+        .iter()
+        .filter(|tool| tool.state == ToolState::Allowed)
+        .filter(|tool| held.is_some_and(|held| held.covers(tool.access)))
+        .collect()
+}
+
+/// How many of the tools [`server_tools`] lists for `server` are switched off.
+pub fn server_off_count(server: &ExtensionInfo, rights: &Rights) -> usize {
+    server_tools(server, rights)
+        .into_iter()
+        .filter(|tool| rights.denied.contains(&extensions::denied_name(&server.id, &tool.name)))
+        .count()
+}
+
+/// The level a tool of a server needs, as the segments name it: `Read`, `Write`, `Full` for one that
+/// deletes. A tool never needs `admin`; should one say so, it shows as the highest level.
+pub fn tool_level(access: Access) -> Level {
+    match access {
+        Access::Read => Level::Read,
+        Access::Write => Level::Write,
+        Access::Delete | Access::Admin => Level::Full,
+    }
 }
 
 /// The first sentence of a command's catalogue description, for the line under its name:
@@ -720,8 +837,9 @@ pub fn template_label(template: RightsTemplate) -> &'static str {
 }
 
 /// A client's rights in a few words for a list: the template they equal ("Read and write"),
-/// else "Custom: Calendar, Tasks, Inbox" (at most three areas, then "+2"); "No access" without
-/// any area; for a hook what it can do at all. Rights with commands switched off are custom.
+/// else "Custom: Calendar, Tasks, Inbox" (at most three areas, then "+2"), with "MCP servers" after
+/// the areas while any server has a level (task MA.10); "No access" without either; for a hook what
+/// it can do at all. Rights with commands switched off or a server opened are custom.
 pub fn rights_summary(rights: &Rights, kind: &str) -> String {
     if kind == HOOK_CLIENT {
         return tr("Reports to the Notification Hub").to_string();
@@ -729,11 +847,14 @@ pub fn rights_summary(rights: &Rights, kind: &str) -> String {
     if let Some(template) = rights.template() {
         return template_label(template).to_string();
     }
-    let areas: Vec<&str> = Area::ALL
+    let mut areas: Vec<&str> = Area::ALL
         .into_iter()
         .filter(|&area| area.grantable() && rights.area(area).level != Level::NoAccess)
         .map(area_label)
         .collect();
+    if rights.extensions.values().any(|&level| level != Level::NoAccess) {
+        areas.push(tr("MCP servers"));
+    }
     let shown = areas[..areas.len().min(3)].join(", ");
     match areas.len() {
         0 => tr("No access").to_string(),
@@ -901,8 +1022,8 @@ fn mail_candidates(known: &Known) -> Vec<Candidate> {
 
 /// The assistant's own tools (`tools.list_tools`, task WZ.7): the id is what the core checks a
 /// command against ([`Rights::reaches_tool`]), the name what people call it ("PDF"). Below it what
-/// the tool does, or, while it is off in the assistant's settings, that it is: granted, it still
-/// does nothing until the person switches it on there.
+/// the tool does, or, while it is switched off under MCP connections (task MA.7), that it is:
+/// granted, it still does nothing until the person switches it on there.
 fn tool_candidates(known: &Known) -> Vec<Candidate> {
     known
         .tools
@@ -910,15 +1031,15 @@ fn tool_candidates(known: &Known) -> Vec<Candidate> {
         .map(|tool| {
             let detail = match tool.enabled {
                 true => tool.description.clone(),
-                false => tr("Off in the assistant's settings").to_string(),
+                false => tr("Off under MCP connections").to_string(),
             };
             Candidate::plain(tool.id.name().to_string(), tool.name.clone(), Some(detail))
         })
         .collect()
 }
 
-/// Whether the tool `id` is known and switched off in the assistant's settings
-/// (`tools.list_tools`): granted, it still does nothing.
+/// Whether the tool `id` is known and switched off under MCP connections (`tools.list_tools`):
+/// granted, it still does nothing.
 fn tool_off(known: &Known, id: &str) -> bool {
     known.tools.iter().any(|tool| tool.id.name() == id && !tool.enabled)
 }
@@ -959,7 +1080,7 @@ pub fn groups<'a>(
     column: Option<f32>,
 ) -> Vec<Element<'a, Message>> {
     let mut groups =
-        vec![access_group(&state.open, rights, column, kind, naming, title), confirm_group(rights.confirm, column)];
+        vec![access_group(state, rights, known, column, kind, naming, title), confirm_group(rights.confirm, column)];
     for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
         groups.push(selection_group(&state.repo_input, pick, rights, known, column));
     }
@@ -968,17 +1089,19 @@ pub fn groups<'a>(
 
 /// The level of every area a client of `kind` can be given ([`shows_area`]), each followed by its
 /// admin switch where it has one and, where the area grants anything, "Show commands" with the
-/// commands of the areas in `open`. The admin switch is a row of its own, not indented: admin
+/// commands of the areas open in `state`. The admin switch is a row of its own, not indented: admin
 /// commands are allowed per area whatever the level (`docs/api.md`, "Rechte"), so its line names the
-/// area instead.
+/// area instead. "Extensions" is followed by the MCP servers `known` lists ([`server_rows`]).
 fn access_group<'a>(
-    open: &BTreeSet<Area>,
+    state: &State,
     rights: &Rights,
+    known: &Known,
     column: Option<f32>,
     kind: &str,
     naming: Naming,
     title: &'a str,
 ) -> Element<'a, Message> {
+    let open = &state.open;
     let mut rows = Vec::new();
     for area in Area::ALL.into_iter().filter(|&area| shows_area(area, kind)) {
         let granted = rights.area(area);
@@ -1008,23 +1131,26 @@ fn access_group<'a>(
             rows.push(setting_row(None, admin_label(area), Some(admin_detail(area)), in_column(switch, column)));
         }
         let listed = commands(area, rights);
-        if listed.is_empty() {
-            continue;
+        if !listed.is_empty() {
+            let shown = open.contains(&area);
+            rows.push(disclosure_row(indent(), shown, Message::Expand(area)));
+            if shown {
+                rows.extend(listed.into_iter().map(|command| command_row(command, rights, naming, column)));
+            }
         }
-        let shown = open.contains(&area);
-        rows.push(disclosure_row(area, shown));
-        if shown {
-            rows.extend(listed.into_iter().map(|command| command_row(command, rights, naming, column)));
+        if area == Area::Extensions {
+            rows.extend(server_rows(&state.open_servers, rights, known, naming, column));
         }
     }
     let footer = tr("Write includes reading, Full also deletes and overwrites. Commands switched off stay off.");
     widgets::group(title, rows, Some(footer.to_string()))
 }
 
-/// "Show commands" under an area, or "Hide commands" while its commands are shown; the whole row
-/// is the button. Its chevron stands where the names of the commands below start ([`indent`] and
-/// the gap of a `setting_row`'s mark), so the row and the commands it opens share one axis.
-fn disclosure_row<'a>(area: Area, shown: bool) -> Element<'a, Message> {
+/// "Show commands" under an area or a server, or "Hide commands" while its commands are shown; the
+/// whole row is the button and sends `toggle`. Its chevron stands where the names of the commands
+/// below start (`lead` – [`indent`] under an area, [`deeper`] under a server – and the gap of a
+/// `setting_row`'s mark), so the row and the commands it opens share one axis.
+fn disclosure_row<'a>(lead: Element<'a, Message>, shown: bool, toggle: Message) -> Element<'a, Message> {
     let (label, which) = match shown {
         true => (tr("Hide commands"), Icon::ChevronUp),
         false => (tr("Show commands"), Icon::ChevronDown),
@@ -1032,8 +1158,8 @@ fn disclosure_row<'a>(area: Area, shown: bool) -> Element<'a, Message> {
     let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let words = typo::text(typo::body(), label).style(theme::text_2);
     let label = row![mark, words].spacing(space::s()).align_y(Alignment::Center);
-    let content = row![indent(), label].spacing(space::m()).align_y(Alignment::Center);
-    pressable(row_frame(content, false), Some(Message::Expand(area)))
+    let content = row![lead, label].spacing(space::m()).align_y(Alignment::Center);
+    pressable(row_frame(content, false), Some(toggle))
 }
 
 /// One command under its area: its name after `naming`, the first sentence of its description, and
@@ -1057,6 +1183,109 @@ fn command_row<'a>(
 /// The room before the commands of an area, which sets them off from the area's own rows.
 fn indent<'a>() -> Element<'a, Message> {
     Space::new().width(space::l()).into()
+}
+
+/// The room before the tools of a server, one step further in than the server's row (which stands
+/// where an area's commands do), so the tools read as the server's.
+fn deeper<'a>() -> Element<'a, Message> {
+    Space::new().width(indent_step() + space::l()).into()
+}
+
+/// How far a row one step further in starts after the row above it: [`indent`] and the gap of a
+/// `setting_row`'s mark.
+fn indent_step() -> f32 {
+    space::l() + space::m()
+}
+
+/// The rows of the MCP servers under "Extensions" (task MA.10): per server in `known` its row with
+/// the four levels ([`server_row`]) and, while its level covers a tool a person allowed, "Show
+/// commands" with its tools for the servers in `open`. Without any server one quiet sentence says
+/// where they are added – the area's own level opens none, so a person looking for a server's tools
+/// learns where they come from instead of finding nothing.
+fn server_rows<'a>(
+    open: &BTreeSet<String>,
+    rights: &Rights,
+    known: &Known,
+    naming: Naming,
+    column: Option<f32>,
+) -> Vec<Element<'a, Message>> {
+    if known.extensions.is_empty() {
+        let words = typo::text(
+            typo::meta(),
+            tr("No MCP servers yet. Each one you add under MCP connections gets its own level here."),
+        )
+        .style(theme::text_3);
+        let content = row![indent(), words.width(Fill)].spacing(space::m());
+        return vec![container(content).width(Fill).padding([space::m(), space::l()]).into()];
+    }
+    let mut rows = Vec::new();
+    for server in known.extensions {
+        rows.push(server_row(server, rights, column));
+        let listed = server_tools(server, rights);
+        if listed.is_empty() {
+            continue;
+        }
+        let shown = open.contains(&server.id);
+        rows.push(disclosure_row(deeper(), shown, Message::ExpandServer(server.id.clone())));
+        if shown {
+            rows.extend(listed.into_iter().map(|tool| server_tool_row(tool, rights, naming, column)));
+        }
+    }
+    rows
+}
+
+/// A server's row: one step in, its name with how many of its tools are off ("Time · 1 off"), "MCP
+/// server" below it – or, while it is switched off, "Off under MCP connections" and a mark in the
+/// attention colour in the room before the name (the other servers keep that room empty, so the
+/// names line up) –, and its four levels ([`server_levels`]).
+fn server_row<'a>(server: &ExtensionInfo, rights: &Rights, column: Option<f32>) -> Element<'a, Message> {
+    let offered = server_levels();
+    let active = active_level(&offered, rights.extension(&server.id));
+    let id = server.id.clone();
+    let control = widgets::segmented(
+        offered.map(|level| (widgets::level_label(level), Message::ServerLevel(id.clone(), level))),
+        active,
+    );
+    let (detail, mark): (&str, Element<'a, Message>) = match server.enabled {
+        true => (tr("MCP server"), Space::new().width(icon::SIZE).into()),
+        false => (
+            tr("Off under MCP connections"),
+            icon::icon(Icon::CircleAlert, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) })
+                .into(),
+        ),
+    };
+    let note = off_note(server_off_count(server, rights));
+    let lead = container(mark).width(indent_step()).align_x(Alignment::End);
+    let row = widgets::segment_row_noted(server.name.clone(), note, Some(detail.to_string()), control, column);
+    row![lead, row].align_y(Alignment::Center).into()
+}
+
+/// One tool of a server under it: its name after `naming` ([`Naming::server_tool`]), the level it
+/// needs and the first sentence of what the server says it does (the server's text, shown as data),
+/// and a switch that is on while `ext.<id>.<tool>` is not in [`Rights::denied`]; the whole row
+/// toggles it.
+fn server_tool_row<'a>(
+    tool: &ExtensionTool,
+    rights: &Rights,
+    naming: Naming,
+    column: Option<f32>,
+) -> Element<'a, Message> {
+    let on = !rights.denied.contains(&extensions::denied_name(&tool.extension, &tool.name));
+    let message = |on| Message::ServerTool(tool.extension.clone(), tool.name.clone(), on);
+    let (id, name) = (tool.extension.clone(), tool.name.clone());
+    let switch = toggler(on)
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
+        .on_toggle(move |on| Message::ServerTool(id.clone(), name.clone(), on));
+    let level = widgets::level_label(tool_level(tool.access));
+    let said = plain(first_sentence(tool.description.trim()));
+    let detail = match said.is_empty() {
+        true => level.to_string(),
+        false => format!("{level} · {said}"),
+    };
+    let row = setting_row(Some(deeper()), naming.server_tool(tool), Some(detail), in_column(switch, column));
+    pressable(row, Some(message(!on)))
 }
 
 /// A warning in a row of its own: a mark in the attention colour and the sentence, which wraps in a
@@ -1124,8 +1353,8 @@ fn selection_group<'a>(
                 false,
             ));
         }
-        // A tool switched off in the assistant's settings gets a mark in the attention colour; the
-        // other tools keep its room, so the names line up.
+        // A tool switched off under MCP connections gets a mark in the attention colour; the other
+        // tools keep its room, so the names line up.
         let any_off = pick == Pick::Tools && offered.iter().any(|candidate| tool_off(known, &candidate.id));
         rows.extend(offered.into_iter().map(|candidate| {
             let ticked = selection.contains(&candidate.id);
@@ -1141,8 +1370,8 @@ fn selection_group<'a>(
 
 /// A candidate as on the Accounts page: a calendar's or list's colour only as a dot before the
 /// name (a calendar the core no longer knows keeps the dot's room, so the names line up), a
-/// neutral switch at the right; the whole row toggles it. `off` marks a tool that is off in the
-/// assistant's settings (`Some(true)`, an alert in the attention colour) or keeps that mark's room
+/// neutral switch at the right; the whole row toggles it. `off` marks a tool that is switched off
+/// under MCP connections (`Some(true)`, an alert in the attention colour) or keeps that mark's room
 /// (`Some(false)`); `None` has no such mark.
 fn candidate_row<'a>(
     pick: Pick,
@@ -1201,6 +1430,7 @@ mod tests {
         sources: Vec<SourceInfo>,
         accounts: Vec<AccountInfo>,
         tools: Vec<ToolInfo>,
+        extensions: Vec<ExtensionInfo>,
     }
 
     impl Fixture {
@@ -1212,8 +1442,58 @@ mod tests {
                 clients: &self.clients,
                 accounts: &self.accounts,
                 tools: &self.tools,
+                extensions: &self.extensions,
             }
         }
+    }
+
+    /// A tool of the server `server` with the access it needs and its state.
+    fn server_tool(server: &str, name: &str, access: Access, state: ToolState) -> ExtensionTool {
+        ExtensionTool {
+            extension: server.into(),
+            extension_name: server.into(),
+            name: name.into(),
+            tool_name: extensions::tool_name(server, name),
+            description: format!("Does {name}. More text."),
+            input_schema: serde_json::json!({ "type": "object" }),
+            access,
+            state,
+        }
+    }
+
+    /// An installed server with `tools`, switched on or not.
+    fn server(id: &str, name: &str, enabled: bool, tools: Vec<ExtensionTool>) -> ExtensionInfo {
+        ExtensionInfo {
+            id: id.into(),
+            name: name.into(),
+            source: extensions::Source::Custom,
+            server: extensions::ServerSpec::Stdio { command: "server".into(), args: Vec::new(), env: BTreeMap::new() },
+            enabled,
+            status: extensions::Status::Stopped,
+            tools,
+            secrets: Vec::new(),
+            notes: Vec::new(),
+            fingerprint: None,
+        }
+    }
+
+    /// "Notes": one tool per access a person allowed, one waiting for review; "Time", switched off,
+    /// with one read tool.
+    fn servers() -> Vec<ExtensionInfo> {
+        vec![
+            server(
+                "notes",
+                "Notes",
+                true,
+                vec![
+                    server_tool("notes", "search", Access::Read, ToolState::Allowed),
+                    server_tool("notes", "add", Access::Write, ToolState::Allowed),
+                    server_tool("notes", "purge", Access::Delete, ToolState::Allowed),
+                    server_tool("notes", "share", Access::Write, ToolState::Review),
+                ],
+            ),
+            server("time", "Time", false, vec![server_tool("time", "now", Access::Read, ToolState::Allowed)]),
+        ]
     }
 
     /// The tool PDF as `tools.list_tools` lists it for the app key, switched on or not.
@@ -1286,6 +1566,7 @@ mod tests {
                 account("mail:anna@work.example.net", "mail", "anna@work.example.net"),
             ],
             tools: vec![pdf(false)],
+            extensions: servers(),
         }
     }
 
@@ -1614,14 +1895,14 @@ mod tests {
         assert_eq!(choice.tools, Selection::Only(vec!["pdf".into()]));
     }
 
-    /// Task WZ.7: a tool is offered by its id and name; below it what it does, or that it is off in
-    /// the assistant's settings, since granted it still does nothing there.
+    /// Task WZ.7: a tool is offered by its id and name; below it what it does, or that it is switched
+    /// off under MCP connections (task MA.7), since granted it still does nothing there.
     #[test]
     fn tools_are_offered_with_what_they_do_or_that_they_are_off() {
         let mut fixture = fixture();
         let offered = candidates(Pick::Tools, &fixture.known(), &Selection::All);
         assert_eq!(offered.iter().map(|c| (c.id.as_str(), c.label.as_str())).collect::<Vec<_>>(), [("pdf", "PDF")]);
-        assert_eq!(offered[0].detail.as_deref(), Some(tr("Off in the assistant's settings")));
+        assert_eq!(offered[0].detail.as_deref(), Some(tr("Off under MCP connections")));
         assert!(offered[0].color.is_none());
         assert!(tool_off(&fixture.known(), "pdf"), "so its row gets the attention mark");
         assert!(!tool_off(&fixture.known(), "chart"), "a tool the core does not know is not off, it is gone");
@@ -1647,9 +1928,9 @@ mod tests {
     fn the_rights_have_no_data_rule_any_more() {
         let mut rights = Rights::assistant();
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
-        let open = BTreeSet::from([Area::Mail]);
+        let state = State { open: BTreeSet::from([Area::Mail]), ..State::default() };
         for kind in [ASSISTANT_CLIENT, BOT_CLIENT, "claude-code"] {
-            drop(access_group(&open, &rights, None, kind, Naming::Tools, "Access"));
+            drop(access_group(&state, &rights, &Known::default(), None, kind, Naming::Tools, "Access"));
         }
     }
 
@@ -1977,7 +2258,8 @@ mod tests {
         assert_eq!(bot_warning(Area::Assistant, &rights, ASSISTANT_CLIENT), None);
     }
 
-    /// The editor builds for every kind, every naming, with every area and selection open.
+    /// The editor builds for every kind, every naming, with every area, server and selection open,
+    /// with servers and without any.
     #[test]
     fn the_editor_builds_in_every_state() {
         let fixture = fixture();
@@ -1985,18 +2267,183 @@ mod tests {
         for area in Area::ALL {
             let _ = send(&mut state, &fixture, "c1", Message::Expand(area));
         }
+        for server in &fixture.extensions {
+            let _ = send(&mut state, &fixture, "c1", Message::ExpandServer(server.id.clone()));
+        }
         let mut rights = RightsTemplate::FullAccess.rights();
         for pick in Pick::ALL {
             *pick.of_mut(&mut rights) = Selection::Only(Vec::new());
         }
         rights.denied.insert("calendar.delete_event".into());
+        rights.denied.insert("ext.notes.add".into());
+        rights.extensions = BTreeMap::from([("notes".into(), Level::Full), ("time".into(), Level::Read)]);
+        let none = Known::default();
         for kind in ["codex", "script", ASSISTANT_CLIENT, BOT_CLIENT] {
             for naming in [Naming::Endpoints, Naming::Tools] {
                 for column in [None, Some(segment_slot())] {
                     drop(groups(&state, &rights, kind, &fixture.known(), naming, "Access", column));
+                    drop(groups(&state, &rights, kind, &none, naming, "Access", column));
                 }
                 drop(view(&state, &rights, kind, fixture.known(), naming, "Access"));
             }
         }
+    }
+
+    /// Task MA.10: a server's level changes `Rights::extensions` and nothing else; "No access" takes
+    /// the server out again, and a server no longer known can be closed but not opened.
+    #[test]
+    fn a_server_s_level_changes_only_its_entry_in_the_rights() {
+        let fixture = fixture();
+        let before = fixture.clients[0].rights.clone();
+        let mut state = State::default();
+        let _ = send(&mut state, &fixture, "c1", Message::ServerLevel("notes".into(), Level::Write));
+        let (id, rights) = saved(&mut state, &fixture);
+        assert_eq!(id, "c1");
+        assert_eq!(rights.extensions, BTreeMap::from([("notes".to_string(), Level::Write)]));
+        assert_eq!(Rights { extensions: BTreeMap::new(), ..rights.clone() }, before, "nothing else changed");
+        assert_eq!(rights.area(Area::Extensions), before.area(Area::Extensions), "the area's level stays");
+
+        let mut input = String::new();
+        let mut apply = |rights: &mut Rights, kind: &str, message| {
+            change_rights(rights, kind, message, &fixture.known(), &mut input)
+        };
+        let mut rights = rights;
+        assert!(apply(&mut rights, "codex", Message::ServerLevel("notes".into(), Level::NoAccess)));
+        assert!(rights.extensions.is_empty(), "missing is no access");
+        assert!(!apply(&mut rights, "codex", Message::ServerLevel("notes".into(), Level::NoAccess)), "closed already");
+        assert!(!apply(&mut rights, "codex", Message::ServerLevel("gone".into(), Level::Read)), "not installed");
+        rights.extensions.insert("gone".into(), Level::Read);
+        assert!(apply(&mut rights, "codex", Message::ServerLevel("gone".into(), Level::NoAccess)), "but closed");
+        // The assistant and its bots get servers too; a hook keeps its rights.
+        assert!(apply(&mut rights, BOT_CLIENT, Message::ServerLevel("time".into(), Level::Full)));
+        assert_eq!(rights.extension("time"), Level::Full);
+        let mut hook = State::default();
+        let _ = send(&mut hook, &fixture, "h1", Message::ServerLevel("time".into(), Level::Read));
+        assert!(hook.draft.is_none());
+    }
+
+    /// Task MA.10: a tool's switch writes `ext.<id>.<tool>` into `Rights::denied` and takes it out
+    /// again; names the core would not store change nothing.
+    #[test]
+    fn switching_a_server_tool_off_writes_its_name_into_denied() {
+        let fixture = fixture();
+        let mut state = State::default();
+        let _ = send(&mut state, &fixture, "c1", Message::ServerTool("notes".into(), "add".into(), false));
+        let (_, rights) = saved(&mut state, &fixture);
+        assert!(rights.denied.iter().eq(["ext.notes.add"]), "{:?}", rights.denied);
+        assert!(rights.extensions.is_empty(), "the level is a control of its own");
+
+        let mut input = String::new();
+        let mut apply =
+            |rights: &mut Rights, message| change_rights(rights, "codex", message, &fixture.known(), &mut input);
+        let mut rights = rights;
+        assert!(!apply(&mut rights, Message::ServerTool("notes".into(), "add".into(), false)), "off already");
+        assert!(apply(&mut rights, Message::ServerTool("notes".into(), "add".into(), true)));
+        assert!(rights.denied.is_empty());
+        for (id, tool) in [("Notes", "add"), ("notes", "a.b"), ("notes", ""), ("no_tes", "add")] {
+            assert!(!apply(&mut rights, Message::ServerTool(id.into(), tool.into(), false)), "{id}.{tool}");
+        }
+        assert!(api::deniable(&extensions::denied_name("notes", "add")), "a name the core stores");
+    }
+
+    /// Task MA.10: a server lists the tools a person allowed that its level covers; "Full" covers
+    /// the ones that delete. A tool waiting for review is never listed.
+    #[test]
+    fn a_server_lists_the_allowed_tools_its_level_covers() {
+        let notes = &servers()[0];
+        let listed = |level: Option<Level>| {
+            let mut rights = Rights::none();
+            rights.extensions.extend(level.map(|level| ("notes".to_string(), level)));
+            server_tools(notes, &rights).into_iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>()
+        };
+        assert!(listed(None).is_empty(), "no access: nothing to list");
+        assert_eq!(listed(Some(Level::Read)), ["search"]);
+        assert_eq!(listed(Some(Level::Write)), ["search", "add"]);
+        assert_eq!(listed(Some(Level::Full)), ["search", "add", "purge"], "never the one under review");
+        assert_eq!(server_levels(), [Level::NoAccess, Level::Read, Level::Write, Level::Full]);
+        assert_eq!(Level::Full.access(), Some(Access::Delete), "Full is what a deleting tool needs");
+        assert_eq!(
+            [Access::Read, Access::Write, Access::Delete].map(tool_level),
+            [Level::Read, Level::Write, Level::Full]
+        );
+
+        // Switched off tools are listed and counted; lowered, the entry stays but counts no more.
+        let mut rights = Rights::none();
+        rights.extensions.insert("notes".into(), Level::Full);
+        rights.denied.insert("ext.notes.purge".into());
+        rights.denied.insert("ext.time.now".into());
+        assert_eq!(server_off_count(notes, &rights), 1, "only its own tools");
+        rights.extensions.insert("notes".into(), Level::Write);
+        assert_eq!(server_off_count(notes, &rights), 0);
+        assert!(rights.denied.contains("ext.notes.purge"));
+
+        // Named like the catalogue's commands: as switched off for a key, as agents see it.
+        let search = &notes.tools[0];
+        assert_eq!(Naming::Endpoints.server_tool(search), "ext.notes.search");
+        assert_eq!(Naming::Tools.server_tool(search), "ext_notes_search");
+    }
+
+    /// Task MA.10: `extensions.list_tools` and `extensions.call_tool` go through without a level, so
+    /// the area lists neither and neither can be switched off.
+    #[test]
+    fn the_per_server_commands_have_no_row_and_no_switch() {
+        let fixture = fixture();
+        let names =
+            |rights: &Rights| commands(Area::Extensions, rights).into_iter().map(|c| c.name).collect::<Vec<_>>();
+        assert!(names(&Rights::none()).is_empty(), "no access to the area: nothing, not even these two");
+        let mut rights = Rights::none();
+        rights.areas.insert(Area::Extensions, AreaRights { level: Level::Full, admin: true });
+        let listed = names(&rights);
+        assert!(listed.contains(&"extensions.list_extensions"), "{listed:?}");
+        assert!(!listed.iter().any(|name| PER_SERVER.contains(name)), "{listed:?}");
+        rights.denied.insert("extensions.call_tool".into());
+        assert_eq!(off_count(Area::Extensions, &rights), 0);
+        let mut input = String::new();
+        for name in PER_SERVER {
+            let message = Message::Command(name, false);
+            assert!(!change_rights(&mut Rights::none(), "codex", message, &fixture.known(), &mut input), "{name}");
+        }
+    }
+
+    /// Task MA.10: no template opens a server, so choosing one leaves `extensions` empty and every
+    /// server shows "None"; rights with a server opened are custom.
+    #[test]
+    fn templates_open_no_server() {
+        for template in RightsTemplate::ALL {
+            let rights = template.rights();
+            assert!(rights.extensions.is_empty(), "{template:?}");
+            for server in servers() {
+                assert_eq!(active_level(&server_levels(), rights.extension(&server.id)), 0, "{template:?}");
+                assert!(server_tools(&server, &rights).is_empty());
+            }
+        }
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.extensions.insert("notes".into(), Level::Read);
+        assert_eq!(rights.template(), None);
+        // Counted after the areas: one more than the same areas without a server.
+        let mut narrowed = RightsTemplate::ReadAndWrite.rights();
+        narrowed.denied.insert("calendar.list_events".into());
+        let (with, without) = (rights_summary(&rights, "codex"), rights_summary(&narrowed, "codex"));
+        assert_ne!(with, without, "{with}");
+        assert_ne!(with, tr("Read and write"));
+        let mut only = Rights::none();
+        only.extensions.insert("notes".into(), Level::Read);
+        assert_eq!(rights_summary(&only, "codex"), trf("Custom: {areas}", &[("areas", &tr("MCP servers"))]));
+    }
+
+    /// Task MA.10: opening a server's tools only changes what the editor shows; another client starts
+    /// with every server closed.
+    #[test]
+    fn a_server_opens_and_closes_without_a_change_of_rights() {
+        let fixture = fixture();
+        let mut state = State::default();
+        assert_eq!(send(&mut state, &fixture, "c1", Message::ExpandServer("notes".into())), Action::None);
+        assert!(state.open_servers.contains("notes"));
+        assert_eq!(subscription(&state).units(), 0, "opening is no change of rights");
+        let _ = send(&mut state, &fixture, "c1", Message::ExpandServer("notes".into()));
+        assert!(state.open_servers.is_empty());
+        let _ = send(&mut state, &fixture, "c1", Message::ExpandServer("time".into()));
+        leave(&mut state);
+        assert!(state.open_servers.is_empty());
     }
 }

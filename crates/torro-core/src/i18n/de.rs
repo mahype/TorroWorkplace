@@ -5187,8 +5187,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The assistant's own tools (WZ.2-WZ.4, #225): area, refusals, the PDF tool's errors and approvals
     ("The assistant's own tools, such as making PDFs", "Eigene Werkzeuge des Assistenten, etwa PDFs erstellen"),
     (
-        "The tool {tool} is switched off in the assistant's settings.",
-        "Das Werkzeug {tool} ist in den Einstellungen des Assistenten ausgeschaltet.",
+        "The tool {tool} is switched off in the control centre under MCP connections.",
+        "Das Werkzeug {tool} ist in der Steuerzentrale unter MCP-Anbindungen ausgeschaltet.",
     ),
     ("The assistant may not use the tool {tool}.", "Der Assistent darf das Werkzeug {tool} nicht verwenden."),
     ("{tool} is switched off", "{tool} ist ausgeschaltet"),
@@ -5260,14 +5260,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
-        "Includes tools added later. Each works only while it is on in the assistant's settings.",
-        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
+        "Includes tools added later. Each works only while it is on under MCP connections in the control centre.",
+        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Anbindungen eingeschaltet ist.",
     ),
     (
-        "This agent can't use tools left off. Each works only while it is on in the assistant's settings.",
-        "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
+        "This agent can't use tools left off. Each works only while it is on under MCP connections in the control centre.",
+        "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in der Steuerzentrale unter MCP-Anbindungen eingeschaltet ist.",
     ),
-    ("Off in the assistant's settings", "In den Einstellungen des Assistenten ausgeschaltet"),
+    ("Off under MCP connections", "Unter MCP-Anbindungen ausgeschaltet"),
     // The file card in the chat (WZ.8, #225)
     ("Save as…", "Speichern unter…"),
     ("Send by mail", "Per Mail senden"),
@@ -5775,4 +5775,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Starting…", "Startet…"),
     ("Tools moved to the control centre", "Die Werkzeuge sind in die Steuerzentrale umgezogen"),
     ("Under MCP connections, next to the MCP servers", "Unter MCP-Anbindungen, neben den MCP-Servern"),
+    // The rights editor › a level per MCP server (MA.10, #302)
+    ("MCP servers", "MCP-Server"),
+    (
+        "No MCP servers yet. Each one you add under MCP connections gets its own level here.",
+        "Noch keine MCP-Server. Jeder, den du unter MCP-Anbindungen hinzufügst, bekommt hier eine eigene Stufe.",
+    ),
 ];
