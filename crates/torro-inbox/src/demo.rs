@@ -31,6 +31,10 @@
 //! [`DemoSource::send_draft`] takes it out again; what was saved and sent is kept for the tests
 //! ([`DemoSource::drafts`], [`DemoSource::sent`]). Like the core they refuse an unknown account,
 //! an unknown draft id and a draft without a recipient.
+//!
+//! Saving attachments (issue #290): two save targets ([`save_targets`]) and a Downloads folder
+//! ([`DEMO_DOWNLOADS`]); the invoice of the private inbox (`m:p3`) has two PDFs and a category the
+//! model guessed. The app plans and answers saving from them without writing a file.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -40,8 +44,8 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 use torro_mail::{
-    AttachmentInfo, Category, Draft, Flag, Folder, MailAddress, MailCategory, Message, MessageSummary, MessageTraits,
-    Order, Role,
+    AttachmentInfo, Category, DateSource, Draft, FileKind, Flag, Folder, MailAddress, MailCategory, Message,
+    MessageSummary, MessageTraits, Order, Role, SaveTarget, SaveTargetSpec,
 };
 
 use crate::item::{
@@ -490,6 +494,29 @@ pub fn remote_sample(now: DateTime<Utc>) -> Vec<Item> {
 /// The two mail accounts of the demo: work and private, as `mail:<address>`, in the order the core lists them.
 pub const MAIL_ACCOUNTS: [&str; 2] = ["mail:anna@work.example.org", "mail:anna@example.org"];
 
+/// The Downloads folder of the demo (issue #290), as `mail.list_save_targets` names it. Nothing is
+/// ever written there: the demo's saving answers without a file.
+pub const DEMO_DOWNLOADS: &str = "/home/anna/Downloads";
+
+/// The save targets of the demo (issue #290, `mail.list_save_targets`): "Invoices" by year and
+/// month of each file's own date (from its name, else the mail's), suggested for invoices, and
+/// "Contracts" by sender, suggested for documents that are PDFs. The demo's invoice (`m:p3`) is a
+/// guess of the model, so "Invoices" is suggested for it but not sure.
+pub fn save_targets() -> Vec<SaveTarget> {
+    let mut invoices = SaveTargetSpec::new("Invoices", "/home/anna/Documents/Invoices");
+    invoices.date_from = DateSource::FileName;
+    invoices.suggest.categories = vec![Category::Invoice];
+    let mut contracts = SaveTargetSpec::new("Contracts", "/home/anna/Documents/Contracts");
+    contracts.subfolders = "{sender}".into();
+    contracts.file_name = "{date}_{name}.{ext}".into();
+    contracts.suggest.categories = vec![Category::Document];
+    contracts.suggest.kinds = vec![FileKind::Pdf];
+    vec![
+        SaveTarget { id: "demo-invoices".into(), spec: invoices },
+        SaveTarget { id: "demo-contracts".into(), spec: contracts },
+    ]
+}
+
 /// A mail account a message can be written from (`accounts.list_accounts` in the core): the sender
 /// name next to the address and the signature the core puts under new mail, replies and forwards.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -906,8 +933,17 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Mobile", "billing@mobile.example"),
             minutes: 4 * 24 * 60,
             flags: READ,
-            text: "Your invoice for September is attached. The amount will be debited on 15 October.",
-            attachments: &[("invoice-september.txt", "text/plain", 860)],
+            text: "Your invoice for September is attached, with the usage of the month. The amount will be \
+                   debited on 15 October.",
+            // Two files (issue #290): "Save all" shows from two on; the invoice's own date in its name
+            // and the usage without one show how the demo's target "Invoices" files them.
+            attachments: &[
+                ("invoice-2026-09-30.pdf", "application/pdf", 48_210),
+                ("usage-september.pdf", "application/pdf", 96_480),
+            ],
+            // A guess of the model: "Invoices" is suggested with the sparkles, but a click never
+            // saves by it (decision 4 of issue #290).
+            category: Some(MailCategory::by_model(Category::Invoice, 0.91)),
             ..Letter::new("m:p3", PRIVATE, "inbox", "Your invoice for September")
         },
         Letter {
@@ -2172,6 +2208,36 @@ mod tests {
         assert_eq!(demo.get_mail("m:w1").expect("there").summary.folder, "f:work-inbox", "nothing moved");
         demo.move_mail_to(&["m:p1".into()], Role::Trash).expect("deleted");
         assert_eq!(demo.get_mail("m:p1").expect("in the trash").summary.folder, "f:private-trash");
+    }
+
+    /// Issue #290: the demo's two save targets are valid ones – absolute folders, schemes that
+    /// resolve, a condition each – and its invoice has two PDFs and a guessed category.
+    #[test]
+    fn the_demo_has_save_targets_and_an_invoice_with_two_files() {
+        let targets = save_targets();
+        assert_eq!(targets.iter().map(|t| t.spec.name.as_str()).collect::<Vec<_>>(), ["Invoices", "Contracts"]);
+        let invoice = DemoSource::new(now()).get_mail("m:p3").expect("the invoice");
+        let files: Vec<&AttachmentInfo> = invoice.attachments.iter().filter(|a| !a.inline).collect();
+        assert_eq!(files.len(), 2, "two files, so the reader offers \"Save all\"");
+        assert!(files.iter().all(|a| a.content_type == "application/pdf"));
+        assert!(invoice.summary.category.is_some_and(|c| c.category == Category::Invoice && c.is_suggestion()));
+        let facts = torro_mail::FileFacts {
+            mail_date: NaiveDate::from_ymd_opt(2026, 10, 9).expect("a day"),
+            file_name: files[0].filename.clone(),
+            content_type: files[0].content_type.clone(),
+            sender_name: Some("Mobile".into()),
+            sender_address: "billing@mobile.example".into(),
+            account: "anna@example.org".into(),
+            subject: invoice.summary.subject.clone(),
+            month_names: std::array::from_fn(|i| format!("M{i}")),
+        };
+        for target in &targets {
+            assert!(target.spec.folder.starts_with('/'), "{}: absolute", target.spec.name);
+            assert!(torro_mail::save_target::resolve(&target.spec, &facts).is_ok(), "{}", target.spec.name);
+            assert!(!target.spec.suggest.categories.is_empty(), "{}: suggested for something", target.spec.name);
+        }
+        let resolved = torro_mail::save_target::resolve(&targets[0].spec, &facts).expect("resolves");
+        assert_eq!(resolved.folders, ["2026", "09"], "the invoice by the date in its name");
     }
 
     #[test]

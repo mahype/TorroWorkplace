@@ -152,6 +152,14 @@
 //! sidebar holds the folders alone and it starts on the first account's inbox ([`View::Mail`]
 //! until the folders are in).
 //!
+//! Attachments (task M12.6, issue #290): a click on an attachment's name does what the setting
+//! `mail_attachments.click` says ([`MailLook::click`]) – open, save to Downloads or a save target, or
+//! ask with the system's save dialog; its triangle and "Save all ▾" open their menus
+//! ([`Menu::Attachment`], [`Menu::SaveAll`]), as "Save attachments (n)" in the rail's File and the
+//! list's context menu do (at the row, as "Later…"). Where each file would go is asked once a mail's
+//! text is in ([`App::saving`], `mail.list_save_targets`); every save is `mail.save_attachments`, and
+//! its hint has "Show in folder" ([`Hint::folder`]). A cancelled dialog sends nothing.
+//!
 //! Security rule 1 (`docs/tasks/eingang.md`): approvals, account problems and the suite's entries
 //! belong to the human. This window is the human (it holds the app key), so it may change them,
 //! with two limits of its own: an approval has no "done" (it closes once decided), and the suite
@@ -197,8 +205,8 @@ use torro_inbox::{
     InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef, State,
     StateFilter, rules,
 };
-use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields, MailFound};
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_ipc::inbox::{CalendarEvent, CategoryInfo, EventFields, MailFound, SaveTargets, SavedAttachments};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget, SaveTo};
 use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{CategoryGroup, Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
@@ -653,6 +661,10 @@ pub struct Hint {
     pub undo: Option<Undo>,
     /// When it appeared; it goes [`UNDO_FOR`] later.
     pub shown: Instant,
+    /// "Show in folder" after attachments were saved (task M12.6): the folder of the first file,
+    /// opened in the file manager as `mail::open_attachment` opens the folder of a program. A hint
+    /// has it or "Undo", never both – saving is not undone.
+    pub folder: Option<std::path::PathBuf>,
 }
 
 /// A message archived or deleted in this window (issue #205), kept out of what loads.
@@ -1013,6 +1025,16 @@ pub enum Sent {
     Fetch,
     /// `ui.json`: the action rail of the window with this key, expanded or collapsed (task E14.3).
     Actions(String, RailMode),
+    /// `mail.list_save_targets` for the message with this id (task M12.6).
+    SaveTargets(String),
+    /// `mail.save_attachments`: message, parts (none: all) and where to.
+    Save(String, Vec<String>, SaveTo),
+    /// The system's save dialog of "Save as…", starting with this name.
+    SaveDialog(String),
+    /// The system's folder dialog of "Save all to folder…".
+    FolderDialog,
+    /// "Show in folder": this folder in the file manager.
+    ShowFolder(std::path::PathBuf),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -1194,6 +1216,13 @@ pub enum Menu {
     /// The question "Delete permanently?" for [`App::mail_subject`] (task E10.1): a dialog over the
     /// window ([`App::question_layer`]), `Enter` or "Delete" removes the message for good.
     DeleteForGood,
+    /// The menu of an attachment's triangle (task M12.6, `mail::file_menu`) of the mail held: its ways
+    /// to open and save, at that triangle. The attachment by its place among the mail's attachments
+    /// that are not `inline` (`mail::files_of`).
+    Attachment(usize),
+    /// The menu of "Save all" (task M12.6) of the mail held: at its triangle, or – with `rail` – at
+    /// "Save attachments (n)" of the rail's File, and from the list's context menu at the row.
+    SaveAll { rail: bool },
 }
 
 /// Which buttons a menu for an entry hangs at (issue #122): the button clicked, else where the
@@ -1332,10 +1361,18 @@ pub enum Open {
     BackupError,
     /// That page with a complete backup, its verified archive and a finished restore.
     BackupDone,
+    /// "With attachments" with the demo's invoice open (task M12.6) and the menu of its first
+    /// attachment open at its triangle.
+    AttachmentMenu,
+    /// That invoice with the menu of "Save all" open.
+    SaveAllMenu,
+    /// That invoice after its first attachment was saved to its first save target: the hint with
+    /// "Show in folder", kept for good.
+    AttachmentSaved,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 50] = [
+    const ALL: [(&'static str, Open); 53] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1386,6 +1423,9 @@ impl Open {
         ("backup-plan", Open::BackupPlan),
         ("backup-error", Open::BackupError),
         ("backup-done", Open::BackupDone),
+        ("attachment-menu", Open::AttachmentMenu),
+        ("save-all-menu", Open::SaveAllMenu),
+        ("attachment-saved", Open::AttachmentSaved),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -1783,6 +1823,7 @@ impl Launch {
             format: self.mail_view.unwrap_or(stored.format),
             colors: self.mail_colors.unwrap_or(stored.colors),
             hidden_categories: stored.hidden_categories,
+            click: stored.click,
         }
     }
 
@@ -1980,6 +2021,20 @@ impl SettingsBackend for CoreSettings {
     }
 }
 
+/// Asks where to save an attachment with the system's save dialog ("Save as…", task M12.6), starting
+/// with `name`; `None` when it is cancelled.
+async fn choose_save_file(name: String) -> Option<std::path::PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().set_title(tr("Save attachment")).set_file_name(name);
+    dialog.save_file().await.map(|file| file.path().to_path_buf())
+}
+
+/// Asks for the folder of "Save all to folder…" (task M12.6) with the system's chooser; `None` when
+/// it is cancelled.
+async fn choose_save_folder() -> Option<std::path::PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().set_title(tr("Choose a folder for the attachments"));
+    dialog.pick_folder().await.map(|folder| folder.path().to_path_buf())
+}
+
 /// Asks for a backup folder or a `.zip` archive with the system's chooser, for "Choose…" on a mail
 /// account's backup page; `None` when it is cancelled.
 async fn choose_backup_path(chooser: settings_mail::BackupChooser) -> Option<std::path::PathBuf> {
@@ -2034,6 +2089,10 @@ fn settings_escape(pane: &SettingsPane) -> Option<SettingsMessage> {
 
 /// The mail window's section with the categories' editor (task E15.5).
 const CATEGORIZATION_SECTION: &str = "categorization";
+
+/// The mail window's section with the save targets (task M12.7), where "Manage save targets…" leads
+/// (task M12.6). Until it exists the settings open at their first section.
+const ATTACHMENTS_SECTION: &str = "attachments";
 
 /// The page of the open section, as the host takes it.
 fn settings_page<'a>(
@@ -2315,6 +2374,10 @@ pub struct App<S> {
     /// The HTML of the mail held ([`App::letter`]), parsed for the panel and the reader (task
     /// M9.7, [`App::follow_html`]); `None` while no mail with HTML is held.
     html: Option<mail::HtmlMail>,
+    /// The save targets and the plans of the attachments of a mail (task M12.6,
+    /// `mail.list_save_targets`), asked once its text is in: the message's id and the answer. Only the
+    /// one of the mail held counts ([`App::saving_of`]).
+    saving: Option<(String, Result<SaveTargets, String>)>,
     /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
     /// `--mail-colors` over them ([`App::take_look`]).
     look: MailLook,
@@ -2683,6 +2746,33 @@ pub enum Message {
     OpenAttachment(String, String),
     /// What became of opening an attachment.
     AttachmentOpened(Result<Opened, String>),
+    /// `mail.list_save_targets` answered for the message with this id (task M12.6).
+    SaveTargets(String, Result<SaveTargets, String>),
+    /// The triangle of an attachment (task M12.6): its menu ([`Menu::Attachment`]) – the message's id
+    /// and the attachment's place among those that are not `inline`.
+    AskAttachment(String, usize),
+    /// The triangle of "Save all" over the attachments of the message with this id: their menu.
+    AskSaveAll(String),
+    /// "Save attachments (n)" of the rail's File, and the list's context menu (task M12.6): the menu of
+    /// "Save all" at that item, or at the row.
+    AskSaveAttachments(String),
+    /// "Save all" itself: what its click does by the setting (`mail::all_act`).
+    SaveAll(String),
+    /// An entry of an attachment's menu (`Some(part)`) or of "Save all" (`None`), for the message with
+    /// this id; also what a click on a name or "Save all" does by the setting.
+    FileAct(String, Option<String>, mail::FileAct),
+    /// The save dialog of "Save as…" answered for the message and part: the file chosen, `None` when
+    /// it was cancelled – then nothing is sent and nothing said.
+    SaveAsChosen(String, String, Option<std::path::PathBuf>),
+    /// The folder dialog of "Save all to folder…" answered for the message, alike.
+    FolderChosen(String, Option<std::path::PathBuf>),
+    /// `mail.save_attachments` answered: the message, the part (`None`: all) and where to, for the
+    /// hint, and what was saved.
+    AttachmentsSaved(String, Option<String>, SaveTo, Result<SavedAttachments, String>),
+    /// "Show in folder" in the hint after saving (task M12.6).
+    ShowInFolder,
+    /// "Manage save targets…" in an attachment's menu: Settings › Attachments of the mail window.
+    ManageSaveTargets,
     /// A web address under a mail's or an entry's text ("Links") was clicked.
     OpenMailLink(String),
     /// A click, drag or key on the text in the panel or the reader (issue #119): selects, never
@@ -3132,7 +3222,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     View::Overview
                 }
                 Some(Open::MailEntry | Open::MailActions | Open::MailGroup) => View::ForMe,
-                Some(Open::Attachments) => View::Attachments,
+                Some(Open::Attachments | Open::AttachmentMenu | Open::SaveAllMenu | Open::AttachmentSaved) => {
+                    View::Attachments
+                }
                 Some(Open::Invitations | Open::Invitation) => View::Invitations,
                 Some(
                     Open::Overview
@@ -3215,6 +3307,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             start_mail: launch.message.clone(),
             pinned_mail: None,
             html: None,
+            saving: None,
             look: launch.look(MailLook::default()),
             mail_format: launch.look(MailLook::default()).format,
             mail_scheme: None,
@@ -3453,11 +3546,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// again (every tick) leaves the switches as the person set them.
     fn take_look(&mut self, stored: MailLook) {
         let look = self.launch.look(stored);
-        if look != self.look {
+        // Only the mail's view resets the switches: another click on attachments (task M12.6) or
+        // other hidden categories leave them as the person set them.
+        if (look.format, look.colors) != (self.look.format, self.look.colors) {
             self.mail_format = look.format;
-            self.look = look;
             self.mail_scheme = None;
         }
+        self.look = look;
     }
 
     /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
@@ -3559,8 +3654,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::Edited(result, after) => return self.edited(result, after),
             Message::Undo => return self.undo(),
             Message::HintTick(now) => {
-                // The forced hints of `--open undo` and `--open mute` stay, so they can be photographed.
-                let forced = matches!(self.launch.open, Some(Open::Undo | Open::Mute));
+                // The forced hints of `--open undo`, `mute` and `attachment-saved` stay, so they can be
+                // photographed.
+                let forced = matches!(self.launch.open, Some(Open::Undo | Open::Mute | Open::AttachmentSaved));
                 if !forced
                     && self.hint.as_ref().is_some_and(|hint| now.saturating_duration_since(hint.shown) >= UNDO_FOR)
                 {
@@ -3657,7 +3753,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MuteSuggested(id, scope, effect) => return self.mute_by(id, scope, effect),
             Message::MutedBy(Ok(muted), effect) => {
                 let text = muted_note(&muted, effect, self.now);
-                self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now() });
+                self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now(), folder: None });
                 return self.load();
             }
             Message::MutedBy(Err(err), _) => {
@@ -4057,6 +4153,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 let unread = result.as_ref().is_ok_and(|mail| !mail.summary.flags.contains(&Flag::Seen))
                     && !self.seen_mail.contains(&id);
+                // Where its attachments would go (task M12.6), once its text says it has some.
+                let files = result.as_ref().is_ok_and(|mail| mail.attachments.iter().any(|file| !file.inline));
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
                     letter.loaded = Some(result);
                     let side = self.ask_invite_side(&id, invite.as_ref());
@@ -4065,7 +4163,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     } else {
                         Task::none()
                     };
-                    return Task::batch([side, read]);
+                    let saving = if files { self.ask_save_targets(&id) } else { Task::none() };
+                    return Task::batch([side, read, saving]);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -4159,11 +4258,76 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.recent.clear();
                 return ui_state::save_searches_task(INBOX, Vec::new());
             }
+            // A click on an attachment's name does what the setting says (task M12.6).
             Message::OpenAttachment(id, part) => {
-                #[cfg(test)]
-                self.sent.push(Sent::Attachment(id.clone(), part.clone()));
-                let inbox = self.inbox.clone();
-                return Task::perform(mail::open_attachment(inbox, id, part), Message::AttachmentOpened);
+                let act = mail::click_act(&self.look.click, self.saving_of(&id), &part);
+                return self.file_act(id, Some(part), act);
+            }
+            Message::SaveTargets(id, result) => {
+                let first = self.launch.open == Some(Open::AttachmentSaved) && self.hint.is_none();
+                self.saving = Some((id.clone(), result));
+                // `--open attachment-saved`: the save that makes the hint, once the plans are in.
+                if first && let Some(saving) = self.saving_of(&id) {
+                    let (part, target) = (saving.files.first(), saving.targets.first());
+                    if let (Some(part), Some(target)) = (part, target) {
+                        let (part, act) = (part.part.clone(), mail::FileAct::Target(target.id.clone()));
+                        return self.file_act(id, Some(part), act);
+                    }
+                }
+            }
+            Message::AskAttachment(id, at) => self.ask_file_menu(&id, Menu::Attachment(at)),
+            Message::AskSaveAll(id) => self.ask_file_menu(&id, Menu::SaveAll { rail: false }),
+            Message::AskSaveAttachments(id) => self.ask_file_menu(&id, Menu::SaveAll { rail: true }),
+            Message::SaveAll(id) => {
+                let act = mail::all_act(&self.look.click, self.saving_of(&id));
+                return self.file_act(id, None, act);
+            }
+            Message::FileAct(id, part, act) => return self.file_act(id, part, act),
+            Message::SaveAsChosen(id, part, Some(path)) => match path.to_str() {
+                Some(path) => return self.save_files(id, Some(part), SaveTo::File(path.to_owned())),
+                None => {
+                    self.error = Some(Failure::new(tr("Couldn't save the attachments."), path.display().to_string()))
+                }
+            },
+            Message::FolderChosen(id, Some(path)) => match path.to_str() {
+                Some(path) => return self.save_files(id, None, SaveTo::Folder(path.to_owned())),
+                None => {
+                    self.error = Some(Failure::new(tr("Couldn't save the attachments."), path.display().to_string()))
+                }
+            },
+            // Cancelled in the dialog: nothing is sent, nothing is said.
+            Message::SaveAsChosen(_, _, None) | Message::FolderChosen(_, None) => {}
+            Message::AttachmentsSaved(id, part, to, Ok(saved)) => {
+                if saved.saved.is_empty() && saved.skipped.is_empty() {
+                    // Nothing lies anywhere: say why, as the core said it (a folder macOS keeps closed).
+                    if let Some(failed) = saved.failed.first() {
+                        self.error = Some(Failure::new(tr("Couldn't save the attachments."), failed.message.clone()));
+                    }
+                    return Task::none();
+                }
+                let place = mail::save_place(&to, self.saving_of(&id), part.as_deref());
+                let (text, folder) = (mail::saved_text(&saved, &place), mail::saved_folder(&saved));
+                self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder });
+            }
+            Message::AttachmentsSaved(_, _, _, Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't save the attachments."), err));
+            }
+            Message::ShowInFolder => {
+                if let Some(folder) = self.hint.as_ref().and_then(|hint| hint.folder.clone()) {
+                    #[cfg(test)]
+                    self.sent.push(Sent::ShowFolder(folder.clone()));
+                    return Task::perform(mail::show_folder(folder), Message::LinkOpened);
+                }
+            }
+            Message::ManageSaveTargets => {
+                self.close_menus();
+                // The save targets are the mail window's settings; elsewhere that window comes forward.
+                return match self.launch.kind {
+                    Kind::Mail => self.open_settings(Some(ATTACHMENTS_SECTION)),
+                    Kind::Hub | Kind::Notifications => {
+                        self.update(Message::OpenApp(Kind::Mail.app().window_class.to_string()))
+                    }
+                };
             }
             Message::AttachmentOpened(Ok(opened)) => self.note(mail::opened_text(&opened)),
             Message::AttachmentOpened(Err(err)) => {
@@ -4297,7 +4461,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 if !done.is_empty() {
                     let text = tr("Mail marked as done").to_owned();
-                    self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now() });
+                    self.hint =
+                        Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now(), folder: None });
                 }
                 return self.load();
             }
@@ -4503,7 +4668,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         if !done.is_empty() {
             let text = trf("{n} dismissed", &[("n", &done.len())]);
-            self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now() });
+            self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now(), folder: None });
         }
         self.load()
     }
@@ -4529,6 +4694,96 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Whether the open menu for an entry hangs at the panel's (or reader's) buttons rather than at
     /// the cursor row's (issue #122): where it was clicked; opened by a key, at the panel while it is
     /// open – the row may lie under it.
+    /// The save targets and plans of the mail `id` (task M12.6), once they are in for it.
+    fn saving_of(&self, id: &str) -> Option<&SaveTargets> {
+        match &self.saving {
+            Some((of, Ok(saving))) if of == id => Some(saving),
+            _ => None,
+        }
+    }
+
+    /// Asks the core where the attachments of the mail `id` would go (task M12.6,
+    /// `mail.list_save_targets`), for its menus and the click on a name.
+    fn ask_save_targets(&mut self, id: &str) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::SaveTargets(id.to_owned()));
+        let (inbox, id) = (self.inbox.clone(), id.to_owned());
+        Task::perform(
+            async move {
+                let answer = MailSource::save_targets(inbox.as_ref(), Some(id.clone())).await;
+                (id, answer.map_err(|err| err.to_string()))
+            },
+            |(id, answer)| Message::SaveTargets(id, answer),
+        )
+    }
+
+    /// The attachment `part` of the mail `id`, while that mail is held and loaded.
+    fn file_of(&self, id: &str, part: &str) -> Option<&torro_mail::AttachmentInfo> {
+        let Letter { loaded: Some(Ok(mail)), .. } = self.letter.as_ref().filter(|letter| letter.id == id)? else {
+            return None;
+        };
+        mail.attachments.iter().find(|file| file.part == part)
+    }
+
+    /// Opens `menu` – an attachment's or "Save all" – for the mail `id` while it is held (task M12.6),
+    /// at the button that asked for it; the same again closes it.
+    fn ask_file_menu(&mut self, id: &str, menu: Menu) {
+        if self.letter.as_ref().is_none_or(|letter| letter.id != id) {
+            return;
+        }
+        self.menu_at = MenuAt::Panel;
+        self.toggle_menu(menu);
+    }
+
+    /// Carries out `act` for the attachment `part` of the mail `id` – `None`: all of them that are not
+    /// `inline` (task M12.6): opens it as before, saves it to Downloads or a target, or asks the
+    /// system's dialog first (the answer comes as [`Message::SaveAsChosen`] or
+    /// [`Message::FolderChosen`]).
+    fn file_act(&mut self, id: String, part: Option<String>, act: mail::FileAct) -> Task<Message> {
+        self.menu = None;
+        match (act, part) {
+            (mail::FileAct::Open, Some(part)) => {
+                #[cfg(test)]
+                self.sent.push(Sent::Attachment(id.clone(), part.clone()));
+                let inbox = self.inbox.clone();
+                Task::perform(mail::open_attachment(inbox, id, part), Message::AttachmentOpened)
+            }
+            // Several files are not opened at once; no menu offers it.
+            (mail::FileAct::Open, None) => Task::none(),
+            (mail::FileAct::Downloads, part) => self.save_files(id, part, SaveTo::Downloads),
+            (mail::FileAct::Target(target), part) => self.save_files(id, part, SaveTo::Target(target)),
+            (mail::FileAct::Choose, Some(part)) => {
+                let name = self
+                    .file_of(&id, &part)
+                    .map_or_else(|| tr("Attachment").to_owned(), |file| mail::dialog_name(self.saving_of(&id), file));
+                #[cfg(test)]
+                self.sent.push(Sent::SaveDialog(name.clone()));
+                Task::perform(choose_save_file(name), move |path| Message::SaveAsChosen(id.clone(), part.clone(), path))
+            }
+            (mail::FileAct::Choose, None) => {
+                #[cfg(test)]
+                self.sent.push(Sent::FolderDialog);
+                Task::perform(choose_save_folder(), move |path| Message::FolderChosen(id.clone(), path))
+            }
+        }
+    }
+
+    /// `mail.save_attachments` for the attachment `part` of the mail `id` (`None`: all) to `to`; the
+    /// answer comes back with what it was for, so the hint can say where ([`Message::AttachmentsSaved`]).
+    fn save_files(&mut self, id: String, part: Option<String>, to: SaveTo) -> Task<Message> {
+        let parts: Vec<String> = part.iter().cloned().collect();
+        #[cfg(test)]
+        self.sent.push(Sent::Save(id.clone(), parts.clone(), to.clone()));
+        let inbox = self.inbox.clone();
+        Task::perform(
+            async move {
+                let saved = MailSource::save_attachments(inbox.as_ref(), id.clone(), parts, to.clone()).await;
+                (id, part, to, saved.map_err(|err| err.to_string()))
+            },
+            |(id, part, to, saved)| Message::AttachmentsSaved(id, part, to, saved),
+        )
+    }
+
     fn menu_from_panel(&self) -> bool {
         match self.menu_at {
             MenuAt::Row => false,
@@ -4610,7 +4865,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let reopen = self.entry_of(&id);
         let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
-        let hint = Hint { text: text.to_owned(), undo: Some(Undo::Mail { edit: back, reopen }), shown: Instant::now() };
+        let hint = Hint {
+            text: text.to_owned(),
+            undo: Some(Undo::Mail { edit: back, reopen }),
+            shown: Instant::now(),
+            folder: None,
+        };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
         self.mail_edit(Some(edit), Some(hint))
@@ -4889,7 +5149,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let undo = homes[0].as_ref().filter(|home| homes.iter().all(|held| held.as_ref() == Some(*home))).map(|home| {
             Undo::Mail { edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) }, reopen: None }
         });
-        let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now() });
+        let hint = Some(Hint { text: tr("Moved to Trash").to_owned(), undo, shown: Instant::now(), folder: None });
         for id in &ids {
             self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(id), answered: None });
             self.take_out(id);
@@ -5044,6 +5304,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             text: trf("Moved to {folder}", &[("folder", &name)]),
             undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id) }),
             shown: Instant::now(),
+            folder: None,
         };
         self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
@@ -5066,7 +5327,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn delete_for_good(&mut self) -> Task<Message> {
         let Some(id) = self.mail_subject.clone() else { return Task::none() };
         self.close_menus();
-        let hint = Hint { text: tr("Deleted permanently").to_owned(), undo: None, shown: Instant::now() };
+        let hint = Hint { text: tr("Deleted permanently").to_owned(), undo: None, shown: Instant::now(), folder: None };
         self.take_out(&id);
         self.mail_edit(Some(MailEdit::DeleteForGood { ids: vec![id] }), Some(hint))
     }
@@ -5759,9 +6020,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
-            Some(Menu::Nav | Menu::Switcher | Menu::MailContext | Menu::MailAccounts | Menu::Folders) => {
-                Focus::Elsewhere
-            }
+            // The attachments' menus (task M12.6) take clicks only, like the other menus of entries here.
+            Some(
+                Menu::Nav
+                | Menu::Switcher
+                | Menu::MailContext
+                | Menu::MailAccounts
+                | Menu::Folders
+                | Menu::Attachment(_)
+                | Menu::SaveAll { .. },
+            ) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
             None if self.is_insights() => Focus::Elsewhere,
@@ -6266,6 +6534,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             text: tr("Moved to junk").to_owned(),
             undo: Some(Undo::Mail { edit: back, reopen: Some(id.to_owned()) }),
             shown: Instant::now(),
+            folder: None,
         };
         self.mail_edit(Some(edit), Some(hint))
     }
@@ -6994,7 +7263,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if let Ok(item) = &result {
             match after {
                 Some(After { text, undo }) => {
-                    self.hint = Some(Hint { text, undo: undo.map(Undo::Edit), shown: Instant::now() });
+                    self.hint = Some(Hint { text, undo: undo.map(Undo::Edit), shown: Instant::now(), folder: None });
                 }
                 None => {
                     // Undone: the entry is back in its place, and the cursor (and panel) with it.
@@ -7010,7 +7279,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// A hint without undo: what happened, or why nothing did.
     fn note(&mut self, text: String) {
-        self.hint = Some(Hint { text, undo: None, shown: Instant::now() });
+        self.hint = Some(Hint { text, undo: None, shown: Instant::now(), folder: None });
     }
 
     /// The entries of the open menu of choices, in order; their digits are their place from 1.
@@ -7259,7 +7528,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return None;
         }
         let rail = self.rail(class, self.rail_groups(class, anchors)?);
-        Some(mail::reader(reading, entry, rail))
+        Some(mail::reader(reading, entry, rail, anchors))
     }
 
     /// The groups of the mail's action rail (task E14.3, `mail::action_groups`) for the mail the
@@ -7311,7 +7580,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return self.rail_open;
         }
         let label = match self.menu? {
-            Menu::Snooze | Menu::Pick | Menu::Lane => tr("File"),
+            Menu::Snooze | Menu::Pick | Menu::Lane | Menu::SaveAll { rail: true } => tr("File"),
             Menu::Task | Menu::Event | Menu::Category | Menu::CategoryAlways => tr("Torro"),
             Menu::Hide | Menu::Mute | Menu::Move => tr("Mute"),
             _ => return None,
@@ -7551,7 +7820,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// badge; empty without a hint.
     fn hint_layer(&self) -> Element<'_, Message> {
         let Some(hint) = &self.hint else { return Space::new().into() };
-        widgets::toast(hint.text.as_str(), hint.undo.is_some().then(|| ToastAction::undo(Message::Undo)))
+        // "Undo" after a change, "Show in folder" after saving attachments (task M12.6).
+        let action = match (&hint.undo, &hint.folder) {
+            (Some(_), _) => Some(ToastAction::undo(Message::Undo)),
+            (None, Some(_)) => Some(ToastAction::new(tr("Show in folder"), None, Message::ShowInFolder)),
+            (None, None) => None,
+        };
+        widgets::toast(hint.text.as_str(), action)
     }
 
     /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
@@ -7628,6 +7903,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let (snooze_at, task_at, event_at, hide_at) =
             (at(|a| &a.snooze), at(|a| &a.task), at(|a| &a.event), at(|a| &a.hide));
         let (lane_at, category_at) = (at(|a| &a.lane), at(|a| &a.category));
+        let save_rail_at = at(|a| &a.save_rail);
         // At the rail by the window's right edge, menus and dialogs open beside it, to the left –
         // the rail and the item that opened them stay in view; below, they would cover the rail.
         let rail_shown = self.rail_groups(class, &anchors).is_some();
@@ -7712,6 +7988,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // A question over the whole window ([`App::question_layer`]), not at a button.
             Some(Menu::DeleteForGood | Menu::PhishingLink) => None,
+            // At the triangle that opened it (task M12.6), its right edge in line, under it while
+            // there is room – the reader's block stands at the bottom, so mostly over it.
+            Some(Menu::Attachment(at)) => self.file_menu(Some(at)).map(|card| {
+                widgets::floating(&anchors.attachment, Placement::Below(Align::End), card, Message::CloseMenu)
+            }),
+            Some(Menu::SaveAll { rail: false }) => self.file_menu(None).map(|card| {
+                widgets::floating(&anchors.save_all, Placement::Below(Align::End), card, Message::CloseMenu)
+            }),
+            // From the rail beside it, as Later…; from the list's context menu at the row.
+            Some(Menu::SaveAll { rail: true }) => {
+                self.file_menu(None).map(|card| widgets::floating(&save_rail_at, below, card, Message::CloseMenu))
+            }
         };
         // The open group of the collapsed rail, over the whole window like a menu (task E14.3); it
         // never shows with one (`App::update` closes it when a menu opens).
@@ -7742,7 +8030,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let (Some(reading), mail::Bars::Command { entry: Some(entry), width }) =
                     (self.reading(), self.panel_bars(class))
                 {
-                    return side(mail::entry_panel(&reading, entry, self.view_label(), width));
+                    return side(mail::entry_panel(&reading, entry, self.view_label(), width, &anchors));
                 }
                 // The notifications window's panel and mail have the bell where the others have "…"
                 // (task E8.6b, issue #123).
@@ -7757,7 +8045,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     view: self.reading().map(|reading| reading.view_tools()),
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
-                let letter = self.reading().map(|reading| mail::body(&reading, mail::Bars::Split));
+                let letter = self.reading().map(|reading| mail::body(&reading, mail::Bars::Split, &anchors));
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
@@ -8052,7 +8340,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 scheme: self.mail_scheme(),
                 scale: self.html_scale(),
             }),
+            saving: self.saving_of(&letter.id),
+            click: &self.look.click,
+            file_menu: match self.menu {
+                Some(Menu::Attachment(at)) => Some(at),
+                _ => None,
+            },
         })
+    }
+
+    /// The card of an open attachment menu (task M12.6, `mail::file_menu`): of the attachment at `at`
+    /// among the mail's, or of "Save all" for `None`. As wide as it needs to show a path and two words
+    /// beside it – up to [`size::panel()`], less in a narrower window – and as high as the window
+    /// leaves. `None` while the mail is not loaded or has no such attachment.
+    fn file_menu(&self, at: Option<usize>) -> Option<Element<'_, Message>> {
+        let reading = self.reading()?;
+        let files = mail::files_of(&reading)?;
+        let part = match at {
+            Some(at) => Some(files.get(at)?.part.as_str()),
+            None => None,
+        };
+        let category = reading.summary().and_then(|summary| summary.category);
+        let menu = mail::FileMenu { id: reading.id, part, saving: reading.saving, click: reading.click, category };
+        let width = (self.size.width - style::MENU_INSET * 2.0).clamp(size::sidebar(), size::panel());
+        let tallest = (self.size.height - style::MENU_INSET * 8.0).max(200.0);
+        Some(mail::file_menu_card(mail::file_menu(menu), width, tallest))
     }
 
     /// The content below the header: an error line if there is one, and the list – left-aligned
@@ -9040,6 +9352,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                         text: tr("Done").to_owned(),
                         undo: Some(Undo::Edit(Edit::Done { id: item.id.clone(), done: false })),
                         shown: Instant::now(),
+                        folder: None,
                     });
                 }
             }
@@ -9112,6 +9425,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                         self.rail_open = Some(1);
                     }
                     _ => {}
+                }
+            }
+            // The demo's invoice in "With attachments" (task M12.6): two PDFs and a guessed category.
+            Some(open @ (Open::AttachmentMenu | Open::SaveAllMenu | Open::AttachmentSaved)) => {
+                let invoice = |message: &&MessageSummary| {
+                    message.category.is_some_and(|held| held.category == torro_mail::Category::Invoice)
+                };
+                let id = self.messages.iter().find(invoice).or(self.messages.first()).map(|message| message.id.clone());
+                if let Some(id) = id {
+                    self.cursor = Some(id);
+                    self.reading = true;
+                    self.menu_at = MenuAt::Panel;
+                    // Shown once the mail is in; the saved state saves once its plans are in.
+                    self.menu = match open {
+                        Open::AttachmentMenu => Some(Menu::Attachment(0)),
+                        Open::SaveAllMenu => Some(Menu::SaveAll { rail: false }),
+                        _ => None,
+                    };
                 }
             }
             Some(open @ (Open::MoveMail | Open::DeleteMail)) => {
@@ -9259,7 +9590,7 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
     } else {
         trf("Unmuted {source}", &[("source", &label)])
     };
-    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now() }
+    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now(), folder: None }
 }
 
 /// Whether `message` is one an item of the mail's action rail sends (task E14.3,
@@ -9279,6 +9610,7 @@ fn closes_rail(message: &Message) -> bool {
             | Message::Reclassify(_)
             | Message::AskHide(_)
             | Message::AskMuteMail(_)
+            | Message::AskSaveAttachments(_)
             | Message::ShowMailAs(_)
             | Message::MailColors(_)
             | Message::CopyText
@@ -9289,13 +9621,13 @@ fn closes_rail(message: &Message) -> bool {
 
 /// The title of a section of a menu card built here, as `widgets::menu` draws one: `typo::caption()`
 /// in `text_3`, 8 around and 4 below.
-fn menu_caption<'a>(title: &str) -> Element<'a, Message> {
+pub(crate) fn menu_caption<'a>(title: &str) -> Element<'a, Message> {
     let head = typo::text(typo::caption(), title.to_owned()).style(theme::text_3);
     container(head).padding(Padding::new(space::s()).bottom(space::xs())).into()
 }
 
 /// The line between the sections of a menu card built here, as `widgets::menu` draws it.
-fn menu_line<'a>() -> Element<'a, Message> {
+pub(crate) fn menu_line<'a>() -> Element<'a, Message> {
     container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
 }
 
@@ -9672,6 +10004,8 @@ mod tests {
     use chrono::TimeZone;
     use iced::futures::executor::block_on;
     use torro_inbox::demo::DemoSource;
+
+    use torro_core::settings::AttachmentClick;
 
     use super::*;
     use crate::empty::EmptySource;
@@ -12138,7 +12472,7 @@ mod tests {
     }
 
     fn look(format: MailFormat, colors: MailAppearance) -> Message {
-        Message::MailLook(Ok(MailLook { format, colors, hidden_categories: Vec::new() }))
+        Message::MailLook(Ok(MailLook { format, colors, ..MailLook::default() }))
     }
 
     /// `mail_view = html` (the default) shows a mail's HTML, `text` its text; a mail without HTML
@@ -12228,11 +12562,10 @@ mod tests {
 
         let launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
         assert_eq!((launch.mail_view, launch.mail_colors), (Some(MailFormat::Text), Some(MailAppearance::Dark)));
-        let stored =
-            MailLook { format: MailFormat::Html, colors: MailAppearance::Light, hidden_categories: Vec::new() };
+        let stored = MailLook { format: MailFormat::Html, colors: MailAppearance::Light, ..MailLook::default() };
         assert_eq!(
             launch.look(stored),
-            MailLook { format: MailFormat::Text, colors: MailAppearance::Dark, hidden_categories: Vec::new() }
+            MailLook { format: MailFormat::Text, colors: MailAppearance::Dark, ..MailLook::default() }
         );
         let mut forced = in_folder("f:private-inbox");
         forced.launch = launch;
@@ -12801,6 +13134,181 @@ mod tests {
         let opened = Opened::Folder(std::path::PathBuf::from("/tmp/setup.exe"));
         let _ = app.update(Message::AttachmentOpened(Ok(opened.clone())));
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(mail::opened_text(&opened)));
+    }
+
+    /// The demo's invoice (`m:p3`: two PDFs, a category the model guessed) read in its folder, with
+    /// the plans of its attachments in as `mail.list_save_targets` answers them (task M12.6).
+    fn invoice() -> App<DemoSource> {
+        invoice_in(&[])
+    }
+
+    /// [`invoice`] in the window of `words` (`--view mail`: the mail window, with its rail).
+    fn invoice_in(words: &[&str]) -> App<DemoSource> {
+        let mut app = overview_at(words);
+        let view = folder_view(&app, "f:private-inbox");
+        let _ = app.update(Message::Show(view));
+        load(&mut app);
+        let _ = app.update(Message::SelectMail("m:p3".into()));
+        deliver_letter(&mut app, "m:p3");
+        assert_eq!(app.sent.last(), Some(&Sent::SaveTargets("m:p3".into())), "asked once the text is in");
+        let saving = block_on(MailSource::save_targets(app.inbox.as_ref(), Some("m:p3".into())));
+        let _ = app.update(Message::SaveTargets("m:p3".into(), saving.map_err(|err| err.to_string())));
+        assert!(app.saving_of("m:p3").is_some_and(|saving| saving.files.len() == 2));
+        app
+    }
+
+    /// Task M12.6: a click on an attachment's name does what the setting says – open, Downloads, the
+    /// save dialog, a target that is there – and opens for a target that is gone and for "Suggested
+    /// target, else open" on a category the model only guessed (decision 4 of issue #290); a sure
+    /// suggestion saves there.
+    #[test]
+    fn a_click_on_an_attachment_does_what_the_setting_says() {
+        let mut app = invoice();
+        let click = |app: &mut App<DemoSource>, click: AttachmentClick| {
+            app.look.click = click;
+            let _ = app.update(Message::OpenAttachment("m:p3".into(), "2".into()));
+            app.sent.last().cloned()
+        };
+        let one = || vec!["2".to_owned()];
+        assert_eq!(click(&mut app, AttachmentClick::Open), Some(Sent::Attachment("m:p3".into(), "2".into())));
+        assert_eq!(
+            click(&mut app, AttachmentClick::Downloads),
+            Some(Sent::Save("m:p3".into(), one(), SaveTo::Downloads))
+        );
+        assert_eq!(
+            click(&mut app, AttachmentClick::SaveAs),
+            Some(Sent::SaveDialog("invoice-2026-09-30.pdf".into())),
+            "the dialog starts with the plan's name"
+        );
+        let invoices = SaveTo::Target("demo-invoices".into());
+        assert_eq!(
+            click(&mut app, AttachmentClick::Target("demo-invoices".into())),
+            Some(Sent::Save("m:p3".into(), one(), invoices.clone()))
+        );
+        assert_eq!(
+            click(&mut app, AttachmentClick::Target("gone".into())),
+            Some(Sent::Attachment("m:p3".into(), "2".into())),
+            "a target that is gone opens"
+        );
+        // The invoice's category is a guess: "Invoices" is suggested, but the click opens.
+        let plan = app.saving_of("m:p3").and_then(|saving| saving.plan("2")).cloned().expect("a plan");
+        assert_eq!((plan.suggested.as_slice(), plan.sure.as_deref()), (&["demo-invoices".to_owned()][..], None));
+        assert_eq!(click(&mut app, AttachmentClick::Suggested), Some(Sent::Attachment("m:p3".into(), "2".into())));
+        // Filed by a person, the suggestion is sure and the click saves there.
+        if let Some((_, Ok(saving))) = app.saving.as_mut() {
+            saving.files[0].sure = Some("demo-invoices".into());
+        }
+        assert_eq!(click(&mut app, AttachmentClick::Suggested), Some(Sent::Save("m:p3".into(), one(), invoices)));
+        // "Save all" by the setting: Downloads for Open and Suggested, the folder dialog for Save as….
+        for (setting, sent) in [
+            (AttachmentClick::Open, Sent::Save("m:p3".into(), Vec::new(), SaveTo::Downloads)),
+            (AttachmentClick::Suggested, Sent::Save("m:p3".into(), Vec::new(), SaveTo::Downloads)),
+            (AttachmentClick::SaveAs, Sent::FolderDialog),
+        ] {
+            app.look.click = setting;
+            let _ = app.update(Message::SaveAll("m:p3".into()));
+            assert_eq!(app.sent.last(), Some(&sent));
+        }
+        draw_everywhere(&mut app);
+    }
+
+    /// Task M12.6: the triangles open the menus at the mail held – an attachment's, "Save all" from the
+    /// block and from the rail –, the same again closes them, and every size draws them; a cancelled
+    /// dialog sends nothing and says nothing.
+    #[test]
+    fn the_triangles_open_their_menus_and_a_cancelled_dialog_sends_nothing() {
+        let mut app = invoice();
+        let _ = app.update(Message::AskAttachment("m:p3".into(), 1));
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Attachment(1)), true));
+        assert!(app.reading().is_some_and(|reading| reading.file_menu == Some(1)), "its triangle carries the anchor");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::AskAttachment("m:p3".into(), 1));
+        assert_eq!(app.menu, None, "the same triangle again closes it");
+        let _ = app.update(Message::AskSaveAll("m:p3".into()));
+        assert_eq!(app.menu, Some(Menu::SaveAll { rail: false }));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::AskSaveAll("m:other".into()));
+        assert_eq!(app.menu, Some(Menu::SaveAll { rail: false }), "only for the mail held");
+
+        let before = app.sent.len();
+        let _ = app.update(Message::SaveAsChosen("m:p3".into(), "2".into(), None));
+        let _ = app.update(Message::FolderChosen("m:p3".into(), None));
+        assert_eq!((app.sent.len(), app.hint.as_ref(), app.error.as_ref()), (before, None, None), "cancelled");
+        let _ = app.update(Message::SaveAsChosen("m:p3".into(), "2".into(), Some("/home/anna/Bill.pdf".into())));
+        let file = SaveTo::File("/home/anna/Bill.pdf".into());
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), vec!["2".into()], file)));
+        let _ = app.update(Message::FolderChosen("m:p3".into(), Some("/home/anna/Bills".into())));
+        let folder = SaveTo::Folder("/home/anna/Bills".into());
+        assert_eq!(app.sent.last(), Some(&Sent::Save("m:p3".into(), Vec::new(), folder)));
+    }
+
+    /// Task M12.6, decision 6 of issue #290's plan: "Save attachments (n)" stands in the rail's File –
+    /// so in the list's context menu – and opens the menu of "Save all" at the row, as "Later…" does.
+    #[test]
+    fn the_context_menu_leads_to_the_menu_of_save_all() {
+        let mut app = invoice_in(&["--view", "mail"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let groups = app.rail_groups(SizeClass::Wide, &detail::Anchors::default()).expect("the rail");
+        let file = groups.iter().find(|group| group.label == tr("File")).expect("File");
+        let words = trf("Save attachments ({n})", &[("n", &2)]);
+        let item = file.items.iter().find(|item| item.label == words.as_str()).expect("Save attachments (2)");
+        assert!(matches!(&item.on_press, Some(Message::AskSaveAttachments(id)) if id == "m:p3"));
+        let _ = app.update(Message::AskSaveAttachments("m:p3".into()));
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::SaveAll { rail: true }), true), "at the item");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::ContextMail("m:p3".into()));
+        assert_eq!(app.menu, Some(Menu::MailContext));
+        let _ = app.update(Message::ContextAction(Box::new(Message::AskSaveAttachments("m:p3".into()))));
+        assert_eq!(app.menu, Some(Menu::SaveAll { rail: true }));
+        assert!(!app.menu_from_panel(), "at the row, as Later… from the context menu");
+        draw_everywhere(&mut app);
+    }
+
+    /// Task M12.6: after saving the hint says where – with "Show in folder", which opens the folder of
+    /// the first file –, a partial save names what failed, and a save of which nothing lies anywhere
+    /// says why.
+    #[test]
+    fn saving_shows_a_hint_with_show_in_folder() {
+        let mut app = invoice();
+        let _ = app.update(Message::FileAct(
+            "m:p3".into(),
+            Some("2".into()),
+            mail::FileAct::Target("demo-invoices".into()),
+        ));
+        let Some(Sent::Save(id, parts, to)) = app.sent.last().cloned() else { panic!("a save") };
+        let saved = block_on(MailSource::save_attachments(app.inbox.as_ref(), id.clone(), parts, to.clone()));
+        let _ = app.update(Message::AttachmentsSaved(id, Some("2".into()), to, saved.map_err(|err| err.to_string())));
+        let hint = app.hint.clone().expect("a hint");
+        assert_eq!(hint.text, trf("Saved to {where}", &[("where", &"Invoices › 2026 › 09")]));
+        assert_eq!(hint.undo, None);
+        let folder = std::path::PathBuf::from("/home/anna/Documents/Invoices/2026/09");
+        assert_eq!(hint.folder.as_ref(), Some(&folder));
+        let _ = app.view();
+        let _ = app.update(Message::ShowInFolder);
+        assert_eq!(app.sent.last(), Some(&Sent::ShowFolder(folder)));
+
+        let file = |part: &str, path: &str| torro_ipc::mail::SavedFile { part: part.into(), path: path.into() };
+        let partly = SavedAttachments {
+            saved: vec![file("2", "/home/anna/Downloads/invoice-2026-09-30.pdf")],
+            failed: vec![torro_ipc::mail::FailedFile {
+                part: "3".into(),
+                name: "usage-september.pdf".into(),
+                code: "error".into(),
+                message: "Disk full".into(),
+            }],
+            ..SavedAttachments::default()
+        };
+        let _ = app.update(Message::AttachmentsSaved("m:p3".into(), None, SaveTo::Downloads, Ok(partly.clone())));
+        let text = app.hint.as_ref().map(|hint| hint.text.clone());
+        assert_eq!(text, Some(trf("{n} saved, {name} failed", &[("n", &1), ("name", &"usage-september.pdf")])));
+        app.hint = None;
+        let none = SavedAttachments { saved: Vec::new(), ..partly };
+        let _ = app.update(Message::AttachmentsSaved("m:p3".into(), None, SaveTo::Downloads, Ok(none)));
+        assert_eq!(
+            (app.hint.as_ref(), app.error.as_ref().map(|failure| failure.why.as_str())),
+            (None, Some("Disk full"))
+        );
     }
 
     /// Issue #119: the text in the reader and the panel can be selected – never changed – and "Copy

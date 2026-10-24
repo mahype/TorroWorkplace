@@ -1356,7 +1356,7 @@ nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
   hell und dunkel angesehen.
 
 ### M12.6 Leser, Panel und Kontextmenü: Dreieck-Menü, Klick-Aktion, Speichern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M12.3, M12.5 · **Dateien:** `crates/torroinbox/src/{mail,app,detail}.rs`,
   `crates/torro-ipc/src/inbox.rs`, `crates/torro-inbox/src/demo.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** Leser, Panel, Kontextmenü der Liste. **API:** `mail.list_save_targets`, `mail.save_attachments`.
