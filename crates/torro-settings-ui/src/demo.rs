@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
-use torro_core::settings::{AssistantDefault, CalendarReminders, PdfTemplateId, Reminders, Settings, ToolId, Tools};
+use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Settings, ToolId, Tools};
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
@@ -67,12 +67,10 @@ impl Demo {
     /// A demo with the sample settings: dark, so the first look shows the suite's own look.
     pub fn new() -> Demo {
         let mut reminders = Reminders::default();
-        // The PDF tool on, with a folder and a logo of its own (task WZ.6), so Tools shows the
-        // switch on, "Use desktop" and "Remove". Paths only: the demo reads no file.
+        // The PDF tool on (task WZ.6), so Access offers it without the mark of a tool switched off.
+        // Its folder and templates are set in the control centre since task MA.7.
         let mut tools = Tools::default();
         tools.set_on(ToolId::Pdf, true);
-        tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
-        tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
         reminders.calendars.insert(WORK_CALENDAR.into(), CalendarReminders::FullScreen);
         let settings = Settings {
             appearance: Appearance::Dark,
@@ -490,7 +488,7 @@ impl Demo {
 
     /// The assistant's own tools as `tools.list_tools` lists them for the app key: switched on as the
     /// settings say, `allowed` always (the app key may use every tool). The assistant's client has
-    /// no access to `tools` ([`Rights::assistant`]), so Tools shows where it is allowed.
+    /// no access to `tools` ([`Rights::assistant`]), so Access shows the tool not chosen.
     fn tools(&self) -> Vec<ToolInfo> {
         ToolId::ALL
             .into_iter()

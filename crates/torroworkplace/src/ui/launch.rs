@@ -144,6 +144,13 @@ pub enum Open {
     ConnectClientDone,
     /// "Connect client" with the key of a new "Other MCP client" and its command, shown once.
     ConnectClientOther,
+    /// MCP connections (task MA.7) with the PDF tool on, a folder and a logo of its own, and the
+    /// demo's servers: two of the catalog (one running, one stopped after errors) and one of one's
+    /// own with tools to review ([`demo_connections`]).
+    Connections,
+    /// MCP connections without any server, the PDF tool as it starts and the assistant without it
+    /// ([`demo_connections_empty`]).
+    ConnectionsEmpty,
     /// Appearance with the demo's designs, fonts and colour schemes ([`demo_looks`]), one of each
     /// broken; the design `--design` names is drawn, else the standard.
     Design,
@@ -173,7 +180,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 91] = [
+    pub const ALL: [(&'static str, Open); 93] = [
         ("accounts-empty", Open::AccountsEmpty),
         ("accounts-ai", Open::AccountsAi),
         ("wizard-nextcloud", Open::WizardNextcloud),
@@ -246,6 +253,8 @@ impl Open {
         ("connect-client-rights", Open::ConnectClientRights),
         ("connect-client-done", Open::ConnectClientDone),
         ("connect-client-other", Open::ConnectClientOther),
+        ("connections", Open::Connections),
+        ("connections-empty", Open::ConnectionsEmpty),
         ("design", Open::Design),
         ("design-schemes", Open::DesignSchemes),
         ("design-switched", Open::DesignSwitched),
@@ -270,7 +279,7 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|ai|api|mcp|approvals|workspaces|appearance|general`: the page to
+/// - `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`: the page to
 ///   start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section accounts`). The words of pages
 ///   that moved keep working ([`Section::from_arg`]): `agents` is MCP (task S.35), `apps` and
@@ -1016,7 +1025,143 @@ pub fn demo_data() -> Data {
         approvals: demo_approvals(now),
         engines: demo_engines(),
         screens: demo_screens(),
+        extensions: super::connections::Listing::Entries(demo_extensions()),
+        catalog: super::connections::Listing::Entries(demo_catalog()),
         error: None,
+    }
+}
+
+/// The built-in catalog as the core lists it on a computer without Node.js: Sequential Thinking
+/// needs `npx` (task MA.8 shows it without "Install…"). The others need nothing the demo lacks.
+fn demo_catalog() -> Vec<torro_ipc::extensions::CatalogEntry> {
+    use torro_ipc::extensions::Prerequisite;
+    let entries = crate::extensions::catalog::builtin().unwrap_or_default();
+    entries
+        .iter()
+        .map(|entry| {
+            let mut info = entry.info.clone();
+            if info.requires.contains(&Prerequisite::Npx) {
+                info.missing = vec![Prerequisite::Npx];
+            }
+            info
+        })
+        .collect()
+}
+
+/// The demo's MCP servers (task MA.7): "Time" of the catalog, on and running with its two tools
+/// allowed; "GitHub" of the catalog, stopped after errors, its token stored; and "Notes", a server of
+/// one's own that waits for its tools to be allowed. Nothing runs: the demo starts no program.
+fn demo_extensions() -> Vec<torro_ipc::extensions::ExtensionInfo> {
+    use torro_ipc::api::Access;
+    use torro_ipc::extensions::{
+        CrashReason, ExtensionInfo, ExtensionTool, SecretInfo, ServerSpec, Source, Status, ToolState, Value,
+    };
+    let catalog = demo_catalog();
+    let version = |id: &str| catalog.iter().find(|entry| entry.id == id).map(|entry| entry.version.clone());
+    let tool = |server: &str, server_name: &str, name: &str, description: &str, access, state| ExtensionTool {
+        extension: server.into(),
+        extension_name: server_name.into(),
+        name: name.into(),
+        tool_name: torro_ipc::extensions::tool_name(server, name),
+        description: description.into(),
+        input_schema: serde_json::json!({ "type": "object" }),
+        access,
+        state,
+    };
+    let program = |command: &str, args: &[&str], env: BTreeMap<String, Value>| ServerSpec::Stdio {
+        command: command.into(),
+        args: args.iter().map(|arg| arg.to_string()).collect(),
+        env,
+    };
+    vec![
+        ExtensionInfo {
+            id: "time".into(),
+            name: "Time".into(),
+            source: Source::Catalog { entry: "time".into(), version: version("time").unwrap_or_default() },
+            server: program("uvx", &["mcp-server-time"], BTreeMap::new()),
+            enabled: true,
+            status: Status::Running,
+            tools: vec![
+                tool(
+                    "time",
+                    "Time",
+                    "get_current_time",
+                    "Get the current time in a time zone",
+                    Access::Read,
+                    ToolState::Allowed,
+                ),
+                tool(
+                    "time",
+                    "Time",
+                    "convert_time",
+                    "Convert a time between time zones",
+                    Access::Read,
+                    ToolState::Allowed,
+                ),
+            ],
+            secrets: Vec::new(),
+            notes: Vec::new(),
+            fingerprint: Some("demo-time".into()),
+        },
+        ExtensionInfo {
+            id: "github".into(),
+            name: "GitHub".into(),
+            source: Source::Catalog { entry: "github".into(), version: version("github").unwrap_or_default() },
+            server: program(
+                "docker",
+                &["run", "-i", "--rm", "ghcr.io/github/github-mcp-server"],
+                BTreeMap::from([("GITHUB_PERSONAL_ACCESS_TOKEN".into(), Value::Stored { secret: true })]),
+            ),
+            enabled: true,
+            status: Status::Crashed { reason: CrashReason::Exited },
+            tools: vec![tool(
+                "github",
+                "GitHub",
+                "list_issues",
+                "List issues of a repository",
+                Access::Read,
+                ToolState::Allowed,
+            )],
+            secrets: vec![SecretInfo { name: "GITHUB_PERSONAL_ACCESS_TOKEN".into(), stored: true }],
+            notes: Vec::new(),
+            fingerprint: Some("demo-github".into()),
+        },
+        ExtensionInfo {
+            id: "notes".into(),
+            name: "Notes".into(),
+            source: Source::Custom,
+            server: program("/usr/local/bin/notes-mcp", &["--stdio"], BTreeMap::new()),
+            enabled: false,
+            status: Status::Review,
+            tools: vec![
+                tool("notes", "Notes", "search_notes", "Search the notes", Access::Delete, ToolState::Review),
+                tool("notes", "Notes", "add_note", "Add a note", Access::Delete, ToolState::Review),
+            ],
+            secrets: Vec::new(),
+            notes: Vec::new(),
+            fingerprint: Some("demo-notes".into()),
+        },
+    ]
+}
+
+/// `--open connections` (task MA.7): the PDF tool on, a folder of its own and a logo in the report
+/// template, so every row of "Built-in tools" and the templates shows. Paths only: the demo reads no
+/// file.
+pub fn demo_connections(data: &mut Data) {
+    use torro_core::settings::{PdfTemplateId, ToolId};
+    let tools = &mut data.settings.tools;
+    tools.set_on(ToolId::Pdf, true);
+    tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
+    tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
+    data.tools = demo_tools(&data.settings.tools);
+}
+
+/// `--open connections-empty` (task MA.7): no server installed, the PDF tool off as it starts, and
+/// an assistant that may not use it, so the row leads to its Access.
+pub fn demo_connections_empty(data: &mut Data) {
+    data.extensions = super::connections::Listing::Entries(Vec::new());
+    for client in data.clients.iter_mut().filter(|client| client.kind == ASSISTANT_CLIENT) {
+        client.rights.set_level(Area::Tools, Level::NoAccess, Vec::new);
     }
 }
 
@@ -1879,7 +2024,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, ai, api, mcp, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, apps, inbox"
+                "valid values: overview, accounts, ai, api, mcp, connections, approvals, workspaces, appearance, general, assistant, bot:<id>, agents, apps, inbox"
             ),
             "{err}"
         );

@@ -226,7 +226,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   `call` baut den richtigen Request; Ergebnis als Daten gekennzeichnet.
 
 ### MA.7 Steuerzentrale › MCP connections: Abschnitt, eigene Werkzeuge ziehen um
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torroworkplace/src/ui/{mod,launch}.rs`,
   `crates/torroworkplace/src/ui/connections.rs` (neu), `crates/torroworkplace/Cargo.toml` (`rfd`),
   `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`, `crates/torro-settings-ui/src/{lib,demo}.rs`,

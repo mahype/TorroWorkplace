@@ -8,8 +8,7 @@
 //! Access    what the assistant and each bot may use; the assistant on and off (task S.34)
 //! Profile   who the assistant is, and what it keeps because it was asked to (two pages below)
 //! Bots      the bots, each with "Edit" in the assistant and "Access" here
-//! Tools     the assistant's own tools: each switched on or off, whether the assistant may use it,
-//!           and the PDF tool's folder and templates (task WZ.6)
+//! Tools     where the assistant's own tools went: the control centre's MCP connections (task MA.7)
 //! Voice     talking by voice, speaking answers, the microphone, the programs on this computer
 //! History   how long conversations are kept
 //! ```
@@ -44,8 +43,7 @@
 //! }
 //! ```
 //!
-//! Escape goes to [`escape`] first (it closes a dialog of Profile or Access, drops a line being
-//! typed in Tools) and only then to the
+//! Escape goes to [`escape`] first (it closes a dialog of Profile or Access) and only then to the
 //! host, which closes the settings – but every way out of the settings passes [`closing`] first, so
 //! a profile that is typed and not saved is never dropped without "Discard changes?", and
 //! [`save_now`] then, so a change of rights made a moment ago goes out before the sections go. The
@@ -71,7 +69,6 @@ use torro_gui::theme::{self, palette, size};
 use torro_gui::{typo, widgets};
 use torro_ipc::api::ASSISTANT_CLIENT;
 use torro_ipc::assistant::EngineKind;
-use torro_ipc::tools::PdfTemplateId;
 use torro_ipc::{ClientInfo, Request, Response};
 
 use crate::parts::setting_row;
@@ -88,7 +85,8 @@ pub const SECTIONS: [Section; 7] = [
     Section { id: "profile", icon: Icon::User, label: "Profile" },
     // The suite has no robot icon; the sparkles stand for AI (design skill, section 5).
     Section { id: "bots", icon: Icon::Sparkles, label: "Bots" },
-    // The suite has no wrench icon; the layers stand for the pages a tool sets after a template.
+    // The suite has no wrench icon; the layers stand for the pages a tool sets after a template. Only
+    // a row that leads to the control centre since task MA.7, where people still look for it.
     Section { id: "tools", icon: Icon::Layers, label: "Tools" },
     // The suite has no microphone icon; talking is a conversation.
     Section { id: "voice", icon: Icon::MessageCircle, label: "Voice" },
@@ -106,15 +104,6 @@ pub enum AppAction {
     /// Open the editor of the bot with this id: "Edit" in the Bots section. Who a bot is – its
     /// name, personality, instructions, skills and engine – is written in the assistant, not here.
     EditBot(String),
-    /// "Choose…" at the folder of the PDF tool (Tools): the app opens the system's folder chooser
-    /// and, once a folder is chosen, sends [`tools::folder_request`] through the host
-    /// ([`crate::Host::act`] with [`crate::Action::Send`]); cancelled, nothing. Only a person sets a
-    /// path (point 9 of "Was nie nach außen geht"), which is why only the app's chooser does.
-    PickFolder,
-    /// "Choose…" at a PDF template's logo (Tools): the app opens the system's file chooser for
-    /// pictures ([`tools::LOGO_EXTENSIONS`]) and, once one is chosen, sends
-    /// [`tools::logo_request`] with the template as the host holds it then; cancelled, nothing.
-    PickLogo(PdfTemplateId),
 }
 
 /// What a section of the assistant returns.
@@ -124,7 +113,7 @@ pub type Action = crate::Action<AppAction>;
 /// change ([`crate::Host::new`]).
 ///
 /// `clients.list_clients` tells whether the assistant is on and holds the rights Access edits
-/// (the assistant's and the bots' clients); Tools reads from it what the assistant may use.
+/// (the assistant's and the bots' clients).
 /// `accounts.list_accounts` tells, while no AI account is an engine, whether there are AI accounts
 /// with no model on (task S.26), and names the mail accounts Access offers; the calendars, task
 /// lists, inbox sources and the tools (`tools.list_tools`) are the other things it offers to
@@ -176,10 +165,9 @@ pub struct State {
     /// Voice: what "Say something" is doing and what it heard. General, Bots and History read
     /// everything from [`Data`] and keep nothing.
     pub voice: voice::State,
-    /// Access: whose rights are open, the first start's choice, the editor's draft.
+    /// Access: whose rights are open, the first start's choice, the editor's draft. Tools keeps
+    /// nothing since task MA.7: it only leads to the control centre.
     pub access: access::State,
-    /// Tools: the header or footer line being typed.
-    pub tools: tools::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -206,13 +194,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::Open(access::ID)
         }
         Message::Bots(message) => bots::update(message, data),
-        // "Allow it under Access" at a tool is about the assistant's own rights, whichever bot
-        // Access showed last (issue #225 after task S.34).
-        Message::Tools(tools::Message::Access) => {
-            show_access(state, None);
-            Action::Open(access::ID)
-        }
-        Message::Tools(message) => tools::update(&mut state.tools, message, data),
+        Message::Tools(message) => tools::update(message),
         Message::Voice(message) => voice::update(&mut state.voice, message, data),
         Message::History(message) => history::update(message, data),
     }
@@ -228,7 +210,7 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
         access::ID => wrap(access::page(&state.access, data, class), Message::Access),
         "profile" => wrap(profile::page(&state.profile, data, class), Message::Profile),
         "bots" => wrap(Page::new(bots::view(data, class)), Message::Bots),
-        "tools" => wrap(Page::new(tools::view(&state.tools, data, class)), Message::Tools),
+        "tools" => wrap(Page::new(tools::view()), Message::Tools),
         "voice" => wrap(Page::new(voice::view(&state.voice, data)), Message::Voice),
         "history" => wrap(Page::new(history::view(data)), Message::History),
         _ => wrap(Page::new(general::view(data)), Message::General),
@@ -289,13 +271,10 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         .or_else(|| access::overlay(&state.access, data).map(|dialog| dialog.map(Message::Access)))
 }
 
-/// What Escape means in these sections: close the question, stop typing a note, drop a header or
-/// footer being typed. `None` leaves it to the host, which closes the settings.
+/// What Escape means in these sections: close the question, stop typing a note. `None` leaves it to
+/// the host, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
-    profile::escape(&state.profile)
-        .map(Message::Profile)
-        .or_else(|| access::escape(&state.access).map(Message::Access))
-        .or_else(|| tools::escape(&state.tools).map(Message::Tools))
+    profile::escape(&state.profile).map(Message::Profile).or_else(|| access::escape(&state.access).map(Message::Access))
 }
 
 /// What stands between the window and closing these settings: the question a section must ask
@@ -581,10 +560,10 @@ mod tests {
         assert!(below, "the bot's name follows Access in the path");
         show_access(&mut state, None);
         assert!(access::open_bot(&state.access, &data).is_none());
-        // A tool's "Allow it under Access" opens it at the assistant, not at the bot shown last.
+        // Tools only leads to the control centre (task MA.7), whichever bot Access showed last.
         let _ = update(&mut state, Message::Bots(bots::Message::Access(bot.clone())), &data);
-        assert_eq!(update(&mut state, Message::Tools(tools::Message::Access), &data), Action::Open(access::ID));
-        assert!(access::open_bot(&state.access, &data).is_none());
+        let tools = update(&mut state, Message::Tools(tools::Message::Open), &data);
+        assert_eq!(tools, Action::ControlCentre(tools::CONTROL_CENTRE_SECTION.to_string()));
 
         // A change of rights waits for the clock; leaving the settings sends it now.
         let level = access::Message::Rights(crate::rights::Message::Level(

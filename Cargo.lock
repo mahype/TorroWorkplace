@@ -7138,6 +7138,7 @@ dependencies = [
  "pulldown-cmark",
  "reqwest",
  "resvg",
+ "rfd",
  "rmcp",
  "rusqlite",
  "rustls",

@@ -5234,16 +5234,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("template|Letter", "Brief"),
     ("template|Report", "Bericht"),
     ("template|Note", "Notiz"),
-    // Assistant › Tools (WZ.6, #225)
+    // The PDF tool's settings (WZ.6, #225), in the control centre since MA.7
     ("No tools", "Keine Werkzeuge"),
     ("Make PDFs", "PDFs erstellen"),
     ("The assistant may use it", "Der Assistent darf es verwenden"),
     ("The assistant may not use it", "Der Assistent darf es nicht verwenden"),
-    ("Allow it under Access", "Unter Zugriff erlauben"),
-    (
-        "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose the folder and the logos.",
-        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet und unter Zugriff erlaubt ist. Nur du kannst es einschalten und den Ordner und die Logos wählen.",
-    ),
     ("Desktop", "Schreibtisch"),
     ("Use desktop", "Schreibtisch verwenden"),
     ("Choose…", "Wählen…"),
@@ -5751,4 +5746,33 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The tool “{name}” isn't offered: its name doesn't fit the rules for tool names (at most {n} characters with the server's id: letters, digits, _ and -).",
         "Das Werkzeug „{name}“ wird nicht angeboten: Sein Name passt nicht zu den Regeln für Werkzeugnamen (höchstens {n} Zeichen mit der Kennung des Servers: Buchstaben, Ziffern, _ und -).",
     ),
+    // Control centre › MCP connections, and the assistant's Tools that moved there (MA.7, #302)
+    ("MCP connections", "MCP-Anbindungen"),
+    ("Built-in tools", "Eingebaute Werkzeuge"),
+    (
+        "A tool works only while it is on here and a client's rights allow it. Only you can switch it on and choose the folder and the logos.",
+        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet ist und die Rechte eines Clients es erlauben. Nur du kannst es einschalten und den Ordner und die Logos wählen.",
+    ),
+    ("Allow it in the assistant under Access", "Im Assistenten unter Zugriff erlauben"),
+    ("PDF templates", "PDF-Vorlagen"),
+    ("Catalog", "Katalog"),
+    (
+        "MCP servers Torro Workplace knows, each in a fixed version. They run as you on this computer.",
+        "MCP-Server, die Torro Workplace kennt, jeder in einer festen Version. Sie laufen mit deinen Rechten auf diesem Rechner.",
+    ),
+    ("The catalog could not be listed", "Der Katalog konnte nicht angezeigt werden"),
+    ("The catalog is empty", "Der Katalog ist leer"),
+    ("No longer in the catalog", "Nicht mehr im Katalog"),
+    ("Your own servers", "Eigene Server"),
+    (
+        "Programs or addresses that speak MCP, added by you. They run as you on this computer.",
+        "Programme oder Adressen, die MCP sprechen, von dir hinzugefügt. Sie laufen mit deinen Rechten auf diesem Rechner.",
+    ),
+    ("The MCP servers could not be listed", "Die MCP-Server konnten nicht angezeigt werden"),
+    ("No servers of your own yet", "Noch keine eigenen Server"),
+    ("Tools to review", "Werkzeuge zu prüfen"),
+    ("Stopped after errors", "Nach Fehlern angehalten"),
+    ("Starting…", "Startet…"),
+    ("Tools moved to the control centre", "Die Werkzeuge sind in die Steuerzentrale umgezogen"),
+    ("Under MCP connections, next to the MCP servers", "Unter MCP-Anbindungen, neben den MCP-Servern"),
 ];

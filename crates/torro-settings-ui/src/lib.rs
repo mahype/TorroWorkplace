@@ -110,8 +110,9 @@ pub struct Data {
     /// The bots (`bots.list_bots`); none from a daemon that has none.
     pub bots: Vec<BotSummary>,
     /// The assistant's own tools (`tools.list_tools`, task WZ.6), each with whether a person
-    /// switched it on. Asked with the app key, so `allowed` is always `true` here; whether the
-    /// assistant may use a tool comes from its client's rights ([`assistant::tools`]).
+    /// switched it on: what Access offers to choose from ([`rights::Known`]). Asked with the app key,
+    /// so `allowed` is always `true` here. They are switched and set in the control centre since
+    /// task MA.7 ([`assistant::tools`] only leads there).
     pub tools: Vec<ToolInfo>,
     /// What the assistant can answer with (`assistant.list_engines`): an AI account, a coding
     /// agent with its own models.
