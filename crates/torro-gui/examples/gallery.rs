@@ -1336,6 +1336,35 @@ impl Gallery {
         items.extend(lists.map(|(name, colour, open)| {
             widgets::sidebar_item(Mark::Ring(p.calendar[colour]), name, Trail::Count(open), false, Msg::Noop)
         }));
+        // A group that folds its children in and out (issue #300): open with its branch, then closed.
+        let mode = shell::SidebarMode::Expanded;
+        let line = p.calendar[0];
+        items.push(widgets::sidebar_group("Areas", None));
+        items.push(widgets::sidebar_fold_in(
+            mode,
+            Mark::Tinted(Icon::Layers, line),
+            "Projects",
+            Trail::Count(7),
+            false,
+            true,
+            Msg::Noop,
+        ));
+        items.push(widgets::sidebar_branch(
+            line,
+            vec![
+                widgets::sidebar_child(Mark::Tinted(Icon::Flag, line), "Launch", Trail::Count(4), true, Msg::Noop),
+                widgets::sidebar_child(Mark::Tinted(Icon::Flag, line), "Website", Trail::Count(3), false, Msg::Noop),
+            ],
+        ));
+        items.push(widgets::sidebar_fold_in(
+            mode,
+            Mark::Tinted(Icon::Archive, p.calendar[1]),
+            "Someday",
+            Trail::Count(2),
+            false,
+            false,
+            Msg::Noop,
+        ));
         items.push(widgets::sidebar_group("Accounts", Some((true, Msg::Noop))));
         items.push(widgets::sidebar_item(Icon::Cloud, "cloud.example.org", Trail::Dot(p.ok), false, Msg::Noop));
         shell::sidebar(

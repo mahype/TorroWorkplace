@@ -1369,10 +1369,18 @@ pub enum Open {
     /// That invoice after its first attachment was saved to its first save target: the hint with
     /// "Show in folder", kept for good.
     AttachmentSaved,
+    /// The mail window's "Waiting for me" open and shown, the group with the most categories of
+    /// the demo (issue #300); set once the catalogue is in.
+    CategoryGroup,
+    /// That group open with its first category shown.
+    Category,
+    /// That group open and shown with the navigation menu open (only the medium and narrow header
+    /// have it).
+    CategoryMenu,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 53] = [
+    const ALL: [(&'static str, Open); 56] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1426,6 +1434,9 @@ impl Open {
         ("attachment-menu", Open::AttachmentMenu),
         ("save-all-menu", Open::SaveAllMenu),
         ("attachment-saved", Open::AttachmentSaved),
+        ("category-group", Open::CategoryGroup),
+        ("category", Open::Category),
+        ("category-menu", Open::CategoryMenu),
     ];
 
     /// The demo page of the backup states, which open the mail window's settings at the first
@@ -2182,6 +2193,8 @@ fn shows_entries(message: &Message) -> bool {
             | Message::OpenFolders
             | Message::DismissAll
             | Message::Switcher(_)
+            | Message::ToggleCategoryGroup(_)
+            | Message::ShowCategoryGroup(_)
     )
 }
 
@@ -2201,6 +2214,9 @@ pub struct App<S> {
     launch: Launch,
     /// The one-time part of `launch.open` (opening a panel) has been done.
     opened: bool,
+    /// The category start states (`--open category-group` …) are in place, once the catalogue
+    /// came (issue #300).
+    categories_staged: bool,
     /// How far "now" is ahead of the clock: zero, or `--now` minus the clock at start, so the
     /// times in the list match the demo data.
     offset: TimeDelta,
@@ -2516,8 +2532,13 @@ pub enum Message {
     AskLane(String),
     /// "Category ▸" on a mail (task E12.8): opens the list of categories.
     AskCategory(String),
-    /// Folds a group of "Categories" in the sidebar open or shut (task E12.8).
+    /// A click on a group of "Categories" (task E12.8, issue #300): a folded group opens and is
+    /// shown, an open group not shown is shown, the open group shown folds
+    /// ([`App::toggle_category_group`]).
     ToggleCategoryGroup(CategoryGroup),
+    /// A click on a group in the navigation menu or the rail (issue #300), where its fold does not
+    /// show: opens and shows the group and closes the menu like every view; never folds it.
+    ShowCategoryGroup(CategoryGroup),
     /// Opens the link held back from a fraudulent mail after all (task E12.9).
     OpenLinkAnyway,
     /// One category picked: the question "Always for this sender?" follows.
@@ -3214,6 +3235,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             opened: false,
             categories: Vec::new(),
             open_groups: std::collections::BTreeSet::new(),
+            categories_staged: false,
             model_ready: false,
             picked_category: None,
             held_link: None,
@@ -3338,7 +3360,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             appearance: Appearance::System,
             system_mode: Mode::None,
             menu: match open {
-                Some(Open::Menu) => Some(Menu::Nav),
+                Some(Open::Menu | Open::CategoryMenu) => Some(Menu::Nav),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
@@ -3557,8 +3579,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Takes the settings `mail_view` and `mail_appearance` (task M9.7), with `--mail-view` and
     /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
     /// again (every tick) leaves the switches as the person set them.
-    fn take_look(&mut self, stored: MailLook) {
+    fn take_look(&mut self, stored: MailLook) -> Task<Message> {
         let look = self.launch.look(stored);
+        if look == self.look {
+            return Task::none();
+        }
+        let hidden_changed = look.hidden_categories != self.look.hidden_categories;
         // Only the mail's view resets the switches: another click on attachments (task M12.6) or
         // other hidden categories leave them as the person set them.
         if (look.format, look.colors) != (self.look.format, self.look.colors) {
@@ -3566,6 +3592,58 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             self.mail_scheme = None;
         }
         self.look = look;
+        // A shown group lists the categories it had when it was shown; one switched off since
+        // must leave its list now, not only after another view (issue #300).
+        if hidden_changed
+            && let View::Category(shown) = &self.view
+            && shown.only.is_none()
+        {
+            let group = shown.group;
+            // No category with mail left: the group is gone from the sidebar (`category_entries`),
+            // and its view would list nothing – or, with no category at all, ask the core for no
+            // filter, every mail under the group's name. Not through `Message::Show`: that one
+            // takes the content area back from open settings, and the category was just switched
+            // off there.
+            let hidden = &self.look.hidden_categories;
+            let listed = self
+                .categories
+                .iter()
+                .any(|held| held.group == group && held.messages > 0 && !hidden.contains(&held.category));
+            if !listed {
+                return self.show_view(View::Overview);
+            }
+            let view = self.category_group_view(group);
+            if view != self.view {
+                self.view = view;
+                return self.load();
+            }
+        }
+        Task::none()
+    }
+
+    /// Shows `view` as a click in the sidebar does: no selection, no detail, no search left from
+    /// the last one, and loads it when it is another.
+    fn show_view(&mut self, view: View) -> Task<Message> {
+        self.close_menus();
+        self.selected_mail.clear();
+        self.mail_anchor = None;
+        self.detail = None;
+        self.reading = false;
+        self.cursor = None;
+        self.pinned_mail = None;
+        // "Act now" again, all of it (task E8.5), and no more Insights (task E8.8b).
+        self.sorting = false;
+        self.filter = None;
+        self.insights.shown = false;
+        // Another view leaves the search: its field starts empty.
+        if view.search().is_none() {
+            self.leave_search_state();
+        }
+        if view != self.view {
+            self.view = view;
+            return self.load();
+        }
+        Task::none()
     }
 
     /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
@@ -3597,8 +3675,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         // The sidebar stays while the settings are open; anything that would show entries again
         // takes the content area back from them (task S.20).
+        let mut message = message;
         if self.settings.is_some() && shows_entries(&message) {
             self.leave_settings();
+            // The highlighted group row brings its list back over the settings, like every other
+            // row; folding it would leave nothing visible changed (issue #300).
+            if let Message::ToggleCategoryGroup(group) = message {
+                message = Message::ShowCategoryGroup(group);
+            }
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
@@ -3627,27 +3711,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Err(err) => self.error = Some(load_failed(&err)),
                 }
             }
-            Message::Show(view) => {
-                self.close_menus();
-                self.selected_mail.clear();
-                self.mail_anchor = None;
-                self.detail = None;
-                self.reading = false;
-                self.cursor = None;
-                self.pinned_mail = None;
-                // "Act now" again, all of it (task E8.5), and no more Insights (task E8.8b).
-                self.sorting = false;
-                self.filter = None;
-                self.insights.shown = false;
-                // Another view leaves the search: its field starts empty.
-                if view.search().is_none() {
-                    self.leave_search_state();
-                }
-                if view != self.view {
-                    self.view = view;
-                    return self.load();
-                }
-            }
+            Message::Show(view) => return self.show_view(view),
             Message::Select(id) => self.select(id),
             Message::Act(id, command) => return self.act(&id, command),
             Message::ToggleInfo(column) => return self.toggle_info(column),
@@ -3702,11 +3766,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return self.open_url(url);
                 }
             }
-            Message::ToggleCategoryGroup(group) => {
-                if !self.open_groups.remove(&group) {
-                    self.open_groups.insert(group);
-                }
-            }
+            Message::ToggleCategoryGroup(group) => return self.toggle_category_group(group),
+            Message::ShowCategoryGroup(group) => return self.show_category_group(group),
             Message::AskCategory(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_category(&id);
@@ -4445,7 +4506,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MailColors(scheme) => self.mail_scheme = Some(scheme),
             Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_link(url),
             Message::HtmlLink(_) => {}
-            Message::MailLook(Ok(look)) => self.take_look(look),
+            Message::MailLook(Ok(look)) => return self.take_look(look),
             // The core may be starting up; keep what the window shows.
             Message::MailLook(Err(_)) => {}
             Message::WindowScale(scale) => self.window_scale = scale,
@@ -5846,6 +5907,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         {
             self.view = View::Folder(FolderView::of(inbox));
             return self.load();
+        }
+        if let Some(staged) = self.stage_categories() {
+            return staged;
         }
         if self.view.is_mail() {
             // The mail of `--message` keeps the cursor, listed or not (task E8.7b).
@@ -8689,13 +8753,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// The group "Categories" of the mail window's sidebar (task E12.8, `docs/kategorien.md`):
-    /// one entry per group of categories with the unread mail it holds, and under an open group
+    /// one branch per group of categories with the unread mail it holds, and in an open group
     /// its categories – only those that occur, so the sidebar shows what is there and nothing
     /// else.
     ///
     /// The whole group is left out until at least one mail has a category: before that it would
-    /// be four empty rows.
-    fn category_entries(&self) -> Vec<NavEntry> {
+    /// be four empty rows. A group row is active while the group itself is shown
+    /// ([`App::category_group_active`]); the rail marks it also for one of its categories.
+    fn category_entries(&self) -> Vec<CategoryBranch> {
         // Only what is there: the catalogue always holds all of them, so a mailbox nothing has
         // been sorted in yet shows no "Categories" at all (task E12.8). A category the person
         // switched off under Settings › Categorization counts as not there either.
@@ -8704,7 +8769,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.launch.kind != Kind::Mail || !self.categories.iter().any(|held| occurs(&held)) {
             return Vec::new();
         }
-        let mut entries = Vec::new();
+        let mut branches = Vec::new();
         for group in CategoryGroup::ALL {
             let of_group: Vec<&CategoryInfo> =
                 self.categories.iter().filter(|held| held.group == group).filter(occurs).collect();
@@ -8712,37 +8777,131 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 continue;
             }
             let unread: u32 = of_group.iter().map(|held| held.unread).sum();
-            let view = View::Category(mail::CategoryView::of_group(group, &self.categories));
             let open = self.open_groups.contains(&group);
             // The group's colour, as the calendar's dots carry theirs: the sidebar is where the
-            // four colours are learnt.
+            // four colours are learnt. The line of its branch takes it too (issue #300).
             let (mark, at) = mail::group_mark(group);
-            entries.push(NavEntry {
-                mark: Mark::Tinted(mark, self.category_colour(at)),
+            let line = self.category_colour(at);
+            let entry = NavEntry {
+                mark: Mark::Tinted(mark, line),
                 label: torro_core::category::group_label(group).to_string(),
                 count: (unread > 0).then_some(unread as usize),
-                active: view == self.view,
-                view,
+                active: self.category_group_active(group),
+                view: self.category_group_view(group),
                 target: Target::Fold(group),
-            });
-            if !open {
-                continue;
-            }
-            for held in of_group {
-                let view = View::Category(mail::CategoryView::of_category(held));
-                entries.push(NavEntry {
-                    mark: Mark::Tinted(mail::category_symbol(held.icon), self.category_colour(at)),
-                    label: held.label.clone(),
-                    // The number is what waits, as every other entry's is; the entry itself
-                    // stands as long as the category occurs.
-                    count: (held.unread > 0).then_some(held.unread as usize),
-                    active: view == self.view,
-                    view,
-                    target: Target::View,
-                });
-            }
+            };
+            let categories = if open {
+                of_group
+                    .into_iter()
+                    .map(|held| {
+                        let view = View::Category(mail::CategoryView::of_category(held));
+                        NavEntry {
+                            mark: Mark::Tinted(mail::category_symbol(held.icon), line),
+                            label: held.label.clone(),
+                            // The number is what waits, as every other entry's is; the entry
+                            // itself stands as long as the category occurs.
+                            count: (held.unread > 0).then_some(held.unread as usize),
+                            active: view == self.view,
+                            view,
+                            target: Target::View,
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            branches.push(CategoryBranch { group: entry, open, line, categories });
         }
-        entries
+        branches
+    }
+
+    /// The view of the whole `group` (issue #300): the mail of every category the catalogue puts
+    /// in it, except those switched off under Settings › Categorization – the group lists exactly
+    /// the categories that could stand under it, so hidden mail does not come back through it.
+    fn category_group_view(&self, group: CategoryGroup) -> View {
+        let hidden = &self.look.hidden_categories;
+        let catalogue: Vec<CategoryInfo> =
+            self.categories.iter().filter(|held| !hidden.contains(&held.category)).cloned().collect();
+        View::Category(mail::CategoryView::of_group(group, &catalogue))
+    }
+
+    /// The whole `group` is shown, not one of its categories. Compared by the group, not by the
+    /// view's list of categories: the catalogue comes anew with every load, and a changed list
+    /// must not make a shown group a stranger (the second click would load it instead of folding).
+    fn category_group_active(&self, group: CategoryGroup) -> bool {
+        matches!(&self.view, View::Category(shown) if shown.group == group && shown.only.is_none())
+    }
+
+    /// The `group` or one of its categories is shown: what the rail marks, which lists no
+    /// categories.
+    fn category_group_shown(&self, group: CategoryGroup) -> bool {
+        matches!(&self.view, View::Category(shown) if shown.group == group)
+    }
+
+    /// What a click on the row of `group` does (issue #300): a folded group opens and is shown; an
+    /// open group not shown (one of its categories or another view is) is shown; the open group
+    /// shown folds, and the list stays as it is.
+    fn toggle_category_group(&mut self, group: CategoryGroup) -> Task<Message> {
+        let active = self.category_group_active(group);
+        if self.open_groups.contains(&group) && active {
+            self.open_groups.remove(&group);
+            return Task::none();
+        }
+        self.open_groups.insert(group);
+        if active {
+            return Task::none();
+        }
+        self.update(Message::Show(self.category_group_view(group)))
+    }
+
+    /// A click on `group` where its fold does not show – the navigation menu and the rail (issue
+    /// #300): it opens and is shown, and the menu closes like for every view. Folding there would
+    /// change nothing to see, only what the expanded sidebar shows later.
+    fn show_category_group(&mut self, group: CategoryGroup) -> Task<Message> {
+        self.open_groups.insert(group);
+        // Shown already: as a click on any shown view, without loading it again for a catalogue
+        // that came anew since (decision 7).
+        if self.category_group_active(group) {
+            return self.show_view(self.view.clone());
+        }
+        self.update(Message::Show(self.category_group_view(group)))
+    }
+
+    /// The group the category start states open (`--open category-group`, `category`,
+    /// `category-menu`): the one with the most categories that hold mail, the first of them on a
+    /// tie – "Waiting for me" in the demo.
+    fn staged_category_group(&self) -> Option<CategoryGroup> {
+        let hidden = &self.look.hidden_categories;
+        let held = |group: CategoryGroup| {
+            let occurs = |held: &&CategoryInfo| held.messages > 0 && !hidden.contains(&held.category);
+            self.categories.iter().filter(|held| held.group == group).filter(occurs).count()
+        };
+        let most = CategoryGroup::ALL.into_iter().map(held).max().filter(|most| *most > 0)?;
+        CategoryGroup::ALL.into_iter().find(|group| held(*group) == most)
+    }
+
+    /// Puts the category start states in place once the catalogue is in; the window then loads
+    /// the view they show. Only once, so a group folded afterwards stays folded.
+    fn stage_categories(&mut self) -> Option<Task<Message>> {
+        let open = self.launch.open?;
+        if self.categories_staged || !matches!(open, Open::CategoryGroup | Open::Category | Open::CategoryMenu) {
+            return None;
+        }
+        let group = self.staged_category_group()?;
+        let view = if open == Open::Category {
+            let hidden = &self.look.hidden_categories;
+            let first = self
+                .categories
+                .iter()
+                .find(|held| held.group == group && held.messages > 0 && !hidden.contains(&held.category))?;
+            View::Category(mail::CategoryView::of_category(first))
+        } else {
+            self.category_group_view(group)
+        };
+        self.categories_staged = true;
+        self.open_groups.insert(group);
+        self.view = view;
+        Some(self.load())
     }
 
     /// A link of the mail being read (task E12.9). From a mail the model called a fraud it is
@@ -8933,11 +9092,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let mut items: Vec<Element<'a, Message>> =
             if self.mail_only { Vec::new() } else { views.into_iter().map(row).collect() };
         // What the mail is (task E12.8): the four groups, with the categories of an open one
-        // under it. The group appears only once at least one mail has a category.
+        // indented under it (issue #300). The group appears only once at least one mail has a
+        // category.
         let categories = self.category_entries();
         if !categories.is_empty() {
             items.push(widgets::sidebar_group_in(mode, tr("Categories"), None));
-            items.extend(categories.into_iter().map(row));
+            for branch in categories {
+                items.extend(self.category_rows(mode, branch));
+            }
         }
         let smart = self.smart_entries();
         if !smart.is_empty() {
@@ -8997,6 +9159,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         shell::sidebar(head, items, footer)
     }
 
+    /// The rows of one group of "Categories" in the sidebar in `mode` (issue #300): the group as a
+    /// row that folds, and while it is open its categories in a branch with the group's line. The
+    /// rail lists no categories, so there the group is marked also while one of them is shown.
+    fn category_rows<'a>(&self, mode: SidebarMode, branch: CategoryBranch) -> Vec<Element<'a, Message>> {
+        let CategoryBranch { group: entry, open, line, categories } = branch;
+        let (active, message) = match (mode, entry.target) {
+            (SidebarMode::Rail, Target::Fold(group)) => {
+                (self.category_group_shown(group), Message::ShowCategoryGroup(group))
+            }
+            _ => (entry.active, entry.message()),
+        };
+        let trail = entry.trail();
+        let mut rows = vec![widgets::sidebar_fold_in(mode, entry.mark, entry.label, trail, active, open, message)];
+        if mode == SidebarMode::Expanded && !categories.is_empty() {
+            let children = categories
+                .into_iter()
+                .map(|e| {
+                    let (trail, message) = (e.trail(), e.message());
+                    widgets::sidebar_child(e.mark, e.label, trail, e.active, message)
+                })
+                .collect();
+            rows.push(widgets::sidebar_branch(line, children));
+        }
+        rows
+    }
+
     /// The navigation menu of the medium and narrow layouts: the sidebar's rows as a menu.
     fn nav_menu(&self) -> Element<'_, Message> {
         let (views, sources) = self.nav_entries();
@@ -9009,9 +9197,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if !self.mail_only {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
+        // The groups, and the categories of an open one nested under it (issue #300).
         let categories = self.category_entries();
         if !categories.is_empty() {
-            sections.push(MenuSection::titled(tr("Categories"), categories.into_iter().map(item).collect()));
+            let entries = categories
+                .into_iter()
+                .flat_map(|branch| {
+                    // Folding shows nothing in the menu: its group only shows and opens.
+                    let target = branch.group.target;
+                    let children = branch.categories.into_iter().map(|e| item(e).nested());
+                    let mut group = item(branch.group);
+                    if let Target::Fold(of) = target {
+                        group.on_press = Message::ShowCategoryGroup(of);
+                    }
+                    std::iter::once(group).chain(children).collect::<Vec<_>>()
+                })
+                .collect();
+            sections.push(MenuSection::titled(tr("Categories"), entries));
         }
         let smart = self.smart_entries();
         if !smart.is_empty() {
@@ -9574,6 +9776,19 @@ struct MailGroup {
     rows: Vec<NavEntry>,
 }
 
+/// A group of "Categories" with its categories (issue #300): the sidebar draws the group as a row
+/// that folds and its categories indented in a branch, the menu the categories nested under it.
+struct CategoryBranch {
+    /// The group's row; its target is [`Target::Fold`].
+    group: NavEntry,
+    /// The group is open, its categories listed.
+    open: bool,
+    /// The group's colour, for the line of its branch.
+    line: iced::Color,
+    /// The categories that occur, while the group is open; else none.
+    categories: Vec<NavEntry>,
+}
+
 /// A row of the sidebar and the navigation menu.
 struct NavEntry {
     mark: Mark,
@@ -9595,8 +9810,8 @@ enum Target {
     ToSort,
     /// The hub's Insights (task E8.8b): what the inbox counted, not a view of entries.
     Insights,
-    /// A group of mail categories that folds open and shut (task E12.8): a click lists its
-    /// categories under it instead of showing the group.
+    /// A group of mail categories that folds open and shut (task E12.8): a click opens and shows
+    /// the group, or folds the group already shown (issue #300, [`App::toggle_category_group`]).
     Fold(CategoryGroup),
 }
 
@@ -13786,13 +14001,308 @@ mod tests {
         let mut app = mail_window(Density::Comfortable, &[]);
         let held = app.categories.iter().find(|held| held.messages > 0).expect("a category in the demo").clone();
         app.open_groups.insert(held.group);
-        let entries = app.category_entries();
-        let child = entries.iter().find(|entry| entry.label == held.label).expect("the open group's category");
+        let branches = app.category_entries();
+        let branch = branches.iter().find(|branch| branch.group.target == Target::Fold(held.group)).expect("its group");
+        assert!(branch.open);
+        let colour = branch.line;
+        let child =
+            branch.categories.iter().find(|entry| entry.label == held.label).expect("the open group's category");
         assert!(matches!(
             child.mark,
-            Mark::Tinted(icon, _) if icon == mail::category_symbol(held.icon)
+            Mark::Tinted(icon, tint) if icon == mail::category_symbol(held.icon) && tint == colour
         ));
+        assert!(matches!(branch.group.mark, Mark::Tinted(_, tint) if tint == colour), "one colour for the group");
         let _ = app.category_menu();
+    }
+
+    /// The groups "Categories" lists in the demo's mail window, top to bottom.
+    fn listed_groups(app: &App<DemoSource>) -> Vec<CategoryGroup> {
+        let group = |branch: CategoryBranch| match branch.group.target {
+            Target::Fold(group) => Some(group),
+            _ => None,
+        };
+        app.category_entries().into_iter().filter_map(group).collect()
+    }
+
+    /// A category of `group` that holds mail in the demo.
+    fn occurring_in(app: &App<DemoSource>, group: CategoryGroup) -> CategoryInfo {
+        let held = app.categories.iter().find(|held| held.group == group && held.messages > 0);
+        held.expect("the demo has mail in every group").clone()
+    }
+
+    /// The branch of `group` in "Categories".
+    fn branch_of(app: &App<DemoSource>, group: CategoryGroup) -> CategoryBranch {
+        let branch = app.category_entries().into_iter().find(|branch| branch.group.target == Target::Fold(group));
+        branch.expect("the group is listed")
+    }
+
+    /// Issue #300 (task E17.2): a click on a folded group opens it and shows the mail of all its
+    /// categories; a click on the open group shown folds it and keeps the list; from one of its
+    /// categories a click shows the group again and keeps it open. For each of the four groups.
+    #[test]
+    fn a_click_on_a_group_opens_and_shows_it_then_folds_it() {
+        let app = mail_window(Density::Compact, &[]);
+        assert_eq!(listed_groups(&app), CategoryGroup::ALL, "the demo has mail in all four groups");
+        for group in CategoryGroup::ALL {
+            let mut app = mail_window(Density::Compact, &[]);
+            assert!(!app.open_groups.contains(&group));
+            // (a) Folded: open it and show it.
+            let task = app.update(Message::ToggleCategoryGroup(group));
+            assert!(task.units() > 0, "{group:?}: its mail is loaded");
+            assert!(app.open_groups.contains(&group), "{group:?}: open");
+            assert_eq!(app.view, app.category_group_view(group));
+            assert!(app.category_group_active(group) && app.category_group_shown(group));
+            load(&mut app);
+            let View::Category(shown) = &app.view else { panic!("{group:?}: the group's view") };
+            let categories = shown.categories();
+            assert!(!app.messages.is_empty(), "{group:?}: its mail is listed");
+            assert!(
+                app.messages.iter().all(|m| m.category.is_some_and(|held| categories.contains(&held.category))),
+                "{group:?}: only mail of its categories"
+            );
+            assert!(branch_of(&app, group).group.active, "{group:?}: the group row is the active one");
+            // (c) Open and shown: fold it, the list stays.
+            let (view, listed) = (app.view.clone(), app.messages.len());
+            let task = app.update(Message::ToggleCategoryGroup(group));
+            assert_eq!(task.units(), 0, "{group:?}: nothing is loaded");
+            assert!(!app.open_groups.contains(&group), "{group:?}: folded");
+            assert_eq!((app.view.clone(), app.messages.len()), (view.clone(), listed), "{group:?}: the list stays");
+            assert!(branch_of(&app, group).categories.is_empty(), "{group:?}: a folded group lists no categories");
+            // Folded but shown: only open it again, nothing to load.
+            assert_eq!(app.update(Message::ToggleCategoryGroup(group)).units(), 0);
+            assert!(app.open_groups.contains(&group) && app.view == view);
+            // (b) One of its categories shown: the group is shown again and stays open.
+            let held = occurring_in(&app, group);
+            let _ = app.update(Message::Show(View::Category(mail::CategoryView::of_category(&held))));
+            load(&mut app);
+            let task = app.update(Message::ToggleCategoryGroup(group));
+            assert!(task.units() > 0, "{group:?}: the group is loaded again");
+            assert!(app.open_groups.contains(&group), "{group:?}: still open");
+            assert!(app.category_group_active(group), "{group:?}: the group is shown");
+        }
+    }
+
+    /// Issue #300 (task E17.2, d): a click on a category shows only it; its group stays open, the
+    /// group row is no longer active, but the group counts as shown (the rail marks it).
+    #[test]
+    fn a_click_on_a_category_shows_only_it_and_keeps_its_group_open() {
+        for group in CategoryGroup::ALL {
+            let mut app = mail_window(Density::Compact, &[]);
+            let _ = app.update(Message::ToggleCategoryGroup(group));
+            load(&mut app);
+            let held = occurring_in(&app, group);
+            let _ = app.update(Message::Show(View::Category(mail::CategoryView::of_category(&held))));
+            load(&mut app);
+            assert!(app.messages.iter().all(|m| m.category.is_some_and(|c| c.category == held.category)));
+            assert!(app.open_groups.contains(&group), "{group:?}: the group stays open");
+            assert!(!app.category_group_active(group) && app.category_group_shown(group));
+            let branch = branch_of(&app, group);
+            assert!(!branch.group.active, "{group:?}: the group row is not active");
+            let child = branch.categories.iter().find(|entry| entry.label == held.label).expect("the category");
+            assert!(child.active, "{group:?}: the category row is");
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    /// Issue #300 (task E17.2, c2): whether a group is shown follows the group, not the list of its
+    /// categories – a catalogue that changed since does not turn the second click into a reload.
+    #[test]
+    fn a_shown_group_folds_after_its_catalogue_changed() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let gone = occurring_in(&app, group).category;
+        app.categories.retain(|held| held.category != gone);
+        assert_ne!(app.view, app.category_group_view(group), "the group's view would list other categories now");
+        let view = app.view.clone();
+        assert_eq!(app.update(Message::ToggleCategoryGroup(group)).units(), 0);
+        assert!(!app.open_groups.contains(&group), "folded");
+        assert_eq!(app.view, view);
+    }
+
+    /// Issue #300 (task E17.2, f): a category switched off under Settings › Categorization is no
+    /// part of its group's view.
+    #[test]
+    fn a_hidden_category_is_no_part_of_its_groups_view() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let hidden = occurring_in(&app, group).category;
+        let View::Category(all) = app.category_group_view(group) else { panic!("a category view") };
+        assert!(all.categories().contains(&hidden));
+        app.look.hidden_categories = vec![hidden];
+        let View::Category(shown) = app.category_group_view(group) else { panic!("a category view") };
+        assert!(!shown.categories().contains(&hidden), "the hidden category is left out");
+        assert_eq!(shown.categories().len(), all.categories().len() - 1, "the others stay");
+    }
+
+    /// Issue #300: a category switched off while its group is shown leaves the group's list at
+    /// once – the shown view is made anew and loaded, not kept with the old categories.
+    #[test]
+    fn hiding_a_category_of_the_shown_group_lists_the_group_anew() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let hidden = occurring_in(&app, group).category;
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: vec![hidden],
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored.clone()))).units() > 0, "the group is loaded again");
+        let View::Category(shown) = &app.view else { panic!("still the group") };
+        assert!(!shown.categories().contains(&hidden));
+        assert!(app.category_group_active(group) && app.open_groups.contains(&group));
+        load(&mut app);
+        assert!(app.messages.iter().all(|m| m.category.is_none_or(|held| held.category != hidden)));
+        assert_eq!(app.update(Message::MailLook(Ok(stored))).units(), 0, "the same settings change nothing");
+    }
+
+    /// Issue #300: with every category of the shown group switched off, the group is gone – the
+    /// window goes back to "For me" instead of asking the core with no categories at all (which
+    /// the core reads as no filter: all mail under the group's name).
+    #[test]
+    fn hiding_every_category_of_the_shown_group_goes_back_to_for_me() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let all: Vec<_> = app.categories.iter().filter(|held| held.group == group).map(|held| held.category).collect();
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: all,
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert_eq!(app.view, View::Overview);
+        assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
+    }
+
+    /// Issue #300: switching off the categories of the shown group that hold mail takes the group
+    /// from the sidebar, though its empty ones are left – the window goes back to "For me" too.
+    #[test]
+    fn hiding_the_shown_groups_categories_with_mail_goes_back_to_for_me() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let of_group = app.categories.iter().filter(|held| held.group == group);
+        let with_mail: Vec<_> = of_group.clone().filter(|held| held.messages > 0).map(|held| held.category).collect();
+        assert!(!with_mail.is_empty() && of_group.count() > with_mail.len(), "empty ones are left");
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: with_mail,
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
+        assert_eq!(app.view, View::Overview);
+    }
+
+    /// Issue #300: the last category of the shown group is switched off in the settings, so the
+    /// settings stay open – only the view behind them goes back to "For me".
+    #[test]
+    fn hiding_every_category_of_the_shown_group_keeps_the_settings_open() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_some());
+        let all: Vec<_> = app.categories.iter().filter(|held| held.group == group).map(|held| held.category).collect();
+        let stored = MailLook {
+            format: app.look.format,
+            colors: app.look.colors,
+            hidden_categories: all,
+            click: app.look.click.clone(),
+        };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert_eq!(app.view, View::Overview);
+        assert!(app.settings.is_some(), "the settings stay open");
+    }
+
+    /// Issue #300: a click on the shown group in the menu or the rail does what a click on any shown
+    /// view does – the open mail and the cursor go, the list stays and is not loaded again.
+    #[test]
+    fn showing_the_shown_group_again_clears_the_open_mail() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        load(&mut app);
+        let first = app.messages.first().map(|mail| mail.id.clone()).expect("the group holds mail");
+        let _ = app.update(Message::SelectMail(first));
+        assert!(app.panel_open() && app.cursor.is_some());
+        let shown = app.view.clone();
+        assert_eq!(app.update(Message::ShowCategoryGroup(group)).units(), 0, "nothing is loaded again");
+        assert!(!app.panel_open() && app.cursor.is_none(), "the open mail goes");
+        assert_eq!(app.view, shown);
+    }
+
+    /// Issue #300: with the settings open, a click on the group shown brings its list back instead
+    /// of folding it, as every other row of the sidebar does.
+    #[test]
+    fn a_click_on_the_shown_group_leaves_the_settings() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        assert!(app.settings.is_none(), "the list is back");
+        assert!(app.open_groups.contains(&group), "the group stays open");
+        assert!(app.category_group_active(group));
+    }
+
+    /// Issue #300 (task E17.2, g): the start states for the visual check – "Waiting for me" open and
+    /// shown, its first category shown, and the group with the navigation menu open.
+    #[test]
+    fn the_category_start_states_open_the_group() {
+        let group = CategoryGroup::WaitingForMe;
+        let mut app = mail_window(Density::Compact, &["--open", "category-group"]);
+        load(&mut app);
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        assert!(!app.messages.is_empty(), "the group's mail is listed");
+        let mut app = mail_window(Density::Compact, &["--open", "category"]);
+        load(&mut app);
+        let first = occurring_in(&app, group);
+        assert!(app.open_groups.contains(&group));
+        assert_eq!(app.view, View::Category(mail::CategoryView::of_category(&first)));
+        assert!(app.category_group_shown(group) && !app.category_group_active(group));
+        let mut app = mail_window(Density::Compact, &["--open", "category-menu"]);
+        load(&mut app);
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        assert_eq!(app.menu, Some(Menu::Nav));
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        // From the menu (and the rail, where folding shows nothing) a click on a group shows it and
+        // closes the menu, also on the group already shown – it never folds unseen.
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        assert_eq!(app.menu, None, "the menu closes like for every view");
+        assert!(app.open_groups.contains(&group) && app.category_group_active(group));
+        app.open_groups.remove(&group);
+        let _ = app.update(Message::ToggleNav);
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        assert_eq!(app.menu, None);
+        assert!(app.open_groups.contains(&group), "a folded group shown opens");
+        let other = CategoryGroup::Info;
+        assert!(app.update(Message::ShowCategoryGroup(other)).units() > 0, "another group is loaded");
+        assert!(app.open_groups.contains(&other) && app.category_group_active(other));
+        let _ = app.update(Message::ShowCategoryGroup(group));
+        load(&mut app);
+        // Staged once: a group folded afterwards stays folded over the next load.
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        assert!(!app.open_groups.contains(&group));
     }
 
     #[test]

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mail-Seitenleiste · Kategorien mit Unterkategorien (Issue #300)</title>
+<!--
+  Entwurf für Issue #300: Gruppen der Kategorien klappen auf und zeigen ihre Mail,
+  Unterkategorien eingerückt mit Führungslinie. Werte aus dem Standard-Design (torro-design).
+
+  Aufrufe (für Screenshots ist das Fenster die ganze Seite):
+    ?view=sheet                       Vergleichsbogen aller Zustände (Standard)
+    ?mode=wide|rail|medium|narrow|drawer
+    &theme=dark|light  &line=group|neutral  &state=group|child|closed
+-->
+<style>
+  @font-face { font-family: Inter; src: url("../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf"); font-weight: 400; }
+  @font-face { font-family: Inter; src: url("../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf"); font-weight: 500; }
+  @font-face { font-family: Inter; src: url("../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf"); font-weight: 600; }
+  @font-face { font-family: InterTab; src: url("../../../crates/torro-gui/assets/fonts/InterTabular-Regular.ttf"); font-weight: 400; }
+
+  .dark {
+    --bg: #08090A; --panel: #0F1011; --raised: #141518; --hover: #16171A; --selected: #1C1E22; --menu: #17181B;
+    --text: #EDEEF0; --text2: #B4B8BF; --text3: #8A8F98; --line: rgba(255,255,255,.06); --line-strong: rgba(255,255,255,.10);
+    --scrim: rgba(0,0,0,.62); --accent: #D50C0C;
+    --c0: #4C8DF0; --c1: #CF8A2C; --c2: #2BA39A; --c3: #A99BD0;
+    --shadow: 0 8px 24px rgba(0,0,0,.5);
+  }
+  .light {
+    --bg: #F4F5F6; --panel: #FFFFFF; --raised: #F8F9FA; --hover: #F0F1F3; --selected: #E9EAED; --menu: #FFFFFF;
+    --text: #18191B; --text2: #4F535A; --text3: #62666D; --line: rgba(0,0,0,.07); --line-strong: rgba(0,0,0,.11);
+    --scrim: rgba(0,0,0,.30); --accent: #D50C0C;
+    --c0: #3D77CE; --c1: #B1741F; --c2: #238A82; --c3: #756990;
+    --shadow: 0 8px 24px rgba(0,0,0,.12);
+  }
+  .dark, .light { color: var(--text); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font-family: Inter, sans-serif; font-size: 14px; line-height: 22px; background: #2a2b2e; }
+  svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+  svg.i.sm { width: 14px; height: 14px; }
+  svg.i.chev { width: 12px; height: 12px; color: var(--text3); }
+
+  /* Fenster */
+  .win { display: flex; width: 100vw; height: 100vh; background: var(--bg); color: var(--text); overflow: hidden; position: relative; }
+  .content { flex: 1; min-width: 0; background: var(--panel); border-left: 1px solid var(--line); display: flex; flex-direction: column; }
+  .win.narrow .content { border-left: 0; }
+
+  /* Seitenleiste 240 */
+  .sidebar { width: 240px; flex: none; padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; background: var(--bg); }
+  .head { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; margin-bottom: 10px; }
+  .logo { width: 20px; height: 20px; border-radius: 4px; background: var(--accent); color: #fff; font-weight: 600; font-size: 12px; display: grid; place-items: center; }
+  .head .app { font-weight: 500; }
+  .head .sp { flex: 1; }
+  .head .ib { color: var(--text2); display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; }
+  .head .boxed { border: 1px solid var(--line-strong); }
+  .gtitle { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text3); height: 32px; display: flex; align-items: center; padding: 0 8px; margin-top: 12px; }
+
+  .item { height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 4px; color: var(--text2); white-space: nowrap; position: relative; }
+  .item:hover { background: var(--hover); color: var(--text); }
+  .item.active { background: var(--selected); color: var(--text); }
+  .item .label { overflow: hidden; text-overflow: ellipsis; }
+  .item .count { margin-left: auto; font-family: InterTab, Inter, sans-serif; font-size: 13px; line-height: 18px; color: var(--text3); }
+  .item .chev { margin-left: -4px; }
+
+  /* Unterkategorien: eingerückt um Icon + Abstand (24), Linie mittig unter dem Gruppen-Icon (16) */
+  .branch { position: relative; padding-left: 24px; display: flex; flex-direction: column; gap: 2px; }
+  .branch::before { content: ""; position: absolute; left: 15.5px; top: 0; bottom: 0; width: 1px; background: var(--branch-line); }
+  .line-neutral .branch::before { background: var(--line-strong); }
+
+  /* Leiste 60 */
+  .rail { width: 60px; flex: none; padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; background: var(--bg); }
+  .rail .item { justify-content: center; padding: 0; }
+  .rail .head { justify-content: center; padding: 0; }
+  .rail .sep { height: 1px; background: var(--line); margin: 8px 4px; flex: none; }
+  .tip { position: absolute; left: 52px; top: 50%; transform: translateY(-50%); background: var(--menu); border: 1px solid var(--line-strong); border-radius: 4px; box-shadow: var(--shadow); padding: 4px 8px; display: flex; gap: 12px; font-size: 13px; line-height: 18px; color: var(--text); z-index: 5; white-space: nowrap; }
+  .tip .n { color: var(--text3); font-family: InterTab, Inter, sans-serif; }
+
+  /* Kopfleiste und Liste */
+  .header { height: 64px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 24px; border-bottom: 1px solid var(--line); }
+  .header .title { font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .header .title.menu { padding: 0 8px; margin-left: -8px; height: 36px; border-radius: 4px; background: var(--selected); }
+  .header .quiet { color: var(--text3); }
+  .header .sp { flex: 1; }
+  .btn { height: 36px; padding: 0 12px; border-radius: 4px; font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.ghost { color: var(--text2); }
+  .list { flex: 1; overflow: hidden; max-width: 720px; }
+  .row { height: 100px; display: flex; align-items: center; gap: 12px; padding: 0 24px; border-bottom: 1px solid var(--line); }
+  .av { width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 13px; font-weight: 500; color: var(--text); background: var(--raised); border: 1px solid var(--line-strong); }
+  .cell { min-width: 0; flex: 1; }
+  .l1 { display: flex; gap: 6px; align-items: baseline; white-space: nowrap; }
+  .l1 b { font-weight: 500; }
+  .l1 .dom { color: var(--text3); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+  .l1 .t { margin-left: auto; color: var(--text3); font-size: 13px; font-family: InterTab, Inter, sans-serif; }
+  .l2, .l3 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .l3 { color: var(--text3); display: flex; align-items: center; gap: 6px; }
+  .l3 .cat { display: inline-flex; align-items: center; gap: 4px; color: var(--text2); flex: none; }
+  .l3 .pv { overflow: hidden; text-overflow: ellipsis; }
+
+  /* Menü */
+  .menu-card { position: absolute; background: var(--menu); border: 1px solid var(--line-strong); border-radius: 4px; box-shadow: var(--shadow); padding: 4px; width: 248px; z-index: 10; }
+  .menu-card .mt { font-size: 12px; line-height: 16px; font-weight: 500; color: var(--text3); padding: 8px 8px 4px; }
+  .menu-card .mi { height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: 4px; color: var(--text); white-space: nowrap; }
+  .menu-card .mi .dot { width: 6px; height: 6px; border-radius: 3px; background: var(--text2); flex: none; }
+  .menu-card .mi .count { margin-left: auto; color: var(--text3); font-size: 13px; font-family: InterTab, Inter, sans-serif; }
+  .menu-card .mi.child { margin-left: 24px; }
+  .menu-card .mi .chev { margin-left: -4px; }
+  .menu-card .sep { height: 1px; background: var(--line); margin: 4px 0; }
+
+  .scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 8; }
+  .drawer { position: absolute; left: 0; top: 0; bottom: 0; z-index: 9; box-shadow: var(--shadow); display: flex; }
+  .drawer .sidebar { height: 100%; }
+
+  /* Vergleichsbogen */
+  .sheet { padding: 32px; color: #e8e9eb; font-family: Inter, sans-serif; background: #1f2023; min-height: 100%; }
+  .sheet h1 { font-size: 22px; line-height: 28px; font-weight: 600; margin: 0 0 6px; }
+  .sheet p.lead { margin: 0 0 24px; color: #b4b8bf; max-width: 90ch; }
+  .sheet h2 { font-size: 14px; font-weight: 600; margin: 28px 0 10px; color: #edeef0; }
+  .cards { display: flex; flex-wrap: wrap; gap: 20px; }
+  .card { display: flex; flex-direction: column; gap: 8px; }
+  .card .cap { font-size: 12px; line-height: 16px; color: #b4b8bf; max-width: 260px; }
+  .card .frame { border-radius: 6px; overflow: hidden; border: 1px solid #3a3c41; position: relative; }
+  .card .frame .sidebar { height: auto; }
+  .card .frame .rail { height: 560px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const ICONS = {"inbox": "<polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\" /> <path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\" />", "info": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"M12 16v-4\" /> <path d=\"M12 8h.01\" />", "clock": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <polyline points=\"12 6 12 12 16 14\" />", "circle-check": "<circle cx=\"12\" cy=\"12\" r=\"10\" /> <path d=\"m9 12 2 2 4-4\" />", "user-check": "<path d=\"M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2\" /> <circle cx=\"9\" cy=\"7\" r=\"4\" /> <polyline points=\"16 11 18 13 22 9\" />", "text-quote": "<path d=\"M17 6H3\" /> <path d=\"M21 12H8\" /> <path d=\"M21 18H8\" /> <path d=\"M3 12v6\" />", "shield-alert": "<path d=\"M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z\" /> <path d=\"M12 8v4\" /> <path d=\"M12 16h.01\" />", "message-circle": "<path d=\"M7.9 20A9 9 0 1 0 4 16.1L2 22Z\" />", "list-todo": "<rect x=\"3\" y=\"5\" width=\"6\" height=\"6\" rx=\"1\" /> <path d=\"m3 17 2 2 4-4\" /> <path d=\"M13 6h8\" /> <path d=\"M13 12h8\" /> <path d=\"M13 18h8\" />", "send": "<path d=\"M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z\" /> <path d=\"m21.854 2.147-10.94 10.939\" />", "square-check": "<rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" /> <path d=\"m9 12 2 2 4-4\" />", "calendar-days": "<path d=\"M8 2v4\" /> <path d=\"M16 2v4\" /> <rect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\" /> <path d=\"M3 10h18\" /> <path d=\"M8 14h.01\" /> <path d=\"M12 14h.01\" /> <path d=\"M16 14h.01\" /> <path d=\"M8 18h.01\" /> <path d=\"M12 18h.01\" /> <path d=\"M16 18h.01\" />", "mail": "<rect width=\"20\" height=\"16\" x=\"2\" y=\"4\" rx=\"2\" /> <path d=\"m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7\" />", "bell": "<path d=\"M10.268 21a2 2 0 0 0 3.464 0\" /> <path d=\"M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326\" />", "trash-2": "<path d=\"M3 6h18\" /> <path d=\"M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6\" /> <path d=\"M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2\" /> <line x1=\"10\" x2=\"10\" y1=\"11\" y2=\"17\" /> <line x1=\"14\" x2=\"14\" y1=\"11\" y2=\"17\" />", "calendar": "<path d=\"M8 2v4\" /> <path d=\"M16 2v4\" /> <rect width=\"18\" height=\"18\" x=\"3\" y=\"4\" rx=\"2\" /> <path d=\"M3 10h18\" />", "paperclip": "<path d=\"m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48\" />", "folder": "<path d=\"M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z\" />", "settings": "<path d=\"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z\" /> <circle cx=\"12\" cy=\"12\" r=\"3\" />", "search": "<circle cx=\"11\" cy=\"11\" r=\"8\" /> <path d=\"m21 21-4.3-4.3\" />", "square-pen": "<path d=\"M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7\" /> <path d=\"M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z\" />", "chevron-down": "<path d=\"m6 9 6 6 6-6\" />", "chevron-right": "<path d=\"m9 18 6-6-6-6\" />"};
+const q = new URLSearchParams(location.search);
+const icon = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24">${ICONS[n] || ''}</svg>`;
+
+// Beispieldaten: Zahl = Ungelesene (wie heute in der Seitenleiste), Liste zeigt alle Mails.
+const GROUPS = [
+  { key: 'waiting', label: 'Waiting for me', icon: 'user-check', c: 0, kids: [
+    { label: 'Request', icon: 'message-circle', n: 3 }, { label: 'Task', icon: 'list-todo', n: 1 } ] },
+  { key: 'paper', label: 'Paper trail', icon: 'text-quote', c: 1, kids: [
+    { label: 'Invoice received', icon: 'text-quote', n: 2 }, { label: 'Order shipping', icon: 'send', n: 4 },
+    { label: 'Order confirmed', icon: 'square-check', n: 1 }, { label: 'Booking', icon: 'calendar-days', n: 0 } ] },
+  { key: 'info', label: 'Info', icon: 'info', c: 2, kids: [
+    { label: 'Newsletter', icon: 'mail', n: 5 }, { label: 'Service notice', icon: 'bell', n: 2 } ] },
+  { key: 'junk', label: 'Junk', icon: 'shield-alert', c: 3, kids: [ { label: 'Spam', icon: 'trash-2', n: 2 } ] },
+];
+const VIEWS = [ ['inbox', 'For me', 6], ['info', 'Info', 0], ['clock', 'Later', 0], ['circle-check', 'Done', 0] ];
+const SMART = [ ['calendar', 'Invitations'], ['paperclip', 'With attachments'] ];
+const MAILS = [
+  ['AM', 'Amazon', 'amazon.de', '09:41', 'Your order has shipped', 'Order shipping', 'send', 'Arriving Thursday · Track your package with DHL…'],
+  ['DB', 'Deutsche Bahn', 'bahn.de', '08:12', 'Booking confirmation ICE 577', 'Booking', 'calendar-days', 'Your ticket for 28 Oct, Berlin Hbf → München Hbf…'],
+  ['HE', 'Hetzner Online', 'hetzner.com', 'Yesterday', 'Invoice 2026-10-0412', 'Invoice received', 'text-quote', 'Your invoice for October is attached as PDF…'],
+  ['DH', 'DHL Paket', 'dhl.de', 'Yesterday', 'Your parcel is on its way', 'Order shipping', 'send', 'Expected delivery: tomorrow between 10:00 and 13:00…'],
+  ['ST', 'Stadtwerke', 'stadtwerke.de', 'Mon', 'Abschlagsrechnung November', 'Invoice received', 'text-quote', 'Ihre Rechnung steht im Kundenportal bereit…'],
+  ['OT', 'Otto', 'otto.de', 'Mon', 'Order confirmed: 2 items', 'Order confirmed', 'square-check', 'Thank you for your order no. 81-4471…'],
+  ['ZA', 'Zalando', 'zalando.de', 'Sun', 'Your return has arrived', 'Order shipping', 'send', 'We have received your return and will refund…'],
+];
+
+const theme = q.get('theme') || 'dark';
+const lineMode = q.get('line') || 'group';
+const state = q.get('state') || 'group';
+const mode = q.get('mode') || null;
+
+// Zustand: welche Gruppe offen, was aktiv ist.
+function stateOf(s) {
+  if (s === 'child') return { open: ['paper'], active: { group: 'paper', kid: 'Invoice received' } };
+  if (s === 'closed') return { open: [], active: { view: 'For me' } };
+  return { open: ['paper'], active: { group: 'paper', kid: null } };
+}
+
+function item(mark, label, count, active, extra = '') {
+  return `<div class="item ${active ? 'active' : ''}">${mark}<span class="label">${label}</span>${extra}${count ? `<span class="count">${count}</span>` : ''}</div>`;
+}
+const tinted = (n, c, cls = '') => `<span style="color:var(--c${c});display:flex">${icon(n, cls)}</span>`;
+const unread = g => g.kids.reduce((a, k) => a + k.n, 0);
+
+function sidebar(st, tip) {
+  let h = `<div class="sidebar">`;
+  h += `<div class="head"><span class="logo">T</span><span class="app">Mail</span>${icon('chevron-down', 'chev')}<span class="sp"></span><span class="ib">${icon('search')}</span><span class="ib boxed">${icon('square-pen')}</span></div>`;
+  for (const [i, l, n] of VIEWS) h += item(icon(i), l, n, st.active.view === l);
+  h += `<div class="gtitle">Categories</div>`;
+  for (const g of GROUPS) {
+    const open = st.open.includes(g.key);
+    const groupActive = st.active.group === g.key && !st.active.kid;
+    h += `<div style="--branch-line:var(--c${g.c})">`;
+    h += item(tinted(g.icon, g.c), g.label, unread(g), groupActive, icon(open ? 'chevron-down' : 'chevron-right', 'chev'));
+    if (open) {
+      h += `<div class="branch" style="margin-top:2px">`;
+      for (const k of g.kids) h += item(tinted(k.icon, g.c, 'sm'), k.label, k.n, st.active.kid === k.label);
+      h += `</div>`;
+    }
+    h += `</div>`;
+  }
+  h += `<div class="gtitle">Smart views</div>`;
+  for (const [i, l] of SMART) h += item(icon(i), l, 0, false);
+  h += `<div style="height:8px"></div>` + item(icon('folder'), 'Open folders', 0, false);
+  return h + `</div>`;
+}
+
+function rail(st, tip) {
+  let h = `<div class="rail"><div class="head"><span class="logo">T</span></div>`;
+  for (const [i, l, n] of VIEWS) h += item(icon(i), '', 0, st.active.view === l);
+  h += `<div class="sep"></div>`;
+  for (const g of GROUPS) {
+    // In der Leiste nur die Gruppen; aktiv, wenn die Gruppe oder eine ihrer Kategorien gezeigt wird.
+    const active = st.active.group === g.key;
+    const t = tip && g.key === 'paper'
+      ? `<div class="tip">${g.label}<span class="n">${unread(g)}</span></div>` : '';
+    h += `<div class="item ${active ? 'active' : ''}">${tinted(g.icon, g.c)}${t}</div>`;
+  }
+  h += `<div class="sep"></div>`;
+  for (const [i] of SMART) h += item(icon(i), '', 0, false);
+  h += item(icon('folder'), '', 0, false);
+  return h + `</div>`;
+}
+
+function menu(st, left, top) {
+  let h = `<div class="menu-card" style="left:${left}px;top:${top}px">`;
+  for (const [i, l, n] of VIEWS) h += `<div class="mi">${icon(i)}${l}<span class="count">${n || ''}</span>${st.active.view === l ? '<span class="dot"></span>' : ''}</div>`;
+  h += `<div class="sep"></div><div class="mt">Categories</div>`;
+  for (const g of GROUPS) {
+    const open = st.open.includes(g.key);
+    const cur = st.active.group === g.key && !st.active.kid;
+    h += `<div class="mi">${tinted(g.icon, g.c)}${g.label}<span class="count">${unread(g)}</span>${cur ? '<span class="dot"></span>' : ''}</div>`;
+    if (open) for (const k of g.kids)
+      h += `<div class="mi child">${tinted(k.icon, g.c, 'sm')}${k.label}${k.n ? `<span class="count">${k.n}</span>` : '<span class="count"></span>'}${st.active.kid === k.label ? '<span class="dot"></span>' : ''}</div>`;
+  }
+  h += `<div class="sep"></div><div class="mt">Smart views</div>`;
+  for (const [i, l] of SMART) h += `<div class="mi">${icon(i)}${l}</div>`;
+  h += `<div class="sep"></div><div class="mi">${icon('folder')}Open folders</div>`;
+  h += `<div class="sep"></div><div class="mi">${icon('settings')}Settings</div>`;
+  return h + `</div>`;
+}
+
+function content(st, compact, menuButton) {
+  const kid = st.active.kid;
+  const g = GROUPS.find(x => x.key === st.active.group);
+  const title = st.active.view || kid || g.label;
+  const mails = st.active.view ? MAILS.slice(0, 5) : MAILS.filter(m => !kid || m[5] === kid);
+  const sub = kid ? `in ${g.label}` : (g ? `${mails.length} mails · ${g.kids.length} categories` : '');
+  let h = `<div class="content"><div class="header">`;
+  if (menuButton) h += `<span class="title menu">${title}${icon('chevron-down', 'chev')}</span>`;
+  else h += `<span class="title">${title}</span><span class="quiet">${sub}</span>`;
+  h += `<span class="sp"></span>`;
+  h += compact ? `<span class="btn primary">${icon('square-pen', 'sm')}</span>` : `<span class="btn ghost">${icon('search', 'sm')}</span><span class="btn primary">${icon('square-pen', 'sm')}New mail</span>`;
+  h += `</div><div class="list">`;
+  for (const [a, s, d, t, subj, cat, ci, pv] of mails) {
+    const c = GROUPS.find(x => x.kids.some(k => k.label === cat))?.c ?? 1;
+    h += `<div class="row"><div class="av">${a}</div><div class="cell"><div class="l1"><b>${s}</b><span class="dom">${d}</span><span class="t">${t}</span></div><div class="l2">${subj}</div><div class="l3"><span class="cat">${tinted(ci, c, 'sm')}${cat}</span><span class="pv">${pv}</span></div></div></div>`;
+  }
+  return h + `</div></div>`;
+}
+
+function windowHtml(m) {
+  const st = stateOf(state);
+  const cls = `win ${theme} line-${lineMode} ${m === 'narrow' || m === 'drawer' ? 'narrow' : ''}`;
+  if (m === 'wide') return `<div class="${cls}">${sidebar(st)}${content(st, false, false)}</div>`;
+  if (m === 'rail') return `<div class="${cls}">${rail(st, true)}${content(st, false, false)}</div>`;
+  if (m === 'medium') return `<div class="${cls}">${rail(st, false)}${content(st, false, true)}${menu(st, 76, 58)}</div>`;
+  if (m === 'narrow') return `<div class="${cls}">${content(st, true, true)}${menu(st, 16, 58)}</div>`;
+  if (m === 'drawer') return `<div class="${cls}">${content(st, true, true)}<div class="scrim"></div><div class="drawer">${sidebar(st)}</div></div>`;
+}
+
+function sheet() {
+  const card = (cap, inner, t, l) => `<div class="card"><div class="frame ${t} line-${l}" style="background:var(--bg)">${inner}</div><div class="cap">${cap}</div></div>`;
+  let h = `<div class="sheet"><h1>Kategorien in der Mail-Seitenleiste · Entwurf zu Issue #300</h1>
+  <p class="lead">Gruppen mit Chevron hinter dem Namen (wie „Sources ▾“), die Icon-Spalte bleibt bündig mit „For me“ und „Info“. Unterkategorien um Icon + Abstand (24) eingerückt, ihr Icon 14 statt 16, eine 1-px-Linie mittig unter dem Gruppen-Icon bindet sie an die Gruppe. Zahlen = Ungelesene wie bisher; die Liste zeigt alle Mails. Mini und Leiste haben keine Seitenleiste und bleiben unverändert.</p><p class="lead"><b>In der Planung entschieden:</b> Linie in Gruppenfarbe (A1). Klick auf eine zugeklappte Gruppe klappt sie auf und zeigt sie; auf eine offene, nicht gezeigte zeigt sie; auf die offene, gezeigte klappt sie zu (die Liste bleibt). Die Leiste zeigt nur die vier Gruppen. Die Gruppe listet nur die Kategorien, die unter ihr stehen (ausgeblendete nicht).</p>`;
+  for (const t of ['dark', 'light']) {
+    h += `<h2>${t === 'dark' ? 'Dunkel' : 'Hell'}</h2><div class="cards">`;
+    h += card('A1 · Linie in Gruppenfarbe · Gruppe aktiv: Liste zeigt alle Mails von Paper trail', sidebar(stateOf('group')), t, 'group');
+    h += card('A2 · Linie neutral (LINE_STRONG) · Gruppe aktiv', sidebar(stateOf('group')), t, 'neutral');
+    h += card('B · Unterkategorie aktiv: Gruppe bleibt offen, Gruppenzeile nicht mehr aktiv', sidebar(stateOf('child')), t, 'group');
+    h += card('C · Alles zugeklappt: Chevron ▸ zeigt, dass sich die Gruppe öffnen lässt', sidebar(stateOf('closed')), t, 'group');
+    h += card('Leiste 60 · nur die vier Gruppen; Paper trail aktiv, weil „Invoice received“ gezeigt wird; Gruppe und Zahl im Tooltip', rail(stateOf('child'), true), t, 'group');
+    h += `</div>`;
+  }
+  return h + `</div>`;
+}
+
+document.getElementById('root').innerHTML = mode ? windowHtml(mode) : sheet();
+</script>
+</body>
+</html>
