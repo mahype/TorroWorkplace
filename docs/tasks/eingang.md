@@ -3867,6 +3867,127 @@ E16.1 semantische Farbe ── E16.2 Mail-Zeilen und -Karten
   `cargo test --workspace` und `TORRO_LANG=de cargo test --workspace`; vor dem PR zusätzlich
   `scripts/ci-local.sh`.
 
+## E17 Kategorien in der Seitenleiste: Gruppe zeigt ihre Mail, Unterkategorien eingerückt (Issue #300, Plan 2026-10-24)
+
+Entwurf: [kategorien-seitenleiste.html](../prototypes/inbox/kategorien-seitenleiste.html), Bilder in den
+Größenklassen daneben unter `kategorien-seitenleiste/` (`vergleich.png` zeigt alle Zustände hell und dunkel).
+Regeln: [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`.
+Kein neuer Request, kein Katalogeintrag, kein MCP-Tool: Die Mail einer Gruppe listet man schon über
+`mail.search_messages { categories }` (MCP `mail_search_messages`), welche Kategorien zu einer Gruppe gehören, sagt
+`inbox.list_categories`, welche ausgeblendet sind, `settings.get_settings` (`hiddenCategories`). Neu sind nur
+Darstellung und Klickverhalten im Mail-Fenster.
+
+In der Planung entschieden:
+
+1. **Klickregel:** Zugeklappte Gruppe → aufklappen und Gruppe zeigen. Offene Gruppe, die nicht gezeigt wird (eine
+   ihrer Kategorien oder eine andere Ansicht ist aktiv) → Gruppe zeigen, bleibt offen. Offene Gruppe, die gezeigt
+   wird → zuklappen, die Liste bleibt. Klick auf eine Kategorie zeigt nur sie; die Gruppe bleibt offen, ihre Zeile
+   ist nicht mehr aktiv.
+2. **Aussehen ausgeklappt:** Chevron (`ChevronRight`/`ChevronDown`, 12, `TEXT_3`) hinter dem Namen der Gruppe wie
+   bei `sidebar_group`; die Icon-Spalte bleibt bündig mit den anderen Zeilen. Kategorien um `icon::SIZE` +
+   `space::s()` (24) eingerückt, ihr Icon `icon::SIZE_SM` (14) in Gruppenfarbe, Text wie jede Zeile. Eine 1-px-Linie
+   in der **Gruppenfarbe** läuft mittig unter dem Gruppen-Icon über die Höhe der Kategorien.
+3. **Leiste (60):** nur die vier Gruppen, keine Kategorien. Die Gruppe ist aktiv, wenn sie oder eine ihrer
+   Kategorien gezeigt wird; Name und Zahl im Tooltip wie bisher. Klick: aufklappen und zeigen, nie zuklappen
+   (`Message::ShowCategoryGroup`). In der Umsetzung geändert (Review): Zuklappen wäre dort unsichtbar und stünde
+   erst nach `[` überraschend zugeklappt da.
+4. **Menü (Mittel, Schmal):** Gruppen ohne Chevron, die Kategorien einer offenen Gruppe darunter eingerückt mit
+   kleinerem Icon, ohne Linie. Ein Klick auf eine Gruppe zeigt sie und schließt das Menü wie jede Ansicht, auch
+   wenn sie schon gezeigt wird (`Message::ShowCategoryGroup`, klappt nie zu). Schublade = ausgeklappte
+   Seitenleiste. Bei offenen Einstellungen bringt ein Klick auf die Gruppe ihre Liste zurück, statt zuzuklappen.
+5. **Ausgeblendete Kategorien** (Settings › Categorization) gehören nicht zur Gruppenansicht: Die Gruppe listet
+   genau die Kategorien, die unter ihr stehen könnten. Wird eine Kategorie der gezeigten Gruppe ausgeblendet, lädt
+   die Gruppe neu; bleibt keine mit Mail übrig, verschwindet sie aus der Seitenleiste und das Fenster geht zu
+   „For me“, auch bei offenen Einstellungen, die dabei offen bleiben (eine leere Liste hieße beim Dienst „kein
+   Filter“).
+6. Die Bausteine kommen nach `torro-gui` (`torro-design`: fehlende Bausteine nie lokal), nicht ins Mail-Fenster.
+
+```text
+E17.1 Bausteine in torro-gui ── E17.2 Mail-Fenster: Klickregel und Darstellung
+```
+
+### E17.1 Bausteine: Gruppe mit Chevron, eingerückte Zweige, eingerückte Menüeinträge
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/widgets.rs`,
+  `crates/torro-gui/src/shell.rs` (nur Sichtbarkeit von `SIDEBAR_GAP`), `crates/torro-gui/examples/gallery.rs`,
+  `crates/torrotasks/src/detail.rs` (nur die zwei `MenuItem { … }`-Literale), `.claude/skills/torro-design/SKILL.md`
+- `widgets::sidebar_fold_in(mode, mark, label, trail, active, open, on_press)`: Ausgeklappt wie
+  `sidebar_item_in`, dazu nach dem Namen der Chevron (`GROUP_CHEVRON`, `Tone::Text3`) je nach `open`; in der
+  Leiste genau wie `sidebar_item_in` (kein Chevron). Entscheidung 2, 3.
+- `widgets::sidebar_branch(line: Color, rows: Vec<Element>)`: die Zeilen untereinander mit dem Abstand der
+  Seitenleiste (`shell::SIDEBAR_GAP` dafür `pub(crate)`), links um `icon::SIZE + space::s()` eingerückt, davor
+  eine 1-px-Linie in `line` bei `style::ITEM_PADDING.left + icon::SIZE / 2` über die ganze Höhe des Zweigs. Nur
+  ausgeklappt; die Leiste zeigt keine Zweige.
+- `widgets::sidebar_child(mark, label, trail, active, on_press)`: Zeile wie `sidebar_item_in` ausgeklappt, die
+  Marke in `Scale::Small`. Für Zeilen in `sidebar_branch`.
+- `MenuItem` bekommt das Feld `nested: bool` (in `MenuItem::new` `false`) und den Builder `.nested()`.
+  `menu_entry` rückt einen solchen Eintrag um `icon::SIZE + space::s()` ein und zeichnet die Marke in
+  `Scale::Small`. Die zwei Literale in `torrotasks/src/detail.rs` (`priority_menu` und das folgende) bekommen
+  `nested: false`; `torrocalendar` nutzt `..MenuItem::new`, nachgesehen, nichts nachzuziehen.
+- Galerie: in `tasks_sidebar` eine offene Gruppe mit `sidebar_fold_in` + `sidebar_branch` (zwei Kinder, eines
+  aktiv, Linie in einer Kalenderfarbe) und eine zugeklappte.
+- Skill `torro-design`, Abschnitt „Seitenleiste“: ein Satz zu den neuen Bausteinen und den Maßen aus
+  Entscheidung 2.
+- Doc-Kommentare mit `ignore`-Beispiel wie bei den Nachbarn. Keine neuen Nutzertexte.
+- Die Maße stehen in zwei privaten Funktionen (`branch_indent()` = `icon::SIZE + space::s()`,
+  `branch_line_x()` = `style::ITEM_PADDING.left + icon::SIZE / 2`), die `sidebar_branch` und `menu_entry` nutzen:
+  Die Bausteine in `widgets.rs` sind nicht generisch über den Renderer, ein Layout-Test mit dem Null-Renderer wie
+  in `shell.rs` geht hier nicht.
+- **Abnahme:** Unit-Tests in `widgets.rs`: `branch_indent()` und `branch_line_x()` haben die Werte oben, die Linie
+  liegt links der eingerückten Zeilen (`branch_line_x() < branch_indent()`); `MenuItem::new(..).nested()` setzt
+  `nested`, `MenuItem::new` nicht; die neuen Bausteine lassen sich in beiden `SidebarMode` bauen.
+  `cargo run -p torro-gui --example gallery` zeigt die Gruppe.
+  `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
+
+### E17.2 Mail-Fenster: Gruppe zeigt ihre Mail, Unterkategorien eingerückt
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E17.1 · **Dateien:** `crates/torroinbox/src/app.rs`
+- `App::category_group_view(group) -> View`: `View::Category(CategoryView::of_group(group, …))` über den Katalog
+  **ohne** `look.hidden_categories` (Entscheidung 5); daraus baut der Klick die gezeigte Ansicht.
+  `CategoryView` bleibt unverändert.
+- „Gezeigt“ wird nach der Gruppe verglichen, nicht über `==` der ganzen `CategoryView`: Der Katalog kommt mit jedem
+  Laden neu, eine geänderte Kategorienliste darf eine gezeigte Gruppe nicht zu einer fremden Ansicht machen (sonst
+  lädt der zweite Klick neu, statt zuzuklappen). `App::category_group_active(group) -> bool`: `self.view` ist
+  `View::Category` mit dieser `group` und `only == None`. `App::category_group_shown(group) -> bool`: dasselbe ohne
+  die Bedingung an `only` (Gruppe oder eine ihrer Kategorien).
+- `category_entries` liefert statt der flachen Liste je Gruppe einen `CategoryBranch { group: NavEntry, open:
+  bool, line: Color, categories: Vec<NavEntry> }` (`line` = `category_colour(at)`); `categories` nur bei offener
+  Gruppe, sonst leer. `active` der Gruppe = `category_group_active`; in der Leiste `category_group_shown`
+  (Entscheidung 3).
+- `Message::ToggleCategoryGroup(group)` behält den Namen und folgt Regel 1: zugeklappt → in `open_groups`
+  aufnehmen und, wenn nicht `category_group_active`, `category_group_view` zeigen (derselbe Weg wie
+  `Message::Show`); offen und nicht `category_group_active` → zeigen; offen und `category_group_active` → aus
+  `open_groups` nehmen, sonst nichts. Doc-Kommentare von
+  `Message::ToggleCategoryGroup` und `Target::Fold` nachziehen.
+- `App::sidebar`: ausgeklappt je Gruppe `widgets::sidebar_fold_in`, bei offener Gruppe danach
+  `widgets::sidebar_branch(line, …)` mit `widgets::sidebar_child`-Zeilen; in der Leiste nur
+  `sidebar_fold_in` mit `active = category_group_shown(group)`.
+- `App::nav_menu`: Gruppen als `MenuItem`, die Kategorien einer offenen Gruppe als `.nested()` darunter
+  (Entscheidung 4).
+- Startzustände für die Sichtprüfung (eine `--open` je Start): `Open::CategoryGroup` (`--open category-group`)
+  zeigt „Waiting for me“ offen und gezeigt (die Gruppe mit den meisten Kategorien der Demo), `Open::Category`
+  (`--open category`) dessen erste Kategorie, `Open::CategoryMenu` (`--open category-menu`) wie `category-group`
+  mit offenem Navigationsmenü (`Menu::Nav`, nur Mittel und Schmal). Alle drei in `Open::ALL` (Länge anpassen).
+  Gruppe und Ansicht gesetzt, sobald der Katalog geladen ist (dort, wo `self.categories = loaded.categories`
+  steht), nur einmal.
+- Tests in `mod tests`, mit `mail_window(...)`: (a) Klick auf zugeklappte Gruppe öffnet und zeigt die
+  Gruppenansicht, ein Laden ist geschickt; (b) Kategorie aktiv, Klick auf die Gruppe zeigt die Gruppe, bleibt
+  offen; (c) Gruppe offen und gezeigt, Klick klappt zu, `view` unverändert; (d) Klick auf eine Kategorie zeigt nur
+  sie, Gruppe offen, Gruppenzeile nicht aktiv, `category_group_shown` wahr; (c2) gezeigte Gruppe, danach ein
+  Katalog mit anderer Kategorienliste geladen, Klick klappt trotzdem zu; (e) (a)–(c) für jede der vier Gruppen
+  des Demo-Postfachs (`CategoryGroup::ALL`, die Demo hat alle vier – sonst Demo prüfen); (f) eine ausgeblendete
+  Kategorie fehlt in `category_group_view(..).categories()`; (g) `--open category-group` und `--open category`
+  und `--open category-menu` setzen die Zustände. Den Test `category_surfaces_use_the_category_icon_in_its_group_colour` an
+  `CategoryBranch` anpassen. `the_mail_windows_sidebar_lists_its_views_smart_views_and_folders` baut weiter alle
+  Größen.
+- Keine neuen Nutzertexte; nachgesehen, `de.rs` bleibt unverändert.
+- **Abnahme:** Tests oben grün. Sichtprüfung mit Agent `torro-design-review` nach `torro-design` §9:
+  `torroinbox --demo --view mail --open category-group` und `--open category` in allen sechs Größen (Breit
+  ausgeklappt, Mittel mit der Leiste), `--open category-menu` in Mittel und Schmal, hell und dunkel (`--appearance`),
+  Designs `torro`, `compact`, `console` (`--design`); Vergleich mit dem Entwurf. Ohne Hyprland: Sichtprüfung als „nicht möglich“ melden. Dann `cargo fmt --all`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
+  `TORRO_LANG=de cargo test --workspace`, `scripts/design-check.sh`.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

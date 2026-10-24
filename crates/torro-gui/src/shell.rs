@@ -128,7 +128,7 @@ fn switcher_height() -> f32 {
 /// Edge of the app logo in the switcher.
 const LOGO: f32 = 20.0;
 /// Gap between the rows of the sidebar (`torro.css`: `.sidebar{gap:2px}`).
-const SIDEBAR_GAP: f32 = 2.0;
+pub(crate) const SIDEBAR_GAP: f32 = 2.0;
 /// Width of the collapsed sidebar (rail) and of the collapsed action rail of the mail window: the
 /// design's [`size::rail()`] (issue #291), 60 in the standard design – rows as wide as a large control
 /// (40) with 10 at both sides, room for a 16 icon on its hover surface, and the icons sit on the same
