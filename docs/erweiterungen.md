@@ -1,7 +1,8 @@
 # Erweiterungen (Plugins)
 
-Stand: 2026-10-15, Issue #79. **Entscheidungsentwurf.** Die Vorschläge unten sind ausgearbeitet,
-entschieden ist noch nichts; die offenen Entscheidungen stehen am Ende als Fragen.
+Stand: 2026-10-24, Issue #79; MCP-Server sind mit Issue #302 gebaut. **Entscheidungsentwurf** bleibt der
+Rest: Die Vorschläge unten sind ausgearbeitet, entschieden ist für MCP-Server, was im Abschnitt
+„MCP-Server (#302)“ und unter „Entscheidungen“ steht; die übrigen Fragen bleiben offen.
 
 Frage: An welchen Stellen lässt sich die Suite durch Komponenten erweitern, die nicht mit ihr
 ausgeliefert werden, und wie, ohne dass Sicherheit, Stabilität und die Regel „jede Funktion
@@ -114,7 +115,7 @@ Dienst mit ETag; eine Erweiterung erreicht nur ihren eigenen Unterordner.
 |---|---|---|
 | Schlüssel, Rechte, Freigaben, Protokoll ([api.md](api.md)) | gibt es | trägt: eine Erweiterung ist ein Client |
 | `inbox.post_item`, `tasks.save_todo`, `create_task_from_item`, `calendar.save_event` | gibt es | Aufgaben, Termine und Meldungen übergeben geht schon |
-| `torro_ipc::api::Area` (15 feste Bereiche), `Request::operation()` (vollständiges `match`) | geschlossen | keine eigenen Befehle, keine eigenen MCP-Tools |
+| `torro_ipc::api::Area` (17 feste Bereiche, seit #302 mit `extensions`), `Request::operation()` (vollständiges `match`) | geschlossen | keine eigenen Befehle je Erweiterung; die Werkzeuge eines MCP-Servers laufen über `extensions.call_tool` mit Stufe je Server, nicht als Katalogbefehle |
 | `torro_core::app::AppId::ALL` | fest im Code | Erweiterungs-Apps fehlen im Umschalter, in Vorlagen und in `apps.list_apps` |
 | Änderungsmeldungen (`subscribe`) | nur geplant ([api.md](api.md#transport)) | jede Erweiterung müsste selbst abfragen |
 | Design | `torro-gui` nur für Rust/Iced; die API nennt nur die Pakete (`settings.list_designs`) | Erweiterungen in anderen Sprachen bekommen Farben und Schriften nicht |
@@ -131,7 +132,8 @@ Assistent spricht es schon. Für Datenquellen und Fenster-Manager (Punkte 7 und 
 dasselbe Protokoll mit festen Werkzeugnamen statt eines eigenen.
 
 Die Erweiterung ruft umgekehrt die Suite über die API mit ihrem eigenen Schlüssel (wie heute ein
-Script-Client).
+Script-Client). Für MCP-Server aus #302 gilt das nicht: Sie bekommen keinen Schlüssel und rufen Torro nie auf
+(Abschnitt „MCP-Server (#302)“).
 
 ### Arten
 
@@ -212,7 +214,9 @@ In dieser Reihenfolge; jeder Punkt wird nach [api.md](api.md) dreifach geplant.
 | 11 | **Nextcloud als KI-Anbieter** | TaskProcessing im Dienst, Ergebnis per Abfrage | – (Anbieter, kein Befehl) | `ki.md`, offener Punkt 3 |
 | 12 | optional nach Capability | eigene Bereiche `talk`, `deck`, `tables` | ebenso | wie Notizen ([notizen.md](notizen.md)) |
 
-Namen und Zugriff sind Vorschläge; sie werden in der ersten Aufgabe jeder Funktion festgelegt.
+Namen und Zugriff sind Vorschläge; sie werden in der ersten Aufgabe jeder Funktion festgelegt. Für MCP-Server
+gelten die gebauten Namen aus #302 (`extensions.list_extensions`, `extensions.call_tool`, `extensions.install_extension`
+u. a., Abschnitt „MCP-Server (#302)“), nicht die Namen der Zeilen 7 und 8 oben.
 
 ## Sicherheit
 
@@ -297,24 +301,97 @@ Sortiert nach Aufwand und Risiko, von „gibt es schon fast“ bis „großer Um
   Anmeldung träfen den Nutzer. Laut Recherche geht `sync-collection` nur für Kalender und
   Adressbücher, und die Sperre zählt je IP-Adresse. Vor einer Korrektur im Quellcode nachprüfen.
 
-## Offene Entscheidungen
+## MCP-Server (#302)
 
-1. **Protokoll:** MCP für alle Erweiterungen mit Code (Erweiterung als MCP-Server, Dienst als
-   Client), auch für Datenquellen und Fenster-Manager? Vorschlag: ja.
-2. **Feste Schnittstellen öffnen:** `Area`, `Request` und `AppId` bekommen je einen Fall für
-   Erweiterungen (`ext:<id>`, Fensterklassen aus dem Manifest). Das ändert festgelegte
-   Schnittstellen. Einverstanden, und in welcher Form (ein `Area::Extension(id)` oder ein eigener
-   Katalog neben dem festen)?
+Umgesetzt in den Aufgaben MA.1–MA.11 ([tasks/mcp-anbindungen.md](tasks/mcp-anbindungen.md)). Ein MCP-Server ist ein
+fremdes Programm auf dem Rechner (stdio) oder eine Adresse (Streamable HTTP). Der Dienst ist sein MCP-Client: Er
+startet das Programm bei Bedarf, liest seine Werkzeuge und bietet die erlaubten dem Assistenten, seinen Bots und den
+MCP-Clients an. Der Server spricht nie mit Torro, hat keinen eigenen Schlüssel und sieht das App-Passwort nicht.
+
+### Festlegungen
+
+- **Bereich und Stufen:** Der feste Bereich `extensions` (Auflisten, Katalog, Ein- und Ausschalten, Entfernen) steht
+  in den Vorlagen wie jeder Bereich. Die Werkzeuge eines Servers öffnet eine Stufe je Server
+  (`Rights::extensions`: Kennung → Kein Zugriff · Lesen · Lesen und Schreiben · Voll; fehlt = Kein Zugriff). Keine
+  Vorlage öffnet einen Server, auch *Full access* nicht. Ein einzelnes Werkzeug sperrt `ext.<id>.<werkzeug>` in
+  `Rights::denied`. Kein `Area` je Server.
+- **Zugriff je Werkzeug:** nur aus dem Katalog-Eintrag (`Read`, `Write`, `Delete`), ohne Angabe `Delete`. `Admin` gibt
+  es für Werkzeuge nicht; Hinweise des Servers (`readOnlyHint`, `destructiveHint`) zählen nicht.
+- **Namen nach außen:** `ext_<id>_<werkzeug>`, höchstens 64 Zeichen, nur `A–Z`, `a–z`, `0–9`, `_` und `-`. Die Kennung
+  hat `a–z`, `0–9` und `-`, beginnt mit einem Buchstaben und hat höchstens 24 Zeichen. Ein Werkzeug, dessen Name das
+  nicht erfüllt, wird nicht angeboten, und sein Status nennt es.
+- **Zustimmen:** Installieren startet den Server einmal, liest seine Werkzeuge und speichert ihn aus, Status `review`.
+  Erst „Allow tools“ (`extensions.confirm_tools` mit dem Fingerabdruck der gezeigten Liste) merkt sich die Werkzeuge
+  und schaltet den Server ein. Fingerabdruck je Werkzeug: SHA-256 über kanonisches JSON aus Name, Beschreibung und
+  Eingabe-Schema. Meldet der Server später neue oder geänderte Werkzeuge (beim Start oder über
+  `notifications/tools/list_changed`), werden genau diese nicht angeboten, bis ein Mensch zustimmt. Unveränderte
+  laufen weiter, verschwundene fallen weg.
+- **Fremder Text:** Beschreibungen, Schemas und Antworten eines Servers sind `untrusted`, überall. Die Beschreibung
+  eines Werkzeugs beginnt bei Agenten mit „From <Name> (external, untrusted): …“.
+- **Nicht angeboten:** Elicitation, Sampling und Roots. Torro meldet diese Fähigkeiten beim `initialize` nicht an;
+  Sampling und Roots kommen mit #304.
+- **Umgebung des Programms:** leer, dann nur `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL` und `TMPDIR` (unter Windows
+  einige mehr), dann der `PATH` (der Ordner des gefundenen Programms vorn), dann die Variablen des Servers. Gesperrt und
+  beim Installieren mit Fehler abgelehnt: `PATH`, `PATHEXT`, `LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS` u. a.
+  sowie `TORRO_*`. Geheimnisse gehen nur beim Start an genau diesen Server.
+- **Adressen:** nur Streamable HTTP. `https://` ist Pflicht, `http://` nur für `localhost`, `127.0.0.1` und `::1`;
+  keine Weiterleitungen; Anmeldung nur über Header. OAuth kommt als eigenes Issue.
+- **Prozess:** Start bei Bedarf (erster Aufruf, Installieren, Zustimmen), Startzeit höchstens 30 s, beim Installieren
+  und Aktualisieren 180 s. Ein Aufruf höchstens 60 s. Nach 10 Minuten ohne Aufruf beendet. Nach einem Absturz neu beim
+  nächsten Bedarf, höchstens drei Starts in fünf Minuten, dann Status `crashed` bis zum Einschalten. Beenden nimmt den
+  ganzen Prozessbaum mit (Unix: Prozessgruppe; Windows: Job Object). Die Ausgabe (stderr) bleibt im Speicher, die letzten
+  200 Zeilen bzw. 64 KB, und ist nur über „Output“ in der Steuerzentrale lesbar, nie im Protokoll.
+- **Speicher:** `<data>/extensions/extensions.json` (Ordner 0700, Datei 0600), die Geheimnisse im Schlüsselbund unter
+  `ext:<id>:<NAME>`. Ein Server wird in der Steuerzentrale eingerichtet: aus dem eingebauten Katalog, über das Formular
+  oder durch Einfügen eines `mcpServers`-Blocks. Ein Manifest je Erweiterung (oben) ist dafür nicht gebaut.
+- **Katalog:** eingebaut (`assets/extensions/catalog.toml`) mit Time, Sequential Thinking und GitHub. Fehlt eine
+  Voraussetzung (`npx`, `uvx`, Docker), steht das in der Zeile, und der Server lässt sich nicht installieren.
+- **Protokoll und Log** nennen Kennung des Servers, Werkzeugname und Fehlerart, nie Argumente, Antworten oder Werte
+  von Variablen.
+- **Nur aus der Oberfläche:** Installieren, Einschalten, Zustimmen, Aktualisieren, Geheimnisse setzen, Ausgabe lesen
+  (Punkt 10 in [api.md](api.md)). Ausschalten und Entfernen darf ein Agent mit Admin-Schalter und Freigabe.
+
+### Abweichungen von den Festlegungen (MA.1–MA.10)
+
+- **Geheimnisse bei „Update“:** Bei eigenen Servern bleiben gespeicherte Geheimnisse nur bei gleichem Befehl und
+  gleichen Argumenten (stdio) bzw. gleichem Ursprung, also Schema, Host und Port (HTTP). Sonst gehen sie. Bei
+  Katalog-Servern bleiben sie beim Versionswechsel aus dem Katalog.
+- **Sichtbarkeit fremder Schlüssel:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in
+  `list_extensions` und `get_extension` nur Server, für die er eine Stufe hat. Deren Einrichtung ist geschwärzt:
+  Argumente und Klartextwerte stehen als „…“, eine Adresse nur mit ihrem Ursprung. Geheimnisse bleiben
+  „gespeichert“ bzw. „fehlt“. Vollständig sieht sie nur der App-Schlüssel.
+- **Länge der Argumente:** Ein Werkzeugaufruf (`call_tool`) hat höchstens 64 KB Argumente als JSON; darüber `error`.
+- **Höher eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft (etwa von Lesen auf Schreiben),
+  wartet wieder auf Zustimmung.
+- **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` für eine Unterhaltung des Assistenten
+  abgeschaltet, sind auch alle Server für sie aus.
+- **Nicht „nach außen“:** Ein Server-Werkzeug zählt nicht als ausgehend (`Rights::outbound`). Ob es auf Freigabe
+  wartet, entscheidet allein sein Zugriff aus dem Katalog. Die Folgen stehen bei den Rechten in [api.md](api.md).
+- **Hook-Schlüssel:** Hooks haben keinen MCP-Server. `extensions.list_tools` ist für sie leer, `extensions.call_tool`
+  liefert `not-found`.
+- **Keine Liste im Gespräch:** Torros MCP-Server meldet geänderte Werkzeuglisten nicht (kein `list_changed`). Fremde
+  Agenten sehen neue Server-Werkzeuge erst in der nächsten Sitzung.
+- **Oberfläche:** Steuerzentrale › MCP connections hat drei Teile, Built-in tools (mit der Unterseite „PDF templates“),
+  Catalog und Your own servers; jeder Server hat eine eigene Seite. Assistent › Tools zeigt nur noch einen Verweis.
+
+## Entscheidungen und offene Fragen
+
+1. **Protokoll:** **Entschieden (#302):** MCP für Erweiterungen mit Code (Erweiterung als MCP-Server, Dienst als
+   Client). Ob Datenquellen (Punkt 7) und Fenster-Manager (Punkt 8) denselben Weg gehen, bleibt offen, bis sie gebaut
+   werden.
+2. **Feste Schnittstellen öffnen:** **Entschieden (#302):** ein fester Bereich `extensions` und die Stufe je Server in
+   `Rights::extensions`, kein `Area` und kein `Request` je Server. Die Werkzeuge kommen über `extensions.call_tool`
+   mit Kennung. Fensterklassen (`AppId`) bleiben offen.
 3. **Reihenfolge:** Vorschlag `subscribe` → Nextcloud-Lesebefehle (Suche, Kacheln, Links,
    Activity) → Design als Daten → Katalog und Manifest → Apps und Kacheln → Quellen und Anbieter.
    Die Nextcloud-Lesebefehle nützen auch ohne Erweiterungen sofort.
 4. **ExApps:** ganz draußen lassen, oder als gekennzeichnete „Server-Stufe“ zulassen, die über die
    Capabilities erkannt wird und nie Voraussetzung der Basis ist?
-5. **Installieren über die API:** nur aus der Oberfläche (`Never`, wie Konten verbinden) oder für
-   Agenten als `Admin` mit Freigabe? Vorschlag: nur Oberfläche, weil eine Erweiterung Code mitbringt.
-6. **Geheimnisse an Erweiterungen:** Darf der Dienst einer Erweiterung ihr eigenes Geheimnis beim
-   Start übergeben (sie braucht es, um ihren Dienst zu erreichen), oder führt der Dienst auch diese
-   Aufrufe selbst aus?
+5. **Installieren über die API:** **Entschieden (#302):** nur aus der Oberfläche (`Never`); Agenten bekommen weder
+   Installieren noch Zustimmen, auch nicht mit Freigabe.
+6. **Geheimnisse an Erweiterungen:** **Entschieden (#302):** Der Dienst übergibt einem Server sein Geheimnis beim
+   Start, nur an diesen Server. Die Werkzeugaufrufe macht der Dienst als MCP-Client wie sonst; das Geheimnis geht dabei
+   nicht weiter.
 7. **Datenquellen von Dritten** (Punkt 7): wirklich öffnen, oder bauen wir die wichtigen selbst?
 8. **Ablage auf dem Server:** Bleibt `/.torro/<id>/` beim Entfernen liegen (die Daten gehören der
    Person, andere Geräte nutzen sie vielleicht noch), oder fragt die Suite?

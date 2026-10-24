@@ -65,6 +65,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **AI** | Ständiger Abschnitt für KI-Anbieter, ihre Konten und Modelle sowie die Datenregel „Mail to cloud models“. | seit 2026-10-20 |
 | **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
 | **MCP** | Ob Agenten Torro über MCP nutzen dürfen; die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub | #231 (S.35) |
+| **MCP connections** | Was Torro für seine Clients ausführt: die eingebauten Werkzeuge (PDF, mit der Unterseite „PDF templates“), der Katalog fremder MCP-Server und die eigenen Server; je Server eine Seite. Wer einen Server nutzen darf, steht im Rechte-Editor (MCP, Access) | #302 (MA.7–MA.9) |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Fenstermanager, Tasten 1 … 0 mit wählbarem Modifikator, Vorlagen bearbeiten, aktualisieren, löschen, beim Anmelden laden. Strategie je Fenster später; die F1–F10 der alten App sind verworfen. Siehe [Workspaces (#243)](#workspaces-243) | #243 (WS.6), Rest später |
 | **Appearance** | Hell/dunkel, Design-Paket ([design-pakete.md](design-pakete.md)), Zoom; gilt für alle Apps, die Apps verweisen hierher | v1 |
@@ -73,8 +74,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
-Die Seitenleiste hat **eine** Liste: Overview, Accounts, AI, API, MCP, Approvals, Workspaces, Appearance; General
-am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
+Die Seitenleiste hat **eine** Liste: Overview, Accounts, AI, API, MCP, MCP connections (#302), Approvals, Workspaces,
+Appearance; General am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
 Mit #231 ziehen die Rechte von Assistent und Bots in das Fenster des Assistenten. Die Datenregel steht
 seit 2026-10-20 unter AI; „Agents & API“ entfällt.
@@ -132,7 +133,7 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
 
 | App | Abschnitte | kommt heute von |
 |---|---|---|
-| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (eigene Werkzeuge, #225: je Werkzeug Schalter, ob der Assistent es darf mit Verweis auf Access; PDF: Ablage-Ordner, Vorlagen Letter, Report, Note) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
+| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Tools (seit #302 nur ein Verweis auf MCP connections › Built-in tools) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
@@ -240,7 +241,8 @@ agent“ verstand niemand als den Weg zu einem Modell. Aufgaben: S.23–S.26.
 3. **Rechte stehen beim Weg, über den ein Programm kommt** (geändert mit #231; vorher „Rechte stehen zentral“,
    #210). Programme von außen: Steuerzentrale › API (Skripte mit Key) bzw. › MCP (Agenten wie Claude Code).
    Der eigene Assistent und seine Bots: im Fenster des Assistenten, Abschnitt Access. Alle nutzen denselben
-   Rechte-Editor. Bindet die Suite später **externe MCP-Server** ein, steuert man den Zugriff darauf unter MCP.
+   Rechte-Editor. Fremde **MCP-Server** richtet man seit #302 unter MCP connections ein; wer sie nutzen darf, steuert
+man unter MCP, API bzw. Access, je Server mit einer Stufe.
 
 **KI-Konten stehen im eigenen Abschnitt AI** (seit 2026-10-20 direkt nach Accounts). Dort gibt es
 „+ Add“; intern sind es Konten wie bisher (`accounts.json`, Schlüssel im Schlüsselbund). Unter den
@@ -318,6 +320,7 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
 | **AI** | Die Suite ruft KI-Modelle | KI-Anbieter hinzufügen, Modelle an/aus, Datenregel ändern |
 | **API** | Programme nutzen Torro mit Key | API an/aus, Keys anlegen, je Key die Rechte bis auf einzelne Endpunkte |
 | **MCP** | Agenten nutzen Torro über MCP | MCP an/aus, Clients verbinden, je Client die Rechte bis auf einzelne Tools, Hooks |
+| **MCP connections** | Torro nutzt Werkzeuge für seine Clients | eingebaute Werkzeuge, Katalog und eigene MCP-Server; je Server eine Seite (#302) |
 
 ### Accounts
 
@@ -370,6 +373,33 @@ Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24
   den Hook-Client an und schreibt die Hooks, bzw. nimmt beides heraus. Wie die Meldungen der Agenten im
   Eingang erscheinen, bleibt in den Einstellungen des Notification Hub; die Apps brauchen dafür nichts Eigenes.
 
+### MCP connections (#302)
+
+Die Seite „MCP connections“ (`--section connections`, Aufgaben MA.7–MA.9) zeigt, was Torro für seine Clients
+ausführt, außer den eigenen Befehlen. Sie hat drei Teile:
+
+- **Built-in tools:** die eigenen Werkzeuge der Suite, heute PDF. Schalter „Make PDFs“ (`tool_enabled`; einschalten
+  nur ein Mensch), Ablage-Ordner und die Unterseite **„PDF templates“** mit den Vorlagen Letter, Report und Note.
+  Wer ein Werkzeug nutzen darf, steht bei den Clients (Access, API, MCP), nicht hier.
+- **Catalog:** die eingebauten fremden MCP-Server (Time, Sequential Thinking, GitHub) mit Name, Herausgeber, Lizenz,
+  „Experimental“ und, was fehlt (etwa Node.js oder Docker). „Install…“ öffnet einen Dialog mit den Werkzeugen und
+  ihrem Zugriff, verdeckten Feldern für Geheimnisse und dem Hinweis, dass der Server als die Person auf diesem Rechner
+  läuft. Danach zeigt er die Werkzeuge, die er gemeldet hat; erst „Allow tools“ schaltet sie ein.
+- **Your own servers:** Server, die die Person selbst einträgt. „Add server…“ verlangt einen Befehl oder eine Adresse,
+  einen Namen, die Kennung (aus dem Namen vorgeschlagen), Argumente sowie Variablen oder Header; Werte mit „Secret“ gehen
+  in den Schlüsselbund. „Paste configuration“ liest einen `mcpServers`-Block (Format von Claude Desktop); enthält er
+  mehrere Server, wählt man aus.
+
+**Die Seite eines Servers:** Status mit Wort und Symbol, der Schalter an/aus, die Werkzeuge mit Zugriff und Stand
+(„Changed since you allowed it“, mit „Allow tools“), Geheimnisse als „Stored“ bzw. „Missing“ mit „Replace…“, „Output“
+(die letzte Ausgabe zum Kopieren), „Update“, wenn der Katalog eine neuere Version hat, und „Remove…“ mit Rückfrage.
+Wer den Server nutzen darf, sagt der Hinweis „Who may use it: API, MCP and the assistant's Access“; die Stufe je
+Server setzt der Rechte-Editor. Die Seitenleiste markiert den Abschnitt, wenn ein Server auf Zustimmung wartet oder
+nach Fehlern steht.
+
+Die Abweichungen von den Festlegungen (Geheimnisse beim Update, Sichtbarkeit fremder Schlüssel, Hooks ohne Server)
+stehen in [erweiterungen.md](erweiterungen.md#mcp-server-302).
+
 ### Der Rechte-Editor
 
 Ein Editor für API, MCP und Access (Assistent, Bots), in `torro-settings-ui`, damit Steuerzentrale und
@@ -383,6 +413,9 @@ Assistent-Fenster denselben nutzen.
   (`Rights::denied`, Namen aus dem Katalog). Die Sperrliste schränkt nur ein: Was die Stufe nicht erlaubt,
   erscheint gar nicht, und kein Eintrag erlaubt mehr als die Stufe. Ein Bereich mit gesperrten Befehlen zeigt
   das in seiner Zeile („Write · 2 off“).
+- **MCP-Server (#302):** Unter „Extensions“ je installiertem Server eine Zeile mit der Stufe (No access · Read ·
+  Write · Full). „Show commands“ zeigt seine zugestimmten Werkzeuge mit Zugriff und Schalter (`ext.<id>.<werkzeug>` in
+  der Sperrliste); ausgeschaltete Server sind markiert. Speichern wie bisher über `clients.update_client`.
 - Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen, Mail-Konten und eigenen Werkzeuge des
   Assistenten (#225; ein Werkzeug, das in den Einstellungen des Assistenten aus ist, trägt ein Warnzeichen),
   „Ask first“, „Send on my behalf“. Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).
@@ -432,6 +465,8 @@ Assistent-Fenster denselben nutzen.
 | Agents & API › Agents | MCP › Connected clients |
 | Agents & API › Scripts | API › Keys |
 | Agents & API › Hooks | MCP › Seite des Agenten › Notification Hub |
+| Assistent › Tools (Schalter, Ablage, Vorlagen PDF) | MCP connections › Built-in tools, Vorlagen unter „PDF templates“ (#302) |
+| – (neu mit #302) | MCP connections › Catalog und Your own servers; `--section connections` |
 | Agents & API › Assistant, Bots | Assistent-Fenster › Access |
 | `--section agents` | `--section mcp` (`agents` bleibt als Wort dafür) |
 

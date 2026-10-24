@@ -347,7 +347,8 @@ Anweisungen. Die Sicherheitsregeln aus
 - **Hook-Clients** (`HOOK_CLIENT`, für die Hooks von Claude Code, Codex, Gemini CLI) haben höchstens
   `Rights::hook()`: Schreiben in `inbox`, sonst nichts, keine Quelle sichtbar (`Rights::for_kind`,
   beim Anlegen und Ändern der Rechte).
-  Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`.
+  Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`. Sie haben auch keinen
+  MCP-Server (Fußnote ²⁵): `extensions.list_tools` ist für sie leer, `extensions.call_tool` liefert `not-found`.
 - Ein Hook-Client gehört zu **genau einem Agenten** (E1.2b): `clients.create_client` mit Art `hook`
   braucht `agent` (`claude-code`, `codex`, `gemini`), andere Arten dürfen keins nennen. Das Feld steht
   in `clients.json` und in `ClientInfo.agent`. Meldungen landen unter `agent:<dieser Agent>`; nennt
@@ -748,6 +749,24 @@ nicht), auch für Freigaben und Nur-Lese-Unterhaltungen. Nach außen heißt jede
 vorhanden (`not-found`); zu niedrige Stufe oder ein gesperrtes Werkzeug ist `forbidden` (`Lack::Extension`).
 Beschreibungen, Schemas und Antworten eines Servers sind fremder Text (`untrusted`).
 
+Was gebaut ist und dabei genauer wurde als oben (Details: [erweiterungen.md › MCP-Server (#302)](erweiterungen.md#mcp-server-302)):
+- **Ausgehend:** Ein Werkzeug eines Servers zählt nicht als „Nach außen“ (`Rights::outbound`, nur `mail.send_draft`
+  und `mail.respond_to_invitation` sind dort gemeint). Ob es auf Freigabe wartet, entscheidet allein sein Zugriff aus
+  dem Katalog (`Rights::needs_approval_of`). Folge: Der Nur-Lese-Modus des Assistenten hält ein Write-Werkzeug, das
+  nach außen wirkt (z. B. ein Kommentar auf GitHub), nur über die Stufe auf; „Nach außen“ hält es nicht. Umgekehrt
+  fragt ein Write-Werkzeug bei „Mit Freigabe“ nicht nach; wer das will, setzt die Stufe auf Lesen oder sperrt das
+  Werkzeug.
+- **Abschalten für eine Unterhaltung:** Wird der Bereich `extensions` abgeschaltet, sind auch alle Server aus.
+- **Sichtbarkeit:** Ein Schlüssel, der nicht der App-Schlüssel ist, sieht in `extensions.list_extensions` und
+  `extensions.get_extension` nur Server, für die er eine Stufe hat, und deren Einrichtung geschwärzt (Argumente und
+  Klartextwerte als „…“). Nur der App-Schlüssel sieht sie vollständig.
+- **Länge:** `extensions.call_tool` mit mehr als 64 KB Argumenten (als JSON) wird mit `error` abgelehnt.
+- **Neu eingestuft:** Ein Werkzeug, das der Katalog nach einem Update höher einstuft, wartet wieder auf Zustimmung.
+- **Geheimnisse bei Update:** eigene Server behalten gespeicherte Geheimnisse nur bei gleichem Befehl und gleichen
+  Argumenten (stdio) bzw. gleichem Ursprung (HTTP); Katalog-Server beim Versionswechsel aus dem Katalog.
+- **Keine Änderungsmeldung:** Torros MCP-Server meldet geänderte Werkzeuglisten nicht; fremde Agenten sehen neue
+  Server-Werkzeuge erst in der nächsten Sitzung.
+
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
 Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
@@ -974,7 +993,8 @@ dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
   Zugriff von selbst zurück.
 - **Je MCP-Server eine Stufe** (Issue #302, Fußnote ²⁵): `Rights::extensions` (Kennung des Servers → Kein Zugriff ·
   Lesen · Lesen und Schreiben · Voll; fehlt sie, kein Zugriff). Sie deckt die Werkzeuge des Servers nach ihrem
-  Zugriff ab. Keine Vorlage öffnet einen Server, auch *Full access* nicht (wie Assistent und Bots), und auch die
+  Zugriff ab; was auf Freigabe wartet, entscheidet allein dieser Zugriff, nicht „Nach außen“ (Fußnote ²⁵). Keine
+  Vorlage öffnet einen Server, auch *Full access* nicht (wie Assistent und Bots), und auch die
   Stufe im Bereich `extensions` nicht. Ein einzelnes Werkzeug lässt sich sperren: `ext.<id>.<werkzeug>` in
   `Rights::denied`. Wird ein Server entfernt, fällt er mit seinen gesperrten Werkzeugen aus den Rechten aller
   Clients.

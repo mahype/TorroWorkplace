@@ -287,7 +287,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Vorlage wählen lässt `extensions` leer; Sichtprüfung der Seite eines MCP-Clients und von Access; Übersetzungen.
 
 ### MA.11 Doku
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** MA.1–MA.10 · **Dateien:** `docs/erweiterungen.md`, `docs/assistent.md`,
   `docs/settings.md`, `docs/api.md`
 - `erweiterungen.md`: Fragen 1, 2, 5 und 6 als entschieden (MCP; fester Bereich `extensions` mit Rechten je Server
