@@ -441,6 +441,12 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Ein Zustand an einem Eintrag (ein Anbieter, dessen Konto Aufmerksamkeit braucht oder einen Fehler hat) ist
   ein `Mark::Badged(icon, farbe)`: das eigene Icon im Ton der Zeile mit einem Punkt 6 in der Statusfarbe auf
   der Ecke oben rechts, gleich in Spalte, Leiste und Chip – nie nur ein getöntes Icon (#248).
+  Eine Gruppe mit Unterpunkten (die Kategoriegruppen der Mail, #300) ist `widgets::sidebar_fold_in`: Zeile wie
+  jede andere, Chevron 12 in `TEXT_3` direkt hinter dem Namen (die Icon-Spalte bleibt bündig), in der Leiste
+  ohne Chevron. Ihre Kinder stehen offen in `widgets::sidebar_branch` als `widgets::sidebar_child`: um
+  `icon::SIZE` + `space::s()` (24) eingerückt, Icon `icon::SIZE_SM` (14), eine 1-px-Linie in der Farbe der
+  Gruppe mittig unter deren Icon; die Leiste zeigt keine Kinder. Im Menü sind Kinder `MenuItem::nested()`
+  (gleich eingerückt, kleineres Icon, ohne Linie).
 - **Aufgabenzeile:** `size::row()` hoch (48), Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
   Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `typo::meta()` tabellarisch
