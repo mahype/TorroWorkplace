@@ -543,13 +543,13 @@ pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 /// cursor): enough for `mail:` and the longest address, and far more than the core's own ids.
 pub const MAX_ID_BYTES: usize = 300;
 
-/// The `error` answer for a mail request that breaks a limit, before anything is looked at:
-/// `ids` empty or over [`MAX_IDS`], more than [`MAX_ATTACHMENTS`] `parts` to save, a search `limit` of 0 or over [`MAX_LIMIT`], a `query` over
-/// [`MAX_QUERY_CHARS`] characters, a draft with more than [`MAX_RECIPIENTS`] recipients, more than
-/// [`MAX_ATTACHMENTS`] attachments or a text over [`MAX_BODY_BYTES`], and any id, folder, cursor or
-/// attachment part over [`MAX_ID_BYTES`]. `None` for every request within them and for every other
-/// request. The core calls it before rights, approvals and handlers, so nobody is asked to approve
-/// what would be refused anyway.
+/// The `error` answer for a mail request that breaks a limit, before anything is looked at: `ids`
+/// empty or over [`MAX_IDS`], more than [`MAX_ATTACHMENTS`] `parts` to save, a search `limit` of 0
+/// or over [`MAX_LIMIT`], a `query` over [`MAX_QUERY_CHARS`] characters, a draft with more than
+/// [`MAX_RECIPIENTS`] recipients, more than [`MAX_ATTACHMENTS`] attachments or a text over
+/// [`MAX_BODY_BYTES`], and any id, folder, cursor or attachment part over [`MAX_ID_BYTES`]. `None`
+/// for every request within them and for every other request. The core calls it before rights,
+/// approvals and handlers, so nobody is asked to approve what would be refused anyway.
 pub fn limit_refusal(request: &Request) -> Option<Response> {
     let refuse = |message: String| Some(Response::Error { code: "error".into(), message });
     if mail_ids(request).any(|id| id.len() > MAX_ID_BYTES) {

@@ -151,13 +151,14 @@ impl Anchors {
         }
     }
 
-    /// The same anchors with the items' anchors falling back to the icon of their group in the mail's
-    /// action rail (task E14.3, [`RailAnchors`]): Later and "Move to …" to File, Task, Event and
-    /// "Category…" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor and
-    /// its menu hangs there; collapsed – or once the open group closed on the click – the row is not
-    /// on screen and the menu hangs at the group's icon. The rail is fixed beside the mail, so that
-    /// icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks stay
-    /// empty and change nothing. "Save attachments (n)" falls back to File too (task M12.6). Make the window's set with it once per `view`.
+    /// The same anchors with the items' anchors falling back to the icon of their group in the
+    /// mail's action rail (task E14.3, [`RailAnchors`]): Later and "Move to …" to File, Task, Event
+    /// and "Category…" to Torro, the bell to Mute. Expanded, an item's row registers its own anchor
+    /// and its menu hangs there; collapsed – or once the open group closed on the click – the row
+    /// is not on screen and the menu hangs at the group's icon. The rail is fixed beside the mail,
+    /// so that icon is always in view. Where no rail is drawn (the hub, the App Feed) the fallbacks
+    /// stay empty and change nothing. "Save attachments (n)" falls back to File too (task M12.6).
+    /// Make the window's set with it once per `view`.
     pub fn with_rail(self) -> Anchors {
         let rail = self.rail.clone();
         Anchors {

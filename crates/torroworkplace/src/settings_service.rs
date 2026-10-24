@@ -376,6 +376,18 @@ impl SettingsStore {
         })
     }
 
+    /// Sets the click on an attachment back to `open` when it names the save target `id`, which was
+    /// just removed (issue #290): compared and written under the same lock, so a click a person
+    /// chose meanwhile stays. Writes nothing when the click names another.
+    pub fn release_attachment_click(&self, id: &str) -> Result<(), String> {
+        let named = torro_core::settings::AttachmentClick::Target(id.to_owned());
+        self.change(|settings| {
+            if settings.mail_attachments.click == named {
+                settings.mail_attachments.click = torro_core::settings::AttachmentClick::Open;
+            }
+        })
+    }
+
     /// Reads the stored settings, lets `edit` change them, saves and applies the result. An edit
     /// that changes nothing writes nothing.
     fn change(&self, edit: impl FnOnce(&mut Settings)) -> Result<(), String> {
@@ -1651,6 +1663,20 @@ mod tests {
         store.set(SettingKey::MailAppearance, &json!("light")).expect("light");
         let current = store.current();
         assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::Light));
+    }
+
+    /// Issue #290: removing a save target sets the click on attachments back to `open` only when it
+    /// named that target.
+    #[test]
+    fn a_removed_target_releases_only_its_own_click() {
+        use torro_core::settings::AttachmentClick;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        store.set(SettingKey::MailAttachmentClick, &json!({ "target": "t1" })).expect("a target");
+        store.release_attachment_click("t2").expect("another target");
+        assert_eq!(store.current().mail_attachments.click, AttachmentClick::Target("t1".into()));
+        store.release_attachment_click("t1").expect("its target");
+        assert_eq!(store.current().mail_attachments.click, AttachmentClick::Open);
     }
 
     /// Task C.9: the voice settings are set one by one and checked; a client's whole settings

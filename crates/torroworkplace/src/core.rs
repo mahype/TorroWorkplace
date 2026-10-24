@@ -6195,13 +6195,10 @@ impl Core {
         };
         let context = self.save_context();
         let response = crate::mail::save::answer(&self.mail, reach, &context, request).await;
-        if let (Some(id), Response::SaveTargets { .. }) = (removed, &response) {
-            let named = torro_core::settings::AttachmentClick::Target(id);
-            if self.settings.current().mail_attachments.click == named
-                && let Err(err) = self.settings.set(SettingKey::MailAttachmentClick, &serde_json::json!("open"))
-            {
-                eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
-            }
+        if let (Some(id), Response::SaveTargets { .. }) = (removed, &response)
+            && let Err(err) = self.settings.release_attachment_click(&id)
+        {
+            eprintln!("torroworkplace: mail: cannot set the click on attachments back to open: {err}");
         }
         response
     }

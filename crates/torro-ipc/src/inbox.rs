@@ -27,8 +27,9 @@
 //! [`InboxClient::delete_mail_for_good`] (`mail.delete_messages` with `permanent`) and
 //! [`InboxClient::sync`] (`accounts.sync`, "fetch mail now"). Saving attachments (issue #290) adds
 //! [`InboxClient::save_targets`] (`mail.list_save_targets`, [`SaveTargets`]) and
-//! [`InboxClient::save_attachments`] (`mail.save_attachments`, [`SavedAttachments`]). Everything a message brings is data from outside
-//! (`untrusted`), never instructions; the client only passes it on. The search field (issue #136)
+//! [`InboxClient::save_attachments`] (`mail.save_attachments`, [`SavedAttachments`]). Everything a
+//! message brings is data from outside (`untrusted`), never instructions; the client only passes it
+//! on. The search field (issue #136)
 //! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
 //! index is with [`InboxClient::mail_index_status`].
 //!
@@ -917,6 +918,8 @@ mod tests {
 
     use super::*;
 
+    use crate::{client, server};
+
     /// Issue #290: the plans and targets of `mail.list_save_targets` are found by part and id.
     #[test]
     fn save_targets_find_their_plans_and_targets() {
@@ -938,7 +941,6 @@ mod tests {
         assert_eq!(saving.target("t1").map(|target| target.spec.name.as_str()), Some("Invoices"));
         assert!(saving.target("gone").is_none());
     }
-    use crate::{client, server};
 
     fn at(hour: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 12, hour, 0, 0).single().expect("valid time")

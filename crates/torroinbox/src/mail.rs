@@ -2785,12 +2785,13 @@ fn more_items<'a>(tools: ViewTools, close: bool) -> Vec<RailItem<'a, Message>> {
 }
 
 /// The mail's attachments at the reader's bottom (task M12.6, design A of
-/// `docs/prototypes/inbox/mail-anhaenge.html`): a framed block (`widgets::file_block`) whose head says
-/// "Attachments" and "{n} files · {size}" ([`files_meta`]), with "Save all ▾" at its right from two
-/// attachments on ([`save_all_control`]), and under it each attachment as a split chip
+/// `docs/prototypes/inbox/mail-anhaenge.html`): a framed block (`widgets::file_block`) whose head
+/// says "Attachments" and "{n} files · {size}" ([`files_meta`]), with "Save all ▾" at its right
+/// from two attachments on ([`save_all_control`]), and under it each attachment as a split chip
 /// ([`attachment_chips`]), which scroll inside the block beyond two lines. [`space::s()`] above it,
-/// [`space::l()`] below and `side` at the sides; the chips wrap on a line `room` wide. The triangles' menus hang at `anchors`. `None` while the mail
-/// loads, after an error and for a mail without attachments (inline pictures are none).
+/// [`space::l()`] below and `side` at the sides; the chips wrap on a line `room` wide. The
+/// triangles' menus hang at `anchors`. `None` while the mail loads, after an error and for a mail
+/// without attachments (inline pictures are none).
 pub fn attachment_line<'a>(
     reading: &Reading<'_>,
     anchors: &detail::Anchors,
