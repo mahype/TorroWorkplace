@@ -1144,7 +1144,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   JSON abgelehnt, mit JSON gespeichert (`httpmock`); Protokollzeile ohne Wörter und Adresse.
 
 ### WEB.5 Assistent: Freigabe je Unterhaltung, Angebot ans Modell, fremder Text
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WEB.4 · **Dateien:** `crates/torroworkplace/src/assistant/{model,tools,prompt}.rs`,
   `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/approvals.rs`,
   `crates/torroworkplace/assets/assistant/skill.md`, `crates/torro-core/src/i18n/de.rs`

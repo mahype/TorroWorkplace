@@ -5402,6 +5402,23 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This SearXNG instance does not answer in JSON. Turn on the json format in its settings.",
         "Diese SearXNG-Instanz antwortet nicht in JSON. Schalte in ihren Einstellungen das Format json ein.",
     ),
+    // The web's yes per conversation (WEB.5)
+    (
+        "Search the web and read web pages in \"{title}\"? Search words go to {providers}.",
+        "In „{title}“ im Web suchen und Webseiten lesen? Die Suchwörter gehen an {providers}.",
+    ),
+    (
+        "This conversation has read mail or other outside data. Search the web and read web pages in \"{title}\" anyway?",
+        "Diese Unterhaltung hat Mail oder andere Daten von außen gelesen. Trotzdem in „{title}“ im Web suchen und Webseiten lesen?",
+    ),
+    (
+        "Search the web and read web pages in \"{title}\"? No web search provider is on.",
+        "In „{title}“ im Web suchen und Webseiten lesen? Kein Anbieter für die Websuche ist an.",
+    ),
+    ("First: search for \"{query}\"", "Zuerst: nach „{query}“ suchen"),
+    ("First: read a page on {host}", "Zuerst: eine Seite auf {host} lesen"),
+    ("Search words go to {providers}.", "Die Suchwörter gehen an {providers}."),
+    ("{names} and {last}", "{names} und {last}"),
     ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
     ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
     (

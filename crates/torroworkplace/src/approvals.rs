@@ -511,6 +511,33 @@ pub struct Origin {
     /// runs more than the conversation allowed. [`Mode::Default`] for every other request.
     #[serde(default, skip_serializing_if = "Mode::is_default")]
     pub mode: Mode,
+    /// For `tools.web_search` and `tools.fetch_page` of an answer of the assistant or a bot (issue
+    /// #305, task WEB.5): the conversation whose yes to the web this approval asks for. Allowed, the
+    /// core keeps that yes in memory before the command runs (`Core::run_approved`), so the next web
+    /// command of the conversation asks no more. `None` for every other approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<WebConsent>,
+}
+
+/// The person's yes to the tool `web` in one conversation of the assistant or a bot (issue #305,
+/// task WEB.5, decision 22 in `docs/assistent.md`), as an approval asks for it ([`Origin::consent`])
+/// and as the assistant's loop hands a web command to the core
+/// (`crate::assistant::Host::run_web`). The yes itself lives only in the service's memory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebConsent {
+    /// The conversation the yes is for: the answer's own, for a bot that runs for the assistant the
+    /// assistant's (`crate::assistant::Delegation::conversation`).
+    pub conversation: String,
+    /// The conversation had read data from outside the suite before this command (mail, GitHub,
+    /// entries of the inbox, answers of bots – never the web's own results;
+    /// `crate::assistant` counts it). A yes given without it does not cover a command with it: the
+    /// person is asked once more ([`web_question`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outside: bool,
+    /// For `tools.fetch_page`: the person wrote the address in the conversation themselves, so the
+    /// page is read like a browser would, without `robots.txt` (decision 23). `false` for a search.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_person: bool,
 }
 
 impl Origin {
@@ -2911,6 +2938,69 @@ pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
     lines
 }
 
+/// The question of the tool `web` in a conversation (issue #305, task WEB.5, decision 22): the
+/// summary and the lines of details under it, for `tools.web_search` and `tools.fetch_page` of an
+/// answer that has no yes for its conversation yet ([`WebConsent`]). The yes covers both commands
+/// in that conversation.
+///
+/// - The summary names the conversation by the title the assistant keeps ([`Facts::name`]; its id
+///   when there is none) and the search providers switched on now, `providers` in their order
+///   (`SearchProviderId::ORDER`): `Search the web and read web pages in "Trip to Lisbon"? Search
+///   words go to DuckDuckGo and Wikipedia.` After data from outside ([`WebConsent::outside`]) it
+///   says so first: `This conversation has read mail or other outside data. Search the web and read
+///   web pages in "Trip to Lisbon" anyway?`, and the providers move into the details.
+/// - The first line of details says what runs on "Allow": `First: search for "…"` with the search
+///   words, or `First: read a page on example.org` with the host of the address (the request's own
+///   words, as they will go out). All of it made harmless ([`quote`]).
+pub fn web_question(
+    request: &Request,
+    facts: &Facts,
+    consent: &WebConsent,
+    providers: &[torro_ipc::web::SearchProviderId],
+) -> (String, Vec<String>) {
+    let title = quote(facts.name.as_deref().unwrap_or(&consent.conversation));
+    let goes_to = provider_words(providers);
+    let summary = match (consent.outside, &goes_to) {
+        (true, _) => trf(
+            "This conversation has read mail or other outside data. Search the web and read web pages in \"{title}\" \
+             anyway?",
+            &[("title", &title)],
+        ),
+        (false, Some(names)) => trf(
+            "Search the web and read web pages in \"{title}\"? Search words go to {providers}.",
+            &[("title", &title), ("providers", names)],
+        ),
+        (false, None) => {
+            trf("Search the web and read web pages in \"{title}\"? No web search provider is on.", &[("title", &title)])
+        }
+    };
+    let first = match request {
+        Request::WebSearch { query, .. } => trf("First: search for \"{query}\"", &[("query", &quote(query))]),
+        Request::FetchPage { url } => {
+            let parsed = reqwest::Url::parse(url.trim()).ok();
+            let host = parsed.as_ref().and_then(reqwest::Url::host_str).map_or_else(|| quote(url), quote);
+            trf("First: read a page on {host}", &[("host", &host)])
+        }
+        other => trf("Run {command}", &[("command", &other.operation().name())]),
+    };
+    let mut details = vec![first];
+    if let (true, Some(names)) = (consent.outside, goes_to) {
+        details.push(trf("Search words go to {providers}.", &[("providers", &names)]));
+    }
+    (summary, details)
+}
+
+/// The names of `providers` as one phrase: `DuckDuckGo`, `SearXNG and Wikipedia`, `SearXNG,
+/// DuckDuckGo and Wikipedia`; `None` for none.
+fn provider_words(providers: &[torro_ipc::web::SearchProviderId]) -> Option<String> {
+    let names: Vec<&str> = providers.iter().map(|provider| provider.title()).collect();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some((*one).to_string()),
+        [first @ .., last] => Some(trf("{names} and {last}", &[("names", &first.join(", ")), ("last", last)])),
+    }
+}
+
 /// A size in bytes as people read it: "860 B", "3 KB", "12 MB" (rounded up, as the inbox app
 /// writes it).
 fn size_words(bytes: u64) -> String {
@@ -4233,6 +4323,58 @@ pub(crate) mod tests {
         assert!(!listed.contains("f00d"), "the client never sees it: {listed}");
     }
 
+    /// Issue #305, task WEB.5: the web's question names the conversation, the providers switched on
+    /// and what runs first, all made harmless; after outside data it says so and the providers move
+    /// into the details. The yes it asks for is kept with the approval, defaults left out.
+    #[test]
+    fn the_webs_question_names_the_conversation_the_providers_and_what_runs_first() {
+        use torro_ipc::web::SearchProviderId::{Duckduckgo, Searxng, Wikipedia};
+        let facts = Facts { name: Some("Trip to \"Lisbon\"".into()), ..Facts::default() };
+        let consent = WebConsent { conversation: "c1".into(), outside: false, by_person: false };
+        let search = Request::WebSearch { query: "trams\nin {title}".into(), count: None, language: None };
+        let (summary, details) = web_question(&search, &facts, &consent, &[Duckduckgo, Wikipedia]);
+        let both = trf("{names} and {last}", &[("names", &Duckduckgo.title()), ("last", &Wikipedia.title())]);
+        let asked = trf(
+            "Search the web and read web pages in \"{title}\"? Search words go to {providers}.",
+            &[("title", &"Trip to 'Lisbon'"), ("providers", &both)],
+        );
+        assert_eq!(summary, asked);
+        assert_eq!(details, [trf("First: search for \"{query}\"", &[("query", &"trams in (title)")])]);
+
+        let fetch = Request::FetchPage { url: " https://www.example.org/a?b=c ".into() };
+        let after = WebConsent { outside: true, ..consent.clone() };
+        let (summary, details) = web_question(&fetch, &Facts::default(), &after, &[Searxng, Duckduckgo, Wikipedia]);
+        let anyway = trf(
+            "This conversation has read mail or other outside data. Search the web and read web pages in \"{title}\" \
+             anyway?",
+            &[("title", &"c1")],
+        );
+        assert_eq!(summary, anyway, "named by its id without a title");
+        let three = trf(
+            "{names} and {last}",
+            &[("names", &format!("{}, {}", Searxng.title(), Duckduckgo.title())), ("last", &Wikipedia.title())],
+        );
+        assert_eq!(
+            details,
+            [
+                trf("First: read a page on {host}", &[("host", &"www.example.org")]),
+                trf("Search words go to {providers}.", &[("providers", &three)]),
+            ]
+        );
+        let (none_on, _) = web_question(&fetch, &facts, &consent, &[]);
+        let none = trf(
+            "Search the web and read web pages in \"{title}\"? No web search provider is on.",
+            &[("title", &"Trip to 'Lisbon'")],
+        );
+        assert_eq!(none_on, none);
+
+        let origin = Origin { consent: Some(after.clone()), ..Origin::default() };
+        let written = serde_json::to_value(&origin).expect("json");
+        assert_eq!(written["consent"], serde_json::json!({"conversation": "c1", "outside": true}));
+        assert_eq!(serde_json::from_value::<Origin>(written).expect("read back"), origin);
+        assert!(serde_json::to_value(Origin::default()).expect("json").get("consent").is_none());
+    }
+
     /// Task C.11: where a request came from (engine, areas a lent key was lent without) survives a
     /// restart and comes back with either decision; the client never sees it, and an approval of
     /// a client's own key keeps nothing of it.
@@ -4240,8 +4382,13 @@ pub(crate) mod tests {
     async fn an_approval_keeps_where_its_request_came_from() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let origin =
-            Origin { engine: Some("claude-code".into()), without: vec![Area::Mail], behalf: None, mode: Mode::Default };
+        let origin = Origin {
+            engine: Some("claude-code".into()),
+            without: vec![Area::Mail],
+            behalf: None,
+            mode: Mode::Default,
+            consent: None,
+        };
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let kept = (None, None, origin.clone());
         let shown = || ("Delete".to_string(), Vec::new());

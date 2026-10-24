@@ -120,6 +120,7 @@ impl Assistant {
             assistant: assistant.to_string(),
             without: without.to_vec(),
             mode,
+            conversation: main.to_string(),
         };
         let asking = Request::AskBot { bot: bot.id.clone(), text: text.clone(), conversation: kept.clone() };
         if let Some(refused) = self.refusal(ai, &asking).await {
