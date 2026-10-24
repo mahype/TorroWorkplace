@@ -5253,7 +5253,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Lists, finds, copies and moves files in the allowed folders, without reading what they hold.",
         "Listet, sucht, kopiert und verschiebt Dateien in den freigegebenen Ordnern, ohne ihren Inhalt zu lesen.",
     ),
-    ("Organizing files is not available in this version yet.", "Dateien ordnen geht in dieser Version noch nicht."),
     ("Listed folder", "Ordner aufgelistet"),
     ("Found files", "Dateien gefunden"),
     ("Made folder", "Ordner angelegt"),
@@ -5306,6 +5305,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Move \"{name}\" to \"{folder}\"", "„{name}“ nach „{folder}“ verschieben"),
     ("Move \"{name}\" to \"{folder}\" as \"{new}\"", "„{name}“ als „{new}“ nach „{folder}“ verschieben"),
     ("Move an unknown file or folder", "Unbekannte Datei oder unbekannten Ordner verschieben"),
+    // The trash of the tool files (WD.3, #304): its approval
+    ("Move \"{name}\" to the trash", "„{name}“ in den Papierkorb legen"),
+    ("Move an unknown file or folder to the trash", "Unbekannte Datei oder unbekannten Ordner in den Papierkorb legen"),
     ("From: {path}", "Von: {path}"),
     ("To: {path}", "Nach: {path}"),
     (

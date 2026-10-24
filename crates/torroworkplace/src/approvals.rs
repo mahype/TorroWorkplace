@@ -346,7 +346,8 @@ pub struct PathFacts {
 }
 
 impl PathFacts {
-    /// The fingerprint an approval of `tools.create_folder`, `tools.copy_file` or `tools.move_file` is pinned to: a
+    /// The fingerprint an approval of `tools.create_folder`, `tools.copy_file`, `tools.move_file` or `tools.trash_file`
+    /// (task WD.3) is pinned to: a
     /// hash of both paths ([`crate::audit::hashed`]). The approved command runs only while the paths resolve to the
     /// same again, else `conflict` (`Core::run_approved`): a link exchanged or a folder moved meanwhile.
     pub fn fingerprint(&self) -> String {
@@ -1506,9 +1507,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             Some(title) => trf("Open the PDF \"{title}\"", &[("title", &quote(title))]),
             None => tr("Open an unknown file").to_string(),
         },
-        request @ (Request::CreateFolder { .. } | Request::CopyFile { .. } | Request::MoveFile { .. }) => {
-            files_summary(request, facts.paths.as_ref())
-        }
+        request @ (Request::CreateFolder { .. }
+        | Request::CopyFile { .. }
+        | Request::MoveFile { .. }
+        | Request::TrashFile { .. }) => files_summary(request, facts.paths.as_ref()),
         // A backup (#267): the account by the label the core keeps, the source and where the
         // archive goes. A file name is a plain name in the managed folder for a client: it is what
         // will be written.
@@ -1551,7 +1553,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
 /// The summary of a command of the tool `files` (issue #304) from the paths the core resolved ([`Facts::paths`]),
 /// by the names in them – the whole paths are in the details ([`files_details`]): "Make the folder "Invoices" in
 /// "Documents"", "Copy "a.pdf" to "Archive"" (with ` as "b.pdf"` when the name changes), "Move …" likewise, and
-/// "Rename "a.pdf" to "b.pdf"" when it stays in its folder. Without paths an unknown file or folder.
+/// "Rename "a.pdf" to "b.pdf"" when it stays in its folder, "Move "a.pdf" to the trash" (task WD.3). Without paths an
+/// unknown file or folder.
 fn files_summary(request: &Request, paths: Option<&PathFacts>) -> String {
     let name = |path: &str| quote(Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path));
     let folder = |path: &str| name(Path::new(path).parent().and_then(Path::to_str).unwrap_or(path));
@@ -1580,16 +1583,21 @@ fn files_summary(request: &Request, paths: Option<&PathFacts>) -> String {
         (Request::MoveFile { .. }, Some(from), Some(to)) => {
             words("Move \"{name}\" to \"{folder}\" as \"{new}\"", from, to)
         }
+        (Request::TrashFile { .. }, Some(from), _) => words("Move \"{name}\" to the trash", from, from),
+        (Request::TrashFile { .. }, None, _) => tr("Move an unknown file or folder to the trash").to_string(),
         _ => tr("Move an unknown file or folder").to_string(),
     }
 }
 
-/// The details of a command of the tool `files` (issue #304): `From: "<path>"` for a copy or a move, `To:
-/// "<path>"`, and that nothing there is replaced. The paths whole as the core resolved them, made harmless as in the
-/// summary; one longer than [`DETAIL_MAX`] characters keeps its end, where the names are. `None` for every other
-/// command.
+/// The details of a command of the tool `files` (issue #304): `From: "<path>"` for a copy, a move and the trash, `To:
+/// "<path>"`, and that nothing there is replaced (not for the trash, which makes nothing). The paths whole as the core
+/// resolved them, made harmless as in the summary; one longer than [`DETAIL_MAX`] characters keeps its end, where the
+/// names are. `None` for every other command.
 fn files_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
-    if !matches!(request, Request::CreateFolder { .. } | Request::CopyFile { .. } | Request::MoveFile { .. }) {
+    if !matches!(
+        request,
+        Request::CreateFolder { .. } | Request::CopyFile { .. } | Request::MoveFile { .. } | Request::TrashFile { .. }
+    ) {
         return None;
     }
     let shown = |path: &str| {
@@ -1604,7 +1612,9 @@ fn files_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
     let mut lines = Vec::new();
     lines.extend(paths.from.as_deref().map(|from| trf("From: {path}", &[("path", &shown(from))])));
     lines.extend(paths.to.as_deref().map(|to| trf("To: {path}", &[("path", &shown(to))])));
-    lines.push(tr("A file there is never replaced; a free name is chosen.").to_string());
+    if !matches!(request, Request::TrashFile { .. }) {
+        lines.push(tr("A file there is never replaced; a free name is chosen.").to_string());
+    }
     Some(lines)
 }
 
@@ -3686,6 +3696,15 @@ pub(crate) mod tests {
         assert_eq!(lines[1], trf("To: {path}", &[("path", &"\"/b/Report.pdf\"")]));
         assert_eq!(lines[2], tr("A file there is never replaced; a free name is chosen."));
         assert_eq!(details(&create, &paths(None, "/b/New")).len(), 2, "no source for a new folder");
+
+        // Task WD.3: the trash by the resolved entry, its path in the details, nothing about free names.
+        let trash = Request::TrashFile { path: "/tmp/harmless".into() };
+        let trashed = summary(&trash, &paths(Some("/a/Report.pdf"), "/unused"));
+        assert_eq!(trashed, trf("Move \"{name}\" to the trash", &[("name", &"Report.pdf")]));
+        assert_eq!(summary(&trash, &Facts::default()), tr("Move an unknown file or folder to the trash"));
+        let entry =
+            Facts { paths: Some(PathFacts { from: Some("/a/Report.pdf".into()), to: None }), ..Facts::default() };
+        assert_eq!(details(&trash, &entry), [trf("From: {path}", &[("path", &"\"/a/Report.pdf\"")])]);
 
         let pinned = PathFacts { from: Some("/a/x".into()), to: Some("/b/x".into()) };
         let moved_away = PathFacts { from: Some("/a/x".into()), to: Some("/c/x".into()) };

@@ -1128,7 +1128,7 @@ WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, k
   inneren „Read“-Ordner verschieben → `forbidden`.
 
 ### WD.3 Kern: Papierkorb mit Freigabe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WD.2 · **Dateien:** `Cargo.toml` (Wurzel: `trash = "5.2.9"`),
   `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/src/tools/{mod,organize}.rs`,
   `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torro-core/src/i18n/de.rs`

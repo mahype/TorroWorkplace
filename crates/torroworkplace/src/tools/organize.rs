@@ -1,6 +1,7 @@
-//! The commands of the tool `files` (issue #304, task WD.2, "Werkzeug Dateien" in `docs/assistent.md`): list a
-//! folder, find by name, make a folder, copy a file, move or rename a file or folder – only in the folders a person
-//! allowed, as [`super::folders::Allowed`] bounds them. Nothing here reads or changes what a file holds.
+//! The commands of the tool `files` (issue #304, tasks WD.2 and WD.3, "Werkzeug Dateien" in `docs/assistent.md`):
+//! list a folder, find by name, make a folder, copy a file, move or rename a file or folder, move one to the system's
+//! trash – only in the folders a person allowed, as [`super::folders::Allowed`] bounds them. Nothing here reads or
+//! changes what a file holds.
 //!
 //! - **Plan, then run** ([`plan`], [`run`]): every command is first resolved as it will run – which entry, which
 //!   target – with every check of the bounds. The core plans before it asks a person to approve, shows the paths of
@@ -12,6 +13,8 @@
 //!   links, drives without hard links) looks at its target just before, since `fs::rename` replaces one.
 //! - **Copy only files** (decision 22): a folder or a symbolic link is `unsupported`. Moving takes a link itself, not
 //!   what it points to; a folder or a link only on the same drive.
+//! - **Trash, never delete** (decision 23, task WD.3): an entry goes to the system's trash through the tools'
+//!   [`super::Trasher`] ([`move_to_trash`]), the entry itself, also a link; the core always asks a person first.
 //! - **Limits** ([`torro_ipc::tools`]): listing one level of at most `MAX_LIST_ENTRIES`, finding at most
 //!   `MAX_FIND_DEPTH` levels, `MAX_FOUND` hits and `MAX_VISITED` entries, without following links; reaching one says
 //!   `truncated`.
@@ -42,16 +45,18 @@ const ONLY_FILES: &str = "Only files can be copied, not folders or links.";
 const SAME_DRIVE: &str = "A folder or a link can only be moved on the same drive.";
 const INTO_ITSELF: &str = "A folder cannot be moved into itself.";
 const ALL_TAKEN: &str = "Every free name for it is taken.";
+/// A request that is no command of `files` (the core never sends one here).
+const NOT_FILES: &str = "This command is not supported.";
 
 /// The paths a command of `files` touches, resolved as it will run ([`plan`]): the entry it reads or moves and the
 /// target it makes, before a free name is picked. For the approval's card ([`Plan::facts`]) and to pin the approval.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// The folder listed or searched, the file copied, the entry moved; `None` for making a folder and for listing
-    /// the allowed folders.
+    /// The folder listed or searched, the file copied, the entry moved or put in the trash; `None` for making a folder
+    /// and for listing the allowed folders.
     pub from: Option<PathBuf>,
-    /// The folder made, where the copy or the moved entry goes (a free name may follow); `None` for listing and
-    /// finding.
+    /// The folder made, where the copy or the moved entry goes (a free name may follow); `None` for listing, finding
+    /// and the trash.
     pub to: Option<PathBuf>,
 }
 
@@ -77,13 +82,15 @@ enum Planned {
     Copy(PathBuf, PathBuf),
     /// `tools.move_file` of this entry to this target.
     Move(PathBuf, PathBuf),
+    /// `tools.trash_file` of this entry.
+    Trash(PathBuf),
 }
 
 impl Planned {
     fn plan(&self) -> Plan {
         let (from, to) = match self {
             Planned::Roots => (None, None),
-            Planned::List(folder) | Planned::Find(folder, _) => (Some(folder.clone()), None),
+            Planned::List(folder) | Planned::Find(folder, _) | Planned::Trash(folder) => (Some(folder.clone()), None),
             Planned::Create(target) => (None, Some(target.clone())),
             Planned::Copy(from, to) | Planned::Move(from, to) => (Some(from.clone()), Some(to.clone())),
         };
@@ -92,17 +99,17 @@ impl Planned {
 }
 
 /// `request` resolved within `allowed` as it will run, with every check: the source of a copy a file in an allowed
-/// folder, the target of making, copying and moving and the source of moving in one with `read_write` access, a
-/// moved entry that is or holds neither an allowed folder nor anything locked, a folder not moved into itself, a name
-/// to find of 1 to [`MAX_NAME_PATTERN_CHARS`] characters. `Ok(None)` for every other request, `tools.trash_file`
-/// too (task WD.3). Changes nothing.
+/// folder, the target of making, copying and moving and the source of moving and trashing in one with `read_write`
+/// access, a moved or trashed entry that is or holds neither an allowed folder nor anything locked, a folder not moved
+/// into itself, a name to find of 1 to [`MAX_NAME_PATTERN_CHARS`] characters. `Ok(None)` for every other request.
+/// Changes nothing.
 pub fn plan(allowed: &Allowed, request: &Request) -> Result<Option<Plan>, FolderError> {
     Ok(planned(allowed, request)?.map(|planned| planned.plan()))
 }
 
 /// Runs `request` within `allowed` as [`plan`] resolves it: [`Response::FolderEntries`] for listing and finding,
 /// [`Response::FilePath`] with the path that came to be for making, copying and moving. `Ok(None)` for a request
-/// that is no command of `files` this runs.
+/// that is no command of `files` this runs – `tools.trash_file` needs the system's trash: [`move_to_trash`].
 pub fn run(allowed: &Allowed, request: &Request) -> Result<Option<Response>, FolderError> {
     let Some(planned) = planned(allowed, request)? else { return Ok(None) };
     let listed = |(entries, truncated)| Response::FolderEntries { entries, truncated };
@@ -114,7 +121,21 @@ pub fn run(allowed: &Allowed, request: &Request) -> Result<Option<Response>, Fol
         Planned::Create(target) => made(create_folder(&target)?),
         Planned::Copy(from, to) => made(copy_file(&from, &to)?),
         Planned::Move(from, to) => made(move_file(&from, &to)?),
+        Planned::Trash(_) => return Ok(None),
     }))
+}
+
+/// Runs `tools.trash_file` within `allowed` as [`plan`] resolves it: hands the entry itself (a symbolic link, not what
+/// it points to) to `trash`, the tools' [`super::Trasher`], and answers [`Response::Ok`]. The system's refusal is
+/// `error` with its kind ([`FolderError::Failed`]), never a path. `Ok(None)` for every other request.
+pub fn move_to_trash(
+    allowed: &Allowed,
+    request: &Request,
+    trash: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<Option<Response>, FolderError> {
+    let Some(Planned::Trash(entry)) = planned(allowed, request)? else { return Ok(None) };
+    trash(&entry).map_err(FolderError::Failed)?;
+    Ok(Some(Response::Ok))
 }
 
 fn planned(allowed: &Allowed, request: &Request) -> Result<Option<Planned>, FolderError> {
@@ -151,6 +172,15 @@ fn planned(allowed: &Allowed, request: &Request) -> Result<Option<Planned>, Fold
                 return Err(FolderError::Invalid(INTO_ITSELF));
             }
             Planned::Move(from, to)
+        }
+        // The entry itself, with the same locks as moving (decision 24): never an allowed folder or what holds one,
+        // else an agent would reach an inner "Read" folder through an outer one.
+        Request::TrashFile { path } => {
+            let entry = allowed.entry(path, FolderAccess::ReadWrite)?;
+            if allowed.holds_protected(&entry) {
+                return Err(FolderError::Forbidden(PROTECTED));
+            }
+            Planned::Trash(entry)
         }
         _ => return Ok(None),
     };
@@ -466,17 +496,21 @@ impl Tools {
         }
     }
 
-    /// Runs a command of `files` ([`run`]) within the allowed `folders` of now, on a blocking thread, planned and
-    /// checked again. The switch and the rights are the core's to check before; `unsupported` for a request this
-    /// does not run.
+    /// Runs a command of `files` ([`run`], [`move_to_trash`] with the tools' [`super::Trasher`]) within the allowed
+    /// `folders` of now, on a blocking thread, planned and checked again. The switch, the rights and the approval are
+    /// the core's to check before; `unsupported` for a request that is no command of `files`.
     pub async fn organize(&self, request: Request, folders: &[AllowedFolder]) -> Response {
-        let (folders, excluded) = (folders.to_vec(), self.roots.excluded.clone());
-        let ran = tokio::task::spawn_blocking(move || run(&Allowed::of(&folders, &excluded), &request));
+        let (folders, excluded, trash) = (folders.to_vec(), self.roots.excluded.clone(), self.trash.clone());
+        let ran = tokio::task::spawn_blocking(move || {
+            let allowed = Allowed::of(&folders, &excluded);
+            match matches!(request, Request::TrashFile { .. }) {
+                true => move_to_trash(&allowed, &request, &*trash),
+                false => run(&allowed, &request),
+            }
+        });
         match ran.await {
             Ok(Ok(Some(response))) => response,
-            Ok(Ok(None)) => {
-                FolderError::Unsupported("Organizing files is not available in this version yet.").response()
-            }
+            Ok(Ok(None)) => FolderError::Unsupported(NOT_FILES).response(),
             Ok(Err(err)) => err.response(),
             Err(err) => FolderError::Failed(err.to_string()).response(),
         }
@@ -805,6 +839,127 @@ mod tests {
         assert!(place.dir.path().join("outside").is_dir(), "what it points to stays");
     }
 
+    /// What a test's trash was handed, in order; it records and never touches the person's trash.
+    struct TrashBin(std::cell::RefCell<Vec<PathBuf>>);
+
+    impl TrashBin {
+        fn new() -> TrashBin {
+            TrashBin(std::cell::RefCell::new(Vec::new()))
+        }
+
+        fn put(&self, request: &Request, allowed: &Allowed) -> Result<Option<Response>, FolderError> {
+            move_to_trash(allowed, request, &|path: &Path| {
+                self.0.borrow_mut().push(path.to_path_buf());
+                Ok(())
+            })
+        }
+
+        fn taken(&self) -> Vec<PathBuf> {
+            self.0.borrow().clone()
+        }
+    }
+
+    /// Task WD.3: a file or a folder in a `read_write` folder goes to the trash as resolved; nothing else is handed to
+    /// it, and `run` leaves the trash to [`move_to_trash`].
+    #[test]
+    fn a_file_or_folder_goes_to_the_trash() {
+        let place = Place::new();
+        let allowed = place.allowed();
+        let docs = resolved(&place, "home/Documents");
+        write(&place, "home/Documents/a.txt", b"a");
+        fs::create_dir(docs.join("Box")).expect("made");
+        let bin = TrashBin::new();
+        let trash = |relative: &str| Request::TrashFile { path: place.path(relative) };
+
+        assert_eq!(bin.put(&trash("home/Documents/a.txt"), &allowed), Ok(Some(Response::Ok)));
+        assert_eq!(bin.put(&trash("home/Documents/Box"), &allowed), Ok(Some(Response::Ok)));
+        assert_eq!(bin.taken(), [docs.join("a.txt"), docs.join("Box")]);
+        assert_eq!(run(&allowed, &trash("home/Documents/a.txt")), Ok(None), "only with the trash");
+        let list = Request::ListFolder { path: None };
+        assert_eq!(bin.put(&list, &allowed), Ok(None), "no other command");
+        assert_eq!(bin.taken().len(), 2);
+    }
+
+    /// Task WD.3: in a `read` folder `forbidden`, an allowed folder itself and what holds one `forbidden`, outside,
+    /// missing and backups `not-found` – and nothing is handed to the trash.
+    #[test]
+    fn the_trash_takes_nothing_protected() {
+        let place = Place::new();
+        write(&place, "home/Documents/Private/secret.txt", b"s");
+        write(&place, "home/Documents/a.txt.torroworkplace-backup", b"b");
+        let allowed = place.allowed();
+        let bin = TrashBin::new();
+        let trash = |relative: &str| Request::TrashFile { path: place.path(relative) };
+        let read_only = Some(FolderError::Forbidden(READ_ONLY));
+        assert_eq!(bin.put(&trash("home/Documents/Private/secret.txt"), &allowed).err(), read_only);
+        assert_eq!(bin.put(&trash("home/Documents/Private"), &allowed).err(), read_only, "the inner read folder");
+        let protected = Some(FolderError::Forbidden(PROTECTED));
+        assert_eq!(bin.put(&trash("home/Documents"), &allowed).err(), protected, "an allowed folder itself");
+        let mut outer_folders = place.folders();
+        outer_folders.insert(0, AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite });
+        let outer = Allowed::of(&outer_folders, &[]);
+        assert_eq!(bin.put(&trash("home/Documents"), &outer).err(), protected, "what holds an allowed folder");
+        for missing in ["outside", "home/Documents/missing.txt", "home/Documents/a.txt.torroworkplace-backup"] {
+            assert_eq!(bin.put(&trash(missing), &allowed).err(), Some(FolderError::NotFound), "{missing}");
+        }
+        assert_eq!(
+            bin.put(&trash("home/Documents/../Documents/a.txt"), &allowed).err().map(|err| err.response()),
+            Some(FolderError::Invalid("Give a full path of one line, without . or .. parts.").response())
+        );
+        assert!(bin.taken().is_empty(), "nothing handed to the trash");
+    }
+
+    /// Task WD.3: the suite's folders inside an allowed folder are not found, and what holds them is `forbidden`.
+    #[test]
+    fn the_trash_takes_nothing_of_the_suite() {
+        let place = Place::new();
+        let home = place.dir.path().join("home");
+        let suite = home.join("Library/Application Support/torroworkplace");
+        fs::create_dir_all(&suite).expect("made");
+        let folders = [AllowedFolder { path: place.path("home"), access: FolderAccess::ReadWrite }];
+        let allowed = Allowed::of(&folders, std::slice::from_ref(&suite));
+        let bin = TrashBin::new();
+        let trash = |relative: &str| Request::TrashFile { path: place.path(relative) };
+        let suite_data = trash("home/Library/Application Support/torroworkplace");
+        assert_eq!(bin.put(&suite_data, &allowed).err(), Some(FolderError::NotFound));
+        let library = trash("home/Library");
+        assert_eq!(bin.put(&library, &allowed).err(), Some(FolderError::Forbidden(PROTECTED)));
+        assert!(bin.taken().is_empty());
+    }
+
+    /// Task WD.3: a symbolic link goes to the trash itself, not what it points to – also one that leads out of the
+    /// allowed folders.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_goes_to_the_trash_itself() {
+        let place = Place::new();
+        let docs = place.dir.path().join("home/Documents");
+        write(&place, "home/Documents/a.txt", b"a");
+        std::os::unix::fs::symlink(place.dir.path().join("outside"), docs.join("out")).expect("linked");
+        std::os::unix::fs::symlink(docs.join("a.txt"), docs.join("to a")).expect("linked");
+        let allowed = place.allowed();
+        let bin = TrashBin::new();
+        for link in ["home/Documents/out", "home/Documents/to a"] {
+            assert_eq!(bin.put(&Request::TrashFile { path: place.path(link) }, &allowed), Ok(Some(Response::Ok)));
+        }
+        let resolved_docs = resolved(&place, "home/Documents");
+        assert_eq!(bin.taken(), [resolved_docs.join("out"), resolved_docs.join("to a")]);
+    }
+
+    /// Task WD.3: the system's refusal is `error` with its kind, never a path.
+    #[test]
+    fn a_refusing_trash_is_an_error_of_its_kind() {
+        let place = Place::new();
+        write(&place, "home/Documents/a.txt", b"a");
+        let request = Request::TrashFile { path: place.path("home/Documents/a.txt") };
+        let refused = move_to_trash(&place.allowed(), &request, &|_: &Path| Err("permission denied".to_string()));
+        assert_eq!(refused, Err(FolderError::Failed("permission denied".into())));
+        let Response::Error { code, message } = FolderError::Failed("permission denied".into()).response() else {
+            panic!("an error")
+        };
+        assert!(code == "error" && !message.contains("a.txt"), "{message}");
+    }
+
     #[test]
     fn a_plan_names_what_the_command_touches() {
         let place = Place::new();
@@ -819,7 +974,8 @@ mod tests {
         assert_eq!(planned, Plan { from: Some(docs.join("a.txt")), to: Some(docs.join("a.txt")) });
         let facts = planned.facts();
         assert_eq!(facts.from.as_deref(), Some(docs.join("a.txt").to_string_lossy().as_ref()));
-        assert_eq!(plan(&allowed, &Request::TrashFile { path: place.path("home/Documents/a.txt") }), Ok(None));
+        let trash = Request::TrashFile { path: place.path("home/Documents/a.txt") };
+        assert_eq!(plan(&allowed, &trash), Ok(Some(Plan { from: Some(docs.join("a.txt")), to: None })));
         assert_eq!(plan(&allowed, &Request::ListTools), Ok(None));
         assert_eq!(fs::read_dir(&docs).expect("listed").count(), 2, "planning changes nothing");
     }

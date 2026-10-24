@@ -1,13 +1,14 @@
 //! The assistant's own tools (concept "Eigene Werkzeuge" in `docs/assistent.md`, issue #225): abilities only the
 //! assistant and the bots have, each with a switch and settings of its own. The first one makes PDFs; the second,
-//! `files` (issue #304, "Werkzeug Dateien"), organizes files in the folders a person allowed – moving to the trash
-//! answers `unsupported` until task WD.3.
+//! `files` (issue #304, "Werkzeug Dateien"), organizes files in the folders a person allowed and moves them to the
+//! system's trash, never deleting for good.
 //!
 //! - `pdf`: sets a PDF from Markdown and one of the three page templates (task WZ.3).
 //! - `place`: where a new file goes and what it is called (task WZ.4).
 //! - `files`: the register of every file a tool made (task WZ.4).
 //! - `folders`: the bounds of the tool `files` – allowed folders, their access, what stays locked (task WD.2).
-//! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2).
+//! - `organize`: the commands of the tool `files` – list, find, make a folder, copy, move (task WD.2), move to the
+//!   trash (task WD.3).
 //!
 //! [`Tools`] answers the `tools.*` requests (task WZ.4). The core checks before: the tool's switch for every key
 //! (`Lack::ToolOff`), for a client its rights and selection (`Lack::Tool`) and that a file is its own; the handlers
@@ -38,6 +39,11 @@ use crate::pim::Reach;
 /// Opens a file with the system's program for it, without waiting ([`system_open`]); tests record instead.
 pub type Opener = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
 
+/// Moves the entry at a path to the system's trash ([`system_trash`], task WD.3); tests record instead and never touch
+/// the person's trash. The path is the entry itself as [`folders::Allowed::entry`] resolves it: a symbolic link goes,
+/// not what it points to. `Err` is the kind of the system's error, never a path.
+pub type Trasher = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>;
+
 /// The folders the tools work with. Each is a parameter, so tests never touch the person's.
 #[derive(Debug, Clone, Default)]
 pub struct Roots {
@@ -60,13 +66,14 @@ pub struct Tools {
     roots: Roots,
     register: Register,
     open: Opener,
+    trash: Trasher,
 }
 
 impl Tools {
     /// The person's: the register in the core's data folder, the system's desktop and home folder, the design
-    /// packs' folder, files opened with the system's program, and locked for the tool `files` the config, data and
-    /// state folders of every app of the suite, the files with client keys and hooks and the system's key stores.
-    /// In tests none of them: nothing of the person's.
+    /// packs' folder, files opened with the system's program and moved to the system's trash, and locked for the tool
+    /// `files` the config, data and state folders of every app of the suite, the files with client keys and hooks and
+    /// the system's key stores. In tests none of them: nothing of the person's.
     pub fn system() -> Tools {
         if cfg!(test) {
             return Tools::new(Roots::default());
@@ -84,19 +91,29 @@ impl Tools {
         }
         excluded.extend(home.as_deref().map(folders::key_stores).unwrap_or_default());
         let roots = Roots { data, desktop: dirs::desktop_dir(), home, fonts: torro_core::design::font_dir(), excluded };
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open: Arc::new(system_open) }
+        let (open, trash): (Opener, Trasher) = (Arc::new(system_open), Arc::new(system_trash));
+        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash }
     }
 
-    /// The tools with `roots`; files are opened by nobody (tests set an [`Opener`] with [`Tools::with_opener`]).
+    /// The tools with `roots`; files are opened by nobody and nothing goes to a trash (tests set an [`Opener`] with
+    /// [`Tools::with_opener`] and a [`Trasher`] with [`Tools::with_trasher`]).
     pub fn new(roots: Roots) -> Tools {
         let open: Opener = Arc::new(|_: &Path| Err("nothing is opened here".to_string()));
-        Tools { register: Register::in_dir(roots.data.clone()), roots, open }
+        let trash: Trasher = Arc::new(|_: &Path| Err("there is no trash here".to_string()));
+        Tools { register: Register::in_dir(roots.data.clone()), roots, open, trash }
     }
 
     /// `self` opening files with `open`, for tests.
     #[cfg(test)]
     pub fn with_opener(mut self, open: Opener) -> Tools {
         self.open = open;
+        self
+    }
+
+    /// `self` moving entries to the trash with `trash`, for tests: one that records, never the person's trash.
+    #[cfg(test)]
+    pub fn with_trasher(mut self, trash: Trasher) -> Tools {
+        self.trash = trash;
         self
     }
 
@@ -338,6 +355,34 @@ fn system_open(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Moves `path` to the system's trash ([`Trasher`]): the Recycle Bin on Windows, the freedesktop trash on Linux, the
+/// Finder's trash on macOS. The entry itself, also a symbolic link (the `trash` crate resolves only its folder). On
+/// macOS through `NSFileManager` rather than the Finder: no Apple Events, so no permission to control the Finder and
+/// no Finder started; only "Put Back" is missing. The error is its kind, never a path.
+fn system_trash(path: &Path) -> Result<(), String> {
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut context = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        context.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    context.delete(path).map_err(|err| trash_error_kind(&err))
+}
+
+/// The kind of a refusal of the system's trash, for the answer and the log: the errors of the `trash` crate carry
+/// paths and the system's own text, which may name the path too, so neither is passed on.
+fn trash_error_kind(err: &trash::Error) -> String {
+    match err {
+        #[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), not(target_os = "android")))]
+        trash::Error::FileSystem { source, .. } => source.kind().to_string(),
+        trash::Error::Os { code, .. } => format!("system error {code}"),
+        trash::Error::TargetedRoot => "a root folder cannot go to the trash".to_string(),
+        trash::Error::CouldNotAccess { .. } | trash::Error::CanonicalizePath { .. } => "not reachable".to_string(),
+        _ => "the trash refused it".to_string(),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::Mutex;
@@ -571,6 +616,24 @@ pub(crate) mod tests {
         rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
         let off = files(&settings, &rights);
         assert!(off.allowed && !off.enabled, "allowed, but switched off");
+    }
+
+    /// Task WD.3: the system trash's errors carry paths and the system's text; the answer takes only their kind.
+    #[test]
+    fn a_trash_error_names_no_path() {
+        let secret = "/Users/anna/Secret plans.pdf";
+        for err in [
+            trash::Error::CouldNotAccess { target: secret.into() },
+            trash::Error::CanonicalizePath { original: secret.into() },
+            trash::Error::Unknown { description: format!("cannot trash {secret}") },
+            trash::Error::Os { code: 13, description: secret.into() },
+            trash::Error::TargetedRoot,
+        ] {
+            let kind = trash_error_kind(&err);
+            assert!(!kind.is_empty() && !kind.contains("Secret"), "{kind}");
+        }
+        let none = Tools::new(Roots::default());
+        assert!((none.trash)(Path::new("/tmp/x")).is_err(), "no trash without one set");
     }
 
     #[test]
