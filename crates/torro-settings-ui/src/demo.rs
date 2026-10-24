@@ -15,7 +15,9 @@ use std::sync::Mutex;
 use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
-use torro_core::settings::{AssistantDefault, CalendarReminders, PdfTemplateId, Reminders, Settings, ToolId, Tools};
+use torro_core::settings::{
+    AllowedFolder, AssistantDefault, CalendarReminders, FolderAccess, PdfTemplateId, Reminders, Settings, ToolId, Tools,
+};
 use torro_core::theme::Appearance;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
@@ -73,6 +75,13 @@ impl Demo {
         tools.set_on(ToolId::Pdf, true);
         tools.pdf.folder = Some("/home/anna/Documents/PDFs".into());
         tools.pdf.template_mut(PdfTemplateId::Report).logo = Some("/home/anna/Pictures/acme-logo.png".into());
+        // The files tool on, with two allowed folders, one to read and one to write (task WD.4), so
+        // Tools shows both steps of the picker.
+        tools.set_on(ToolId::Files, true);
+        tools.folders = vec![
+            AllowedFolder { path: "/home/anna/Documents".into(), access: FolderAccess::Read },
+            AllowedFolder { path: "/home/anna/Projects/Invoices".into(), access: FolderAccess::ReadWrite },
+        ];
         reminders.calendars.insert(WORK_CALENDAR.into(), CalendarReminders::FullScreen);
         let settings = Settings {
             appearance: Appearance::Dark,

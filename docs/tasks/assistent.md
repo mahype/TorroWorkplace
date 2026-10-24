@@ -1147,7 +1147,7 @@ WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, k
   ohne Freigabe. `cargo check` für Linux und Windows, soweit die Ziele installiert sind, sonst im Bericht als offen.
 
 ### WD.4 Assistent › Einstellungen › Tools: freigegebene Ordner und Werkzeug Dateien
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WD.1 · **Dateien:** `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`,
   `crates/torro-settings-ui/src/demo.rs`, `crates/torroassistant/src/app.rs`, `crates/torro-core/src/i18n/de.rs`,
   `docs/settings.md`

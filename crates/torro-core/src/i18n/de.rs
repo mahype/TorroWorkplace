@@ -5259,6 +5259,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Copied file", "Datei kopiert"),
     ("Moved file", "Datei verschoben"),
     ("Moved to trash", "In den Papierkorb gelegt"),
+    // The tool files (WD.4, #304): the allowed folders in the assistant's Tools settings
+    ("Allowed folders", "Freigegebene Ordner"),
+    ("Add folder…", "Ordner hinzufügen…"),
+    (
+        "Tools like Files work only in these folders; ArtCraft will use them too. Only you can change this list.",
+        "Werkzeuge wie Files arbeiten nur in diesen Ordnern; ArtCraft wird sie auch nutzen. Nur du kannst diese Liste ändern.",
+    ),
+    ("No allowed folders", "Keine freigegebenen Ordner"),
+    ("Add a folder above. The tool works only there.", "Füge oben einen Ordner hinzu. Das Werkzeug arbeitet nur dort."),
+    (
+        "A tool works only while it is on here and allowed under Access. Only you can switch it on and choose its folders.",
+        "Ein Werkzeug arbeitet nur, solange es hier eingeschaltet und unter Zugriff erlaubt ist. Nur du kannst es einschalten und seine Ordner wählen.",
+    ),
+    ("Choose a folder for the tools", "Ordner für die Werkzeuge wählen"),
     // The tool files (WD.2, #304): its bounds, its errors, its approvals
     (
         "No such file or folder in the allowed folders.",
