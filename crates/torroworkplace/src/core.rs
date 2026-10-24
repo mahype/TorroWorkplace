@@ -8576,6 +8576,17 @@ impl crate::assistant::Host for Core {
         self.settings.current().tools.enabled
     }
 
+    /// The server tools a client with `rights` may call now (issue #302, task MA.6), as
+    /// `extensions.list_tools` answers it ([`Core::extension_tools`]).
+    fn extension_tools(&self, rights: &torro_ipc::api::Rights) -> Vec<torro_ipc::extensions::ExtensionTool> {
+        Core::extension_tools(self, Reach::Client(rights))
+    }
+
+    /// The operation the core checks `request` by ([`Core::extension_operation`], issue #302).
+    fn extension_operation(&self, request: &Request) -> torro_ipc::api::Operation {
+        Core::extension_operation(self, request)
+    }
+
     /// The register's file `id` as made by `actor`'s client and still intact (issue #225), read on a
     /// blocking thread ([`crate::tools::Tools::file`]); `false` without that client.
     fn knows_file<'a>(

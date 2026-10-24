@@ -208,7 +208,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   `TORRO_BLESS=1 cargo test -p torro-ipc`.
 
 ### MA.6 Angebot an Assistent, Bots und MCP-Server
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.5 · **Dateien:** `crates/torroworkplace/src/assistant/{tools,model,prompt}.rs`,
   `crates/torroworkplace/src/bots/mod.rs`, `crates/torroworkplace/src/mcp.rs`,
   `crates/torroworkplace/assets/assistant/skill.md`
