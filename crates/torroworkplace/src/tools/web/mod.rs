@@ -6,12 +6,17 @@
 //! - [`router::Router`]: asks the switched-on providers in [`SearchProviderId::ORDER`], falls back on a block, a
 //!   limit or a missing key, adds Wikipedia's hits, throttles, pauses and keeps answers an hour in memory.
 //! - [`catalogue`]: what each provider is, where the words go and on what terms, for `tools.list_search_providers`.
+//! - [`fetch::Fetcher`]: reads one page (task WEB.3), only from the public internet, as Markdown; with
+//!   [`robots`], a reader of `robots.txt` after RFC 9309, for the addresses the model picks.
 //!
-//! The commands (`tools.web_search`, `tools.list_search_providers`) come with task WEB.4. Nothing here logs or
-//! keeps search words, addresses or a key in an error: errors carry fixed texts only ([`SearchError`]).
+//! The commands (`tools.web_search`, `tools.fetch_page`, `tools.list_search_providers`) come with task WEB.4.
+//! Nothing here logs or keeps search words, addresses or a key in an error: errors carry fixed texts only
+//! ([`SearchError`], [`fetch::FetchError`]).
 
 pub mod catalogue;
+pub mod fetch;
 pub mod providers;
+pub mod robots;
 pub mod router;
 
 use std::time::Duration;

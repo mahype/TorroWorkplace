@@ -5314,6 +5314,40 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Your own SearXNG instance. Torro checks that it answers in JSON when you enter its address.",
         "Deine eigene SearXNG-Instanz. Torro prüft beim Eintragen der Adresse, ob sie JSON liefert.",
     ),
+    // Reading a web page, reasons of tools.fetch_page (WEB.3, #305)
+    ("The address is too long.", "Die Adresse ist zu lang."),
+    (
+        "Only web addresses starting with http or https can be read.",
+        "Gelesen werden nur Webadressen, die mit http oder https beginnen.",
+    ),
+    (
+        "Addresses with a user name or password are not read.",
+        "Adressen mit Benutzername oder Passwort werden nicht gelesen.",
+    ),
+    (
+        "Addresses with an IP address are not read, only those with a name.",
+        "Adressen mit IP-Adresse werden nicht gelesen, nur solche mit einem Namen.",
+    ),
+    ("The address names no host on the internet.", "Die Adresse nennt keinen Host im Internet."),
+    (
+        "Only addresses on the standard ports 80 and 443 are read.",
+        "Gelesen werden nur Adressen auf den Standard-Ports 80 und 443.",
+    ),
+    (
+        "The address leads into a local network, which is not read.",
+        "Die Adresse führt in ein lokales Netz, das wird nicht gelesen.",
+    ),
+    (
+        "The site's robots.txt does not allow Torro to read this page.",
+        "Die robots.txt der Website erlaubt Torro nicht, diese Seite zu lesen.",
+    ),
+    ("The page redirects more than five times.", "Die Seite leitet mehr als fünfmal weiter."),
+    ("The page is neither HTML nor text.", "Die Seite ist weder HTML noch Text."),
+    ("The page is larger than 2 MB.", "Die Seite ist größer als 2 MB."),
+    ("The site has no such page.", "Diese Seite gibt es auf der Website nicht."),
+    ("The site answered with an error.", "Die Website hat mit einem Fehler geantwortet."),
+    ("The site cannot be reached.", "Die Website ist nicht erreichbar."),
+    ("The page could not be read.", "Die Seite konnte nicht gelesen werden."),
     ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
     ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
     (

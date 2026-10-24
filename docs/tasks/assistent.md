@@ -1103,7 +1103,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   Zwischenspeicher trifft, Brave nie im Speicher, Wikipedia zusätzlich; kein Netz.
 
 ### WEB.3 Kern: Seite lesen mit Wächtern, `robots.txt` und Markdown
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WEB.1 · **Dateien:** `crates/torroworkplace/src/tools/web/{fetch,robots}.rs` (neu),
   `Cargo.toml` (Wurzel: `dom_smoothie`), `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/tests/fixtures/web/**`
 - `fetch.rs`: Adresse prüfen (`http`/`https`, Hostname per `torro_pim_caldav::discover::checked_domain`, keine

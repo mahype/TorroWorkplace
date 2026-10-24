@@ -91,6 +91,13 @@ ammonia = "4.2.3"
 # of ammonia and blitz-html) and second selectors/cssparser (0.38/0.37, beside Stylo's 0.41/0.38),
 # with older phf, string_cache, servo_arc and web_atoms. MIT.
 dom_query = { version = "0.28.0", default-features = false }
+# The main content of a web page as Markdown for the tool web (torroworkplace, WEB.3, issue #305), Mozilla's
+# Readability ported to dom_query. On dom_query 0.28 above, so it adds no further html5ever: the second one (0.39)
+# came with dom_query already. No htmd (yet another html5ever). MIT.
+dom_smoothie = { version = "0.18.2", default-features = false }
+# The character set of a web page (WEB.3) that is not UTF-8 (`charset=iso-8859-1`); already in the build through
+# reqwest's `charset`, which only decodes whole bodies without a size limit. MIT/Apache-2.0.
+encoding_rs = "0.8.42"
 rustls = "0.23.45"
 rustls-platform-verifier = "0.7.1"
 tokio-rustls = "0.26.6"
