@@ -3489,6 +3489,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             && shown.only.is_none()
         {
             let view = self.category_group_view(shown.group);
+            // No category left: the group is gone from the sidebar, and an empty list would ask
+            // the core for no filter at all – every mail under the group's name.
+            if matches!(&view, View::Category(group) if group.categories().is_empty()) {
+                return self.update(Message::Show(View::Overview));
+            }
             if view != self.view {
                 self.view = view;
                 return self.load();
@@ -13568,6 +13573,22 @@ mod tests {
         load(&mut app);
         assert!(app.messages.iter().all(|m| m.category.is_none_or(|held| held.category != hidden)));
         assert_eq!(app.update(Message::MailLook(Ok(stored))).units(), 0, "the same settings change nothing");
+    }
+
+    /// Issue #300: with every category of the shown group switched off, the group is gone – the
+    /// window goes back to "For me" instead of asking the core with no categories at all (which
+    /// the core reads as no filter: all mail under the group's name).
+    #[test]
+    fn hiding_every_category_of_the_shown_group_goes_back_to_for_me() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::PaperTrail;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let all: Vec<_> = app.categories.iter().filter(|held| held.group == group).map(|held| held.category).collect();
+        let stored = MailLook { format: app.look.format, colors: app.look.colors, hidden_categories: all };
+        assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "For me is loaded");
+        assert_eq!(app.view, View::Overview);
+        assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
     }
 
     /// Issue #300: with the settings open, a click on the group shown brings its list back instead

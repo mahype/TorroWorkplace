@@ -3888,12 +3888,17 @@ In der Planung entschieden:
    `space::s()` (24) eingerückt, ihr Icon `icon::SIZE_SM` (14) in Gruppenfarbe, Text wie jede Zeile. Eine 1-px-Linie
    in der **Gruppenfarbe** läuft mittig unter dem Gruppen-Icon über die Höhe der Kategorien.
 3. **Leiste (60):** nur die vier Gruppen, keine Kategorien. Die Gruppe ist aktiv, wenn sie oder eine ihrer
-   Kategorien gezeigt wird; Name und Zahl im Tooltip wie bisher. Klick nach Regel 1.
+   Kategorien gezeigt wird; Name und Zahl im Tooltip wie bisher. Klick: aufklappen und zeigen, nie zuklappen
+   (`Message::ShowCategoryGroup`). In der Umsetzung geändert (Review): Zuklappen wäre dort unsichtbar und stünde
+   erst nach `[` überraschend zugeklappt da.
 4. **Menü (Mittel, Schmal):** Gruppen ohne Chevron, die Kategorien einer offenen Gruppe darunter eingerückt mit
-   kleinerem Icon, ohne Linie. Ein Klick auf eine Gruppe zeigt sie und schließt das Menü wie jede Ansicht.
-   Schublade = ausgeklappte Seitenleiste.
+   kleinerem Icon, ohne Linie. Ein Klick auf eine Gruppe zeigt sie und schließt das Menü wie jede Ansicht, auch
+   wenn sie schon gezeigt wird (`Message::ShowCategoryGroup`, klappt nie zu). Schublade = ausgeklappte
+   Seitenleiste. Bei offenen Einstellungen bringt ein Klick auf die Gruppe ihre Liste zurück, statt zuzuklappen.
 5. **Ausgeblendete Kategorien** (Settings › Categorization) gehören nicht zur Gruppenansicht: Die Gruppe listet
-   genau die Kategorien, die unter ihr stehen könnten.
+   genau die Kategorien, die unter ihr stehen könnten. Wird eine Kategorie der gezeigten Gruppe ausgeblendet, lädt
+   die Gruppe neu; bleibt keine übrig, geht das Fenster zu „For me“ (eine leere Liste hieße beim Dienst „kein
+   Filter“).
 6. Die Bausteine kommen nach `torro-gui` (`torro-design`: fehlende Bausteine nie lokal), nicht ins Mail-Fenster.
 
 ```text
