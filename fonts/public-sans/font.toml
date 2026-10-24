@@ -1,0 +1,39 @@
+# The font Public Sans (task SR.6, issue #299): Public Sans, figures Public Sans Figures. Its size adjustment
+# comes from its x-height.
+# Source: github.com/uswds/public-sans release v2.001 (public-sans-v2.001.zip, fonts/ttf), Version 2.001;
+# downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Public Sans files are the maker's, unchanged.
+# Public Sans Figures (Regular, Medium) is made from the Public Sans cuts with fontTools 4.67.0, with a name
+# of its own so it does not mix with the text cuts; Regular: tnum not frozen (its figures are too wide), the
+# default digits used, digits kerned against each other (up to 52 units): mapped to unkerned copies, advances
+# 814-1295 equalised to 1295 and centred; Medium: tnum not frozen (its figures are too wide), the default
+# digits used, digits kerned against each other (up to 45 units): mapped to unkerned copies, advances 825-1308
+# equalised to 1308 and centred. Copyright and licence records in the files are unchanged.
+# x-height 0.517 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.056; widest figure
+# of numbers 0.654 em, 0.691 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 814-1295, Medium 825-1308,
+# SemiBold 837-1321, Bold 856-1350 units), so numbers takes Public Sans Figures, whose ten digits are one
+# width in each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Public Sans"
+version = "1.0.0"
+author = "Torro"
+description = "Public Sans: a strong, neutral sans for interfaces, with tabular figures"
+
+[fonts.text]
+family = "Public Sans"
+regular = "PublicSans-Regular.ttf"
+medium = "PublicSans-Medium.ttf"
+semibold = "PublicSans-SemiBold.ttf"
+bold = "PublicSans-Bold.ttf"
+
+[fonts.numbers]
+family = "Public Sans Figures"
+regular = "PublicSansFigures-Regular.ttf"
+medium = "PublicSansFigures-Medium.ttf"

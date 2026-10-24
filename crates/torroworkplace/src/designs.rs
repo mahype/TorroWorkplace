@@ -123,6 +123,55 @@ const FONTS: &[Example] = &[
     },
     // Issue #299 (tasks SR.5-SR.7): the free fonts the suite ships, by id.
     Example {
+        id: "cantarell",
+        files: &[
+            example_file!("fonts", "cantarell", "font.toml"),
+            example_file!("fonts", "cantarell", "Cantarell-Bold.ttf"),
+            example_file!("fonts", "cantarell", "Cantarell-Regular.ttf"),
+            example_file!("fonts", "cantarell", "CantarellFigures-Regular.ttf"),
+            example_file!("fonts", "cantarell", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "dm-sans",
+        files: &[
+            example_file!("fonts", "dm-sans", "font.toml"),
+            example_file!("fonts", "dm-sans", "DMSans-Bold.ttf"),
+            example_file!("fonts", "dm-sans", "DMSans-Medium.ttf"),
+            example_file!("fonts", "dm-sans", "DMSans-Regular.ttf"),
+            example_file!("fonts", "dm-sans", "DMSans-SemiBold.ttf"),
+            example_file!("fonts", "dm-sans", "DMSansFigures-Medium.ttf"),
+            example_file!("fonts", "dm-sans", "DMSansFigures-Regular.ttf"),
+            example_file!("fonts", "dm-sans", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "fira-sans",
+        files: &[
+            example_file!("fonts", "fira-sans", "font.toml"),
+            example_file!("fonts", "fira-sans", "FiraSans-Bold.ttf"),
+            example_file!("fonts", "fira-sans", "FiraSans-Medium.ttf"),
+            example_file!("fonts", "fira-sans", "FiraSans-Regular.ttf"),
+            example_file!("fonts", "fira-sans", "FiraSans-SemiBold.ttf"),
+            example_file!("fonts", "fira-sans", "FiraSansFigures-Medium.ttf"),
+            example_file!("fonts", "fira-sans", "FiraSansFigures-Regular.ttf"),
+            example_file!("fonts", "fira-sans", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "geist",
+        files: &[
+            example_file!("fonts", "geist", "font.toml"),
+            example_file!("fonts", "geist", "Geist-Bold.ttf"),
+            example_file!("fonts", "geist", "Geist-Medium.ttf"),
+            example_file!("fonts", "geist", "Geist-Regular.ttf"),
+            example_file!("fonts", "geist", "Geist-SemiBold.ttf"),
+            example_file!("fonts", "geist", "GeistFigures-Medium.ttf"),
+            example_file!("fonts", "geist", "GeistFigures-Regular.ttf"),
+            example_file!("fonts", "geist", "LICENSE.txt"),
+        ],
+    },
+    Example {
         id: "hyperlegible",
         files: &[
             example_file!("fonts", "hyperlegible", "font.toml"),
@@ -133,6 +182,19 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "hyperlegible", "HyperlegibleFigures-Medium.ttf"),
             example_file!("fonts", "hyperlegible", "HyperlegibleFigures-Regular.ttf"),
             example_file!("fonts", "hyperlegible", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "lexend",
+        files: &[
+            example_file!("fonts", "lexend", "font.toml"),
+            example_file!("fonts", "lexend", "LICENSE.txt"),
+            example_file!("fonts", "lexend", "Lexend-Bold.ttf"),
+            example_file!("fonts", "lexend", "Lexend-Medium.ttf"),
+            example_file!("fonts", "lexend", "Lexend-Regular.ttf"),
+            example_file!("fonts", "lexend", "Lexend-SemiBold.ttf"),
+            example_file!("fonts", "lexend", "LexendFigures-Medium.ttf"),
+            example_file!("fonts", "lexend", "LexendFigures-Regular.ttf"),
         ],
     },
     Example {
@@ -181,6 +243,19 @@ const FONTS: &[Example] = &[
         ],
     },
     Example {
+        id: "public-sans",
+        files: &[
+            example_file!("fonts", "public-sans", "font.toml"),
+            example_file!("fonts", "public-sans", "LICENSE.txt"),
+            example_file!("fonts", "public-sans", "PublicSans-Bold.ttf"),
+            example_file!("fonts", "public-sans", "PublicSans-Medium.ttf"),
+            example_file!("fonts", "public-sans", "PublicSans-Regular.ttf"),
+            example_file!("fonts", "public-sans", "PublicSans-SemiBold.ttf"),
+            example_file!("fonts", "public-sans", "PublicSansFigures-Medium.ttf"),
+            example_file!("fonts", "public-sans", "PublicSansFigures-Regular.ttf"),
+        ],
+    },
+    Example {
         id: "roboto",
         files: &[
             example_file!("fonts", "roboto", "font.toml"),
@@ -188,6 +263,19 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "roboto", "Roboto-Bold.ttf"),
             example_file!("fonts", "roboto", "Roboto-Medium.ttf"),
             example_file!("fonts", "roboto", "Roboto-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "rubik",
+        files: &[
+            example_file!("fonts", "rubik", "font.toml"),
+            example_file!("fonts", "rubik", "LICENSE.txt"),
+            example_file!("fonts", "rubik", "Rubik-Bold.ttf"),
+            example_file!("fonts", "rubik", "Rubik-Medium.ttf"),
+            example_file!("fonts", "rubik", "Rubik-Regular.ttf"),
+            example_file!("fonts", "rubik", "Rubik-SemiBold.ttf"),
+            example_file!("fonts", "rubik", "RubikFigures-Medium.ttf"),
+            example_file!("fonts", "rubik", "RubikFigures-Regular.ttf"),
         ],
     },
     Example {
@@ -733,8 +821,23 @@ mod tests {
     /// The six examples that are a font and a colour scheme (and were a design too until issue #291).
     const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
     /// The fonts that are only a font (issue #299, tasks SR.5–SR.7), by id.
-    const FONTS_ONLY: [&str; 8] =
-        ["hyperlegible", "manrope", "noto-sans", "nunito", "open-sans", "roboto", "source", "work-sans"];
+    const FONTS_ONLY: [&str; 15] = [
+        "cantarell",
+        "dm-sans",
+        "fira-sans",
+        "geist",
+        "hyperlegible",
+        "lexend",
+        "manrope",
+        "noto-sans",
+        "nunito",
+        "open-sans",
+        "public-sans",
+        "roboto",
+        "rubik",
+        "source",
+        "work-sans",
+    ];
     /// The six examples that are only a colour scheme (task L.20).
     const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
     /// The colour schemes after free palettes in light and dark (issue #292). They bring no logo of their
@@ -908,6 +1011,14 @@ mod tests {
             ("roboto", "Roboto", "Roboto"),
             ("work-sans", "Work Sans", "Work Sans Figures"),
             ("manrope", "Manrope", "Manrope Figures"),
+            // SR.6.
+            ("dm-sans", "DM Sans", "DM Sans Figures"),
+            ("public-sans", "Public Sans", "Public Sans Figures"),
+            ("lexend", "Lexend", "Lexend Figures"),
+            ("fira-sans", "Fira Sans", "Fira Sans Figures"),
+            ("geist", "Geist", "Geist Figures"),
+            ("rubik", "Rubik", "Rubik Figures"),
+            ("cantarell", "Cantarell", "Cantarell Figures"),
         ] {
             let font = design::load_font(&repo(Part::Font), id).unwrap_or_else(|p| panic!("{id}: {p:?}"));
             assert_eq!((font.fonts.text.family.as_str(), font.fonts.numbers.family.as_str()), (text, numbers));

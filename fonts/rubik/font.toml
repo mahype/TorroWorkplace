@@ -1,0 +1,39 @@
+# The font Rubik (task SR.6, issue #299): Rubik, figures Rubik Figures. Its size adjustment comes from its
+# x-height.
+# Source: github.com/googlefonts/rubik (fonts/variable/Rubik[wght].ttf at commit e337a5f, the file
+# google/fonts ships), Version 2.300; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's
+# OFL text as published.
+# Reserved Font Name: none.
+# Regular, Medium, SemiBold and Bold are fixed cuts of the variable font, made with fontTools 4.67.0
+# varLib.instancer (wght 400/500/600/700, nothing else to pin) and named Rubik.
+# Rubik Figures (Regular, Medium) is made from the Rubik cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (619); Medium: tnum frozen, digits already one width (641).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.520 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.050; widest figure
+# of numbers 0.641 em, 0.673 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 428-636, Medium 463-657,
+# SemiBold 479-668, Bold 497-683 units), so numbers takes Rubik Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Rubik"
+version = "1.0.0"
+author = "Torro"
+description = "Rubik: a sans with slightly rounded corners, with tabular figures"
+
+[fonts.text]
+family = "Rubik"
+regular = "Rubik-Regular.ttf"
+medium = "Rubik-Medium.ttf"
+semibold = "Rubik-SemiBold.ttf"
+bold = "Rubik-Bold.ttf"
+
+[fonts.numbers]
+family = "Rubik Figures"
+regular = "RubikFigures-Regular.ttf"
+medium = "RubikFigures-Medium.ttf"

@@ -248,7 +248,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
 - **Abnahme:** jede lädt ohne Gründe (Test in `designs.rs`), Zeilen in der Doku, Sichtprüfung je Schrift.
 
 ### SR.6 Sans 2: DM Sans, Public Sans, Lexend, Fira Sans, Geist, Rubik, Cantarell
-- [ ] erledigt
+- [x] erledigt (2026-10-24: Public Sans und Lexend mit angeglichenen Standardziffern statt `tnum`, Cantarell nur Regular und Bold; die Sichtprüfung je Schrift steht in SR.8)
 - **Modell:** Opus · **Braucht:** SR.5 · **Dateien:** `fonts/{dm-sans,public-sans,lexend,fira-sans,geist,rubik,
   cantarell}/`, `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md`
 - Nach den gemeinsamen Regeln.

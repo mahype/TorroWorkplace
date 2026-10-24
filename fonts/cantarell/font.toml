@@ -1,0 +1,32 @@
+# The font Cantarell (task SR.6, issue #299): Cantarell, figures Cantarell Figures. Its size adjustment comes
+# from its x-height.
+# Source: github.com/google/fonts (ofl/cantarell at commit e7db6ca), Version 1.004; downloaded 2026-10-24.
+# Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as published.
+# Reserved Font Name: none.
+# The Cantarell files are the maker's, unchanged.
+# Cantarell Figures (Regular) is made from the Cantarell cuts with fontTools 4.67.0, with a name of its own so
+# it does not mix with the text cuts; Regular: the font has no tnum, digits already one width (1300).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.482 em (top of the x of the Regular, which has no OS/2 sxHeight), so the automatic size
+# adjustment is 1.132; widest figure of numbers 0.635 em, 0.718 em after it.
+# Figures checked with fontTools: the default digits differ in width (Bold 1464-1546 units), so numbers takes
+# Cantarell Figures, whose ten digits are one width in each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Cantarell"
+version = "1.0.0"
+author = "Torro"
+description = "Cantarell: a contemporary humanist sans with gentle curves"
+
+[fonts.text]
+family = "Cantarell"
+regular = "Cantarell-Regular.ttf"
+bold = "Cantarell-Bold.ttf"
+
+[fonts.numbers]
+family = "Cantarell Figures"
+regular = "CantarellFigures-Regular.ttf"
