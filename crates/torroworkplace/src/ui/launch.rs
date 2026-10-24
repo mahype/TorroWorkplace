@@ -594,6 +594,8 @@ fn demo_fonts() -> Vec<FontEntry> {
         author: font.about.author.clone(),
         description: font.about.description.clone(),
         license: Some(font.license.clone()),
+        origin: torro_ipc::FontOrigin::Bundled,
+        kind: font.kind,
         standard: font.is_standard(),
         valid: true,
         problems: Vec::new(),
@@ -615,6 +617,8 @@ fn demo_fonts() -> Vec<FontEntry> {
         author: Some("Torro samples".into()),
         description: None,
         license: None,
+        origin: torro_ipc::FontOrigin::Folder,
+        kind: None,
         standard: false,
         valid: false,
         problems: [

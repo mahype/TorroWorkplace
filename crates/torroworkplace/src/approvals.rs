@@ -3618,6 +3618,21 @@ pub(crate) mod tests {
         assert!(!summary(&font, &both).contains("jetbrains-mono"));
     }
 
+    /// Issue #299: a font of the computer is named by its id, cut and cleaned like any text of a
+    /// client – a long family or one with bidi controls can't take over the question.
+    #[test]
+    fn a_font_of_the_computer_is_named_short_and_clean() {
+        let set = |id: &str| Request::SetSetting { key: torro_ipc::SettingKey::Font, value: serde_json::json!(id) };
+        let plain = summary(&set("system:Avenir Next"), &Facts::default());
+        assert_eq!(
+            plain,
+            trf("Change the setting {key} to {value}", &[("key", &"Font"), ("value", &"'system:Avenir Next'")])
+        );
+        let sneaky = summary(&set(&format!("system:Evil\u{202E}{}", "x".repeat(200))), &Facts::default());
+        assert!(!sneaky.contains('\u{202E}') && sneaky.contains('…'), "{sneaky}");
+        assert!(sneaky.chars().count() < 200, "{sneaky}");
+    }
+
     #[test]
     fn a_summary_names_the_item_that_runs_not_the_one_the_client_claims() {
         let today = Local::now().date_naive();

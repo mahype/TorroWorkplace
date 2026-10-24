@@ -2102,6 +2102,8 @@ mod tests {
                 author: None,
                 description: None,
                 license: None,
+                origin: torro_ipc::FontOrigin::Bundled,
+                kind: None,
                 standard: false,
                 valid: false,
                 problems: vec!["A file is missing.".into()],

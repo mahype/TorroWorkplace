@@ -362,6 +362,44 @@ fn listed_in<T>(
     list(dir.unwrap_or(std::path::Path::new("")))
 }
 
+/// The fonts of the folders (`folders`, the standard first) and of the computer (`system`) as
+/// `settings.list_fonts` answers them, `chosen` the id the settings name. The standard and the
+/// suite's examples are `bundled` ([`crate::designs::bundled_font`]), other folders `folder`, the computer's
+/// `system` and without a licence: they are used, never handed on.
+fn font_infos(
+    folders: Vec<torro_core::design::Listed<torro_core::design::FontSet>>,
+    system: Vec<torro_core::design::Listed<torro_core::design::FontSet>>,
+    chosen: &str,
+) -> Vec<torro_ipc::FontInfo> {
+    use torro_ipc::FontOrigin;
+    let folders = folders.into_iter().map(|font| {
+        let origin = if crate::designs::bundled_font(&font.id) { FontOrigin::Bundled } else { FontOrigin::Folder };
+        (font, origin)
+    });
+    let system = system.into_iter().map(|font| (font, FontOrigin::System));
+    folders
+        .chain(system)
+        .map(|(font, origin)| {
+            let found = font.result.as_ref().ok();
+            torro_ipc::FontInfo {
+                family: found.map(|set| set.fonts.text.family.clone()),
+                license: found.filter(|_| origin != FontOrigin::System).map(|set| set.license.clone()),
+                kind: found.and_then(|set| set.kind),
+                origin,
+                valid: font.valid(),
+                problems: problems_of(&font),
+                active: font.id == chosen,
+                id: font.id,
+                name: font.about.name,
+                version: font.about.version,
+                author: font.about.author,
+                description: font.about.description,
+                standard: font.standard,
+            }
+        })
+        .collect()
+}
+
 /// Why a listed part can't be used, one sentence per reason, for people.
 fn problems_of<T>(listed: &torro_core::design::Listed<T>) -> Vec<String> {
     listed.problems().iter().map(ToString::to_string).collect()
@@ -4192,7 +4230,7 @@ impl Core {
             Request::TestVoice => self.test_voice().await,
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::ListDesigns => Response::Designs { designs: self.list_designs() },
-            Request::ListFonts => Response::Fonts { fonts: self.list_fonts() },
+            Request::ListFonts => Response::Fonts { fonts: self.list_fonts().await },
             Request::ListColorSchemes => Response::ColorSchemes { color_schemes: self.list_color_schemes() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
             Request::RemoveAccount { id } => self.remove_account(&id).await,
@@ -7569,28 +7607,13 @@ impl Core {
     }
 
     /// `settings.list_fonts` (task L.22): every font with its family and licence, like
-    /// [`Core::list_designs`].
-    fn list_fonts(&self) -> Vec<torro_ipc::FontInfo> {
-        let chosen = self.settings.current().font;
-        listed_in(self.settings.fonts(), torro_core::design::list_fonts)
-            .into_iter()
-            .map(|font| {
-                let found = font.result.as_ref().ok();
-                torro_ipc::FontInfo {
-                    family: found.map(|set| set.fonts.text.family.clone()),
-                    license: found.map(|set| set.license.clone()),
-                    valid: font.valid(),
-                    problems: problems_of(&font),
-                    active: font.id == chosen,
-                    id: font.id,
-                    name: font.about.name,
-                    version: font.about.version,
-                    author: font.about.author,
-                    description: font.about.description,
-                    standard: font.standard,
-                }
-            })
-            .collect()
+    /// [`Core::list_designs`]; after the folders the fonts of the computer (issue #299), from one
+    /// fresh scan off the async threads (about 100 ms). Never fails: when the scan can't run, only the
+    /// folders are listed.
+    async fn list_fonts(&self) -> Vec<torro_ipc::FontInfo> {
+        let folders = listed_in(self.settings.fonts(), torro_core::design::list_fonts);
+        let system = tokio::task::spawn_blocking(torro_core::design::list_system_fonts).await.unwrap_or_default();
+        font_infos(folders, system, &self.settings.current().font)
     }
 
     /// `settings.list_color_schemes` (task L.22): every colour scheme, like [`Core::list_designs`].
@@ -9702,6 +9725,10 @@ mod tests {
         };
         write("fonts", "plain", "font.toml", "");
         write("fonts", "lost", "font.toml", "[fonts.text]\nfamily = \"Lost\"\nregular = \"Lost.ttf\"\n");
+        // An example of the suite's in its fonts folder is `bundled` (issue #299).
+        write("fonts", "plex", "font.toml", "");
+        let plex = "format = 1\nkind = \"serif\"\n[about]\nname = \"plex\"\nversion = \"1.0.0\"\n";
+        std::fs::write(data.join("fonts").join("plex").join("font.toml"), plex).expect("font.toml");
         write("color-schemes", "nord", "color-scheme.toml", "");
         write("color-schemes", "murky", "color-scheme.toml", "[colors.dark]\ntext = \"#151515\"\n");
         write("designs", "airy", "design.toml", "");
@@ -9712,9 +9739,23 @@ mod tests {
         std::fs::write(&airy, suggesting).expect("design.toml");
 
         let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
-        let Response::Fonts { fonts } = ask(&core, Some(&reader), Request::ListFonts).await else { panic!("fonts") };
+        let Response::Fonts { fonts: all } = ask(&core, Some(&reader), Request::ListFonts).await else {
+            panic!("fonts")
+        };
+        // Issue #299: the computer's fonts come after the folders. Which ones a computer has is no
+        // business of a test: only that every one after the folders is one of them.
+        let folders = all.iter().take_while(|font| font.origin != torro_ipc::FontOrigin::System).count();
+        let (fonts, system) = all.split_at(folders);
+        assert!(system.iter().all(|font| font.origin == torro_ipc::FontOrigin::System && font.license.is_none()));
+        assert!(system.iter().all(|font| font.id.starts_with("system")), "{system:?}");
         let ids: Vec<&str> = fonts.iter().map(|font| font.id.as_str()).collect();
-        assert_eq!(ids, ["torro", "lost", "plain"], "the standard first, then by folder name");
+        assert_eq!(ids, ["torro", "lost", "plain", "plex"], "the standard first, then by folder name");
+        let origins: Vec<torro_ipc::FontOrigin> = fonts.iter().map(|font| font.origin).collect();
+        use torro_ipc::FontOrigin::{Bundled, Folder};
+        assert_eq!(origins, [Bundled, Folder, Folder, Bundled]);
+        let kinds = fonts.iter().map(|font| font.kind);
+        use torro_core::design::FontKind;
+        assert_eq!(kinds.collect::<Vec<_>>(), [Some(FontKind::Sans), None, None, Some(FontKind::Serif)]);
         assert!(fonts[0].standard && fonts[0].valid && fonts[0].active);
         assert_eq!((fonts[0].family.as_deref(), fonts[0].license.as_deref()), (Some("Inter"), Some("OFL-1.1")));
         assert!(!fonts[1].valid && fonts[1].problems.iter().any(|p| p.contains("Lost.ttf")), "{:?}", fonts[1]);
@@ -9761,6 +9802,41 @@ mod tests {
         let kept = settings(&core).await;
         assert_eq!((kept.font.as_str(), kept.color_scheme.as_str()), ("plain", "nord"));
         assert_eq!(kept.appearance, torro_core::theme::Appearance::Dark);
+    }
+
+    /// Issue #299: a font of the computer is `system` and carries no licence, even a valid one; a
+    /// broken one keeps its reasons. The folders stay first.
+    #[test]
+    fn the_fonts_of_the_computer_follow_the_folders_without_a_licence() {
+        use torro_core::design::{DesignError, FontSet, Listed};
+        let entry = |id: &str, result: Result<FontSet, Vec<DesignError>>| Listed {
+            id: id.to_string(),
+            about: torro_core::design::About { name: id.to_string(), ..Default::default() },
+            standard: false,
+            result,
+        };
+        let standard = Listed { standard: true, ..entry("torro", Ok(FontSet::standard())) };
+        let avenir = FontSet { id: "system:Avenir".into(), kind: None, ..FontSet::standard() };
+        let gone = vec![DesignError::SystemNoRegular { family: "Gone".into() }];
+        let infos = font_infos(
+            vec![standard, entry("mine", Ok(FontSet::standard()))],
+            vec![entry("system:Avenir", Ok(avenir)), entry("system:Gone", Err(gone))],
+            "system:Avenir",
+        );
+        use torro_ipc::FontOrigin::{Bundled, Folder, System};
+        let got: Vec<(&str, torro_ipc::FontOrigin, Option<&str>, bool)> =
+            infos.iter().map(|f| (f.id.as_str(), f.origin, f.license.as_deref(), f.active)).collect();
+        assert_eq!(
+            got,
+            [
+                ("torro", Bundled, Some("OFL-1.1"), false),
+                ("mine", Folder, Some("OFL-1.1"), false),
+                ("system:Avenir", System, None, true),
+                ("system:Gone", System, None, false),
+            ]
+        );
+        assert_eq!((infos[2].kind, infos[2].family.as_deref()), (None, Some("Inter")));
+        assert!(!infos[3].valid && infos[3].problems.iter().any(|p| p.contains("Gone")));
     }
 
     /// Task L.33: the designs name their density and what they suggest, a colour scheme whether it is

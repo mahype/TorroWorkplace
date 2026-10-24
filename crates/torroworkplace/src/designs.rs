@@ -364,6 +364,13 @@ const COLOR_SCHEMES: &[Example] = &[
     },
 ];
 
+/// Whether the font `id` ships with the suite (issue #299, `FontInfo::origin`): the standard or one of
+/// the example fonts laid into the fonts folder. A folder of that name the user changed since still
+/// counts: the id is what the control centre groups by.
+pub fn bundled_font(id: &str) -> bool {
+    id == torro_core::design::STANDARD_ID || FONTS.iter().any(|example| example.id == id)
+}
+
 /// The examples of `part`.
 fn examples(part: Part) -> &'static [Example] {
     match part {

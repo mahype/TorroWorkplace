@@ -155,7 +155,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
   eine Systemschrift nichts.
 
 ### SR.2 Dienst, API, MCP: Herkunft und Art jeder Schrift, Systemschriften wählen
-- [ ] erledigt
+- [x] erledigt (2026-10-24: `torro-api-review` ohne Fehler; die Prüfung von `system:…` beim Setzen läuft wie die anderen Teile synchron unter der Sperre der Einstellungen)
 - **Modell:** Opus · **Braucht:** SR.1 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`,
   `docs/api.md`, `crates/torroworkplace/src/{core,designs,settings_service,mcp,approvals}.rs`
 - **`FontInfo`:** neues Feld `origin: FontOrigin` (`pub enum FontOrigin { Bundled, Folder, System }` in
