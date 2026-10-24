@@ -346,7 +346,7 @@ dazu beginnt mit einer Kopie von `designs/compact/design.toml`.
 | Ordner | Datei | trägt | dazu |
 |---|---|---|---|
 | `designs/<id>/` | `design.toml` | `format`, `[about]` (mit den Vorschlägen `font` und `mail_view`), `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | `preview.png` |
-| `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
+| `fonts/<id>/` | `font.toml` | `format`, `license`, `size_adjust` (optional), `kind` (optional: `sans`, `serif`, `mono`), `[about]`, `[fonts.text\|heading\|numbers]` | die Schriftdateien, `LICENSE.txt` |
 | `color-schemes/<id>/` | `color-scheme.toml` | `format`, `dark_only` (optional, [nur dunkel](#farbschema-nur-dunkel)), `[about]`, `[colors.light\|dark]` (mit Seitenleiste und Diagramm), `[logo] mark` | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird für sich geprüft. Wer nur einen Teil
@@ -506,7 +506,7 @@ Jeder Teil hat einen eigenen Ordner im Datenordner, jeder Eintrag ist ein Untero
 | Ordner | Datei | bringt | dazu |
 |---|---|---|---|
 | `designs/<id>/` | `design.toml`: `[about]`, `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]`, `[list]` | ein **Design** | `preview.png` |
-| `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
+| `fonts/<id>/` | `font.toml`: `[about]`, `license`, `size_adjust`, `kind`, `[fonts.text\|heading\|numbers]` | eine **Schrift** | Schriftdateien, `LICENSE.txt` |
 | `color-schemes/<id>/` | `color-scheme.toml`: `dark_only` (optional), `[about]`, `[colors.light\|dark]` mit Seitenleiste und Diagramm, `[logo]` | ein **Farbschema** | `logo.svg`, bei fremder Palette `LICENSE.txt` |
 
 - Jede Datei hat ihr eigenes `[about]` (Name, Version, Autor, Beschreibung). Dieselbe id darf in mehreren Ordnern
@@ -647,18 +647,50 @@ kräftiger); `text` und `text_2` erreichen 4,5:1 auch auf den getönten Terminfl
 | Sonokai | `sonokai` | Dark only | github.com/sainnhe/sonokai | MIT | Stil default, Akzent sein Blau `#76CCE0`; ohne Cyan und Magenta (Violett, Gelb im Kalender); gedämpfter Text und Rot verschoben |
 | Synthwave ’84 | `synthwave-84` | Dark only | github.com/robb0wen/synthwave-vscode | MIT | Akzent Pink `#FF7EDB`; Blau und Cyan sind ein Neon-Cyan (Gelb als fünfte Kalenderfarbe); gedämpfter Text und Rot verschoben |
 
-### Mitgelieferte Schriften (Vorschlag)
+### Schriften des Systems
 
-Alle unter OFL, mit `LICENSE.txt`. Ziffern wie in L.5 prüfen: gleich breit, sonst eine Ziffernschrift dazu.
+Neben den Schriften von Torro kann die Suite die Schriften nutzen, die auf dem Rechner installiert sind (Issue #299).
+Sie **nutzt sie nur mit und gibt sie nicht weiter**: Nichts wird kopiert, die Dateien werden nur gelesen, um sie zu
+prüfen, und gespeichert wird nur die Id in `Settings::font`. Das Format der Einstellungen bleibt gleich.
 
-| Schrift | Familien | wozu |
-|---|---|---|
-| **Torro** | Inter, Ziffern Inter Tabular | Standard |
-| **Hyperlegible** | Atkinson Hyperlegible Next (Braille Institute) | eindeutige Buchstaben (I, l, 1), für Clear |
-| **Source** | Source Sans 3, Überschriften Source Serif 4 | Lesen, für Folio |
-| **Nunito** | Nunito | runde Strichenden, für Pebble |
-| **JetBrains Mono** | JetBrains Mono für alle Rollen | Terminal-Gefühl, für Square |
-| Plex, Commitr, Channelr, Guildr, Quattro, Ribbon | IBM Plex Sans, Mona Sans, Lato, Figtree, Roboto Flex, Selawik | gibt es schon in den Paketen |
+- **Ids:** `system` ist der Eintrag „System“, die Oberflächenschrift des Betriebssystems, beim Laden jedes Mal neu
+  aufgelöst: auf macOS `System Font` (SF), auf Windows die erste von `Segoe UI Variable Text`, `Segoe UI Variable`,
+  `Segoe UI`, auf Linux die Familie von `fc-match -f '%{family[0]}' sans-serif`. `system:<Familie>` ist eine
+  installierte Familie (`system:Avenir Next`). Ordner-Ids sind `a-z0-9-`, keine kann mit `system:` beginnen;
+  `system` selbst ist wie `torro` als Ordnername gesperrt.
+- **Welche erscheinen:** Familien, deren Name nicht mit `.` beginnt, höchstens 64 Zeichen hat und keine Steuer- oder
+  Formatzeichen enthält (der Name stammt aus einer fremden Datei und wird Teil der Id), mit einem aufrechten Schnitt,
+  dessen regulärer Schnitt `A–Z a–z ä ö ü ß é` hat. Symbol-, Emoji- und nicht lateinische Schriften erscheinen gar
+  nicht.
+- **Regeln** (am aufrechten Schnitt mit Gewicht 400): Ohne ihn ist die Familie mit Grund ungültig. Schnitte gelten
+  nur, wo ein aufrechter Schnitt genau das Gewicht hat, sonst der nächste (`Font::nearest`); ein variabler regulärer
+  Schnitt mit Achse `wght` gilt als Regular, Medium und SemiBold, nicht als Bold (Iced zeichnet SF bei 500 und 600 aus
+  der Achse und fällt bei 700 auf eine andere Schrift). Sind die zehn Ziffern gleich breit, bleibt `numbers` die
+  Familie, sonst die eingebaute Inter Tabular. Der Größenausgleich kommt aus der x-Höhe, die Regeln für Schriften
+  gelten wie bei einem Ordner. Lizenz, Art (`kind`) und Version bleiben leer.
+- **Gründe** nennen nur die Familie, nie einen Dateipfad (er verriete Benutzernamen und Home-Verzeichnis).
+- **Fehlt die Schrift** auf einem Rechner (deinstalliert, anderer Rechner), zeichnen die Apps mit dem Standard;
+  die Steuerzentrale zeigt den Grund.
+- **Kein PDF:** Die PDF-Werkzeuge betten ihre Schrift ein. Eine Systemschrift einzubetten hieße, sie weiterzugeben;
+  bei gewählter Systemschrift setzt das PDF deshalb in Inter.
+- Ein Design kann keine Systemschrift vorschlagen (`[about] font` nimmt nur Ordner-Ids und `torro`).
+
+### Mitgelieferte Schriften
+
+Die Schriften von Torro: alle unter OFL, mit `LICENSE.txt` (die `OFL.txt` der Schrift wörtlich). Ziffern wie in L.5
+geprüft: gleich breit, sonst eine Ziffernschrift dazu. „Verändert“ heißt: Die Dateien sind nicht die der Quelle (feste
+Schnitte aus einer variablen Schrift, eingefrorene Ziffern); eine veränderte Datei einer Schrift mit Reserved Font
+Name (RFN) trägt einen anderen Familiennamen.
+
+| Id | Familien | Art | Quelle | Lizenz | RFN | verändert | Ziffern |
+|---|---|---|---|---|---|---|---|
+| `torro` | Inter, Ziffern Inter Tabular | sans | github.com/rsms/inter | OFL-1.1 | – | ja (Inter Tabular) | Inter Tabular, eingefroren |
+| `channelr` | Lato | sans | google/fonts | OFL-1.1 | „Lato“ | nein | gleich breit |
+| `commitr` | Mona Sans, Ziffern Commitr Figures | sans | github/mona-sans 2.0.27 | OFL-1.1 | „Mona“ | ja (Commitr Figures) | Commitr Figures, eingefroren |
+| `guildr` | Figtree, Ziffern Figtree Tabular | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte, Figtree Tabular) | Figtree Tabular, eingefroren |
+| `plex` | IBM Plex Sans | sans | github.com/IBM/plex 1.1.0 | OFL-1.1 | „Plex“ | nein | gleich breit |
+| `quattro` | Roboto Flex | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
+| `ribbon` | Selawik | sans | microsoft/Selawik 1.01 | OFL-1.1 | „Selawik“ | nein | gleich breit |
 
 Zu prüfen beim Bauen: Höhere Seitenleistenzeilen (Airy 32, Clear 36) schieben in niedrigen Fenstern „Settings“ aus der
 Seitenleiste des Kalenders (siehe Plex). Clear braucht dort vielleicht eine rollende Seitenleiste, das wäre eine eigene

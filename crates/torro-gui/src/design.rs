@@ -689,7 +689,8 @@ pub(crate) fn mark_fonts_loaded(id: &str) -> bool {
 /// once, every weight it has. Built-in faces are the Inter files embedded in `torro_gui`
 /// ([`crate::fonts`]); a font folder's files are read from it (a file that cannot be read is left
 /// out, Iced then falls back to another font – the font was checked when it was loaded, so this only
-/// happens when the folder changed since).
+/// happens when the folder changed since). A font of the computer ([`Face::System`], issue #299) gives
+/// nothing: Iced loads the installed fonts itself, and none is copied.
 pub fn font_files(font: &FontSet) -> Vec<Cow<'static, [u8]>> {
     let mut seen: Vec<&str> = Vec::new();
     let mut files = Vec::new();
@@ -703,7 +704,7 @@ pub fn font_files(font: &FontSet) -> Vec<Cow<'static, [u8]>> {
             match family.face(weight) {
                 Some(Face::Builtin) => files.extend(builtin(&family.family, weight).map(Cow::Borrowed)),
                 Some(Face::File(path)) => files.extend(std::fs::read(path).ok().map(Cow::Owned)),
-                None => {}
+                Some(Face::System) | None => {}
             }
         }
     }
@@ -712,13 +713,15 @@ pub fn font_files(font: &FontSet) -> Vec<Cow<'static, [u8]>> {
 
 /// The file of one face of `font`: the family of `role` at exactly `weight`, resolved like
 /// [`font_files`] (built-in faces from `torro_gui`, a folder's from it). `None` when the family has no
-/// file for that weight, or a folder's file cannot be read any more. Picking another weight instead is
-/// the caller's choice (the PDF tool takes the next heavier one for bold).
+/// file for that weight, or a folder's file cannot be read any more, and always for a font of the
+/// computer ([`Face::System`]): its bytes are never handed on, so a PDF sets it in Inter. Picking
+/// another weight instead is the caller's choice (the PDF tool takes the next heavier one for bold).
 pub fn font_file(font: &FontSet, role: FontRole, weight: Weight) -> Option<Cow<'static, [u8]>> {
     let family = font.fonts.get(role);
     match family.face(weight)? {
         Face::Builtin => builtin(&family.family, weight).map(Cow::Borrowed),
         Face::File(path) => std::fs::read(path).ok().map(Cow::Owned),
+        Face::System => None,
     }
 }
 
@@ -1233,6 +1236,28 @@ mod tests {
         assert_eq!(font_file(&pack, FontRole::Heading, Weight::Bold).as_deref(), Some(&b"bold bytes"[..]));
         std::fs::remove_file(&file).expect("remove");
         assert_eq!(font_file(&pack, FontRole::Heading, Weight::Bold), None, "a file gone since is none");
+    }
+
+    /// Issue #299: a font of the computer brings no bytes – Iced draws it from the installed fonts, and
+    /// nothing hands it on. Only its figures, the embedded Inter Tabular, are loaded.
+    #[test]
+    fn a_font_of_the_computer_gives_no_files() {
+        let mut system = FontSet::standard();
+        system.fonts.text = torro_core::design::Font {
+            family: "Avenir Next".into(),
+            regular: Some(Face::System),
+            medium: Some(Face::System),
+            semibold: None,
+            bold: Some(Face::System),
+        };
+        system.fonts.heading = system.fonts.text.clone();
+        for weight in WEIGHTS {
+            assert_eq!(font_file(&system, FontRole::Text, weight), None, "{weight}");
+        }
+        let [_, _, _, tabular, tabular_medium] = crate::fonts();
+        assert_eq!(font_files(&system), [Cow::Borrowed(tabular), Cow::Borrowed(tabular_medium)]);
+        system.fonts.numbers = system.fonts.text.clone();
+        assert!(font_files(&system).is_empty());
     }
 
     #[test]

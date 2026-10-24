@@ -96,7 +96,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
 `jetbrains-mono` ist die Id, die Console schon vorschlägt (`[about] font`); sie muss so heißen.
 
 ### SR.1 Kern: Schriften des Systems, `kind`, `Face::System`
-- [ ] erledigt
+- [x] erledigt (2026-10-24: Abtastung auf einem Mac 164 ms, 124 Familien, 91 gültig; „System“ ist `System Font` mit Inter Tabular für die Ziffern)
 - **Modell:** Opus · **Dateien:** `Cargo.toml` (Wurzel), `crates/torro-core/Cargo.toml`,
   `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/{font,files,error}.rs`, neu
   `crates/torro-core/src/design/system.rs`, `crates/torro-gui/src/design.rs`, `crates/torroworkplace/src/tools/pdf.rs`,

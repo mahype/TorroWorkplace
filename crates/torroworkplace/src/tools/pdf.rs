@@ -1183,6 +1183,24 @@ mod tests {
         assert!(pdf.all().contains("Trotzdem gesetzt."));
     }
 
+    /// Issue #299: a font of the computer is never embedded in a PDF – that would hand it on. The PDF is
+    /// set in the standard's Inter.
+    #[test]
+    fn a_font_of_the_computer_is_set_in_inter() {
+        let mut font = FontSet::standard();
+        let system = design::Font {
+            family: "Avenir Next".into(),
+            regular: Some(design::Face::System),
+            medium: Some(design::Face::System),
+            semibold: Some(design::Face::System),
+            bold: Some(design::Face::System),
+        };
+        (font.fonts.text, font.fonts.heading) = (system.clone(), system);
+        assert_eq!(PdfFonts::of(&font), None);
+        assert_eq!(PdfFonts::of_pack(Some(&font)), PdfFonts::standard());
+        assert_eq!(PdfFonts::of_font(None, "system:Torro Test Font That Is Never Installed"), PdfFonts::standard());
+    }
+
     fn face_bytes(font: &FontSet) -> Cow<'static, [u8]> {
         face(font, FontRole::Text, Weight::Regular).expect("the file")
     }
