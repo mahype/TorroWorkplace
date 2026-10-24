@@ -1177,7 +1177,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   Unterhaltung fragt ebenso.
 
 ### WEB.6 Assistent › Einstellungen › Tools › Web
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WEB.1 · **Dateien:** `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`,
   `crates/torro-settings-ui/src/assistant/web.rs` (neu), `crates/torro-settings-ui/src/{lib,demo,rights}.rs`,
   `crates/torroassistant/src/app.rs`, `crates/torro-core/src/i18n/de.rs`

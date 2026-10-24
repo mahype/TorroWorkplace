@@ -5265,8 +5265,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
     // The rights editor › the selection of tools (WZ.7, #225)
     (
-        "Includes tools added later. Each works only while it is on in the assistant's settings.",
-        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
+        "Includes tools added later, but not web search: tick it by name. Each works only while it is on in the assistant's settings.",
+        "Enthält später hinzugefügte Werkzeuge, aber nicht die Websuche: Sie wird einzeln angehakt. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
     ),
     (
         "This agent can't use tools left off. Each works only while it is on in the assistant's settings.",
@@ -5430,6 +5430,34 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The new one with the due dates is on your desktop: Release checklist-2.pdf.",
         "Die neue mit den Fälligkeiten liegt auf deinem Schreibtisch: Release checklist-2.pdf.",
     ),
+    // Assistant › Settings › Tools › Web and the rights editor (WEB.6, #305)
+    ("Asked in this order: {providers}.", "Gefragt in dieser Reihenfolge: {providers}."),
+    ("{provider} is asked.", "Gefragt wird {provider}."),
+    ("Wikipedia is asked as well.", "Wikipedia wird zusätzlich gefragt."),
+    ("Check and save", "Prüfen und speichern"),
+    ("Key saved", "Schlüssel gespeichert"),
+    ("No provider is on, so the web search is off.", "Kein Anbieter ist eingeschaltet, die Websuche ist also aus."),
+    ("Only Wikipedia is asked.", "Nur Wikipedia wird gefragt."),
+    ("Paste the key", "Schlüssel einfügen"),
+    ("Paused until {time} after a block or a limit", "Pausiert bis {time} Uhr nach einer Sperre oder einem Limit"),
+    ("Remove key", "Schlüssel entfernen"),
+    ("Save key", "Schlüssel speichern"),
+    ("Search providers", "Suchanbieter"),
+    ("Search words go to your own server", "Die Suchwörter gehen an deinen eigenen Server"),
+    ("Search words go to {host}", "Die Suchwörter gehen an {host}"),
+    ("Search words go to {host} · {seat}", "Die Suchwörter gehen an {host} · {seat}"),
+    ("Skipped until a key is saved", "Übersprungen, bis ein Schlüssel gespeichert ist"),
+    ("Skipped until an address is saved", "Übersprungen, bis eine Adresse gespeichert ist"),
+    ("Terms", "Bedingungen"),
+    (
+        "The assistant asks once in each conversation before it searches.",
+        "Der Assistent fragt in jeder Unterhaltung einmal, bevor er sucht.",
+    ),
+    (
+        "This agent can then put text it read into search words and web addresses. Only the assistant asks first, once in each conversation.",
+        "Dieser Agent kann dann Gelesenes in Suchwörter und Webadressen schreiben. Nur der Assistent fragt vorher, einmal je Unterhaltung.",
+    ),
+    ("api key|No key", "Kein Schlüssel"),
     // Design review #231
     ("Command", "Befehl"),
     ("Refused while API keys are off", "Abgelehnt, solange API-Schlüssel aus sind"),

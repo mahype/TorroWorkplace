@@ -67,6 +67,7 @@ use torro_inbox::{Rule, SourceInfo};
 use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::tools::ToolInfo;
+use torro_ipc::web::SearchProviderInfo;
 use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 use torro_pim::Collection;
 
@@ -113,6 +114,10 @@ pub struct Data {
     /// switched it on. Asked with the app key, so `allowed` is always `true` here; whether the
     /// assistant may use a tool comes from its client's rights ([`assistant::tools`]).
     pub tools: Vec<ToolInfo>,
+    /// The search providers of the tool `web` (`tools.list_search_providers`, task WEB.6), in the order the core
+    /// asks them: where the search words go, the terms, whether a key is stored – never the key – and whether a
+    /// person switched each on ([`assistant::web`]).
+    pub search_providers: Vec<SearchProviderInfo>,
     /// What the assistant can answer with (`assistant.list_engines`): an AI account, a coding
     /// agent with its own models.
     pub engines: Vec<Engine>,
@@ -189,6 +194,7 @@ impl Data {
             Response::Memories { notes } => self.memories = notes,
             Response::Bots { bots } => self.bots = bots,
             Response::Tools { tools } => self.tools = tools,
+            Response::SearchProviders { providers } => self.search_providers = providers,
             Response::Engines { engines } => self.engines = engines,
             Response::AiModels { account, models } => {
                 // Several accounts answer the same command in one load (task E12.10); each
