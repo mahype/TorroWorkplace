@@ -4,9 +4,16 @@
 //!
 //! - `catalog`: the built-in catalog (`assets/extensions/catalog.toml`), read and checked (task MA.2).
 //! - `prereq`: whether the programs a server needs (`npx`, `uvx`, `docker`) are on this computer (task MA.2).
+//! - `store`: `<data>/extensions/extensions.json` and the servers' secrets in the keychain (task MA.3).
+//! - `env`: the environment and headers a server gets, and which addresses may be used (task MA.3).
 
 pub mod catalog;
+// The client and the handlers (tasks MA.4, MA.5) are the first to use these; until then only tests do.
+#[allow(dead_code, reason = "used from tasks MA.4 and MA.5 on")]
+pub mod env;
 pub mod prereq;
+#[allow(dead_code, reason = "used from tasks MA.4 and MA.5 on")]
+pub mod store;
 
 use torro_ipc::extensions::CatalogEntry;
 

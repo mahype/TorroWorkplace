@@ -5649,4 +5649,32 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The assistant may not use this tool of the MCP server.",
         "Der Assistent darf dieses Werkzeug des MCP-Servers nicht verwenden.",
     ),
+    // MCP connections: what a server may be given (MA.3, #302)
+    (
+        "Enter the program by name (like npx) or by its full path.",
+        "Gib das Programm mit Namen (etwa npx) oder mit vollem Pfad an.",
+    ),
+    (
+        "Remove the user name and password from the address and add them as a secret header.",
+        "Entferne Benutzername und Passwort aus der Adresse und trag sie als geheimen Header ein.",
+    ),
+    (
+        "The address must start with https://. Only this computer (localhost) may use http://.",
+        "Die Adresse muss mit https:// beginnen. Nur dieser Computer (localhost) darf http:// verwenden.",
+    ),
+    ("The secret “{name}” is missing. Enter it again.", "Das Geheimnis „{name}“ fehlt. Gib es noch einmal ein."),
+    ("The value of “{name}” has characters that aren't allowed.", "Der Wert von „{name}“ enthält unerlaubte Zeichen."),
+    (
+        "This isn't a valid address. Enter one like https://example.com/mcp.",
+        "Das ist keine gültige Adresse. Gib eine wie https://example.com/mcp ein.",
+    ),
+    ("This setting doesn't fit this kind of server.", "Diese Einstellung passt nicht zu dieser Art von Server."),
+    (
+        "“{name}” can't be given to an MCP server: it could change which code the program loads. Remove it.",
+        "„{name}“ kann einem MCP-Server nicht übergeben werden: Damit ließe sich ändern, welchen Code das Programm lädt. Entferne die Variable.",
+    ),
+    (
+        "“{name}” isn't a valid name for a variable or header.",
+        "„{name}“ ist kein gültiger Name für eine Variable oder einen Header.",
+    ),
 ];

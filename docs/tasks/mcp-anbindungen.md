@@ -140,7 +140,7 @@ Reihenfolge der Umsetzung in einem Strang: MA.1, MA.2, MA.3, MA.4, MA.5, MA.6, M
   Programm in einem Temp-Ordner als Ersatz für Homebrew bzw. nvm und meldet ein fehlendes; Handler-Test.
 
 ### MA.3 Kern: Speicher, Geheimnisse, Umgebung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** MA.1 · **Dateien:** `crates/torroworkplace/src/extensions/{mod,store,env}.rs`,
   `crates/torroworkplace/tests/fixtures/extensions/**`
 - `store.rs`: `extensions.json` lesen und schreiben (siehe Festlegungen), atomar, Rechte 0700/0600; Geheimnisse über
