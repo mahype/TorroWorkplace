@@ -312,6 +312,8 @@ fn own_tools(context: &Context<'_>) -> Vec<String> {
         .into_iter()
         .map(|tool| match tool {
             ToolId::Pdf => "PDF (tools_create_pdf makes a PDF from your Markdown and saves it on this computer)".into(),
+            // The prompt's own words for the web come with task WEB.5 (issue #305).
+            ToolId::Web => "Web (tools_web_search searches the web, tools_fetch_page reads a web page)".into(),
         })
         .collect();
     if tools.is_empty() {

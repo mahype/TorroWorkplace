@@ -1037,7 +1037,7 @@ WEB.1 (Gerüst) ──┬── WEB.2 (Suche) ──┬── WEB.4 (Befehle) �
   HTTP-Tests mit `httpmock` nur über einen Konstruktor, der Basisadresse und Wächter als Parameter nimmt.
 
 ### WEB.1 Gerüst: Werkzeug `web`, Requests, Katalog, Einstellungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api,
   tools}.rs`, `crates/torro-ipc/src/web.rs` (neu), `crates/torroworkplace/src/{core,settings_service,audit,daemon,pim,
   mcp}.rs` (nur `match`-Zweige, `unsupported`, `INSTRUCTIONS`), `crates/torroworkplace/src/assistant/tools.rs`,

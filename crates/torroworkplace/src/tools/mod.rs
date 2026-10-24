@@ -23,7 +23,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Settings, ToolId};
 use torro_ipc::Response;
 use torro_ipc::api::{Access, Area, Rights};
-use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolInfo};
+use torro_ipc::tools::{MAX_MARKDOWN_BYTES, MAX_TITLE_CHARS, PdfTemplateId, ToolAccess, ToolInfo};
 
 pub use files::{FileEntry, Maker, Register};
 
@@ -193,7 +193,8 @@ impl Tools {
 }
 
 /// `tools.list_tools` for `reach`: every tool with whether a person switched it on (`settings`) and whether the
-/// key may use it: the app key always; a client with write access to `tools` and the tool in its selection.
+/// key may use it: the app key always; a client with the tool's level in `tools` ([`ToolAccess::access`]: write
+/// for `pdf`, read for `web`) and the tool in its selection (`web` only when named, `Rights::reaches_tool`).
 pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Response {
     let tools = ToolId::ALL
         .into_iter()
@@ -204,7 +205,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
             enabled: settings.is_on(id),
             allowed: match reach {
                 Reach::Suite => true,
-                Reach::Client(rights) => rights.area(Area::Tools).allows(Access::Write) && rights.reaches_tool(id),
+                Reach::Client(rights) => rights.area(Area::Tools).allows(id.access()) && rights.reaches_tool(id),
             },
         })
         .collect();
@@ -215,6 +216,7 @@ pub fn list(settings: &torro_core::settings::Tools, reach: Reach<'_>) -> Respons
 fn description(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Makes PDFs from the assistant's text, set after the templates in its settings."),
+        ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers you switch on."),
     }
 }
 
@@ -503,9 +505,10 @@ pub(crate) mod tests {
             other => panic!("expected tools, got {other:?}"),
         };
         let suite = listed(&settings, Reach::Suite);
-        assert_eq!(suite.len(), 1);
+        assert_eq!(suite.iter().map(|tool| tool.id).collect::<Vec<_>>(), ToolId::ALL);
         assert_eq!((suite[0].id, suite[0].enabled, suite[0].allowed), (ToolId::Pdf, false, true));
         assert_eq!(suite[0].description, tr(description(ToolId::Pdf)));
+        assert_eq!((suite[1].id, suite[1].name.as_str(), suite[1].allowed), (ToolId::Web, "Web", true));
         settings.set_on(ToolId::Pdf, true);
         let mut rights = RightsTemplate::ReadOnly.rights();
         assert!(!listed(&settings, Reach::Client(&rights))[0].allowed, "reading only");
@@ -515,6 +518,24 @@ pub(crate) mod tests {
         rights.tools = Selection::Only(vec!["pdf".into()]);
         let client = listed(&settings, Reach::Client(&rights));
         assert!(client[0].allowed && client[0].enabled);
+    }
+
+    /// Issue #305: `web` needs only reading in `tools`, and its id in the selection; "all tools" does
+    /// not stand for it.
+    #[test]
+    fn the_list_allows_web_with_reading_and_its_name() {
+        let settings = torro_core::settings::Tools::default();
+        let allowed = |rights: &Rights| match list(&settings, Reach::Client(rights)) {
+            Response::Tools { tools } => tools.iter().map(|tool| (tool.id, tool.allowed)).collect::<Vec<_>>(),
+            other => panic!("expected tools, got {other:?}"),
+        };
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert_eq!(allowed(&rights), [(ToolId::Pdf, false), (ToolId::Web, false)], "All, reading only");
+        rights.tools = Selection::Only(vec!["web".into()]);
+        assert_eq!(allowed(&rights), [(ToolId::Pdf, false), (ToolId::Web, true)], "named, reading is enough");
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::All;
+        assert_eq!(allowed(&rights), [(ToolId::Pdf, true), (ToolId::Web, false)], "All is pdf, never web");
     }
 
     #[test]

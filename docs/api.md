@@ -815,8 +815,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Nach einem Quit startet kein MCP-Server den Dienst neu, siehe [lebenszyklus.md](lebenszyklus.md).
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Import aus einem fremden
-   Schlüsselbund): nur mit
+   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
+   Websuche-Anbieters `accounts.set_search_key` (#305), Import aus einem fremden Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch
    (`connect_mail`, `trusted_certificates`, #284): Der Kern verbindet sich mit jedem dort eingetragenen Host,
@@ -849,6 +849,19 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
    `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
+
+   Ebenso **Websuche-Anbieter einschalten und SearXNG-Adresse setzen** (Werkzeug `web`, #305,
+   [assistent.md](assistent.md) „Werkzeug Web“): Suchwörter gehen an die eingeschalteten Anbieter, die
+   SearXNG-Adresse kann ins lokale Netz zeigen. `settings.set_setting` mit `search_provider` und `enabled`
+   ungleich `false`, mit `searxng_address` und einer anderen Adresse als der gespeicherten, und ein
+   `settings.update_settings`, das einen Anbieter einschalten oder die Adresse ändern würde, bekommen von jedem
+   Client `forbidden`, auch mit Admin-Rechten. Ausschalten und `searxng_address: null` sind gewöhnliche
+   Admin-Änderungen; ein `update_settings` eines Clients behält die gespeicherte Adresse. Den Schlüssel eines
+   Anbieters nimmt nur `accounts.set_search_key` entgegen (Punkt 5). Wer `web` benutzen darf, entscheidet der
+   Haken eines Menschen in der Auswahl `tools` des Clients: „alle Werkzeuge“ (`Selection::All`, jede Vorlage)
+   deckt `web` nicht ab, auch in keiner Schnittmenge (`Rights::reached_tools`; Tests
+   `only_people_switch_a_search_provider_on` und `web_is_reached_only_when_named` in `torro-ipc`,
+   `only_people_switch_search_providers_on_and_set_the_searxng_address` im Kern).
 
    Ebenso **Karten und Ortssuche einschalten** (Termin-Editor, Aufgabe TE.1, [termin-editor.md](termin-editor.md)):
    Die Suche schickt den getippten Ort mit der Sprache der Suite (bei Photon auch `near`), die Karte die Koordinaten,

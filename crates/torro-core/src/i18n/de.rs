@@ -5284,6 +5284,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Copy saved", "Kopie gespeichert"),
     ("Couldn't open a new mail with the file.", "Es konnte keine neue Mail mit der Datei geöffnet werden."),
     ("Save a copy of the PDF", "Kopie der PDF speichern"),
+    // The tool web (WEB.1, #305)
+    (
+        "Searches the web and reads web pages for the assistant, with the providers you switch on.",
+        "Sucht im Web und liest Webseiten für den Assistenten, mit den Anbietern, die du einschaltest.",
+    ),
+    ("Search the web", "Im Web suchen"),
+    ("Searched the web", "Im Web gesucht"),
+    ("Read web page", "Webseite gelesen"),
+    ("Listed search providers", "Suchanbieter aufgelistet"),
     ("Moved, changed, deleted or out of reach.", "Verschoben, geändert, gelöscht oder nicht mehr erreichbar."),
     ("Put them in a PDF for the team.", "Mach daraus eine PDF fürs Team."),
     (

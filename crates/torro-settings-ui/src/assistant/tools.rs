@@ -280,6 +280,7 @@ fn wrapping_row<'a>(label: &'a str, detail: &'a str, control: impl Into<Element<
 fn switch_label(id: ToolId) -> &'static str {
     match id {
         ToolId::Pdf => tr("Make PDFs"),
+        ToolId::Web => tr("Search the web"),
     }
 }
 

@@ -4609,7 +4609,12 @@ impl Core {
             // The assistant's own tools (issue #225, task WZ.4). A client's commands come with its id
             // through `handle_client` and `run_approved`, which name it as the files' maker; without
             // that id no file of the register is reached.
-            request @ Request::ListTools => self.tools_request(request, reach, Maker::App).await,
+            request @ (Request::ListTools
+            | Request::WebSearch { .. }
+            | Request::FetchPage { .. }
+            | Request::ListSearchProviders) => self.tools_request(request, reach, Maker::App).await,
+            // The key of a web search provider (issue #305): the handler comes with task WEB.4.
+            Request::SetSearchKey { .. } => web_not_yet("accounts.set_search_key"),
             request @ (Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. }) => {
                 match reach {
                     Reach::Suite => self.tools_request(request, reach, Maker::App).await,
@@ -6973,6 +6978,11 @@ impl Core {
             }
             (Request::OpenFile { file }, maker) => self.tools.open_file(&file, maker).await,
             (Request::SaveFileAs { file, path }, Maker::App) => self.tools.save_file_as(&file, &path).await,
+            // The tool `web` (issue #305): switch and selection are checked like the PDF tool's; the
+            // handlers come with task WEB.4.
+            (request @ (Request::WebSearch { .. } | Request::FetchPage { .. } | Request::ListSearchProviders), _) => {
+                web_not_yet(request.operation().name())
+            }
             (other, _) => Refused::Forbidden { command: other.operation().name() }.response(),
         }
     }
@@ -8039,7 +8049,9 @@ impl Core {
     ///   or names another search or tile service than the stored one (task TE.1,
     ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay); or that
     ///   sets the Downloads folder of attachments to a path other than the stored one (issue #290,
-    ///   `torro_core::settings::MailAttachments::needs_a_person`),
+    ///   `torro_core::settings::MailAttachments::needs_a_person`); or that switches a web search provider
+    ///   on or sets another SearXNG address (issue #305, `torro_core::settings::WebSearch::needs_a_person`),
+    /// - `settings.set_setting searxng_address` with an address other than the stored one,
     /// - `settings.set_setting pdf_folder` or `mail_downloads_folder` with a folder other than the
     ///   stored one,
     /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template,
@@ -8062,6 +8074,12 @@ impl Core {
                     || now.maps.needs_a_person(&settings.maps)
                     // The folder of "Save to Downloads" (issue #290, point 9).
                     || now.mail_attachments.needs_a_person(&settings.mail_attachments)
+                    // A web search provider on, or another SearXNG address (issue #305).
+                    || now.web_search.needs_a_person(&settings.web_search)
+            }
+            Request::SetSetting { key: SettingKey::SearxngAddress, value } => {
+                let Ok(Some(address)) = torro_core::settings::WebSearch::address_from(value) else { return false };
+                self.settings.current().web_search.searxng.as_ref() != Some(&address)
             }
             Request::SetSetting { key: SettingKey::MailDownloadsFolder, value } => {
                 let Ok(Some(folder)) = torro_core::settings::MailAttachments::downloads_from(value) else {
@@ -8745,11 +8763,19 @@ fn my_access(
     let never: Vec<Area> = never_given.iter().filter(|area| origin.without.contains(area)).copied().collect();
     let never = never.as_slice();
     let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
-    let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
+    // "All tools" written out without `web` (issue #305, decision 26): `web` only when named.
+    let rights = torro_ipc::api::Rights { tools: rights.reached_tools(), ..rights.clone() };
+    let access = torro_ipc::assistant::MyAccess::of(rights, origin.engine.clone());
     // The tools a person switched on (issue #225), so an agent tells a switched-off tool from one
     // outside its selection.
     let access = access.with_tools_on(tools.enabled.iter().copied().collect());
     Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
+}
+
+/// `unsupported` for a command of the web (issue #305) whose handler is not there yet (task WEB.4):
+/// nothing is searched, read or stored.
+fn web_not_yet(command: &str) -> Response {
+    Response::Error { code: "unsupported".into(), message: format!("{command} is not carried out yet") }
 }
 
 /// `forbidden` with [`torro_ipc::api::Lack::Tool`] for a command of one of the assistant's own
@@ -11518,6 +11544,133 @@ mod tests {
         let allowed = approval(Box::pin(ask(&core, Some(&app_key), decide(&asked.id, true))).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(!settings(&core).await.maps.enabled, "off once the person allowed it");
+    }
+
+    /// Issue #305, point 6: no client switches a web search provider on or sets another SearXNG
+    /// address, not with every right, neither one setting at a time nor with the whole settings, and
+    /// nobody is asked to approve it. Switching off and removing the address are admin changes like
+    /// any other, after approval; whole settings keep the stored address. Only the app key switches on
+    /// and sets the address.
+    #[tokio::test]
+    async fn only_people_switch_search_providers_on_and_set_the_searxng_address() {
+        use serde_json::json;
+        use torro_core::settings::SearchProviderId;
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let switch = |provider: &str, on: bool| Request::SetSetting {
+            key: SettingKey::SearchProvider,
+            value: json!({"provider": provider, "enabled": on}),
+        };
+        let address = |value| Request::SetSetting { key: SettingKey::SearxngAddress, value };
+        let searxng = "https://search.example.org";
+
+        for refused in [switch("duckduckgo", true), address(json!(searxng))] {
+            assert_eq!(code(&ask(&core, Some(&key), refused.clone()).await), "forbidden", "{refused:?}");
+        }
+        let mut on = Box::new(settings(&core).await);
+        on.web_search.set_on(SearchProviderId::Duckduckgo, true);
+        let mut other = Box::new(settings(&core).await);
+        other.web_search.searxng = Some(searxng.into());
+        for whole in [on, other] {
+            let update = Request::UpdateSettings { settings: *whole };
+            assert_eq!(code(&Box::pin(ask(&core, Some(&key), update)).await), "forbidden");
+        }
+        assert_eq!(settings(&core).await.web_search, Default::default(), "nothing changed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        // The person switches two on and sets the address; one in the local network is fine.
+        for request in [switch("duckduckgo", true), switch("wikipedia", true), address(json!("http://10.0.0.5:8888"))] {
+            assert_eq!(ask(&core, Some(&app_key), request).await, Response::Ok);
+        }
+        let refused = address(json!("https://search.example.org/?key=1"));
+        assert_eq!(code(&ask(&core, Some(&app_key), refused).await), "error", "a query is refused even then");
+        let set = settings(&core).await.web_search;
+        let both = std::collections::BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Wikipedia]);
+        assert_eq!(set.providers, both);
+        assert_eq!(set.searxng.as_deref(), Some("http://10.0.0.5:8888"));
+
+        // The stored address again sets nothing anew: an admin change, which waits for the person.
+        let asked = waits(ask(&core, Some(&key), address(json!("http://10.0.0.5:8888"))).await);
+        assert_eq!(asked.command, "settings.set_setting");
+        // Off and removing, one at a time and in the whole settings: run once the person allows them.
+        let mut off = Box::new(settings(&core).await);
+        off.web_search.set_on(SearchProviderId::Wikipedia, false);
+        off.web_search.searxng = None;
+        for request in [Request::UpdateSettings { settings: *off }, switch("duckduckgo", false)] {
+            let asked = waits(Box::pin(ask(&core, Some(&key), request)).await);
+            let allowed = approval(Box::pin(ask(&core, Some(&app_key), decide(&asked.id, true))).await);
+            assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        }
+        let kept = settings(&core).await.web_search;
+        assert!(kept.providers.is_empty(), "off once the person allowed it");
+        assert_eq!(kept.searxng.as_deref(), Some("http://10.0.0.5:8888"), "whole settings keep the address");
+        let asked = waits(ask(&core, Some(&key), address(json!(null))).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert_eq!(settings(&core).await.web_search.searxng, None, "removed once the person allowed it");
+    }
+
+    /// Issue #305, decisions 20 and 26: the web's commands are checked like the PDF tool's – the switch
+    /// for everyone, `web` only when a person named it in the client's selection, reading in `tools`
+    /// is enough – and until their handlers come (task WEB.4) answer `unsupported`, asking no one.
+    /// `tools.list_tools` and `assistant.my_access` never let "all tools" stand for `web`.
+    #[tokio::test]
+    async fn the_web_is_checked_like_a_tool_and_reached_only_when_named() {
+        use torro_core::settings::ToolId;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = || Request::WebSearch { query: "Lisbon".into(), count: None, language: None };
+        let fetch = || Request::FetchPage { url: "https://example.org/".into() };
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        // So it may ask its own access (issue #134).
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        let (id, key) = client(&core, rights.clone()).await;
+        let (core, key) = (&core, &key);
+        let refused_for = |request: Request, lack: Lack| async move {
+            let refused = ask(core, Some(key), request).await;
+            assert_eq!(code(&refused), "forbidden");
+            assert!(message(&refused).contains(&lack.message()), "{lack:?}: {refused:?}");
+        };
+
+        let off = Lack::ToolOff { tool: ToolId::Web };
+        refused_for(search(), off).await;
+        assert_eq!(code(&ask(core, Some(&app_key), search()).await), "forbidden", "off for the person too");
+        let value = serde_json::json!({"tool": "web", "enabled": true});
+        let on = Request::SetSetting { key: torro_ipc::SettingKey::ToolEnabled, value };
+        assert_eq!(core.handle(on).await, Response::Ok);
+        refused_for(search(), Lack::Tool { tool: ToolId::Web }).await;
+        refused_for(fetch(), Lack::Tool { tool: ToolId::Web }).await;
+        let access = my_access_of(&ask(core, Some(key), Request::MyAccess).await);
+        assert!(!access.rights.reaches_tool(ToolId::Web) && access.rights.tools != Selection::All, "All is not web");
+        let Response::Tools { tools } = ask(core, Some(key), Request::ListTools).await else { panic!("the tools") };
+        let allowed = |tools: &[torro_ipc::tools::ToolInfo], tool| tools.iter().any(|t| t.id == tool && t.allowed);
+        assert!(!allowed(&tools, ToolId::Web) && !allowed(&tools, ToolId::Pdf), "reading only, web not named");
+
+        rights.tools = Selection::Only(vec!["web".into()]);
+        core.clients.update(&id, rights.clone()).await.expect("updated");
+        for request in [search(), fetch(), Request::ListSearchProviders] {
+            assert_eq!(code(&ask(core, Some(key), request.clone()).await), "unsupported", "{request:?}");
+        }
+        let Response::Tools { tools } = ask(core, Some(key), Request::ListTools).await else { panic!("the tools") };
+        assert!(allowed(&tools, ToolId::Web) && !allowed(&tools, ToolId::Pdf), "reading is enough for web only");
+        let access = my_access_of(&ask(core, Some(key), Request::MyAccess).await);
+        assert!(access.rights.reaches_tool(ToolId::Web), "named, so reached");
+        let set_key = Request::SetSearchKey {
+            provider: torro_core::settings::SearchProviderId::Brave,
+            key: Some(torro_ipc::Secret::new("BSA_secret")),
+        };
+        assert_eq!(code(&ask(core, Some(key), set_key.clone()).await), "forbidden", "a key is the person's");
+        assert_eq!(code(&ask(core, Some(&app_key), set_key).await), "unsupported");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing asked");
     }
 
     /// Tasks TE.1 and TE.5: the place search and the map check their limits first, then answer
@@ -20580,6 +20733,8 @@ mod tests {
         let mut expected = set.clone();
         expected.areas.remove(&Area::Calendar);
         expected.calendars = Selection::Only(Vec::new());
+        // "All tools" written out without `web`, which only a person's tick grants (issue #305).
+        expected.tools = set.reached_tools();
         assert_eq!(access.rights, expected, "no calendar of the area switched off either");
         assert_eq!((access.engine.as_deref(), access.switched_off), (Some(engine.as_str()), vec![Area::Calendar]));
         assert!(access.withheld.is_empty(), "an AI account on this computer gets mail");

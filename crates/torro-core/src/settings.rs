@@ -179,6 +179,12 @@ pub struct Settings {
     /// that does not read gives the defaults (every tool off), never a settings file that fails.
     #[serde(default, deserialize_with = "lenient")]
     pub tools: Tools,
+    /// The web search of the tool `web` (issue #305, `docs/assistent.md` "Werkzeug Web"): which search
+    /// providers a person switched on and the address of their own SearXNG ([`WebSearch`]). Read
+    /// leniently: a provider this version does not know and an address that does not fit are dropped,
+    /// a value that does not read gives the defaults (none on), never a settings file that fails.
+    #[serde(default, deserialize_with = "lenient_web_search")]
+    pub web_search: WebSearch,
     /// Workspace templates (issue #243): the modifiers held with the digit keys that load them
     /// ([`WorkspaceSettings`]). Read leniently: a value that does not read gives the defaults of
     /// this system (Linux super_alt, macOS and Windows ctrl_alt).
@@ -749,6 +755,7 @@ impl Default for Settings {
             allow_api_keys: on(),
             allow_mcp: on(),
             tools: Tools::default(),
+            web_search: WebSearch::default(),
             workspaces: WorkspaceSettings::default(),
         }
     }
@@ -1306,35 +1313,52 @@ pub enum ToolId {
     /// (`tools.create_pdf`); its files are opened and saved elsewhere with `tools.open_file` and
     /// `tools.save_file_as`.
     Pdf,
+    /// `web` (issue #305, `docs/assistent.md` "Werkzeug Web"): searches the web with the providers a
+    /// person switched on ([`WebSearch`], `tools.web_search`) and reads a web page as Markdown
+    /// (`tools.fetch_page`). Both only read, but send search words or an address out of the computer,
+    /// so a client reaches it only when a person ticked it ([`ToolId::needs_naming`]).
+    Web,
 }
 
 impl ToolId {
     /// Every tool, in the order the settings and the control centre show them.
-    pub const ALL: [ToolId; 1] = [ToolId::Pdf];
+    pub const ALL: [ToolId; 2] = [ToolId::Pdf, ToolId::Web];
 
-    /// The id on the wire and in a selection of the rights: `pdf`.
+    /// The id on the wire and in a selection of the rights: `pdf`, `web`.
     pub fn name(self) -> &'static str {
         match self {
             ToolId::Pdf => "pdf",
+            ToolId::Web => "web",
         }
     }
 
-    /// What people call it, the same in every language: `PDF`.
+    /// What people call it, the same in every language: `PDF`, `Web`.
     pub fn title(self) -> &'static str {
         match self {
             ToolId::Pdf => "PDF",
+            ToolId::Web => "Web",
         }
     }
 
     /// The tool the catalogue command `name` belongs to: `tools.create_pdf`, `tools.open_file` and
-    /// `tools.save_file_as` to [`ToolId::Pdf`] (every file a tool makes is a PDF for now). `None`
-    /// for `tools.list_tools`, which belongs to no tool, and for every other name. The core checks
-    /// the switch and the selection of exactly this tool before such a command runs.
+    /// `tools.save_file_as` to [`ToolId::Pdf`] (every file a tool makes is a PDF for now),
+    /// `tools.web_search` and `tools.fetch_page` to [`ToolId::Web`]. `None` for `tools.list_tools`
+    /// and `tools.list_search_providers`, which belong to no tool, and for every other name. The core
+    /// checks the switch and the selection of exactly this tool before such a command runs.
     pub fn of_command(name: &str) -> Option<ToolId> {
         match name {
             "tools.create_pdf" | "tools.open_file" | "tools.save_file_as" => Some(ToolId::Pdf),
+            "tools.web_search" | "tools.fetch_page" => Some(ToolId::Web),
             _ => None,
         }
+    }
+
+    /// Whether a client reaches the tool only when its selection names it (decision 26 in
+    /// `docs/assistent.md`): `web`, which sends search words and addresses out of the computer. "All
+    /// tools" (`Selection::All`, every template of the rights) does not cover it, so no client that
+    /// held the templates' rights before gets it without a person ticking it. `pdf` is covered.
+    pub fn needs_naming(self) -> bool {
+        matches!(self, ToolId::Web)
     }
 }
 
@@ -1343,7 +1367,7 @@ impl ToolId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSwitch {
-    /// The tool: `pdf`.
+    /// The tool: `pdf` or `web`.
     pub tool: ToolId,
     /// `true` switches it on, `false` off.
     pub enabled: bool,
@@ -1669,6 +1693,185 @@ impl Tools {
 /// the stored one (setting a path is a person's, point 9).
 pub fn kept_or_removed(stored: &Option<String>, sent: &Option<String>) -> Option<String> {
     sent.as_ref().and(stored.clone())
+}
+
+/// A web search provider of the tool `web` (issue #305, `docs/assistent.md` "Werkzeug Web"). The core
+/// asks the switched-on ones in [`SearchProviderId::ORDER`]; on a block, a limit or a missing key the
+/// next one. Wikipedia is no fallback but asked besides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchProviderId {
+    /// `searxng`: the person's own SearXNG instance (`<address>/search?format=json`,
+    /// [`WebSearch::searxng`]); no key.
+    Searxng,
+    /// `brave`: the Brave Search API, with a key of the person's own. Its results may only be used
+    /// for the answer, never stored, so the core never keeps them in its cache.
+    Brave,
+    /// `tavily`: the Tavily search API, with a key of the person's own.
+    Tavily,
+    /// `exa`: the Exa search API, with a key of the person's own.
+    Exa,
+    /// `mojeek`: the Mojeek search API, with a key of the person's own.
+    Mojeek,
+    /// `duckduckgo`: DuckDuckGo's results page (`html.duckduckgo.com`), read like a browser; no key and
+    /// no official interface, so DuckDuckGo may block it at any time.
+    Duckduckgo,
+    /// `wikipedia`: the REST search of Wikipedia in the suite's language; no key. Asked besides the
+    /// others, never instead of them.
+    Wikipedia,
+}
+
+impl SearchProviderId {
+    /// Every provider in the order the core asks them and the settings show them: SearXNG, Brave,
+    /// Tavily, Exa, Mojeek, DuckDuckGo, Wikipedia. The first five fall back to the next on a block, a
+    /// limit or a missing key; Wikipedia, last, is not part of that fallback but comes besides.
+    pub const ORDER: [SearchProviderId; 7] = [
+        SearchProviderId::Searxng,
+        SearchProviderId::Brave,
+        SearchProviderId::Tavily,
+        SearchProviderId::Exa,
+        SearchProviderId::Mojeek,
+        SearchProviderId::Duckduckgo,
+        SearchProviderId::Wikipedia,
+    ];
+
+    /// The id on the wire and in the settings: `searxng`, `brave`, `tavily`, `exa`, `mojeek`,
+    /// `duckduckgo`, `wikipedia`.
+    pub fn name(self) -> &'static str {
+        match self {
+            SearchProviderId::Searxng => "searxng",
+            SearchProviderId::Brave => "brave",
+            SearchProviderId::Tavily => "tavily",
+            SearchProviderId::Exa => "exa",
+            SearchProviderId::Mojeek => "mojeek",
+            SearchProviderId::Duckduckgo => "duckduckgo",
+            SearchProviderId::Wikipedia => "wikipedia",
+        }
+    }
+
+    /// What people call it, the same in every language: `SearXNG`, `Brave`, `Tavily`, `Exa`,
+    /// `Mojeek`, `DuckDuckGo`, `Wikipedia`.
+    pub fn title(self) -> &'static str {
+        match self {
+            SearchProviderId::Searxng => "SearXNG",
+            SearchProviderId::Brave => "Brave",
+            SearchProviderId::Tavily => "Tavily",
+            SearchProviderId::Exa => "Exa",
+            SearchProviderId::Mojeek => "Mojeek",
+            SearchProviderId::Duckduckgo => "DuckDuckGo",
+            SearchProviderId::Wikipedia => "Wikipedia",
+        }
+    }
+}
+
+/// The value of the setting `search_provider` (`settings.set_setting`, issue #305): one provider and
+/// whether it is on. Only a person switches one on (point 6 of "Was nie nach außen geht" in
+/// `docs/api.md`); anyone allowed to change settings may switch one off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchProviderSwitch {
+    /// The provider: `searxng`, `brave`, `tavily`, `exa`, `mojeek`, `duckduckgo` or `wikipedia`.
+    pub provider: SearchProviderId,
+    /// `true` switches it on, `false` off.
+    pub enabled: bool,
+}
+
+/// The web search of the tool `web` (issue #305): the providers a person switched on and the address of
+/// their own SearXNG. Search words go only to the providers here. Keys of providers that need one are
+/// never here but in the system keychain (`websearch-<id>`).
+///
+/// Switching a provider on and setting an address other than the stored one is a person's alone
+/// (point 6 of "Was nie nach außen geht", [`WebSearch::needs_a_person`]); switching off and removing
+/// the address are anyone's with admin rights in `settings`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WebSearch {
+    /// The providers a person switched on; every other one is off, also one added later. None is on
+    /// unless a person switched it on.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_names")]
+    pub providers: BTreeSet<SearchProviderId>,
+    /// The base address of the person's own SearXNG (`https://search.example.org`): `http` or
+    /// `https`, without query and without sign-in; it may lie in the local network. `None` until a
+    /// person sets one; SearXNG is asked only with one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub searxng: Option<String>,
+}
+
+impl WebSearch {
+    /// Whether `provider` is switched on.
+    pub fn is_on(&self, provider: SearchProviderId) -> bool {
+        self.providers.contains(&provider)
+    }
+
+    /// Switches `provider` on or off.
+    pub fn set_on(&mut self, provider: SearchProviderId, on: bool) {
+        if on {
+            self.providers.insert(provider);
+        } else {
+            self.providers.remove(&provider);
+        }
+    }
+
+    /// The SearXNG address in `value`: `null` or a blank string for none, else the trimmed address,
+    /// refused by [`address_problem`] with its reason (`http`/`https` with a host, no query, no
+    /// fragment, no sign-in, no spaces). For `settings.set_setting searxng_address`.
+    pub fn address_from(value: &serde_json::Value) -> Result<Option<String>, String> {
+        let address = match value {
+            serde_json::Value::Null => return Ok(None),
+            serde_json::Value::String(address) => address.trim(),
+            _ => return Err("that is not a SearXNG address: send a string or null".into()),
+        };
+        if address.is_empty() {
+            return Ok(None);
+        }
+        match address_problem(address, false) {
+            Some(why) => Err(format!("the SearXNG address is refused: {why}")),
+            None => Ok(Some(address.to_string())),
+        }
+    }
+
+    /// Whether the address that differs from `stored` may be used ([`WebSearch::address_from`]'s
+    /// rule); an address equal to `stored`, and none, are not checked. For `settings.update_settings`,
+    /// which carries these settings whole.
+    pub fn check_changes(&self, stored: &WebSearch) -> Result<(), String> {
+        match &self.searxng {
+            Some(address) if self.searxng != stored.searxng => match address_problem(address, false) {
+                Some(why) => Err(format!("the SearXNG address is refused: {why}")),
+                None => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// Whether going from these settings (as stored) to `new` is a person's alone: a provider is
+    /// switched on (the set grows), or an address other than the stored one is set. Switching off and
+    /// removing the address are no such change. The core refuses a client's `settings.update_settings`
+    /// with it.
+    pub fn needs_a_person(&self, new: &WebSearch) -> bool {
+        let switches_on = !new.providers.is_subset(&self.providers);
+        let new_address = new.searxng.is_some() && new.searxng != self.searxng;
+        switches_on || new_address
+    }
+
+    /// `sent` as a client may store it over these settings (as stored), for `settings.update_settings`:
+    /// a provider stays on only when it is on in both, the address stays as stored. So a person who
+    /// switched a provider off between the core's check and the write is not undone.
+    pub fn from_client(&self, sent: &WebSearch) -> WebSearch {
+        WebSearch {
+            providers: self.providers.intersection(&sent.providers).copied().collect(),
+            searxng: self.searxng.clone(),
+        }
+    }
+}
+
+/// `webSearch` as written, without providers this version does not know and without an address that
+/// does not fit ([`WebSearch::address_from`]); the defaults (none on) when it does not read at all.
+fn lenient_web_search<'de, D: Deserializer<'de>>(deserializer: D) -> Result<WebSearch, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let mut web: WebSearch = serde_json::from_value(value).unwrap_or_default();
+    let address = web.searxng.take().map(serde_json::Value::String).unwrap_or_default();
+    web.searxng = WebSearch::address_from(&address).ok().flatten();
+    Ok(web)
 }
 
 /// Whether `path` can be a path from outside: one line of at most [`MAX_PATH_BYTES`], absolute on
@@ -2217,6 +2420,7 @@ mod tests {
             allow_api_keys: true,
             allow_mcp: true,
             tools: Tools::default(),
+            web_search: WebSearch::default(),
             workspaces: WorkspaceSettings::default(),
         };
         assert_eq!(load_from(&path), expected);
@@ -2481,6 +2685,10 @@ mod tests {
             tools: Tools {
                 enabled: BTreeSet::from([ToolId::Pdf]),
                 pdf: Box::new(PdfSettings { folder: Some("/Users/anna/PDFs".into()), ..PdfSettings::default() }),
+            },
+            web_search: WebSearch {
+                providers: BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Wikipedia]),
+                searxng: Some("http://192.168.1.20:8080".into()),
             },
             workspaces: WorkspaceSettings { modifiers: ShortcutModifiers::CtrlShift },
         };
@@ -2944,9 +3152,14 @@ mod tests {
         for name in ["tools.create_pdf", "tools.open_file", "tools.save_file_as"] {
             assert_eq!(ToolId::of_command(name), Some(ToolId::Pdf), "{name}");
         }
-        for name in ["tools.list_tools", "settings.set_setting", "pdf", ""] {
+        for name in ["tools.web_search", "tools.fetch_page"] {
+            assert_eq!(ToolId::of_command(name), Some(ToolId::Web), "{name}");
+        }
+        for name in ["tools.list_tools", "tools.list_search_providers", "settings.set_setting", "pdf", "web", ""] {
             assert_eq!(ToolId::of_command(name), None, "{name}");
         }
+        assert_eq!((ToolId::Web.name(), ToolId::Web.title()), ("web", "Web"));
+        assert!(ToolId::Web.needs_naming() && !ToolId::Pdf.needs_naming(), "only web needs a person's tick");
     }
 
     /// A damaged tools entry costs the defaults (every tool off), never the other settings; a tool
@@ -3119,5 +3332,112 @@ mod tests {
         let kept = person.from_client(&person);
         assert!(kept.is_on(ToolId::Pdf), "on stays on");
         assert_eq!(kept, person, "the stored paths stay");
+    }
+
+    /// Issue #305: the providers in their fixed order with their ids and names; none on, no address
+    /// until a person sets them, also in a file from before the web search.
+    #[test]
+    fn search_providers_start_off_in_their_order() {
+        let names: Vec<&str> = SearchProviderId::ORDER.iter().map(|id| id.name()).collect();
+        assert_eq!(names, ["searxng", "brave", "tavily", "exa", "mojeek", "duckduckgo", "wikipedia"]);
+        for id in SearchProviderId::ORDER {
+            assert_eq!(serde_json::to_value(id).expect("json"), id.name(), "{id:?}");
+        }
+        let mut sorted = SearchProviderId::ORDER;
+        sorted.sort();
+        assert_eq!(sorted, SearchProviderId::ORDER, "a set of them iterates in the order of asking");
+        assert_eq!(SearchProviderId::Duckduckgo.title(), "DuckDuckGo");
+        assert_eq!(SearchProviderId::Searxng.title(), "SearXNG");
+        let old: Settings = serde_json::from_str("{}").expect("a file from before the web search");
+        assert_eq!(old.web_search, WebSearch::default());
+        assert!(old.web_search.providers.is_empty() && old.web_search.searxng.is_none());
+    }
+
+    /// Issue #305: a provider this version does not know and an address that does not fit are dropped
+    /// when the file is read, a damaged entry gives the defaults, never the other settings.
+    #[test]
+    fn the_web_search_is_read_leniently() {
+        let dir = TempDir::new("web-search");
+        let path = dir.file("settings.json");
+        let file = r#"{"language":"german","webSearch":{"providers":["brave","altavista","wikipedia"],
+            "searxng":"https://search.example.org?key=1"}}"#;
+        fs::write(&path, file).expect("write");
+        let loaded = load_from(&path);
+        let known = BTreeSet::from([SearchProviderId::Brave, SearchProviderId::Wikipedia]);
+        assert_eq!(loaded.web_search.providers, known, "the unknown one is dropped");
+        assert_eq!(loaded.web_search.searxng, None, "an address with a query is dropped");
+        let file = r#"{"language":"german","webSearch":{"providers":["exa"],"searxng":"http://10.0.0.5:8888"}}"#;
+        fs::write(&path, file).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.web_search.searxng.as_deref(), Some("http://10.0.0.5:8888"), "the local network is fine");
+        fs::write(&path, r#"{"language":"german","webSearch":{"providers":7}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.language, Language::German, "the other settings stay");
+        assert_eq!(loaded.web_search, WebSearch::default(), "a damaged entry is the defaults");
+        let written = serde_json::to_value(Settings::default()).expect("json");
+        assert_eq!(written["webSearch"], serde_json::json!({}), "nothing on, nothing written");
+    }
+
+    /// Issue #305: the SearXNG address is `http` or `https` without query and sign-in, `null` or blank
+    /// for none; only an address that changes is checked.
+    #[test]
+    fn a_searxng_address_is_checked() {
+        let from = |value: serde_json::Value| WebSearch::address_from(&value);
+        assert_eq!(
+            from(serde_json::json!(" https://search.example.org ")),
+            Ok(Some("https://search.example.org".into()))
+        );
+        assert_eq!(from(serde_json::json!("http://localhost:8888")), Ok(Some("http://localhost:8888".into())));
+        assert_eq!(from(serde_json::Value::Null), Ok(None));
+        assert_eq!(from(serde_json::json!("  ")), Ok(None));
+        for refused in [
+            serde_json::json!("search.example.org"),
+            serde_json::json!("ftp://search.example.org"),
+            serde_json::json!("https://search.example.org/?q=x"),
+            serde_json::json!("https://anna:secret@search.example.org"),
+            serde_json::json!(7),
+        ] {
+            assert!(from(refused.clone()).is_err(), "{refused}");
+        }
+        let stored = WebSearch { searxng: Some("https://user@old.example.org".into()), ..WebSearch::default() };
+        assert_eq!(stored.check_changes(&stored), Ok(()), "a stored address is not checked again");
+        let new = WebSearch { searxng: Some("https://new.example.org/?x".into()), ..WebSearch::default() };
+        assert!(new.check_changes(&stored).is_err());
+        assert_eq!(WebSearch::default().check_changes(&stored), Ok(()), "removing it");
+    }
+
+    /// Point 6, issue #305: switching a provider on and setting another SearXNG address is a person's;
+    /// switching off and removing the address are not. A client's whole settings keep the providers
+    /// on in both and the stored address.
+    #[test]
+    fn only_people_switch_search_providers_on_and_set_the_address() {
+        let mut stored = WebSearch::default();
+        stored.set_on(SearchProviderId::Duckduckgo, true);
+        stored.searxng = Some("https://search.example.org".into());
+        let mut more = stored.clone();
+        more.set_on(SearchProviderId::Wikipedia, true);
+        assert!(stored.needs_a_person(&more) && !more.needs_a_person(&stored), "on, but off is anyone's");
+        let other = WebSearch { searxng: Some("https://other.example.org".into()), ..stored.clone() };
+        assert!(stored.needs_a_person(&other), "another address");
+        let removed = WebSearch { searxng: None, ..stored.clone() };
+        assert!(!stored.needs_a_person(&removed) && !stored.needs_a_person(&stored), "removing, the same");
+        assert!(!stored.needs_a_person(&WebSearch::default()), "everything off");
+
+        let kept = stored.from_client(&WebSearch {
+            providers: BTreeSet::from([SearchProviderId::Duckduckgo, SearchProviderId::Brave]),
+            searxng: Some("https://other.example.org".into()),
+        });
+        assert_eq!(kept.providers, BTreeSet::from([SearchProviderId::Duckduckgo]), "on only when on in both");
+        assert_eq!(kept.searxng, stored.searxng, "the stored address stays");
+        let kept = stored.from_client(&WebSearch::default());
+        assert!(kept.providers.is_empty(), "a client may switch them off");
+        assert_eq!(kept.searxng, stored.searxng, "and the address stays");
+        let switch: SearchProviderSwitch =
+            serde_json::from_value(serde_json::json!({"provider": "duckduckgo", "enabled": false})).expect("reads");
+        assert_eq!(switch, SearchProviderSwitch { provider: SearchProviderId::Duckduckgo, enabled: false });
+        assert!(
+            serde_json::from_value::<SearchProviderSwitch>(serde_json::json!({"provider": "google", "enabled": true}))
+                .is_err()
+        );
     }
 }

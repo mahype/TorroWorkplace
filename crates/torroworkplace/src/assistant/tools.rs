@@ -36,6 +36,7 @@ use torro_ipc::api::{
     ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Lack, Mcp, Operation, Rights, Selection, own_memory,
 };
 use torro_ipc::assistant::Mode;
+use torro_ipc::tools::ToolAccess;
 use torro_ipc::{Request, Response};
 
 /// At most this many tools are offered at once, [`FIND_TOOLS`] included.
@@ -159,22 +160,27 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area]) -> Vec
 /// `rights` with their selection of the assistant's own tools (`Rights::tools`, issue #225) cut to
 /// the tools a person switched on (`on`, setting `tool_enabled`): what an answer of the assistant or
 /// a bot offers its model, tells it in the prompt and denies an agent go by these, so a tool is
-/// offered only with its switch **and** in the selection.
+/// offered only with its switch **and** in the selection. "All tools" is written out first
+/// ([`Rights::reached_tools`]), so `web` stays out unless the selection names it (issue #305): the
+/// cut is never `All`.
 pub fn with_tools_on(rights: &Rights, on: &BTreeSet<ToolId>) -> Rights {
     let mut cut = rights.clone();
-    cut.tools = rights.tools.common(&Selection::Only(on.iter().map(|tool| tool.name().to_string()).collect()));
+    cut.tools =
+        rights.reached_tools().common(&Selection::Only(on.iter().map(|tool| tool.name().to_string()).collect()));
     cut
 }
 
-/// The assistant's own tools an answer may use (issue #225): with write access to `tools` (their
-/// commands make and open files), the area among `areas` (not turned off for the conversation nor
-/// withheld) and each tool in the selection of `rights`, which come cut to the switched-on tools
-/// ([`with_tools_on`]). What the prompt names and what engine B leaves to the agent.
+/// The assistant's own tools an answer may use (issue #225): each with its level in `tools`
+/// ([`ToolAccess::access`]: write for `pdf`, whose commands make and open files; read for `web`), the
+/// area among `areas` (not turned off for the conversation nor withheld) and the tool in the selection
+/// of `rights`, which come cut to the switched-on tools ([`with_tools_on`]). What the prompt names
+/// and what engine B leaves to the agent.
 pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
-    if !areas.contains(&Area::Tools) || !rights.area(Area::Tools).allows(Access::Write) {
+    if !areas.contains(&Area::Tools) {
         return Vec::new();
     }
-    ToolId::ALL.into_iter().filter(|tool| rights.reaches_tool(*tool)).collect()
+    let held = rights.area(Area::Tools);
+    ToolId::ALL.into_iter().filter(|tool| held.allows(tool.access()) && rights.reaches_tool(*tool)).collect()
 }
 
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
@@ -501,6 +507,33 @@ mod tests {
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only");
         reading.areas.remove(&Area::Tools);
         assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
+    }
+
+    /// Issue #305, decision 26: "all tools" cut to the switched-on ones never reaches `web`; reading in
+    /// `tools` with `web` named is enough for it, and then `pdf`, which needs writing, is not usable.
+    #[test]
+    fn web_is_offered_only_when_named_and_reading_is_enough() {
+        let both = BTreeSet::from([ToolId::Pdf, ToolId::Web]);
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        assert_eq!(rights.tools, Selection::All);
+        let cut = with_tools_on(&rights, &both);
+        assert!(cut.reaches_tool(ToolId::Pdf) && !cut.reaches_tool(ToolId::Web), "All does not cover web");
+        assert_eq!(usable_tools(&cut, &[Area::Tools]), vec![ToolId::Pdf]);
+
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        rights.tools = Selection::Only(vec!["web".into()]);
+        let cut = with_tools_on(&rights, &both);
+        assert_eq!(usable_tools(&cut, &[Area::Tools]), vec![ToolId::Web], "reading is enough for web");
+        let offered: Vec<String> = allowed(Some(&cut), &[]).iter().map(|tool| tool.spec.name.clone()).collect();
+        for name in ["tools_web_search", "tools_fetch_page", "tools_list_search_providers"] {
+            assert!(offered.contains(&name.to_string()), "{name}");
+        }
+        assert!(!offered.contains(&"tools_create_pdf".to_string()), "pdf is neither named nor writable");
+        rights.tools = Selection::Only(vec!["pdf".into(), "web".into()]);
+        let cut = with_tools_on(&rights, &both);
+        assert_eq!(usable_tools(&cut, &[Area::Tools]), vec![ToolId::Web], "pdf needs writing");
+        let off = with_tools_on(&rights, &BTreeSet::from([ToolId::Pdf]));
+        assert!(usable_tools(&off, &[Area::Tools]).is_empty(), "web switched off");
     }
 
     use super::*;

@@ -501,6 +501,9 @@ impl Demo {
                     ToolId::Pdf => {
                         tr("Makes PDFs from the assistant's text, set after the templates in its settings.").to_string()
                     }
+                    ToolId::Web => tr("Searches the web and reads web pages for the assistant, with the providers \
+                                       you switch on.")
+                    .to_string(),
                 },
                 enabled: self.settings.tools.is_on(id),
                 allowed: true,
