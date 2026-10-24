@@ -1000,3 +1000,165 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
 - **Abnahme:** App-Tests mit Test-Backend: Karte aus `get_cards`, jeder Knopf schickt seinen Request; `Target`
   parst `file:<id>`, fremde Kennung und Datei eines anderen Clients `not-found`; `compose` parst `--attach`; `--demo` mit Datei-Karte,
   `scripts/design-check.sh`, `torro-design-review`, `TORRO_LANG=de cargo test --workspace`; Übersetzungen in `de.rs`.
+
+## Werkzeug Dateien (WD.1–WD.4)
+
+Konzept: Abschnitt „Werkzeug Dateien“ in [assistent.md](../assistent.md) (Entscheidungen 20–24), Punkt 9 in „Was nie
+nach außen geht“ ([api.md](../api.md)). Issue #304, geplant am 2026-10-24. Baut auf WZ.2–WZ.7 auf.
+
+```
+WD.1 (Gerüst) ──┬── WD.2 (Kern: Ordner, auflisten, suchen, anlegen, kopieren, verschieben) ── WD.3 (Papierkorb)
+                └── WD.4 (Assistent › Einstellungen › Tools: Ordnerliste, Werkzeug)
+```
+
+**Festlegungen für alle WD-Aufgaben:**
+- `ToolId::Files` (Name `files`, Titel `Files`, nach `Pdf` in `ToolId::ALL`); `ToolId::of_command` ordnet
+  `tools.list_folder`, `tools.find_files`, `tools.create_folder`, `tools.copy_file`, `tools.move_file`,
+  `tools.trash_file` → `Files` zu. Damit gelten Schalter (`Lack::ToolOff`) und Auswahl (`Lack::Tool`) ohne neuen
+  Code in `handle_client`, `run_approved`, `assistant::tools::allowed_for` und `claude::denied`.
+- Einstellung: `torro_core::settings::Tools::folders: Vec<AllowedFolder>` (`#[serde(default,
+  skip_serializing_if = "Vec::is_empty")]`), `AllowedFolder { path: String, access: FolderAccess }`,
+  `FolderAccess { Read, ReadWrite }` (`read`, `read_write`). Höchstens 50 Ordner, Pfad absolut, ohne Steuerzeichen,
+  höchstens `MAX_PATH_BYTES`, keine Dublette. `torro_ipc::tools` reicht `FolderAccess` und `AllowedFolder` weiter
+  wie `ToolId`.
+- Pfade in Requests: absolut, höchstens 4096 Bytes, ohne Steuerzeichen, ohne `Component::ParentDir` und
+  `Component::CurDir` → sonst `error`. Draußen oder fehlend → `not-found`; Schreiben in „Read“ und ein freigegebener
+  Ordner als Quelle von Verschieben/Papierkorb → `forbidden`; Ordner kopieren, Ordner über Laufwerke verschieben →
+  `unsupported`. Meldungen ohne Pfade aus dem Request.
+- Protokoll (`audit::ids`: nichts) und Log (`daemon::describe`: „list a folder“, „find files“, „make a folder“,
+  „copy a file“, „move a file“, „trash a file“) nennen nie Pfad oder Suchbegriff.
+- Tests: alle Wurzeln als Parameter (`Roots`), Temp-Verzeichnisse, nie das echte Home und nie der echte Papierkorb.
+
+### WD.1 Gerüst: Werkzeug `files`, Einstellung `allowed_folder`, Requests, Katalog
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/settings.rs`,
+  `crates/torro-ipc/src/{lib,api,tools}.rs`, `crates/torroworkplace/src/{core,settings_service,audit,daemon,mcp}.rs`,
+  `crates/torroworkplace/src/{tools/mod,pim}.rs`, `crates/torroworkplace/src/assistant/prompt.rs`,
+  `crates/torro-settings-ui/src/{demo.rs,assistant/tools.rs}` (nur `match`-Zweige und `assistant_may_use`),
+  `crates/torroassistant/src/chat.rs` (`tool_title`), `crates/torro-core/src/i18n/de.rs`, `docs/api.md`,
+  `docs/api-reference.md`
+- `ToolId::Files` und `of_command` nach den Festlegungen; Doc-Kommentare von `ToolId` und `ToolSwitch` nennen
+  `files`. Einstellung nach den Festlegungen mit `AllowedFolder::check`; `SettingKey::AllowedFolder` (Wert `{"path":
+  "/abs", "access": "read" | "read_write" | null}`; `null` entfernt den Ordner, ein vorhandener Pfad bekommt die neue
+  Stufe) mit `Change::AllowedFolder` in `settings_service.rs`.
+- Nur Menschen (Punkt 9): `Request::kept_for_people` gibt für `SetSetting { key: AllowedFolder, .. }` immer `true`;
+  `Tools::needs_a_person` meldet jede Änderung an `folders`; `Tools::from_client` behält `folders` aus dem
+  gespeicherten Stand.
+- `torro_ipc::tools`: `FolderEntry { name, path, kind: EntryKind, size: Option<u64>, modified:
+  Option<DateTime<Utc>>, access: Option<FolderAccess> }` (`access` nur bei den freigegebenen Ordnern), `EntryKind {
+  File, Folder, Link }`, Konstanten `MAX_LIST_ENTRIES = 500`, `MAX_FOUND = 200`, `MAX_FIND_DEPTH = 10`,
+  `MAX_VISITED = 50_000`, `MAX_NAME_PATTERN_CHARS = 200`, und `fn access_to_use(ToolId) -> Access` (`Pdf` → Write,
+  `Files` → Read).
+- Requests (`lib.rs`, nach `SaveFileAs`): `ListFolder { path: Option<String> }`, `FindFiles { folder, name }`,
+  `CreateFolder { path }`, `CopyFile { from, to }`, `MoveFile { from, to }`, `TrashFile { path }`. `to` ist ein
+  vorhandener Ordner (dann gleicher Name darin) oder ein neuer Pfad. Antworten `Response::FolderEntries { entries,
+  truncated }` und `Response::FilePath { path }` (der entstandene Pfad); `TrashFile` → `Response::Ok`.
+- Katalog (`api.rs`, nach `SAVE_FILE_AS`, alle `Area::Tools`, `Mcp::Tool`): `tools.list_folder`,
+  `tools.find_files` (Read), `tools.create_folder`, `tools.copy_file`, `tools.move_file` (Write),
+  `tools.trash_file` (Delete). Beschreibungen nennen: nur freigegebene Ordner, `list_folder` ohne `path` zuerst,
+  nie überschreiben und freier Name, Pfad aus der Antwort nennen, Papierkorb fragt immer, kein Inhalt.
+  `LIST_TOOLS` und `ToolInfo::allowed` sagen „Leserecht für `files`“. Beschreibung von `SET_SETTING` nennt
+  `allowed_folder`.
+- `tools::list` nimmt `access_to_use`; `tools::description` mit Arm für `Files`; `assistant_may_use` in
+  `torro-settings-ui` ebenso. Handler in `Core::handle_within`/`tools_request` vorerst `unsupported`. `prompt.rs`:
+  Arm für `Files` („tools_list_folder lists the allowed folders …“). `chat.rs` `tool_title`: „Listed folder“, „Found
+  files“, „Made folder“, „Copied file“, „Moved file“, „Moved to trash“. `demo.rs`: Arm.
+- `docs/api.md`: Zeile `tools` in der Rechte-Tabelle (Read `list_folder`, `find_files`; Write `create_folder`,
+  `copy_file`, `move_file`; Delete `trash_file`), Fußnote ²² und Punkt 9 (freigegebene Ordner nur Menschen).
+- **Abnahme:** `samples()` deckt die sechs Requests; Test in `tools.rs` `every_command_of_a_tool_is_in_the_area_tools`
+  ordnet `Pdf` und `Files` zu; Test: `set_setting allowed_folder` von einem Client mit Admin `forbidden`, auch mit
+  `access: null`; `update_settings`, das `folders` ändert, `forbidden`; `update_keeping_hidden` behält `folders`;
+  Einstellung lesen und prüfen (relativ, Dublette, über 50); `tools.list_tools` zeigt `files` mit `allowed` bei
+  Leserecht; Vertragstest Tool ↔ Katalog mit den sechs Tools; `TORRO_BLESS=1 cargo test -p torro-ipc` und
+  `docs/api-reference.md`; Übersetzungen in `de.rs`.
+
+### WD.2 Kern: Ordnergrenzen, auflisten, suchen, anlegen, kopieren, verschieben
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** WD.1 · **Dateien:** `crates/torroworkplace/src/tools/{mod,folders,organize}.rs`
+  (`folders.rs` und `organize.rs` neu), `crates/torroworkplace/src/{core,approvals,client_setup}.rs`,
+  `crates/torroworkplace/assets/assistant/skill.md`, `crates/torro-core/src/i18n/de.rs`
+- `folders.rs`: `Allowed::of(&[AllowedFolder], excluded: &[PathBuf])` löst jeden Ordner mit `fs::canonicalize` auf
+  (fehlende fallen weg); `fn roots(&self) -> &[(PathBuf, FolderAccess)]` (für #303); `fn existing(&self, path,
+  need) -> Result<PathBuf, FolderError>` (ganzer Pfad aufgelöst, folgt Links); `fn entry(&self, path, need)` (nur
+  der Elternordner aufgelöst, der letzte Teil bleibt: für Verschieben und Papierkorb eines Links); `fn
+  new_target(&self, path, need)` (Elternordner aufgelöst, letzter Teil ein einfacher Name ohne Trenner, höchstens
+  255 Bytes). Gilt der innerste passende Ordner (`Path::starts_with` auf aufgelösten Pfaden). Alles in oder gleich
+  einem Pfad aus `excluded` und jeder Name mit `client_setup::BACKUP_SUFFIX` ist `not-found` (Komponenten in
+  Kleinschreibung verglichen); Auflisten und Suchen lassen sie aus. Verschieben (und in WD.3 der Papierkorb) eines
+  Eintrags, der einen Pfad aus `excluded` **oder einen freigegebenen Ordner** enthält oder ist, ist `forbidden`;
+  sonst träfe ein Agent den Inhalt eines inneren „Read“-Ordners über einen äußeren. Stufen je Befehl: auflisten,
+  suchen, Quelle von kopieren `Read`; Ziel von anlegen, kopieren, verschieben und Quelle von verschieben
+  `ReadWrite`. `ErrorKind::PermissionDenied` →
+  `error` mit dem Hinweis auf die Freigabe des Systems (macOS: Datenschutz › Dateien und Ordner).
+- `Roots` bekommt `excluded: Vec<PathBuf>`; `Tools::system` füllt es mit `config`, `data`, `state` aus
+  `AppPaths::for_app` für jede `AppId::ALL`, mit `client_setup::protected_files(&Env)` (neu: für jedes `Target` die
+  Datei des Datei-Wegs von `Target::locate` (auch wenn dort `Method::Cli` gewinnt, gleich ob sie existiert), `hook_file` je
+  `AgentKind` und `skill_file`; sie tragen Client-Schlüssel und die Freigabe-Hooks) und mit den Schlüsselablagen
+  des Systems: `~/.ssh`, `~/.gnupg`, auf macOS `~/Library/Keychains`, auf Linux `~/.local/share/keyrings`, auf
+  Windows `%APPDATA%\Microsoft\Credentials`, `%LOCALAPPDATA%\Microsoft\Credentials` und
+  `%APPDATA%\Microsoft\Protect`.
+- `organize.rs`, alles in `spawn_blocking`: `list_folder` (ohne Pfad die freigegebenen Ordner mit `access`; sonst
+  eine Ebene, Ordner zuerst, dann nach Namen, `symlink_metadata`, höchstens `MAX_LIST_ENTRIES`); `find_files`
+  (eigener Stapel über `fs::read_dir`, folgt keinen Links, überspringt `excluded`, Muster ohne Groß-/Kleinschreibung,
+  `*` und `?` als Platzhalter, sonst Teilstring; Grenzen aus WD.1); `create_folder` (`fs::create_dir`, belegt →
+  freier Name); `copy_file` (Quelle eine echte Datei, Ziel mit `OpenOptions::create_new`, belegt → freier Name,
+  Rechte der Quelle übernehmen); `move_file` (Datei: `fs::hard_link` auf das Ziel, belegt → freier Name, dann Quelle
+  entfernen; geht kein harter Link: Ziel prüfen und `fs::rename`; `ErrorKind::CrossesDevices` → kopieren wie oben,
+  dann Quelle entfernen. Ordner und Links: Ziel prüfen, `fs::rename`; Ordner über Laufwerke → `unsupported`).
+  Freier Name nach dem Muster von `place::write_new` (`Name-2.ext` bis `-999`, bei Ordnern ohne Endung); ein
+  gemeinsamer Helfer, wenn `place.rs` sich dafür teilen lässt, ohne sein Verhalten zu ändern.
+- Kern: `tools_request` ruft die Handler mit `settings.tools.folders`; `tool_request_refusal` prüft die Pfade schon vor
+  der Freigabe (Handler prüfen beim Ausführen noch einmal). `Facts` bekommt `paths: Option<PathFacts { from:
+  Option<String>, to: Option<String> }>`, gefüllt in `Core::facts` aus der Auflösung; `approvals::summary` („Make the
+  folder …“, „Copy …“, „Move …“, „Rename … to …“ bei gleichem Elternordner) und `approvals::details` („From: …“,
+  „To: …“, „A file there is never replaced; a free name is chosen.“). Festgehalten wie beim Senden: in
+  `Core::ask_approval` bekommen `CreateFolder`, `CopyFile`, `MoveFile` einen `fingerprint` (`audit::hashed` über die
+  aufgelösten Pfade), `run_approved` löst neu auf und antwortet bei Abweichung `conflict`, ohne etwas zu tun.
+- `skill.md`, Abschnitt „Your own tools“: Dateien nur in freigegebenen Ordnern, zuerst `tools_list_folder` ohne
+  Pfad, Pfad aus der Antwort nennen, kein Inhalt.
+- **Abnahme:** Tests in `folders.rs`: `..` und `.` → `error`; relativer Pfad → `error`; Link aus dem Ordner (Unix,
+  `#[cfg(unix)]`) → `not-found`; Link innerhalb → erreichbar; innerster Ordner gilt (Read in Read-Write und
+  umgekehrt); Suite-Ordner gesperrt, auch in anderer Schreibweise; fehlender Ordner fällt weg. Tests in
+  `organize.rs`: jede Funktion, belegtes Ziel → `-2` ohne Änderung am Vorhandenen, Ordner kopieren `unsupported`,
+  Schreiben in „Read“ `forbidden`, freigegebener Ordner als Quelle `forbidden`, Grenzen setzen `truncated`.
+  Kern-Test: Schalter aus → `forbidden`; ohne `files` in der Auswahl → `forbidden`; Pfad draußen → `not-found`
+  ohne Freigabe-Antrag; Client mit „On every change“ bekommt `pending` mit Quelle und Ziel in `details`; Link nach
+  der Freigabe getauscht → `conflict`. Tests für die Sperren: Datei aus `protected_files` und `*.torroworkplace-backup`
+  → `not-found`, auch in einem freigegebenen Home; Verschieben aus „Read“ → `forbidden`; äußeren Ordner um einen
+  inneren „Read“-Ordner verschieben → `forbidden`.
+
+### WD.3 Kern: Papierkorb mit Freigabe
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** WD.2 · **Dateien:** `Cargo.toml` (Wurzel: `trash = "5.2.9"`),
+  `crates/torroworkplace/Cargo.toml`, `crates/torroworkplace/src/tools/{mod,organize}.rs`,
+  `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torro-core/src/i18n/de.rs`
+- `pub type Trasher = Arc<dyn Fn(&Path) -> Result<(), String> + Send + Sync>` wie `Opener`; `Tools::system` nimmt
+  `system_trash` (`trash::TrashContext`, auf macOS mit `TrashContextExtMacos::set_delete_method(
+  DeleteMethod::NsFileManager)` hinter `#[cfg(target_os = "macos")]`), `Tools::new` einen, der nichts tut und
+  `Err` gibt, Tests einen, der aufzeichnet (`with_trasher`).
+- `trash_file`: `Allowed::entry` mit `ReadWrite`, nichts, das einen freigegebenen Ordner oder einen Pfad aus
+  `excluded` ist oder enthält (Regel aus WD.2); dann der `Trasher`. Fehler des Systems → `error` mit der Art, ohne Pfad.
+- Immer mit Freigabe: in `Core::handle_client` neben `question` eine Bedingung für `Request::TrashFile`, damit auch
+  `Confirm::Never` fragt; `approvals::summary` „Move "{name}" to the trash“, `details` „From: …“ aus
+  `Facts::paths`; `fingerprint` und `conflict` wie in WD.2.
+- **Abnahme:** Tests: Client mit `Confirm::Never` bekommt für `tools.trash_file` `pending`; nach „Allow“ ruft der Kern
+  den `Trasher` mit dem aufgelösten Pfad; Link wird selbst übergeben, nicht sein Ziel; freigegebener Ordner und
+  Ordner mit Suite-Daten → `forbidden` bzw. `not-found` ohne Freigabe-Antrag; „Read“ → `forbidden`; App-Schlüssel
+  ohne Freigabe. `cargo check` für Linux und Windows, soweit die Ziele installiert sind, sonst im Bericht als offen.
+
+### WD.4 Assistent › Einstellungen › Tools: freigegebene Ordner und Werkzeug Dateien
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** WD.1 · **Dateien:** `crates/torro-settings-ui/src/assistant/{mod,tools}.rs`,
+  `crates/torro-settings-ui/src/demo.rs`, `crates/torroassistant/src/app.rs`, `crates/torro-core/src/i18n/de.rs`,
+  `docs/settings.md`
+- Gruppe „Allowed folders“ vor den Werkzeugen: je Ordner Pfad (gekürzt, ganz im Tooltip), Auswahl „Read“ / „Read
+  and write“, „Remove“; „Add folder…“ über `AppAction::PickAllowedFolder`, die App öffnet den Ordner-Dialog von
+  `rfd` und schickt `set_setting allowed_folder` mit `access: "read"`. Erklärzeile: Werkzeuge wie Files arbeiten nur
+  hier; ArtCraft nutzt die Liste später auch.
+- Gruppe des Werkzeugs `files` wie PDF: Schalter „Organize files“, Kurzbeschreibung, Zeile „may use it“; ist die
+  Liste leer, Hinweis „Add a folder above. The tool works only there.“
+- Demo mit zwei Ordnern (einmal Read, einmal Read and write). `docs/settings.md`: Zeilen in Bestand und „Was wohin
+  gehört“.
+- **Abnahme:** Tests: „Add folder…“ gibt `AppAction`, Auswahl schickt genau einen `set_setting allowed_folder` mit der
+  Stufe, „Remove“ mit `access: null`; kein `clients.*`; Abschnitt baut in jedem Zustand; `--demo`;
+  `scripts/design-check.sh`, `torro-design-review` (schmal bis breit); Übersetzungen in `de.rs`.
