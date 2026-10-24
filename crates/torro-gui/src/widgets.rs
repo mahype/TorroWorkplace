@@ -921,7 +921,8 @@ fn sidebar_row<'a, M: Clone + 'a>(
                 None => line_label(typo::body(), label),
                 Some(open) => {
                     // The chevron follows the name instead of the row's end, so the label takes
-                    // only its own width; both are clipped together if the name is too long.
+                    // only its own width. A name wider than the row pushes the chevron out of the
+                    // clip (Iced 0.14 has no ellipsis); the group names it is made for are short.
                     let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
                     let name = row![
                         typo::text(typo::body(), label).wrapping(Wrapping::None),

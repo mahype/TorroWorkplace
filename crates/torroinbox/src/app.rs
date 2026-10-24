@@ -2124,6 +2124,8 @@ fn shows_entries(message: &Message) -> bool {
             | Message::OpenFolders
             | Message::DismissAll
             | Message::Switcher(_)
+            | Message::ToggleCategoryGroup(_)
+            | Message::ShowCategoryGroup(_)
     )
 }
 
@@ -3471,13 +3473,28 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Takes the settings `mail_view` and `mail_appearance` (task M9.7), with `--mail-view` and
     /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
     /// again (every tick) leaves the switches as the person set them.
-    fn take_look(&mut self, stored: MailLook) {
+    fn take_look(&mut self, stored: MailLook) -> Task<Message> {
         let look = self.launch.look(stored);
-        if look != self.look {
-            self.mail_format = look.format;
-            self.look = look;
-            self.mail_scheme = None;
+        if look == self.look {
+            return Task::none();
         }
+        let hidden_changed = look.hidden_categories != self.look.hidden_categories;
+        self.mail_format = look.format;
+        self.look = look;
+        self.mail_scheme = None;
+        // A shown group lists the categories it had when it was shown; one switched off since
+        // must leave its list now, not only after another view (issue #300).
+        if hidden_changed
+            && let View::Category(shown) = &self.view
+            && shown.only.is_none()
+        {
+            let view = self.category_group_view(shown.group);
+            if view != self.view {
+                self.view = view;
+                return self.load();
+            }
+        }
+        Task::none()
     }
 
     /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
@@ -3509,8 +3526,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         // The sidebar stays while the settings are open; anything that would show entries again
         // takes the content area back from them (task S.20).
+        let mut message = message;
         if self.settings.is_some() && shows_entries(&message) {
             self.leave_settings();
+            // The highlighted group row brings its list back over the settings, like every other
+            // row; folding it would leave nothing visible changed (issue #300).
+            if let Message::ToggleCategoryGroup(group) = message {
+                message = Message::ShowCategoryGroup(group);
+            }
         }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
@@ -4275,7 +4298,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MailColors(scheme) => self.mail_scheme = Some(scheme),
             Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_link(url),
             Message::HtmlLink(_) => {}
-            Message::MailLook(Ok(look)) => self.take_look(look),
+            Message::MailLook(Ok(look)) => return self.take_look(look),
             // The core may be starting up; keep what the window shows.
             Message::MailLook(Err(_)) => {}
             Message::WindowScale(scale) => self.window_scale = scale,
@@ -13526,6 +13549,41 @@ mod tests {
         let View::Category(shown) = app.category_group_view(group) else { panic!("a category view") };
         assert!(!shown.categories().contains(&hidden), "the hidden category is left out");
         assert_eq!(shown.categories().len(), all.categories().len() - 1, "the others stay");
+    }
+
+    /// Issue #300: a category switched off while its group is shown leaves the group's list at
+    /// once – the shown view is made anew and loaded, not kept with the old categories.
+    #[test]
+    fn hiding_a_category_of_the_shown_group_lists_the_group_anew() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let hidden = occurring_in(&app, group).category;
+        let stored = MailLook { format: app.look.format, colors: app.look.colors, hidden_categories: vec![hidden] };
+        assert!(app.update(Message::MailLook(Ok(stored.clone()))).units() > 0, "the group is loaded again");
+        let View::Category(shown) = &app.view else { panic!("still the group") };
+        assert!(!shown.categories().contains(&hidden));
+        assert!(app.category_group_active(group) && app.open_groups.contains(&group));
+        load(&mut app);
+        assert!(app.messages.iter().all(|m| m.category.is_none_or(|held| held.category != hidden)));
+        assert_eq!(app.update(Message::MailLook(Ok(stored))).units(), 0, "the same settings change nothing");
+    }
+
+    /// Issue #300: with the settings open, a click on the group shown brings its list back instead
+    /// of folding it, as every other row of the sidebar does.
+    #[test]
+    fn a_click_on_the_shown_group_leaves_the_settings() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let group = CategoryGroup::WaitingForMe;
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        load(&mut app);
+        let _ = app.update(Message::OpenSettings);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::ToggleCategoryGroup(group));
+        assert!(app.settings.is_none(), "the list is back");
+        assert!(app.open_groups.contains(&group), "the group stays open");
+        assert!(app.category_group_active(group));
     }
 
     /// Issue #300 (task E17.2, g): the start states for the visual check – "Waiting for me" open and
