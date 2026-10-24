@@ -1323,7 +1323,7 @@ nur für den echten Lauf; ihre Tests gehen über Demo und Fakes.
   --workspace` grün.
 
 ### M12.4 MCP: `mail_save_attachments` ohne Pfad
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** M12.3 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - **Oberfläche/API:** M12.1. **MCP:** `mail_save_attachments`, `mail_list_save_targets`, `mail_update_save_target`,
   `mail_remove_save_target`.
