@@ -353,7 +353,8 @@ Jede Datei hat ihr eigenes `[about]` mit `name` und `version`; jeder Teil wird f
 ändern will, legt nur dessen Ordner an: ein eigenes Farbschema braucht kein Design und keine Schrift.
 
 Die Suite legt ihre Beispiele in die Ordner im Datenordner, der Dienst beim Start, die Steuerzentrale bei
-„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, Nord,
+„Open designs folder“: Plex, Commitr, Channelr, Guildr, Quattro und Ribbon als Schrift und Farbschema, die freien
+Schriften von Issue #299 nur als Schrift ([Mitgelieferte Schriften](#mitgelieferte-schriften)), Nord,
 Solarized, Catppuccin, Gruvbox, Dracula und Everforest nur als Farbschema, dazu 21 Farbschemata nach freien Paletten ([Mitgelieferte Farbschemata](#mitgelieferte-farbschemata)). Beispiel-Designs gibt es seit Issue #291
 nicht mehr: Die drei Designs der Suite sind eingebaut ([unten](#drei-eingebaute-designs-standard-compact-console)), und
 eine Kopie der sechs alten Beispiel-Designs in einem Datenordner bleibt ein eigenes Design ihres Besitzers. Jedes Beispiel wird **einmal angeboten**
@@ -688,9 +689,17 @@ Name (RFN) trägt einen anderen Familiennamen.
 | `channelr` | Lato | sans | google/fonts | OFL-1.1 | „Lato“ | nein | gleich breit |
 | `commitr` | Mona Sans, Ziffern Commitr Figures | sans | github/mona-sans 2.0.27 | OFL-1.1 | „Mona“ | ja (Commitr Figures) | Commitr Figures, eingefroren |
 | `guildr` | Figtree, Ziffern Figtree Tabular | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte, Figtree Tabular) | Figtree Tabular, eingefroren |
+| `hyperlegible` | Atkinson Hyperlegible Next, Ziffern Hyperlegible Figures | sans | googlefonts/atkinson-hyperlegible-next @7925f50, 2.001 | OFL-1.1 | – | ja (Hyperlegible Figures) | Hyperlegible Figures, `tnum` eingefroren |
+| `manrope` | Manrope, Ziffern Manrope Figures | sans | googlefonts/manrope @468c0db, 4.505 | OFL-1.1 | – | ja (Manrope Figures) | Manrope Figures, `tnum` eingefroren |
+| `noto-sans` | Noto Sans | sans | notofonts/latin-greek-cyrillic NotoSans-v2.015 | OFL-1.1 | – | nein | gleich breit |
+| `nunito` | Nunito | sans | googlefonts/nunito @8c6a9bb, 3.602 | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
+| `open-sans` | Open Sans (ohne Medium) | sans | googlefonts/opensans @bd7e376, 3.003 | OFL-1.1 | – | nein | gleich breit |
 | `plex` | IBM Plex Sans | sans | github.com/IBM/plex 1.1.0 | OFL-1.1 | „Plex“ | nein | gleich breit |
 | `quattro` | Roboto Flex | sans | google/fonts | OFL-1.1 | – | ja (feste Schnitte) | gleich breit |
 | `ribbon` | Selawik | sans | microsoft/Selawik 1.01 | OFL-1.1 | „Selawik“ | nein | gleich breit |
+| `roboto` | Roboto (ohne SemiBold) | sans | googlefonts/roboto-3-classic v3.016 | OFL-1.1 | – | nein | gleich breit je Schnitt |
+| `source` | Source Sans 3, Überschriften Source Serif 4 | sans | adobe-fonts/source-sans 3.052R, adobe-fonts/source-serif 4.005R | OFL-1.1 | „Source“ | nein | gleich breit je Schnitt |
+| `work-sans` | Work Sans, Ziffern Work Sans Figures | sans | weiweihuanghuang/Work-Sans @b35c810, 2.012 | OFL-1.1 | – | ja (Work Sans Figures) | Work Sans Figures, `tnum` eingefroren |
 
 Zu prüfen beim Bauen: Höhere Seitenleistenzeilen (Airy 32, Clear 36) schieben in niedrigen Fenstern „Settings“ aus der
 Seitenleiste des Kalenders (siehe Plex). Clear braucht dort vielleicht eine rollende Seitenleiste, das wäre eine eigene

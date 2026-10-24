@@ -241,7 +241,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
   breit und schmal, hell und dunkel, in Standard und Console (`torro-design-review`).
 
 ### SR.5 Sans 1: Hyperlegible, Source, Nunito, Open Sans, Noto Sans, Roboto, Work Sans, Manrope
-- [ ] erledigt
+- [x] erledigt (2026-10-24: Herkunft, Ziffern und RFN je Schrift im Kopf von `font.toml`; Open Sans ohne Medium, Roboto ohne SemiBold, Source Serif 4 ohne Medium, weil die Hersteller sie nicht als feste Schnitte liefern; die Sichtprüfung je Schrift steht in SR.8)
 - **Modell:** Opus · **Braucht:** SR.4 · **Dateien:** `fonts/{hyperlegible,source,nunito,open-sans,noto-sans,roboto,
   work-sans,manrope}/`, `crates/torroworkplace/src/designs.rs`, `docs/design-pakete.md`
 - Nach den gemeinsamen Regeln. Source: `heading` Source Serif 4 (Regular, Medium, SemiBold, soweit vorhanden).

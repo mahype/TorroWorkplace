@@ -1,0 +1,28 @@
+# The font Nunito (task SR.5, issue #299): Nunito. Its size adjustment comes from its x-height.
+# Source: github.com/googlefonts/nunito (fonts/variable/Nunito[wght].ttf at commit 8c6a9bb, the file
+# google/fonts ships), Version 3.602; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's
+# OFL text as published.
+# Reserved Font Name: none.
+# Regular, Medium, SemiBold and Bold are fixed cuts of the variable font, made with fontTools 4.67.0
+# varLib.instancer (wght 400/500/600/700, nothing else to pin) and named Nunito.
+# x-height 0.484 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.128; widest figure
+# of numbers 0.600 em, 0.677 em after it.
+# Figures checked with fontTools: the ten default digits are one width in every cut (Regular 600, Medium 600,
+# SemiBold 600, Bold 600 of 1000 units), so numbers keeps the text font.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Nunito"
+version = "1.0.0"
+author = "Torro"
+description = "Nunito: a balanced sans with rounded terminals"
+
+[fonts.text]
+family = "Nunito"
+regular = "Nunito-Regular.ttf"
+medium = "Nunito-Medium.ttf"
+semibold = "Nunito-SemiBold.ttf"
+bold = "Nunito-Bold.ttf"

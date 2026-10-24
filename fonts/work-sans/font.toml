@@ -1,0 +1,38 @@
+# The font Work Sans (task SR.5, issue #299): Work Sans, figures Work Sans Figures. Its size adjustment comes
+# from its x-height.
+# Source: github.com/weiweihuanghuang/Work-Sans (fonts/ttf at commit b35c810, the source google/fonts builds
+# from), Version 2.012; downloaded 2026-10-24. Licence: SIL OFL 1.1, LICENSE.txt is the font's OFL text as
+# published.
+# Reserved Font Name: none.
+# The Work Sans files are the maker's, unchanged.
+# Work Sans Figures (Regular, Medium) is made from the Work Sans cuts with opentype-feature-freezer 1.32.2
+# (pyftfeatfreeze -f tnum) and fontTools 4.67.0, with a name of its own so it does not mix with the text cuts;
+# Regular: tnum frozen, digits already one width (604); Medium: tnum frozen, digits already one width (604).
+# Copyright and licence records in the files are unchanged.
+# x-height 0.500 em (OS/2 sxHeight of the Regular), so the automatic size adjustment is 1.092; widest figure
+# of numbers 0.604 em, 0.659 em after it.
+# Figures checked with fontTools: the default digits differ in width (Regular 390-622, Medium 402-628,
+# SemiBold 416-636, Bold 431-646 units), so numbers takes Work Sans Figures, whose ten digits are one width in
+# each cut.
+format = 1
+license = "OFL-1.1"
+# Grouped under "Sans" in the control centre (#299).
+kind = "sans"
+
+[about]
+name = "Work Sans"
+version = "1.0.0"
+author = "Torro"
+description = "Work Sans: a grotesque after early twentieth-century types, with tabular figures"
+
+[fonts.text]
+family = "Work Sans"
+regular = "WorkSans-Regular.ttf"
+medium = "WorkSans-Medium.ttf"
+semibold = "WorkSans-SemiBold.ttf"
+bold = "WorkSans-Bold.ttf"
+
+[fonts.numbers]
+family = "Work Sans Figures"
+regular = "WorkSansFigures-Regular.ttf"
+medium = "WorkSansFigures-Medium.ttf"

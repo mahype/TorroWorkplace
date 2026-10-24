@@ -121,6 +121,101 @@ const FONTS: &[Example] = &[
             example_file!("fonts", "quattro", "RobotoFlex-SemiBold.ttf"),
         ],
     },
+    // Issue #299 (tasks SR.5-SR.7): the free fonts the suite ships, by id.
+    Example {
+        id: "hyperlegible",
+        files: &[
+            example_file!("fonts", "hyperlegible", "font.toml"),
+            example_file!("fonts", "hyperlegible", "AtkinsonHyperlegibleNext-Bold.ttf"),
+            example_file!("fonts", "hyperlegible", "AtkinsonHyperlegibleNext-Medium.ttf"),
+            example_file!("fonts", "hyperlegible", "AtkinsonHyperlegibleNext-Regular.ttf"),
+            example_file!("fonts", "hyperlegible", "AtkinsonHyperlegibleNext-SemiBold.ttf"),
+            example_file!("fonts", "hyperlegible", "HyperlegibleFigures-Medium.ttf"),
+            example_file!("fonts", "hyperlegible", "HyperlegibleFigures-Regular.ttf"),
+            example_file!("fonts", "hyperlegible", "LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "manrope",
+        files: &[
+            example_file!("fonts", "manrope", "font.toml"),
+            example_file!("fonts", "manrope", "LICENSE.txt"),
+            example_file!("fonts", "manrope", "Manrope-Bold.ttf"),
+            example_file!("fonts", "manrope", "Manrope-Medium.ttf"),
+            example_file!("fonts", "manrope", "Manrope-Regular.ttf"),
+            example_file!("fonts", "manrope", "Manrope-SemiBold.ttf"),
+            example_file!("fonts", "manrope", "ManropeFigures-Medium.ttf"),
+            example_file!("fonts", "manrope", "ManropeFigures-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "noto-sans",
+        files: &[
+            example_file!("fonts", "noto-sans", "font.toml"),
+            example_file!("fonts", "noto-sans", "LICENSE.txt"),
+            example_file!("fonts", "noto-sans", "NotoSans-Bold.ttf"),
+            example_file!("fonts", "noto-sans", "NotoSans-Medium.ttf"),
+            example_file!("fonts", "noto-sans", "NotoSans-Regular.ttf"),
+            example_file!("fonts", "noto-sans", "NotoSans-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "nunito",
+        files: &[
+            example_file!("fonts", "nunito", "font.toml"),
+            example_file!("fonts", "nunito", "LICENSE.txt"),
+            example_file!("fonts", "nunito", "Nunito-Bold.ttf"),
+            example_file!("fonts", "nunito", "Nunito-Medium.ttf"),
+            example_file!("fonts", "nunito", "Nunito-Regular.ttf"),
+            example_file!("fonts", "nunito", "Nunito-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "open-sans",
+        files: &[
+            example_file!("fonts", "open-sans", "font.toml"),
+            example_file!("fonts", "open-sans", "LICENSE.txt"),
+            example_file!("fonts", "open-sans", "OpenSans-Bold.ttf"),
+            example_file!("fonts", "open-sans", "OpenSans-Regular.ttf"),
+            example_file!("fonts", "open-sans", "OpenSans-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "roboto",
+        files: &[
+            example_file!("fonts", "roboto", "font.toml"),
+            example_file!("fonts", "roboto", "LICENSE.txt"),
+            example_file!("fonts", "roboto", "Roboto-Bold.ttf"),
+            example_file!("fonts", "roboto", "Roboto-Medium.ttf"),
+            example_file!("fonts", "roboto", "Roboto-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "source",
+        files: &[
+            example_file!("fonts", "source", "font.toml"),
+            example_file!("fonts", "source", "LICENSE.txt"),
+            example_file!("fonts", "source", "SourceSans3-Bold.ttf"),
+            example_file!("fonts", "source", "SourceSans3-Medium.ttf"),
+            example_file!("fonts", "source", "SourceSans3-Regular.ttf"),
+            example_file!("fonts", "source", "SourceSans3-SemiBold.ttf"),
+            example_file!("fonts", "source", "SourceSerif4-Regular.ttf"),
+            example_file!("fonts", "source", "SourceSerif4-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "work-sans",
+        files: &[
+            example_file!("fonts", "work-sans", "font.toml"),
+            example_file!("fonts", "work-sans", "LICENSE.txt"),
+            example_file!("fonts", "work-sans", "WorkSans-Bold.ttf"),
+            example_file!("fonts", "work-sans", "WorkSans-Medium.ttf"),
+            example_file!("fonts", "work-sans", "WorkSans-Regular.ttf"),
+            example_file!("fonts", "work-sans", "WorkSans-SemiBold.ttf"),
+            example_file!("fonts", "work-sans", "WorkSansFigures-Medium.ttf"),
+            example_file!("fonts", "work-sans", "WorkSansFigures-Regular.ttf"),
+        ],
+    },
 ];
 
 /// The example colour schemes with every file they have (`color-schemes/` in the repository).
@@ -637,6 +732,9 @@ mod tests {
 
     /// The six examples that are a font and a colour scheme (and were a design too until issue #291).
     const COMPLETE: [&str; 6] = ["channelr", "commitr", "guildr", "plex", "quattro", "ribbon"];
+    /// The fonts that are only a font (issue #299, tasks SR.5–SR.7), by id.
+    const FONTS_ONLY: [&str; 8] =
+        ["hyperlegible", "manrope", "noto-sans", "nunito", "open-sans", "roboto", "source", "work-sans"];
     /// The six examples that are only a colour scheme (task L.20).
     const SCHEMES_ONLY: [&str; 6] = ["catppuccin", "dracula", "everforest", "gruvbox", "nord", "solarized"];
     /// The colour schemes after free palettes in light and dark (issue #292). They bring no logo of their
@@ -711,7 +809,9 @@ mod tests {
             found.into_iter().map(|(id, _)| id).filter(|id| id != STANDARD_ID).collect()
         };
         assert!(examples(Part::Design).is_empty(), "no example designs since issue #291");
-        assert_eq!(listed(Part::Font), COMPLETE);
+        let mut fonts: Vec<&str> = COMPLETE.iter().chain(&FONTS_ONLY).copied().collect();
+        fonts.sort_unstable();
+        assert_eq!(listed(Part::Font), fonts);
         let mut schemes: Vec<&str> =
             COMPLETE.iter().chain(&SCHEMES_ONLY).chain(&WITHOUT_LOGO).chain(&DARK_ONLY).copied().collect();
         schemes.sort_unstable();
@@ -799,11 +899,26 @@ mod tests {
             ("channelr", "Lato", "Lato"),
             ("guildr", "Figtree", "Figtree Tabular"),
             ("quattro", "Roboto Flex", "Roboto Flex"),
+            // Issue #299 (SR.5): figures of one width stay the text font, else a figures font of its own.
+            ("hyperlegible", "Atkinson Hyperlegible Next", "Hyperlegible Figures"),
+            ("source", "Source Sans 3", "Source Sans 3"),
+            ("nunito", "Nunito", "Nunito"),
+            ("open-sans", "Open Sans", "Open Sans"),
+            ("noto-sans", "Noto Sans", "Noto Sans"),
+            ("roboto", "Roboto", "Roboto"),
+            ("work-sans", "Work Sans", "Work Sans Figures"),
+            ("manrope", "Manrope", "Manrope Figures"),
         ] {
-            let font = shipped(id).font;
+            let font = design::load_font(&repo(Part::Font), id).unwrap_or_else(|p| panic!("{id}: {p:?}"));
             assert_eq!((font.fonts.text.family.as_str(), font.fonts.numbers.family.as_str()), (text, numbers));
         }
         assert_eq!(shipped("channelr").level(LevelName::Title).weight, Weight::Bold, "Lato has no SemiBold");
+        let source = design::load_font(&repo(Part::Font), "source").expect("valid");
+        assert_eq!(source.fonts.heading.family, "Source Serif 4", "headings in the serif");
+        for id in FONTS_ONLY {
+            let font = design::load_font(&repo(Part::Font), id).expect("valid");
+            assert!(font.kind.is_some() && font.license == "OFL-1.1", "{id}: {:?}", font.kind);
+        }
     }
 
     #[test]
