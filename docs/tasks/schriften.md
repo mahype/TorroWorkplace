@@ -209,7 +209,7 @@ die Id in `Settings::font`; das Format der Einstellungen ändert sich nicht.
   Galerie hell und dunkel, in Standard und Console.
 
 ### SR.4 Steuerzentrale: Font als Dropdown
-- [ ] erledigt
+- [x] erledigt (2026-10-24: Sichtprüfung auf macOS in 1100 × 760, dunkel, hell, Console und mit Suche; ohne Hyprland kein `torro-design-review` und keine Größenklassen, schmal und breit bleiben von Hand zu prüfen)
 - **Modell:** Opus · **Braucht:** SR.3 · **Dateien:** `crates/torroworkplace/src/ui/{general,mod,launch}.rs`,
   `.claude/skills/torro-design/SKILL.md` (nur die Liste der `--open`-Zustände)
 - `font_row`/`font_button` ersetzen durch eine Zeile wie `scheme_row`: Knopf `size::sidebar()` breit mit dem Namen der

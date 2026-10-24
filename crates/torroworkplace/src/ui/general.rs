@@ -10,8 +10,7 @@
 //!   again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance; variant B of issue #291 since task L.37): three groups – "Design" (a compact list of
-//!   the designs), "Font and colors" (the fonts as a row of buttons, the colour scheme as a
-//!   dropdown) and "Display" ("Color mode" as a segment of System, Light, Dark with symbol and word,
+//!   the designs), "Font and colors" (the font and the colour scheme each as a dropdown) and "Display" ("Color mode" as a segment of System, Light, Dark with symbol and word,
 //!   and the zoom of the suite with −, the value, + and "Reset", task Z.1).
 //!
 //! What a single app or window shows and how it behaves is set in that window, behind its gear
@@ -35,9 +34,13 @@
 //!   name and description, three dots and the word of its density (`DesignInfo::density`, never
 //!   reckoned here), and the check mark at the one drawn. "version · author" as tooltip of the
 //!   picture.
-//! - **Font** – a row of buttons, each named by its family and written in it, the one drawn with a
-//!   check mark; the font the drawn design suggests has a dot, and the row's sentence says so
-//!   ([`FontHint`]). "pack · version · author · licence" as tooltip.
+//! - **Font** – a dropdown with a search field (issue #299, `widgets::search_menu`), each entry named
+//!   by its family and written in it, the one drawn with a check mark; the font the drawn design
+//!   suggests has a dot, and the row's sentence says so ([`FontHint`]). "pack · version · author ·
+//!   licence" as tooltip. The section "Torro fonts" (`FontInfo::origin` bundled or folder) holds
+//!   the groups Sans, Serif, Mono and Other (`FontInfo::kind`), a line parts it from "System fonts",
+//!   the computer's: "System" first, then the families ([`font_sections`]). Typing filters both,
+//!   Enter takes the first usable match.
 //! - **Colour scheme** – a dropdown: four stripes (`bg`, `panel`, `text`, `accent` in the window's
 //!   light or dark mode) and the name, in the sections "Torro", "Light and dark" and "Dark only"
 //!   (`ColorSchemeInfo::dark_only`); an empty section is left out ([`scheme_groups`]).
@@ -75,8 +78,8 @@ use iced::{
 };
 use torro_core::AppId;
 use torro_core::design::{
-    ColorScheme, DensityLevel, Design, FontRole, FontSet, Level, ListSelection, ListStyle, Mode, Part, STANDARD_ID,
-    Weight,
+    ColorScheme, DensityLevel, Design, FontKind, FontRole, FontSet, Level, ListSelection, ListStyle, Mode, Part,
+    STANDARD_ID, SYSTEM_ID, Weight,
 };
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{
@@ -88,7 +91,7 @@ use torro_gui::theme::{Palette, palette, radius, size, space};
 use torro_gui::widgets::{Align, Anchor, Placement};
 use torro_gui::zoom::{self, Step};
 use torro_gui::{layout, style, typo, widgets};
-use torro_ipc::{ColorSchemeInfo, DesignInfo, FontInfo, Request, SettingKey};
+use torro_ipc::{ColorSchemeInfo, DesignInfo, FontInfo, FontOrigin, Request, SettingKey};
 use torro_settings_ui::parts::{choice, field, notice, picker, row_frame, switch};
 
 use super::setup::component_name;
@@ -107,10 +110,17 @@ pub struct State {
     problems: Option<(Part, String)>,
     /// The addresses of "Maps" as typed and not saved yet ([`maps`]).
     maps: MapsDraft,
-    /// Whether the colour scheme's dropdown is open ([`overlay`]).
+    /// Whether the colour scheme's dropdown is open ([`overlay`]). At most one of the two dropdowns is
+    /// open.
     schemes_open: bool,
     /// Where the dropdown's button is, so its menu hangs under it.
     anchor: Anchor,
+    /// Whether the font's dropdown is open ([`overlay`], issue #299).
+    fonts_open: bool,
+    /// The words in the font dropdown's search field; emptied each time it opens.
+    font_query: String,
+    /// Where the font dropdown's button is.
+    font_anchor: Anchor,
     /// What was drawn when a design was chosen here, until the reload that carries the choice
     /// ([`loaded`]).
     before: Option<Before>,
@@ -400,15 +410,19 @@ pub fn loaded(state: &mut State, settings: &Settings, waiting: bool) {
     state.switched = (font.is_some() || mail_view.is_some()).then_some(Switched { font, mail_view });
 }
 
-/// Leaving the page closes the colour scheme's dropdown.
+/// Leaving the page closes the dropdowns.
 pub fn leave(state: &mut State) {
     state.schemes_open = false;
+    state.fonts_open = false;
 }
 
-/// What Escape does on the page: close the colour scheme's dropdown, if it is open.
+/// What Escape does on the page: close the dropdown that is open, if one is.
 pub fn escape(state: &State) -> Option<Message> {
-    state.schemes_open.then_some(Message::CloseSchemes)
+    if state.schemes_open { Some(Message::CloseSchemes) } else { state.fonts_open.then_some(Message::CloseFonts) }
 }
+
+/// The id of the search field in the font's dropdown, focused when it opens (`Action::Focus`).
+pub const FONT_SEARCH: &str = "appearance-font-search";
 
 /// What the core switched with the design chosen here last, for the shell's tests.
 #[cfg(test)]
@@ -447,6 +461,15 @@ pub enum Message {
     ToggleSchemes,
     /// A click next to the open dropdown, or Escape: close it.
     CloseSchemes,
+    /// The font's button: open its dropdown, with an empty search field that has the focus, or
+    /// close it (issue #299).
+    ToggleFonts,
+    /// A click next to the font's dropdown, or Escape: close it.
+    CloseFonts,
+    /// The words in the font dropdown's search field changed.
+    FontQuery(String),
+    /// Enter in the search field: choose the first match that can be used.
+    FirstFont,
     /// "Reload": list designs, fonts and colour schemes again, after one was added to or changed
     /// in a folder.
     Reload,
@@ -491,6 +514,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Choose(part, id) => {
             state.problems = None;
             state.schemes_open = false;
+            state.fonts_open = false;
             if part == Part::Design {
                 let settings = &data.settings;
                 let before = Before { design: id.clone(), font: settings.font.clone(), mail_view: settings.mail_view };
@@ -503,15 +527,41 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             let shown = state.problems.as_ref().is_some_and(|(p, i)| *p == part && *i == id);
             state.problems = if shown { None } else { Some((part, id)) };
             state.schemes_open = false;
+            state.fonts_open = false;
             return Action::None;
         }
         Message::ToggleSchemes => {
             state.schemes_open = !state.schemes_open;
+            state.fonts_open = false;
             return Action::None;
         }
         Message::CloseSchemes => {
             state.schemes_open = false;
             return Action::None;
+        }
+        Message::ToggleFonts => {
+            state.fonts_open = !state.fonts_open;
+            state.schemes_open = false;
+            if !state.fonts_open {
+                return Action::None;
+            }
+            state.font_query.clear();
+            return Action::Focus(FONT_SEARCH);
+        }
+        Message::CloseFonts => {
+            state.fonts_open = false;
+            return Action::None;
+        }
+        Message::FontQuery(words) => {
+            state.font_query = words;
+            return Action::None;
+        }
+        Message::FirstFont => {
+            let first = ok(&state.fonts).and_then(|fonts| first_font(fonts, &state.font_query));
+            return match first.map(|entry| entry.info.id.clone()) {
+                Some(id) => update(state, Message::Choose(Part::Font, id), data),
+                None => Action::None,
+            };
         }
         Message::Reload => return Action::ListLooks,
         Message::OpenFolder(part) => return Action::OpenFolder(part),
@@ -1168,7 +1218,7 @@ fn looks<'a>(state: &'a State, settings: &'a Settings, width: f32) -> Element<'a
     let footer = format!(
         "{} {}",
         tr(
-            "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder."
+            "The typeface of all Torro apps, sized so that text reads alike in every font. More fonts go into the fonts folder, and the fonts installed on this computer can be used too."
         ),
         tr("The colors of all Torro apps, light and dark. More color schemes go into the color schemes folder."),
     );
@@ -1188,68 +1238,227 @@ fn looks_heading_need() -> f32 {
         + space::xs()
 }
 
-/// The font's row: its name, the sentence about the font the drawn design suggests ([`FontHint`]),
-/// and a button per font under both, as many in a line as fit, the rest wrapping.
+/// The font's row: its name, the sentence about the font the drawn design suggests ([`FontHint`])
+/// under it, and the dropdown's button with the font drawn ([`font_button`]).
 fn font_row<'a>(state: &'a State, settings: &'a Settings, entries: &'a [FontEntry]) -> Element<'a, Message> {
+    let drawn = drawn(entries, &settings.font);
+    let current = entries.iter().find(|entry| entry.info.id == drawn);
+    let hint = font_hint(state, settings).map(|hint| hint.sentence());
+    setting_row(None, tr("Font"), hint, font_button(&state.font_anchor, current))
+}
+
+/// The button of the font's dropdown, in the look of a secondary button [`size::sidebar()`] wide:
+/// the name of the font drawn, written in it, and a chevron; it opens the dropdown under it
+/// ([`overlay`]).
+fn font_button<'a>(anchor: &Anchor, current: Option<&'a FontEntry>) -> Element<'a, Message> {
+    let name = current.map_or("", |entry| font_name(&entry.info));
+    let label = in_font(typo::text(typo::body(), name).wrapping(Wrapping::None), current);
+    let content = row![container(label).width(Fill).clip(true), small_icon(Icon::ChevronDown, |p| p.text_3)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let open = button(container(content).center_y(Fill))
+        .width(size::sidebar())
+        .height(size::control_sm())
+        .padding(style::button_padding())
+        .style(style::button::secondary)
+        .on_press(Message::ToggleFonts);
+    widgets::anchored(anchor, open)
+}
+
+/// `label` written in the text font of `entry` at the size it draws body text; unchanged when the
+/// entry has no font to draw with (one that can't be used, or a font of the computer this window
+/// can't find).
+fn in_font<'a>(label: text::Text<'a>, entry: Option<&FontEntry>) -> text::Text<'a> {
+    let Some(font) = entry.and_then(|entry| entry.part.as_deref()) else { return label };
+    let level = font.apply(torro_gui::design::active().typo.body);
+    label
+        .font(torro_gui::design::font_of(font, FontRole::Text, Weight::Regular))
+        .size(Pixels(level.size))
+        .line_height(LineHeight::Absolute(Pixels(level.line)))
+}
+
+/// What the font is called on the page: its family; the entry that follows the system's interface
+/// font is "System".
+fn font_name(info: &FontInfo) -> &str {
+    if info.id == SYSTEM_ID { tr("System") } else { info.name() }
+}
+
+/// The sections of the font's dropdown (issue #299), in this order, a line between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontSection {
+    /// The suite's own: shipped with it or laid into the fonts folder.
+    Torro,
+    /// The fonts installed on this computer.
+    System,
+}
+
+impl FontSection {
+    fn title(self) -> &'static str {
+        match self {
+            FontSection::Torro => tr("Torro fonts"),
+            FontSection::System => tr("System fonts"),
+        }
+    }
+}
+
+/// The groups of "Torro fonts", by their kind (`FontInfo::kind`), in this order; "Other" for one
+/// without a kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FontGroup {
+    Sans,
+    Serif,
+    Mono,
+    Other,
+}
+
+impl FontGroup {
+    const ALL: [FontGroup; 4] = [FontGroup::Sans, FontGroup::Serif, FontGroup::Mono, FontGroup::Other];
+
+    fn of(info: &FontInfo) -> FontGroup {
+        match info.kind {
+            Some(FontKind::Sans) => FontGroup::Sans,
+            Some(FontKind::Serif) => FontGroup::Serif,
+            Some(FontKind::Mono) => FontGroup::Mono,
+            None => FontGroup::Other,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            FontGroup::Sans => tr("Sans"),
+            FontGroup::Serif => tr("Serif"),
+            FontGroup::Mono => tr("Mono"),
+            FontGroup::Other => tr("Other"),
+        }
+    }
+}
+
+/// One section of the font's dropdown: its groups (`None`: no group title, the computer's fonts),
+/// each with its fonts.
+type FontList<'a> = (FontSection, Vec<(Option<FontGroup>, Vec<&'a FontEntry>)>);
+
+/// The fonts that match `query` (name or family, ignoring case; all for an empty one) by section and
+/// group: in "Torro fonts" the standard first in its group, then by name; in "System fonts"
+/// "System" first, then by name. A group or section without a match is left out.
+fn font_sections<'a>(entries: &'a [FontEntry], query: &str) -> Vec<FontList<'a>> {
+    let words = query.trim().to_lowercase();
+    let matching: Vec<&FontEntry> = entries.iter().filter(|entry| matches(&entry.info, &words)).collect();
+    let sorted = |mut fonts: Vec<&'a FontEntry>, first: fn(&FontInfo) -> bool| {
+        fonts.sort_by_key(|entry| (!first(&entry.info), font_name(&entry.info).to_lowercase()));
+        fonts
+    };
+    let (system, own): (Vec<&FontEntry>, Vec<&FontEntry>) =
+        matching.into_iter().partition(|entry| entry.info.origin == FontOrigin::System);
+    let groups: Vec<(Option<FontGroup>, Vec<&FontEntry>)> = FontGroup::ALL
+        .into_iter()
+        .map(|group| {
+            let members = own.iter().copied().filter(|entry| FontGroup::of(&entry.info) == group).collect();
+            (Some(group), sorted(members, |info| info.standard))
+        })
+        .filter(|(_, members)| !members.is_empty())
+        .collect();
+    let mut sections = Vec::new();
+    if !groups.is_empty() {
+        sections.push((FontSection::Torro, groups));
+    }
+    if !system.is_empty() {
+        sections.push((FontSection::System, vec![(None, sorted(system, |info| info.id == SYSTEM_ID))]));
+    }
+    sections
+}
+
+/// Whether the font `info` matches the lowercase `words`: its name on the page, its pack's name or
+/// its family contains them.
+fn matches(info: &FontInfo, words: &str) -> bool {
+    words.is_empty()
+        || [Some(font_name(info)), Some(info.name.as_str()), info.family.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|name| name.to_lowercase().contains(words))
+}
+
+/// The font Enter takes: the first match of `query` in the dropdown's order that can be used.
+fn first_font<'a>(entries: &'a [FontEntry], query: &str) -> Option<&'a FontEntry> {
+    font_sections(entries, query)
+        .into_iter()
+        .flat_map(|(_, groups)| groups)
+        .flat_map(|(_, members)| members)
+        .find(|entry| entry.info.valid)
+}
+
+/// The font's dropdown: a menu with search ([`widgets::search_menu`], [`size::props()`] wide) with the
+/// [`font_sections`] of the words typed – section titles in `text_2`, group titles in `text_3`, a line
+/// between the sections, an entry per font ([`font_item`]).
+fn font_menu<'a>(state: &'a State, settings: &'a Settings, entries: &'a [FontEntry]) -> Element<'a, Message> {
     let drawn = drawn(entries, &settings.font);
     let hint = font_hint(state, settings);
     let open = state.problems.as_ref().filter(|(part, _)| *part == Part::Font).map(|(_, id)| id.as_str());
-    let buttons = entries.iter().map(|entry| {
-        let id = entry.info.id.as_str();
-        let suggested = hint.as_ref().filter(|hint| hint.marks(id)).map(FontHint::design);
-        font_button(entry, id == drawn, open == Some(id), suggested)
-    });
-    let buttons = row(buttons).spacing(space::xs()).wrap().vertical_spacing(space::xs());
-    widgets::segment_row(tr("Font"), hint.as_ref().map(FontHint::sentence), buttons, None)
-}
-
-/// A font's button in the look of a chip to choose (`style::button::choice_chip`): its family written
-/// in its own text font at the size it draws body text, the check mark in front of the one `drawn`,
-/// a dot after the one the drawn design suggests (`suggested`: the design's name, said in the
-/// tooltip with "pack · version · author · licence"). One that can't be used is greyed out with an
-/// alert mark; its click shows its reasons (`open`: they are shown).
-fn font_button<'a>(entry: &'a FontEntry, drawn: bool, open: bool, suggested: Option<&'a str>) -> Element<'a, Message> {
-    let info = &entry.info;
-    let tip = byline([
-        Some(info.name.as_str()),
-        Some(info.version.as_str()),
-        info.author.as_deref(),
-        info.license.as_deref(),
-    ]);
-    let tip = suggested_tip(suggested, tip);
-    let mut label = typo::text(typo::body(), info.name()).wrapping(Wrapping::None);
-    if let Some(font) = entry.part.as_deref() {
-        let level = font.apply(torro_gui::design::active().typo.body);
-        label = label
-            .font(torro_gui::design::font_of(font, FontRole::Text, Weight::Regular))
-            .size(Pixels(level.size))
-            .line_height(LineHeight::Absolute(Pixels(level.line)));
-    }
-    let mut content = row![].spacing(space::xs()).align_y(Alignment::Center);
-    let button = if info.valid {
-        if drawn {
-            content = content.push(small_icon(Icon::Check, |p| p.text));
-        }
-        content = content.push(label);
-        if suggested.is_some() {
-            content = content.push(round_dot(|p: &Palette| p.text_3));
-        }
-        chip(content).style(style::button::choice_chip(drawn)).on_press(Message::Choose(Part::Font, info.id.clone()))
-    } else {
-        content = content.push(small_icon(Icon::CircleAlert, |p| p.text_3)).push(label);
-        chip(content)
-            .style(style::button::preview_tile(open, false))
-            .on_press(Message::Problems(Part::Font, info.id.clone()))
+    let title = |words: &'static str, tone: fn(&Theme) -> text::Style| -> Element<'a, Message> {
+        container(typo::text(typo::caption(), words).style(tone))
+            .padding(Padding::new(space::s()).bottom(space::xs()))
+            .into()
     };
-    match tip {
-        Some(tip) => widgets::with_tooltip(button, tip),
-        None => button.into(),
+    let mut items: Vec<Element<'a, Message>> = Vec::new();
+    for (section, groups) in font_sections(entries, &state.font_query) {
+        if !items.is_empty() {
+            items.push(
+                container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into(),
+            );
+        }
+        items.push(title(section.title(), torro_gui::theme::text_2));
+        for (group, members) in groups {
+            if let Some(group) = group {
+                items.push(title(group.title(), torro_gui::theme::text_3));
+            }
+            items.extend(members.into_iter().map(|entry| {
+                let id = entry.info.id.as_str();
+                let suggested = hint.as_ref().filter(|hint| hint.marks(id)).map(FontHint::design);
+                font_item(entry, id == drawn, open == Some(id), suggested)
+            }));
+        }
     }
+    widgets::search_menu(FONT_SEARCH, &state.font_query, Message::FontQuery, Message::FirstFont, items, size::props())
 }
 
-/// `content` as a chip-sized button: [`size::control_sm()`] high, the padding of a chip.
-fn chip<'a>(content: iced::widget::Row<'a, Message>) -> iced::widget::Button<'a, Message> {
-    button(container(content).center_y(Fill)).height(size::control_sm()).padding(style::CHIP_PADDING)
+/// A font of the dropdown, the whole entry a menu item: its name written in it, a dot at the one the
+/// drawn design suggests (`suggested`: the design's name, said in the tooltip with "pack · version ·
+/// author · licence"; for "System" the family it stands for), the check mark at the one `drawn`. One
+/// that can't be used has its name in `text_3` and an alert mark; its click shows its reasons under
+/// the group (`open`: they are shown).
+fn font_item<'a>(entry: &'a FontEntry, drawn: bool, open: bool, suggested: Option<&'a str>) -> Element<'a, Message> {
+    let info = &entry.info;
+    let tip = match info.id == SYSTEM_ID {
+        true => info.family.clone(),
+        false => byline([
+            Some(info.name.as_str()),
+            Some(info.version.as_str()),
+            info.author.as_deref(),
+            info.license.as_deref(),
+        ]),
+    };
+    let tip = suggested_tip(suggested, tip);
+    let name = in_font(typo::text(typo::body(), font_name(info)).wrapping(Wrapping::None), Some(entry));
+    let (name, press) = match info.valid {
+        true => (name, Message::Choose(Part::Font, info.id.clone())),
+        false => (name.style(torro_gui::theme::text_3), Message::Problems(Part::Font, info.id.clone())),
+    };
+    let mut content = row![container(name).width(Fill).clip(true)].spacing(space::s()).align_y(Alignment::Center);
+    if !info.valid {
+        content = content.push(small_icon(Icon::CircleAlert, |p| p.text_3));
+    }
+    if suggested.is_some() {
+        content = content.push(round_dot(|p: &Palette| p.text_3));
+    }
+    let item = button(container(content.push(check_mark(drawn))).center_y(Fill))
+        .width(Fill)
+        .height(style::MENU_ITEM_HEIGHT)
+        .padding(style::ITEM_PADDING)
+        .style(style::button::menu_item(open))
+        .on_press(press);
+    match tip {
+        Some(tip) => widgets::with_tooltip(item, tip),
+        None => item.into(),
+    }
 }
 
 /// `which` at the size of icons in buttons, in the colour `pick` takes from the window's palette.
@@ -1367,15 +1576,20 @@ fn scheme_button<'a>(anchor: &Anchor, current: Option<&'a SchemeEntry>) -> Eleme
     widgets::anchored(anchor, open)
 }
 
-/// The page's layer over the window: the colour scheme's dropdown while it is open, under its
-/// button, its right edge on the button's ([`scheme_menu`]). A click next to it closes it.
+/// The page's layer over the window: the dropdown that is open, under its button, its right edge
+/// on the button's – the colour scheme's ([`scheme_menu`]) or the font's ([`font_menu`]). A click
+/// next to it closes it.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    if !state.schemes_open {
-        return None;
+    if state.schemes_open {
+        let entries = ok(&state.schemes)?;
+        let menu = scheme_menu(entries, drawn(entries, &data.settings.color_scheme));
+        return Some(widgets::floating(&state.anchor, Placement::Below(Align::End), menu, Message::CloseSchemes));
     }
-    let entries = ok(&state.schemes)?;
-    let menu = scheme_menu(entries, drawn(entries, &data.settings.color_scheme));
-    Some(widgets::floating(&state.anchor, Placement::Below(Align::End), menu, Message::CloseSchemes))
+    if state.fonts_open {
+        let menu = font_menu(state, &data.settings, ok(&state.fonts)?);
+        return Some(widgets::floating(&state.font_anchor, Placement::Below(Align::End), menu, Message::CloseFonts));
+    }
+    None
 }
 
 /// The sections of the colour scheme's dropdown, in this order.
@@ -2241,6 +2455,123 @@ mod tests {
         let without: Vec<SchemeEntry> = schemes.iter().filter(|e| !e.info.dark_only).cloned().collect();
         let groups: Vec<SchemeGroup> = scheme_groups(&without).into_iter().map(|(group, _)| group).collect();
         assert_eq!(groups, [SchemeGroup::Torro, SchemeGroup::LightAndDark], "no empty section");
+    }
+
+    /// [`font_sections`] as ids.
+    type FontIds = Vec<(FontSection, Vec<(Option<FontGroup>, Vec<String>)>)>;
+
+    /// The ids of [`font_sections`], by section and group; the demo's fonts only (a test elsewhere may
+    /// add the font the process draws with).
+    fn font_ids(entries: &[FontEntry], query: &str) -> FontIds {
+        let known = ["torro", "tabular", "brush", "system", "system:Avenir Next", "system:Monaco"];
+        font_sections(entries, query)
+            .into_iter()
+            .map(|(section, groups)| {
+                let groups = groups
+                    .into_iter()
+                    .map(|(group, members)| {
+                        let ids = members.iter().map(|e| e.info.id.clone()).filter(|id| known.contains(&id.as_str()));
+                        (group, ids.collect())
+                    })
+                    .collect();
+                (section, groups)
+            })
+            .collect()
+    }
+
+    fn strings(list: &[&str]) -> Vec<String> {
+        list.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// Issue #299: "Torro fonts" first with the groups by kind (the standard first in its group, then
+    /// by name), then "System fonts" with "System" first; a group or a section without a font is left
+    /// out.
+    #[test]
+    fn the_font_dropdown_groups_the_suites_fonts_and_the_computers() {
+        let state = demo();
+        let fonts = ok(&state.fonts).expect("fonts");
+        assert_eq!(
+            font_ids(fonts, ""),
+            vec![
+                (
+                    FontSection::Torro,
+                    vec![
+                        (Some(FontGroup::Sans), strings(&["torro"])),
+                        (Some(FontGroup::Other), strings(&["brush", "tabular"]))
+                    ]
+                ),
+                (FontSection::System, vec![(None, strings(&["system", "system:Avenir Next", "system:Monaco"]))]),
+            ]
+        );
+        let system = fonts.iter().find(|entry| entry.info.id == SYSTEM_ID).expect("System");
+        assert_eq!(font_name(&system.info), tr("System"), "not the family it stands for");
+        assert_eq!(FontSection::System.title(), tr("System fonts"));
+        assert_eq!(FontGroup::Other.title(), tr("Other"));
+    }
+
+    /// Issue #299: the search filters by name and family without regard to case, and titles without a
+    /// match go; Enter takes the first match that can be used.
+    #[test]
+    fn the_font_search_filters_and_enter_takes_the_first_match() {
+        let data = Data::default();
+        let mut state = demo();
+        let fonts = ok(&state.fonts).expect("fonts");
+        assert_eq!(font_ids(fonts, "mo"), vec![(FontSection::System, vec![(None, strings(&["system:Monaco"]))])]);
+        assert_eq!(
+            font_ids(fonts, " INTER "),
+            vec![(
+                FontSection::Torro,
+                vec![(Some(FontGroup::Sans), strings(&["torro"])), (Some(FontGroup::Other), strings(&["tabular"]))]
+            )],
+            "the family counts, Inter Tabular too"
+        );
+        assert_eq!(font_ids(fonts, "helvetica"), vec![(FontSection::System, vec![(None, strings(&["system"]))])]);
+        assert!(font_ids(fonts, "zzz").is_empty(), "nothing: the menu says so");
+
+        let _ = update(&mut state, Message::ToggleFonts, &data);
+        let _ = update(&mut state, Message::FontQuery("ave".into()), &data);
+        let chosen = update(&mut state, Message::FirstFont, &data);
+        assert!(matches!(chosen, Action::Choose(Part::Font, ref id) if id == "system:Avenir Next"), "{chosen:?}");
+        assert!(!state.fonts_open, "choosing closes it");
+        let _ = update(&mut state, Message::ToggleFonts, &data);
+        assert_eq!(state.font_query, "", "it opens empty");
+        let _ = update(&mut state, Message::FontQuery("brush".into()), &data);
+        let nothing = update(&mut state, Message::FirstFont, &data);
+        assert!(matches!(nothing, Action::None), "a broken font is never taken: {nothing:?}");
+        assert!(state.fonts_open);
+    }
+
+    /// Issue #299: the font's button opens its dropdown with the focus in the search field; Escape, a
+    /// click next to it and leaving the page close it; only one of the two dropdowns is open; a broken
+    /// font's click shows its reasons under the group.
+    #[test]
+    fn the_font_dropdown_opens_closes_and_shows_reasons() {
+        let data = Data::default();
+        let mut state = demo();
+        let opened_it = update(&mut state, Message::ToggleFonts, &data);
+        assert!(matches!(opened_it, Action::Focus(FONT_SEARCH)), "{opened_it:?}");
+        assert!(overlay(&state, &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::CloseFonts)));
+        let _ = update(&mut state, Message::CloseFonts, &data);
+        assert!(overlay(&state, &data).is_none() && escape(&state).is_none());
+
+        let _ = update(&mut state, Message::ToggleFonts, &data);
+        let _ = update(&mut state, Message::ToggleSchemes, &data);
+        assert!(state.schemes_open && !state.fonts_open, "one dropdown at a time");
+        let _ = update(&mut state, Message::ToggleFonts, &data);
+        assert!(state.fonts_open && !state.schemes_open);
+        let closed = update(&mut state, Message::ToggleFonts, &data);
+        assert!(matches!(closed, Action::None) && !state.fonts_open, "a second click closes it");
+
+        let _ = update(&mut state, Message::ToggleFonts, &data);
+        let _ = update(&mut state, Message::Problems(Part::Font, "brush".into()), &data);
+        assert!(!state.fonts_open, "the reasons show under the group");
+        let fonts = ok(&state.fonts).expect("fonts");
+        let shown = opened(fonts, Part::Font, state.problems.as_ref()).map(|entry| entry.info.id.as_str());
+        assert_eq!(shown, Some("brush"));
+        let _ = update(&mut state, Message::ToggleFonts, &data);
+        leave(&mut state);
+        assert!(overlay(&state, &data).is_none(), "leaving the page closes it");
     }
 
     /// Task L.37: the colour scheme's button opens and closes its dropdown, a layer over the window;
